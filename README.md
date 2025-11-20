@@ -65,6 +65,12 @@ Or run the built executable:
 
 ## Architecture
 
+### SwiftUI Interface
+- Modern declarative UI using SwiftUI
+- MenuBarExtra for native macOS menubar integration
+- Observable state management with `@StateObject` and `@EnvironmentObject`
+- Clean separation between UI and business logic
+
 ### Screen Capture
 - Uses `ScreenCaptureKit` for efficient screen capture
 - Captures at native Retina resolution (2x)
@@ -136,10 +142,10 @@ MIT License - Feel free to modify and distribute
 
 **Technologies:**
 - Swift 5.9+
+- SwiftUI (Modern declarative UI with MenuBarExtra)
 - ScreenCaptureKit (Screen Capture)
 - VideoToolbox (H.264 Encoding/Decoding)
 - Network Framework (TCP Communication)
-- AppKit (Menubar UI)
 
 **Quality Settings:**
 - Resolution: Native Retina (2x scaling)
