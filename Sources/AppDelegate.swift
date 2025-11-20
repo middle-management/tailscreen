@@ -1,5 +1,6 @@
 import AppKit
 import Network
+import Foundation
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
@@ -57,9 +58,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
                 // Start server
                 server = ScreenShareServer(port: 7447)
-                try server?.start { [weak self] in
-                    self?.screenCapture?.captureFrame()
-                }
+                try server?.start()
 
                 isSharing = true
                 statusItem.button?.title = "📡"

@@ -14,7 +14,7 @@ class ScreenShareServer {
         self.port = port
     }
 
-    func start(onFrameNeeded: @escaping () -> Void) throws {
+    func start() throws {
         // Setup listener
         let params = NWParameters.tcp
         params.allowLocalEndpointReuse = true
