@@ -2,6 +2,19 @@ import VideoToolbox
 import CoreMedia
 import CoreVideo
 
+// Global C callback function for VideoToolbox
+private func compressionOutputCallback(
+    outputCallbackRefCon: UnsafeMutableRawPointer?,
+    sourceFrameRefCon: UnsafeMutableRawPointer?,
+    status: OSStatus,
+    infoFlags: VTEncodeInfoFlags,
+    sampleBuffer: CMSampleBuffer?
+) {
+    guard let outputCallbackRefCon = outputCallbackRefCon else { return }
+    let encoder = Unmanaged<VideoEncoder>.fromOpaque(outputCallbackRefCon).takeUnretainedValue()
+    encoder.handleEncodedFrame(status: status, infoFlags: infoFlags, sampleBuffer: sampleBuffer)
+}
+
 class VideoEncoder {
     private var session: VTCompressionSession?
     private var frameCount: Int64 = 0
@@ -18,8 +31,8 @@ class VideoEncoder {
             encoderSpecification: nil,
             imageBufferAttributes: nil,
             compressedDataAllocator: nil,
-            outputCallback: nil,
-            refcon: nil,
+            outputCallback: compressionOutputCallback,
+            refcon: Unmanaged.passUnretained(self).toOpaque(),
             compressionSessionOut: &session
         )
 
@@ -64,16 +77,14 @@ class VideoEncoder {
             frameProperties: nil,
             sourceFrameRefcon: nil,
             infoFlagsOut: &flags
-        ) { [weak self] status, infoFlags, sampleBuffer in
-            self?.handleEncodedFrame(status: status, infoFlags: infoFlags, sampleBuffer: sampleBuffer)
-        }
+        )
 
         if status != noErr {
             print("Encoding frame failed: \(status)")
         }
     }
 
-    private func handleEncodedFrame(status: OSStatus, infoFlags: VTEncodeInfoFlags, sampleBuffer: CMSampleBuffer?) {
+    fileprivate func handleEncodedFrame(status: OSStatus, infoFlags: VTEncodeInfoFlags, sampleBuffer: CMSampleBuffer?) {
         guard status == noErr,
               let sampleBuffer = sampleBuffer,
               CMSampleBufferDataIsReady(sampleBuffer) else {
@@ -91,7 +102,7 @@ class VideoEncoder {
         let length = CMBlockBufferGetDataLength(dataBuffer)
         var data = Data(count: length)
 
-        data.withUnsafeMutableBytes { ptr in
+        _ = data.withUnsafeMutableBytes { ptr in
             CMBlockBufferCopyDataBytes(dataBuffer, atOffset: 0, dataLength: length, destination: ptr.baseAddress!)
         }
 

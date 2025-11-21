@@ -2,6 +2,28 @@ import Network
 import AppKit
 import CoreVideo
 
+// Thread-safe flag for tracking continuation state
+final class ResumedFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+
+    var isResumed: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+
+    func setResumed() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if value {
+            return false // Already resumed
+        }
+        value = true
+        return true // Successfully set
+    }
+}
+
 class ScreenShareClient {
     private var connection: NWConnection?
     private var decoder: VideoDecoder?
@@ -20,22 +42,23 @@ class ScreenShareClient {
         }
 
         return try await withCheckedThrowingContinuation { continuation in
-            var resumed = false
+            let resumedFlag = ResumedFlag()
 
             connection?.stateUpdateHandler = { state in
-                guard !resumed else { return }
+                guard !resumedFlag.isResumed else { return }
 
                 switch state {
                 case .ready:
-                    resumed = true
-                    continuation.resume()
-                    self.receiveData()
+                    if resumedFlag.setResumed() {
+                        continuation.resume()
+                        self.receiveData()
+                    }
                 case .failed(let error):
-                    resumed = true
-                    continuation.resume(throwing: error)
+                    if resumedFlag.setResumed() {
+                        continuation.resume(throwing: error)
+                    }
                 case .cancelled:
-                    if !resumed {
-                        resumed = true
+                    if resumedFlag.setResumed() {
                         continuation.resume(throwing: ClientError.connectionCancelled)
                     }
                 default:
