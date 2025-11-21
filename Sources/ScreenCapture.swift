@@ -49,12 +49,10 @@ class ScreenCapture: NSObject {
         try await stream?.startCapture()
     }
 
-    func stop() {
-        Task {
-            try? await stream?.stopCapture()
-            stream = nil
-            streamOutput = nil
-        }
+    func stop() async {
+        try? await stream?.stopCapture()
+        stream = nil
+        streamOutput = nil
     }
 
     func captureFrame() {

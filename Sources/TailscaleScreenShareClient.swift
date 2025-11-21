@@ -101,8 +101,6 @@ class TailscaleScreenShareClient: @unchecked Sendable {
     }
 
     private func receiveData() async {
-        guard let connection = connection else { return }
-
         while isConnected {
             do {
                 // Read data from connection
@@ -154,7 +152,7 @@ class TailscaleScreenShareClient: @unchecked Sendable {
     }
 
     private func displayFrame(_ pixelBuffer: CVPixelBuffer) {
-        DispatchQueue.main.async { [weak self] in
+        Task { @MainActor [weak self] in
             guard let self = self else { return }
 
             // Create window if needed
