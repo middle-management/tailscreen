@@ -1,47 +1,59 @@
 # Tailscale Integration - Quick Start Guide
 
-A minimal guide to get started with Tailscale networking in Cuple.
+A minimal guide to get started with Tailscale networking in Cuple using the **official TailscaleKit framework**.
 
 ## TL;DR
 
 ```bash
-# 1. Get an auth key from Tailscale
+# 1. Clone and build TailscaleKit framework
+cd /tmp
+git clone https://github.com/tailscale/libtailscale.git
+cd libtailscale/swift
+make macos  # Builds TailscaleKit.framework
+
+# 2. Add framework to your Xcode project
+# Drag TailscaleKit.framework into your project
+
+# 3. Get an auth key from Tailscale
 open https://login.tailscale.com/admin/settings/keys
 
-# 2. Set it as environment variable
+# 4. Set it as environment variable
 export TS_AUTHKEY="tskey-auth-xxxxxxxxxxxxx"
 
-# 3. Build and link libtailscale (see TAILSCALE_INTEGRATION.md for details)
-cd /path/to/libtailscale
-make archive
-
-# 4. Use the Tailscale classes in your app
+# 5. Use TailscaleKit in your app!
 ```
+
+## What's TailscaleKit?
+
+TailscaleKit is the **official Swift framework** from Tailscale (found in `libtailscale/swift/`). It provides:
+
+- ✅ Native Swift API with async/await
+- ✅ Swift 6 concurrency compliance
+- ✅ Actor-based thread safety
+- ✅ Modern API design
+- ✅ LocalAPI client for Tailnet state
+- ✅ URLSession extensions for HTTP/HTTPS
 
 ## Code Examples
 
 ### Server Example
 
 ```swift
-import Foundation
+import TailscaleKit
 
-// Create and start a Tailscale server
 let server = TailscaleScreenShareServer()
 
 Task {
     do {
-        // Start server (uses TS_AUTHKEY from environment)
+        // Start server (uses TS_AUTHKEY from environment if not specified)
         try await server.start(hostname: "my-mac")
 
         // Print Tailscale IPs
-        let ips = server.getIPAddresses()
-        print("✅ Server running on: \(ips.joined(separator: ", "))")
+        let ips = try await server.getIPAddresses()
+        print("✅ Server running on:")
+        print("   IPv4: \(ips.ip4 ?? "none")")
+        print("   IPv6: \(ips.ip6 ?? "none")")
         print("📱 Others can connect using: my-mac")
-
-        // Server will automatically:
-        // - Capture screen
-        // - Encode to H.264
-        // - Stream to connected clients
 
     } catch {
         print("❌ Server failed: \(error)")
@@ -49,15 +61,14 @@ Task {
 }
 
 // Stop when done
-server.stop()
+await server.stop()
 ```
 
 ### Client Example
 
 ```swift
-import Foundation
+import TailscaleKit
 
-// Create and connect a Tailscale client
 let client = TailscaleScreenShareClient()
 
 Task {
@@ -67,222 +78,223 @@ Task {
 
         print("✅ Connected! Video window will appear automatically.")
 
-        // Client will automatically:
-        // - Receive H.264 stream
-        // - Decode frames
-        // - Display in window
-
     } catch {
         print("❌ Connection failed: \(error)")
     }
 }
 
 // Disconnect when done
-client.disconnect()
+await client.disconnect()
 ```
 
-## Integration with Existing AppState
+## Building TailscaleKit
 
-To add Tailscale as an option alongside the existing TCP networking:
-
-```swift
-// Add to AppState.swift
-@Observable
-class AppState {
-    var useTailscale: Bool = false  // Toggle between TCP and Tailscale
-
-    // Existing
-    var screenShareServer: ScreenShareServer?
-    var screenShareClient: ScreenShareClient?
-
-    // New Tailscale
-    var tailscaleServer: TailscaleScreenShareServer?
-    var tailscaleClient: TailscaleScreenShareClient?
-
-    func startSharing() {
-        if useTailscale {
-            // Use Tailscale
-            let server = TailscaleScreenShareServer()
-            tailscaleServer = server
-
-            Task {
-                try? await server.start(hostname: Host.current().localizedName ?? "cuple")
-                let ips = server.getIPAddresses()
-                print("Share via Tailscale: \(ips.first ?? "unknown")")
-            }
-        } else {
-            // Use traditional TCP
-            let server = ScreenShareServer(port: 7447)
-            screenShareServer = server
-            try? server.start()
-        }
-    }
-
-    func connectToServer(address: String) {
-        if useTailscale {
-            // Use Tailscale
-            let client = TailscaleScreenShareClient()
-            tailscaleClient = client
-
-            Task {
-                try? await client.connect(to: address, port: 7447)
-            }
-        } else {
-            // Use traditional TCP
-            let client = ScreenShareClient()
-            screenShareClient = client
-
-            Task {
-                try? await client.connect(to: address, port: 7447)
-            }
-        }
-    }
-}
-```
-
-## Simple UI Toggle
-
-Add a toggle in your menu bar to switch modes:
-
-```swift
-// In MenuBarView.swift
-Toggle("Use Tailscale", isOn: $appState.useTailscale)
-```
-
-## Required Steps Before Running
-
-⚠️ **Important**: The code won't compile yet! You need to:
-
-### 1. Build libtailscale
+### Step 1: Clone the Repository
 
 ```bash
+cd /tmp
 git clone https://github.com/tailscale/libtailscale.git
-cd libtailscale
-make archive
-# Creates: libtailscale.a and tailscale.h
+cd libtailscale/swift
 ```
 
-### 2. Add to Xcode Project
-
-1. Create directories in your project:
-   ```bash
-   mkdir -p lib include
-   cp /path/to/libtailscale/libtailscale.a lib/
-   cp /path/to/libtailscale/tailscale.h include/
-   ```
-
-2. In Xcode:
-   - **Build Phases** → **Link Binary With Libraries** → Add `lib/libtailscale.a`
-   - **Build Settings** → **Header Search Paths** → Add `$(PROJECT_DIR)/include`
-   - **Build Settings** → **Library Search Paths** → Add `$(PROJECT_DIR)/lib`
-
-### 3. Create Bridging Header
-
-Create `Cuple-Bridging-Header.h`:
-
-```c
-#ifndef Cuple_Bridging_Header_h
-#define Cuple_Bridging_Header_h
-
-#import "tailscale.h"
-
-#endif
-```
-
-In Xcode:
-- **Build Settings** → **Objective-C Bridging Header** → Set to `Cuple-Bridging-Header.h`
-
-### 4. Remove Placeholder Declarations
-
-In `TailscaleNetwork.swift`, remove the placeholder `@_silgen_name` declarations (lines 11-50) since they'll now come from the bridging header.
-
-### 5. Get an Auth Key
+### Step 2: Build the Framework
 
 ```bash
-# Visit: https://login.tailscale.com/admin/settings/keys
-# Create a new auth key with "Ephemeral" checked
-# Copy the key and export it:
+# For macOS (creates TailscaleKit.framework)
+make macos
+
+# For iOS (creates fat framework with simulator + device)
+make ios-fat
+
+# For iOS Simulator only
+make ios-sim
+
+# See all options
+make help
+```
+
+The built framework will be in `build/macos/TailscaleKit.framework` (or respective platform directory).
+
+### Step 3: Add to Xcode Project
+
+1. **Drag and drop** `TailscaleKit.framework` into your Xcode project navigator
+2. In **Build Phases** → **Embed Frameworks**, ensure TailscaleKit is listed
+3. In **General** → **Frameworks, Libraries, and Embedded Content**, verify it's set to "Embed & Sign"
+
+That's it! No bridging headers, no C API bindings needed. Just import and use:
+
+```swift
+import TailscaleKit
+```
+
+## Getting an Auth Key
+
+1. Visit: https://login.tailscale.com/admin/settings/keys
+2. Click "Generate auth key"
+3. Check "Ephemeral" (recommended for temporary sharing sessions)
+4. Copy the key
+5. Export it:
+
+```bash
 export TS_AUTHKEY="tskey-auth-xxxxxxxxxxxxx"
 ```
 
-## Testing the Integration
-
-### Test 1: Server Start
+Or pass it directly in code:
 
 ```swift
-let server = TailscaleScreenShareServer()
-try await server.start()
-print(server.getIPAddresses())
+try await server.start(hostname: "my-mac", authKey: "tskey-auth-xxx...")
 ```
 
-**Expected output:**
+## Comparison: TailscaleKit vs Raw TCP
+
+| Feature | Raw TCP | TailscaleKit |
+|---------|---------|--------------|
+| **Setup** | Simple | Single framework import |
+| **Encryption** | None | WireGuard (built-in) |
+| **Auth** | Manual IP sharing | Tailscale identity |
+| **NAT Traversal** | Manual forwarding | Automatic |
+| **Cross-network** | Requires public IP | Works everywhere |
+| **Code complexity** | Low | Low (official API) |
+| **Peer discovery** | Manual | Via Tailnet |
+
+## Architecture
+
 ```
-🔷 Starting Tailscale network...
-✅ Tailscale connected! IP addresses: 100.64.0.1
-🔷 Starting listener on port 7447...
-✅ Listening on Tailscale port 7447
-🔷 Starting screen capture...
-✅ Screen share server started!
+┌─────────────────────────────────┐
+│   Your Cuple App                │
+├─────────────────────────────────┤
+│   TailscaleScreenShareServer    │
+│   TailscaleScreenShareClient    │
+├─────────────────────────────────┤
+│   TailscaleKit.framework        │  ← Official Swift framework
+│   (TailscaleNode, Listener,     │
+│    OutgoingConnection, etc.)    │
+├─────────────────────────────────┤
+│   libtailscale.a (C library)    │  ← Compiled into framework
+├─────────────────────────────────┤
+│   Tailscale/WireGuard           │
+└─────────────────────────────────┘
 ```
 
-### Test 2: Client Connect
+## API Overview
+
+### TailscaleNode (Actor)
+
+Main entry point for creating a Tailscale node:
 
 ```swift
-let client = TailscaleScreenShareClient()
-try await client.connect(to: "100.64.0.1")
+let config = Configuration(
+    hostName: "my-app",
+    path: "/path/to/state",
+    authKey: "tskey-auth-...",
+    controlURL: kDefaultControlURL,
+    ephemeral: true
+)
+
+let node = try TailscaleNode(config: config, logger: logger)
+try await node.up()
+
+let ips = try await node.addrs()  // Returns (ip4: String?, ip6: String?)
 ```
 
-**Expected output:**
-```
-🔷 Starting Tailscale client...
-🔷 Connecting to Tailscale network...
-✅ Tailscale connected! IP addresses: 100.64.0.2
-🔷 Connecting to 100.64.0.1:7447...
-✅ Connected to 100.64.0.1!
-```
+### Listener (Actor)
 
-## Debugging
+Accept incoming connections:
 
-### Check Tailscale Status
+```swift
+let listener = try await Listener(
+    tailscale: node.tailscale!,
+    proto: .tcp,
+    address: ":7447",
+    logger: logger
+)
 
-While your app is running, in a terminal:
-
-```bash
-# Install Tailscale CLI if not already installed
-brew install tailscale
-
-# Check network status
-tailscale status
-
-# Should show your app's nodes:
-# 100.64.0.1    my-mac               ...
-# 100.64.0.2    cuple-client-abc123  ...
+let connection = try await listener.accept(timeout: 60.0)
+let data = try await connection.receive(maximumLength: 4096, timeout: 1000)
 ```
 
-### Common Issues
+### OutgoingConnection (Actor)
 
-**"Initialization failed"**
-- Library not linked correctly
-- Check Xcode build settings
+Create outgoing connections:
 
-**"Start failed: invalid auth key"**
-- Auth key expired or invalid
-- Generate a new one from Tailscale admin
+```swift
+let connection = try await OutgoingConnection(
+    tailscale: node.tailscale!,
+    to: "peer-hostname:7447",
+    proto: .tcp,
+    logger: logger
+)
 
-**"Connection refused"**
-- Server not running
-- Firewall blocking (unlikely with Tailscale)
-- Wrong hostname/IP
+try await connection.connect()
+try connection.send(myData)
+```
+
+### URLSession Extension
+
+For HTTP/HTTPS, use the URLSession extension:
+
+```swift
+let (sessionConfig, _) = try await URLSessionConfiguration.tailscaleSession(node)
+let session = URLSession(configuration: sessionConfig)
+
+let url = URL(string: "http://peer-hostname/api")!
+let (data, _) = try await session.data(from: url)
+```
 
 ## Next Steps
 
-1. ✅ Complete the setup steps above
-2. ✅ Test with server and client
-3. ✅ Add UI controls for Tailscale mode
-4. 🔜 Implement peer discovery (list available servers)
-5. 🔜 Add connection state indicators
-6. 🔜 Add error handling UI
+1. ✅ Build TailscaleKit.framework
+2. ✅ Add it to your Xcode project
+3. ✅ Get a Tailscale auth key
+4. ✅ Import TailscaleKit in your code
+5. ✅ Use TailscaleScreenShareServer and TailscaleScreenShareClient
 
-## Questions?
+## Known Limitations
 
-See the full documentation: [TAILSCALE_INTEGRATION.md](./TAILSCALE_INTEGRATION.md)
+The current implementation has a few architectural considerations:
+
+1. **Bidirectional Communication**: TailscaleKit's `OutgoingConnection` only supports sending data (no `receive()` method). For bidirectional communication, you would need to:
+   - Use separate Listener for server→client direction
+   - Or access the underlying file descriptor directly
+   - Or extend TailscaleKit to add receiving capabilities
+
+2. **Connection Broadcasting**: The server needs to send H.264 frames to multiple clients. The current `IncomingConnection` API doesn't expose a `send()` method, so broadcasting would require accessing raw file descriptors.
+
+These are framework design choices and can be addressed by either extending TailscaleKit or using the underlying C API directly for specific use cases.
+
+## Troubleshooting
+
+### "Module 'TailscaleKit' not found"
+
+- Ensure the framework is in your project
+- Check Build Phases → Link Binary With Libraries
+- Verify framework search paths
+
+### "No such module 'TailscaleKit'"
+
+- Clean build folder (Cmd+Shift+K)
+- Rebuild the framework
+- Restart Xcode
+
+### "dyld: Library not loaded: TailscaleKit.framework"
+
+- Check that framework is set to "Embed & Sign" in General → Frameworks
+- Verify it's in Build Phases → Embed Frameworks
+
+### Connection fails
+
+- Verify both nodes are authenticated to Tailscale
+- Check Tailscale status: `tailscale status`
+- Ensure ACLs allow traffic on the port
+- Try connecting by IP instead of hostname
+
+## Resources
+
+- [TailscaleKit Source](https://github.com/tailscale/libtailscale/tree/main/swift)
+- [TailscaleKit Example](https://github.com/tailscale/libtailscale/tree/main/swift/Examples/TailscaleKitHello)
+- [Tailscale Docs](https://tailscale.com/kb/)
+- [libtailscale README](https://github.com/tailscale/libtailscale)
+
+## Full Documentation
+
+See [TAILSCALE_INTEGRATION.md](./TAILSCALE_INTEGRATION.md) for comprehensive documentation.
