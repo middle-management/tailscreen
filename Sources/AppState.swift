@@ -1,5 +1,6 @@
 import SwiftUI
 import Observation
+import Foundation
 
 @MainActor
 class AppState: ObservableObject {
@@ -12,26 +13,33 @@ class AppState: ObservableObject {
     @Published var showConnectSheet = false
     @Published var showIPSheet = false
 
-    private var screenCapture: ScreenCapture?
-    private var server: ScreenShareServer?
-    private var client: ScreenShareClient?
+    private var server: TailscaleScreenShareServer?
+    private var client: TailscaleScreenShareClient?
+    private var tailscaleIPs: [String] = []
 
     var localIPAddresses: [String] {
-        NetworkHelper.getLocalIPAddresses()
+        if !tailscaleIPs.isEmpty {
+            return tailscaleIPs.map { "Tailscale: \($0)" }
+        }
+        return ["Starting Tailscale..."]
     }
 
     func startSharing() async {
         do {
-            // Initialize screen capture
-            screenCapture = ScreenCapture()
-            try await screenCapture?.start()
+            // Start Tailscale server with hostname
+            let hostname = Host.current().localizedName ?? "cuple-share"
+            server = TailscaleScreenShareServer()
 
-            // Start server
-            server = ScreenShareServer(port: 7447)
-            try server?.start()
+            let ips = try await server?.start(hostname: hostname)
+            tailscaleIPs = ips ?? []
 
             isSharing = true
-            showAlertMessage(title: "Sharing Started", message: "Your screen is now being shared on port 7447.\nOthers can connect to your IP address.")
+
+            let ipList = tailscaleIPs.joined(separator: "\n")
+            showAlertMessage(
+                title: "Sharing Started",
+                message: "Your screen is being shared via Tailscale!\n\nYour addresses:\n\(ipList)\n\nOthers can connect using your Tailscale hostname: \(hostname)"
+            )
         } catch {
             showAlertMessage(title: "Error", message: "Failed to start sharing: \(error.localizedDescription)")
         }
@@ -39,9 +47,8 @@ class AppState: ObservableObject {
 
     func stopSharing() async {
         await server?.stop()
-        await screenCapture?.stop()
         server = nil
-        screenCapture = nil
+        tailscaleIPs = []
         isSharing = false
         showAlertMessage(title: "Sharing Stopped", message: "Screen sharing has been stopped.")
     }
@@ -50,18 +57,18 @@ class AppState: ObservableObject {
         guard !host.isEmpty else { return }
 
         do {
-            client = ScreenShareClient()
+            client = TailscaleScreenShareClient()
             try await client?.connect(to: host, port: 7447)
             isConnected = true
-            showAlertMessage(title: "Connected", message: "Successfully connected to \(host)")
+            showAlertMessage(title: "Connected", message: "Successfully connected to \(host) via Tailscale")
         } catch {
             showAlertMessage(title: "Connection Failed", message: "Could not connect to \(host): \(error.localizedDescription)")
             client = nil
         }
     }
 
-    func disconnect() {
-        client?.disconnect()
+    func disconnect() async {
+        await client?.disconnect()
         client = nil
         isConnected = false
         showAlertMessage(title: "Disconnected", message: "Disconnected from remote screen.")

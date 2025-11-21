@@ -30,7 +30,9 @@ struct MenuBarView: View {
             Group {
                 if appState.isConnected {
                     MenuButton("Disconnect", systemImage: "xmark.circle") {
-                        appState.disconnect()
+                        Task {
+                            await appState.disconnect()
+                        }
                     }
                 } else {
                     MenuButton("Connect to...", systemImage: "link") {
@@ -42,7 +44,7 @@ struct MenuBarView: View {
             Divider()
 
             // Info section
-            MenuButton("Show IP Address", systemImage: "info.circle") {
+            MenuButton("Show Tailscale Info", systemImage: "info.circle") {
                 appState.showIPSheet = true
             }
 
@@ -133,18 +135,18 @@ struct MenuButton: View {
 struct ConnectSheet: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.dismiss) var dismiss
-    @State private var ipAddress = ""
+    @State private var hostname = ""
 
     var body: some View {
         VStack(spacing: 16) {
-            Text("Connect to Screen Share")
+            Text("Connect via Tailscale")
                 .font(.headline)
 
-            Text("Enter the IP address of the computer you want to view:")
+            Text("Enter the Tailscale hostname or IP address:")
                 .font(.subheadline)
                 .foregroundColor(.secondary)
 
-            TextField("192.168.1.100", text: $ipAddress)
+            TextField("hostname or 100.x.x.x", text: $hostname)
                 .textFieldStyle(.roundedBorder)
                 .frame(width: 250)
 
@@ -156,12 +158,12 @@ struct ConnectSheet: View {
 
                 Button("Connect") {
                     Task {
-                        await appState.connect(to: ipAddress.trimmingCharacters(in: .whitespacesAndNewlines))
+                        await appState.connect(to: hostname.trimmingCharacters(in: .whitespacesAndNewlines))
                         dismiss()
                     }
                 }
                 .keyboardShortcut(.return)
-                .disabled(ipAddress.isEmpty)
+                .disabled(hostname.isEmpty)
             }
         }
         .padding()
@@ -175,11 +177,11 @@ struct IPAddressSheet: View {
 
     var body: some View {
         VStack(spacing: 16) {
-            Text("Your IP Addresses")
+            Text("Tailscale Connection Info")
                 .font(.headline)
 
             if appState.localIPAddresses.isEmpty {
-                Text("No network interfaces found")
+                Text("Tailscale not connected")
                     .foregroundColor(.secondary)
             } else {
                 VStack(alignment: .leading, spacing: 8) {
