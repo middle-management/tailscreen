@@ -84,7 +84,7 @@ class VideoEncoder {
         }
     }
 
-    private func handleEncodedFrame(status: OSStatus, infoFlags: VTEncodeInfoFlags, sampleBuffer: CMSampleBuffer?) {
+    fileprivate func handleEncodedFrame(status: OSStatus, infoFlags: VTEncodeInfoFlags, sampleBuffer: CMSampleBuffer?) {
         guard status == noErr,
               let sampleBuffer = sampleBuffer,
               CMSampleBufferDataIsReady(sampleBuffer) else {
