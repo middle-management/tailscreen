@@ -1,0 +1,32 @@
+# Swift Package Manager
+.build/
+.swiftpm/
+Package.resolved
+
+# Xcode
+*.xcodeproj
+*.xcworkspace
+xcuserdata/
+DerivedData/
+
+# Built C library in upstream (created by make c-archive)
+upstream/libtailscale/libtailscale.a
+upstream/libtailscale/libtailscale.h
+
+# Build outputs
+*.o
+*.dylib
+*.so
+
+# macOS
+.DS_Store
+
+# Temporary files
+*.swp
+*.swo
+*~
+
+# VS Code
+.vscode/
+
+# Note: Sources/, lib/, and include/ are symlinks - they are tracked!

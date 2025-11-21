@@ -1,0 +1,33 @@
+name: Build
+
+on:
+  push:
+    branches: [ main, claude/** ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive  # Initialize all submodules
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Build libtailscale
+        run: |
+          cd TailscaleKitPackage
+          ./setup.sh
+
+      - name: Build Cuple
+        run: swift build
+
+      - name: Run tests
+        run: swift test
