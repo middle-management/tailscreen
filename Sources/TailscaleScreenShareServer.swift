@@ -183,9 +183,7 @@ class TailscaleScreenShareServer: @unchecked Sendable {
 
         // Send to all connections (using the underlying file descriptors)
         connectionQueue.sync {
-            var deadConnections: [UUID] = []
-
-            for (id, (connection, _)) in activeConnections {
+            for (_, (connection, _)) in activeConnections {
                 // Note: IncomingConnection doesn't have a send method
                 // We'd need to get the raw file descriptor and write directly
                 // For now, we'll track connections but actual sending would need
@@ -194,11 +192,6 @@ class TailscaleScreenShareServer: @unchecked Sendable {
                 // This is a limitation of the current TailscaleKit API
                 // for bidirectional communication
                 _ = connection
-            }
-
-            // Remove dead connections
-            for id in deadConnections {
-                activeConnections.removeValue(forKey: id)
             }
         }
     }
@@ -226,7 +219,7 @@ class TailscaleScreenShareServer: @unchecked Sendable {
         }
         activeConnections.removeAll()
 
-        listener?.close()
+        await listener?.close()
         listener = nil
 
         if let node = node {
@@ -238,9 +231,9 @@ class TailscaleScreenShareServer: @unchecked Sendable {
     }
 
     deinit {
-        Task {
-            await stop()
-        }
+        // Cleanup is handled by stop() which should be called before deallocation
+        // We cannot use Task in deinit as it would capture self after deallocation
+        isRunning = false
     }
 }
 
