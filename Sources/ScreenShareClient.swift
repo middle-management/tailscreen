@@ -24,7 +24,7 @@ final class ResumedFlag: @unchecked Sendable {
     }
 }
 
-class ScreenShareClient {
+class ScreenShareClient: @unchecked Sendable {
     private var connection: NWConnection?
     private var decoder: VideoDecoder?
     private var window: NSWindow?
@@ -170,6 +170,7 @@ class ScreenShareClient {
         }
     }
 
+    @MainActor
     private func createWindow() {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1280, height: 720),

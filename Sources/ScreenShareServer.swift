@@ -1,7 +1,7 @@
 import Network
 import CoreVideo
 
-class ScreenShareServer {
+class ScreenShareServer: @unchecked Sendable {
     private let port: UInt16
     private var listener: NWListener?
     private var connections: [NWConnection] = []

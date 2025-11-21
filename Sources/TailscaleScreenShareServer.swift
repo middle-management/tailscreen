@@ -5,7 +5,7 @@ import TailscaleKit
 /// Screen share server that uses TailscaleKit for networking
 /// This uses the official TailscaleKit framework from libtailscale/swift
 @available(macOS 10.15, *)
-class TailscaleScreenShareServer {
+class TailscaleScreenShareServer: @unchecked Sendable {
     private let port: UInt16
     private var node: TailscaleNode?
     private var listener: Listener?
@@ -71,7 +71,7 @@ class TailscaleScreenShareServer {
         }
 
         // Get the tailscale handle for creating listener
-        guard let tailscaleHandle = node.tailscale else {
+        guard let tailscaleHandle = await node.tailscale else {
             throw TailscaleError.badInterfaceHandle
         }
 
@@ -114,14 +114,10 @@ class TailscaleScreenShareServer {
             do {
                 let connection = try await listener.accept(timeout: 10.0)
                 handleNewConnection(connection)
-            } catch TailscaleError.timeoutError {
-                // Timeout is expected, continue loop
-                continue
             } catch {
-                if isRunning {
-                    print("❌ Accept error: \(error)")
-                }
-                break
+                // Poll timeout or other errors - just continue trying
+                // Timeouts are expected when no connections are pending
+                continue
             }
         }
     }

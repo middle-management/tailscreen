@@ -6,7 +6,7 @@ import TailscaleKit
 /// Screen share client that uses TailscaleKit for networking
 /// This uses the official TailscaleKit framework from libtailscale/swift
 @available(macOS 10.15, *)
-class TailscaleScreenShareClient {
+class TailscaleScreenShareClient: @unchecked Sendable {
     private var node: TailscaleNode?
     private var connection: OutgoingConnection?
     private var decoder: VideoDecoder?
@@ -69,7 +69,7 @@ class TailscaleScreenShareClient {
         }
 
         // Get the tailscale handle
-        guard let tailscaleHandle = node.tailscale else {
+        guard let tailscaleHandle = await node.tailscale else {
             throw TailscaleError.badInterfaceHandle
         }
 
@@ -207,6 +207,7 @@ class TailscaleScreenShareClient {
         }
     }
 
+    @MainActor
     private func createWindow() {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1280, height: 720),
@@ -233,7 +234,7 @@ class TailscaleScreenShareClient {
             object: window,
             queue: .main
         ) { [weak self] _ in
-            Task {
+            Task { @MainActor in
                 await self?.disconnect()
             }
         }
@@ -270,9 +271,10 @@ class TailscaleScreenShareClient {
     }
 
     deinit {
-        Task {
-            await disconnect()
-        }
+        // Cleanup is handled by disconnect() which should be called before deallocation
+        // We cannot use Task in deinit as it would capture self after deallocation
+        isConnected = false
+        receiveTask?.cancel()
     }
 }
 
