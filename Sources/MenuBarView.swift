@@ -86,7 +86,7 @@ struct MenuBarView: View {
                         await appState.stopSharing()
                     }
                     if appState.isConnected {
-                        appState.disconnect()
+                        await appState.disconnect()
                     }
                     NSApplication.shared.terminate(nil)
                 }

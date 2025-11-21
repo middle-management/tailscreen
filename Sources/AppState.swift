@@ -28,10 +28,14 @@ class AppState: ObservableObject {
         do {
             // Start Tailscale server with hostname
             let hostname = Host.current().localizedName ?? "cuple-share"
-            server = TailscaleScreenShareServer()
+            let srv = TailscaleScreenShareServer()
+            server = srv
 
-            let ips = try await server?.start(hostname: hostname)
-            tailscaleIPs = ips ?? []
+            try await srv.start(hostname: hostname)
+
+            // Get the Tailscale IP addresses
+            let ips = try await srv.getIPAddresses()
+            tailscaleIPs = [ips.ip4, ips.ip6].compactMap { $0 }
 
             isSharing = true
 
