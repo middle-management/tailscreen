@@ -22,7 +22,10 @@ let package = Package(
             dependencies: [
                 .product(name: "TailscaleKit", package: "TailscaleKitPackage")
             ],
-            path: "Sources"
+            path: "Sources",
+            linkerSettings: [
+                .unsafeFlags(["-L", "TailscaleKitPackage/lib"])
+            ]
         )
     ]
 )

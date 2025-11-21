@@ -21,17 +21,14 @@ let package = Package(
         .target(
             name: "TailscaleKit",
             dependencies: ["libtailscale"],
-            path: "Sources/TailscaleKit",
-            linkerSettings: [
-                .unsafeFlags(["-L/home/user/cuple/TailscaleKitPackage/lib"], .when(platforms: [.macOS, .iOS])),
-                .linkedLibrary("tailscale", .when(platforms: [.macOS, .iOS]))
-            ]
+            path: "Sources/TailscaleKit"
         ),
 
         // C library system target
         .systemLibrary(
             name: "libtailscale",
-            path: "Modules/libtailscale"
+            path: "Modules/libtailscale",
+            pkgConfig: "libtailscale"
         ),
 
         // Tests
