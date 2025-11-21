@@ -28,25 +28,25 @@ Or if already cloned:
 git submodule update --init --recursive
 ```
 
-### 2. Build the C Library
+### 2. Build
 
 ```bash
-./setup.sh
+make
 ```
 
-This will:
-- Build the C library (requires Go)
-- Verify symlinks are in place
+This will automatically:
+- Build the C library if needed (requires Go)
+- Build the Swift package
 
 **Note**: Swift sources are symlinked from `upstream/libtailscale/swift/TailscaleKit/`, so no copying is needed!
 
-### 3. Build
+Or build just the Swift package (if C library is already built):
 
 ```bash
 swift build
 ```
 
-### 4. Use in Your Project
+### 3. Use in Your Project
 
 Add to your `Package.swift`:
 
