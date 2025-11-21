@@ -21,8 +21,15 @@ echo "✅ Go found: $(go version)"
 echo
 
 # Check submodule
-if [ ! -d "upstream/libtailscale/.git" ]; then
+if [ ! -e "upstream/libtailscale/.git" ]; then
     echo "❌ Submodule not initialized"
+    echo "   Run: git submodule update --init --recursive"
+    exit 1
+fi
+
+# Check if submodule has content
+if [ ! -f "upstream/libtailscale/Makefile" ]; then
+    echo "❌ Submodule is empty"
     echo "   Run: git submodule update --init --recursive"
     exit 1
 fi
