@@ -2,6 +2,28 @@ import Network
 import AppKit
 import CoreVideo
 
+// Thread-safe flag for tracking continuation state
+final class ResumedFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+
+    var isResumed: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+
+    func setResumed() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if value {
+            return false // Already resumed
+        }
+        value = true
+        return true // Successfully set
+    }
+}
+
 class ScreenShareClient {
     private var connection: NWConnection?
     private var decoder: VideoDecoder?
@@ -20,37 +42,23 @@ class ScreenShareClient {
         }
 
         return try await withCheckedThrowingContinuation { continuation in
-            let lock = NSLock()
-            var resumed = false
+            let resumedFlag = ResumedFlag()
 
             connection?.stateUpdateHandler = { state in
-                lock.lock()
-                let hasResumed = resumed
-                lock.unlock()
-
-                guard !hasResumed else { return }
+                guard !resumedFlag.isResumed else { return }
 
                 switch state {
                 case .ready:
-                    lock.lock()
-                    resumed = true
-                    lock.unlock()
-                    continuation.resume()
-                    self.receiveData()
-                case .failed(let error):
-                    lock.lock()
-                    resumed = true
-                    lock.unlock()
-                    continuation.resume(throwing: error)
-                case .cancelled:
-                    lock.lock()
-                    let hasResumed = resumed
-                    if !hasResumed {
-                        resumed = true
+                    if resumedFlag.setResumed() {
+                        continuation.resume()
+                        self.receiveData()
                     }
-                    lock.unlock()
-
-                    if !hasResumed {
+                case .failed(let error):
+                    if resumedFlag.setResumed() {
+                        continuation.resume(throwing: error)
+                    }
+                case .cancelled:
+                    if resumedFlag.setResumed() {
                         continuation.resume(throwing: ClientError.connectionCancelled)
                     }
                 default:
