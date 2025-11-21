@@ -152,7 +152,7 @@ class TailscaleScreenShareClient: @unchecked Sendable {
     }
 
     private func displayFrame(_ pixelBuffer: CVPixelBuffer) {
-        Task { @MainActor [weak self] in
+        Task { @MainActor [weak self, pixelBuffer] in
             guard let self = self else { return }
 
             // Create window if needed
