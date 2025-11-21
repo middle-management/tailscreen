@@ -20,22 +20,37 @@ class ScreenShareClient {
         }
 
         return try await withCheckedThrowingContinuation { continuation in
+            let lock = NSLock()
             var resumed = false
 
             connection?.stateUpdateHandler = { state in
-                guard !resumed else { return }
+                lock.lock()
+                let hasResumed = resumed
+                lock.unlock()
+
+                guard !hasResumed else { return }
 
                 switch state {
                 case .ready:
+                    lock.lock()
                     resumed = true
+                    lock.unlock()
                     continuation.resume()
                     self.receiveData()
                 case .failed(let error):
+                    lock.lock()
                     resumed = true
+                    lock.unlock()
                     continuation.resume(throwing: error)
                 case .cancelled:
-                    if !resumed {
+                    lock.lock()
+                    let hasResumed = resumed
+                    if !hasResumed {
                         resumed = true
+                    }
+                    lock.unlock()
+
+                    if !hasResumed {
                         continuation.resume(throwing: ClientError.connectionCancelled)
                     }
                 default:
