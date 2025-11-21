@@ -2,6 +2,19 @@ import VideoToolbox
 import CoreMedia
 import CoreVideo
 
+// Global C callback function for VideoToolbox
+private func compressionOutputCallback(
+    outputCallbackRefCon: UnsafeMutableRawPointer?,
+    sourceFrameRefCon: UnsafeMutableRawPointer?,
+    status: OSStatus,
+    infoFlags: VTEncodeInfoFlags,
+    sampleBuffer: CMSampleBuffer?
+) {
+    guard let outputCallbackRefCon = outputCallbackRefCon else { return }
+    let encoder = Unmanaged<VideoEncoder>.fromOpaque(outputCallbackRefCon).takeUnretainedValue()
+    encoder.handleEncodedFrame(status: status, infoFlags: infoFlags, sampleBuffer: sampleBuffer)
+}
+
 class VideoEncoder {
     private var session: VTCompressionSession?
     private var frameCount: Int64 = 0
@@ -9,12 +22,6 @@ class VideoEncoder {
 
     func setup(width: Int, height: Int) throws {
         var session: VTCompressionSession?
-
-        var outputCallback = VTCompressionOutputCallback { outputCallbackRefCon, sourceFrameRefCon, status, infoFlags, sampleBuffer in
-            guard let encoder = outputCallbackRefCon else { return }
-            let encoderObject = Unmanaged<VideoEncoder>.fromOpaque(encoder).takeUnretainedValue()
-            encoderObject.handleEncodedFrame(status: status, infoFlags: infoFlags, sampleBuffer: sampleBuffer)
-        }
 
         let status = VTCompressionSessionCreate(
             allocator: kCFAllocatorDefault,
@@ -24,7 +31,7 @@ class VideoEncoder {
             encoderSpecification: nil,
             imageBufferAttributes: nil,
             compressedDataAllocator: nil,
-            outputCallback: &outputCallback,
+            outputCallback: compressionOutputCallback,
             refcon: Unmanaged.passUnretained(self).toOpaque(),
             compressionSessionOut: &session
         )
