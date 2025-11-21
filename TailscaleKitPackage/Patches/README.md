@@ -32,7 +32,35 @@ make clean
 
 **Fix:** Adds `import Foundation` to make `URLSessionConfiguration` available.
 
-**Status:** This should be submitted as a PR to upstream libtailscale.
+**Status:** Should be submitted as a PR to upstream libtailscale.
+
+### 002-add-libtailscale-import-tailscalenode.patch
+**Issue:** `TailscaleNode.swift` doesn't import the `libtailscale` C module, causing "cannot find 'tailscale_*'" errors.
+
+**Fix:** Adds `import libtailscale` to make C functions visible to Swift.
+
+**Status:** Required for Swift Package Manager builds; upstream uses Xcode which may handle this differently.
+
+### 003-add-libtailscale-import-listener.patch
+**Issue:** `Listener.swift` doesn't import the `libtailscale` C module.
+
+**Fix:** Adds `import libtailscale`.
+
+**Status:** Required for Swift Package Manager builds.
+
+### 004-add-libtailscale-import-outgoingconnection.patch
+**Issue:** `OutgoingConnection.swift` doesn't import the `libtailscale` C module.
+
+**Fix:** Adds `import libtailscale`.
+
+**Status:** Required for Swift Package Manager builds.
+
+### 005-add-libtailscale-import-tailscaleerror.patch
+**Issue:** `TailscaleError.swift` doesn't import the `libtailscale` C module.
+
+**Fix:** Adds `import libtailscale`.
+
+**Status:** Required for Swift Package Manager builds.
 
 ## Creating New Patches
 

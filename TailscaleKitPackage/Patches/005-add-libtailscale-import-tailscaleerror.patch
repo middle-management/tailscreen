@@ -1,0 +1,10 @@
+--- a/upstream/libtailscale/swift/TailscaleKit/TailscaleError.swift
++++ b/upstream/libtailscale/swift/TailscaleKit/TailscaleError.swift
+@@ -2,6 +2,7 @@
+ // SPDX-License-Identifier: BSD-3-Clause
+
+ import Foundation
++import libtailscale
+
+ public enum TailscaleError: Error {
+     case badInterfaceHandle     ///< The tailscale handle is bad.

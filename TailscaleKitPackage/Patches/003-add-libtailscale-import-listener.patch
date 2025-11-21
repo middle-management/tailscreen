@@ -1,0 +1,10 @@
+--- a/upstream/libtailscale/swift/TailscaleKit/Listener.swift
++++ b/upstream/libtailscale/swift/TailscaleKit/Listener.swift
+@@ -3,6 +3,7 @@
+
+ import Combine
+ import Foundation
++import libtailscale
+
+ /// A Listener is used to await incoming connections from another
+ /// Tailnet node.

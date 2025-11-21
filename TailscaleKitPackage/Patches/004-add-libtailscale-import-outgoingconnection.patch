@@ -1,0 +1,10 @@
+--- a/upstream/libtailscale/swift/TailscaleKit/OutgoingConnection.swift
++++ b/upstream/libtailscale/swift/TailscaleKit/OutgoingConnection.swift
+@@ -3,6 +3,7 @@
+
+ import Foundation
+ import Combine
++import libtailscale
+
+ /// ConnectionState indicates the state of individual TSConnection instances
+ public enum ConnectionState {
