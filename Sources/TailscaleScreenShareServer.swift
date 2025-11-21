@@ -209,7 +209,7 @@ class TailscaleScreenShareServer: @unchecked Sendable {
         encoder?.shutdown()
         encoder = nil
 
-        screenCapture?.stop()
+        await screenCapture?.stop()
         screenCapture = nil
 
         // Close all connections

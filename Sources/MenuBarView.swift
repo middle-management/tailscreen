@@ -11,7 +11,9 @@ struct MenuBarView: View {
             Group {
                 if appState.isSharing {
                     MenuButton("Stop Sharing", systemImage: "stop.circle") {
-                        appState.stopSharing()
+                        Task {
+                            await appState.stopSharing()
+                        }
                     }
                 } else {
                     MenuButton("Start Sharing", systemImage: "play.circle") {
@@ -77,13 +79,15 @@ struct MenuBarView: View {
 
             // Quit
             Button("Quit") {
-                if appState.isSharing {
-                    appState.stopSharing()
+                Task {
+                    if appState.isSharing {
+                        await appState.stopSharing()
+                    }
+                    if appState.isConnected {
+                        appState.disconnect()
+                    }
+                    NSApplication.shared.terminate(nil)
                 }
-                if appState.isConnected {
-                    appState.disconnect()
-                }
-                NSApplication.shared.terminate(nil)
             }
             .keyboardShortcut("q")
         }

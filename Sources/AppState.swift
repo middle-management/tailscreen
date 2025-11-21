@@ -37,9 +37,9 @@ class AppState: ObservableObject {
         }
     }
 
-    func stopSharing() {
-        server?.stop()
-        screenCapture?.stop()
+    func stopSharing() async {
+        await server?.stop()
+        await screenCapture?.stop()
         server = nil
         screenCapture = nil
         isSharing = false

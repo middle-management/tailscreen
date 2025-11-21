@@ -105,10 +105,10 @@ class TailscaleScreenShareManager {
         print("📱 Share: \(hostname)")
     }
 
-    func stopServer() {
+    func stopServer() async {
         guard isServerRunning else { return }
 
-        server?.stop()
+        await server?.stop()
         server = nil
         isServerRunning = false
 
@@ -131,10 +131,10 @@ class TailscaleScreenShareManager {
         print("✅ Connected to \(host)")
     }
 
-    func disconnectClient() {
+    func disconnectClient() async {
         guard isClientConnected else { return }
 
-        client?.disconnect()
+        await client?.disconnect()
         client = nil
         isClientConnected = false
 
