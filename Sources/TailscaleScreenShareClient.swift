@@ -152,20 +152,21 @@ class TailscaleScreenShareClient: @unchecked Sendable {
     }
 
     private func displayFrame(_ pixelBuffer: CVPixelBuffer) {
-        Task { @MainActor [weak self, pixelBuffer] in
+        // Convert pixel buffer to CGImage on background thread
+        let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
+        let context = CIContext()
+
+        guard let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else {
+            return
+        }
+
+        // Now jump to MainActor with the CGImage (which is Sendable)
+        Task { @MainActor [weak self, cgImage] in
             guard let self = self else { return }
 
             // Create window if needed
             if self.window == nil {
                 self.createWindow()
-            }
-
-            // Convert pixel buffer to NSImage
-            let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
-            let context = CIContext()
-
-            guard let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else {
-                return
             }
 
             let image = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
