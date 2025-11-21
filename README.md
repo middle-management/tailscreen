@@ -1,5 +1,7 @@
 # Cuple - High-Quality Screen Sharing over LAN
 
+[![Build Status](https://github.com/slaskis/cuple/actions/workflows/build.yml/badge.svg)](https://github.com/slaskis/cuple/actions/workflows/build.yml)
+
 A minimal macOS menubar app for high-quality, low-latency screen sharing over local network. Built with Swift Package Manager (no Xcode required).
 
 ## Features
@@ -40,6 +42,31 @@ Or run the built executable:
 ```bash
 .build/release/Cuple
 ```
+
+## CI/CD
+
+The project includes GitHub Actions workflows for automated building and releases:
+
+### Build Workflow
+- Runs on every push to `main` and `claude/*` branches
+- Builds on macOS 13 with the latest Swift toolchain
+- Creates build artifacts for download
+- Generates build reports to verify compilation
+
+### Release Workflow
+- Triggers on version tags (e.g., `v1.0.0`) or manual dispatch
+- Builds optimized release binary
+- Creates `.app` bundle with proper Info.plist
+- Generates ZIP archive and checksums
+- Publishes GitHub release with notes
+
+To create a release:
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+Or use the "Actions" tab to manually trigger a release build.
 
 ## Usage
 

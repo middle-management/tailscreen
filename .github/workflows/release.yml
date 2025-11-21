@@ -1,0 +1,128 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., v1.0.0)'
+        required: true
+
+jobs:
+  release:
+    name: Create Release
+    runs-on: macos-13
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Get version
+      id: version
+      run: |
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+        else
+          echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Build release binary
+      run: swift build -c release
+
+    - name: Create application bundle
+      run: |
+        mkdir -p Cuple.app/Contents/MacOS
+        mkdir -p Cuple.app/Contents/Resources
+
+        # Copy binary
+        cp .build/release/Cuple Cuple.app/Contents/MacOS/
+
+        # Create Info.plist
+        cat > Cuple.app/Contents/Info.plist <<EOF
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+            <key>CFBundleDevelopmentRegion</key>
+            <string>en</string>
+            <key>CFBundleExecutable</key>
+            <string>Cuple</string>
+            <key>CFBundleIdentifier</key>
+            <string>com.cuple.app</string>
+            <key>CFBundleInfoDictionaryVersion</key>
+            <string>6.0</string>
+            <key>CFBundleName</key>
+            <string>Cuple</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>CFBundleShortVersionString</key>
+            <string>${{ steps.version.outputs.version }}</string>
+            <key>CFBundleVersion</key>
+            <string>1</string>
+            <key>LSMinimumSystemVersion</key>
+            <string>13.0</string>
+            <key>LSUIElement</key>
+            <true/>
+            <key>NSHighResolutionCapable</key>
+            <true/>
+        </dict>
+        </plist>
+        EOF
+
+    - name: Create ZIP archive
+      run: |
+        zip -r Cuple-${{ steps.version.outputs.version }}-macOS.zip Cuple.app
+
+    - name: Generate checksums
+      run: |
+        shasum -a 256 Cuple-${{ steps.version.outputs.version }}-macOS.zip > checksums.txt
+        cat checksums.txt
+
+    - name: Create release notes
+      run: |
+        cat > release-notes.md <<EOF
+        # Cuple ${{ steps.version.outputs.version }}
+
+        High-quality screen sharing over LAN for macOS.
+
+        ## Installation
+
+        1. Download \`Cuple-${{ steps.version.outputs.version }}-macOS.zip\`
+        2. Unzip and move \`Cuple.app\` to your Applications folder
+        3. Right-click and select "Open" to bypass Gatekeeper (first time only)
+        4. Grant Screen Recording permission when prompted
+
+        ## Requirements
+
+        - macOS 13.0 (Ventura) or later
+        - Screen Recording permission
+
+        ## Features
+
+        - 📺 MenuBar app with SwiftUI interface
+        - 🎥 60 FPS screen capture at Retina resolution
+        - 🚀 Hardware-accelerated H.264 encoding
+        - 🌐 Direct peer-to-peer LAN streaming
+        - ⚡ Low latency optimized for real-time sharing
+
+        ## Checksums
+
+        \`\`\`
+        $(cat checksums.txt)
+        \`\`\`
+        EOF
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        name: Cuple ${{ steps.version.outputs.version }}
+        body_path: release-notes.md
+        files: |
+          Cuple-${{ steps.version.outputs.version }}-macOS.zip
+          checksums.txt
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
