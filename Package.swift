@@ -12,9 +12,16 @@ let package = Package(
             targets: ["Cuple"]
         )
     ],
+    dependencies: [
+        // TailscaleKit local package
+        .package(path: "./TailscaleKitPackage")
+    ],
     targets: [
         .executableTarget(
             name: "Cuple",
+            dependencies: [
+                .product(name: "TailscaleKit", package: "TailscaleKitPackage")
+            ],
             path: "Sources"
         )
     ]
