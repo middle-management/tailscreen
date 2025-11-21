@@ -1,0 +1,10 @@
+--- a/upstream/libtailscale/swift/TailscaleKit/URLSession+Tailscale.swift
++++ b/upstream/libtailscale/swift/TailscaleKit/URLSession+Tailscale.swift
+@@ -1,6 +1,7 @@
+ // Copyright (c) Tailscale Inc & AUTHORS
+ // SPDX-License-Identifier: BSD-3-Clause
+
++import Foundation
+ #if os(iOS)
+ import UIKit
+ #endif

@@ -13,6 +13,9 @@ DerivedData/
 upstream/libtailscale/libtailscale.a
 upstream/libtailscale/libtailscale.h
 
+# Patch marker file
+.patches-applied
+
 # Build outputs
 *.o
 *.dylib
