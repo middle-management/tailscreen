@@ -10,6 +10,12 @@ class VideoEncoder {
     func setup(width: Int, height: Int) throws {
         var session: VTCompressionSession?
 
+        var outputCallback = VTCompressionOutputCallback { outputCallbackRefCon, sourceFrameRefCon, status, infoFlags, sampleBuffer in
+            guard let encoder = outputCallbackRefCon else { return }
+            let encoderObject = Unmanaged<VideoEncoder>.fromOpaque(encoder).takeUnretainedValue()
+            encoderObject.handleEncodedFrame(status: status, infoFlags: infoFlags, sampleBuffer: sampleBuffer)
+        }
+
         let status = VTCompressionSessionCreate(
             allocator: kCFAllocatorDefault,
             width: Int32(width),
@@ -18,8 +24,8 @@ class VideoEncoder {
             encoderSpecification: nil,
             imageBufferAttributes: nil,
             compressedDataAllocator: nil,
-            outputCallback: nil,
-            refcon: nil,
+            outputCallback: &outputCallback,
+            refcon: Unmanaged.passUnretained(self).toOpaque(),
             compressionSessionOut: &session
         )
 
@@ -64,9 +70,7 @@ class VideoEncoder {
             frameProperties: nil,
             sourceFrameRefcon: nil,
             infoFlagsOut: &flags
-        ) { [weak self] status, infoFlags, sampleBuffer in
-            self?.handleEncodedFrame(status: status, infoFlags: infoFlags, sampleBuffer: sampleBuffer)
-        }
+        )
 
         if status != noErr {
             print("Encoding frame failed: \(status)")
@@ -91,7 +95,7 @@ class VideoEncoder {
         let length = CMBlockBufferGetDataLength(dataBuffer)
         var data = Data(count: length)
 
-        data.withUnsafeMutableBytes { ptr in
+        _ = data.withUnsafeMutableBytes { ptr in
             CMBlockBufferCopyDataBytes(dataBuffer, atOffset: 0, dataLength: length, destination: ptr.baseAddress!)
         }
 

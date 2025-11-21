@@ -51,7 +51,7 @@ class VideoDecoder {
         }
 
         // Copy data into block buffer
-        data.withUnsafeBytes { ptr in
+        _ = data.withUnsafeBytes { ptr in
             CMBlockBufferReplaceDataBytes(
                 with: ptr.baseAddress!,
                 blockBuffer: blockBuffer,
@@ -133,20 +133,27 @@ class VideoDecoder {
             let parameterSets = [sps, pps]
             let sizes = parameterSets.map { $0.count }
 
-            parameterSets.withUnsafeBufferPointer { paramPtr in
-                sizes.withUnsafeBufferPointer { sizePtr in
-                    let pointers = paramPtr.map { $0.withUnsafeBytes { $0.baseAddress! } }
-                    pointers.withUnsafeBufferPointer { ptrPtr in
-                        var desc: CMFormatDescription?
-                        CMVideoFormatDescriptionCreateFromH264ParameterSets(
-                            allocator: kCFAllocatorDefault,
-                            parameterSetCount: parameterSets.count,
-                            parameterSetPointers: ptrPtr.baseAddress!,
-                            parameterSetSizes: sizePtr.baseAddress!,
-                            nalUnitHeaderLength: 4,
-                            formatDescriptionOut: &desc
-                        )
-                        formatDescription = desc
+            sps.withUnsafeBytes { spsBytes in
+                pps.withUnsafeBytes { ppsBytes in
+                    guard let spsPtr = spsBytes.baseAddress?.assumingMemoryBound(to: UInt8.self),
+                          let ppsPtr = ppsBytes.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
+                        return
+                    }
+
+                    let pointers = [spsPtr, ppsPtr]
+                    pointers.withUnsafeBufferPointer { ptrBuffer in
+                        sizes.withUnsafeBufferPointer { sizeBuffer in
+                            var desc: CMFormatDescription?
+                            CMVideoFormatDescriptionCreateFromH264ParameterSets(
+                                allocator: kCFAllocatorDefault,
+                                parameterSetCount: parameterSets.count,
+                                parameterSetPointers: ptrBuffer.baseAddress!,
+                                parameterSetSizes: sizeBuffer.baseAddress!,
+                                nalUnitHeaderLength: 4,
+                                formatDescriptionOut: &desc
+                            )
+                            formatDescription = desc
+                        }
                     }
                 }
             }
