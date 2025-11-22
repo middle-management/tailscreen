@@ -23,6 +23,9 @@ class AppState: ObservableObject {
     @Published var isDiscovering = false
     private var peerDiscovery: TailscalePeerDiscovery?
 
+    // Authentication
+    @Published var tailscaleAuth = TailscaleAuth()
+
     var localIPAddresses: [String] {
         if !tailscaleIPs.isEmpty {
             return tailscaleIPs.map { "Tailscale: \($0)" }
@@ -42,6 +45,11 @@ class AppState: ObservableObject {
             // Get the Tailscale IP addresses
             let ips = try await srv.getIPAddresses()
             tailscaleIPs = [ips.ip4, ips.ip6].compactMap { $0 }
+
+            // Check authentication status
+            if let node = srv.node {
+                await tailscaleAuth.checkAuthStatus(node: node)
+            }
 
             isSharing = true
 
@@ -124,6 +132,45 @@ class AppState: ObservableObject {
             try await ScreenCapture.requestPermission()
         } catch {
             showAlertMessage(title: "Permission Error", message: "Failed to request screen recording permission: \(error.localizedDescription)")
+        }
+    }
+
+    func login() async {
+        // Need an active Tailscale node to authenticate
+        guard let node = server?.node ?? client?.node else {
+            showAlertMessage(
+                title: "Login Failed",
+                message: "You need to start sharing or connect to a peer first to log in to Tailscale."
+            )
+            return
+        }
+
+        do {
+            try await tailscaleAuth.login(node: node)
+            showAlertMessage(
+                title: "Login Successful",
+                message: "You are now logged in to Tailscale!"
+            )
+        } catch {
+            showAlertMessage(
+                title: "Login Failed",
+                message: error.localizedDescription
+            )
+        }
+    }
+
+    func signOut() async {
+        do {
+            try await tailscaleAuth.signOut()
+            showAlertMessage(
+                title: "Signed Out",
+                message: "You have been signed out of Tailscale."
+            )
+        } catch {
+            showAlertMessage(
+                title: "Sign Out Failed",
+                message: error.localizedDescription
+            )
         }
     }
 

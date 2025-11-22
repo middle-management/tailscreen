@@ -53,6 +53,56 @@ struct MenuBarView: View {
 
             Divider()
 
+            // Authentication section
+            Group {
+                if let userProfile = appState.tailscaleAuth.userProfile {
+                    // Show user info when logged in
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Image(systemName: "person.circle.fill")
+                                .foregroundColor(.blue)
+                            Text(userProfile.displayName)
+                                .font(.caption)
+                                .lineLimit(1)
+                        }
+                        Text(userProfile.loginName)
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+
+                    MenuButton("Sign Out", systemImage: "rectangle.portrait.and.arrow.right") {
+                        Task {
+                            await appState.signOut()
+                        }
+                    }
+                } else if appState.isSharing || appState.isConnected {
+                    // Show login button when Tailscale is active but not logged in
+                    MenuButton("Log in to Tailscale", systemImage: "person.circle") {
+                        Task {
+                            await appState.login()
+                        }
+                    }
+                    .disabled(appState.tailscaleAuth.isLoading)
+
+                    if appState.tailscaleAuth.isLoading {
+                        HStack {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("Authenticating...")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                    }
+                }
+            }
+
+            Divider()
+
             // Status
             if appState.isSharing {
                 HStack {
