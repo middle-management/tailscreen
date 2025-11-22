@@ -8,10 +8,10 @@ tailscale:
 build: tailscale
 	swift build
 
-run: build
+run: tailscale
 	swift run
 
-test: build
+test: tailscale
 	swift test
 
 release: tailscale
