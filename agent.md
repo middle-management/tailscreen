@@ -36,16 +36,30 @@ This document provides guidance for AI agents working on the Cuple screen sharin
    - Discovers other Cuple instances on tailnet
    - Uses LocalAPI to query peer status
    - Parallel TCP port checking with timeouts
+   - Real-time peer monitoring via IPN bus
 
-5. **TailscaleAuth** (`Sources/TailscaleAuth.swift`)
+5. **TailscaleIPNWatcher** (`Sources/TailscaleIPNWatcher.swift`)
+   - Watches Tailscale IPN bus for live status updates
+   - Tracks peer online/offline changes in real-time
+   - Rate-limited netmap updates
+   - MessageConsumer protocol implementation
+
+6. **CupleMetadataService** (`Sources/CupleMetadata.swift`)
+   - Share metadata (resolution, name, hostname)
+   - Request-to-share protocol
+   - Peer-to-peer metadata exchange
+   - Pending request management
+
+7. **TailscaleAuth** (`Sources/TailscaleAuth.swift`)
    - Manages Tailscale authentication state
    - Interactive login flow (browser-based)
    - Profile display and sign-out
 
-6. **MenuBarView** (`Sources/MenuBarView.swift`)
+8. **MenuBarView** (`Sources/MenuBarView.swift`)
    - SwiftUI menubar interface
    - Native macOS styling and interactions
    - Multiple sheet views for different workflows
+   - Real-time peer status indicators
 
 ### Package Structure
 
@@ -194,6 +208,54 @@ for (peerKey, peerStatus) in status.Peer ?? [:] {
 }
 ```
 
+### Real-Time Features
+
+**IPN Bus Watching:**
+```swift
+// Create and start IPN watcher
+let watcher = TailscaleIPNWatcher()
+try await watcher.startWatching(node: node)
+
+// Observe peer status changes
+Task { @MainActor in
+    for await _ in watcher.$peers.values {
+        // Update UI when peers change
+    }
+}
+
+// Stop watching
+watcher.stopWatching()
+```
+
+**Metadata Exchange:**
+```swift
+// Update metadata when sharing
+metadataService.updateMetadata(isSharing: true, shareName: "My Screen")
+
+// Fetch peer metadata
+let metadata = try await CupleMetadataService.fetchMetadata(
+    from: peerIP,
+    port: 7447
+)
+
+// Send request to share
+try await metadataService.sendRequestToShare(
+    to: peerIP,
+    port: 7447,
+    from: hostname
+)
+```
+
+**Real-Time Peer Monitoring:**
+```swift
+// Start real-time monitoring
+try await discovery.startRealTimeMonitoring(node: node)
+
+// Peers update automatically via IPN bus
+// Stop monitoring when done
+discovery.stopRealTimeMonitoring()
+```
+
 ### Testing Locally
 
 Use `test-local.sh` to run two instances:
@@ -275,6 +337,8 @@ git push -u origin claude/tailscale-tsnet-exploration-01AeQUK8Y9cycVbFwuCqfaaa
 | Server | `Sources/TailscaleScreenShareServer.swift` | Sharing functionality |
 | Client | `Sources/TailscaleScreenShareClient.swift` | Viewing functionality |
 | Discovery | `Sources/TailscalePeerDiscovery.swift` | Peer finding |
+| IPN Watcher | `Sources/TailscaleIPNWatcher.swift` | Real-time peer status |
+| Metadata | `Sources/CupleMetadata.swift` | Metadata & requests |
 | Auth | `Sources/TailscaleAuth.swift` | Authentication |
 | Screen capture | `Sources/ScreenCapture.swift` | macOS screen recording |
 
