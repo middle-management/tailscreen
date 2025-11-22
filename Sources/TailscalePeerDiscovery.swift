@@ -9,6 +9,8 @@ struct CuplePeer: Identifiable, Sendable {
     let tailscaleIP: String
     let isOnline: Bool
     var isRunningCuple: Bool
+    var metadata: CupleMetadata?
+    var lastSeen: Date?
 }
 
 /// Discovers Cuple instances running on the Tailscale network
@@ -19,9 +21,14 @@ class TailscalePeerDiscovery: ObservableObject {
 
     private let cuplePort: UInt16 = 7447
     private let logger: TSLogger
+    private var ipnWatcher: TailscaleIPNWatcher?
 
     init() {
         self.logger = TSLogger()
+    }
+
+    deinit {
+        ipnWatcher?.stopWatching()
     }
 
     /// Discovers all peers on the tailnet and checks which ones are running Cuple
@@ -51,7 +58,9 @@ class TailscalePeerDiscovery: ObservableObject {
                 dnsName: peerStatus.DNSName,
                 tailscaleIP: peerStatus.TailscaleIPs?.first ?? "",
                 isOnline: peerStatus.Online,
-                isRunningCuple: false
+                isRunningCuple: false,
+                metadata: nil,
+                lastSeen: nil
             )
 
             peers.append(peer)
@@ -138,6 +147,69 @@ class TailscalePeerDiscovery: ObservableObject {
 
             group.cancelAll()
             return result
+        }
+    }
+
+    /// Start real-time monitoring of peer status using IPN bus
+    func startRealTimeMonitoring(node: TailscaleNode) async throws {
+        // Create and start IPN watcher
+        let watcher = TailscaleIPNWatcher()
+        ipnWatcher = watcher
+
+        try await watcher.startWatching(node: node)
+
+        // Observe peer status changes
+        Task { @MainActor in
+            for await _ in watcher.$peers.values {
+                // When peers change, update our peer list
+                await updatePeerListFromIPNWatcher()
+            }
+        }
+
+        logger.log("✓ Real-time monitoring started")
+    }
+
+    /// Update peer list based on IPN watcher data
+    private func updatePeerListFromIPNWatcher() async {
+        guard let watcher = ipnWatcher else { return }
+
+        // Update online status for existing peers
+        for i in availablePeers.indices {
+            if let peerStatus = watcher.peers[availablePeers[i].id] {
+                var updatedPeer = availablePeers[i]
+                // Create new peer with updated status
+                availablePeers[i] = CuplePeer(
+                    id: updatedPeer.id,
+                    hostname: peerStatus.hostname,
+                    dnsName: peerStatus.dnsName,
+                    tailscaleIP: peerStatus.tailscaleIPs.first ?? updatedPeer.tailscaleIP,
+                    isOnline: peerStatus.online,
+                    isRunningCuple: updatedPeer.isRunningCuple,
+                    metadata: updatedPeer.metadata,
+                    lastSeen: peerStatus.online ? Date() : updatedPeer.lastSeen
+                )
+            }
+        }
+    }
+
+    /// Stop real-time monitoring
+    func stopRealTimeMonitoring() {
+        ipnWatcher?.stopWatching()
+        ipnWatcher = nil
+        logger.log("✓ Real-time monitoring stopped")
+    }
+
+    /// Fetch metadata for a specific peer
+    func fetchMetadata(for peer: CuplePeer) async -> CupleMetadata? {
+        do {
+            let metadata = try await CupleMetadataService.fetchMetadata(
+                from: peer.tailscaleIP,
+                port: cuplePort
+            )
+            return metadata
+        } catch {
+            logger.log("Failed to fetch metadata from \(peer.hostname): \(error.localizedDescription)")
+            return nil
         }
     }
 }

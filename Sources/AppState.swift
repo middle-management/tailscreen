@@ -26,6 +26,9 @@ class AppState: ObservableObject {
     // Authentication
     @Published var tailscaleAuth = TailscaleAuth()
 
+    // Metadata and requests
+    @Published var metadataService = CupleMetadataService()
+
     var localIPAddresses: [String] {
         if !tailscaleIPs.isEmpty {
             return tailscaleIPs.map { "Tailscale: \($0)" }
@@ -51,6 +54,9 @@ class AppState: ObservableObject {
                 await tailscaleAuth.checkAuthStatus(node: node)
             }
 
+            // Update metadata
+            metadataService.updateMetadata(isSharing: true, shareName: "\(hostname)'s Screen")
+
             isSharing = true
 
             let ipList = tailscaleIPs.joined(separator: "\n")
@@ -67,6 +73,13 @@ class AppState: ObservableObject {
         await server?.stop()
         server = nil
         tailscaleIPs = []
+
+        // Update metadata
+        metadataService.updateMetadata(isSharing: false)
+
+        // Stop peer monitoring if active
+        peerDiscovery?.stopRealTimeMonitoring()
+
         isSharing = false
         showAlertMessage(title: "Sharing Stopped", message: "Screen sharing has been stopped.")
     }
@@ -114,6 +127,16 @@ class AppState: ObservableObject {
         do {
             try await discovery.startDiscovery(node: node)
             self.availablePeers = discovery.availablePeers
+
+            // Start real-time monitoring for peer status updates
+            try? await discovery.startRealTimeMonitoring(node: node)
+
+            // Observe peer changes
+            Task { @MainActor in
+                for await peers in discovery.$availablePeers.values {
+                    self.availablePeers = peers
+                }
+            }
 
             if availablePeers.isEmpty {
                 showAlertMessage(
@@ -170,6 +193,26 @@ class AppState: ObservableObject {
             showAlertMessage(
                 title: "Sign Out Failed",
                 message: error.localizedDescription
+            )
+        }
+    }
+
+    func requestToShare(from peer: CuplePeer) async {
+        let hostname = Host.current().localizedName ?? "Unknown"
+        do {
+            try await metadataService.sendRequestToShare(
+                to: peer.tailscaleIP,
+                port: 7447,
+                from: hostname
+            )
+            showAlertMessage(
+                title: "Request Sent",
+                message: "Requested \(peer.hostname) to start sharing their screen."
+            )
+        } catch {
+            showAlertMessage(
+                title: "Request Failed",
+                message: "Could not send request to \(peer.hostname): \(error.localizedDescription)"
             )
         }
     }

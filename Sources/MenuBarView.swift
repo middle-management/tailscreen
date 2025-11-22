@@ -407,32 +407,60 @@ struct BrowseSharesSheet: View {
 }
 
 struct PeerRow: View {
+    @EnvironmentObject var appState: AppState
     let peer: CuplePeer
     let onConnect: () -> Void
     @State private var isHovered = false
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: "desktopcomputer")
-                .font(.system(size: 20))
-                .foregroundStyle(.secondary)
-                .frame(width: 28)
+            // Computer icon with online status indicator
+            ZStack(alignment: .topTrailing) {
+                Image(systemName: "desktopcomputer")
+                    .font(.system(size: 20))
+                    .foregroundStyle(peer.isOnline ? .primary : .secondary)
+                    .frame(width: 28)
+
+                // Online status dot
+                Circle()
+                    .fill(peer.isOnline ? Color.green : Color.gray)
+                    .frame(width: 8, height: 8)
+                    .offset(x: 2, y: -2)
+            }
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(peer.hostname)
-                    .font(.system(size: 13, weight: .medium))
-                Text(peer.tailscaleIP)
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(.secondary)
+                HStack(spacing: 4) {
+                    Text(peer.hostname)
+                        .font(.system(size: 13, weight: .medium))
+
+                    if !peer.isOnline {
+                        Text("(offline)")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+
+                // Show metadata if available
+                if let metadata = peer.metadata {
+                    Text("\(metadata.shareName) • \(metadata.screenResolution.width)×\(metadata.screenResolution.height)")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text(peer.tailscaleIP)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
             }
 
             Spacer()
 
+            // Connect button
             Button("Connect") {
                 onConnect()
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.small)
+            .disabled(!peer.isOnline)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -442,8 +470,9 @@ struct PeerRow: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .stroke(Color(nsColor: .separatorColor).opacity(0.3), lineWidth: 0.5)
+                .stroke(Color(nsColor: .separatorColor).opacity(peer.isOnline ? 0.3 : 0.15), lineWidth: 0.5)
         )
+        .opacity(peer.isOnline ? 1.0 : 0.6)
         .onHover { hovering in
             isHovered = hovering
         }
