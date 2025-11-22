@@ -8,6 +8,7 @@ A minimal macOS menubar app for high-quality, low-latency screen sharing using T
 
 - **Menubar Integration**: Lightweight menubar app that stays out of your way
 - **Tailscale Integration**: Secure, encrypted peer-to-peer connections via Tailscale
+- **Automatic Peer Discovery**: Browse and connect to available shares on your tailnet with one click
 - **Zero Configuration**: No port forwarding or firewall configuration needed
 - **High Quality**: Hardware-accelerated H.264 encoding/decoding using VideoToolbox
 - **Low Latency**: Optimized for real-time streaming with minimal delay
@@ -58,6 +59,46 @@ Or run the built executable:
 .build/release/Cuple
 ```
 
+## Testing on One Machine
+
+You can test Cuple on a single machine without needing two computers:
+
+### Quick Test (Easiest)
+
+1. Build and run Cuple:
+   ```bash
+   make build
+   .build/debug/Cuple
+   ```
+
+2. Click **"Start Sharing"** in the menubar
+
+3. Click **"Browse Shares..."**
+
+4. Your own machine will appear in the list - click **"Connect"**!
+
+This creates both a server and client on the same machine, opening a window showing your own screen (creating a recursive mirror effect).
+
+### Testing with Two Instances
+
+To test like you have two separate machines:
+
+**Terminal 1:**
+```bash
+./test-local.sh
+# Click "Start Sharing" when Cuple opens
+```
+
+**Terminal 2:**
+```bash
+.build/debug/Cuple
+# Click "Browse Shares..." to find the first instance
+```
+
+Both instances will create separate ephemeral Tailscale nodes on your tailnet, appearing as different devices.
+
+**Note:** This tests the full Tailscale integration and peer discovery, but doesn't test actual network traversal or NAT punch-through since both instances are on the same machine.
+
 ## CI/CD
 
 The project includes GitHub Actions workflows for automated building and releases:
@@ -100,6 +141,16 @@ Or use the "Actions" tab to manually trigger a release build.
 6. Share your hostname (e.g., "macbook-pro") or Tailscale IP with others
 
 ### Viewing a Shared Screen
+
+**Option 1: Browse Shares (Easiest)**
+
+1. Click the Cuple icon (📺) in the menubar
+2. Select "Browse Shares..."
+3. Available shares will be automatically discovered
+4. Click "Connect" next to the share you want to view
+5. A window will open showing the shared screen
+
+**Option 2: Manual Connection**
 
 1. Click the Cuple icon (📺) in the menubar
 2. Select "Connect to..."
