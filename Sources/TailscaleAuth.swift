@@ -1,6 +1,6 @@
+import AppKit
 import Foundation
 import TailscaleKit
-import AppKit
 
 /// Manages Tailscale authentication state and user profile
 @MainActor
@@ -61,12 +61,12 @@ class TailscaleAuth: ObservableObject {
         // Get the backend status which should contain auth URL
         let status = try await client.backendStatus()
 
-        if let authURL = status.AuthURL, !authURL.isEmpty {
-            self.authURL = authURL
-            logger.log("🔗 Auth URL: \(authURL)")
+        if !status.AuthURL.isEmpty {
+            self.authURL = status.AuthURL
+            logger.log("🔗 Auth URL: \(status.AuthURL)")
 
             // Open auth URL in browser
-            if let url = URL(string: authURL) {
+            if let url = URL(string: status.AuthURL) {
                 NSWorkspace.shared.open(url)
             }
         }
@@ -94,7 +94,9 @@ class TailscaleAuth: ObservableObject {
     }
 
     /// Polls for authentication completion
-    private func pollForAuth(client: LocalAPIClient, node: TailscaleNode, maxAttempts: Int = 30) async throws {
+    private func pollForAuth(client: LocalAPIClient, node: TailscaleNode, maxAttempts: Int = 30)
+        async throws
+    {
         for attempt in 1...maxAttempts {
             try await Task.sleep(for: .seconds(2))
 
