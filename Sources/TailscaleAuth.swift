@@ -56,10 +56,18 @@ class TailscaleAuth: ObservableObject {
         self.localAPIClient = client
 
         // Start interactive login
+        logger.log("🔧 Starting interactive login...")
         try await client.startLoginInteractive()
 
+        // Wait a moment for the backend to generate the auth URL
+        try await Task.sleep(for: .seconds(1))
+
         // Get the backend status which should contain auth URL
+        logger.log("🔧 Fetching backend status...")
         let status = try await client.backendStatus()
+
+        logger.log(
+            "🔧 Auth URL from status: '\(status.AuthURL)' (isEmpty: \(status.AuthURL.isEmpty))")
 
         if !status.AuthURL.isEmpty {
             self.authURL = status.AuthURL
@@ -67,11 +75,18 @@ class TailscaleAuth: ObservableObject {
 
             // Open auth URL in browser
             if let url = URL(string: status.AuthURL) {
-                NSWorkspace.shared.open(url)
+                logger.log("✅ Opening URL in browser: \(url)")
+                let success = NSWorkspace.shared.open(url)
+                logger.log("🔧 Browser open result: \(success)")
+            } else {
+                logger.log("❌ Failed to create URL from: \(status.AuthURL)")
             }
+        } else {
+            logger.log("⚠️ Auth URL is empty!")
         }
 
         // Poll for authentication completion
+        logger.log("🔧 Starting to poll for authentication...")
         try await pollForAuth(client: client, node: node)
     }
 

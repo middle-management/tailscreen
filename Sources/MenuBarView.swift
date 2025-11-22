@@ -1,5 +1,5 @@
-import SwiftUI
 import AppKit
+import SwiftUI
 
 struct MenuBarView: View {
     @EnvironmentObject var appState: AppState
@@ -7,81 +7,9 @@ struct MenuBarView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Sharing section
-            Group {
-                if appState.isSharing {
-                    MenuButton("Stop Sharing", systemImage: "stop.circle") {
-                        Task {
-                            await appState.stopSharing()
-                        }
-                    }
-                } else {
-                    MenuButton("Start Sharing", systemImage: "play.circle") {
-                        Task {
-                            await appState.startSharing()
-                        }
-                    }
-                }
-            }
-
-            Divider()
-
-            // Connection section
-            Group {
-                if appState.isConnected {
-                    MenuButton("Disconnect", systemImage: "xmark.circle") {
-                        Task {
-                            await appState.disconnect()
-                        }
-                    }
-                } else {
-                    MenuButton("Browse Shares...", systemImage: "network") {
-                        appState.showBrowseSheet = true
-                    }
-                    MenuButton("Connect to...", systemImage: "link") {
-                        appState.showConnectSheet = true
-                    }
-                }
-            }
-
-            Divider()
-
-            // Info section
-            MenuButton("Show Tailscale Info", systemImage: "info.circle") {
-                appState.showIPSheet = true
-            }
-
-            Divider()
-
-            // Authentication section
-            Group {
-                if let userProfile = appState.tailscaleAuth.userProfile {
-                    // Show user info when logged in
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: 6) {
-                            Image(systemName: "person.circle.fill")
-                                .font(.system(size: 13))
-                                .foregroundStyle(.secondary)
-                            Text(userProfile.displayName)
-                                .font(.system(size: 12, weight: .medium))
-                        }
-                        Text(userProfile.loginName)
-                            .font(.system(size: 11))
-                            .foregroundStyle(.tertiary)
-                            .padding(.leading, 19)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(Color(nsColor: .controlBackgroundColor))
-
-                    MenuButton("Sign Out", systemImage: "rectangle.portrait.and.arrow.right") {
-                        Task {
-                            await appState.signOut()
-                        }
-                    }
-                } else if appState.isSharing || appState.isConnected {
-                    // Show login button when Tailscale is active but not logged in
+            // Authentication section - show first if not authenticated
+            if !appState.tailscaleAuth.isAuthenticated {
+                Group {
                     if appState.tailscaleAuth.isLoading {
                         HStack(spacing: 8) {
                             ProgressView()
@@ -93,18 +21,99 @@ struct MenuBarView: View {
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
+                        .padding(.vertical, 8)
                     } else {
-                        MenuButton("Log in to Tailscale", systemImage: "person.circle") {
+                        MenuButton("Log in to Tailscale", systemImage: "person.circle.fill") {
                             Task {
-                                await appState.login()
+                                await appState.initializeTailscaleAndLogin()
                             }
                         }
                     }
                 }
+
+                Divider()
             }
 
-            Divider()
+            // Sharing section - only show if authenticated
+            if appState.tailscaleAuth.isAuthenticated {
+                Group {
+                    if appState.isSharing {
+                        MenuButton("Stop Sharing", systemImage: "stop.circle") {
+                            Task {
+                                await appState.stopSharing()
+                            }
+                        }
+                    } else {
+                        MenuButton("Start Sharing", systemImage: "play.circle") {
+                            Task {
+                                await appState.startSharing()
+                            }
+                        }
+                    }
+                }
+
+                Divider()
+            }
+
+            // Connection section - only show if authenticated
+            if appState.tailscaleAuth.isAuthenticated {
+                Group {
+                    if appState.isConnected {
+                        MenuButton("Disconnect", systemImage: "xmark.circle") {
+                            Task {
+                                await appState.disconnect()
+                            }
+                        }
+                    } else {
+                        MenuButton("Browse Shares...", systemImage: "network") {
+                            appState.showBrowseSheet = true
+                        }
+                        MenuButton("Connect to...", systemImage: "link") {
+                            appState.showConnectSheet = true
+                        }
+                    }
+                }
+
+                Divider()
+            }
+
+            // Info section - only show if authenticated
+            if appState.tailscaleAuth.isAuthenticated {
+                MenuButton("Show Tailscale Info", systemImage: "info.circle") {
+                    appState.showIPSheet = true
+                }
+
+                Divider()
+            }
+
+            // User profile section - show when authenticated
+            if let userProfile = appState.tailscaleAuth.userProfile {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "person.circle.fill")
+                            .font(.system(size: 13))
+                            .foregroundStyle(.secondary)
+                        Text(userProfile.displayName)
+                            .font(.system(size: 12, weight: .medium))
+                    }
+                    Text(userProfile.loginName)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                        .padding(.leading, 19)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color(nsColor: .controlBackgroundColor))
+
+                MenuButton("Sign Out", systemImage: "rectangle.portrait.and.arrow.right") {
+                    Task {
+                        await appState.signOut()
+                    }
+                }
+
+                Divider()
+            }
 
             // Status
             if appState.isSharing {
@@ -162,7 +171,7 @@ struct MenuBarView: View {
                 .environmentObject(appState)
         }
         .alert(appState.alertTitle, isPresented: $appState.showAlert) {
-            Button("OK", role: .cancel) { }
+            Button("OK", role: .cancel) {}
         } message: {
             Text(appState.alertMessage)
         }
@@ -195,7 +204,9 @@ struct MenuButton: View {
         .buttonStyle(.plain)
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
-        .background(isHovered ? Color(nsColor: .selectedContentBackgroundColor).opacity(0.5) : Color.clear)
+        .background(
+            isHovered ? Color(nsColor: .selectedContentBackgroundColor).opacity(0.5) : Color.clear
+        )
         .onHover { hovering in
             isHovered = hovering
         }
@@ -232,7 +243,8 @@ struct ConnectSheet: View {
 
                 Button("Connect") {
                     Task {
-                        await appState.connect(to: hostname.trimmingCharacters(in: .whitespacesAndNewlines))
+                        await appState.connect(
+                            to: hostname.trimmingCharacters(in: .whitespacesAndNewlines))
                         dismiss()
                     }
                 }
@@ -276,7 +288,9 @@ struct IPAddressSheet: View {
                             Spacer()
                             Button {
                                 NSPasteboard.general.clearContents()
-                                NSPasteboard.general.setString(address.components(separatedBy: ": ").last ?? address, forType: .string)
+                                NSPasteboard.general.setString(
+                                    address.components(separatedBy: ": ").last ?? address,
+                                    forType: .string)
                             } label: {
                                 Image(systemName: "doc.on.doc")
                                     .font(.system(size: 12))
@@ -466,7 +480,10 @@ struct PeerRow: View {
         .padding(.vertical, 10)
         .background(
             RoundedRectangle(cornerRadius: 8)
-                .fill(isHovered ? Color(nsColor: .controlBackgroundColor) : Color(nsColor: .controlBackgroundColor).opacity(0.5))
+                .fill(
+                    isHovered
+                        ? Color(nsColor: .controlBackgroundColor)
+                        : Color(nsColor: .controlBackgroundColor).opacity(0.5))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 8)

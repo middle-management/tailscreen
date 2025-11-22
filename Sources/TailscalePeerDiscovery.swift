@@ -27,10 +27,6 @@ class TailscalePeerDiscovery: ObservableObject {
         self.logger = TSLogger()
     }
 
-    deinit {
-        ipnWatcher?.stopWatching()
-    }
-
     /// Discovers all peers on the tailnet and checks which ones are running Cuple
     func startDiscovery(node: TailscaleNode) async throws {
         isDiscovering = true
@@ -176,7 +172,7 @@ class TailscalePeerDiscovery: ObservableObject {
         // Update online status for existing peers
         for i in availablePeers.indices {
             if let peerStatus = watcher.peers[availablePeers[i].id] {
-                var updatedPeer = availablePeers[i]
+                let updatedPeer = availablePeers[i]
                 // Create new peer with updated status
                 availablePeers[i] = CuplePeer(
                     id: updatedPeer.id,
@@ -208,7 +204,8 @@ class TailscalePeerDiscovery: ObservableObject {
             )
             return metadata
         } catch {
-            logger.log("Failed to fetch metadata from \(peer.hostname): \(error.localizedDescription)")
+            logger.log(
+                "Failed to fetch metadata from \(peer.hostname): \(error.localizedDescription)")
             return nil
         }
     }

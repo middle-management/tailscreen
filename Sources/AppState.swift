@@ -1,6 +1,7 @@
-import SwiftUI
-import Observation
 import Foundation
+import Observation
+import SwiftUI
+import TailscaleKit
 
 @MainActor
 class AppState: ObservableObject {
@@ -16,6 +17,7 @@ class AppState: ObservableObject {
 
     private var server: TailscaleScreenShareServer?
     private var client: TailscaleScreenShareClient?
+    private var node: TailscaleNode?
     private var tailscaleIPs: [String] = []
 
     // Peer discovery
@@ -38,21 +40,21 @@ class AppState: ObservableObject {
 
     func startSharing() async {
         do {
-            // Start Tailscale server with hostname
-            let hostname = Host.current().localizedName ?? "cuple-share"
-            let srv = TailscaleScreenShareServer()
-            server = srv
+            // If Tailscale is already initialized, just start sharing
+            // Otherwise, initialize it first
+            if server == nil {
+                let hostname = Host.current().localizedName ?? "cuple-share"
+                let srv = TailscaleScreenShareServer()
+                server = srv
 
-            try await srv.start(hostname: hostname)
+                try await srv.start(hostname: hostname)
 
-            // Get the Tailscale IP addresses
-            let ips = try await srv.getIPAddresses()
-            tailscaleIPs = [ips.ip4, ips.ip6].compactMap { $0 }
-
-            // Check authentication status
-            if let node = srv.node {
-                await tailscaleAuth.checkAuthStatus(node: node)
+                // Get the Tailscale IP addresses
+                let ips = try await srv.getIPAddresses()
+                tailscaleIPs = [ips.ip4, ips.ip6].compactMap { $0 }
             }
+
+            let hostname = Host.current().localizedName ?? "cuple-share"
 
             // Update metadata
             metadataService.updateMetadata(isSharing: true, shareName: "\(hostname)'s Screen")
@@ -62,10 +64,12 @@ class AppState: ObservableObject {
             let ipList = tailscaleIPs.joined(separator: "\n")
             showAlertMessage(
                 title: "Sharing Started",
-                message: "Your screen is being shared via Tailscale!\n\nYour addresses:\n\(ipList)\n\nOthers can connect using your Tailscale hostname: \(hostname)"
+                message:
+                    "Your screen is being shared via Tailscale!\n\nYour addresses:\n\(ipList)\n\nOthers can connect using your Tailscale hostname: \(hostname)"
             )
         } catch {
-            showAlertMessage(title: "Error", message: "Failed to start sharing: \(error.localizedDescription)")
+            showAlertMessage(
+                title: "Error", message: "Failed to start sharing: \(error.localizedDescription)")
         }
     }
 
@@ -91,9 +95,12 @@ class AppState: ObservableObject {
             client = TailscaleScreenShareClient()
             try await client?.connect(to: host, port: 7447)
             isConnected = true
-            showAlertMessage(title: "Connected", message: "Successfully connected to \(host) via Tailscale")
+            showAlertMessage(
+                title: "Connected", message: "Successfully connected to \(host) via Tailscale")
         } catch {
-            showAlertMessage(title: "Connection Failed", message: "Could not connect to \(host): \(error.localizedDescription)")
+            showAlertMessage(
+                title: "Connection Failed",
+                message: "Could not connect to \(host): \(error.localizedDescription)")
             client = nil
         }
     }
@@ -112,10 +119,11 @@ class AppState: ObservableObject {
     func discoverPeers() async {
         // Need an active Tailscale node to discover peers
         // Try to get it from either server or client
-        guard let node = server?.node ?? client?.node else {
+        guard let node = server?.node ?? client?.node ?? self.node else {
             showAlertMessage(
                 title: "Discovery Failed",
-                message: "You need to start sharing or connect to a peer first to discover other Cuple instances."
+                message:
+                    "You need to be logged in to discover other Cuple instances."
             )
             return
         }
@@ -154,22 +162,33 @@ class AppState: ObservableObject {
         do {
             try await ScreenCapture.requestPermission()
         } catch {
-            showAlertMessage(title: "Permission Error", message: "Failed to request screen recording permission: \(error.localizedDescription)")
+            showAlertMessage(
+                title: "Permission Error",
+                message:
+                    "Failed to request screen recording permission: \(error.localizedDescription)")
         }
     }
 
-    func login() async {
-        // Need an active Tailscale node to authenticate
-        guard let node = server?.node ?? client?.node else {
-            showAlertMessage(
-                title: "Login Failed",
-                message: "You need to start sharing or connect to a peer first to log in to Tailscale."
-            )
-            return
-        }
+    /// Initialize Tailscale and trigger login flow
+    func initializeTailscaleAndLogin() async {
+        await login()
+    }
 
+    func login() async {
         do {
+            // Get or create the Tailscale node
+            let node = try await getOrCreateNode()
+
+            // Run the login flow
             try await tailscaleAuth.login(node: node)
+
+            // Update auth status after login
+            await tailscaleAuth.checkAuthStatus(node: node)
+
+            // Fetch IPs after successful login
+            let ips = try await node.addrs()
+            self.tailscaleIPs = [ips.ip4, ips.ip6].compactMap { $0 }
+
             showAlertMessage(
                 title: "Login Successful",
                 message: "You are now logged in to Tailscale!"
@@ -177,14 +196,81 @@ class AppState: ObservableObject {
         } catch {
             showAlertMessage(
                 title: "Login Failed",
-                message: error.localizedDescription
+                message: "Failed to log in: \(error.localizedDescription)"
             )
         }
+    }
+
+    private func getOrCreateNode() async throws -> TailscaleNode {
+        // If node exists and is running, return it
+        if let node = self.node {
+            // TODO: We should check the status of the node
+            return node
+        }
+
+        // Determine state directory
+        let statePath = {
+            let appSupport = FileManager.default.urls(
+                for: .applicationSupportDirectory, in: .userDomainMask
+            ).first!
+            return appSupport.appendingPathComponent("Cuple/tailscale").path
+        }()
+
+        // Create directory if needed
+        try? FileManager.default.createDirectory(
+            atPath: statePath, withIntermediateDirectories: true)
+
+        // Create Tailscale configuration
+        let config = Configuration(
+            hostName: Host.current().localizedName ?? "cuple",
+            path: statePath,
+            authKey: nil,
+            controlURL: kDefaultControlURL,
+            ephemeral: true
+        )
+
+        // Initialize Tailscale node
+        let node = try TailscaleNode(config: config, logger: SimpleLogger())
+        self.node = node
+
+        // Bring up the node in a background task
+        Task {
+            do {
+                try await node.up()
+            } catch {
+                // This will fail if the user doesn't authenticate, which is expected
+                // We can log this if needed, but for now we'll ignore it
+                print("❗️ node.up() failed: \(error.localizedDescription)")
+            }
+        }
+
+        // Give the node a moment to start up and generate the auth URL
+        try await Task.sleep(for: .seconds(2))
+
+        return node
     }
 
     func signOut() async {
         do {
             try await tailscaleAuth.signOut()
+
+            // Stop sharing if active
+            if isSharing {
+                await stopSharing()
+            }
+
+            // Disconnect if connected
+            if isConnected {
+                await disconnect()
+            }
+
+            // Reset Tailscale state
+            await server?.stop()
+            server = nil
+            try? await node?.close()
+            node = nil
+            tailscaleIPs = []
+
             showAlertMessage(
                 title: "Signed Out",
                 message: "You have been signed out of Tailscale."
@@ -221,5 +307,14 @@ class AppState: ObservableObject {
         alertTitle = title
         alertMessage = message
         showAlert = true
+    }
+}
+
+// Simple logger for LocalAPIClient
+private struct SimpleLogger: LogSink {
+    var logFileHandle: Int32? = nil
+
+    func log(_ message: String) {
+        print("[LocalAPI] \(message)")
     }
 }

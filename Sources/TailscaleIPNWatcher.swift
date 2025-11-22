@@ -33,7 +33,7 @@ class TailscaleIPNWatcher: ObservableObject {
 
     /// Stop watching the IPN bus
     func stopWatching() {
-        messageProcessor?.stop()
+        messageProcessor?.cancel()
         messageProcessor = nil
         isWatching = false
         logger.log("IPN bus watcher stopped")
@@ -46,14 +46,17 @@ class TailscaleIPNWatcher: ObservableObject {
             if let netmap = notify.NetMap, let peerMap = netmap.Peers {
                 var updatedPeers: [String: TailscalePeerStatus] = [:]
 
-                for (nodeID, peer) in peerMap {
+                for peer in peerMap {
+                    let nodeID = String(peer.ID)
+                    // Convert IP.Prefix addresses to string array
+                    let ipStrings = (peer.Addresses ?? []).map { String($0) }
                     let status = TailscalePeerStatus(
                         nodeID: nodeID,
-                        hostname: peer.HostName,
-                        dnsName: peer.DNSName,
-                        tailscaleIPs: peer.TailscaleIPs ?? [],
-                        online: peer.Online,
-                        lastSeen: peer.LastSeen
+                        hostname: peer.ComputedName,
+                        dnsName: peer.Name,
+                        tailscaleIPs: ipStrings,
+                        online: peer.Online ?? false,
+                        lastSeen: peer.LastSeen != nil ? String(peer.LastSeen!) : nil
                     )
                     updatedPeers[nodeID] = status
                 }
@@ -99,7 +102,10 @@ struct TailscalePeerStatus: Identifiable, Sendable {
     let online: Bool
     let lastSeen: String?
 
-    init(nodeID: String, hostname: String, dnsName: String, tailscaleIPs: [String], online: Bool, lastSeen: String?) {
+    init(
+        nodeID: String, hostname: String, dnsName: String, tailscaleIPs: [String], online: Bool,
+        lastSeen: String?
+    ) {
         self.id = nodeID
         self.nodeID = nodeID
         self.hostname = hostname
@@ -107,5 +113,15 @@ struct TailscalePeerStatus: Identifiable, Sendable {
         self.tailscaleIPs = tailscaleIPs
         self.online = online
         self.lastSeen = lastSeen
+    }
+}
+
+// MARK: - Logger Implementation
+
+private struct TSLogger: LogSink {
+    var logFileHandle: Int32? = nil
+
+    func log(_ message: String) {
+        print("[IPNWatcher] \(message)")
     }
 }
