@@ -7,7 +7,7 @@ import TailscaleKit
 /// This uses the official TailscaleKit framework from libtailscale/swift
 @available(macOS 10.15, *)
 class TailscaleScreenShareClient: @unchecked Sendable {
-    private var node: TailscaleNode?
+    var node: TailscaleNode? // Exposed for peer discovery
     private var connection: OutgoingConnection?
     private var decoder: VideoDecoder?
     private var window: NSWindow?

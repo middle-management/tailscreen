@@ -35,6 +35,9 @@ struct MenuBarView: View {
                         }
                     }
                 } else {
+                    MenuButton("Browse Shares...", systemImage: "network") {
+                        appState.showBrowseSheet = true
+                    }
                     MenuButton("Connect to...", systemImage: "link") {
                         appState.showConnectSheet = true
                     }
@@ -100,6 +103,10 @@ struct MenuBarView: View {
         }
         .sheet(isPresented: $appState.showIPSheet) {
             IPAddressSheet()
+                .environmentObject(appState)
+        }
+        .sheet(isPresented: $appState.showBrowseSheet) {
+            BrowseSharesSheet()
                 .environmentObject(appState)
         }
         .alert(appState.alertTitle, isPresented: $appState.showAlert) {
@@ -210,5 +217,128 @@ struct IPAddressSheet: View {
         }
         .padding()
         .frame(width: 400)
+    }
+}
+
+struct BrowseSharesSheet: View {
+    @EnvironmentObject var appState: AppState
+    @Environment(\.dismiss) var dismiss
+
+    var body: some View {
+        VStack(spacing: 16) {
+            HStack {
+                Text("Browse Available Shares")
+                    .font(.headline)
+
+                Spacer()
+
+                Button {
+                    Task {
+                        await appState.discoverPeers()
+                    }
+                } label: {
+                    if appState.isDiscovering {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                }
+                .buttonStyle(.plain)
+                .disabled(appState.isDiscovering)
+                .help("Refresh")
+            }
+
+            if appState.isDiscovering {
+                VStack(spacing: 8) {
+                    ProgressView()
+                    Text("Discovering Cuple instances on your tailnet...")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .frame(height: 100)
+            } else if appState.availablePeers.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "network.slash")
+                        .font(.largeTitle)
+                        .foregroundColor(.secondary)
+                    Text("No shares found")
+                        .font(.headline)
+                    Text("Click the refresh button to search for Cuple instances on your tailnet")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(height: 100)
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(appState.availablePeers) { peer in
+                            PeerRow(peer: peer) {
+                                Task {
+                                    await appState.connectToPeer(peer)
+                                    dismiss()
+                                }
+                            }
+                        }
+                    }
+                }
+                .frame(height: 200)
+            }
+
+            HStack {
+                Button("Close") {
+                    dismiss()
+                }
+                .keyboardShortcut(.escape)
+
+                Spacer()
+
+                if !appState.isDiscovering && appState.availablePeers.isEmpty {
+                    Button("Discover") {
+                        Task {
+                            await appState.discoverPeers()
+                        }
+                    }
+                    .keyboardShortcut(.return)
+                }
+            }
+        }
+        .padding()
+        .frame(width: 500)
+        .onAppear {
+            // Auto-discover when sheet opens
+            Task {
+                await appState.discoverPeers()
+            }
+        }
+    }
+}
+
+struct PeerRow: View {
+    let peer: CuplePeer
+    let onConnect: () -> Void
+
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(peer.hostname)
+                    .font(.headline)
+                Text(peer.tailscaleIP)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fontDesign(.monospaced)
+            }
+
+            Spacer()
+
+            Button("Connect") {
+                onConnect()
+            }
+            .buttonStyle(.borderedProminent)
+        }
+        .padding(8)
+        .background(Color.secondary.opacity(0.1))
+        .cornerRadius(8)
     }
 }

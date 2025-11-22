@@ -12,10 +12,16 @@ class AppState: ObservableObject {
     @Published var alertMessage = ""
     @Published var showConnectSheet = false
     @Published var showIPSheet = false
+    @Published var showBrowseSheet = false
 
     private var server: TailscaleScreenShareServer?
     private var client: TailscaleScreenShareClient?
     private var tailscaleIPs: [String] = []
+
+    // Peer discovery
+    @Published var availablePeers: [CuplePeer] = []
+    @Published var isDiscovering = false
+    private var peerDiscovery: TailscalePeerDiscovery?
 
     var localIPAddresses: [String] {
         if !tailscaleIPs.isEmpty {
@@ -71,11 +77,46 @@ class AppState: ObservableObject {
         }
     }
 
+    func connectToPeer(_ peer: CuplePeer) async {
+        await connect(to: peer.tailscaleIP)
+    }
+
     func disconnect() async {
         await client?.disconnect()
         client = nil
         isConnected = false
         showAlertMessage(title: "Disconnected", message: "Disconnected from remote screen.")
+    }
+
+    func discoverPeers() async {
+        // Need an active Tailscale node to discover peers
+        // Try to get it from either server or client
+        guard let node = server?.node ?? client?.node else {
+            showAlertMessage(
+                title: "Discovery Failed",
+                message: "You need to start sharing or connect to a peer first to discover other Cuple instances."
+            )
+            return
+        }
+
+        let discovery = TailscalePeerDiscovery()
+        self.peerDiscovery = discovery
+
+        isDiscovering = true
+        do {
+            try await discovery.startDiscovery(node: node)
+            self.availablePeers = discovery.availablePeers
+
+            if availablePeers.isEmpty {
+                showAlertMessage(
+                    title: "No Shares Found",
+                    message: "No other Cuple instances are currently sharing on your tailnet."
+                )
+            }
+        } catch {
+            showAlertMessage(title: "Discovery Failed", message: error.localizedDescription)
+        }
+        isDiscovering = false
     }
 
     func requestPermission() async {

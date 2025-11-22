@@ -7,7 +7,7 @@ import TailscaleKit
 @available(macOS 10.15, *)
 class TailscaleScreenShareServer: @unchecked Sendable {
     private let port: UInt16
-    private var node: TailscaleNode?
+    var node: TailscaleNode? // Exposed for peer discovery
     private var listener: Listener?
     private var connections: [IncomingConnection] = []
     private var encoder: VideoEncoder?
