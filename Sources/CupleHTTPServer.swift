@@ -2,28 +2,41 @@ import Foundation
 import Network
 
 /// Lightweight HTTP server for serving Cuple metadata
-/// Listens on all interfaces (including Tailscale) using standard BSD sockets
+/// Listens on Tailscale interface by binding to Tailscale IP
 @available(macOS 10.15, *)
 actor CupleHTTPServer {
     private let port: UInt16
     private var listener: NWListener?
     private var isRunning = false
     private weak var metadataService: CupleMetadataService?
+    private var tailscaleIP: String?
 
     init(port: UInt16 = 7448, metadataService: CupleMetadataService) {
         self.port = port
         self.metadataService = metadataService
     }
 
-    func start() async throws {
+    func start(tailscaleIP: String? = nil) async throws {
         guard !isRunning else { return }
+
+        self.tailscaleIP = tailscaleIP
 
         let params = NWParameters.tcp
         params.allowLocalEndpointReuse = true
+        params.requiredInterfaceType = .other  // Tailscale uses "other" interface type
 
-        guard
-            let listener = try? NWListener(using: params, on: NWEndpoint.Port(integerLiteral: port))
-        else {
+        // If we have a Tailscale IP, bind to it specifically
+        let endpoint: NWEndpoint.Port
+        if let ip = tailscaleIP, let host = IPv4Address(ip) {
+            params.requiredLocalEndpoint = NWEndpoint.hostPort(
+                host: NWEndpoint.Host.ipv4(host),
+                port: NWEndpoint.Port(integerLiteral: port)
+            )
+            print("🌐 [HTTP] Binding to Tailscale IP: \(ip):\(port)")
+        }
+        endpoint = NWEndpoint.Port(integerLiteral: port)
+
+        guard let listener = try? NWListener(using: params, on: endpoint) else {
             throw NSError(
                 domain: "CupleHTTPServer", code: 1,
                 userInfo: [NSLocalizedDescriptionKey: "Failed to create listener"])

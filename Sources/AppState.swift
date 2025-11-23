@@ -233,10 +233,10 @@ class AppState: ObservableObject {
             let ips = try await node.addrs()
             self.tailscaleIPs = [ips.ip4, ips.ip6].compactMap { $0 }
 
-            // Start HTTP metadata server
-            if let httpServer = self.httpServer {
-                try? await httpServer.start()
-                print("📡 [AppState] Metadata server started on port 7448")
+            // Start HTTP metadata server bound to Tailscale IP
+            if let httpServer = self.httpServer, let tailscaleIP = ips.ip4 {
+                try? await httpServer.start(tailscaleIP: tailscaleIP)
+                print("📡 [AppState] Metadata server started on \(tailscaleIP):7448")
             }
 
             if !silent {
