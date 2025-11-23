@@ -24,7 +24,7 @@ final class ResumedFlag: @unchecked Sendable {
     }
 }
 
-class ScreenShareClient {
+class ScreenShareClient: @unchecked Sendable {
     private var connection: NWConnection?
     private var decoder: VideoDecoder?
     private var window: NSWindow?
@@ -117,20 +117,21 @@ class ScreenShareClient {
     }
 
     private func displayFrame(_ pixelBuffer: CVPixelBuffer) {
-        DispatchQueue.main.async { [weak self] in
+        // Convert pixel buffer to CGImage on background thread
+        let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
+        let context = CIContext()
+
+        guard let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else {
+            return
+        }
+
+        // Now jump to MainActor with the CGImage (which is Sendable)
+        Task { @MainActor [weak self, cgImage] in
             guard let self = self else { return }
 
             // Create window if needed
             if self.window == nil {
                 self.createWindow()
-            }
-
-            // Convert pixel buffer to NSImage
-            let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
-            let context = CIContext()
-
-            guard let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else {
-                return
             }
 
             let image = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
@@ -170,6 +171,7 @@ class ScreenShareClient {
         }
     }
 
+    @MainActor
     private func createWindow() {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1280, height: 720),

@@ -1,7 +1,7 @@
 import Network
 import CoreVideo
 
-class ScreenShareServer {
+class ScreenShareServer: @unchecked Sendable {
     private let port: UInt16
     private var listener: NWListener?
     private var connections: [NWConnection] = []
@@ -131,11 +131,11 @@ class ScreenShareServer {
         }
     }
 
-    func stop() {
+    func stop() async {
         encoder?.shutdown()
         encoder = nil
 
-        screenCapture?.stop()
+        await screenCapture?.stop()
         screenCapture = nil
 
         for connection in connections {

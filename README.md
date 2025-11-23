@@ -1,30 +1,46 @@
-# Cuple - High-Quality Screen Sharing over LAN
+# Cuple - Secure Screen Sharing via Tailscale
 
 [![Build Status](https://github.com/slaskis/cuple/actions/workflows/build.yml/badge.svg)](https://github.com/slaskis/cuple/actions/workflows/build.yml)
 
-A minimal macOS menubar app for high-quality, low-latency screen sharing over local network. Built with Swift Package Manager (no Xcode required).
+A minimal macOS menubar app for high-quality, low-latency screen sharing using Tailscale's encrypted peer-to-peer network. Built with Swift Package Manager (no Xcode required).
 
 ## Features
 
 - **Menubar Integration**: Lightweight menubar app that stays out of your way
+- **Tailscale Integration**: Secure, encrypted peer-to-peer connections via Tailscale
+- **Automatic Peer Discovery**: Browse and connect to available shares on your tailnet with one click
+- **Zero Configuration**: No port forwarding or firewall configuration needed
 - **High Quality**: Hardware-accelerated H.264 encoding/decoding using VideoToolbox
 - **Low Latency**: Optimized for real-time streaming with minimal delay
-- **LAN Only**: Direct peer-to-peer connection over local network
 - **Retina Support**: Captures and streams at full Retina resolution
 - **60 FPS**: Smooth 60 frames per second capture
+- **Works Anywhere**: Share screens across networks, not just LAN
 
 ## Requirements
 
-- macOS 13.0 (Ventura) or later
-- Swift 5.9 or later
+- macOS 15.0 (Sequoia) or later
+- Swift 6.0 or later
 - Screen Recording permission
+- Tailscale account (free for personal use)
 
 ## Building
 
-Build the app using Swift Package Manager:
+The project includes TailscaleKit as a local package with the libtailscale C library. Build using the provided Makefile:
 
 ```bash
-swift build -c release
+make build
+```
+
+This will:
+1. Build the libtailscale C library from the upstream submodule
+2. Apply necessary patches
+3. Build the Swift TailscaleKit wrapper
+4. Build the Cuple application
+
+For a release build:
+
+```bash
+make release
 ```
 
 The executable will be at `.build/release/Cuple`
@@ -42,6 +58,46 @@ Or run the built executable:
 ```bash
 .build/release/Cuple
 ```
+
+## Testing on One Machine
+
+You can test Cuple on a single machine without needing two computers:
+
+### Quick Test (Easiest)
+
+1. Build and run Cuple:
+   ```bash
+   make build
+   .build/debug/Cuple
+   ```
+
+2. Click **"Start Sharing"** in the menubar
+
+3. Click **"Browse Shares..."**
+
+4. Your own machine will appear in the list - click **"Connect"**!
+
+This creates both a server and client on the same machine, opening a window showing your own screen (creating a recursive mirror effect).
+
+### Testing with Two Instances
+
+To test like you have two separate machines:
+
+**Terminal 1:**
+```bash
+./test-local.sh
+# Click "Start Sharing" when Cuple opens
+```
+
+**Terminal 2:**
+```bash
+.build/debug/Cuple
+# Click "Browse Shares..." to find the first instance
+```
+
+Both instances will create separate ephemeral Tailscale nodes on your tailnet, appearing as different devices.
+
+**Note:** This tests the full Tailscale integration and peer discovery, but doesn't test actual network traversal or NAT punch-through since both instances are on the same machine.
 
 ## CI/CD
 
@@ -70,25 +126,42 @@ Or use the "Actions" tab to manually trigger a release build.
 
 ## Usage
 
+### First Time Setup
+
+1. Create a free Tailscale account at https://tailscale.com if you don't have one
+2. Both the sharing and viewing computers need to be on the same Tailscale network (tailnet)
+
 ### Sharing Your Screen
 
 1. Click the Cuple icon (📺) in the menubar
 2. Select "Start Sharing"
 3. Grant Screen Recording permission if prompted
-4. Select "Show IP Address" to see your local IP addresses
-5. Share your IP address with others who want to view your screen
+4. Tailscale will automatically connect (ephemeral node, auto-cleanup)
+5. Select "Show Tailscale Info" to see your Tailscale IP addresses
+6. Share your hostname (e.g., "macbook-pro") or Tailscale IP with others
 
 ### Viewing a Shared Screen
 
+**Option 1: Browse Shares (Easiest)**
+
+1. Click the Cuple icon (📺) in the menubar
+2. Select "Browse Shares..."
+3. Available shares will be automatically discovered
+4. Click "Connect" next to the share you want to view
+5. A window will open showing the shared screen
+
+**Option 2: Manual Connection**
+
 1. Click the Cuple icon (📺) in the menubar
 2. Select "Connect to..."
-3. Enter the IP address of the computer sharing their screen
+3. Enter the Tailscale hostname or IP address (e.g., "macbook-pro" or "100.x.x.x")
 4. A window will open showing the shared screen
 
 ### Stopping
 
 - To stop sharing: Select "Stop Sharing" from the menubar
 - To stop viewing: Select "Disconnect" or close the viewer window
+- Tailscale nodes are ephemeral and automatically cleaned up when you stop
 
 ## Architecture
 
@@ -110,10 +183,18 @@ Or use the "Actions" tab to manually trigger a release build.
 - Adaptive bitrate based on resolution
 
 ### Network Protocol
-- Direct TCP connection on port 7447
+- Tailscale encrypted peer-to-peer connection on port 7447
+- WireGuard-based encryption (via Tailscale)
 - Simple framing protocol: `[size:4][keyframe:1][data:N]`
 - No buffering for minimal latency
 - Automatic keyframe requests every 2 seconds
+
+### Tailscale Integration
+- Uses official TailscaleKit framework (Swift wrapper for libtailscale)
+- Ephemeral nodes (automatically cleaned up)
+- Direct peer-to-peer connections via WireGuard
+- No central relay server (unless DERP fallback needed)
+- Works across networks, NATs, and firewalls
 
 ## Network Protocol Details
 
@@ -128,17 +209,21 @@ Port: `7447` (TCP)
 
 ## Privacy & Security
 
-- **LAN Only**: No internet connectivity, all traffic stays on local network
+- **Encrypted**: All traffic encrypted via WireGuard (Tailscale)
+- **Peer-to-Peer**: Direct connections between devices when possible
 - **No Recording**: Frames are encoded and transmitted in real-time, not stored
-- **Direct Connection**: Peer-to-peer, no intermediary servers
+- **Ephemeral Nodes**: Temporary Tailscale nodes that auto-cleanup
 - **Screen Recording Permission**: macOS requires explicit user permission
+- **Tailscale ACLs**: Control who can access your device via Tailscale admin console
 
 ## Performance Tips
 
+- Tailscale will prefer direct peer-to-peer connections when possible
+- Direct connections provide LAN-like performance even over the internet
 - Use wired Ethernet for best quality and lowest latency
-- Ensure both computers are on the same local network
 - Disable WiFi power saving for consistent performance
 - Close bandwidth-intensive applications
+- Check Tailscale status to ensure direct connection (not relayed)
 
 ## Troubleshooting
 
@@ -147,9 +232,10 @@ Port: `7447` (TCP)
 - Enable permission for Cuple or your Terminal app
 
 ### "Connection Failed"
-- Verify both computers are on the same network
-- Check firewall settings allow incoming connections on port 7447
-- Ensure the IP address is correct (use "Show IP Address")
+- Verify both computers are on the same Tailscale network (tailnet)
+- Check that Tailscale is running and connected on both machines
+- Ensure the hostname or IP address is correct (use "Show Tailscale Info")
+- Check Tailscale ACLs allow connections between devices
 
 ### Low FPS or stuttering
 - Check network bandwidth (run `iperf3` between machines)
@@ -168,11 +254,12 @@ MIT License - Feel free to modify and distribute
 ## Technical Details
 
 **Technologies:**
-- Swift 5.9+
+- Swift 6.0+
 - SwiftUI (Modern declarative UI with MenuBarExtra)
+- TailscaleKit (Official Swift wrapper for libtailscale)
+- WireGuard (via Tailscale - encrypted networking)
 - ScreenCaptureKit (Screen Capture)
 - VideoToolbox (H.264 Encoding/Decoding)
-- Network Framework (TCP Communication)
 
 **Quality Settings:**
 - Resolution: Native Retina (2x scaling)

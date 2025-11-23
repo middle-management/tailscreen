@@ -1,10 +1,10 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 6.0
 import PackageDescription
 
 let package = Package(
     name: "Cuple",
     platforms: [
-        .macOS(.v13)
+        .macOS(.v15)
     ],
     products: [
         .executable(
@@ -12,10 +12,20 @@ let package = Package(
             targets: ["Cuple"]
         )
     ],
+    dependencies: [
+        // TailscaleKit local package
+        .package(path: "./TailscaleKitPackage")
+    ],
     targets: [
         .executableTarget(
             name: "Cuple",
-            path: "Sources"
+            dependencies: [
+                .product(name: "TailscaleKit", package: "TailscaleKitPackage")
+            ],
+            path: "Sources",
+            linkerSettings: [
+                .unsafeFlags(["-L", "TailscaleKitPackage/lib"])
+            ]
         )
     ]
 )
