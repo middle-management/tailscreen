@@ -22,10 +22,15 @@ struct NetworkHelper {
                 guard !name.starts(with: "lo") else { continue }
 
                 var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-                if getnameinfo(interface.ifa_addr, socklen_t(interface.ifa_addr.pointee.sa_len),
-                             &hostname, socklen_t(hostname.count),
-                             nil, socklen_t(0), NI_NUMERICHOST) == 0 {
-                    let address = String(cString: hostname)
+                if getnameinfo(
+                    interface.ifa_addr, socklen_t(interface.ifa_addr.pointee.sa_len),
+                    &hostname, socklen_t(hostname.count),
+                    nil, socklen_t(0), NI_NUMERICHOST) == 0
+                {
+                    let nullTerminatedHostname = hostname.prefix(while: { $0 != 0 }).map {
+                        UInt8(bitPattern: $0)
+                    }
+                    let address = String(decoding: nullTerminatedHostname, as: UTF8.self)
 
                     // Only include IPv4 addresses
                     if addrFamily == UInt8(AF_INET) {

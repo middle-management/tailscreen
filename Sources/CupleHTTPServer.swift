@@ -21,8 +21,12 @@ actor CupleHTTPServer {
         let params = NWParameters.tcp
         params.allowLocalEndpointReuse = true
 
-        guard let listener = try? NWListener(using: params, on: NWEndpoint.Port(integerLiteral: port)) else {
-            throw NSError(domain: "CupleHTTPServer", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to create listener"])
+        guard
+            let listener = try? NWListener(using: params, on: NWEndpoint.Port(integerLiteral: port))
+        else {
+            throw NSError(
+                domain: "CupleHTTPServer", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Failed to create listener"])
         }
 
         self.listener = listener
@@ -39,8 +43,11 @@ actor CupleHTTPServer {
     private func handleConnection(_ conn: NWConnection) {
         conn.start(queue: .global(qos: .userInitiated))
 
-        conn.receive(minimumIncompleteLength: 1, maximumLength: 4096) { [weak self] data, _, _, error in
-            guard let self = self, let data = data, let request = String(data: data, encoding: .utf8) else {
+        conn.receive(minimumIncompleteLength: 1, maximumLength: 4096) {
+            [weak self] data, _, _, error in
+            guard let self = self, let data = data,
+                let request = String(data: data, encoding: .utf8)
+            else {
                 conn.cancel()
                 return
             }
@@ -60,7 +67,7 @@ actor CupleHTTPServer {
                 }
 
                 // Get metadata
-                guard let metadataService = self.metadataService else {
+                guard let metadataService = await self.metadataService else {
                     await self.sendResponse(conn, status: 500, body: "Service unavailable")
                     return
                 }
@@ -78,31 +85,33 @@ actor CupleHTTPServer {
     }
 
     private func sendJSON(_ conn: NWConnection, data: Data) async {
-        let response = "HTTP/1.1 200 OK\r\n" +
-                      "Content-Type: application/json\r\n" +
-                      "Content-Length: \(data.count)\r\n" +
-                      "Connection: close\r\n\r\n"
+        let response =
+            "HTTP/1.1 200 OK\r\n" + "Content-Type: application/json\r\n"
+            + "Content-Length: \(data.count)\r\n" + "Connection: close\r\n\r\n"
 
         var fullResponse = Data()
         fullResponse.append(response.data(using: .utf8)!)
         fullResponse.append(data)
 
-        conn.send(content: fullResponse, completion: .contentProcessed { _ in
-            conn.cancel()
-        })
+        conn.send(
+            content: fullResponse,
+            completion: .contentProcessed { _ in
+                conn.cancel()
+            })
     }
 
     private func sendResponse(_ conn: NWConnection, status: Int, body: String) async {
         let statusText = status == 200 ? "OK" : status == 404 ? "Not Found" : "Error"
-        let response = "HTTP/1.1 \(status) \(statusText)\r\n" +
-                      "Content-Type: text/plain\r\n" +
-                      "Content-Length: \(body.utf8.count)\r\n" +
-                      "Connection: close\r\n\r\n\(body)"
+        let response =
+            "HTTP/1.1 \(status) \(statusText)\r\n" + "Content-Type: text/plain\r\n"
+            + "Content-Length: \(body.utf8.count)\r\n" + "Connection: close\r\n\r\n\(body)"
 
         if let data = response.data(using: .utf8) {
-            conn.send(content: data, completion: .contentProcessed { _ in
-                conn.cancel()
-            })
+            conn.send(
+                content: data,
+                completion: .contentProcessed { _ in
+                    conn.cancel()
+                })
         }
     }
 
