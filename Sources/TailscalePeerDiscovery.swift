@@ -65,106 +65,50 @@ class TailscalePeerDiscovery: ObservableObject {
 
         logger.log("✓ Found \(peers.count) online peers")
 
-        // Check which peers are running Cuple and fetch metadata (in parallel)
+        // Fetch metadata from all peers (in parallel)
         var updatedPeers: [CuplePeer] = []
 
-        await withTaskGroup(of: (String, Bool, CupleMetadata?).self) { group in
+        await withTaskGroup(of: (String, CupleMetadata?).self) { group in
             for peer in peers {
                 group.addTask {
-                    let isRunning = await self.checkIfRunningCuple(
-                        host: peer.tailscaleIP,
-                        port: self.cuplePort
-                    )
-
-                    // If running Cuple, fetch metadata
-                    var metadata: CupleMetadata? = nil
-                    if isRunning {
-                        do {
-                            metadata = try await CupleMetadataService.fetchMetadata(
-                                from: peer.tailscaleIP,
-                                port: self.metadataPort
-                            )
-                            self.logger.log("✓ Got metadata from \(peer.hostname)")
-                        } catch {
-                            self.logger.log("⚠️  \(peer.hostname) is running but no metadata: \(error.localizedDescription)")
-                        }
+                    // Try to fetch metadata - if it works, Cuple is running
+                    do {
+                        let metadata = try await CupleMetadataService.fetchMetadata(
+                            from: peer.tailscaleIP,
+                            port: self.metadataPort
+                        )
+                        self.logger.log("✓ Got metadata from \(peer.hostname)")
+                        return (peer.id, metadata)
+                    } catch {
+                        // No metadata = Cuple not running or not sharing
+                        return (peer.id, nil)
                     }
-
-                    return (peer.id, isRunning, metadata)
                 }
             }
 
-            var cupleData: [String: (Bool, CupleMetadata?)] = [:]
-            for await (peerId, isRunning, metadata) in group {
-                cupleData[peerId] = (isRunning, metadata)
+            var metadataMap: [String: CupleMetadata?] = [:]
+            for await (peerId, metadata) in group {
+                metadataMap[peerId] = metadata
             }
 
-            // Update peers with Cuple status and metadata
+            // Update peers with metadata
             for var peer in peers {
-                if let (isRunning, metadata) = cupleData[peer.id] {
-                    peer.isRunningCuple = isRunning
+                if let metadata = metadataMap[peer.id] {
                     peer.metadata = metadata
+                    peer.isRunningCuple = (metadata != nil)
                 }
                 updatedPeers.append(peer)
             }
         }
 
-        // Only show peers that are running Cuple AND actively sharing
+        // Only show peers that have metadata AND are actively sharing
         let sharingPeers = updatedPeers.filter {
-            $0.isRunningCuple && ($0.metadata?.isSharing ?? false)
+            $0.metadata?.isSharing ?? false
         }
 
         logger.log("🎯 Found \(sharingPeers.count) peers actively sharing")
 
         availablePeers = sharingPeers
-    }
-
-    /// Quick check if a peer is running Cuple by attempting to connect
-    private func checkIfRunningCuple(host: String, port: UInt16) async -> Bool {
-        // Simple connection test - try to connect and immediately disconnect
-        // A more sophisticated approach would send a discovery packet
-        do {
-            // Create a temporary client to test the connection
-            let testClient = TailscaleScreenShareClient()
-
-            // Try to connect with a short timeout
-            // If Cuple is running, the connection will succeed
-            try await withTimeout(seconds: 2) {
-                try await testClient.connect(to: host, port: port)
-            }
-
-            // Disconnect immediately
-            await testClient.disconnect()
-
-            logger.log("✓ \(host) is running Cuple")
-            return true
-        } catch {
-            // Connection failed - Cuple is not running on this peer
-            return false
-        }
-    }
-
-    /// Helper to run async operations with a timeout
-    private func withTimeout<T: Sendable>(
-        seconds: TimeInterval, operation: @escaping @Sendable () async throws -> T
-    ) async throws -> T {
-        try await withThrowingTaskGroup(of: T.self) { group in
-            group.addTask {
-                try await operation()
-            }
-
-            group.addTask {
-                try await Task.sleep(for: .seconds(seconds))
-                throw TimeoutError()
-            }
-
-            guard let result = try await group.next() else {
-                throw TimeoutError()
-            }
-
-            group.cancelAll()
-            return result
-        }
     }
 
     /// Start real-time monitoring of peer status using IPN bus
