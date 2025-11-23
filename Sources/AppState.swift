@@ -261,11 +261,17 @@ class AppState: ObservableObject {
             return node
         }
 
-        // Determine state directory
+        // Determine state directory - support CUPLE_INSTANCE env var for testing
         let statePath = {
             let appSupport = FileManager.default.urls(
                 for: .applicationSupportDirectory, in: .userDomainMask
             ).first!
+
+            // Check for instance override
+            if let instance = ProcessInfo.processInfo.environment["CUPLE_INSTANCE"] {
+                return appSupport.appendingPathComponent("Cuple-\(instance)/tailscale").path
+            }
+
             return appSupport.appendingPathComponent("Cuple/tailscale").path
         }()
 
