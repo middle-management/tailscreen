@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import Observation
 import SwiftUI
@@ -26,10 +27,23 @@ class AppState: ObservableObject {
     private var peerDiscovery: TailscalePeerDiscovery?
 
     // Authentication
-    @Published var tailscaleAuth = TailscaleAuth()
+    var tailscaleAuth = TailscaleAuth()
 
     // Metadata and requests
     @Published var metadataService = CupleMetadataService()
+
+    // Track if auto-login has been triggered
+    private var hasTriggeredAutoLogin = false
+    private var isLoggingIn = false
+
+    init() {
+        // Observe changes in tailscaleAuth and propagate them
+        tailscaleAuth.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }.store(in: &cancellables)
+    }
+
+    private var cancellables = Set<AnyCancellable>()
 
     var localIPAddresses: [String] {
         if !tailscaleIPs.isEmpty {
@@ -170,18 +184,39 @@ class AppState: ObservableObject {
     }
 
     /// Initialize Tailscale and trigger login flow
-    func initializeTailscaleAndLogin() async {
-        await login()
+    func initializeTailscaleAndLogin(silent: Bool = true) async {
+        await login(silent: silent)
     }
 
-    func login() async {
+    /// Trigger auto-login only once on app startup
+    func triggerAutoLoginIfNeeded() {
+        guard !hasTriggeredAutoLogin else { return }
+        hasTriggeredAutoLogin = true
+
+        Task {
+            await initializeTailscaleAndLogin(silent: true)
+        }
+    }
+
+    func login(silent: Bool = false) async {
+        // Prevent multiple concurrent login attempts
+        guard !isLoggingIn else {
+            print("📱 [AppState] Login already in progress, skipping...")
+            return
+        }
+        isLoggingIn = true
+        defer { isLoggingIn = false }
+
         do {
+            print("📱 [AppState] Starting login flow...")
             // Get or create the Tailscale node
             let node = try await getOrCreateNode()
 
+            print("📱 [AppState] Node created, calling tailscaleAuth.login...")
             // Run the login flow
             try await tailscaleAuth.login(node: node)
 
+            print("📱 [AppState] Login completed, checking auth status...")
             // Update auth status after login
             await tailscaleAuth.checkAuthStatus(node: node)
 
@@ -189,11 +224,14 @@ class AppState: ObservableObject {
             let ips = try await node.addrs()
             self.tailscaleIPs = [ips.ip4, ips.ip6].compactMap { $0 }
 
-            showAlertMessage(
-                title: "Login Successful",
-                message: "You are now logged in to Tailscale!"
-            )
+            if !silent {
+                showAlertMessage(
+                    title: "Login Successful",
+                    message: "You are now logged in to Tailscale!"
+                )
+            }
         } catch {
+            print("📱 [AppState] Login error: \(error)")
             showAlertMessage(
                 title: "Login Failed",
                 message: "Failed to log in: \(error.localizedDescription)"
@@ -233,19 +271,9 @@ class AppState: ObservableObject {
         let node = try TailscaleNode(config: config, logger: SimpleLogger())
         self.node = node
 
-        // Bring up the node in a background task
-        Task {
-            do {
-                try await node.up()
-            } catch {
-                // This will fail if the user doesn't authenticate, which is expected
-                // We can log this if needed, but for now we'll ignore it
-                print("❗️ node.up() failed: \(error.localizedDescription)")
-            }
-        }
-
-        // Give the node a moment to start up and generate the auth URL
-        try await Task.sleep(for: .seconds(2))
+        // Don't call node.up() here - we'll handle login separately
+        // Just give the node a moment to initialize
+        try await Task.sleep(for: .seconds(1))
 
         return node
     }

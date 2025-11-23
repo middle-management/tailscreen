@@ -4,6 +4,7 @@ import SwiftUI
 struct MenuBarView: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.openWindow) private var openWindow
+    @State private var viewID = UUID()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -175,6 +176,14 @@ struct MenuBarView: View {
         } message: {
             Text(appState.alertMessage)
         }
+        .id(viewID)
+        .onAppear {
+            // Auto-login on app startup if not authenticated (only once)
+            print("📱 [MenuBarView] onAppear called")
+            appState.triggerAutoLoginIfNeeded()
+            // Force view refresh by updating ID
+            viewID = UUID()
+        }
     }
 }
 
@@ -239,6 +248,7 @@ struct ConnectSheet: View {
                     dismiss()
                 }
                 .keyboardShortcut(.escape)
+                .buttonStyle(.borderless)
                 .controlSize(.large)
 
                 Button("Connect") {
@@ -250,6 +260,7 @@ struct ConnectSheet: View {
                 }
                 .keyboardShortcut(.return)
                 .buttonStyle(.borderedProminent)
+                .buttonStyle(.borderless)
                 .controlSize(.large)
                 .disabled(hostname.isEmpty)
             }
@@ -295,7 +306,7 @@ struct IPAddressSheet: View {
                                 Image(systemName: "doc.on.doc")
                                     .font(.system(size: 12))
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(.borderless)
                             .help("Copy to clipboard")
                         }
                         .padding(10)
@@ -310,6 +321,7 @@ struct IPAddressSheet: View {
                 dismiss()
             }
             .keyboardShortcut(.return)
+            .buttonStyle(.borderless)
             .controlSize(.large)
         }
         .padding(24)
@@ -343,7 +355,7 @@ struct BrowseSharesSheet: View {
                             .font(.system(size: 13))
                     }
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.borderless)
                 .disabled(appState.isDiscovering)
                 .help("Refresh")
             }
@@ -393,6 +405,7 @@ struct BrowseSharesSheet: View {
                     dismiss()
                 }
                 .keyboardShortcut(.escape)
+                .buttonStyle(.borderless)
                 .controlSize(.large)
 
                 Spacer()
@@ -405,6 +418,7 @@ struct BrowseSharesSheet: View {
                     }
                     .keyboardShortcut(.return)
                     .buttonStyle(.borderedProminent)
+                    .buttonStyle(.borderless)
                     .controlSize(.large)
                 }
             }
@@ -456,9 +470,11 @@ struct PeerRow: View {
 
                 // Show metadata if available
                 if let metadata = peer.metadata {
-                    Text("\(metadata.shareName) • \(metadata.screenResolution.width)×\(metadata.screenResolution.height)")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
+                    Text(
+                        "\(metadata.shareName) • \(metadata.screenResolution.width)×\(metadata.screenResolution.height)"
+                    )
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
                 } else {
                     Text(peer.tailscaleIP)
                         .font(.system(size: 11, design: .monospaced))
@@ -473,6 +489,7 @@ struct PeerRow: View {
                 onConnect()
             }
             .buttonStyle(.borderedProminent)
+            .buttonStyle(.borderless)
             .controlSize(.small)
             .disabled(!peer.isOnline)
         }
@@ -487,7 +504,9 @@ struct PeerRow: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .stroke(Color(nsColor: .separatorColor).opacity(peer.isOnline ? 0.3 : 0.15), lineWidth: 0.5)
+                .stroke(
+                    Color(nsColor: .separatorColor).opacity(peer.isOnline ? 0.3 : 0.15),
+                    lineWidth: 0.5)
         )
         .opacity(peer.isOnline ? 1.0 : 0.6)
         .onHover { hovering in

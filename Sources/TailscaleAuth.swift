@@ -15,8 +15,8 @@ class TailscaleAuth: ObservableObject {
 
     /// Checks authentication status and fetches user profile
     func checkAuthStatus(node: TailscaleNode) async {
-        isLoading = true
-        defer { isLoading = false }
+        // Don't set isLoading here - it interferes with login flow UI
+        // isLoading should only be true during active login attempts
 
         do {
             let client = LocalAPIClient(localNode: node, logger: logger)
@@ -34,6 +34,7 @@ class TailscaleAuth: ObservableObject {
                 )
                 self.isAuthenticated = true
                 logger.log("✓ Authenticated as \(profile.UserProfile.DisplayName)")
+                logger.log("✓ Set isAuthenticated = true, isLoading will be set to false")
             } else {
                 // No user logged in
                 self.isAuthenticated = false
@@ -49,40 +50,83 @@ class TailscaleAuth: ObservableObject {
 
     /// Initiates interactive login flow
     func login(node: TailscaleNode) async throws {
+        guard !isLoading else {
+            logger.log("⚠️ Login already in progress")
+            return
+        }
         isLoading = true
-        defer { isLoading = false }
+        defer {
+            isLoading = false
+            logger.log("🔧 Login flow complete, isLoading = false")
+        }
 
         let client = LocalAPIClient(localNode: node, logger: logger)
         self.localAPIClient = client
 
-        // Start interactive login
+        // First check if already authenticated
+        logger.log("🔧 Checking if already authenticated...")
+        do {
+            let profile = try await client.currentProfile()
+            if !profile.isNullUser() {
+                // Already authenticated!
+                self.userProfile = TailscaleUserProfile(
+                    displayName: profile.UserProfile.DisplayName,
+                    loginName: profile.UserProfile.LoginName,
+                    profilePicURL: profile.UserProfile.ProfilePicURL
+                )
+                self.isAuthenticated = true
+                logger.log("✓ Already authenticated as \(profile.UserProfile.DisplayName)")
+                return
+            }
+        } catch {
+            logger.log("⚠️ Not authenticated yet, will start login flow")
+        }
+
+        // Not authenticated, start interactive login
         logger.log("🔧 Starting interactive login...")
         try await client.startLoginInteractive()
+        logger.log("🔧 Interactive login started, waiting for auth URL...")
 
-        // Wait a moment for the backend to generate the auth URL
-        try await Task.sleep(for: .seconds(1))
+        // Poll for the auth URL to appear in backend status
+        var authURL = ""
+        for attempt in 1...10 {
+            try await Task.sleep(for: .seconds(1))
 
-        // Get the backend status which should contain auth URL
-        logger.log("🔧 Fetching backend status...")
-        let status = try await client.backendStatus()
+            logger.log("🔧 Fetching backend status (attempt \(attempt))...")
+            do {
+                // Add timeout to prevent hanging
+                let status = try await withTimeout(seconds: 3) {
+                    try await client.backendStatus()
+                }
 
-        logger.log(
-            "🔧 Auth URL from status: '\(status.AuthURL)' (isEmpty: \(status.AuthURL.isEmpty))")
+                logger.log("🔧 Backend status - BackendState: '\(status.BackendState)'")
+                logger.log(
+                    "🔧 Auth URL from status: '\(status.AuthURL)' (isEmpty: \(status.AuthURL.isEmpty))"
+                )
 
-        if !status.AuthURL.isEmpty {
-            self.authURL = status.AuthURL
-            logger.log("🔗 Auth URL: \(status.AuthURL)")
+                if !status.AuthURL.isEmpty {
+                    authURL = status.AuthURL
+                    break
+                }
+            } catch {
+                logger.log("⚠️ Failed to fetch backend status: \(error)")
+            }
+        }
+
+        if !authURL.isEmpty {
+            self.authURL = authURL
+            logger.log("🔗 Auth URL: \(authURL)")
 
             // Open auth URL in browser
-            if let url = URL(string: status.AuthURL) {
+            if let url = URL(string: authURL) {
                 logger.log("✅ Opening URL in browser: \(url)")
                 let success = NSWorkspace.shared.open(url)
                 logger.log("🔧 Browser open result: \(success)")
             } else {
-                logger.log("❌ Failed to create URL from: \(status.AuthURL)")
+                logger.log("❌ Failed to create URL from: \(authURL)")
             }
         } else {
-            logger.log("⚠️ Auth URL is empty!")
+            logger.log("⚠️ Auth URL is empty after polling!")
         }
 
         // Poll for authentication completion
@@ -167,5 +211,29 @@ private struct TSLogger: LogSink {
 
     func log(_ message: String) {
         print("[Auth] \(message)")
+    }
+}
+
+// MARK: - Helper Functions
+
+private func withTimeout<T: Sendable>(
+    seconds: TimeInterval, operation: @escaping @Sendable () async throws -> T
+) async throws -> T {
+    try await withThrowingTaskGroup(of: T.self) { group in
+        group.addTask {
+            try await operation()
+        }
+
+        group.addTask {
+            try await Task.sleep(for: .seconds(seconds))
+            throw TailscaleAuthError.authTimeout
+        }
+
+        guard let result = try await group.next() else {
+            throw TailscaleAuthError.authTimeout
+        }
+
+        group.cancelAll()
+        return result
     }
 }
