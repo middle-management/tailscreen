@@ -20,6 +20,7 @@ class TailscalePeerDiscovery: ObservableObject {
     @Published var isDiscovering = false
 
     private let cuplePort: UInt16 = 7447
+    private let metadataPort: UInt16 = 7448
     private let logger: TSLogger
     private var ipnWatcher: TailscaleIPNWatcher?
 
@@ -64,38 +65,58 @@ class TailscalePeerDiscovery: ObservableObject {
 
         logger.log("✓ Found \(peers.count) online peers")
 
-        // Check which peers are running Cuple (in parallel)
+        // Check which peers are running Cuple and fetch metadata (in parallel)
         var updatedPeers: [CuplePeer] = []
 
-        await withTaskGroup(of: (String, Bool).self) { group in
+        await withTaskGroup(of: (String, Bool, CupleMetadata?).self) { group in
             for peer in peers {
                 group.addTask {
                     let isRunning = await self.checkIfRunningCuple(
                         host: peer.tailscaleIP,
                         port: self.cuplePort
                     )
-                    return (peer.id, isRunning)
+
+                    // If running Cuple, fetch metadata
+                    var metadata: CupleMetadata? = nil
+                    if isRunning {
+                        do {
+                            metadata = try await CupleMetadataService.fetchMetadata(
+                                from: peer.tailscaleIP,
+                                port: self.metadataPort
+                            )
+                            self.logger.log("✓ Got metadata from \(peer.hostname)")
+                        } catch {
+                            self.logger.log("⚠️  \(peer.hostname) is running but no metadata: \(error.localizedDescription)")
+                        }
+                    }
+
+                    return (peer.id, isRunning, metadata)
                 }
             }
 
-            var cupleStatus: [String: Bool] = [:]
-            for await (peerId, isRunning) in group {
-                cupleStatus[peerId] = isRunning
+            var cupleData: [String: (Bool, CupleMetadata?)] = [:]
+            for await (peerId, isRunning, metadata) in group {
+                cupleData[peerId] = (isRunning, metadata)
             }
 
-            // Update peers with Cuple status
+            // Update peers with Cuple status and metadata
             for var peer in peers {
-                peer.isRunningCuple = cupleStatus[peer.id] ?? false
+                if let (isRunning, metadata) = cupleData[peer.id] {
+                    peer.isRunningCuple = isRunning
+                    peer.metadata = metadata
+                }
                 updatedPeers.append(peer)
             }
         }
 
-        // Only show peers that are running Cuple
-        let cuplePeers = updatedPeers.filter { $0.isRunningCuple }
+        // Only show peers that are running Cuple AND actively sharing
+        let sharingPeers = updatedPeers.filter {
+            $0.isRunningCuple && ($0.metadata?.isSharing ?? false)
+        }
 
-        logger.log("🎯 Found \(cuplePeers.count) peers running Cuple")
+        logger.log("🎯 Found \(sharingPeers.count) peers actively sharing")
 
-        availablePeers = cuplePeers
+        availablePeers = sharingPeers
     }
 
     /// Quick check if a peer is running Cuple by attempting to connect
@@ -200,7 +221,7 @@ class TailscalePeerDiscovery: ObservableObject {
         do {
             let metadata = try await CupleMetadataService.fetchMetadata(
                 from: peer.tailscaleIP,
-                port: cuplePort
+                port: metadataPort
             )
             return metadata
         } catch {

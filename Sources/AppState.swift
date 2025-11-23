@@ -32,6 +32,9 @@ class AppState: ObservableObject {
     // Metadata and requests
     @Published var metadataService = CupleMetadataService()
 
+    // HTTP server for metadata
+    private var httpServer: CupleHTTPServer?
+
     // Track if auto-login has been triggered
     private var hasTriggeredAutoLogin = false
     private var isLoggingIn = false
@@ -41,6 +44,12 @@ class AppState: ObservableObject {
         tailscaleAuth.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }.store(in: &cancellables)
+
+        // Initialize HTTP server (but don't start yet)
+        httpServer = CupleHTTPServer(port: 7448, metadataService: metadataService)
+
+        // Initialize metadata with isSharing: false
+        metadataService.updateMetadata(isSharing: false)
     }
 
     private var cancellables = Set<AnyCancellable>()
@@ -224,6 +233,12 @@ class AppState: ObservableObject {
             let ips = try await node.addrs()
             self.tailscaleIPs = [ips.ip4, ips.ip6].compactMap { $0 }
 
+            // Start HTTP metadata server
+            if let httpServer = self.httpServer {
+                try? await httpServer.start()
+                print("📡 [AppState] Metadata server started on port 7448")
+            }
+
             if !silent {
                 showAlertMessage(
                     title: "Login Successful",
@@ -291,6 +306,9 @@ class AppState: ObservableObject {
             if isConnected {
                 await disconnect()
             }
+
+            // Stop HTTP server
+            await httpServer?.stop()
 
             // Reset Tailscale state
             await server?.stop()

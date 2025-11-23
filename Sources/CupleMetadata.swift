@@ -144,7 +144,7 @@ class CupleMetadataService: ObservableObject {
     }
 
     /// Fetch metadata from a peer
-    static func fetchMetadata(from host: String, port: UInt16 = 7447) async throws -> CupleMetadata {
+    static func fetchMetadata(from host: String, port: UInt16 = 7448) async throws -> CupleMetadata {
         let url = URL(string: "http://\(host):\(port)/api/metadata")!
         let (data, response) = try await URLSession.shared.data(from: url)
 
