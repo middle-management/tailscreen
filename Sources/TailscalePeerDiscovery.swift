@@ -72,15 +72,16 @@ class TailscalePeerDiscovery: ObservableObject {
             for peer in peers {
                 group.addTask {
                     // Try to fetch metadata - if it works, Cuple is running
+                    self.logger.log("🔍 Attempting to fetch metadata from \(peer.hostname) (\(peer.tailscaleIP))...")
                     do {
                         let metadata = try await CupleMetadataService.fetchMetadata(
                             from: peer.tailscaleIP,
                             port: self.metadataPort
                         )
-                        self.logger.log("✓ Got metadata from \(peer.hostname)")
+                        self.logger.log("✓ Got metadata from \(peer.hostname): isSharing=\(metadata.isSharing)")
                         return (peer.id, metadata)
                     } catch {
-                        // No metadata = Cuple not running or not sharing
+                        self.logger.log("✗ Failed to get metadata from \(peer.hostname): \(error.localizedDescription)")
                         return (peer.id, nil)
                     }
                 }
