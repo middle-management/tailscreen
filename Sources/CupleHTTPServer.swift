@@ -42,15 +42,26 @@ actor CupleHTTPServer {
 
     private func handleConnection(_ conn: NWConnection) {
         conn.start(queue: .global(qos: .userInitiated))
+        print("🌐 [HTTP] New connection received")
 
         conn.receive(minimumIncompleteLength: 1, maximumLength: 4096) {
             [weak self] data, _, _, error in
-            guard let self = self, let data = data,
-                let request = String(data: data, encoding: .utf8)
-            else {
+
+            if let error = error {
+                print("❌ [HTTP] Connection error: \(error)")
                 conn.cancel()
                 return
             }
+
+            guard let self = self, let data = data,
+                let request = String(data: data, encoding: .utf8)
+            else {
+                print("❌ [HTTP] Failed to parse request")
+                conn.cancel()
+                return
+            }
+
+            print("📥 [HTTP] Request: \(request.prefix(100))...")
 
             Task {
                 // Parse request line (e.g., "GET /api/metadata HTTP/1.1")
@@ -76,6 +87,7 @@ actor CupleHTTPServer {
                     let jsonData = try await MainActor.run {
                         try metadataService.getMetadataJSON()
                     }
+                    print("✅ [HTTP] Sending metadata: \(jsonData.count) bytes")
                     await self.sendJSON(conn, data: jsonData)
                 } catch {
                     await self.sendResponse(conn, status: 500, body: "Failed to get metadata")
