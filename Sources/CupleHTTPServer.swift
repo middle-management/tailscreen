@@ -23,20 +23,16 @@ actor CupleHTTPServer {
 
         let params = NWParameters.tcp
         params.allowLocalEndpointReuse = true
-        params.requiredInterfaceType = .other  // Tailscale uses "other" interface type
+        params.acceptLocalOnly = false  // Accept connections from all interfaces
 
-        // If we have a Tailscale IP, bind to it specifically
-        let endpoint: NWEndpoint.Port
-        if let ip = tailscaleIP, let host = IPv4Address(ip) {
-            params.requiredLocalEndpoint = NWEndpoint.hostPort(
-                host: NWEndpoint.Host.ipv4(host),
-                port: NWEndpoint.Port(integerLiteral: port)
-            )
-            print("🌐 [HTTP] Binding to Tailscale IP: \(ip):\(port)")
+        // Don't restrict interface type - let it bind to all including Tailscale
+        // params.requiredInterfaceType = .other
+
+        if let ip = tailscaleIP {
+            print("🌐 [HTTP] Starting server for Tailscale IP: \(ip):\(port)")
         }
-        endpoint = NWEndpoint.Port(integerLiteral: port)
 
-        guard let listener = try? NWListener(using: params, on: endpoint) else {
+        guard let listener = try? NWListener(using: params, on: NWEndpoint.Port(integerLiteral: port)) else {
             throw NSError(
                 domain: "CupleHTTPServer", code: 1,
                 userInfo: [NSLocalizedDescriptionKey: "Failed to create listener"])
@@ -50,7 +46,7 @@ actor CupleHTTPServer {
         }
 
         listener.start(queue: .global(qos: .userInitiated))
-        print("✅ Metadata server listening on port \(port)")
+        print("✅ Metadata server listening on 0.0.0.0:\(port) (all interfaces)")
     }
 
     private func handleConnection(_ conn: NWConnection) {
