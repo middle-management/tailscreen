@@ -1,8 +1,8 @@
 import VideoToolbox
 import CoreMedia
 import CoreVideo
+import Foundation
 
-// Global C callback function for VideoToolbox
 private func compressionOutputCallback(
     outputCallbackRefCon: UnsafeMutableRawPointer?,
     sourceFrameRefCon: UnsafeMutableRawPointer?,
@@ -15,13 +15,30 @@ private func compressionOutputCallback(
     encoder.handleEncodedFrame(status: status, infoFlags: infoFlags, sampleBuffer: sampleBuffer)
 }
 
-class VideoEncoder {
-    private var session: VTCompressionSession?
-    private var frameCount: Int64 = 0
+final class VideoEncoder: @unchecked Sendable {
+    /// Emits the AVCC-formatted compressed frame plus its keyframe flag.
+    /// Fires from VideoToolbox's encoder thread; receivers must be thread-safe.
     var onEncodedData: ((Data, Bool) -> Void)?
 
-    func setup(width: Int, height: Int) throws {
-        var session: VTCompressionSession?
+    /// Emits H.264 parameter sets (SPS, PPS) on every IDR so late joiners
+    /// can rebuild a decoder session. Fires before the matching frame.
+    var onParameterSets: ((_ sps: Data, _ pps: Data) -> Void)?
+
+    private let lock = NSLock()
+    private var session: VTCompressionSession?
+    private var frameCount: Int64 = 0
+    private var fps: Int32 = 60
+    private var forceNextKeyframe = false
+    private var lastSPS: Data?
+    private var lastPPS: Data?
+
+    /// - Parameters:
+    ///   - width: pixel width
+    ///   - height: pixel height
+    ///   - fps: target frame rate
+    ///   - bitsPerPixel: quality knob; ~0.15 gives a good balance for screen content at 60fps.
+    func setup(width: Int, height: Int, fps: Int32 = 60, bitsPerPixel: Double = 0.15) throws {
+        var newSession: VTCompressionSession?
 
         let status = VTCompressionSessionCreate(
             allocator: kCFAllocatorDefault,
@@ -33,54 +50,71 @@ class VideoEncoder {
             compressedDataAllocator: nil,
             outputCallback: compressionOutputCallback,
             refcon: Unmanaged.passUnretained(self).toOpaque(),
-            compressionSessionOut: &session
+            compressionSessionOut: &newSession
         )
 
-        guard status == noErr, let session = session else {
+        guard status == noErr, let newSession = newSession else {
             throw VideoEncoderError.sessionCreationFailed
         }
 
-        self.session = session
+        VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue)
+        VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_ProfileLevel, value: kVTProfileLevel_H264_High_AutoLevel)
+        VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
+        VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: fps as CFNumber)
 
-        // Configure for high quality and low latency
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue)
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ProfileLevel, value: kVTProfileLevel_H264_High_AutoLevel)
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
+        let bitrate = Int(Double(width * height) * bitsPerPixel * Double(fps))
+        VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_AverageBitRate, value: bitrate as CFNumber)
 
-        // Set quality
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_Quality, value: 0.8 as CFNumber)
+        // IDRs are triggered on demand (new viewer, explicit refresh). This
+        // interval is a safety net, not a cadence.
+        VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: (fps * 10) as CFNumber)
 
-        // Set average bitrate (higher for better quality)
-        let bitrate = width * height * 4 // ~4 bits per pixel for high quality
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate, value: bitrate as CFNumber)
+        VTCompressionSessionPrepareToEncodeFrames(newSession)
 
-        // Set keyframe interval
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: 60 as CFNumber)
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, value: 2.0 as CFNumber)
+        lock.lock()
+        session = newSession
+        self.fps = fps
+        frameCount = 0
+        forceNextKeyframe = true  // first frame out should be an IDR
+        lastSPS = nil
+        lastPPS = nil
+        lock.unlock()
+    }
 
-        VTCompressionSessionPrepareToEncodeFrames(session)
+    /// Request that the next encoded frame be an IDR. Safe from any thread.
+    func requestKeyframe() {
+        lock.lock()
+        forceNextKeyframe = true
+        lock.unlock()
     }
 
     func encode(pixelBuffer: CVPixelBuffer) {
-        guard let session = session else { return }
-
-        let presentationTimeStamp = CMTime(value: frameCount, timescale: 60)
+        lock.lock()
+        guard let session = session else {
+            lock.unlock()
+            return
+        }
+        let pts = CMTime(value: frameCount, timescale: fps)
         frameCount += 1
+        var frameProps: CFDictionary?
+        if forceNextKeyframe {
+            forceNextKeyframe = false
+            frameProps = [kVTEncodeFrameOptionKey_ForceKeyFrame: kCFBooleanTrue] as CFDictionary
+        }
+        lock.unlock()
 
         var flags: VTEncodeInfoFlags = []
-
         let status = VTCompressionSessionEncodeFrame(
             session,
             imageBuffer: pixelBuffer,
-            presentationTimeStamp: presentationTimeStamp,
+            presentationTimeStamp: pts,
             duration: .invalid,
-            frameProperties: nil,
+            frameProperties: frameProps,
             sourceFrameRefcon: nil,
             infoFlagsOut: &flags
         )
-
         if status != noErr {
-            print("Encoding frame failed: \(status)")
+            print("VideoEncoder: encode failed (\(status))")
         }
     }
 
@@ -91,39 +125,81 @@ class VideoEncoder {
             return
         }
 
-        // Check if this is a keyframe
         let isKeyframe = !sampleBuffer.isNotSync
+        let paramCallback = onParameterSets
+        let dataCallback = onEncodedData
 
-        // Get the encoded data
-        guard let dataBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else {
-            return
+        if isKeyframe, let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer),
+           let (sps, pps) = Self.extractParameterSets(from: formatDescription) {
+            lock.lock()
+            lastSPS = sps
+            lastPPS = pps
+            lock.unlock()
+            paramCallback?(sps, pps)
         }
 
+        guard let dataBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else { return }
         let length = CMBlockBufferGetDataLength(dataBuffer)
         var data = Data(count: length)
-
-        _ = data.withUnsafeMutableBytes { ptr in
-            CMBlockBufferCopyDataBytes(dataBuffer, atOffset: 0, dataLength: length, destination: ptr.baseAddress!)
+        let copyStatus = data.withUnsafeMutableBytes { ptr -> OSStatus in
+            guard let base = ptr.baseAddress else { return -1 }
+            return CMBlockBufferCopyDataBytes(dataBuffer, atOffset: 0, dataLength: length, destination: base)
         }
+        guard copyStatus == noErr else { return }
 
-        onEncodedData?(data, isKeyframe)
+        dataCallback?(data, isKeyframe)
+    }
+
+    private static func extractParameterSets(from formatDescription: CMFormatDescription) -> (sps: Data, pps: Data)? {
+        var spsPtr: UnsafePointer<UInt8>?
+        var spsSize = 0
+        var count = 0
+        var nalHeaderLength: Int32 = 0
+
+        let spsStatus = CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
+            formatDescription, parameterSetIndex: 0,
+            parameterSetPointerOut: &spsPtr, parameterSetSizeOut: &spsSize,
+            parameterSetCountOut: &count, nalUnitHeaderLengthOut: &nalHeaderLength
+        )
+        guard spsStatus == noErr, let sps = spsPtr, count >= 2 else { return nil }
+
+        var ppsPtr: UnsafePointer<UInt8>?
+        var ppsSize = 0
+        let ppsStatus = CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
+            formatDescription, parameterSetIndex: 1,
+            parameterSetPointerOut: &ppsPtr, parameterSetSizeOut: &ppsSize,
+            parameterSetCountOut: nil, nalUnitHeaderLengthOut: nil
+        )
+        guard ppsStatus == noErr, let pps = ppsPtr else { return nil }
+
+        return (Data(bytes: sps, count: spsSize), Data(bytes: pps, count: ppsSize))
+    }
+
+    /// Last emitted parameter sets, if any. Thread-safe.
+    var cachedParameterSets: (sps: Data, pps: Data)? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let sps = lastSPS, let pps = lastPPS else { return nil }
+        return (sps, pps)
     }
 
     func shutdown() {
-        if let session = session {
-            VTCompressionSessionInvalidate(session)
-        }
+        lock.lock()
+        let s = session
         session = nil
+        lock.unlock()
+        if let s = s {
+            VTCompressionSessionInvalidate(s)
+        }
     }
 }
 
 extension CMSampleBuffer {
-    var isNotSync: Bool {
+    fileprivate var isNotSync: Bool {
         guard let attachments = CMSampleBufferGetSampleAttachmentsArray(self, createIfNecessary: false) as? [[CFString: Any]],
               let attachment = attachments.first else {
             return true
         }
-
         return attachment[kCMSampleAttachmentKey_NotSync] as? Bool ?? false
     }
 }

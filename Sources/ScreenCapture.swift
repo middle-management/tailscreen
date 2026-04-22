@@ -22,11 +22,14 @@ class ScreenCapture: NSObject {
             throw ScreenCaptureError.noDisplayAvailable
         }
 
-        // Configure the stream
+        // Capture at the display's native pixel resolution. SCDisplay reports
+        // width/height in points, so we multiply by the main screen's backing
+        // scale factor (1 on non-Retina, 2 or 3 on Retina).
+        let scale = Int(NSScreen.main?.backingScaleFactor ?? 1)
         let config = SCStreamConfiguration()
-        config.width = Int(display.width) * 2 // Retina resolution
-        config.height = Int(display.height) * 2
-        config.minimumFrameInterval = CMTime(value: 1, timescale: 60) // 60 FPS
+        config.width = Int(display.width) * scale
+        config.height = Int(display.height) * scale
+        config.minimumFrameInterval = CMTime(value: 1, timescale: 60)
         config.pixelFormat = kCVPixelFormatType_32BGRA
         config.showsCursor = true
         config.queueDepth = 5
