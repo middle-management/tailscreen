@@ -118,13 +118,16 @@ final class VideoDecoder: @unchecked Sendable {
         _ = isKeyframe  // VT infers sync/no-sync from NAL types; we use the flag only for UI state.
 
         var flagsOut: VTDecodeInfoFlags = []
-        VTDecompressionSessionDecodeFrame(
+        let decodeStatus = VTDecompressionSessionDecodeFrame(
             session,
             sampleBuffer: sampleBuffer,
             flags: [._EnableAsynchronousDecompression],
             frameRefcon: nil,
             infoFlagsOut: &flagsOut
         )
+        if decodeStatus != noErr {
+            print("VideoDecoder: DecodeFrame failed status=\(decodeStatus) (isKeyframe=\(isKeyframe), \(data.count)B)")
+        }
     }
 
     private func createDecompressionSession(formatDescription: CMFormatDescription) {
@@ -137,10 +140,16 @@ final class VideoDecoder: @unchecked Sendable {
 
         var outputCallback = VTDecompressionOutputCallbackRecord(
             decompressionOutputCallback: { refcon, _, status, _, imageBuffer, _, _ in
-                guard status == noErr,
-                      let imageBuffer = imageBuffer,
-                      let refcon = refcon else { return }
+                guard let refcon = refcon else { return }
                 let decoder = Unmanaged<VideoDecoder>.fromOpaque(refcon).takeUnretainedValue()
+                if status != noErr {
+                    print("VideoDecoder: output callback reported status=\(status)")
+                    return
+                }
+                guard let imageBuffer = imageBuffer else {
+                    print("VideoDecoder: output callback got nil imageBuffer")
+                    return
+                }
                 decoder.onDecodedFrame?(imageBuffer)
             },
             decompressionOutputRefCon: Unmanaged.passUnretained(self).toOpaque()

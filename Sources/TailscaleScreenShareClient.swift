@@ -115,19 +115,25 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     private func displayFrame(_ pixelBuffer: CVPixelBuffer) {
         let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
         let context = CIContext()
-        guard let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else { return }
+        guard let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else {
+            print("Client: displayFrame failed to build CGImage")
+            return
+        }
 
         Task { @MainActor [weak self, cgImage] in
             guard let self = self else { return }
 
-            if self.window == nil {
+            let firstFrame = (self.window == nil)
+            if firstFrame {
+                print("Client: creating viewer window (first decoded frame \(cgImage.width)x\(cgImage.height))")
                 self.createWindow()
             }
 
             let image = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
             self.imageView?.image = image
 
-            if let window = self.window, !window.isVisible {
+            guard let window = self.window else { return }
+            if !window.isVisible {
                 let screenFrame = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1920, height: 1080)
                 var windowSize = image.size
                 let maxWidth = screenFrame.width * 0.9
@@ -149,7 +155,13 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                     y: screenFrame.midY - windowSize.height / 2
                 )
                 window.setFrame(NSRect(origin: origin, size: windowSize), display: true)
+                // MenuBarExtra apps default to .accessory activation policy, so
+                // windows can exist but don't necessarily come to the front.
+                // Activate the app + raise the window so the viewer is visible.
+                NSApp.activate(ignoringOtherApps: true)
                 window.makeKeyAndOrderFront(nil)
+                window.orderFrontRegardless()
+                print("Client: viewer window ordered front (size=\(Int(windowSize.width))x\(Int(windowSize.height)))")
             }
         }
     }
