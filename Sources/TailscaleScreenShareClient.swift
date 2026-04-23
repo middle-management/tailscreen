@@ -218,7 +218,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
             if self.window == nil {
                 self.createWindow(initialSize: Self.size(of: format))
             }
-            self.displayLayer?.enqueue(sampleBuffer)
+            self.displayLayer?.sampleBufferRenderer.enqueue(sampleBuffer)
         }
     }
 
@@ -305,7 +305,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         }
 
         await MainActor.run {
-            self.displayLayer?.flushAndRemoveImage()
+            self.displayLayer?.sampleBufferRenderer.flush(removingDisplayedImage: true) { }
             self.displayLayer = nil
             self.window?.close()
             self.window = nil
