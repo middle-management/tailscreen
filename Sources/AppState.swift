@@ -244,9 +244,14 @@ class AppState: ObservableObject {
         try? FileManager.default.createDirectory(
             atPath: statePath, withIntermediateDirectories: true)
 
+        // Suffix "-auth" so this node doesn't share a hostname with the
+        // screen-share server node. Two tsnet nodes on the same tailnet
+        // with identical hostnames confuse routing/probing — peers
+        // receive `connection refused` on dial even though the server
+        // is actively listening.
         let baseHostname = Host.current().localizedName ?? "cuple"
         let config = Configuration(
-            hostName: "\(baseHostname)\(CupleInstance.hostnameSuffix)",
+            hostName: "\(baseHostname)\(CupleInstance.hostnameSuffix)-auth",
             path: statePath,
             authKey: nil,
             controlURL: kDefaultControlURL,
