@@ -19,6 +19,8 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     private var displayLayer: AVSampleBufferDisplayLayer?
     private var formatDescription: CMFormatDescription?
     private var isConnected = false
+    private var isDisconnecting = false
+    private var windowCloseObserver: NSObjectProtocol?
     private let logger: TSLogger
     private var receiveTask: Task<Void, Never>?
 
@@ -278,7 +280,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         window.orderFrontRegardless()
         print("Client: viewer window ordered front (size=\(Int(windowSize.width))x\(Int(windowSize.height)))")
 
-        NotificationCenter.default.addObserver(
+        self.windowCloseObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.willCloseNotification,
             object: window,
             queue: .main
@@ -290,8 +292,21 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     }
 
     func disconnect() async {
+        // Idempotent. Disconnect can fire from: AppState.disconnect menu
+        // click, the window's close button (via willCloseNotification), and
+        // the receiveLoop's error path — all at once during teardown.
+        if isDisconnecting { return }
+        isDisconnecting = true
+
         isConnected = false
-        receiveTask?.cancel()
+
+        // Stop the receive loop and wait for it to exit BEFORE closing the
+        // Tailscale node. Closing the node rips the underlying fd out from
+        // under a concurrent read and segfaults tsnet.
+        if let receiveTask = receiveTask {
+            receiveTask.cancel()
+            _ = await receiveTask.value
+        }
         receiveTask = nil
 
         if let connection = connection {
@@ -305,7 +320,17 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         }
 
         await MainActor.run {
+            // Detach the willCloseNotification observer BEFORE closing the
+            // window so its callback can't re-enter disconnect().
+            if let obs = self.windowCloseObserver {
+                NotificationCenter.default.removeObserver(obs)
+                self.windowCloseObserver = nil
+            }
+            // Remove the layer from its superlayer before nil-ing — flushing
+            // a detached renderer is fine, but we want to stop any in-flight
+            // enqueues from touching it.
             self.displayLayer?.sampleBufferRenderer.flush(removingDisplayedImage: true) { }
+            self.displayLayer?.removeFromSuperlayer()
             self.displayLayer = nil
             self.window?.close()
             self.window = nil
