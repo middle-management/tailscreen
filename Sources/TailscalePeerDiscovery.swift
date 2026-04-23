@@ -64,17 +64,29 @@ class TailscalePeerDiscovery: ObservableObject {
 
         logger.log("✓ Found \(peers.count) online peers")
 
-        // Check which peers are running Cuple (in parallel)
+        // Check which peers are running Cuple (in parallel).
+        // Uses the existing node to dial; must NOT spin up a new TailscaleNode
+        // per probe — that takes several seconds per peer and blows the 2s timeout.
+        guard let tailscaleHandle = await node.tailscale else {
+            logger.log("⚠️ node has no tailscale handle; skipping Cuple probe")
+            availablePeers = []
+            return
+        }
+
         var updatedPeers: [CuplePeer] = []
 
         await withTaskGroup(of: (String, Bool).self) { group in
             for peer in peers {
+                let ip = peer.tailscaleIP
+                let id = peer.id
                 group.addTask {
-                    let isRunning = await self.checkIfRunningCuple(
-                        host: peer.tailscaleIP,
-                        port: self.cuplePort
+                    let isRunning = await Self.probeCuplePort(
+                        tailscale: tailscaleHandle,
+                        host: ip,
+                        port: self.cuplePort,
+                        logger: self.logger
                     )
-                    return (peer.id, isRunning)
+                    return (id, isRunning)
                 }
             }
 
@@ -98,27 +110,36 @@ class TailscalePeerDiscovery: ObservableObject {
         availablePeers = cuplePeers
     }
 
-    /// Quick check if a peer is running Cuple by attempting to connect
-    private func checkIfRunningCuple(host: String, port: UInt16) async -> Bool {
-        // Simple connection test - try to connect and immediately disconnect
-        // A more sophisticated approach would send a discovery packet
+    /// Opens a raw TCP connection to `host:port` over the provided tsnet handle.
+    /// Uses the caller's live node — never spins up a new one per probe.
+    private static func probeCuplePort(
+        tailscale: TailscaleHandle,
+        host: String,
+        port: UInt16,
+        logger: LogSink
+    ) async -> Bool {
         do {
-            // Create a temporary client to test the connection
-            let testClient = TailscaleScreenShareClient()
-
-            // Try to connect with a short timeout
-            // If Cuple is running, the connection will succeed
-            try await withTimeout(seconds: 2) {
-                try await testClient.connect(to: host, port: port)
+            let conn = try await OutgoingConnection(
+                tailscale: tailscale,
+                to: "\(host):\(port)",
+                proto: .tcp,
+                logger: logger
+            )
+            let connected: Void = try await withThrowingTaskGroup(of: Void.self) { group in
+                group.addTask { try await conn.connect() }
+                group.addTask {
+                    try await Task.sleep(for: .seconds(2))
+                    throw TimeoutError()
+                }
+                defer { group.cancelAll() }
+                _ = try await group.next()
+                return ()
             }
-
-            // Disconnect immediately
-            await testClient.disconnect()
-
-            logger.log("✓ \(host) is running Cuple")
+            _ = connected
+            await conn.close()
+            logger.log("✓ \(host):\(port) is running Cuple")
             return true
         } catch {
-            // Connection failed - Cuple is not running on this peer
             return false
         }
     }
