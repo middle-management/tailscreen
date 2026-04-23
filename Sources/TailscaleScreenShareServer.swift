@@ -18,6 +18,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     private var lastWidth: Int = 0
     private var lastHeight: Int = 0
     private var isRunning = false
+    private var didLogFirstFrame = false
     private let logger: TSLogger
 
     private let clients = OSAllocatedUnfairLock<[UUID: ClientSender]>(initialState: [:])
@@ -72,13 +73,21 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             await self?.acceptConnections()
         }
 
-        screenCapture = ScreenCapture()
-        try? await screenCapture?.start()
+        let capture = ScreenCapture()
+        // Wire the callback BEFORE starting so we don't drop the first few
+        // frames while the assignment hops over to MainActor.
+        capture.onFrameCaptured = { [weak self] pixelBuffer in
+            self?.handleCapturedFrame(pixelBuffer)
+        }
+        screenCapture = capture
 
-        await MainActor.run {
-            self.screenCapture?.onFrameCaptured = { [weak self] pixelBuffer in
-                self?.handleCapturedFrame(pixelBuffer)
-            }
+        do {
+            try await capture.start()
+            print("ScreenCapture started")
+        } catch {
+            // Surface the error instead of silently swallowing it. Most common
+            // cause on first run: macOS Screen Recording permission missing.
+            print("ERROR: ScreenCapture failed to start: \(error)")
         }
     }
 
@@ -122,6 +131,10 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
 
     private func handleCapturedFrame(_ pixelBuffer: CVPixelBuffer) {
         guard isRunning else { return }
+        if !didLogFirstFrame {
+            didLogFirstFrame = true
+            print("First frame received from ScreenCapture")
+        }
         let hasClients = clients.withLock { !$0.isEmpty }
         guard hasClients else { return }
 
