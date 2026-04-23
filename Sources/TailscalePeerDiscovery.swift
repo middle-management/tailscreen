@@ -112,6 +112,11 @@ class TailscalePeerDiscovery: ObservableObject {
 
     /// Opens a raw TCP connection to `host:port` over the provided tsnet handle.
     /// Uses the caller's live node — never spins up a new one per probe.
+    ///
+    /// The timeout is intentionally generous: on a cold netmap, the very first
+    /// dial to a peer can block a few seconds while tsnet sorts out the path,
+    /// and a 2s window produced false negatives where the dial eventually
+    /// succeeded server-side but after discovery had already given up.
     private static func probeCuplePort(
         tailscale: TailscaleHandle,
         host: String,
@@ -128,7 +133,7 @@ class TailscalePeerDiscovery: ObservableObject {
             let connected: Void = try await withThrowingTaskGroup(of: Void.self) { group in
                 group.addTask { try await conn.connect() }
                 group.addTask {
-                    try await Task.sleep(for: .seconds(2))
+                    try await Task.sleep(for: .seconds(8))
                     throw TimeoutError()
                 }
                 defer { group.cancelAll() }
