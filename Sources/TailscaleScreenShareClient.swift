@@ -332,11 +332,12 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                 NotificationCenter.default.removeObserver(obs)
                 self.windowCloseObserver = nil
             }
-            // Remove the layer from its superlayer before nil-ing — flushing
-            // a detached renderer is fine, but we want to stop any in-flight
-            // enqueues from touching it.
-            self.displayLayer?.sampleBufferRenderer.flush(removingDisplayedImage: true) { }
-            self.displayLayer?.removeFromSuperlayer()
+            // Just drop our references. Closing the NSWindow cascades release
+            // of its contentView, which releases the AVSampleBufferDisplayLayer
+            // and its underlying renderer at a time when no in-flight enqueue
+            // can still touch them. Calling flush() + removeFromSuperlayer()
+            // ourselves here raced with pending enqueueFrame Tasks and caused
+            // a SIGSEGV in objc_autoreleasePoolPop on the main queue.
             self.displayLayer = nil
             self.window?.close()
             self.window = nil
