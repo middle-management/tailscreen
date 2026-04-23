@@ -32,7 +32,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
 
         let statePath = path ?? {
             let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            return appSupport.appendingPathComponent("Cuple/tailscale").path
+            return appSupport.appendingPathComponent("Cuple/tailscale\(CupleInstance.stateSuffix)").path
         }()
         try? FileManager.default.createDirectory(atPath: statePath, withIntermediateDirectories: true)
 

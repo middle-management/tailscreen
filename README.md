@@ -85,17 +85,17 @@ To test like you have two separate machines:
 
 **Terminal 1:**
 ```bash
-./test-local.sh
+CUPLE_INSTANCE=1 .build/debug/Cuple
 # Click "Start Sharing" when Cuple opens
 ```
 
 **Terminal 2:**
 ```bash
-.build/debug/Cuple
+CUPLE_INSTANCE=2 .build/debug/Cuple
 # Click "Browse Shares..." to find the first instance
 ```
 
-Both instances will create separate ephemeral Tailscale nodes on your tailnet, appearing as different devices.
+`CUPLE_INSTANCE` suffixes the Tailscale state directory and hostname so the two processes register as distinct tailnet nodes. Without it, both instances share `~/Library/Application Support/Cuple/tailscale`, get the same machine key, and the browser sees zero peers because it's looking at its own node.
 
 **Note:** This tests the full Tailscale integration and peer discovery, but doesn't test actual network traversal or NAT punch-through since both instances are on the same machine.
 

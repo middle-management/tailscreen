@@ -57,7 +57,7 @@ class AppState: ObservableObject {
             // If Tailscale is already initialized, just start sharing
             // Otherwise, initialize it first
             if server == nil {
-                let hostname = Host.current().localizedName ?? "cuple-share"
+                let hostname = "\(Host.current().localizedName ?? "cuple-share")\(CupleInstance.hostnameSuffix)"
                 let srv = TailscaleScreenShareServer()
                 server = srv
 
@@ -68,7 +68,7 @@ class AppState: ObservableObject {
                 tailscaleIPs = [ips.ip4, ips.ip6].compactMap { $0 }
             }
 
-            let hostname = Host.current().localizedName ?? "cuple-share"
+            let hostname = "\(Host.current().localizedName ?? "cuple-share")\(CupleInstance.hostnameSuffix)"
 
             // Update metadata
             metadataService.updateMetadata(isSharing: true, shareName: "\(hostname)'s Screen")
@@ -246,21 +246,21 @@ class AppState: ObservableObject {
             return node
         }
 
-        // Determine state directory
+        // Determine state directory (with per-instance suffix for local testing)
         let statePath = {
             let appSupport = FileManager.default.urls(
                 for: .applicationSupportDirectory, in: .userDomainMask
             ).first!
-            return appSupport.appendingPathComponent("Cuple/tailscale").path
+            return appSupport.appendingPathComponent("Cuple/tailscale\(CupleInstance.stateSuffix)").path
         }()
 
         // Create directory if needed
         try? FileManager.default.createDirectory(
             atPath: statePath, withIntermediateDirectories: true)
 
-        // Create Tailscale configuration
+        let baseHostname = Host.current().localizedName ?? "cuple"
         let config = Configuration(
-            hostName: Host.current().localizedName ?? "cuple",
+            hostName: "\(baseHostname)\(CupleInstance.hostnameSuffix)",
             path: statePath,
             authKey: nil,
             controlURL: kDefaultControlURL,
