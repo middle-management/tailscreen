@@ -74,13 +74,6 @@ class AppState: ObservableObject {
             metadataService.updateMetadata(isSharing: true, shareName: "\(hostname)'s Screen")
 
             isSharing = true
-
-            let ipList = tailscaleIPs.joined(separator: "\n")
-            showAlertMessage(
-                title: "Sharing Started",
-                message:
-                    "Your screen is being shared via Tailscale!\n\nYour addresses:\n\(ipList)\n\nOthers can connect using your Tailscale hostname: \(hostname)"
-            )
         } catch {
             showAlertMessage(
                 title: "Error", message: "Failed to start sharing: \(error.localizedDescription)")
@@ -99,7 +92,6 @@ class AppState: ObservableObject {
         peerDiscovery?.stopRealTimeMonitoring()
 
         isSharing = false
-        showAlertMessage(title: "Sharing Stopped", message: "Screen sharing has been stopped.")
     }
 
     func connect(to host: String) async {
@@ -109,8 +101,6 @@ class AppState: ObservableObject {
             client = TailscaleScreenShareClient()
             try await client?.connect(to: host, port: 7447)
             isConnected = true
-            showAlertMessage(
-                title: "Connected", message: "Successfully connected to \(host) via Tailscale")
         } catch {
             showAlertMessage(
                 title: "Connection Failed",
@@ -127,7 +117,6 @@ class AppState: ObservableObject {
         await client?.disconnect()
         client = nil
         isConnected = false
-        showAlertMessage(title: "Disconnected", message: "Disconnected from remote screen.")
     }
 
     func discoverPeers() async {
@@ -160,12 +149,8 @@ class AppState: ObservableObject {
                 }
             }
 
-            if availablePeers.isEmpty {
-                showAlertMessage(
-                    title: "No Shares Found",
-                    message: "No other Cuple instances are currently sharing on your tailnet."
-                )
-            }
+            // Empty list is already reflected inline in the Browse sheet —
+            // no popup needed.
         } catch {
             showAlertMessage(title: "Discovery Failed", message: error.localizedDescription)
         }
@@ -224,12 +209,9 @@ class AppState: ObservableObject {
             let ips = try await node.addrs()
             self.tailscaleIPs = [ips.ip4, ips.ip6].compactMap { $0 }
 
-            if !silent {
-                showAlertMessage(
-                    title: "Login Successful",
-                    message: "You are now logged in to Tailscale!"
-                )
-            }
+            // Login success is visible via the menu's user profile section;
+            // a popup just interrupts the flow the user was already in.
+            _ = silent
         } catch {
             print("📱 [AppState] Login error: \(error)")
             showAlertMessage(
@@ -304,10 +286,6 @@ class AppState: ObservableObject {
             node = nil
             tailscaleIPs = []
 
-            showAlertMessage(
-                title: "Signed Out",
-                message: "You have been signed out of Tailscale."
-            )
         } catch {
             showAlertMessage(
                 title: "Sign Out Failed",
@@ -323,10 +301,6 @@ class AppState: ObservableObject {
                 to: peer.tailscaleIP,
                 port: 7447,
                 from: hostname
-            )
-            showAlertMessage(
-                title: "Request Sent",
-                message: "Requested \(peer.hostname) to start sharing their screen."
             )
         } catch {
             showAlertMessage(
