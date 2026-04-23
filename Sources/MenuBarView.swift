@@ -418,7 +418,6 @@ struct BrowseSharesSheet: View {
                     }
                     .keyboardShortcut(.return)
                     .buttonStyle(.borderedProminent)
-                    .buttonStyle(.borderless)
                     .controlSize(.large)
                 }
             }
@@ -441,73 +440,79 @@ struct PeerRow: View {
     @State private var isHovered = false
 
     var body: some View {
-        HStack(spacing: 12) {
-            // Computer icon with online status indicator
-            ZStack(alignment: .topTrailing) {
-                Image(systemName: "desktopcomputer")
-                    .font(.system(size: 20))
-                    .foregroundStyle(peer.isOnline ? .primary : .secondary)
-                    .frame(width: 28)
+        // Whole-row button. MenuBarExtra(.window) dismisses its popover on
+        // any click that doesn't hit an interactive control; gaps around a
+        // nested Connect button (icon area, hostname, spacer) fell through
+        // to the popover and closed the Browse sheet. Making the row itself
+        // the button fixes that and also lets the user click anywhere on
+        // the row to connect.
+        Button(action: onConnect) {
+            HStack(spacing: 12) {
+                // Computer icon with online status indicator
+                ZStack(alignment: .topTrailing) {
+                    Image(systemName: "desktopcomputer")
+                        .font(.system(size: 20))
+                        .foregroundStyle(peer.isOnline ? .primary : .secondary)
+                        .frame(width: 28)
 
-                // Online status dot
-                Circle()
-                    .fill(peer.isOnline ? Color.green : Color.gray)
-                    .frame(width: 8, height: 8)
-                    .offset(x: 2, y: -2)
-            }
+                    // Online status dot
+                    Circle()
+                        .fill(peer.isOnline ? Color.green : Color.gray)
+                        .frame(width: 8, height: 8)
+                        .offset(x: 2, y: -2)
+                }
 
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 4) {
-                    Text(peer.hostname)
-                        .font(.system(size: 13, weight: .medium))
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 4) {
+                        Text(peer.hostname)
+                            .font(.system(size: 13, weight: .medium))
 
-                    if !peer.isOnline {
-                        Text("(offline)")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.tertiary)
+                        if !peer.isOnline {
+                            Text("(offline)")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+
+                    // Show metadata if available
+                    if let metadata = peer.metadata {
+                        Text(
+                            "\(metadata.shareName) • \(metadata.screenResolution.width)×\(metadata.screenResolution.height)"
+                        )
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                    } else {
+                        Text(peer.tailscaleIP)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.secondary)
                     }
                 }
 
-                // Show metadata if available
-                if let metadata = peer.metadata {
-                    Text(
-                        "\(metadata.shareName) • \(metadata.screenResolution.width)×\(metadata.screenResolution.height)"
-                    )
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-                } else {
-                    Text(peer.tailscaleIP)
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                }
-            }
+                Spacer()
 
-            Spacer()
-
-            // Connect button
-            Button("Connect") {
-                onConnect()
+                Image(systemName: "play.circle.fill")
+                    .font(.system(size: 18))
+                    .foregroundStyle(peer.isOnline ? Color.accentColor : Color.secondary)
             }
-            .buttonStyle(.borderedProminent)
-            .buttonStyle(.borderless)
-            .controlSize(.small)
-            .disabled(!peer.isOnline)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(
+                        isHovered
+                            ? Color(nsColor: .controlBackgroundColor)
+                            : Color(nsColor: .controlBackgroundColor).opacity(0.5))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(
+                        Color(nsColor: .separatorColor).opacity(peer.isOnline ? 0.3 : 0.15),
+                        lineWidth: 0.5)
+            )
+            .contentShape(Rectangle())
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(
-                    isHovered
-                        ? Color(nsColor: .controlBackgroundColor)
-                        : Color(nsColor: .controlBackgroundColor).opacity(0.5))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(
-                    Color(nsColor: .separatorColor).opacity(peer.isOnline ? 0.3 : 0.15),
-                    lineWidth: 0.5)
-        )
+        .buttonStyle(.plain)
+        .disabled(!peer.isOnline)
         .opacity(peer.isOnline ? 1.0 : 0.6)
         .onHover { hovering in
             isHovered = hovering
