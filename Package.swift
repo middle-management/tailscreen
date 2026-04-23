@@ -26,6 +26,14 @@ let package = Package(
             linkerSettings: [
                 .unsafeFlags(["-L", "TailscaleKitPackage/lib"])
             ]
+        ),
+        .testTarget(
+            name: "CupleTests",
+            dependencies: ["Cuple"],
+            path: "Tests/CupleTests",
+            linkerSettings: [
+                .unsafeFlags(["-L", "TailscaleKitPackage/lib"])
+            ]
         )
     ]
 )
