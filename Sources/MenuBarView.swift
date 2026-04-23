@@ -65,20 +65,14 @@ struct MenuBarView: View {
 
             // Sharing section - only show if authenticated
             if appState.tailscaleAuth.isAuthenticated {
-                Group {
-                    if appState.isSharing {
-                        MenuButton("Stop Sharing", systemImage: "stop.circle") {
-                            Task {
-                                await appState.stopSharing()
-                            }
-                        }
-                    } else {
-                        MenuButton("Start Sharing", systemImage: "play.circle") {
-                            Task {
-                                await appState.startSharing()
-                            }
+                if appState.isSharing {
+                    MenuButton("Stop Sharing", systemImage: "stop.circle") {
+                        Task {
+                            await appState.stopSharing()
                         }
                     }
+                } else {
+                    DisplayPickerSection()
                 }
 
                 Divider()
@@ -217,6 +211,87 @@ struct MenuButton: View {
         .background(
             isHovered ? Color(nsColor: .selectedContentBackgroundColor).opacity(0.5) : Color.clear
         )
+        .onHover { hovering in
+            isHovered = hovering
+        }
+    }
+}
+
+/// Display picker rendered inline in the menu when the user is not yet
+/// sharing. One row per attached display; clicking a row starts sharing
+/// that specific display. Refreshes on appear to catch hot-plug changes.
+struct DisplayPickerSection: View {
+    @EnvironmentObject var appState: AppState
+    @State private var didKickOff = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                Image(systemName: "rectangle.on.rectangle")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                Text("Share a Display")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            .padding(.horizontal, 10)
+            .padding(.top, 6)
+            .padding(.bottom, 2)
+
+            if appState.availableDisplays.isEmpty {
+                Text("No displays available")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+            } else {
+                ForEach(appState.availableDisplays) { display in
+                    DisplayRow(display: display) {
+                        Task { await appState.startSharing(displayID: display.id) }
+                    }
+                }
+            }
+        }
+        .onAppear {
+            guard !didKickOff else { return }
+            didKickOff = true
+            Task { await appState.refreshDisplays() }
+        }
+    }
+}
+
+private struct DisplayRow: View {
+    let display: DisplayInfo
+    let onPick: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: onPick) {
+            HStack(spacing: 8) {
+                Image(systemName: "display")
+                    .font(.system(size: 13))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(display.name)
+                        .font(.system(size: 13))
+                    Text("\(display.width)×\(display.height)")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Image(systemName: "play.circle.fill")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Color.accentColor)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(
+                isHovered ? Color(nsColor: .selectedContentBackgroundColor).opacity(0.5) : Color.clear
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
         .onHover { hovering in
             isHovered = hovering
         }

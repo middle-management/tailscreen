@@ -3,6 +3,15 @@ import AppKit
 import CoreMedia
 import CoreVideo
 
+/// Serializable summary of an SCDisplay so AppState can expose a display
+/// picker in the menu without exposing ScreenCaptureKit types to the UI.
+struct DisplayInfo: Identifiable, Sendable, Hashable {
+    let id: CGDirectDisplayID
+    let name: String
+    let width: Int
+    let height: Int
+}
+
 class ScreenCapture: NSObject {
     private var stream: SCStream?
     private var streamOutput: StreamOutput?
@@ -17,11 +26,45 @@ class ScreenCapture: NSObject {
         _ = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
     }
 
-    func start() async throws {
+    /// Enumerate the displays the user can share. Returns an empty array if
+    /// permission has not been granted yet.
+    static func listDisplays() async throws -> [DisplayInfo] {
+        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        return content.displays.enumerated().map { idx, d in
+            DisplayInfo(
+                id: d.displayID,
+                name: Self.humanName(for: d, index: idx),
+                width: Int(d.width),
+                height: Int(d.height)
+            )
+        }
+    }
+
+    private static func humanName(for display: SCDisplay, index: Int) -> String {
+        // SCDisplay has no public name. Fall back to the matching NSScreen's
+        // localizedName (macOS 14+) if we can find it by CGDirectDisplayID.
+        if #available(macOS 14.0, *) {
+            for screen in NSScreen.screens {
+                let screenID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID
+                if screenID == display.displayID {
+                    return screen.localizedName
+                }
+            }
+        }
+        return "Display \(index + 1)"
+    }
+
+    func start(displayID: CGDirectDisplayID? = nil) async throws {
         // Get available content
         availableContent = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
 
-        guard let display = availableContent?.displays.first else {
+        let display: SCDisplay
+        if let wanted = displayID,
+           let match = availableContent?.displays.first(where: { $0.displayID == wanted }) {
+            display = match
+        } else if let first = availableContent?.displays.first {
+            display = first
+        } else {
             throw ScreenCaptureError.noDisplayAvailable
         }
 

@@ -1,4 +1,5 @@
 import Combine
+import CoreGraphics
 import Foundation
 import Observation
 import SwiftUI
@@ -24,6 +25,10 @@ class AppState: ObservableObject {
     @Published var availablePeers: [CuplePeer] = []
     @Published var isDiscovering = false
     private var peerDiscovery: TailscalePeerDiscovery?
+
+    // Display selection
+    @Published var availableDisplays: [DisplayInfo] = []
+    @Published var selectedDisplayID: CGDirectDisplayID?
 
     // Authentication
     var tailscaleAuth = TailscaleAuth()
@@ -51,14 +56,33 @@ class AppState: ObservableObject {
         return ["Starting Tailscale..."]
     }
 
-    func startSharing() async {
+    /// Populate `availableDisplays` via ScreenCaptureKit. Safe to call any
+    /// time the menu is opened; silently clears the list if the API errors
+    /// (permission not granted yet).
+    func refreshDisplays() async {
         do {
+            let displays = try await ScreenCapture.listDisplays()
+            availableDisplays = displays
+            if selectedDisplayID == nil || !displays.contains(where: { $0.id == selectedDisplayID }) {
+                selectedDisplayID = displays.first?.id
+            }
+        } catch {
+            availableDisplays = []
+        }
+    }
+
+    func startSharing(displayID: CGDirectDisplayID? = nil) async {
+        do {
+            let pickedID = displayID ?? selectedDisplayID
             // If Tailscale is already initialized, just start sharing
             // Otherwise, initialize it first
             if server == nil {
                 let hostname = "\(Host.current().localizedName ?? "cuple-share")\(CupleInstance.hostnameSuffix)"
                 let srv = TailscaleScreenShareServer()
                 server = srv
+                if let pickedID = pickedID {
+                    selectedDisplayID = pickedID
+                }
 
                 // If the user stops the ScreenCaptureKit stream from the
                 // macOS menubar, tear down sharing rather than leaving an
@@ -76,7 +100,7 @@ class AppState: ObservableObject {
                     }
                 }
 
-                try await srv.start(hostname: hostname)
+                try await srv.start(hostname: hostname, displayID: pickedID)
 
                 // Get the Tailscale IP addresses
                 let ips = try await srv.getIPAddresses()

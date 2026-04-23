@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import CoreVideo
 import os
@@ -35,7 +36,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         self.logger = TSLogger()
     }
 
-    func start(hostname: String = "cuple-server", authKey: String? = nil, path: String? = nil) async throws {
+    func start(hostname: String = "cuple-server", authKey: String? = nil, path: String? = nil, displayID: CGDirectDisplayID? = nil) async throws {
         guard !isRunning else { return }
 
         let statePath = path ?? {
@@ -92,8 +93,8 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         screenCapture = capture
 
         do {
-            try await capture.start()
-            print("ScreenCapture started")
+            try await capture.start(displayID: displayID)
+            print("ScreenCapture started (displayID=\(displayID.map { String($0) } ?? "default"))")
         } catch {
             // Surface the error instead of silently swallowing it. Most common
             // cause on first run: macOS Screen Recording permission missing.
