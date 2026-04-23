@@ -13,9 +13,7 @@ struct MenuBarView: View {
             // that becomes key, and the menubar popover auto-closes on focus
             // loss. Render the "sheets" as inline views instead, swapping the
             // menu list out for whichever one is active.
-            if appState.showBrowseSheet {
-                BrowseSharesSheet()
-            } else if appState.showConnectSheet {
+            if appState.showConnectSheet {
                 ConnectSheet()
             } else if appState.showIPSheet {
                 IPAddressSheet()
@@ -96,9 +94,7 @@ struct MenuBarView: View {
                             }
                         }
                     } else {
-                        MenuButton("Browse Shares...", systemImage: "network") {
-                            appState.showBrowseSheet = true
-                        }
+                        InlinePeersSection()
                         MenuButton("Connect to...", systemImage: "link") {
                             appState.showConnectSheet = true
                         }
@@ -227,6 +223,110 @@ struct MenuButton: View {
     }
 }
 
+/// Compact peer list rendered directly in the menu, replacing the old
+/// "Browse Shares..." modal. Kicks discovery on appear and shows a one-line
+/// row per Cuple peer — click to connect.
+struct InlinePeersSection: View {
+    @EnvironmentObject var appState: AppState
+    @State private var didKickOff = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                Image(systemName: "network")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                Text("Available Shares")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    Task { await appState.discoverPeers() }
+                } label: {
+                    if appState.isDiscovering {
+                        ProgressView().controlSize(.small).scaleEffect(0.6)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 10))
+                    }
+                }
+                .buttonStyle(.borderless)
+                .disabled(appState.isDiscovering)
+                .help("Refresh")
+            }
+            .padding(.horizontal, 10)
+            .padding(.top, 6)
+            .padding(.bottom, 2)
+
+            if appState.isDiscovering && appState.availablePeers.isEmpty {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small).scaleEffect(0.7)
+                    Text("Searching…")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+            } else if appState.availablePeers.isEmpty {
+                Text("No shares found")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+            } else {
+                ForEach(appState.availablePeers) { peer in
+                    InlinePeerRow(peer: peer) {
+                        Task { await appState.connectToPeer(peer) }
+                    }
+                }
+            }
+        }
+        .onAppear {
+            guard !didKickOff else { return }
+            didKickOff = true
+            Task { await appState.discoverPeers() }
+        }
+    }
+}
+
+private struct InlinePeerRow: View {
+    @EnvironmentObject var appState: AppState
+    let peer: CuplePeer
+    let onConnect: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: onConnect) {
+            HStack(spacing: 8) {
+                Image(systemName: "desktopcomputer")
+                    .font(.system(size: 13))
+                    .foregroundStyle(peer.isOnline ? .primary : .secondary)
+                Text(peer.hostname)
+                    .font(.system(size: 13))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer()
+                Image(systemName: "play.circle.fill")
+                    .font(.system(size: 13))
+                    .foregroundStyle(peer.isOnline ? Color.accentColor : Color.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(
+                isHovered ? Color(nsColor: .selectedContentBackgroundColor).opacity(0.5) : Color.clear
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!peer.isOnline)
+        .opacity(peer.isOnline ? 1.0 : 0.5)
+        .onHover { hovering in
+            isHovered = hovering
+        }
+    }
+}
+
 struct ConnectSheet: View {
     @EnvironmentObject var appState: AppState
     @State private var hostname = ""
@@ -335,194 +435,3 @@ struct IPAddressSheet: View {
     }
 }
 
-struct BrowseSharesSheet: View {
-    @EnvironmentObject var appState: AppState
-
-    private func dismiss() { appState.showBrowseSheet = false }
-
-    var body: some View {
-        VStack(spacing: 20) {
-            HStack {
-                Text("Browse Available Shares")
-                    .font(.system(size: 15, weight: .semibold))
-
-                Spacer()
-
-                Button {
-                    Task {
-                        await appState.discoverPeers()
-                    }
-                } label: {
-                    if appState.isDiscovering {
-                        ProgressView()
-                            .controlSize(.small)
-                            .scaleEffect(0.8)
-                    } else {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.system(size: 13))
-                    }
-                }
-                .buttonStyle(.borderless)
-                .disabled(appState.isDiscovering)
-                .help("Refresh")
-            }
-
-            if appState.isDiscovering {
-                VStack(spacing: 12) {
-                    ProgressView()
-                        .controlSize(.regular)
-                    Text("Discovering Cuple instances on your tailnet...")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                }
-                .frame(height: 180)
-            } else if appState.availablePeers.isEmpty {
-                VStack(spacing: 12) {
-                    Image(systemName: "network.slash")
-                        .font(.system(size: 36))
-                        .foregroundStyle(.secondary)
-                    Text("No shares found")
-                        .font(.system(size: 14, weight: .medium))
-                    Text("Click the refresh button to search for Cuple instances on your tailnet")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .frame(maxWidth: 300)
-                }
-                .frame(height: 180)
-            } else {
-                ScrollView {
-                    VStack(spacing: 8) {
-                        ForEach(appState.availablePeers) { peer in
-                            PeerRow(peer: peer) {
-                                Task {
-                                    await appState.connectToPeer(peer)
-                                    dismiss()
-                                }
-                            }
-                        }
-                    }
-                    .padding(2)
-                }
-                .frame(height: 220)
-            }
-
-            HStack(spacing: 12) {
-                Button("Close") {
-                    dismiss()
-                }
-                .keyboardShortcut(.escape)
-                .buttonStyle(.borderless)
-                .controlSize(.large)
-
-                Spacer()
-
-                if !appState.isDiscovering && appState.availablePeers.isEmpty {
-                    Button("Discover") {
-                        Task {
-                            await appState.discoverPeers()
-                        }
-                    }
-                    .keyboardShortcut(.return)
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
-                }
-            }
-        }
-        .padding(24)
-        .frame(width: 540)
-        .onAppear {
-            // Auto-discover when sheet opens
-            Task {
-                await appState.discoverPeers()
-            }
-        }
-    }
-}
-
-struct PeerRow: View {
-    @EnvironmentObject var appState: AppState
-    let peer: CuplePeer
-    let onConnect: () -> Void
-    @State private var isHovered = false
-
-    var body: some View {
-        // Whole-row button. MenuBarExtra(.window) dismisses its popover on
-        // any click that doesn't hit an interactive control; gaps around a
-        // nested Connect button (icon area, hostname, spacer) fell through
-        // to the popover and closed the Browse sheet. Making the row itself
-        // the button fixes that and also lets the user click anywhere on
-        // the row to connect.
-        Button(action: onConnect) {
-            HStack(spacing: 12) {
-                // Computer icon with online status indicator
-                ZStack(alignment: .topTrailing) {
-                    Image(systemName: "desktopcomputer")
-                        .font(.system(size: 20))
-                        .foregroundStyle(peer.isOnline ? .primary : .secondary)
-                        .frame(width: 28)
-
-                    // Online status dot
-                    Circle()
-                        .fill(peer.isOnline ? Color.green : Color.gray)
-                        .frame(width: 8, height: 8)
-                        .offset(x: 2, y: -2)
-                }
-
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 4) {
-                        Text(peer.hostname)
-                            .font(.system(size: 13, weight: .medium))
-
-                        if !peer.isOnline {
-                            Text("(offline)")
-                                .font(.system(size: 10))
-                                .foregroundStyle(.tertiary)
-                        }
-                    }
-
-                    // Show metadata if available
-                    if let metadata = peer.metadata {
-                        Text(
-                            "\(metadata.shareName) • \(metadata.screenResolution.width)×\(metadata.screenResolution.height)"
-                        )
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                    } else {
-                        Text(peer.tailscaleIP)
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                Spacer()
-
-                Image(systemName: "play.circle.fill")
-                    .font(.system(size: 18))
-                    .foregroundStyle(peer.isOnline ? Color.accentColor : Color.secondary)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(
-                        isHovered
-                            ? Color(nsColor: .controlBackgroundColor)
-                            : Color(nsColor: .controlBackgroundColor).opacity(0.5))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(
-                        Color(nsColor: .separatorColor).opacity(peer.isOnline ? 0.3 : 0.15),
-                        lineWidth: 0.5)
-            )
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .disabled(!peer.isOnline)
-        .opacity(peer.isOnline ? 1.0 : 0.6)
-        .onHover { hovering in
-            isHovered = hovering
-        }
-    }
-}

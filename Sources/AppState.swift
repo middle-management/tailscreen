@@ -14,7 +14,6 @@ class AppState: ObservableObject {
     @Published var alertMessage = ""
     @Published var showConnectSheet = false
     @Published var showIPSheet = false
-    @Published var showBrowseSheet = false
 
     private var server: TailscaleScreenShareServer?
     private var client: TailscaleScreenShareClient?
