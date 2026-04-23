@@ -177,6 +177,15 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         if broadcastCounter == 1 || broadcastCounter % 60 == 0 {
             print("Broadcast #\(broadcastCounter) -> \(senders.count) viewer(s)")
         }
+        // Every ~5s of 60fps, log per-viewer queue depth. Reveals slow viewers
+        // whose droppable frames are being shed.
+        if senders.count > 1 && broadcastCounter % 300 == 0 {
+            let summary = senders.map { s -> String in
+                let (depth, bytes) = s.backlog()
+                return "\(s.id.uuidString.prefix(8))=\(depth)msg/\(bytes / 1024)KB"
+            }.joined(separator: " ")
+            print("Viewer backlog: \(summary)")
+        }
         for sender in senders {
             sender.enqueue(message, priority: priority)
         }
@@ -252,6 +261,11 @@ fileprivate final class ClientSender: @unchecked Sendable {
         self.id = id
         self.connection = connection
         self.onClose = onClose
+    }
+
+    /// Snapshot of (queueDepth, queuedBytes) for logging. Cheap: single lock.
+    func backlog() -> (depth: Int, bytes: Int) {
+        state.withLock { ($0.queue.count, $0.queuedBytes) }
     }
 
     func start() {

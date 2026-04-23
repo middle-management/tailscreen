@@ -1,8 +1,16 @@
 #!/usr/bin/env bash
-# Launch two Cuple instances side-by-side for local testing. Logs from both
-# processes land in one file, each line prefixed with [1] or [2]. Stopping
-# this script (Ctrl-C or exit) shuts both instances down.
+# Launch N Cuple instances side-by-side for local testing (default 2). Logs
+# from every process land in one file, prefixed with [i]. Stopping this
+# script (Ctrl-C or exit) shuts all instances down.
+#
+# Usage: ./test-local.sh [count]
 set -euo pipefail
+
+COUNT="${1:-2}"
+if ! [[ "$COUNT" =~ ^[0-9]+$ ]] || [ "$COUNT" -lt 1 ]; then
+    echo "count must be a positive integer, got '$COUNT'" >&2
+    exit 2
+fi
 
 # Enable job control so each backgrounded pipeline gets its own process
 # group. We then kill the whole group on exit to take down Cuple + sed +
@@ -50,15 +58,21 @@ launch() {
     pgids+=("$pgid")
 }
 
-echo "Launching instance 1 (wisp-1)..."
-launch 1
-echo "Launching instance 2 (wisp-2)..."
-launch 2
+for i in $(seq 1 "$COUNT"); do
+    echo "Launching instance $i (wisp-$i)..."
+    launch "$i"
+done
 
 echo
-echo "Both instances running. Merged log: $LOG"
+echo "$COUNT instances running. Merged log: $LOG"
 echo "Ctrl-C to stop."
-echo "In menubar: click Start Sharing on one, Browse Shares on the other."
+if [ "$COUNT" -eq 1 ]; then
+    echo "In menubar: click Start Sharing or Browse Shares."
+elif [ "$COUNT" -eq 2 ]; then
+    echo "In menubar: click Start Sharing on one, Browse Shares on the other."
+else
+    echo "In menubar: click Start Sharing on one instance, Browse Shares + Connect on the others."
+fi
 echo
 
 # Stream the merged log until Ctrl-C. trap handles the shutdown.
