@@ -217,6 +217,12 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
 
         Task { @MainActor [weak self, sampleBuffer] in
             guard let self = self else { return }
+            // If disconnect has started (or finished) while this Task was in
+            // the main-queue, bail. Otherwise a straggling enqueue could
+            // recreate the window + display layer *after* teardown, leaving
+            // a dangling observer / autoreleased renderer that crashes on
+            // the next main-queue drain.
+            guard self.isConnected, !self.isDisconnecting else { return }
             if self.window == nil {
                 self.createWindow(initialSize: Self.size(of: format))
             }
