@@ -36,8 +36,10 @@ final class VideoEncoder: @unchecked Sendable {
     ///   - width: pixel width
     ///   - height: pixel height
     ///   - fps: target frame rate
-    ///   - bitsPerPixel: quality knob; ~0.15 gives a good balance for screen content at 60fps.
-    func setup(width: Int, height: Int, fps: Int32 = 60, bitsPerPixel: Double = 0.15) throws {
+    ///   - bitsPerPixel: quality knob. 0.08 is plenty for screen content and
+    ///     matters for latency because the previous 0.15 produced ~550 KB
+    ///     keyframes at Retina resolutions that stalled viewers for ~200 ms.
+    func setup(width: Int, height: Int, fps: Int32 = 60, bitsPerPixel: Double = 0.08) throws {
         var newSession: VTCompressionSession?
 
         let status = VTCompressionSessionCreate(
@@ -64,6 +66,21 @@ final class VideoEncoder: @unchecked Sendable {
 
         let bitrate = Int(Double(width * height) * bitsPerPixel * Double(fps))
         VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_AverageBitRate, value: bitrate as CFNumber)
+
+        // Hard cap per-window bytes. Without this the encoder honors the
+        // average but is free to emit a ~10x spike on a single keyframe.
+        // Format: alternating [maxBytesInWindow, windowSeconds]. Allow 1.75x
+        // the per-second budget over a 500 ms window — generous enough for
+        // a single IDR but tight enough to prevent the burst tail latency.
+        let perSecondBytes = bitrate / 8
+        let windowBytes = Int(Double(perSecondBytes) * 1.75 / 2.0)
+        let windowSeconds = 0.5
+        let dataRateLimits = [windowBytes, windowSeconds] as CFArray
+        VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_DataRateLimits, value: dataRateLimits)
+
+        // Emit each frame as soon as it's encoded — no pipelining — so the
+        // wall-clock latency per frame stays predictable.
+        VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_MaxFrameDelayCount, value: 0 as CFNumber)
 
         // IDRs are triggered on demand (new viewer, explicit refresh). This
         // interval is a safety net, not a cadence.
