@@ -31,6 +31,13 @@ final class VideoEncoder: @unchecked Sendable {
     private var forceNextKeyframe = false
     private var lastSPS: Data?
     private var lastPPS: Data?
+    /// Frames handed to VT that haven't come back through the output callback
+    /// yet. Capped so we don't build up seconds of encoder backlog on busy
+    /// pipelines (ScreenCaptureKit will happily deliver 60fps faster than VT
+    /// can encode Retina frames, which otherwise manifests as live-stream lag).
+    private var inFlight: Int = 0
+    private var droppedAtInput: Int = 0
+    private let maxInFlight = 2
 
     /// - Parameters:
     ///   - width: pixel width
@@ -111,6 +118,17 @@ final class VideoEncoder: @unchecked Sendable {
             lock.unlock()
             return
         }
+        // Drop this frame if the encoder is already saturated. Without this
+        // the backlog grows unbounded and the stream ends up several seconds
+        // behind live.
+        if inFlight >= maxInFlight && !forceNextKeyframe {
+            droppedAtInput += 1
+            if droppedAtInput == 1 || droppedAtInput % 60 == 0 {
+                print("VideoEncoder: dropped \(droppedAtInput) input frames (encoder saturated)")
+            }
+            lock.unlock()
+            return
+        }
         let pts = CMTime(value: frameCount, timescale: fps)
         frameCount += 1
         var frameProps: CFDictionary?
@@ -118,6 +136,7 @@ final class VideoEncoder: @unchecked Sendable {
             forceNextKeyframe = false
             frameProps = [kVTEncodeFrameOptionKey_ForceKeyFrame: kCFBooleanTrue] as CFDictionary
         }
+        inFlight += 1
         lock.unlock()
 
         var flags: VTEncodeInfoFlags = []
@@ -131,11 +150,20 @@ final class VideoEncoder: @unchecked Sendable {
             infoFlagsOut: &flags
         )
         if status != noErr {
+            lock.lock()
+            inFlight -= 1
+            lock.unlock()
             print("VideoEncoder: encode failed (\(status))")
         }
     }
 
     fileprivate func handleEncodedFrame(status: OSStatus, infoFlags: VTEncodeInfoFlags, sampleBuffer: CMSampleBuffer?) {
+        // Always decrement inFlight regardless of success — VT has finished
+        // this frame one way or another.
+        lock.lock()
+        if inFlight > 0 { inFlight -= 1 }
+        lock.unlock()
+
         guard status == noErr,
               let sampleBuffer = sampleBuffer,
               CMSampleBufferDataIsReady(sampleBuffer) else {
