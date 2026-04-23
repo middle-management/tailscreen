@@ -1,27 +1,29 @@
 import Foundation
 import AppKit
+import AVFoundation
+import CoreMedia
 import CoreVideo
 import TailscaleKit
 
 /// Screen-share viewer. Dials a peer over TailscaleKit, parses the framed
-/// protocol, and renders decoded frames into an NSWindow.
+/// protocol, and pipes the raw H.264 sample buffers straight into an
+/// `AVSampleBufferDisplayLayer` — no CIImage, no CGImage copies, no
+/// per-frame MainActor hop. The display layer handles hardware decode +
+/// presentation on its own thread.
 @available(macOS 10.15, *)
 final class TailscaleScreenShareClient: @unchecked Sendable {
     var node: TailscaleNode?
 
     private var connection: OutgoingConnection?
-    private let decoder = VideoDecoder()
     private var window: NSWindow?
-    private var imageView: NSImageView?
+    private var displayLayer: AVSampleBufferDisplayLayer?
+    private var formatDescription: CMFormatDescription?
     private var isConnected = false
     private let logger: TSLogger
     private var receiveTask: Task<Void, Never>?
 
     init() {
         self.logger = TSLogger()
-        decoder.onDecodedFrame = { [weak self] pixelBuffer in
-            self?.displayFrame(pixelBuffer)
-        }
     }
 
     func connect(to hostname: String, port: UInt16 = 7447, authKey: String? = nil, path: String? = nil) async throws {
@@ -90,14 +92,11 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                     switch message {
                     case .parameterSets(let sps, let pps):
                         print("Client: received SPS/PPS (sps=\(sps.count)B pps=\(pps.count)B)")
-                        decoder.setParameterSets(sps: sps, pps: pps)
+                        applyParameterSets(sps: sps, pps: pps)
                     case .frame(let data, let isKeyframe, let timestampNs):
                         framesReceived += 1
                         if framesReceived == 1 || framesReceived % 60 == 0 {
                             let nowNs = DispatchTime.now().uptimeNanoseconds
-                            // Server timestamp is also mach ns. On a single host the
-                            // clocks are identical; across hosts the delta is still
-                            // useful as a relative number if clocks are close.
                             let latencyMs: Double
                             if timestampNs > 0 && nowNs >= timestampNs {
                                 latencyMs = Double(nowNs - timestampNs) / 1_000_000.0
@@ -107,11 +106,10 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                             let latencyStr = latencyMs >= 0 ? String(format: "%.1fms", latencyMs) : "n/a"
                             print("Client: received frame #\(framesReceived) (kf=\(isKeyframe), \(data.count)B, total=\(bytesReceived)B, encode→recv=\(latencyStr))")
                         }
-                        decoder.decode(data: data, isKeyframe: isKeyframe)
+                        enqueueFrame(data: data, isKeyframe: isKeyframe)
                     }
                 }
             } catch TailscaleError.readFailed {
-                // Either poll timeout (no data) or EOF. Stay in the loop unless we were closed.
                 if !isConnected { break }
                 continue
             } catch {
@@ -123,64 +121,136 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         }
     }
 
-    private func displayFrame(_ pixelBuffer: CVPixelBuffer) {
-        let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
-        let context = CIContext()
-        guard let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else {
-            print("Client: displayFrame failed to build CGImage")
+    private func applyParameterSets(sps: Data, pps: Data) {
+        var newDesc: CMFormatDescription?
+        let status = sps.withUnsafeBytes { (spsBuf: UnsafeRawBufferPointer) -> OSStatus in
+            pps.withUnsafeBytes { (ppsBuf: UnsafeRawBufferPointer) -> OSStatus in
+                guard let spsBase = spsBuf.baseAddress?.assumingMemoryBound(to: UInt8.self),
+                      let ppsBase = ppsBuf.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
+                    return -1
+                }
+                let pointers: [UnsafePointer<UInt8>] = [spsBase, ppsBase]
+                let sizes: [Int] = [sps.count, pps.count]
+                return pointers.withUnsafeBufferPointer { ptrs in
+                    sizes.withUnsafeBufferPointer { szs in
+                        CMVideoFormatDescriptionCreateFromH264ParameterSets(
+                            allocator: kCFAllocatorDefault,
+                            parameterSetCount: 2,
+                            parameterSetPointers: ptrs.baseAddress!,
+                            parameterSetSizes: szs.baseAddress!,
+                            nalUnitHeaderLength: 4,
+                            formatDescriptionOut: &newDesc
+                        )
+                    }
+                }
+            }
+        }
+        guard status == noErr, let desc = newDesc else {
+            print("Client: failed to build H.264 format description (\(status))")
             return
         }
+        formatDescription = desc
+    }
 
-        Task { @MainActor [weak self, cgImage] in
-            guard let self = self else { return }
+    private func enqueueFrame(data: Data, isKeyframe: Bool) {
+        guard let format = formatDescription else { return }
 
-            let firstFrame = (self.window == nil)
-            if firstFrame {
-                print("Client: creating viewer window (first decoded frame \(cgImage.width)x\(cgImage.height))")
-                self.createWindow()
-            }
+        // Wrap the AVCC NAL units in a CMBlockBuffer owning its own copy.
+        var blockBuffer: CMBlockBuffer?
+        let allocStatus = CMBlockBufferCreateWithMemoryBlock(
+            allocator: kCFAllocatorDefault,
+            memoryBlock: nil,
+            blockLength: data.count,
+            blockAllocator: kCFAllocatorDefault,
+            customBlockSource: nil,
+            offsetToData: 0,
+            dataLength: data.count,
+            flags: 0,
+            blockBufferOut: &blockBuffer
+        )
+        guard allocStatus == kCMBlockBufferNoErr, let blockBuffer = blockBuffer else { return }
 
-            let image = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
-            self.imageView?.image = image
+        let copyStatus = data.withUnsafeBytes { ptr -> OSStatus in
+            guard let base = ptr.baseAddress else { return -1 }
+            return CMBlockBufferReplaceDataBytes(
+                with: base,
+                blockBuffer: blockBuffer,
+                offsetIntoDestination: 0,
+                dataLength: data.count
+            )
+        }
+        guard copyStatus == kCMBlockBufferNoErr else { return }
 
-            guard let window = self.window else { return }
-            if !window.isVisible {
-                let screenFrame = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1920, height: 1080)
-                var windowSize = image.size
-                let maxWidth = screenFrame.width * 0.9
-                let maxHeight = screenFrame.height * 0.9
+        var sampleBuffer: CMSampleBuffer?
+        var sampleSizes = [data.count]
+        let sampleStatus = CMSampleBufferCreateReady(
+            allocator: kCFAllocatorDefault,
+            dataBuffer: blockBuffer,
+            formatDescription: format,
+            sampleCount: 1,
+            sampleTimingEntryCount: 0,
+            sampleTimingArray: nil,
+            sampleSizeEntryCount: 1,
+            sampleSizeArray: &sampleSizes,
+            sampleBufferOut: &sampleBuffer
+        )
+        guard sampleStatus == noErr, let sampleBuffer = sampleBuffer else { return }
 
-                if windowSize.width > maxWidth {
-                    let scale = maxWidth / windowSize.width
-                    windowSize.width = maxWidth
-                    windowSize.height *= scale
-                }
-                if windowSize.height > maxHeight {
-                    let scale = maxHeight / windowSize.height
-                    windowSize.height = maxHeight
-                    windowSize.width *= scale
-                }
-
-                let origin = NSPoint(
-                    x: screenFrame.midX - windowSize.width / 2,
-                    y: screenFrame.midY - windowSize.height / 2
+        // Tell the display layer to show this frame immediately, no reorder.
+        if let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: true) as? [CFMutableDictionary],
+           let first = attachments.first {
+            CFDictionarySetValue(
+                first,
+                Unmanaged.passUnretained(kCMSampleAttachmentKey_DisplayImmediately).toOpaque(),
+                Unmanaged.passUnretained(kCFBooleanTrue).toOpaque()
+            )
+            if !isKeyframe {
+                CFDictionarySetValue(
+                    first,
+                    Unmanaged.passUnretained(kCMSampleAttachmentKey_NotSync).toOpaque(),
+                    Unmanaged.passUnretained(kCFBooleanTrue).toOpaque()
                 )
-                window.setFrame(NSRect(origin: origin, size: windowSize), display: true)
-                // MenuBarExtra apps default to .accessory activation policy, so
-                // windows can exist but don't necessarily come to the front.
-                // Activate the app + raise the window so the viewer is visible.
-                NSApp.activate(ignoringOtherApps: true)
-                window.makeKeyAndOrderFront(nil)
-                window.orderFrontRegardless()
-                print("Client: viewer window ordered front (size=\(Int(windowSize.width))x\(Int(windowSize.height)))")
             }
+        }
+
+        Task { @MainActor [weak self, sampleBuffer] in
+            guard let self = self else { return }
+            if self.window == nil {
+                self.createWindow(initialSize: Self.size(of: format))
+            }
+            self.displayLayer?.enqueue(sampleBuffer)
         }
     }
 
+    private static func size(of format: CMFormatDescription) -> CGSize {
+        let dims = CMVideoFormatDescriptionGetDimensions(format)
+        return CGSize(width: CGFloat(dims.width), height: CGFloat(dims.height))
+    }
+
     @MainActor
-    private func createWindow() {
+    private func createWindow(initialSize: CGSize) {
+        let screenFrame = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1920, height: 1080)
+        var windowSize = initialSize
+        let maxWidth = screenFrame.width * 0.9
+        let maxHeight = screenFrame.height * 0.9
+        if windowSize.width > maxWidth {
+            let scale = maxWidth / windowSize.width
+            windowSize.width = maxWidth
+            windowSize.height *= scale
+        }
+        if windowSize.height > maxHeight {
+            let scale = maxHeight / windowSize.height
+            windowSize.height = maxHeight
+            windowSize.width *= scale
+        }
+
+        let origin = NSPoint(
+            x: screenFrame.midX - windowSize.width / 2,
+            y: screenFrame.midY - windowSize.height / 2
+        )
+
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1280, height: 720),
+            contentRect: NSRect(origin: origin, size: windowSize),
             styleMask: [.titled, .closable, .resizable],
             backing: .buffered,
             defer: false
@@ -188,13 +258,25 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         window.title = "Tailscale Screen Share"
         window.backgroundColor = .black
 
-        let imageView = NSImageView(frame: window.contentView!.bounds)
-        imageView.imageScaling = .scaleProportionallyUpOrDown
-        imageView.autoresizingMask = [.width, .height]
-        window.contentView?.addSubview(imageView)
+        let contentView = NSView(frame: NSRect(origin: .zero, size: windowSize))
+        contentView.wantsLayer = true
+        contentView.layer = CALayer()
+        contentView.layer?.backgroundColor = NSColor.black.cgColor
 
+        let displayLayer = AVSampleBufferDisplayLayer()
+        displayLayer.frame = contentView.bounds
+        displayLayer.videoGravity = .resizeAspect
+        displayLayer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
+        contentView.layer?.addSublayer(displayLayer)
+
+        window.contentView = contentView
         self.window = window
-        self.imageView = imageView
+        self.displayLayer = displayLayer
+
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
+        print("Client: viewer window ordered front (size=\(Int(windowSize.width))x\(Int(windowSize.height)))")
 
         NotificationCenter.default.addObserver(
             forName: NSWindow.willCloseNotification,
@@ -217,17 +299,17 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
             self.connection = nil
         }
 
-        decoder.shutdown()
-
         if let node = node {
             try? await node.close()
             self.node = nil
         }
 
         await MainActor.run {
+            self.displayLayer?.flushAndRemoveImage()
+            self.displayLayer = nil
             self.window?.close()
             self.window = nil
-            self.imageView = nil
+            self.formatDescription = nil
         }
 
         print("Client disconnected")
