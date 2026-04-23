@@ -1,5 +1,16 @@
 import Foundation
 
+private extension String {
+    init?(posixCString ptr: UnsafePointer<CChar>) {
+        let len = strlen(ptr)
+        let bytes = UnsafeRawPointer(ptr).withMemoryRebound(to: UInt8.self, capacity: len) {
+            UnsafeBufferPointer(start: $0, count: len)
+        }
+        guard let s = String(validating: bytes, as: UTF8.self) else { return nil }
+        self = s
+    }
+}
+
 struct NetworkHelper {
     static func getLocalIPAddresses() -> [String] {
         var addresses: [String] = []
@@ -16,7 +27,7 @@ struct NetworkHelper {
             let addrFamily = interface.ifa_addr.pointee.sa_family
 
             if addrFamily == UInt8(AF_INET) || addrFamily == UInt8(AF_INET6) {
-                let name = String(cString: interface.ifa_name)
+                guard let name = String(posixCString: interface.ifa_name) else { continue }
 
                 // Skip loopback and non-active interfaces
                 guard !name.starts(with: "lo") else { continue }
@@ -25,7 +36,10 @@ struct NetworkHelper {
                 if getnameinfo(interface.ifa_addr, socklen_t(interface.ifa_addr.pointee.sa_len),
                              &hostname, socklen_t(hostname.count),
                              nil, socklen_t(0), NI_NUMERICHOST) == 0 {
-                    let address = String(cString: hostname)
+                    guard let address = hostname.withUnsafeBufferPointer({ buf -> String? in
+                        guard let base = buf.baseAddress else { return nil }
+                        return String(posixCString: base)
+                    }) else { continue }
 
                     // Only include IPv4 addresses
                     if addrFamily == UInt8(AF_INET) {

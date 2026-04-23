@@ -1,5 +1,9 @@
 .PHONY: build run clean release install tailscale test e2e-up e2e-down test-e2e
 
+# Lets SwiftPM's systemLibrary target find libtailscale.pc at build time,
+# which in turn resolves the `-L` flag for libtailscale.a.
+export PKG_CONFIG_PATH := $(CURDIR)/TailscaleKitPackage
+
 # Build TailscaleKit C library if needed
 tailscale:
 	@cd TailscaleKitPackage && $(MAKE)

@@ -3,7 +3,7 @@ import AppKit
 
 /// Metadata about a Cuple screen share
 struct CupleMetadata: Codable, Sendable {
-    let version: String = "1.0"
+    var version: String = "1.0"
     let shareName: String
     let hostname: String
     let screenResolution: ScreenResolution
