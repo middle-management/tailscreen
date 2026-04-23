@@ -267,13 +267,14 @@ class AppState: ObservableObject {
             ephemeral: true
         )
 
-        // Initialize Tailscale node
         let node = try TailscaleNode(config: config, logger: SimpleLogger())
         self.node = node
 
-        // Don't call node.up() here - we'll handle login separately
-        // Just give the node a moment to initialize
-        try await Task.sleep(for: .seconds(1))
+        // Bring the node up so discovery probes can actually route. Without
+        // this the node's LocalAPI works (so login + status queries succeed),
+        // but tailscale_dial fails silently — every peer probe returns false
+        // and "Browse Shares" always lists zero.
+        try await node.up()
 
         return node
     }
