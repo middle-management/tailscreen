@@ -8,6 +8,9 @@ class ScreenCapture: NSObject {
     private var streamOutput: StreamOutput?
     private var availableContent: SCShareableContent?
     var onFrameCaptured: ((CVPixelBuffer) -> Void)?
+    /// Fires when the SCStream terminates on its own — e.g. user clicked the
+    /// menubar "Stop Screen Recording" item, or the stream hit an error.
+    var onStreamStopped: ((Error?) -> Void)?
 
     static func requestPermission() async throws {
         // Request permission by attempting to get shareable content
@@ -66,6 +69,7 @@ class ScreenCapture: NSObject {
 extension ScreenCapture: SCStreamDelegate {
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         print("Stream stopped with error: \(error.localizedDescription)")
+        onStreamStopped?(error)
     }
 }
 

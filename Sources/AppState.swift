@@ -61,6 +61,22 @@ class AppState: ObservableObject {
                 let srv = TailscaleScreenShareServer()
                 server = srv
 
+                // If the user stops the ScreenCaptureKit stream from the
+                // macOS menubar, tear down sharing rather than leaving an
+                // empty server that's listening but has no capture source.
+                srv.onCaptureStopped = { [weak self] error in
+                    Task { @MainActor [weak self] in
+                        guard let self = self, self.isSharing else { return }
+                        await self.stopSharing()
+                        if let error = error {
+                            self.showAlertMessage(
+                                title: "Sharing Stopped",
+                                message: "Screen capture ended: \(error.localizedDescription)"
+                            )
+                        }
+                    }
+                }
+
                 try await srv.start(hostname: hostname)
 
                 // Get the Tailscale IP addresses

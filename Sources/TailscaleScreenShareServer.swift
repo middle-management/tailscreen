@@ -24,6 +24,12 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
 
     private let clients = OSAllocatedUnfairLock<[UUID: ClientSender]>(initialState: [:])
 
+    /// Fires when the underlying ScreenCaptureKit stream ends on its own —
+    /// user clicked "Stop Screen Recording" in the menubar, display changed,
+    /// or the stream hit an error. AppState observes this to flip the
+    /// `isSharing` flag and tear the server down.
+    var onCaptureStopped: ((Error?) -> Void)?
+
     init(port: UInt16 = 7447) {
         self.port = port
         self.logger = TSLogger()
@@ -79,6 +85,9 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         // frames while the assignment hops over to MainActor.
         capture.onFrameCaptured = { [weak self] pixelBuffer in
             self?.handleCapturedFrame(pixelBuffer)
+        }
+        capture.onStreamStopped = { [weak self] error in
+            self?.onCaptureStopped?(error)
         }
         screenCapture = capture
 
