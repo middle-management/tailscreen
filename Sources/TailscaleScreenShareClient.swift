@@ -108,7 +108,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                             let latencyStr = latencyMs >= 0 ? String(format: "%.1fms", latencyMs) : "n/a"
                             print("Client: received frame #\(framesReceived) (kf=\(isKeyframe), \(data.count)B, total=\(bytesReceived)B, encode→recv=\(latencyStr))")
                         }
-                        enqueueFrame(data: data, isKeyframe: isKeyframe)
+                        await enqueueFrame(data: data, isKeyframe: isKeyframe)
                     }
                 }
             } catch TailscaleError.readFailed {
@@ -154,7 +154,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         formatDescription = desc
     }
 
-    private func enqueueFrame(data: Data, isKeyframe: Bool) {
+    private func enqueueFrame(data: Data, isKeyframe: Bool) async {
         guard let format = formatDescription else { return }
 
         // Wrap the AVCC NAL units in a CMBlockBuffer owning its own copy.
@@ -215,13 +215,12 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
             }
         }
 
-        Task { @MainActor [weak self, sampleBuffer] in
+        // Structured hop: `await` means disconnect()'s `await receiveTask.value`
+        // blocks until this completes. No straggling Tasks can outlive the
+        // receive loop (which was the crash vector — a stale Task popping an
+        // autorelease pool after teardown segfaulted at main-queue drain end).
+        await MainActor.run { [weak self, sampleBuffer] in
             guard let self = self else { return }
-            // If disconnect has started (or finished) while this Task was in
-            // the main-queue, bail. Otherwise a straggling enqueue could
-            // recreate the window + display layer *after* teardown, leaving
-            // a dangling observer / autoreleased renderer that crashes on
-            // the next main-queue drain.
             guard self.isConnected, !self.isDisconnecting else { return }
             if self.window == nil {
                 self.createWindow(initialSize: Self.size(of: format))
