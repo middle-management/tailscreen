@@ -1,32 +1,65 @@
-#!/bin/bash
-# Test script to run two Cuple instances on one machine
+#!/usr/bin/env bash
+# Launch two Cuple instances side-by-side for local testing. Logs from both
+# processes land in one file, each line prefixed with [1] or [2]. Stopping
+# this script (Ctrl-C or exit) shuts both instances down.
+set -euo pipefail
 
-set -e
+# Enable job control so each backgrounded pipeline gets its own process
+# group. We then kill the whole group on exit to take down Cuple + sed +
+# stdbuf in one shot — `$!` of a pipeline only points at the last stage,
+# not the Cuple binary itself.
+set -m
 
-echo "🧪 Cuple Local Testing Script"
-echo "=============================="
-echo ""
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$REPO_ROOT"
 
-# Build if needed
-if [ ! -f ".build/debug/Cuple" ]; then
-    echo "📦 Building Cuple..."
+LOG="${CUPLE_LOG:-/tmp/cuple-merged.log}"
+BIN=".build/debug/Cuple"
+
+if [ ! -x "$BIN" ]; then
+    echo "Building Cuple..."
     make build
 fi
 
-echo "This script helps you test Cuple on a single machine."
-echo ""
-echo "Instructions:"
-echo "1. First instance will start in this terminal"
-echo "2. Open a new terminal and run: .build/debug/Cuple"
-echo "3. In first instance: Click 'Start Sharing'"
-echo "4. In second instance: Click 'Browse Shares...'"
-echo "5. You should see the first instance listed!"
-echo ""
-echo "Note: Both instances will use Tailscale ephemeral nodes,"
-echo "so they'll appear as separate devices on your tailnet."
-echo ""
-read -p "Press Enter to start first instance..."
+: > "$LOG"
 
-# Run first instance
-echo "🚀 Starting Cuple instance 1..."
-.build/debug/Cuple
+pgids=()
+cleanup() {
+    echo
+    echo "Shutting down Cuple instances..."
+    for pgid in "${pgids[@]}"; do
+        kill -TERM -- "-$pgid" 2>/dev/null || true
+    done
+    sleep 1
+    for pgid in "${pgids[@]}"; do
+        kill -KILL -- "-$pgid" 2>/dev/null || true
+    done
+    wait 2>/dev/null || true
+    echo "Logs: $LOG"
+}
+trap cleanup EXIT INT TERM
+
+launch() {
+    local id="$1"
+    CUPLE_INSTANCE="$id" stdbuf -oL -eL "$BIN" 2>&1 \
+        | stdbuf -oL sed "s/^/[$id] /" >> "$LOG" &
+    # `$!` is the PID of the last stage (sed); its pgid is shared with Cuple
+    # because we're in job-control mode.
+    local pgid
+    pgid=$(ps -o pgid= -p "$!" | tr -d ' ')
+    pgids+=("$pgid")
+}
+
+echo "Launching instance 1 (wisp-1)..."
+launch 1
+echo "Launching instance 2 (wisp-2)..."
+launch 2
+
+echo
+echo "Both instances running. Merged log: $LOG"
+echo "Ctrl-C to stop."
+echo "In menubar: click Start Sharing on one, Browse Shares on the other."
+echo
+
+# Stream the merged log until Ctrl-C. trap handles the shutdown.
+tail -f "$LOG"
