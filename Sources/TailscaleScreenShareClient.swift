@@ -75,19 +75,27 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     private func receiveLoop() async {
         guard let connection = connection else { return }
         var parser = ScreenShareMessageParser()
+        var bytesReceived = 0
+        var framesReceived = 0
 
         while isConnected {
             do {
                 // Generous timeout so we don't spin; receive returns as soon as bytes arrive.
                 let chunk = try await connection.receive(maximumLength: 64 * 1024, timeout: 5_000)
                 if chunk.isEmpty { continue }
+                bytesReceived += chunk.count
 
                 parser.append(chunk)
                 while let message = parser.next() {
                     switch message {
                     case .parameterSets(let sps, let pps):
+                        print("Client: received SPS/PPS (sps=\(sps.count)B pps=\(pps.count)B)")
                         decoder.setParameterSets(sps: sps, pps: pps)
                     case .frame(let data, let isKeyframe):
+                        framesReceived += 1
+                        if framesReceived == 1 || framesReceived % 60 == 0 {
+                            print("Client: received frame #\(framesReceived) (kf=\(isKeyframe), \(data.count)B, total=\(bytesReceived)B)")
+                        }
                         decoder.decode(data: data, isKeyframe: isKeyframe)
                     }
                 }

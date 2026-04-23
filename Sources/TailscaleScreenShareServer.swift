@@ -18,7 +18,8 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     private var lastWidth: Int = 0
     private var lastHeight: Int = 0
     private var isRunning = false
-    private var didLogFirstFrame = false
+    private var frameCounter = 0
+    private var broadcastCounter = 0
     private let logger: TSLogger
 
     private let clients = OSAllocatedUnfairLock<[UUID: ClientSender]>(initialState: [:])
@@ -131,9 +132,10 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
 
     private func handleCapturedFrame(_ pixelBuffer: CVPixelBuffer) {
         guard isRunning else { return }
-        if !didLogFirstFrame {
-            didLogFirstFrame = true
-            print("First frame received from ScreenCapture")
+        frameCounter += 1
+        if frameCounter == 1 || frameCounter % 60 == 0 {
+            let clientCount = clients.withLock { $0.count }
+            print("ScreenCapture: frame #\(frameCounter), \(clientCount) viewer(s)")
         }
         let hasClients = clients.withLock { !$0.isEmpty }
         guard hasClients else { return }
@@ -146,10 +148,12 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             let newEncoder = VideoEncoder()
             do {
                 try newEncoder.setup(width: width, height: height, fps: 60)
+                print("VideoEncoder setup: \(width)x\(height) @ 60fps")
                 lastWidth = width
                 lastHeight = height
 
                 newEncoder.onParameterSets = { [weak self] sps, pps in
+                    print("VideoEncoder emitted SPS/PPS (sps=\(sps.count)B pps=\(pps.count)B)")
                     self?.broadcast(.parameterSets(sps: sps, pps: pps), priority: .critical)
                 }
                 newEncoder.onEncodedData = { [weak self] data, isKeyframe in
@@ -168,6 +172,10 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
 
     private func broadcast(_ message: ScreenShareMessage, priority: ClientSender.Priority) {
         let senders = clients.withLock { Array($0.values) }
+        broadcastCounter += 1
+        if broadcastCounter == 1 || broadcastCounter % 60 == 0 {
+            print("Broadcast #\(broadcastCounter) -> \(senders.count) viewer(s)")
+        }
         for sender in senders {
             sender.enqueue(message, priority: priority)
         }
@@ -337,5 +345,11 @@ fileprivate final class ClientSender: @unchecked Sendable {
 
 private struct TSLogger: LogSink {
     var logFileHandle: Int32? = nil
-    func log(_ message: String) { print("[Tailscale] \(message)") }
+    func log(_ message: String) {
+        // The listener prints "Listening for tcp on :PORT" on every accept()
+        // poll, which floods the console every 10s. Silence it; accept()
+        // successes are already logged by the server itself.
+        if message.hasPrefix("Listening for ") { return }
+        print("[Tailscale] \(message)")
+    }
 }
