@@ -157,6 +157,19 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     private func enqueueFrame(data: Data, isKeyframe: Bool) async {
         guard let format = formatDescription else { return }
 
+        // Lazily create the window once we know the video dimensions. All
+        // subsequent frames skip the MainActor hop and enqueue directly on
+        // the layer's renderer, which AVFoundation documents as thread-safe.
+        if window == nil {
+            let size = Self.size(of: format)
+            await MainActor.run { [weak self] in
+                guard let self = self, self.isConnected, !self.isDisconnecting else { return }
+                if self.window == nil {
+                    self.createWindow(initialSize: size)
+                }
+            }
+        }
+
         // Wrap the AVCC NAL units in a CMBlockBuffer owning its own copy.
         var blockBuffer: CMBlockBuffer?
         let allocStatus = CMBlockBufferCreateWithMemoryBlock(
@@ -215,18 +228,12 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
             }
         }
 
-        // Structured hop: `await` means disconnect()'s `await receiveTask.value`
-        // blocks until this completes. No straggling Tasks can outlive the
-        // receive loop (which was the crash vector — a stale Task popping an
-        // autorelease pool after teardown segfaulted at main-queue drain end).
-        await MainActor.run { [weak self, sampleBuffer] in
-            guard let self = self else { return }
-            guard self.isConnected, !self.isDisconnecting else { return }
-            if self.window == nil {
-                self.createWindow(initialSize: Self.size(of: format))
-            }
-            self.displayLayer?.sampleBufferRenderer.enqueue(sampleBuffer)
-        }
+        // Enqueue directly from the receive-loop thread. The video renderer
+        // is documented thread-safe, and skipping the main-queue hop per
+        // frame dodges the repeatable SIGSEGV in objc_autoreleasePoolPop
+        // that showed up on every viewer disconnect.
+        guard isConnected, !isDisconnecting else { return }
+        displayLayer?.sampleBufferRenderer.enqueue(sampleBuffer)
     }
 
     private static func size(of format: CMFormatDescription) -> CGSize {
