@@ -246,12 +246,16 @@ class AppState: ObservableObject {
             return node
         }
 
-        // Determine state directory (with per-instance suffix for local testing)
+        // Use a state dir distinct from the screen-share server. Both nodes
+        // run in the same process and both need a Tailscale identity; pointing
+        // them at the same tailscaled.state gives them the same machine key,
+        // so tsnet's netmap sees a single confused peer listening twice and
+        // peer discovery from a second Cuple instance silently fails to dial.
         let statePath = {
             let appSupport = FileManager.default.urls(
                 for: .applicationSupportDirectory, in: .userDomainMask
             ).first!
-            return appSupport.appendingPathComponent("Cuple/tailscale\(CupleInstance.stateSuffix)").path
+            return appSupport.appendingPathComponent("Cuple/tailscale-auth\(CupleInstance.stateSuffix)").path
         }()
 
         // Create directory if needed
