@@ -12,10 +12,14 @@ import Foundation
 ///         payload = [4 BE: spsLen][sps bytes][4 BE: ppsLen][pps bytes]
 ///
 ///     .frame (0x02)
-///         payload = [1 byte: keyframe flag][raw AVCC NAL units]
+///         payload = [1 byte: keyframe flag][8 BE: server timestamp ns][raw AVCC NAL units]
+///
+/// The timestamp uses `DispatchTime.now().uptimeNanoseconds` (mach_absolute_time),
+/// which is monotonic and consistent across processes on the same machine. Lets
+/// the client compute one-way encode→receive latency when both ends run locally.
 enum ScreenShareMessage {
     case parameterSets(sps: Data, pps: Data)
-    case frame(data: Data, isKeyframe: Bool)
+    case frame(data: Data, isKeyframe: Bool, timestampNs: UInt64)
 
     static let headerSize = 5
 
@@ -35,9 +39,10 @@ enum ScreenShareMessage {
             payload.append(pps)
             return Self.frame(type: .parameterSets, payload: payload)
 
-        case .frame(let data, let isKeyframe):
-            var payload = Data(capacity: 1 + data.count)
+        case .frame(let data, let isKeyframe, let timestampNs):
+            var payload = Data(capacity: 1 + 8 + data.count)
             payload.append(isKeyframe ? 1 : 0)
+            payload.appendBigEndian(timestampNs)
             payload.append(data)
             return Self.frame(type: .frame, payload: payload)
         }
@@ -107,11 +112,13 @@ struct ScreenShareMessageParser {
     }
 
     private func decodeFrame(_ payload: Data) -> ScreenShareMessage? {
-        guard !payload.isEmpty else { return nil }
+        guard payload.count >= 9 else { return nil }
         let isKeyframe = payload[payload.startIndex] == 1
-        let bodyStart = payload.index(payload.startIndex, offsetBy: 1)
+        let timestampStart = payload.index(payload.startIndex, offsetBy: 1)
+        let timestampNs = payload.readBigEndian(UInt64.self, at: timestampStart)
+        let bodyStart = payload.index(timestampStart, offsetBy: 8)
         let body = Data(payload[bodyStart..<payload.endIndex])
-        return .frame(data: body, isKeyframe: isKeyframe)
+        return .frame(data: body, isKeyframe: isKeyframe, timestampNs: timestampNs)
     }
 }
 
@@ -123,11 +130,25 @@ private extension Data {
         append(UInt8(value & 0xFF))
     }
 
+    mutating func appendBigEndian(_ value: UInt64) {
+        for shift in stride(from: 56, through: 0, by: -8) {
+            append(UInt8((value >> UInt64(shift)) & 0xFF))
+        }
+    }
+
     func readBigEndian(_: UInt32.Type, at index: Data.Index) -> UInt32 {
         let b0 = UInt32(self[index])
         let b1 = UInt32(self[self.index(index, offsetBy: 1)])
         let b2 = UInt32(self[self.index(index, offsetBy: 2)])
         let b3 = UInt32(self[self.index(index, offsetBy: 3)])
         return (b0 << 24) | (b1 << 16) | (b2 << 8) | b3
+    }
+
+    func readBigEndian(_: UInt64.Type, at index: Data.Index) -> UInt64 {
+        var result: UInt64 = 0
+        for offset in 0..<8 {
+            result = (result << 8) | UInt64(self[self.index(index, offsetBy: offset)])
+        }
+        return result
     }
 }

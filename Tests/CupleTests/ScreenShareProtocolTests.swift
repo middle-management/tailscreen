@@ -4,17 +4,19 @@ import XCTest
 final class ScreenShareProtocolTests: XCTestCase {
     func testRoundTripFrame() throws {
         let payload = Data((0..<1024).map { UInt8($0 & 0xFF) })
-        let message: ScreenShareMessage = .frame(data: payload, isKeyframe: true)
+        let ts: UInt64 = 0x0123_4567_89AB_CDEF
+        let message: ScreenShareMessage = .frame(data: payload, isKeyframe: true, timestampNs: ts)
 
         var parser = ScreenShareMessageParser()
         parser.append(message.encode())
 
         let decoded = try XCTUnwrap(parser.next())
-        guard case let .frame(data: got, isKeyframe: key) = decoded else {
+        guard case let .frame(data: got, isKeyframe: key, timestampNs: gotTs) = decoded else {
             return XCTFail("expected .frame, got \(decoded)")
         }
         XCTAssertEqual(got, payload)
         XCTAssertTrue(key)
+        XCTAssertEqual(gotTs, ts)
         XCTAssertNil(parser.next())
     }
 
@@ -36,7 +38,7 @@ final class ScreenShareProtocolTests: XCTestCase {
 
     func testPartialReceiveReturnsNilUntilComplete() {
         let payload = Data(repeating: 0xAB, count: 300)
-        let full = ScreenShareMessage.frame(data: payload, isKeyframe: false).encode()
+        let full = ScreenShareMessage.frame(data: payload, isKeyframe: false, timestampNs: 42).encode()
 
         var parser = ScreenShareMessageParser()
 
@@ -52,18 +54,19 @@ final class ScreenShareProtocolTests: XCTestCase {
         parser.append(full.subdata(in: 10..<full.count))
         let decoded = parser.next()
         XCTAssertNotNil(decoded)
-        if case let .frame(data: got, isKeyframe: key) = decoded {
+        if case let .frame(data: got, isKeyframe: key, timestampNs: ts) = decoded {
             XCTAssertEqual(got, payload)
             XCTAssertFalse(key)
+            XCTAssertEqual(ts, 42)
         } else {
             XCTFail("expected .frame")
         }
     }
 
     func testMultipleMessagesInOneChunk() throws {
-        let m1: ScreenShareMessage = .frame(data: Data([1, 2, 3]), isKeyframe: true)
+        let m1: ScreenShareMessage = .frame(data: Data([1, 2, 3]), isKeyframe: true, timestampNs: 1)
         let m2: ScreenShareMessage = .parameterSets(sps: Data([0x67]), pps: Data([0x68]))
-        let m3: ScreenShareMessage = .frame(data: Data([4, 5]), isKeyframe: false)
+        let m3: ScreenShareMessage = .frame(data: Data([4, 5]), isKeyframe: false, timestampNs: 2)
 
         var combined = Data()
         combined.append(m1.encode())
@@ -79,9 +82,9 @@ final class ScreenShareProtocolTests: XCTestCase {
         let d3 = try XCTUnwrap(parser.next())
         XCTAssertNil(parser.next())
 
-        guard case let .frame(data: got1, isKeyframe: k1) = d1 else { return XCTFail("d1") }
+        guard case let .frame(data: got1, isKeyframe: k1, timestampNs: _) = d1 else { return XCTFail("d1") }
         guard case let .parameterSets(sps: gotSps, pps: gotPps) = d2 else { return XCTFail("d2") }
-        guard case let .frame(data: got3, isKeyframe: k3) = d3 else { return XCTFail("d3") }
+        guard case let .frame(data: got3, isKeyframe: k3, timestampNs: _) = d3 else { return XCTFail("d3") }
 
         XCTAssertEqual(got1, Data([1, 2, 3]))
         XCTAssertTrue(k1)
@@ -98,14 +101,14 @@ final class ScreenShareProtocolTests: XCTestCase {
         bogus.append(contentsOf: [0x00, 0x00, 0x00, 0x02])  // payload len = 2, big-endian
         bogus.append(contentsOf: [0xDE, 0xAD])           // payload
 
-        let good = ScreenShareMessage.frame(data: Data([7, 7, 7]), isKeyframe: true).encode()
+        let good = ScreenShareMessage.frame(data: Data([7, 7, 7]), isKeyframe: true, timestampNs: 0).encode()
 
         var parser = ScreenShareMessageParser()
         parser.append(bogus + good)
 
         // The unknown message is consumed and the parser returns the next valid one.
         let decoded = try XCTUnwrap(parser.next())
-        guard case let .frame(data: got, isKeyframe: _) = decoded else {
+        guard case let .frame(data: got, isKeyframe: _, timestampNs: _) = decoded else {
             return XCTFail("expected .frame after skipping unknown type")
         }
         XCTAssertEqual(got, Data([7, 7, 7]))
@@ -115,12 +118,13 @@ final class ScreenShareProtocolTests: XCTestCase {
         // Construct a frame whose payload is larger than 255 bytes so we exercise
         // every byte of the length field (not just the last one).
         let payload = Data(repeating: 0x42, count: 500)
-        let encoded = ScreenShareMessage.frame(data: payload, isKeyframe: false).encode()
+        let encoded = ScreenShareMessage.frame(data: payload, isKeyframe: false, timestampNs: 0).encode()
 
-        // Header is [type=0x02][length big-endian]. Payload length is 1 (keyframe) + 500.
+        // Header is [type=0x02][length big-endian]. Payload length is
+        // 1 (keyframe) + 8 (timestamp) + 500 (data) = 509.
         XCTAssertEqual(encoded[0], 0x02)
         let lenBytes = encoded.subdata(in: 1..<5)
-        let expectedLen = UInt32(501).bigEndian
+        let expectedLen = UInt32(509).bigEndian
         var expected = Data(count: 4)
         _ = expected.withUnsafeMutableBytes { buf in
             buf.storeBytes(of: expectedLen, as: UInt32.self)

@@ -91,10 +91,21 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                     case .parameterSets(let sps, let pps):
                         print("Client: received SPS/PPS (sps=\(sps.count)B pps=\(pps.count)B)")
                         decoder.setParameterSets(sps: sps, pps: pps)
-                    case .frame(let data, let isKeyframe):
+                    case .frame(let data, let isKeyframe, let timestampNs):
                         framesReceived += 1
                         if framesReceived == 1 || framesReceived % 60 == 0 {
-                            print("Client: received frame #\(framesReceived) (kf=\(isKeyframe), \(data.count)B, total=\(bytesReceived)B)")
+                            let nowNs = DispatchTime.now().uptimeNanoseconds
+                            // Server timestamp is also mach ns. On a single host the
+                            // clocks are identical; across hosts the delta is still
+                            // useful as a relative number if clocks are close.
+                            let latencyMs: Double
+                            if timestampNs > 0 && nowNs >= timestampNs {
+                                latencyMs = Double(nowNs - timestampNs) / 1_000_000.0
+                            } else {
+                                latencyMs = -1
+                            }
+                            let latencyStr = latencyMs >= 0 ? String(format: "%.1fms", latencyMs) : "n/a"
+                            print("Client: received frame #\(framesReceived) (kf=\(isKeyframe), \(data.count)B, total=\(bytesReceived)B, encode→recv=\(latencyStr))")
                         }
                         decoder.decode(data: data, isKeyframe: isKeyframe)
                     }

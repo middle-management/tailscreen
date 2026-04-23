@@ -157,7 +157,8 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
                     self?.broadcast(.parameterSets(sps: sps, pps: pps), priority: .critical)
                 }
                 newEncoder.onEncodedData = { [weak self] data, isKeyframe in
-                    self?.broadcast(.frame(data: data, isKeyframe: isKeyframe),
+                    let ts = DispatchTime.now().uptimeNanoseconds
+                    self?.broadcast(.frame(data: data, isKeyframe: isKeyframe, timestampNs: ts),
                                     priority: isKeyframe ? .critical : .droppable)
                 }
                 encoder = newEncoder
