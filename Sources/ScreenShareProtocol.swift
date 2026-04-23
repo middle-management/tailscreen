@@ -117,18 +117,17 @@ struct ScreenShareMessageParser {
 
 private extension Data {
     mutating func appendBigEndian(_ value: UInt32) {
-        var be = value.bigEndian
-        withUnsafeBytes(of: &be) { append(contentsOf: $0) }
+        append(UInt8((value >> 24) & 0xFF))
+        append(UInt8((value >> 16) & 0xFF))
+        append(UInt8((value >> 8) & 0xFF))
+        append(UInt8(value & 0xFF))
     }
 
     func readBigEndian(_: UInt32.Type, at index: Data.Index) -> UInt32 {
-        let end = self.index(index, offsetBy: 4)
-        return self[index..<end].withUnsafeBytes { raw -> UInt32 in
-            var value: UInt32 = 0
-            withUnsafeMutableBytes(of: &value) { dst in
-                dst.copyBytes(from: raw)
-            }
-            return UInt32(bigEndian: value)
-        }
+        let b0 = UInt32(self[index])
+        let b1 = UInt32(self[self.index(index, offsetBy: 1)])
+        let b2 = UInt32(self[self.index(index, offsetBy: 2)])
+        let b3 = UInt32(self[self.index(index, offsetBy: 3)])
+        return (b0 << 24) | (b1 << 16) | (b2 << 8) | b3
     }
 }

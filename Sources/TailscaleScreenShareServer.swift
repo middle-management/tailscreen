@@ -1,14 +1,14 @@
 import Foundation
 import CoreVideo
+import os
 import TailscaleKit
 
 /// Screen-share server that uses TailscaleKit as the transport.
 ///
-/// Each accepted client gets its own ``ClientSender`` actor; a slow client can't
-/// stall the capture pipeline or other viewers. When a client attaches, the
-/// server immediately pushes cached SPS/PPS (if any) and asks the encoder for a
-/// fresh IDR so the new viewer starts on a keyframe.
-@available(macOS 10.15, *)
+/// Each accepted client gets its own ``ClientSender``; a slow viewer can't stall
+/// the capture pipeline or other viewers. When a viewer attaches, the server
+/// immediately pushes cached SPS/PPS (if any) and asks the encoder for a fresh
+/// IDR so the new viewer starts on a keyframe.
 final class TailscaleScreenShareServer: @unchecked Sendable {
     private let port: UInt16
     var node: TailscaleNode?
@@ -20,8 +20,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     private var isRunning = false
     private let logger: TSLogger
 
-    private let clientsLock = NSLock()
-    private var clients: [UUID: ClientSender] = [:]
+    private let clients = OSAllocatedUnfairLock<[UUID: ClientSender]>(initialState: [:])
 
     init(port: UInt16 = 7447) {
         self.port = port
@@ -101,15 +100,12 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             self?.removeClient(clientID)
         }
 
-        clientsLock.lock()
-        clients[id] = sender
-        let cached = encoder?.cachedParameterSets
-        clientsLock.unlock()
+        clients.withLock { $0[id] = sender }
 
         let addr = await connection.remoteAddress ?? "unknown"
         print("New viewer: \(addr) [\(id)]")
 
-        if let cached = cached {
+        if let cached = encoder?.cachedParameterSets {
             sender.enqueue(.parameterSets(sps: cached.sps, pps: cached.pps), priority: .critical)
         }
         encoder?.requestKeyframe()
@@ -118,20 +114,15 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     }
 
     private func removeClient(_ id: UUID) {
-        clientsLock.lock()
-        let sender = clients.removeValue(forKey: id)
-        clientsLock.unlock()
-        if sender != nil {
+        let removed = clients.withLock { $0.removeValue(forKey: id) }
+        if removed != nil {
             print("Viewer disconnected [\(id)]")
         }
     }
 
     private func handleCapturedFrame(_ pixelBuffer: CVPixelBuffer) {
         guard isRunning else { return }
-
-        clientsLock.lock()
-        let hasClients = !clients.isEmpty
-        clientsLock.unlock()
+        let hasClients = clients.withLock { !$0.isEmpty }
         guard hasClients else { return }
 
         let width = CVPixelBufferGetWidth(pixelBuffer)
@@ -163,9 +154,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     }
 
     private func broadcast(_ message: ScreenShareMessage, priority: ClientSender.Priority) {
-        clientsLock.lock()
-        let senders = Array(clients.values)
-        clientsLock.unlock()
+        let senders = clients.withLock { Array($0.values) }
         for sender in senders {
             sender.enqueue(message, priority: priority)
         }
@@ -186,10 +175,11 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         encoder?.shutdown()
         encoder = nil
 
-        clientsLock.lock()
-        let all = Array(clients.values)
-        clients.removeAll()
-        clientsLock.unlock()
+        let all = clients.withLock { state -> [ClientSender] in
+            let values = Array(state.values)
+            state.removeAll()
+            return values
+        }
         for sender in all {
             await sender.close()
         }
@@ -213,7 +203,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
 /// One per viewer. Owns a background task that drains a bounded send queue.
 /// Critical messages (parameter sets, keyframes) always queue; droppable frames
 /// are discarded when the queue is already over its byte cap.
-private final class ClientSender: @unchecked Sendable {
+fileprivate final class ClientSender: @unchecked Sendable {
     enum Priority {
         case critical
         case droppable
@@ -223,14 +213,16 @@ private final class ClientSender: @unchecked Sendable {
     private let connection: IncomingConnection
     private let onClose: (UUID) -> Void
 
-    private let lock = NSLock()
-    private var queue: [Data] = []
-    private var queuedBytes = 0
-    private var waiter: CheckedContinuation<Void, Never>?
-    private var closed = false
+    private struct State {
+        var queue: [Data] = []
+        var queuedBytes = 0
+        var closed = false
+        var waiter: CheckedContinuation<Void, Never>?
+    }
 
-    /// If the viewer's backlog grows past this, we drop droppable frames.
-    /// Roughly one second of 60Mbps = 7.5 MB — this leaves some slack.
+    private let state = OSAllocatedUnfairLock<State>(initialState: State())
+
+    /// Viewer backlog cap. ~1s of 60Mbps = 7.5 MB; 12 MB leaves slack.
     private let backlogCapBytes = 12 * 1024 * 1024
     private var task: Task<Void, Never>?
 
@@ -249,30 +241,29 @@ private final class ClientSender: @unchecked Sendable {
     func enqueue(_ message: ScreenShareMessage, priority: Priority) {
         let data = message.encode()
 
-        lock.lock()
-        if closed {
-            lock.unlock()
-            return
+        let waiterToResume: CheckedContinuation<Void, Never>? = state.withLock { s -> CheckedContinuation<Void, Never>? in
+            if s.closed { return nil }
+            if priority == .droppable && s.queuedBytes + data.count > backlogCapBytes {
+                return nil
+            }
+            s.queue.append(data)
+            s.queuedBytes += data.count
+            let w = s.waiter
+            s.waiter = nil
+            return w
         }
+        waiterToResume?.resume()
+    }
 
-        if priority == .droppable && queuedBytes + data.count > backlogCapBytes {
-            lock.unlock()
-            return  // viewer is behind — drop this frame
-        }
-
-        queue.append(data)
-        queuedBytes += data.count
-        let waiter = self.waiter
-        self.waiter = nil
-        lock.unlock()
-
-        waiter?.resume()
+    private enum PopResult {
+        case closed
+        case item(Data)
+        case empty
     }
 
     private func drain() async {
         while true {
-            let item: Data? = await nextItem()
-            guard let data = item else { return }
+            guard let data = await nextItem() else { return }
             do {
                 try await connection.send(data)
             } catch {
@@ -285,46 +276,46 @@ private final class ClientSender: @unchecked Sendable {
 
     private func nextItem() async -> Data? {
         while true {
-            lock.lock()
-            if closed {
-                lock.unlock()
-                return nil
+            let popped: PopResult = state.withLock { s -> PopResult in
+                if s.closed { return .closed }
+                if !s.queue.isEmpty {
+                    let data = s.queue.removeFirst()
+                    s.queuedBytes -= data.count
+                    return .item(data)
+                }
+                return .empty
             }
-            if !queue.isEmpty {
-                let data = queue.removeFirst()
-                queuedBytes -= data.count
-                lock.unlock()
-                return data
+
+            switch popped {
+            case .closed: return nil
+            case .item(let d): return d
+            case .empty: break
             }
-            lock.unlock()
 
             await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-                lock.lock()
-                if closed || !queue.isEmpty {
-                    lock.unlock()
-                    cont.resume()
-                    return
+                let shouldResumeImmediately = state.withLock { s -> Bool in
+                    if s.closed || !s.queue.isEmpty { return true }
+                    s.waiter = cont
+                    return false
                 }
-                self.waiter = cont
-                lock.unlock()
+                if shouldResumeImmediately { cont.resume() }
             }
         }
     }
 
     func close() async {
-        lock.lock()
-        if closed {
-            lock.unlock()
-            return
+        let transition: (didClose: Bool, waiter: CheckedContinuation<Void, Never>?) = state.withLock { s in
+            if s.closed { return (false, nil) }
+            s.closed = true
+            s.queue.removeAll()
+            s.queuedBytes = 0
+            let w = s.waiter
+            s.waiter = nil
+            return (true, w)
         }
-        closed = true
-        queue.removeAll()
-        queuedBytes = 0
-        let waiter = self.waiter
-        self.waiter = nil
-        lock.unlock()
+        guard transition.didClose else { return }
 
-        waiter?.resume()
+        transition.waiter?.resume()
         await connection.close()
         task?.cancel()
         onClose(id)
