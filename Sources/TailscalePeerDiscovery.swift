@@ -75,6 +75,9 @@ class TailscalePeerDiscovery: ObservableObject {
 
         var updatedPeers: [CuplePeer] = []
 
+        for peer in peers {
+            logger.log("→ probing \(peer.hostname) @ \(peer.tailscaleIP):\(cuplePort)")
+        }
         await withTaskGroup(of: (String, Bool).self) { group in
             for peer in peers {
                 let ip = peer.tailscaleIP
@@ -145,6 +148,9 @@ class TailscalePeerDiscovery: ObservableObject {
             logger.log("✓ \(host):\(port) is running Cuple")
             return true
         } catch {
+            // Log the reason so silent-negatives (wrong netmap, DERP fail,
+            // ACL deny, peer not listening, timeout) are distinguishable.
+            logger.log("✗ \(host):\(port) probe failed: \(error)")
             return false
         }
     }
