@@ -7,6 +7,36 @@ struct MenuBarView: View {
     @State private var viewID = UUID()
 
     var body: some View {
+        Group {
+            // SwiftUI sheets inside a MenuBarExtra(.window) popover cause the
+            // popover itself to dismiss: the sheet opens in a separate NSWindow
+            // that becomes key, and the menubar popover auto-closes on focus
+            // loss. Render the "sheets" as inline views instead, swapping the
+            // menu list out for whichever one is active.
+            if appState.showBrowseSheet {
+                BrowseSharesSheet()
+            } else if appState.showConnectSheet {
+                ConnectSheet()
+            } else if appState.showIPSheet {
+                IPAddressSheet()
+            } else {
+                menuList
+            }
+        }
+        .alert(appState.alertTitle, isPresented: $appState.showAlert) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(appState.alertMessage)
+        }
+        .id(viewID)
+        .onAppear {
+            print("📱 [MenuBarView] onAppear called")
+            appState.triggerAutoLoginIfNeeded()
+            viewID = UUID()
+        }
+    }
+
+    private var menuList: some View {
         VStack(alignment: .leading, spacing: 0) {
             // Authentication section - show first if not authenticated
             if !appState.tailscaleAuth.isAuthenticated {
@@ -159,31 +189,6 @@ struct MenuBarView: View {
             }
         }
         .frame(width: 220)
-        .sheet(isPresented: $appState.showConnectSheet) {
-            ConnectSheet()
-                .environmentObject(appState)
-        }
-        .sheet(isPresented: $appState.showIPSheet) {
-            IPAddressSheet()
-                .environmentObject(appState)
-        }
-        .sheet(isPresented: $appState.showBrowseSheet) {
-            BrowseSharesSheet()
-                .environmentObject(appState)
-        }
-        .alert(appState.alertTitle, isPresented: $appState.showAlert) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(appState.alertMessage)
-        }
-        .id(viewID)
-        .onAppear {
-            // Auto-login on app startup if not authenticated (only once)
-            print("📱 [MenuBarView] onAppear called")
-            appState.triggerAutoLoginIfNeeded()
-            // Force view refresh by updating ID
-            viewID = UUID()
-        }
     }
 }
 
@@ -224,8 +229,9 @@ struct MenuButton: View {
 
 struct ConnectSheet: View {
     @EnvironmentObject var appState: AppState
-    @Environment(\.dismiss) var dismiss
     @State private var hostname = ""
+
+    private func dismiss() { appState.showConnectSheet = false }
 
     var body: some View {
         VStack(spacing: 20) {
@@ -260,7 +266,6 @@ struct ConnectSheet: View {
                 }
                 .keyboardShortcut(.return)
                 .buttonStyle(.borderedProminent)
-                .buttonStyle(.borderless)
                 .controlSize(.large)
                 .disabled(hostname.isEmpty)
             }
@@ -272,7 +277,8 @@ struct ConnectSheet: View {
 
 struct IPAddressSheet: View {
     @EnvironmentObject var appState: AppState
-    @Environment(\.dismiss) var dismiss
+
+    private func dismiss() { appState.showIPSheet = false }
 
     var body: some View {
         VStack(spacing: 20) {
@@ -331,7 +337,8 @@ struct IPAddressSheet: View {
 
 struct BrowseSharesSheet: View {
     @EnvironmentObject var appState: AppState
-    @Environment(\.dismiss) var dismiss
+
+    private func dismiss() { appState.showBrowseSheet = false }
 
     var body: some View {
         VStack(spacing: 20) {
