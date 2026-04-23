@@ -65,23 +65,23 @@ class TailscalePeerDiscovery: ObservableObject {
 
         logger.log("✓ Found \(peers.count) online peers")
 
-        // Fetch metadata from all peers (in parallel)
+        // Fetch metadata from all peers (in parallel, over Tailscale)
         var updatedPeers: [CuplePeer] = []
 
         await withTaskGroup(of: (String, CupleMetadata?).self) { group in
             for peer in peers {
-                group.addTask {
-                    // Try to fetch metadata - if it works, Cuple is running
-                    self.logger.log("🔍 Attempting to fetch metadata from \(peer.hostname) (\(peer.tailscaleIP))...")
+                group.addTask { [metadataPort] in
+                    self.logger.log("🔍 Fetching metadata from \(peer.hostname) (\(peer.tailscaleIP))...")
                     do {
                         let metadata = try await CupleMetadataService.fetchMetadata(
+                            node: node,
                             from: peer.tailscaleIP,
-                            port: self.metadataPort
+                            port: metadataPort
                         )
-                        self.logger.log("✓ Got metadata from \(peer.hostname): isSharing=\(metadata.isSharing)")
+                        self.logger.log("✓ \(peer.hostname): isSharing=\(metadata.isSharing)")
                         return (peer.id, metadata)
                     } catch {
-                        self.logger.log("✗ Failed to get metadata from \(peer.hostname): \(error.localizedDescription)")
+                        self.logger.log("✗ \(peer.hostname): \(error.localizedDescription)")
                         return (peer.id, nil)
                     }
                 }
@@ -161,20 +161,6 @@ class TailscalePeerDiscovery: ObservableObject {
         logger.log("✓ Real-time monitoring stopped")
     }
 
-    /// Fetch metadata for a specific peer
-    func fetchMetadata(for peer: CuplePeer) async -> CupleMetadata? {
-        do {
-            let metadata = try await CupleMetadataService.fetchMetadata(
-                from: peer.tailscaleIP,
-                port: metadataPort
-            )
-            return metadata
-        } catch {
-            logger.log(
-                "Failed to fetch metadata from \(peer.hostname): \(error.localizedDescription)")
-            return nil
-        }
-    }
 }
 
 struct TimeoutError: Error {}

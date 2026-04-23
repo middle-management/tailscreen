@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import TailscaleKit
 
 /// Metadata about a Cuple screen share
 struct CupleMetadata: Codable, Sendable {
@@ -150,25 +151,92 @@ class CupleMetadataService: ObservableObject {
         }
     }
 
-    /// Fetch metadata from a peer
-    static func fetchMetadata(from host: String, port: UInt16 = 7448) async throws -> CupleMetadata
-    {
-        let url = URL(string: "http://\(host):\(port)/api/metadata")!
-
-        // Create request with timeout
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 3.0
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-
-        guard let httpResponse = response as? HTTPURLResponse,
-            (200...299).contains(httpResponse.statusCode)
-        else {
-            throw NSError(
-                domain: "CupleMetadata", code: 3,
-                userInfo: [NSLocalizedDescriptionKey: "Failed to fetch metadata"])
+    /// Fetch metadata from a peer over the Tailscale network.
+    /// Uses TailscaleKit's OutgoingConnection so the request actually routes via tsnet.
+    static func fetchMetadata(
+        node: TailscaleNode,
+        from host: String,
+        port: UInt16 = 7448
+    ) async throws -> CupleMetadata {
+        guard let tailscaleHandle = await node.tailscale else {
+            throw TailscaleError.badInterfaceHandle
         }
 
-        return try JSONDecoder().decode(CupleMetadata.self, from: data)
+        let connection = try await OutgoingConnection(
+            tailscale: tailscaleHandle,
+            to: "\(host):\(port)",
+            proto: .tcp,
+            logger: MetadataLogger()
+        )
+        try await connection.connect()
+
+        // Send HTTP/1.0 GET request (HTTP/1.0 so server can close after response)
+        let httpRequest =
+            "GET /api/metadata HTTP/1.0\r\n"
+            + "Host: \(host):\(port)\r\n"
+            + "Accept: application/json\r\n"
+            + "Connection: close\r\n"
+            + "\r\n"
+
+        guard let requestData = httpRequest.data(using: .utf8) else {
+            throw NSError(
+                domain: "CupleMetadata", code: 4,
+                userInfo: [NSLocalizedDescriptionKey: "Failed to encode request"])
+        }
+
+        try await connection.send(requestData)
+
+        // Read response until connection closes or we have the whole body.
+        var buffer = Data()
+        let deadline = Date().addingTimeInterval(5.0)
+
+        while Date() < deadline {
+            do {
+                let chunk = try await connection.receive(maximumLength: 8192, timeout: 2_000)
+                if chunk.isEmpty { break }
+                buffer.append(chunk)
+                if buffer.count > 64 * 1024 { break }  // metadata is small; bail on bloat
+            } catch {
+                break  // EOF or timeout — use what we have
+            }
+        }
+
+        await connection.close()
+
+        // Split headers from body on the blank line.
+        guard let separator = "\r\n\r\n".data(using: .utf8),
+              let range = buffer.range(of: separator)
+        else {
+            throw NSError(
+                domain: "CupleMetadata", code: 5,
+                userInfo: [NSLocalizedDescriptionKey: "Malformed HTTP response"])
+        }
+
+        let headerData = buffer[..<range.lowerBound]
+        let body = buffer[range.upperBound...]
+
+        guard let headerString = String(data: headerData, encoding: .utf8),
+              let statusLine = headerString.components(separatedBy: "\r\n").first
+        else {
+            throw NSError(
+                domain: "CupleMetadata", code: 6,
+                userInfo: [NSLocalizedDescriptionKey: "Invalid HTTP headers"])
+        }
+
+        let parts = statusLine.components(separatedBy: " ")
+        guard parts.count >= 2, let status = Int(parts[1]), (200...299).contains(status) else {
+            throw NSError(
+                domain: "CupleMetadata", code: 7,
+                userInfo: [NSLocalizedDescriptionKey: "HTTP error: \(statusLine)"])
+        }
+
+        return try JSONDecoder().decode(CupleMetadata.self, from: body)
+    }
+}
+
+private struct MetadataLogger: LogSink {
+    var logFileHandle: Int32? = nil
+    func log(_ message: String) {
+        // Quiet by default; metadata fetches happen often.
     }
 }

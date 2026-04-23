@@ -1,7 +1,8 @@
 import Foundation
 import TailscaleKit
 
-/// Lightweight HTTP server for serving Cuple metadata over Tailscale
+/// Lightweight HTTP server for serving Cuple metadata over Tailscale.
+/// Uses TailscaleKit's Listener + IncomingConnection.send() for bidirectional HTTP.
 @available(macOS 10.15, *)
 actor CupleHTTPServer {
     private let port: UInt16
@@ -14,12 +15,15 @@ actor CupleHTTPServer {
         self.metadataService = metadataService
     }
 
-    func start(tailscaleHandle: OpaquePointer) async throws {
+    func start(node: TailscaleNode) async throws {
         guard !isRunning else { return }
+
+        guard let tailscaleHandle = await node.tailscale else {
+            throw TailscaleError.badInterfaceHandle
+        }
 
         print("🌐 [HTTP] Starting metadata server on Tailscale port \(port)...")
 
-        // Create Tailscale listener (just like the screen share server)
         let listener = try await Listener(
             tailscale: tailscaleHandle,
             proto: .tcp,
@@ -32,9 +36,8 @@ actor CupleHTTPServer {
 
         print("✅ Metadata server listening on Tailscale port \(port)")
 
-        // Start accepting connections
-        Task {
-            await acceptConnections()
+        Task { [weak self] in
+            await self?.acceptConnections()
         }
     }
 
@@ -44,40 +47,29 @@ actor CupleHTTPServer {
         while isRunning {
             do {
                 let connection = try await listener.accept(timeout: 10.0)
-                // Handle connection in background
                 Task {
                     await handleConnection(connection)
                 }
             } catch {
-                // Timeout - continue
                 continue
             }
         }
     }
 
-    struct SimpleLogger: LogSink {
-        var logFileHandle: Int32? = nil
-        func log(_ message: String) {
-            print("[HTTP] \(message)")
-        }
-    }
-
     private func handleConnection(_ connection: IncomingConnection) async {
-        print("🌐 [HTTP] New connection from: \(await connection.remoteAddress ?? "unknown")")
+        let addr = await connection.remoteAddress ?? "unknown"
+        print("🌐 [HTTP] New connection from: \(addr)")
 
         do {
-            // Read HTTP request
             let data = try await connection.receive(maximumLength: 4096, timeout: 5_000)
 
             guard let request = String(data: data, encoding: .utf8) else {
-                print("❌ [HTTP] Failed to parse request")
                 await connection.close()
                 return
             }
 
-            print("📥 [HTTP] Request: \(request.prefix(100))...")
+            print("📥 [HTTP] Request: \(request.prefix(80))")
 
-            // Parse request
             let lines = request.components(separatedBy: "\r\n")
             guard let requestLine = lines.first else {
                 await connection.close()
@@ -85,68 +77,98 @@ actor CupleHTTPServer {
             }
 
             let parts = requestLine.components(separatedBy: " ")
-            guard parts.count >= 2, parts[0] == "GET", parts[1] == "/api/metadata" else {
+            guard parts.count >= 2 else {
+                await sendResponse(connection, status: 400, body: "Bad Request")
+                return
+            }
+
+            let method = parts[0]
+            let path = parts[1]
+
+            if method == "GET" && path == "/api/metadata" {
+                await handleMetadata(connection)
+            } else {
                 await sendResponse(connection, status: 404, body: "Not Found")
-                return
-            }
-
-            // Get metadata
-            guard let metadataService = metadataService else {
-                await sendResponse(connection, status: 500, body: "Service unavailable")
-                return
-            }
-
-            do {
-                let jsonData = try await MainActor.run {
-                    try metadataService.getMetadataJSON()
-                }
-                print("✅ [HTTP] Sending metadata: \(jsonData.count) bytes")
-                await sendJSON(connection, data: jsonData)
-            } catch {
-                await sendResponse(connection, status: 500, body: "Failed to get metadata: \(error)")
             }
         } catch {
             print("❌ [HTTP] Error handling connection: \(error)")
+            await connection.close()
+        }
+    }
+
+    private func handleMetadata(_ connection: IncomingConnection) async {
+        guard let metadataService = metadataService else {
+            await sendResponse(connection, status: 500, body: "Service unavailable")
+            return
         }
 
-        await connection.close()
+        do {
+            let jsonData = try await MainActor.run {
+                try metadataService.getMetadataJSON()
+            }
+            print("✅ [HTTP] Sending metadata: \(jsonData.count) bytes")
+            await sendJSON(connection, data: jsonData)
+        } catch {
+            await sendResponse(connection, status: 500, body: "Failed to get metadata")
+        }
     }
 
-    private func sendJSON(_ conn: NWConnection, data: Data) async {
-        let response =
-            "HTTP/1.1 200 OK\r\n" + "Content-Type: application/json\r\n"
-            + "Content-Length: \(data.count)\r\n" + "Connection: close\r\n\r\n"
+    private func sendJSON(_ connection: IncomingConnection, data: Data) async {
+        let header =
+            "HTTP/1.1 200 OK\r\n"
+            + "Content-Type: application/json\r\n"
+            + "Content-Length: \(data.count)\r\n"
+            + "Connection: close\r\n\r\n"
 
-        var fullResponse = Data()
-        fullResponse.append(response.data(using: .utf8)!)
-        fullResponse.append(data)
+        var response = Data()
+        response.append(header.data(using: .utf8)!)
+        response.append(data)
 
-        conn.send(
-            content: fullResponse,
-            completion: .contentProcessed { _ in
-                conn.cancel()
-            })
+        await sendAndClose(connection, data: response)
     }
 
-    private func sendResponse(_ conn: NWConnection, status: Int, body: String) async {
-        let statusText = status == 200 ? "OK" : status == 404 ? "Not Found" : "Error"
+    private func sendResponse(_ connection: IncomingConnection, status: Int, body: String) async {
+        let statusText: String
+        switch status {
+        case 200: statusText = "OK"
+        case 400: statusText = "Bad Request"
+        case 404: statusText = "Not Found"
+        case 500: statusText = "Internal Server Error"
+        default: statusText = "Error"
+        }
+
         let response =
-            "HTTP/1.1 \(status) \(statusText)\r\n" + "Content-Type: text/plain\r\n"
-            + "Content-Length: \(body.utf8.count)\r\n" + "Connection: close\r\n\r\n\(body)"
+            "HTTP/1.1 \(status) \(statusText)\r\n"
+            + "Content-Type: text/plain\r\n"
+            + "Content-Length: \(body.utf8.count)\r\n"
+            + "Connection: close\r\n\r\n"
+            + body
 
         if let data = response.data(using: .utf8) {
-            conn.send(
-                content: data,
-                completion: .contentProcessed { _ in
-                    conn.cancel()
-                })
+            await sendAndClose(connection, data: data)
         }
+    }
+
+    private func sendAndClose(_ connection: IncomingConnection, data: Data) async {
+        do {
+            try await connection.send(data)
+        } catch {
+            print("❌ [HTTP] Send failed: \(error)")
+        }
+        await connection.close()
     }
 
     func stop() async {
         isRunning = false
-        listener?.cancel()
+        await listener?.close()
         listener = nil
         print("🛑 Metadata server stopped")
+    }
+}
+
+private struct SimpleLogger: LogSink {
+    var logFileHandle: Int32? = nil
+    func log(_ message: String) {
+        print("[HTTP] \(message)")
     }
 }
