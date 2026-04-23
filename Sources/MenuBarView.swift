@@ -66,11 +66,7 @@ struct MenuBarView: View {
             // Sharing section - only show if authenticated
             if appState.tailscaleAuth.isAuthenticated {
                 if appState.isSharing {
-                    MenuButton("Stop Sharing", systemImage: "stop.circle") {
-                        Task {
-                            await appState.stopSharing()
-                        }
-                    }
+                    SharingActiveSection()
                 } else {
                     DisplayPickerSection()
                 }
@@ -213,6 +209,40 @@ struct MenuButton: View {
         )
         .onHover { hovering in
             isHovered = hovering
+        }
+    }
+}
+
+/// Sharing-active section. Shows a live ~2 Hz thumbnail of the shared
+/// screen and a stop button.
+struct SharingActiveSection: View {
+    @EnvironmentObject var appState: AppState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let image = appState.previewImage {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: .infinity)
+                    .background(Color.black)
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                    .padding(.horizontal, 10)
+                    .padding(.top, 6)
+            } else {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small).scaleEffect(0.7)
+                    Text("Capturing…")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+            }
+
+            MenuButton("Stop Sharing", systemImage: "stop.circle") {
+                Task { await appState.stopSharing() }
+            }
         }
     }
 }

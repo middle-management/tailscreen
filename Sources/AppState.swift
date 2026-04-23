@@ -30,6 +30,9 @@ class AppState: ObservableObject {
     @Published var availableDisplays: [DisplayInfo] = []
     @Published var selectedDisplayID: CGDirectDisplayID?
 
+    // Live thumbnail of the shared screen for the menu preview
+    @Published var previewImage: NSImage?
+
     // Authentication
     var tailscaleAuth = TailscaleAuth()
 
@@ -99,6 +102,11 @@ class AppState: ObservableObject {
                         }
                     }
                 }
+                srv.onPreviewImage = { [weak self] image in
+                    Task { @MainActor [weak self] in
+                        self?.previewImage = image
+                    }
+                }
 
                 try await srv.start(hostname: hostname, displayID: pickedID)
 
@@ -122,6 +130,7 @@ class AppState: ObservableObject {
     func stopSharing() async {
         await server?.stop()
         server = nil
+        previewImage = nil
         tailscaleIPs = []
 
         // Update metadata

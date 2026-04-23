@@ -1,6 +1,8 @@
+import AppKit
 import CoreGraphics
-import Foundation
+import CoreImage
 import CoreVideo
+import Foundation
 import os
 import TailscaleKit
 
@@ -30,6 +32,12 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// or the stream hit an error. AppState observes this to flip the
     /// `isSharing` flag and tear the server down.
     var onCaptureStopped: ((Error?) -> Void)?
+
+    /// Fires at ~2 Hz with a scaled-down thumbnail of the latest captured
+    /// frame. Used by AppState to show a preview in the menu while sharing.
+    var onPreviewImage: ((NSImage) -> Void)?
+    private let previewContext = CIContext(options: [.useSoftwareRenderer: false])
+    private let previewMaxWidth: CGFloat = 280
 
     init(port: UInt16 = 7447) {
         self.port = port
@@ -147,6 +155,15 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             let clientCount = clients.withLock { $0.count }
             print("ScreenCapture: frame #\(frameCounter), \(clientCount) viewer(s)")
         }
+
+        // Emit a preview thumbnail ~2 Hz regardless of viewer count so the
+        // menubar preview stays live. Cheap at this cadence.
+        if frameCounter % 30 == 0, let callback = onPreviewImage {
+            if let image = buildPreviewImage(from: pixelBuffer) {
+                callback(image)
+            }
+        }
+
         let hasClients = clients.withLock { !$0.isEmpty }
         guard hasClients else { return }
 
@@ -179,6 +196,16 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         }
 
         encoder?.encode(pixelBuffer: pixelBuffer)
+    }
+
+    private func buildPreviewImage(from pixelBuffer: CVPixelBuffer) -> NSImage? {
+        let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
+        let srcExtent = ciImage.extent
+        guard srcExtent.width > 0 else { return nil }
+        let scale = min(1.0, previewMaxWidth / srcExtent.width)
+        let scaled = ciImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        guard let cg = previewContext.createCGImage(scaled, from: scaled.extent) else { return nil }
+        return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
     }
 
     private func broadcast(_ message: ScreenShareMessage, priority: ClientSender.Priority) {
