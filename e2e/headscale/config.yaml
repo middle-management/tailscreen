@@ -1,0 +1,51 @@
+server_url: http://localhost:8080
+listen_addr: 0.0.0.0:8080
+metrics_listen_addr: 0.0.0.0:9090
+
+private_key_path: /var/lib/headscale/private.key
+noise:
+  private_key_path: /var/lib/headscale/noise_private.key
+
+prefixes:
+  v4: 100.64.0.0/10
+  v6: fd7a:115c:a1e0::/48
+  allocation: sequential
+
+derp:
+  server:
+    enabled: true
+    region_id: 999
+    region_code: local
+    region_name: local
+    stun_listen_addr: "0.0.0.0:3478"
+    private_key_path: /var/lib/headscale/derp_server_private.key
+    ipv4: 127.0.0.1
+  urls: []
+  auto_update_enabled: false
+  update_frequency: 24h
+
+database:
+  type: sqlite
+  sqlite:
+    path: /var/lib/headscale/db.sqlite
+
+disable_check_updates: true
+ephemeral_node_inactivity_timeout: 2m
+
+log:
+  level: info
+  format: text
+
+dns:
+  magic_dns: false
+  override_local_dns: false
+  base_domain: cuple.test
+  nameservers:
+    global: []
+  search_domains: []
+
+policy:
+  mode: file
+  path: ""
+
+unix_socket: /var/run/headscale.sock

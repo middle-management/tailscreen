@@ -1,0 +1,21 @@
+services:
+  headscale:
+    image: headscale/headscale:0.26.1
+    container_name: cuple-headscale
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:9090:9090"
+      - "127.0.0.1:3478:3478/udp"
+    volumes:
+      - ./headscale:/etc/headscale
+      - headscale-data:/var/lib/headscale
+    command: serve
+    healthcheck:
+      test: ["CMD", "headscale", "users", "list"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+volumes:
+  headscale-data:

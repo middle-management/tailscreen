@@ -8,20 +8,26 @@ import TailscaleKit
 /// transport. Verifies the listen/accept/dial/read/write path actually works.
 ///
 /// Requires a Tailscale auth key so each fresh node can register unattended.
-/// Set `TS_AUTHKEY` (or `CUPLE_TS_AUTHKEY`) to a reusable, ephemeral auth key
-/// from https://login.tailscale.com/admin/settings/keys. If unset, the test
-/// is skipped.
+/// Two supported modes:
+///   * Real tailnet: set `TS_AUTHKEY` (or `CUPLE_TS_AUTHKEY`) to a reusable,
+///     ephemeral key from https://login.tailscale.com/admin/settings/keys.
+///   * Local headscale: run `./scripts/e2e-test.sh`, which launches a
+///     disposable headscale in Docker and exports `CUPLE_TS_AUTHKEY` +
+///     `CUPLE_TS_CONTROL_URL=http://localhost:8080` for this test.
+/// If neither is set, the test is skipped.
 final class TailscaleConnectivityTests: XCTestCase {
     func testTwoNodesCanConnectAndExchangeBytes() async throws {
-        let authKey = ProcessInfo.processInfo.environment["CUPLE_TS_AUTHKEY"]
-            ?? ProcessInfo.processInfo.environment["TS_AUTHKEY"]
+        let env = ProcessInfo.processInfo.environment
+        let authKey = env["CUPLE_TS_AUTHKEY"] ?? env["TS_AUTHKEY"]
+        let controlURL = env["CUPLE_TS_CONTROL_URL"] ?? env["TS_CONTROL_URL"] ?? kDefaultControlURL
         try XCTSkipIf(
             authKey == nil || authKey?.isEmpty == true,
-            "Set TS_AUTHKEY to a reusable+ephemeral Tailscale auth key to run this test."
+            "Set CUPLE_TS_AUTHKEY (or run scripts/e2e-test.sh for local headscale)."
         )
 
         let port: UInt16 = 17447
         let logger = PrintLogger()
+        logger.log("control URL: \(controlURL)")
 
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent("cuple-conn-test-\(UUID().uuidString)")
@@ -39,7 +45,7 @@ final class TailscaleConnectivityTests: XCTestCase {
                 hostName: "cuple-test-server-\(UUID().uuidString.prefix(6))",
                 path: serverDir,
                 authKey: authKey,
-                controlURL: kDefaultControlURL,
+                controlURL: controlURL,
                 ephemeral: true
             ),
             logger: logger
@@ -58,7 +64,7 @@ final class TailscaleConnectivityTests: XCTestCase {
                 hostName: "cuple-test-client-\(UUID().uuidString.prefix(6))",
                 path: clientDir,
                 authKey: authKey,
-                controlURL: kDefaultControlURL,
+                controlURL: controlURL,
                 ephemeral: true
             ),
             logger: logger
