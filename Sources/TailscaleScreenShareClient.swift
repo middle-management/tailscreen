@@ -212,19 +212,21 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         guard sampleStatus == noErr, let sampleBuffer = sampleBuffer else { return }
 
         // Tell the display layer to show this frame immediately, no reorder.
-        if let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: true) as? [CFMutableDictionary],
-           let first = attachments.first {
-            CFDictionarySetValue(
-                first,
-                Unmanaged.passUnretained(kCMSampleAttachmentKey_DisplayImmediately).toOpaque(),
-                Unmanaged.passUnretained(kCFBooleanTrue).toOpaque()
-            )
+        // Use CFArrayGetValueAtIndex instead of bridging the CFArray to
+        // [CFMutableDictionary] — the latter produces a bridged *copy* whose
+        // mutations don't reach the real per-sample attachment dictionary,
+        // and the Unmanaged pointer juggling involved has tripped
+        // objc_autoreleasePoolPop on disconnect.
+        if let attachmentsArray = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: true),
+           CFArrayGetCount(attachmentsArray) > 0 {
+            let raw = CFArrayGetValueAtIndex(attachmentsArray, 0)
+            let dict = unsafeBitCast(raw, to: CFMutableDictionary.self)
+            let displayKey = Unmanaged.passUnretained(kCMSampleAttachmentKey_DisplayImmediately).toOpaque()
+            let trueValue = Unmanaged.passUnretained(kCFBooleanTrue).toOpaque()
+            CFDictionarySetValue(dict, displayKey, trueValue)
             if !isKeyframe {
-                CFDictionarySetValue(
-                    first,
-                    Unmanaged.passUnretained(kCMSampleAttachmentKey_NotSync).toOpaque(),
-                    Unmanaged.passUnretained(kCFBooleanTrue).toOpaque()
-                )
+                let notSyncKey = Unmanaged.passUnretained(kCMSampleAttachmentKey_NotSync).toOpaque()
+                CFDictionarySetValue(dict, notSyncKey, trueValue)
             }
         }
 
