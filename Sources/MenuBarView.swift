@@ -3,7 +3,6 @@ import SwiftUI
 
 struct MenuBarView: View {
     @EnvironmentObject var appState: AppState
-    @Environment(\.openWindow) private var openWindow
     @State private var viewID = UUID()
 
     var body: some View {
@@ -15,10 +14,8 @@ struct MenuBarView: View {
             // menu list out for whichever one is active.
             if appState.showConnectSheet {
                 ConnectSheet()
-            } else if appState.showIPSheet {
-                IPAddressSheet()
             } else {
-                menuList
+                mainView
             }
         }
         .alert(appState.alertTitle, isPresented: $appState.showAlert) {
@@ -28,253 +25,243 @@ struct MenuBarView: View {
         }
         .id(viewID)
         .onAppear {
-            print("📱 [MenuBarView] onAppear called")
             appState.triggerAutoLoginIfNeeded()
             viewID = UUID()
         }
     }
 
-    private var menuList: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Authentication section - show first if not authenticated
-            if !appState.tailscaleAuth.isAuthenticated {
-                Group {
-                    if appState.tailscaleAuth.isLoading {
-                        HStack(spacing: 8) {
-                            ProgressView()
-                                .controlSize(.small)
-                                .scaleEffect(0.8)
-                            Text("Authenticating...")
-                                .font(.system(size: 12))
-                                .foregroundStyle(.secondary)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 8)
-                    } else {
-                        MenuButton("Log in to Tailscale", systemImage: "person.circle.fill") {
-                            Task {
-                                await appState.initializeTailscaleAndLogin()
-                            }
-                        }
-                    }
-                }
-
-                Divider()
-            }
-
-            // Sharing section - only show if authenticated
-            if appState.tailscaleAuth.isAuthenticated {
-                if appState.isSharing {
-                    SharingActiveSection()
-                } else {
-                    DisplayPickerSection()
-                }
-
-                Divider()
-            }
-
-            // Connection section - only show if authenticated
-            if appState.tailscaleAuth.isAuthenticated {
-                Group {
-                    if appState.isConnected {
-                        MenuButton("Disconnect", systemImage: "xmark.circle") {
-                            Task {
-                                await appState.disconnect()
-                            }
-                        }
-                    } else {
-                        InlinePeersSection()
-                        MenuButton("Connect to...", systemImage: "link") {
-                            appState.showConnectSheet = true
-                        }
-                    }
-                }
-
-                Divider()
-            }
-
-            // Info section - only show if authenticated
-            if appState.tailscaleAuth.isAuthenticated {
-                MenuButton("Show Tailscale Info", systemImage: "info.circle") {
-                    appState.showIPSheet = true
-                }
-
-                Divider()
-            }
-
-            // User profile section - show when authenticated
-            if let userProfile = appState.tailscaleAuth.userProfile {
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "person.circle.fill")
-                            .font(.system(size: 13))
-                            .foregroundStyle(.secondary)
-                        Text(userProfile.displayName)
-                            .font(.system(size: 12, weight: .medium))
-                    }
-                    Text(userProfile.loginName)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.tertiary)
-                        .padding(.leading, 19)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(Color(nsColor: .controlBackgroundColor))
-
-                MenuButton("Sign Out", systemImage: "rectangle.portrait.and.arrow.right") {
+    @ViewBuilder
+    private var mainView: some View {
+        if !appState.tailscaleAuth.isAuthenticated {
+            WelcomeView()
+        } else {
+            VStack(alignment: .leading, spacing: 0) {
+                StatusSection()
+                DevicesSection()
+                IdentityFooter()
+                Divider().padding(.vertical, 4)
+                MenuRow(
+                    "Quit Cuple",
+                    systemImage: nil,
+                    shortcut: "⌘Q"
+                ) {
                     Task {
-                        await appState.signOut()
+                        if appState.isSharing { await appState.stopSharing() }
+                        if appState.isConnected { await appState.disconnect() }
+                        NSApplication.shared.terminate(nil)
                     }
                 }
-
-                Divider()
+                .keyboardShortcut("q", modifiers: .command)
             }
-
-            // Status
-            if appState.isSharing {
-                HStack(spacing: 6) {
-                    Image(systemName: "circle.fill")
-                        .font(.system(size: 8))
-                        .foregroundStyle(.green)
-                    Text("Sharing")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-            }
-
-            if appState.isConnected {
-                HStack(spacing: 6) {
-                    Image(systemName: "circle.fill")
-                        .font(.system(size: 8))
-                        .foregroundStyle(.blue)
-                    Text("Connected")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-            }
-
-            Divider()
-
-            // Quit
-            MenuButton("Quit", systemImage: "power") {
-                Task {
-                    if appState.isSharing {
-                        await appState.stopSharing()
-                    }
-                    if appState.isConnected {
-                        await appState.disconnect()
-                    }
-                    NSApplication.shared.terminate(nil)
-                }
-            }
-        }
-        .frame(width: 220)
-    }
-}
-
-struct MenuButton: View {
-    let title: String
-    let systemImage: String
-    let action: () -> Void
-    @State private var isHovered = false
-
-    init(_ title: String, systemImage: String, action: @escaping () -> Void) {
-        self.title = title
-        self.systemImage = systemImage
-        self.action = action
-    }
-
-    var body: some View {
-        Button(action: action) {
-            Label {
-                Text(title)
-                    .font(.system(size: 13))
-            } icon: {
-                Image(systemName: systemImage)
-                    .font(.system(size: 13))
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .buttonStyle(.plain)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
-        .background(
-            isHovered ? Color(nsColor: .selectedContentBackgroundColor).opacity(0.5) : Color.clear
-        )
-        .onHover { hovering in
-            isHovered = hovering
+            .padding(.vertical, 6)
+            .frame(width: 280)
         }
     }
 }
 
-/// Sharing-active section. Shows a live ~2 Hz thumbnail of the shared
-/// screen and a stop button.
-struct SharingActiveSection: View {
+// MARK: - Welcome / Unauthenticated
+
+private struct WelcomeView: View {
     @EnvironmentObject var appState: AppState
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if let image = appState.previewImage {
-                Image(nsImage: image)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(maxWidth: .infinity)
-                    .background(Color.black)
-                    .clipShape(RoundedRectangle(cornerRadius: 4))
-                    .padding(.horizontal, 10)
-                    .padding(.top, 6)
-            } else {
-                HStack(spacing: 6) {
-                    ProgressView().controlSize(.small).scaleEffect(0.7)
-                    Text("Capturing…")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-            }
+        VStack(spacing: 0) {
+            VStack(spacing: 12) {
+                Image(systemName: "tv")
+                    .font(.system(size: 34, weight: .light))
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 8)
 
-            MenuButton("Stop Sharing", systemImage: "stop.circle") {
-                Task { await appState.stopSharing() }
+                Text("Welcome to Cuple")
+                    .font(.system(size: 15, weight: .semibold))
+
+                Text("Sign in with Tailscale to share and view screens with your peers.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 16)
+
+                Group {
+                    if appState.tailscaleAuth.isLoading {
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            Text("Signing in…")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                        }
+                        .frame(height: 28)
+                    } else {
+                        Button {
+                            Task { await appState.initializeTailscaleAndLogin() }
+                        } label: {
+                            Text("Sign in with Tailscale")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 4)
             }
+            .padding(.vertical, 16)
+
+            Divider().padding(.vertical, 4)
+
+            MenuRow("Quit Cuple", systemImage: nil, shortcut: "⌘Q") {
+                NSApplication.shared.terminate(nil)
+            }
+            .keyboardShortcut("q", modifiers: .command)
+        }
+        .padding(.vertical, 6)
+        .frame(width: 280)
+    }
+}
+
+// MARK: - Status section (idle / sharing / viewing)
+
+private struct StatusSection: View {
+    @EnvironmentObject var appState: AppState
+
+    var body: some View {
+        if appState.isSharing {
+            SharingCard()
+        } else if appState.isConnected {
+            ViewingCard()
+        } else {
+            DisplayPickerSection()
         }
     }
 }
 
-/// Display picker rendered inline in the menu when the user is not yet
-/// sharing. One row per attached display; clicking a row starts sharing
-/// that specific display. Refreshes on appear to catch hot-plug changes.
-struct DisplayPickerSection: View {
+/// Card shown while sharing: live thumbnail, resolution, Stop button.
+private struct SharingCard: View {
+    @EnvironmentObject var appState: AppState
+
+    private var resolutionText: String? {
+        guard let res = appState.metadataService.currentMetadata?.screenResolution else { return nil }
+        return "\(res.width) × \(res.height)"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
+                Circle()
+                    .fill(Color.green)
+                    .frame(width: 8, height: 8)
+                    .padding(.top, 5)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Sharing your screen")
+                        .font(.system(size: 13, weight: .semibold))
+                    if let resolutionText {
+                        Text(resolutionText)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+
+            Group {
+                if let image = appState.previewImage {
+                    Image(nsImage: image)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(maxWidth: .infinity)
+                        .background(Color.black)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                } else {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small).scaleEffect(0.7)
+                        Text("Capturing…")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 60)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Color.black.opacity(0.15))
+                    )
+                }
+            }
+
+            Button {
+                Task { await appState.stopSharing() }
+            } label: {
+                Text("Stop Sharing").frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 10).fill(Color.green.opacity(0.12))
+        )
+        .padding(.horizontal, 8)
+        .padding(.bottom, 6)
+    }
+}
+
+/// Card shown while viewing a remote peer.
+private struct ViewingCard: View {
+    @EnvironmentObject var appState: AppState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
+                Circle()
+                    .fill(Color.accentColor)
+                    .frame(width: 8, height: 8)
+                    .padding(.top, 5)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Viewing \(appState.connectedHostname ?? "peer")")
+                        .font(.system(size: 13, weight: .semibold))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Text("Connected over Tailscale")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+            }
+
+            Button {
+                Task { await appState.disconnect() }
+            } label: {
+                Text("Disconnect").frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 10).fill(Color.accentColor.opacity(0.12))
+        )
+        .padding(.horizontal, 8)
+        .padding(.bottom, 6)
+    }
+}
+
+/// Display picker shown when idle. One row per attached display; clicking
+/// a row starts sharing that display.
+private struct DisplayPickerSection: View {
     @EnvironmentObject var appState: AppState
     @State private var didKickOff = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 6) {
-                Image(systemName: "rectangle.on.rectangle")
-                    .font(.system(size: 13))
-                    .foregroundStyle(.secondary)
-                Text("Share a Display")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.secondary)
-                Spacer()
-            }
-            .padding(.horizontal, 10)
-            .padding(.top, 6)
-            .padding(.bottom, 2)
+        VStack(alignment: .leading, spacing: 4) {
+            SectionHeader(title: "SHARE A DISPLAY")
+                .padding(.top, 2)
 
             if appState.availableDisplays.isEmpty {
                 Text("No displays available")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.tertiary)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 4)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .frame(height: 28)
+                    .padding(.horizontal, 14)
             } else {
                 ForEach(appState.availableDisplays) { display in
                     DisplayRow(display: display) {
@@ -283,6 +270,7 @@ struct DisplayPickerSection: View {
                 }
             }
         }
+        .padding(.bottom, 6)
         .onAppear {
             guard !didKickOff else { return }
             didKickOff = true
@@ -301,136 +289,302 @@ private struct DisplayRow: View {
             HStack(spacing: 8) {
                 Image(systemName: "display")
                     .font(.system(size: 13))
+                    .frame(width: 16, alignment: .center)
+                    .foregroundStyle(.secondary)
+
                 VStack(alignment: .leading, spacing: 1) {
                     Text(display.name)
                         .font(.system(size: 13))
-                    Text("\(display.width)×\(display.height)")
+                        .lineLimit(1)
+                    Text("\(display.width) × \(display.height)")
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                 }
-                Spacer()
-                Image(systemName: "play.circle.fill")
-                    .font(.system(size: 13))
-                    .foregroundStyle(Color.accentColor)
+
+                Spacer(minLength: 0)
+
+                if isHovered {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .background(
-                isHovered ? Color(nsColor: .selectedContentBackgroundColor).opacity(0.5) : Color.clear
-            )
+            .frame(height: 34)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .onHover { hovering in
-            isHovered = hovering
-        }
+        .background(
+            RoundedRectangle(cornerRadius: 5)
+                .fill(isHovered ? Color.primary.opacity(0.08) : Color.clear)
+                .padding(.horizontal, 4)
+        )
+        .onHover { isHovered = $0 }
     }
 }
 
-/// Compact peer list rendered directly in the menu, replacing the old
-/// "Browse Shares..." modal. Kicks discovery on appear and shows a one-line
-/// row per Cuple peer — click to connect.
-struct InlinePeersSection: View {
+// MARK: - Devices section
+
+private struct DevicesSection: View {
     @EnvironmentObject var appState: AppState
-    @State private var didKickOff = false
+    @State private var didAutoDiscover = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 6) {
-                Image(systemName: "network")
-                    .font(.system(size: 13))
-                    .foregroundStyle(.secondary)
-                Text("Available Shares")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Text("DEVICES")
+                    .font(.system(size: 10, weight: .semibold))
+                    .tracking(0.6)
+                    .foregroundStyle(.tertiary)
+
                 Spacer()
+
                 Button {
                     Task { await appState.discoverPeers() }
                 } label: {
                     if appState.isDiscovering {
-                        ProgressView().controlSize(.small).scaleEffect(0.6)
+                        ProgressView()
+                            .controlSize(.small)
+                            .scaleEffect(0.6)
+                            .frame(width: 14, height: 14)
                     } else {
                         Image(systemName: "arrow.clockwise")
-                            .font(.system(size: 10))
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(.tertiary)
+                            .frame(width: 14, height: 14)
                     }
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(.plain)
                 .disabled(appState.isDiscovering)
-                .help("Refresh")
+                .help("Refresh devices")
             }
-            .padding(.horizontal, 10)
+            .padding(.horizontal, 14)
             .padding(.top, 6)
             .padding(.bottom, 2)
 
-            if appState.isDiscovering && appState.availablePeers.isEmpty {
-                HStack(spacing: 6) {
-                    ProgressView().controlSize(.small).scaleEffect(0.7)
-                    Text("Searching…")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-            } else if appState.availablePeers.isEmpty {
-                Text("No shares found")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.tertiary)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 4)
-            } else {
-                ForEach(appState.availablePeers) { peer in
-                    InlinePeerRow(peer: peer) {
-                        Task { await appState.connectToPeer(peer) }
+            content
+
+            MenuRow("Connect to address…", systemImage: "keyboard") {
+                appState.showConnectSheet = true
+            }
+        }
+        .padding(.bottom, 4)
+        .onAppear {
+            guard !didAutoDiscover else { return }
+            didAutoDiscover = true
+            Task { await appState.discoverPeers() }
+        }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if appState.isDiscovering && appState.availablePeers.isEmpty {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small).scaleEffect(0.7)
+                Text("Looking for devices…")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+            .frame(height: 28)
+            .padding(.horizontal, 14)
+        } else if appState.availablePeers.isEmpty {
+            Text("No devices found on your tailnet")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .frame(height: 28)
+                .padding(.horizontal, 14)
+        } else {
+            let maxRows = 6
+            let rowHeight: CGFloat = 28
+            ScrollView {
+                VStack(spacing: 0) {
+                    ForEach(appState.availablePeers) { peer in
+                        PeerMenuRow(peer: peer) {
+                            Task { await appState.connectToPeer(peer) }
+                        }
                     }
                 }
             }
-        }
-        .onAppear {
-            guard !didKickOff else { return }
-            didKickOff = true
-            Task { await appState.discoverPeers() }
+            .frame(
+                maxHeight: rowHeight * CGFloat(min(appState.availablePeers.count, maxRows))
+            )
         }
     }
 }
 
-private struct InlinePeerRow: View {
+private struct PeerMenuRow: View {
     @EnvironmentObject var appState: AppState
     let peer: CuplePeer
     let onConnect: () -> Void
     @State private var isHovered = false
 
+    // Whole-row button. MenuBarExtra(.window) dismisses its popover on any
+    // click that doesn't hit an interactive control; making the row itself
+    // the button avoids gaps falling through to the popover.
     var body: some View {
         Button(action: onConnect) {
             HStack(spacing: 8) {
                 Image(systemName: "desktopcomputer")
                     .font(.system(size: 13))
-                    .foregroundStyle(peer.isOnline ? .primary : .secondary)
+                    .frame(width: 16, alignment: .center)
+                    .foregroundStyle(peer.isOnline ? .secondary : .tertiary)
+
                 Text(peer.hostname)
                     .font(.system(size: 13))
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Spacer()
-                Image(systemName: "play.circle.fill")
-                    .font(.system(size: 13))
-                    .foregroundStyle(peer.isOnline ? Color.accentColor : Color.secondary)
+
+                Circle()
+                    .fill(peer.isOnline ? Color.green : Color(nsColor: .tertiaryLabelColor))
+                    .frame(width: 6, height: 6)
+
+                Spacer(minLength: 0)
+
+                if isHovered && peer.isOnline {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .background(
-                isHovered ? Color(nsColor: .selectedContentBackgroundColor).opacity(0.5) : Color.clear
-            )
+            .frame(height: 28)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(!peer.isOnline)
-        .opacity(peer.isOnline ? 1.0 : 0.5)
-        .onHover { hovering in
-            isHovered = hovering
+        .opacity(peer.isOnline ? 1.0 : 0.55)
+        .background(
+            RoundedRectangle(cornerRadius: 5)
+                .fill(isHovered && peer.isOnline
+                    ? Color.primary.opacity(0.08)
+                    : Color.clear)
+                .padding(.horizontal, 4)
+        )
+        .onHover { isHovered = $0 }
+    }
+}
+
+// MARK: - Identity footer
+
+private struct IdentityFooter: View {
+    @EnvironmentObject var appState: AppState
+
+    var body: some View {
+        if let profile = appState.tailscaleAuth.userProfile {
+            VStack(alignment: .leading, spacing: 2) {
+                Divider().padding(.vertical, 4)
+
+                HStack(spacing: 8) {
+                    Image(systemName: "person.crop.circle.fill")
+                        .font(.system(size: 20))
+                        .foregroundStyle(.secondary)
+
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(profile.displayName)
+                            .font(.system(size: 12, weight: .medium))
+                            .lineLimit(1)
+                        Text(profile.loginName)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+
+                    Spacer()
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 4)
+
+                MenuRow("Copy Tailscale address", systemImage: "doc.on.doc") {
+                    let ip = appState.rawTailscaleIPs.first ?? ""
+                    guard !ip.isEmpty else { return }
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(ip, forType: .string)
+                }
+
+                MenuRow("Sign out", systemImage: "rectangle.portrait.and.arrow.right") {
+                    Task { await appState.signOut() }
+                }
+            }
         }
     }
 }
+
+// MARK: - Small section header label
+
+private struct SectionHeader: View {
+    let title: String
+
+    var body: some View {
+        Text(title)
+            .font(.system(size: 10, weight: .semibold))
+            .tracking(0.6)
+            .foregroundStyle(.tertiary)
+            .padding(.horizontal, 14)
+            .padding(.top, 6)
+            .padding(.bottom, 2)
+    }
+}
+
+// MARK: - Menu row
+
+struct MenuRow: View {
+    let title: String
+    let systemImage: String?
+    let shortcut: String?
+    let action: () -> Void
+    @State private var isHovered = false
+
+    init(
+        _ title: String,
+        systemImage: String?,
+        shortcut: String? = nil,
+        action: @escaping () -> Void
+    ) {
+        self.title = title
+        self.systemImage = systemImage
+        self.shortcut = shortcut
+        self.action = action
+    }
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                if let systemImage {
+                    Image(systemName: systemImage)
+                        .font(.system(size: 12))
+                        .frame(width: 16, alignment: .center)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Color.clear.frame(width: 16, height: 1)
+                }
+
+                Text(title)
+                    .font(.system(size: 13))
+
+                Spacer()
+
+                if let shortcut {
+                    Text(shortcut)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 24)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(
+            RoundedRectangle(cornerRadius: 5)
+                .fill(isHovered ? Color.primary.opacity(0.08) : Color.clear)
+                .padding(.horizontal, 4)
+        )
+        .onHover { isHovered = $0 }
+    }
+}
+
+// MARK: - Connect sheet
 
 struct ConnectSheet: View {
     @EnvironmentObject var appState: AppState
@@ -438,105 +592,47 @@ struct ConnectSheet: View {
 
     private func dismiss() { appState.showConnectSheet = false }
 
-    var body: some View {
-        VStack(spacing: 20) {
-            VStack(spacing: 8) {
-                Text("Connect via Tailscale")
-                    .font(.system(size: 15, weight: .semibold))
+    private var isValid: Bool {
+        !hostname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 
-                Text("Enter the Tailscale hostname or IP address:")
-                    .font(.system(size: 12))
+    private func submit() {
+        guard isValid else { return }
+        let host = hostname.trimmingCharacters(in: .whitespacesAndNewlines)
+        Task {
+            await appState.connect(to: host)
+            dismiss()
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Connect to address")
+                    .font(.system(size: 14, weight: .semibold))
+                Text("Enter a Tailscale hostname or IP.")
+                    .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
 
             TextField("hostname or 100.x.x.x", text: $hostname)
                 .textFieldStyle(.roundedBorder)
-                .controlSize(.large)
-                .frame(width: 280)
+                .onSubmit(submit)
 
-            HStack(spacing: 12) {
-                Button("Cancel") {
-                    dismiss()
-                }
-                .keyboardShortcut(.escape)
-                .buttonStyle(.borderless)
-                .controlSize(.large)
+            HStack(spacing: 8) {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.escape, modifiers: [])
+                    .controlSize(.regular)
 
-                Button("Connect") {
-                    Task {
-                        await appState.connect(
-                            to: hostname.trimmingCharacters(in: .whitespacesAndNewlines))
-                        dismiss()
-                    }
-                }
-                .keyboardShortcut(.return)
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .disabled(hostname.isEmpty)
+                Button("Connect", action: submit)
+                    .keyboardShortcut(.return, modifiers: [])
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.regular)
+                    .disabled(!isValid)
             }
         }
-        .padding(24)
-        .frame(width: 380)
+        .padding(16)
+        .frame(width: 280)
     }
 }
-
-struct IPAddressSheet: View {
-    @EnvironmentObject var appState: AppState
-
-    private func dismiss() { appState.showIPSheet = false }
-
-    var body: some View {
-        VStack(spacing: 20) {
-            Text("Tailscale Connection Info")
-                .font(.system(size: 15, weight: .semibold))
-
-            if appState.localIPAddresses.isEmpty {
-                VStack(spacing: 12) {
-                    Image(systemName: "network.slash")
-                        .font(.system(size: 32))
-                        .foregroundStyle(.secondary)
-                    Text("Tailscale not connected")
-                        .font(.system(size: 13))
-                        .foregroundStyle(.secondary)
-                }
-                .frame(height: 100)
-            } else {
-                VStack(alignment: .leading, spacing: 10) {
-                    ForEach(appState.localIPAddresses, id: \.self) { address in
-                        HStack(spacing: 12) {
-                            Text(address)
-                                .font(.system(size: 13, design: .monospaced))
-                                .textSelection(.enabled)
-                            Spacer()
-                            Button {
-                                NSPasteboard.general.clearContents()
-                                NSPasteboard.general.setString(
-                                    address.components(separatedBy: ": ").last ?? address,
-                                    forType: .string)
-                            } label: {
-                                Image(systemName: "doc.on.doc")
-                                    .font(.system(size: 12))
-                            }
-                            .buttonStyle(.borderless)
-                            .help("Copy to clipboard")
-                        }
-                        .padding(10)
-                        .background(Color(nsColor: .controlBackgroundColor))
-                        .cornerRadius(6)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-
-            Button("Close") {
-                dismiss()
-            }
-            .keyboardShortcut(.return)
-            .buttonStyle(.borderless)
-            .controlSize(.large)
-        }
-        .padding(24)
-        .frame(width: 450)
-    }
-}
-
