@@ -69,11 +69,15 @@ MallocScribble=1 \
 CFZombieLevel=17"
     fi
     if [ "${CUPLE_DEBUG_GMALLOC:-0}" = "1" ]; then
-        # Mode B: libgmalloc. Turns every over-release into an IMMEDIATE
-        # crash at the *call site that did the extra release*, with a full
-        # stack trace in the crash report (not a post-mortem pool-pop stack
-        # that tells us nothing). Much slower; run this *after* mode A has
-        # confirmed it's an Obj-C over-release.
+        # Mode B: libgmalloc. In theory catches over-releases at the caller.
+        # In practice it's too slow for ScreenCaptureKit's XPC path —
+        # SCShareableContent timed out at connect and the server hung at
+        # "Listening on Tailscale port 7447" with the screen-capture daemon
+        # never responding. Prefer Instruments' Zombies template for
+        # pinpointing: `instruments -t Zombies -D /tmp/zombies.trace \
+        #   .build/debug/Cuple` (while debug symbols are intact).
+        echo "WARNING: CUPLE_DEBUG_GMALLOC=1 breaks ScreenCaptureKit." >&2
+        echo "         Use Instruments' Zombies template instead." >&2
         debug_env="$debug_env DYLD_INSERT_LIBRARIES=/usr/lib/libgmalloc.dylib \
 MALLOC_PROTECT_BEFORE=1 \
 MALLOC_FILL_SPACE=1 \
