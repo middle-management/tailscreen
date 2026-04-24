@@ -334,34 +334,21 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         }
 
         await MainActor.run {
-            // Detach the willCloseNotification observer BEFORE closing the
+            // Detach the willCloseNotification observer BEFORE hiding the
             // window so its callback can't re-enter disconnect().
             if let obs = self.windowCloseObserver {
                 NotificationCenter.default.removeObserver(obs)
                 self.windowCloseObserver = nil
             }
-            // AVSampleBufferDisplayLayer has a background renderer that can
-            // schedule work on CATransaction boundaries. If we release the
-            // window + layer synchronously here, the next main-queue drain
-            // autoreleasepool pop can land on a zombie from that background
-            // scheduler and SIGSEGV in objc_release. Two safeguards:
-            //  1. Hide the window with orderOut() instead of close(); close()
-            //     immediately triggers full view-tree release on the current
-            //     runloop tick, which is exactly when the race happens.
-            //  2. Defer dropping our strong refs to the next runloop tick so
-            //     ARC release runs under its own fresh autoreleasepool,
-            //     outside the main-queue job that's about to pop.
-            self.window?.orderOut(nil)
             self.formatDescription = nil
-            let layer = self.displayLayer
-            let win = self.window
-            self.displayLayer = nil
-            self.window = nil
-            DispatchQueue.main.async {
-                _ = layer
-                win?.close()
-                _ = win
-            }
+            // Just hide the window. DO NOT call close(), DO NOT nil our
+            // strong refs to window/layer synchronously — every teardown
+            // attempt has produced a SIGSEGV in objc_release on the next
+            // runloop autoreleasepool pop. Leaving the window + layer
+            // retained until the process exits (or the user connects to
+            // something else) avoids the race entirely, at the cost of
+            // leaking one NSWindow per viewer session.
+            self.window?.orderOut(nil)
         }
 
         print("Client disconnected")
