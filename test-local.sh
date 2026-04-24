@@ -49,7 +49,25 @@ trap cleanup EXIT INT TERM
 
 launch() {
     local id="$1"
-    CUPLE_INSTANCE="$id" stdbuf -oL -eL "$BIN" 2>&1 \
+    # Set CUPLE_DEBUG_ZOMBIES=1 before running this script to turn on Foundation's
+    # zombie / malloc-stack-logging machinery. NSZombieEnabled makes every
+    # deallocated Obj-C object log on any subsequent message instead of
+    # crashing, so when Cuple segfaults in objc_release after disconnect
+    # the console instead says
+    #     -[SomeClass release]: message sent to deallocated instance 0x…
+    # which is the real culprit we can't get from the crash stack alone.
+    # MallocStackLoggingNoCompact + MallocScribble cost memory and CPU;
+    # worth it for diagnosis, not for everyday use.
+    local zombie_env=""
+    if [ "${CUPLE_DEBUG_ZOMBIES:-0}" = "1" ]; then
+        zombie_env="NSZombieEnabled=YES \
+MallocStackLogging=1 \
+MallocStackLoggingNoCompact=1 \
+MallocScribble=1 \
+CFZombieLevel=17"
+    fi
+
+    env CUPLE_INSTANCE="$id" $zombie_env stdbuf -oL -eL "$BIN" 2>&1 \
         | stdbuf -oL sed "s/^/[$id] /" >> "$LOG" &
     # `$!` is the PID of the last stage (sed); its pgid is shared with Cuple
     # because we're in job-control mode.
@@ -65,6 +83,10 @@ done
 
 echo
 echo "$COUNT instances running. Merged log: $LOG"
+if [ "${CUPLE_DEBUG_ZOMBIES:-0}" = "1" ]; then
+    echo "Zombie diagnostics ENABLED (NSZombieEnabled / MallocStackLogging)."
+    echo "After a crash repro, run: malloc_history <pid> <zombie-address>"
+fi
 echo "Ctrl-C to stop."
 if [ "$COUNT" -eq 1 ]; then
     echo "In menubar: click Start Sharing or Browse Shares."
