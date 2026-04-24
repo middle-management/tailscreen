@@ -6,16 +6,28 @@ import Foundation
 import os
 import TailscaleKit
 
-/// Screen-share server that uses TailscaleKit as the transport.
+/// Screen-share server over TailscaleKit.
 ///
-/// Each accepted client gets its own ``ClientSender``; a slow viewer can't stall
-/// the capture pipeline or other viewers. When a viewer attaches, the server
-/// immediately pushes cached SPS/PPS (if any) and asks the encoder for a fresh
-/// IDR so the new viewer starts on a keyframe.
+/// # Transport
+/// Two independent channels, both served by their own ``Listener``:
+///
+/// - **TCP control** (port 7447): sharer → viewer ``parameterSets`` (SPS/PPS)
+///   on every IDR, viewer → sharer ``keyframeRequest`` when the RTP
+///   depacketizer detects loss.
+/// - **UDP media** (port 7448): RTP-packetized H.264 access units,
+///   RFC 3550 + RFC 6184. Plain RTP, not SRTP — WireGuard already encrypts.
+///
+/// The two channels are broadcast-independent: the server tracks TCP and
+/// UDP peers in separate sets and fans each message out to the relevant
+/// set. A viewer normally opens both; if one is momentarily down the
+/// other still functions degraded. Any new accept on either channel
+/// triggers a fresh keyframe so the viewer sees video promptly.
 final class TailscaleScreenShareServer: @unchecked Sendable {
-    private let port: UInt16
+    private let controlPort: UInt16
+    private let mediaPort: UInt16
     var node: TailscaleNode?
-    private var listener: Listener?
+    private var controlListener: Listener?
+    private var mediaListener: Listener?
     private var encoder: VideoEncoder?
     private var screenCapture: ScreenCapture?
     private var lastWidth: Int = 0
@@ -24,8 +36,12 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     private var frameCounter = 0
     private var broadcastCounter = 0
     private let logger: TSLogger
+    private let packetizer = RTPPacketizer()
 
-    private let clients = OSAllocatedUnfairLock<[UUID: ClientSender]>(initialState: [:])
+    /// TCP control peers. SPS/PPS go here, keyframeRequest comes from here.
+    private let controlClients = OSAllocatedUnfairLock<[UUID: ControlChannel]>(initialState: [:])
+    /// UDP media peers. RTP packets go here.
+    private let mediaClients = OSAllocatedUnfairLock<[UUID: MediaChannel]>(initialState: [:])
 
     /// Fires when the underlying ScreenCaptureKit stream ends on its own —
     /// user clicked "Stop Screen Recording" in the menubar, display changed,
@@ -39,8 +55,9 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     private let previewContext = CIContext(options: [.useSoftwareRenderer: false])
     private let previewMaxWidth: CGFloat = 280
 
-    init(port: UInt16 = 7447) {
-        self.port = port
+    init(controlPort: UInt16 = 7447, mediaPort: UInt16 = 7448) {
+        self.controlPort = controlPort
+        self.mediaPort = mediaPort
         self.logger = TSLogger()
     }
 
@@ -74,24 +91,30 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             throw TailscaleError.badInterfaceHandle
         }
 
-        let listener = try await Listener(
+        let controlListener = try await Listener(
             tailscale: tailscaleHandle,
             proto: .tcp,
-            address: ":\(port)",
+            address: ":\(controlPort)",
             logger: logger
         )
-        self.listener = listener
-        print("Listening on Tailscale port \(port)")
+        self.controlListener = controlListener
+
+        let mediaListener = try await Listener(
+            tailscale: tailscaleHandle,
+            proto: .udp,
+            address: ":\(mediaPort)",
+            logger: logger
+        )
+        self.mediaListener = mediaListener
+
+        print("Listening on Tailscale — control=tcp:\(controlPort) media=udp:\(mediaPort)")
 
         isRunning = true
 
-        Task { [weak self] in
-            await self?.acceptConnections()
-        }
+        Task { [weak self] in await self?.acceptControl() }
+        Task { [weak self] in await self?.acceptMedia() }
 
         let capture = ScreenCapture()
-        // Wire the callback BEFORE starting so we don't drop the first few
-        // frames while the assignment hops over to MainActor.
         capture.onFrameCaptured = { [weak self] pixelBuffer in
             self?.handleCapturedFrame(pixelBuffer)
         }
@@ -104,56 +127,86 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             try await capture.start(displayID: displayID)
             print("ScreenCapture started (displayID=\(displayID.map { String($0) } ?? "default"))")
         } catch {
-            // Surface the error instead of silently swallowing it. Most common
-            // cause on first run: macOS Screen Recording permission missing.
             print("ERROR: ScreenCapture failed to start: \(error)")
         }
     }
 
-    private func acceptConnections() async {
-        guard let listener = listener else { return }
+    // MARK: - Accept loops
+
+    private func acceptControl() async {
+        guard let listener = controlListener else { return }
         while isRunning {
             do {
                 let connection = try await listener.accept(timeout: 10.0)
-                await attach(connection)
+                await attachControl(connection)
             } catch {
-                continue  // timeout — just keep polling
+                continue
             }
         }
     }
 
-    private func attach(_ connection: IncomingConnection) async {
-        let id = UUID()
-        let sender = ClientSender(id: id, connection: connection) { [weak self] clientID in
-            self?.removeClient(clientID)
+    private func acceptMedia() async {
+        guard let listener = mediaListener else { return }
+        while isRunning {
+            do {
+                let connection = try await listener.accept(timeout: 10.0)
+                await attachMedia(connection)
+            } catch {
+                continue
+            }
         }
+    }
 
-        clients.withLock { $0[id] = sender }
-
+    private func attachControl(_ connection: IncomingConnection) async {
+        let id = UUID()
         let addr = await connection.remoteAddress ?? "unknown"
-        print("New viewer: \(addr) [\(id)]")
+        print("New viewer control: \(addr) [\(id)]")
 
+        let channel = ControlChannel(id: id, connection: connection,
+                                     onKeyframeRequest: { [weak self] in self?.encoder?.requestKeyframe() },
+                                     onClose: { [weak self] cid in self?.removeControlClient(cid) })
+        controlClients.withLock { $0[id] = channel }
+
+        // Seed the viewer with cached params so decoding can start without
+        // waiting for the next IDR.
         if let cached = encoder?.cachedParameterSets {
-            sender.enqueue(.parameterSets(sps: cached.sps, pps: cached.pps), priority: .critical)
+            channel.enqueue(.parameterSets(sps: cached.sps, pps: cached.pps))
         }
         encoder?.requestKeyframe()
-
-        sender.start()
+        channel.start()
     }
 
-    private func removeClient(_ id: UUID) {
-        let removed = clients.withLock { $0.removeValue(forKey: id) }
-        if removed != nil {
-            print("Viewer disconnected [\(id)]")
-        }
+    private func attachMedia(_ connection: IncomingConnection) async {
+        let id = UUID()
+        let addr = await connection.remoteAddress ?? "unknown"
+        print("New viewer media: \(addr) [\(id)]")
+
+        let channel = MediaChannel(id: id, connection: connection,
+                                   onClose: { [weak self] cid in self?.removeMediaClient(cid) })
+        mediaClients.withLock { $0[id] = channel }
+        encoder?.requestKeyframe()
+        channel.start()
     }
+
+    private func removeControlClient(_ id: UUID) {
+        let removed = controlClients.withLock { $0.removeValue(forKey: id) }
+        if removed != nil { print("Viewer control disconnected [\(id)]") }
+    }
+
+    private func removeMediaClient(_ id: UUID) {
+        let removed = mediaClients.withLock { $0.removeValue(forKey: id) }
+        if removed != nil { print("Viewer media disconnected [\(id)]") }
+    }
+
+    // MARK: - Capture → encode → broadcast
 
     private func handleCapturedFrame(_ pixelBuffer: CVPixelBuffer) {
         guard isRunning else { return }
         frameCounter += 1
         if frameCounter == 1 || frameCounter % 60 == 0 {
-            let clientCount = clients.withLock { $0.count }
-            print("ScreenCapture: frame #\(frameCounter), \(clientCount) viewer(s)")
+            let cc = controlClients.withLock { $0.count }
+            let mc = mediaClients.withLock { $0.count }
+            print("ScreenCapture: frame #\(frameCounter), control=\(cc) media=\(mc)")
         }
 
         // Emit a preview thumbnail ~2 Hz regardless of viewer count so the
@@ -164,7 +217,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             }
         }
 
-        let hasClients = clients.withLock { !$0.isEmpty }
+        let hasClients = mediaClients.withLock { !$0.isEmpty }
         guard hasClients else { return }
 
         let width = CVPixelBufferGetWidth(pixelBuffer)
@@ -181,12 +234,11 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
 
                 newEncoder.onParameterSets = { [weak self] sps, pps in
                     print("VideoEncoder emitted SPS/PPS (sps=\(sps.count)B pps=\(pps.count)B)")
-                    self?.broadcast(.parameterSets(sps: sps, pps: pps), priority: .critical)
+                    self?.broadcastControl(.parameterSets(sps: sps, pps: pps))
                 }
                 newEncoder.onEncodedData = { [weak self] data, isKeyframe in
                     let ts = DispatchTime.now().uptimeNanoseconds
-                    self?.broadcast(.frame(data: data, isKeyframe: isKeyframe, timestampNs: ts),
-                                    priority: isKeyframe ? .critical : .droppable)
+                    self?.broadcastMedia(data, isKeyframe: isKeyframe, uptimeNs: ts)
                 }
                 encoder = newEncoder
             } catch {
@@ -208,23 +260,23 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
     }
 
-    private func broadcast(_ message: ScreenShareMessage, priority: ClientSender.Priority) {
-        let senders = clients.withLock { Array($0.values) }
+    private func broadcastControl(_ message: ScreenShareMessage) {
+        let viewers = controlClients.withLock { Array($0.values) }
+        for v in viewers { v.enqueue(message) }
+    }
+
+    private func broadcastMedia(_ accessUnit: Data, isKeyframe: Bool, uptimeNs: UInt64) {
+        let viewers = mediaClients.withLock { Array($0.values) }
         broadcastCounter += 1
         if broadcastCounter == 1 || broadcastCounter % 60 == 0 {
-            print("Broadcast #\(broadcastCounter) -> \(senders.count) viewer(s)")
+            print("Broadcast #\(broadcastCounter) -> \(viewers.count) viewer(s) (kf=\(isKeyframe), \(accessUnit.count)B)")
         }
-        // Every ~5s of 60fps, log per-viewer queue depth. Reveals slow viewers
-        // whose droppable frames are being shed.
-        if senders.count > 1 && broadcastCounter % 300 == 0 {
-            let summary = senders.map { s -> String in
-                let (depth, bytes) = s.backlog()
-                return "\(s.id.uuidString.prefix(8))=\(depth)msg/\(bytes / 1024)KB"
-            }.joined(separator: " ")
-            print("Viewer backlog: \(summary)")
-        }
-        for sender in senders {
-            sender.enqueue(message, priority: priority)
+        guard !viewers.isEmpty else { return }
+
+        let rtpTs = RTPClock.timestamp(fromUptimeNanoseconds: uptimeNs)
+        let packets = packetizer.packetize(accessUnit: accessUnit, rtpTimestamp: rtpTs)
+        for pkt in packets {
+            for v in viewers { v.enqueue(pkt) }
         }
     }
 
@@ -236,24 +288,26 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     func stop() async {
         isRunning = false
 
-        // Stop capture first so no more frames arrive after the encoder is torn down.
         await screenCapture?.stop()
         screenCapture = nil
 
         encoder?.shutdown()
         encoder = nil
 
-        let all = clients.withLock { state -> [ClientSender] in
-            let values = Array(state.values)
-            state.removeAll()
-            return values
+        let controls = controlClients.withLock { state -> [ControlChannel] in
+            let v = Array(state.values); state.removeAll(); return v
         }
-        for sender in all {
-            await sender.close()
-        }
+        for c in controls { await c.close() }
 
-        await listener?.close()
-        listener = nil
+        let medias = mediaClients.withLock { state -> [MediaChannel] in
+            let v = Array(state.values); state.removeAll(); return v
+        }
+        for m in medias { await m.close() }
+
+        await controlListener?.close()
+        controlListener = nil
+        await mediaListener?.close()
+        mediaListener = nil
 
         if let node = node {
             try? await node.close()
@@ -268,31 +322,146 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     }
 }
 
-/// One per viewer. Owns a background task that drains a bounded send queue.
-/// Critical messages (parameter sets, keyframes) always queue; droppable frames
-/// are discarded when the queue is already over its byte cap.
-fileprivate final class ClientSender: @unchecked Sendable {
-    enum Priority {
-        case critical
-        case droppable
+// MARK: - Per-viewer channels
+
+/// TCP control channel for a single viewer. Bidirectional: sends SPS/PPS
+/// to the viewer, receives keyframeRequest from the viewer.
+fileprivate final class ControlChannel: @unchecked Sendable {
+    let id: UUID
+    private let connection: IncomingConnection
+    private let onKeyframeRequest: () -> Void
+    private let onClose: (UUID) -> Void
+
+    private struct State {
+        var queue: [Data] = []
+        var closed = false
+        var waiter: CheckedContinuation<Void, Never>?
+    }
+    private let lock = NSLock()
+    private var state = State()
+    private var sendTask: Task<Void, Never>?
+    private var recvTask: Task<Void, Never>?
+
+    init(id: UUID,
+         connection: IncomingConnection,
+         onKeyframeRequest: @escaping () -> Void,
+         onClose: @escaping (UUID) -> Void) {
+        self.id = id
+        self.connection = connection
+        self.onKeyframeRequest = onKeyframeRequest
+        self.onClose = onClose
     }
 
+    func start() {
+        sendTask = Task.detached { [weak self] in await self?.drainSend() }
+        recvTask = Task.detached { [weak self] in await self?.drainRecv() }
+    }
+
+    func enqueue(_ message: ScreenShareMessage) {
+        let data = message.encode()
+        lock.lock()
+        if state.closed { lock.unlock(); return }
+        state.queue.append(data)
+        let w = state.waiter; state.waiter = nil
+        lock.unlock()
+        w?.resume()
+    }
+
+    private enum Pop { case closed, item(Data), empty }
+
+    private func drainSend() async {
+        while true {
+            let popped: Pop = {
+                lock.lock(); defer { lock.unlock() }
+                if state.closed { return .closed }
+                if !state.queue.isEmpty { return .item(state.queue.removeFirst()) }
+                return .empty
+            }()
+            switch popped {
+            case .closed: return
+            case .item(let d):
+                do { try await connection.send(d) }
+                catch { print("ControlChannel[\(id)] send failed: \(error)"); await close(); return }
+            case .empty:
+                await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                    let resumeNow: Bool = {
+                        lock.lock(); defer { lock.unlock() }
+                        if state.closed || !state.queue.isEmpty { return true }
+                        state.waiter = cont
+                        return false
+                    }()
+                    if resumeNow { cont.resume() }
+                }
+            }
+        }
+    }
+
+    private func drainRecv() async {
+        var parser = ScreenShareMessageParser()
+        while true {
+            let closed: Bool = { lock.lock(); defer { lock.unlock() }; return state.closed }()
+            if closed { return }
+            do {
+                let chunk = try await connection.receive(maximumLength: 4096, timeout: 30_000)
+                if chunk.isEmpty { continue }
+                parser.append(chunk)
+                while let msg = parser.next() {
+                    switch msg {
+                    case .keyframeRequest:
+                        print("ControlChannel[\(id)] keyframe requested")
+                        onKeyframeRequest()
+                    case .parameterSets:
+                        break // server never receives these
+                    }
+                }
+            } catch TailscaleError.readFailed {
+                if !closed { continue } else { return }
+            } catch {
+                print("ControlChannel[\(id)] recv error: \(error)")
+                await close()
+                return
+            }
+        }
+    }
+
+    func close() async {
+        let (didClose, waiter): (Bool, CheckedContinuation<Void, Never>?) = {
+            lock.lock(); defer { lock.unlock() }
+            if state.closed { return (false, nil) }
+            state.closed = true
+            state.queue.removeAll()
+            let w = state.waiter; state.waiter = nil
+            return (true, w)
+        }()
+        waiter?.resume()
+        await connection.close()
+        sendTask?.cancel()
+        recvTask?.cancel()
+        if didClose { onClose(id) }
+    }
+}
+
+/// UDP media channel for a single viewer. Send-only from the server's
+/// perspective (RTP packets fan out here).
+fileprivate final class MediaChannel: @unchecked Sendable {
     let id: UUID
     private let connection: IncomingConnection
     private let onClose: (UUID) -> Void
 
     private struct State {
         var queue: [Data] = []
-        var queuedBytes = 0
         var closed = false
         var waiter: CheckedContinuation<Void, Never>?
     }
-
-    private let state = OSAllocatedUnfairLock<State>(initialState: State())
-
-    /// Viewer backlog cap. ~1s of 60Mbps = 7.5 MB; 12 MB leaves slack.
-    private let backlogCapBytes = 12 * 1024 * 1024
+    private let lock = NSLock()
+    private var state = State()
     private var task: Task<Void, Never>?
+
+    /// ~300 KB of buffered UDP datagrams — roughly one Retina IDR.
+    /// Oldest-shed on overflow (the UDP drop model — slow viewers don't
+    /// stall the capture pipeline).
+    // TODO: bitrate adaptation via RTCP would replace this coarse policy.
+    private static let softCap = 256
 
     init(id: UUID, connection: IncomingConnection, onClose: @escaping (UUID) -> Void) {
         self.id = id
@@ -300,107 +469,70 @@ fileprivate final class ClientSender: @unchecked Sendable {
         self.onClose = onClose
     }
 
-    /// Snapshot of (queueDepth, queuedBytes) for logging. Cheap: single lock.
-    func backlog() -> (depth: Int, bytes: Int) {
-        state.withLock { ($0.queue.count, $0.queuedBytes) }
-    }
-
     func start() {
-        task = Task.detached { [weak self] in
-            await self?.drain()
+        task = Task.detached { [weak self] in await self?.drain() }
+    }
+
+    func enqueue(_ datagram: Data) {
+        lock.lock()
+        if state.closed { lock.unlock(); return }
+        if state.queue.count >= Self.softCap {
+            state.queue.removeFirst(state.queue.count - Self.softCap + 1)
         }
+        state.queue.append(datagram)
+        let w = state.waiter; state.waiter = nil
+        lock.unlock()
+        w?.resume()
     }
 
-    func enqueue(_ message: ScreenShareMessage, priority: Priority) {
-        let data = message.encode()
-
-        let waiterToResume: CheckedContinuation<Void, Never>? = state.withLock { s -> CheckedContinuation<Void, Never>? in
-            if s.closed { return nil }
-            if priority == .droppable && s.queuedBytes + data.count > backlogCapBytes {
-                return nil
-            }
-            s.queue.append(data)
-            s.queuedBytes += data.count
-            let w = s.waiter
-            s.waiter = nil
-            return w
-        }
-        waiterToResume?.resume()
-    }
-
-    private enum PopResult {
-        case closed
-        case item(Data)
-        case empty
-    }
+    private enum Pop { case closed, item(Data), empty }
 
     private func drain() async {
         while true {
-            guard let data = await nextItem() else { return }
-            do {
-                try await connection.send(data)
-            } catch {
-                print("ClientSender[\(id)] send failed: \(error)")
-                await close()
-                return
-            }
-        }
-    }
-
-    private func nextItem() async -> Data? {
-        while true {
-            let popped: PopResult = state.withLock { s -> PopResult in
-                if s.closed { return .closed }
-                if !s.queue.isEmpty {
-                    let data = s.queue.removeFirst()
-                    s.queuedBytes -= data.count
-                    return .item(data)
-                }
+            let popped: Pop = {
+                lock.lock(); defer { lock.unlock() }
+                if state.closed { return .closed }
+                if !state.queue.isEmpty { return .item(state.queue.removeFirst()) }
                 return .empty
-            }
-
+            }()
             switch popped {
-            case .closed: return nil
-            case .item(let d): return d
-            case .empty: break
-            }
-
-            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-                let shouldResumeImmediately = state.withLock { s -> Bool in
-                    if s.closed || !s.queue.isEmpty { return true }
-                    s.waiter = cont
-                    return false
+            case .closed: return
+            case .item(let d):
+                do { try await connection.send(d) }
+                catch { print("MediaChannel[\(id)] send failed: \(error)"); await close(); return }
+            case .empty:
+                await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                    let resumeNow: Bool = {
+                        lock.lock(); defer { lock.unlock() }
+                        if state.closed || !state.queue.isEmpty { return true }
+                        state.waiter = cont
+                        return false
+                    }()
+                    if resumeNow { cont.resume() }
                 }
-                if shouldResumeImmediately { cont.resume() }
             }
         }
     }
 
     func close() async {
-        let transition: (didClose: Bool, waiter: CheckedContinuation<Void, Never>?) = state.withLock { s in
-            if s.closed { return (false, nil) }
-            s.closed = true
-            s.queue.removeAll()
-            s.queuedBytes = 0
-            let w = s.waiter
-            s.waiter = nil
+        let (didClose, waiter): (Bool, CheckedContinuation<Void, Never>?) = {
+            lock.lock(); defer { lock.unlock() }
+            if state.closed { return (false, nil) }
+            state.closed = true
+            state.queue.removeAll()
+            let w = state.waiter; state.waiter = nil
             return (true, w)
-        }
-        guard transition.didClose else { return }
-
-        transition.waiter?.resume()
+        }()
+        waiter?.resume()
         await connection.close()
         task?.cancel()
-        onClose(id)
+        if didClose { onClose(id) }
     }
 }
 
 private struct TSLogger: LogSink {
     var logFileHandle: Int32? = nil
     func log(_ message: String) {
-        // The listener prints "Listening for tcp on :PORT" on every accept()
-        // poll, which floods the console every 10s. Silence it; accept()
-        // successes are already logged by the server itself.
         if message.hasPrefix("Listening for ") { return }
         print("[Tailscale] \(message)")
     }

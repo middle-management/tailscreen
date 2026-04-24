@@ -1,31 +1,35 @@
 import Foundation
 
-/// Wire format used between ``TailscaleScreenShareServer`` and ``TailscaleScreenShareClient``.
+/// Wire format used on the **TCP control channel** between
+/// ``TailscaleScreenShareServer`` and ``TailscaleScreenShareClient``.
 ///
-/// Every message starts with a 5-byte header:
+/// Media (encoded H.264 access units) moves out-of-band on the **UDP media
+/// channel** as standards-compliant RTP (RFC 3550 + RFC 6184); see
+/// ``RTPPacketizer`` and ``RTPDepacketizer``.
+///
+/// Control messages are small and rare enough that TCP's reliability wins
+/// over UDP's latency. Every message starts with a 5-byte header:
 ///
 ///     [1 byte: type][4 bytes big-endian: payload length][payload...]
 ///
-/// There are two message types:
+/// Message types:
 ///
-///     .parameterSets (0x01)
-///         payload = [4 BE: spsLen][sps bytes][4 BE: ppsLen][pps bytes]
+///     .parameterSets     (0x02) sharer → viewer. Sent on connect and before
+///                               every IDR.
+///                               payload = [4 BE: spsLen][sps][4 BE: ppsLen][pps]
 ///
-///     .frame (0x02)
-///         payload = [1 byte: keyframe flag][8 BE: server timestamp ns][raw AVCC NAL units]
-///
-/// The timestamp uses `DispatchTime.now().uptimeNanoseconds` (mach_absolute_time),
-/// which is monotonic and consistent across processes on the same machine. Lets
-/// the client compute one-way encode→receive latency when both ends run locally.
+///     .keyframeRequest   (0x03) viewer → sharer. Sent when the RTP
+///                               depacketizer notices a gap.
+///                               payload = empty
 enum ScreenShareMessage {
     case parameterSets(sps: Data, pps: Data)
-    case frame(data: Data, isKeyframe: Bool, timestampNs: UInt64)
+    case keyframeRequest
 
     static let headerSize = 5
 
     enum MessageType: UInt8 {
-        case parameterSets = 0x01
-        case frame = 0x02
+        case parameterSets = 0x02
+        case keyframeRequest = 0x03
     }
 
     /// Serialize this message as a wire-format packet (header + payload).
@@ -39,12 +43,8 @@ enum ScreenShareMessage {
             payload.append(pps)
             return Self.frame(type: .parameterSets, payload: payload)
 
-        case .frame(let data, let isKeyframe, let timestampNs):
-            var payload = Data(capacity: 1 + 8 + data.count)
-            payload.append(isKeyframe ? 1 : 0)
-            payload.appendBigEndian(timestampNs)
-            payload.append(data)
-            return Self.frame(type: .frame, payload: payload)
+        case .keyframeRequest:
+            return Self.frame(type: .keyframeRequest, payload: Data())
         }
     }
 
@@ -88,8 +88,8 @@ struct ScreenShareMessageParser {
         switch type {
         case .parameterSets:
             return decodeParameterSets(payload)
-        case .frame:
-            return decodeFrame(payload)
+        case .keyframeRequest:
+            return .keyframeRequest
         }
     }
 
@@ -110,19 +110,14 @@ struct ScreenShareMessageParser {
 
         return .parameterSets(sps: sps, pps: pps)
     }
-
-    private func decodeFrame(_ payload: Data) -> ScreenShareMessage? {
-        guard payload.count >= 9 else { return nil }
-        let isKeyframe = payload[payload.startIndex] == 1
-        let timestampStart = payload.index(payload.startIndex, offsetBy: 1)
-        let timestampNs = payload.readBigEndian(UInt64.self, at: timestampStart)
-        let bodyStart = payload.index(timestampStart, offsetBy: 8)
-        let body = Data(payload[bodyStart..<payload.endIndex])
-        return .frame(data: body, isKeyframe: isKeyframe, timestampNs: timestampNs)
-    }
 }
 
-private extension Data {
+extension Data {
+    mutating func appendBigEndian(_ value: UInt16) {
+        append(UInt8((value >> 8) & 0xFF))
+        append(UInt8(value & 0xFF))
+    }
+
     mutating func appendBigEndian(_ value: UInt32) {
         append(UInt8((value >> 24) & 0xFF))
         append(UInt8((value >> 16) & 0xFF))
@@ -134,6 +129,12 @@ private extension Data {
         for shift in stride(from: 56, through: 0, by: -8) {
             append(UInt8((value >> UInt64(shift)) & 0xFF))
         }
+    }
+
+    func readBigEndian(_: UInt16.Type, at index: Data.Index) -> UInt16 {
+        let b0 = UInt16(self[index])
+        let b1 = UInt16(self[self.index(index, offsetBy: 1)])
+        return (b0 << 8) | b1
     }
 
     func readBigEndian(_: UInt32.Type, at index: Data.Index) -> UInt32 {

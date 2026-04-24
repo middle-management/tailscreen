@@ -5,16 +5,21 @@ import CoreMedia
 import CoreVideo
 import TailscaleKit
 
-/// Screen-share viewer. Dials a peer over TailscaleKit, parses the framed
-/// protocol, and pipes the raw H.264 sample buffers straight into an
-/// `AVSampleBufferDisplayLayer` — no CIImage, no CGImage copies, no
-/// per-frame MainActor hop. The display layer handles hardware decode +
-/// presentation on its own thread.
+/// Screen-share viewer. Opens two connections to the sharer:
+///
+/// - **TCP control** (``OutgoingConnection`` on port 7447): receives
+///   ``parameterSets`` (SPS/PPS), sends ``keyframeRequest`` when the RTP
+///   depacketizer notices loss.
+/// - **UDP media** (``OutgoingConnection`` on port 7448): receives
+///   RFC 3550 + RFC 6184 RTP packets; the ``RTPDepacketizer`` reassembles
+///   them into AVCC access units, which go straight into an
+///   ``AVSampleBufferDisplayLayer`` for hardware decode + presentation.
 @available(macOS 10.15, *)
 final class TailscaleScreenShareClient: @unchecked Sendable {
     var node: TailscaleNode?
 
-    private var connection: OutgoingConnection?
+    private var controlConnection: OutgoingConnection?
+    private var mediaConnection: OutgoingConnection?
     private var window: NSWindow?
     private var displayLayer: AVSampleBufferDisplayLayer?
     private var formatDescription: CMFormatDescription?
@@ -22,13 +27,26 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     private var isDisconnecting = false
     private var windowCloseObserver: NSObjectProtocol?
     private let logger: TSLogger
-    private var receiveTask: Task<Void, Never>?
+    private var controlTask: Task<Void, Never>?
+    private var mediaTask: Task<Void, Never>?
+    private let depacketizer = RTPDepacketizer()
+    /// Filled by `depacketizer.onAccessUnit` (fires synchronously inside
+    /// `feed()` on the media-loop thread) and drained by `mediaLoop`
+    /// between datagrams so it can `await enqueueFrame`. Never touched
+    /// from another thread.
+    private var pendingAccessUnits: [(Data, Bool)] = []
+    private var framesReceived = 0
+    private var lossEvents = 0
 
     init() {
         self.logger = TSLogger()
     }
 
-    func connect(to hostname: String, port: UInt16 = 7447, authKey: String? = nil, path: String? = nil) async throws {
+    func connect(to hostname: String,
+                 controlPort: UInt16 = 7447,
+                 mediaPort: UInt16 = 7448,
+                 authKey: String? = nil,
+                 path: String? = nil) async throws {
         guard !isConnected else { return }
 
         let statePath = path ?? {
@@ -59,69 +77,123 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
             throw TailscaleError.badInterfaceHandle
         }
 
-        print("Dialing \(hostname):\(port)…")
-        let connection = try await OutgoingConnection(
+        print("Dialing \(hostname):\(controlPort) (control) and \(hostname):\(mediaPort) (media)…")
+        let control = try await OutgoingConnection(
             tailscale: tailscaleHandle,
-            to: "\(hostname):\(port)",
+            to: "\(hostname):\(controlPort)",
             proto: .tcp,
             logger: logger
         )
-        try await connection.connect()
-        self.connection = connection
+        try await control.connect()
+
+        let media = try await OutgoingConnection(
+            tailscale: tailscaleHandle,
+            to: "\(hostname):\(mediaPort)",
+            proto: .udp,
+            logger: logger
+        )
+        try await media.connect()
+
+        // Nudge the sharer's UDP listener so it accepts our peer and starts
+        // delivering. A 4-byte NUL "ping" is tiny, costs nothing, and is
+        // silently ignored by ``RTPDepacketizer`` (< 12-byte minimum).
+        try? await media.send(Data(count: 4))
+
+        self.controlConnection = control
+        self.mediaConnection = media
         self.isConnected = true
         print("Connected to \(hostname)")
 
-        receiveTask = Task { [weak self] in
-            await self?.receiveLoop()
+        depacketizer.onAccessUnit = { [weak self] accessUnit, isKeyframe in
+            // Buffered synchronously from inside `depacketizer.feed()`; the
+            // media loop drains after each feed so it can `await enqueueFrame`.
+            self?.pendingAccessUnits.append((accessUnit, isKeyframe))
         }
+        depacketizer.onLoss = { [weak self] count in
+            self?.handleLoss(count)
+        }
+
+        controlTask = Task { [weak self] in await self?.controlLoop() }
+        mediaTask = Task { [weak self] in await self?.mediaLoop() }
     }
 
-    private func receiveLoop() async {
-        guard let connection = connection else { return }
-        var parser = ScreenShareMessageParser()
-        var bytesReceived = 0
-        var framesReceived = 0
+    // MARK: - Loops
 
+    private func controlLoop() async {
+        guard let connection = controlConnection else { return }
+        var parser = ScreenShareMessageParser()
         while isConnected {
             do {
-                // Generous timeout so we don't spin; receive returns as soon as bytes arrive.
                 let chunk = try await connection.receive(maximumLength: 64 * 1024, timeout: 5_000)
                 if chunk.isEmpty { continue }
-                bytesReceived += chunk.count
-
                 parser.append(chunk)
                 while let message = parser.next() {
                     switch message {
                     case .parameterSets(let sps, let pps):
                         print("Client: received SPS/PPS (sps=\(sps.count)B pps=\(pps.count)B)")
                         applyParameterSets(sps: sps, pps: pps)
-                    case .frame(let data, let isKeyframe, let timestampNs):
-                        framesReceived += 1
-                        if framesReceived == 1 || framesReceived % 60 == 0 {
-                            let nowNs = DispatchTime.now().uptimeNanoseconds
-                            let latencyMs: Double
-                            if timestampNs > 0 && nowNs >= timestampNs {
-                                latencyMs = Double(nowNs - timestampNs) / 1_000_000.0
-                            } else {
-                                latencyMs = -1
-                            }
-                            let latencyStr = latencyMs >= 0 ? String(format: "%.1fms", latencyMs) : "n/a"
-                            print("Client: received frame #\(framesReceived) (kf=\(isKeyframe), \(data.count)B, total=\(bytesReceived)B, encode→recv=\(latencyStr))")
-                        }
-                        await enqueueFrame(data: data, isKeyframe: isKeyframe)
+                    case .keyframeRequest:
+                        break // server-bound message; ignore if echoed
                     }
                 }
             } catch TailscaleError.readFailed {
                 if !isConnected { break }
                 continue
             } catch {
-                if isConnected {
-                    print("Receive error: \(error)")
-                }
+                if isConnected { print("Control recv error: \(error)") }
                 break
             }
         }
     }
+
+    private func mediaLoop() async {
+        guard let connection = mediaConnection else { return }
+        while isConnected {
+            do {
+                // One call → one UDP datagram (see UDP semantics in
+                // TailscaleScreenShareServer.swift header comment).
+                let datagram = try await connection.receive(
+                    maximumLength: RTPConstants.maxDatagramBytes + 64,
+                    timeout: 5_000
+                )
+                if datagram.isEmpty { continue }
+                depacketizer.feed(datagram)
+                while !pendingAccessUnits.isEmpty {
+                    let (unit, isKeyframe) = pendingAccessUnits.removeFirst()
+                    framesReceived += 1
+                    if framesReceived == 1 || framesReceived % 60 == 0 {
+                        print("Client: received frame #\(framesReceived) (kf=\(isKeyframe), \(unit.count)B, loss events=\(lossEvents))")
+                    }
+                    await enqueueFrame(data: unit, isKeyframe: isKeyframe)
+                }
+            } catch TailscaleError.readFailed {
+                if !isConnected { break }
+                continue
+            } catch {
+                if isConnected { print("Media recv error: \(error)") }
+                break
+            }
+        }
+    }
+
+    private func handleLoss(_ count: Int) {
+        lossEvents += 1
+        // Coalesce: one keyframe request per several loss events is enough —
+        // the encoder will emit an IDR within a frame time either way.
+        if lossEvents == 1 || lossEvents % 30 == 0 {
+            print("Client: loss detected (missing≈\(count), total events=\(lossEvents)) — requesting keyframe")
+            Task { [weak self] in await self?.sendKeyframeRequest() }
+        }
+    }
+
+    private func sendKeyframeRequest() async {
+        guard let control = controlConnection else { return }
+        let data = ScreenShareMessage.keyframeRequest.encode()
+        do { try await control.send(data) }
+        catch { print("Client: keyframeRequest send failed: \(error)") }
+    }
+
+    // MARK: - Decoder wiring (unchanged vs. TCP version)
 
     private func applyParameterSets(sps: Data, pps: Data) {
         var newDesc: CMFormatDescription?
@@ -314,19 +386,18 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
 
         isConnected = false
 
-        // Stop the receive loop and wait for it to exit BEFORE closing the
-        // Tailscale node. Closing the node rips the underlying fd out from
-        // under a concurrent read and segfaults tsnet.
-        if let receiveTask = receiveTask {
-            receiveTask.cancel()
-            _ = await receiveTask.value
-        }
-        receiveTask = nil
+        // Stop the receive loops and wait for them to exit BEFORE closing
+        // the Tailscale node. Closing the node rips the underlying fds out
+        // from under concurrent reads and segfaults tsnet.
+        controlTask?.cancel()
+        mediaTask?.cancel()
+        if let t = controlTask { _ = await t.value }
+        if let t = mediaTask { _ = await t.value }
+        controlTask = nil
+        mediaTask = nil
 
-        if let connection = connection {
-            await connection.close()
-            self.connection = nil
-        }
+        if let c = controlConnection { await c.close(); controlConnection = nil }
+        if let m = mediaConnection { await m.close(); mediaConnection = nil }
 
         if let node = node {
             try? await node.close()
@@ -356,7 +427,8 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
 
     deinit {
         isConnected = false
-        receiveTask?.cancel()
+        controlTask?.cancel()
+        mediaTask?.cancel()
     }
 }
 

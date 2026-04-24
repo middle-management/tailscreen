@@ -149,7 +149,7 @@ class AppState: ObservableObject {
 
         do {
             client = TailscaleScreenShareClient()
-            try await client?.connect(to: host, port: 7447)
+            try await client?.connect(to: host, controlPort: 7447, mediaPort: 7448)
             isConnected = true
             connectedHostname = host
         } catch {
