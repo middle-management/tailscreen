@@ -272,28 +272,24 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
             self.decoder = nil
         }
 
+        // Bisect step A: full teardown inside an explicit autoreleasepool.
+        // Earlier attempts to close window + nil renderer + nil window
+        // synchronously all SIGSEGV'd the next main-queue autoreleasepool
+        // pop. Wrapping the whole block in autoreleasepool drains any
+        // objects that Metal/CA autoreleased *inside this job* before the
+        // system's outer pool pop, so if the zombie is one of those it
+        // gets released while its buffers are still valid.
         await MainActor.run {
-            // Detach the willCloseNotification observer BEFORE hiding the
-            // window so its callback can't re-enter disconnect().
-            if let obs = self.windowCloseObserver {
-                NotificationCenter.default.removeObserver(obs)
-                self.windowCloseObserver = nil
+            autoreleasepool {
+                if let obs = self.windowCloseObserver {
+                    NotificationCenter.default.removeObserver(obs)
+                    self.windowCloseObserver = nil
+                }
+                self.renderer?.invalidate()
+                self.renderer = nil
+                self.window?.close()
+                self.window = nil
             }
-
-            // Stop the display link synchronously. CADisplayLink.invalidate
-            // returns only after the current callback (if any) finishes, so
-            // no further Metal work can be enqueued after this line.
-            self.renderer?.invalidate()
-
-            // Just hide the window. Explicit close() + nil-out of window
-            // and renderer used to SIGSEGV in objc_autoreleasePoolPop on
-            // the next main-queue tick every single time — Metal/CA still
-            // has objects autoreleased in the current pool when we tore
-            // everything down synchronously. Leaving window + renderer
-            // retained by self means their real release happens during
-            // TailscaleScreenShareClient's own dealloc, one runloop later,
-            // under a fresh pool. One-NSWindow-per-session leak, no crash.
-            self.window?.orderOut(nil)
         }
 
         print("Client disconnected")
