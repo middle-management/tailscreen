@@ -22,7 +22,18 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     private var mediaConnection: OutgoingConnection?
     private var window: NSWindow?
     private var displayLayer: AVSampleBufferDisplayLayer?
-    private var formatDescription: CMFormatDescription?
+    private var _formatDescription: CMFormatDescription?
+    private let formatDescriptionLock = NSLock()
+    private var formatDescription: CMFormatDescription? {
+        get {
+            formatDescriptionLock.lock(); defer { formatDescriptionLock.unlock() }
+            return _formatDescription
+        }
+        set {
+            formatDescriptionLock.lock(); defer { formatDescriptionLock.unlock() }
+            _formatDescription = newValue
+        }
+    }
     private var isConnected = false
     private var isDisconnecting = false
     private var windowCloseObserver: NSObjectProtocol?
