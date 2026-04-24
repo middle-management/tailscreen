@@ -61,15 +61,27 @@ final class RTPDepacketizer {
         let ts = datagram.readBigEndian(UInt32.self,
                                         at: datagram.index(datagram.startIndex, offsetBy: 4))
 
-        var payloadStart = datagram.index(datagram.startIndex, offsetBy: 12 + 4 * csrcCount)
+        // Absolute header size including CSRCs. Swift's Data.index(_,offsetBy:)
+        // traps on overshoot, so every offset computation below is guarded
+        // against datagram.count up front instead of relying on endIndex
+        // comparisons after the fact.
+        let csrcHeaderBytes = 12 + 4 * csrcCount
+        guard datagram.count >= csrcHeaderBytes else {
+            reportLoss(1); dropCurrentUnit(); return
+        }
+        var payloadStart = datagram.index(datagram.startIndex, offsetBy: csrcHeaderBytes)
         if extensionBit {
             // RTP header extension: 4-byte profile/length, then `length` 32-bit words.
-            guard datagram.distance(from: payloadStart, to: datagram.endIndex) >= 4 else {
+            guard datagram.count >= csrcHeaderBytes + 4 else {
                 reportLoss(1); dropCurrentUnit(); return
             }
             let extWordsOffset = datagram.index(payloadStart, offsetBy: 2)
             let extWords = Int(datagram.readBigEndian(UInt16.self, at: extWordsOffset))
-            payloadStart = datagram.index(payloadStart, offsetBy: 4 + 4 * extWords)
+            let totalHeader = csrcHeaderBytes + 4 + 4 * extWords
+            guard datagram.count >= totalHeader else {
+                reportLoss(1); dropCurrentUnit(); return
+            }
+            payloadStart = datagram.index(datagram.startIndex, offsetBy: totalHeader)
         }
         guard payloadStart < datagram.endIndex else {
             reportLoss(1); dropCurrentUnit(); return
