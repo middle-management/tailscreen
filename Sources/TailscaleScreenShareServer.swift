@@ -238,7 +238,17 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
                 }
                 newEncoder.onEncodedData = { [weak self] data, isKeyframe in
                     let ts = DispatchTime.now().uptimeNanoseconds
-                    self?.broadcastMedia(data, isKeyframe: isKeyframe, uptimeNs: ts)
+                    guard let self = self else { return }
+                    if isKeyframe {
+                        // Keyframes ride the reliable TCP control channel.
+                        // A typical IDR fragments into ~70 FU-A packets over
+                        // MTU and a single UDP loss destroyed the whole frame
+                        // under the old RTP-only path, spinning a keyframe-
+                        // request loop that never produced a visible frame.
+                        self.broadcastControl(.keyframe(timestampNs: ts, data: data))
+                    } else {
+                        self.broadcastMedia(data, isKeyframe: false, uptimeNs: ts)
+                    }
                 }
                 encoder = newEncoder
             } catch {
@@ -410,7 +420,7 @@ fileprivate final class ControlChannel: @unchecked Sendable {
                     case .keyframeRequest:
                         print("ControlChannel[\(id)] keyframe requested")
                         onKeyframeRequest()
-                    case .parameterSets:
+                    case .parameterSets, .keyframe:
                         break // server never receives these
                     }
                 }

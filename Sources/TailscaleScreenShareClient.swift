@@ -145,6 +145,13 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                         applyParameterSets(sps: sps, pps: pps)
                     case .keyframeRequest:
                         break // server-bound message; ignore if echoed
+                    case .keyframe(_, let data):
+                        // Keyframes arrive reliably via TCP. Reset any lossy
+                        // delta state the depacketizer had accumulated so we
+                        // resync cleanly on the next UDP delta.
+                        depacketizer.reset()
+                        print("Client: received keyframe via TCP (\(data.count)B)")
+                        await enqueueFrame(data: data, isKeyframe: true)
                     }
                 }
             } catch TailscaleError.readFailed {

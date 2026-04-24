@@ -21,15 +21,27 @@ import Foundation
 ///     .keyframeRequest   (0x03) viewer → sharer. Sent when the RTP
 ///                               depacketizer notices a gap.
 ///                               payload = empty
+///
+///     .keyframe          (0x04) sharer → viewer. The full AVCC-formatted
+///                               IDR access unit. Keyframes ride the TCP
+///                               control channel instead of RTP/UDP because
+///                               a 100–500 KB IDR fragments into ~70 FU-A
+///                               packets over MTU — a single UDP loss used
+///                               to discard the whole frame and start a
+///                               keyframe-request loop that never converged.
+///                               Deltas still go via RTP.
+///                               payload = [8 BE: uptimeNs][4 BE: dataLen][data]
 enum ScreenShareMessage {
     case parameterSets(sps: Data, pps: Data)
     case keyframeRequest
+    case keyframe(timestampNs: UInt64, data: Data)
 
     static let headerSize = 5
 
     enum MessageType: UInt8 {
         case parameterSets = 0x02
         case keyframeRequest = 0x03
+        case keyframe = 0x04
     }
 
     /// Serialize this message as a wire-format packet (header + payload).
@@ -45,6 +57,13 @@ enum ScreenShareMessage {
 
         case .keyframeRequest:
             return Self.frame(type: .keyframeRequest, payload: Data())
+
+        case .keyframe(let ts, let data):
+            var payload = Data(capacity: 8 + 4 + data.count)
+            payload.appendBigEndian(ts)
+            payload.appendBigEndian(UInt32(data.count))
+            payload.append(data)
+            return Self.frame(type: .keyframe, payload: payload)
         }
     }
 
@@ -90,7 +109,21 @@ struct ScreenShareMessageParser {
             return decodeParameterSets(payload)
         case .keyframeRequest:
             return .keyframeRequest
+        case .keyframe:
+            return decodeKeyframe(payload)
         }
+    }
+
+    private func decodeKeyframe(_ payload: Data) -> ScreenShareMessage? {
+        guard payload.count >= 12 else { return nil }
+        let ts = payload.readBigEndian(UInt64.self, at: payload.startIndex)
+        let dataLenStart = payload.index(payload.startIndex, offsetBy: 8)
+        let dataLen = Int(payload.readBigEndian(UInt32.self, at: dataLenStart))
+        guard payload.count >= 12 + dataLen else { return nil }
+        let dataStart = payload.index(dataLenStart, offsetBy: 4)
+        let dataEnd = payload.index(dataStart, offsetBy: dataLen)
+        let data = Data(payload[dataStart..<dataEnd])
+        return .keyframe(timestampNs: ts, data: data)
     }
 
     private func decodeParameterSets(_ payload: Data) -> ScreenShareMessage? {

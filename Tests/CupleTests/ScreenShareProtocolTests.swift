@@ -80,6 +80,22 @@ final class ScreenShareProtocolTests: XCTestCase {
         XCTAssertEqual(gotPps3, Data([0x68, 0x43]))
     }
 
+    func testRoundTripKeyframe() throws {
+        let au = Data(repeating: 0x67, count: 4096)
+        let ts: UInt64 = 0xDEAD_BEEF_CAFE_F00D
+        let message: ScreenShareMessage = .keyframe(timestampNs: ts, data: au)
+
+        var parser = ScreenShareMessageParser()
+        parser.append(message.encode())
+
+        let decoded = try XCTUnwrap(parser.next())
+        guard case let .keyframe(timestampNs: gotTs, data: gotData) = decoded else {
+            return XCTFail("expected .keyframe, got \(decoded)")
+        }
+        XCTAssertEqual(gotTs, ts)
+        XCTAssertEqual(gotData, au)
+    }
+
     func testUnknownMessageTypeIsSkipped() throws {
         var bogus = Data()
         bogus.append(0xFF)
