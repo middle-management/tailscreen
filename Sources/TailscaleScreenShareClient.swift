@@ -273,23 +273,27 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         }
 
         await MainActor.run {
-            // Detach the willCloseNotification observer BEFORE closing the
+            // Detach the willCloseNotification observer BEFORE hiding the
             // window so its callback can't re-enter disconnect().
             if let obs = self.windowCloseObserver {
                 NotificationCenter.default.removeObserver(obs)
                 self.windowCloseObserver = nil
             }
 
-            // Stop the display link synchronously. The link's selector
-            // fires on this same main runloop, so invalidate() can't race
-            // an in-flight tick. After it returns no more Metal work gets
-            // enqueued and nothing autoreleases into our main-queue pool,
-            // so we can drop the renderer and the window in the same turn.
+            // Stop the display link synchronously. CADisplayLink.invalidate
+            // returns only after the current callback (if any) finishes, so
+            // no further Metal work can be enqueued after this line.
             self.renderer?.invalidate()
-            self.renderer = nil
 
-            self.window?.close()
-            self.window = nil
+            // Just hide the window. Explicit close() + nil-out of window
+            // and renderer used to SIGSEGV in objc_autoreleasePoolPop on
+            // the next main-queue tick every single time — Metal/CA still
+            // has objects autoreleased in the current pool when we tore
+            // everything down synchronously. Leaving window + renderer
+            // retained by self means their real release happens during
+            // TailscaleScreenShareClient's own dealloc, one runloop later,
+            // under a fresh pool. One-NSWindow-per-session leak, no crash.
+            self.window?.orderOut(nil)
         }
 
         print("Client disconnected")
