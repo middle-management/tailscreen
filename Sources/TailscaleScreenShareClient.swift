@@ -284,22 +284,22 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         guard sampleStatus == noErr, let sampleBuffer = sampleBuffer else { return }
 
         // Tell the display layer to show this frame immediately, no reorder.
-        // Use CFArrayGetValueAtIndex instead of bridging the CFArray to
-        // [CFMutableDictionary] — the latter produces a bridged *copy* whose
-        // mutations don't reach the real per-sample attachment dictionary,
-        // and the Unmanaged pointer juggling involved has tripped
-        // objc_autoreleasePoolPop on disconnect.
-        if let attachmentsArray = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: true),
-           CFArrayGetCount(attachmentsArray) > 0 {
-            let raw = CFArrayGetValueAtIndex(attachmentsArray, 0)
-            let dict = unsafeBitCast(raw, to: CFMutableDictionary.self)
-            let displayKey = Unmanaged.passUnretained(kCMSampleAttachmentKey_DisplayImmediately).toOpaque()
-            let trueValue = Unmanaged.passUnretained(kCFBooleanTrue).toOpaque()
-            CFDictionarySetValue(dict, displayKey, trueValue)
-            if !isKeyframe {
-                let notSyncKey = Unmanaged.passUnretained(kCMSampleAttachmentKey_NotSync).toOpaque()
-                CFDictionarySetValue(dict, notSyncKey, trueValue)
-            }
+        // Use CMSetAttachment at the sample-buffer level; it's idiomatic and
+        // sidesteps the CFArray getValueAtIndex → unsafeBitCast → nil-receiver
+        // objc_msgSend crash the per-sample path could hit on some buffers.
+        CMSetAttachment(
+            sampleBuffer,
+            key: kCMSampleAttachmentKey_DisplayImmediately,
+            value: kCFBooleanTrue,
+            attachmentMode: CMAttachmentMode(kCMAttachmentMode_ShouldNotPropagate)
+        )
+        if !isKeyframe {
+            CMSetAttachment(
+                sampleBuffer,
+                key: kCMSampleAttachmentKey_NotSync,
+                value: kCFBooleanTrue,
+                attachmentMode: CMAttachmentMode(kCMAttachmentMode_ShouldNotPropagate)
+            )
         }
 
         // Enqueue directly from the receive-loop thread. The video renderer
