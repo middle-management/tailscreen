@@ -114,6 +114,37 @@ final class ScreenShareProtocolTests: XCTestCase {
         XCTAssertEqual(got, Data([7, 7, 7]))
     }
 
+    func testRoundTripAnnotation() throws {
+        let ann = Annotation(
+            id: UUID(),
+            tool: .arrow,
+            points: [CGPoint(x: 0.1, y: 0.2), CGPoint(x: 0.8, y: 0.7)],
+            color: Annotation.defaultColor,
+            width: Annotation.defaultWidth
+        )
+        let op = AnnotationOp.add(ann)
+        let message: ScreenShareMessage = .annotation(op)
+
+        var parser = ScreenShareMessageParser()
+        parser.append(message.encode())
+
+        let decoded = try XCTUnwrap(parser.next())
+        guard case .annotation(let gotOp) = decoded else {
+            return XCTFail("expected .annotation, got \(decoded)")
+        }
+        XCTAssertEqual(gotOp, op)
+    }
+
+    func testAnnotationClearAllRoundTrip() throws {
+        let message: ScreenShareMessage = .annotation(.clearAll)
+        var parser = ScreenShareMessageParser()
+        parser.append(message.encode())
+        let decoded = try XCTUnwrap(parser.next())
+        guard case .annotation(.clearAll) = decoded else {
+            return XCTFail("expected .annotation(.clearAll), got \(decoded)")
+        }
+    }
+
     func testBigEndianLengthField() {
         // Construct a frame whose payload is larger than 255 bytes so we exercise
         // every byte of the length field (not just the last one).

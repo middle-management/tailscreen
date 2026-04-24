@@ -187,13 +187,27 @@ private struct SharingCard: View {
                 }
             }
 
-            Button {
-                Task { await appState.stopSharing() }
-            } label: {
-                Text("Stop Sharing").frame(maxWidth: .infinity)
+            HStack(spacing: 6) {
+                Button {
+                    appState.toggleSharerOverlay()
+                } label: {
+                    Label(
+                        appState.isSharerOverlayVisible ? "Stop Drawing" : "Draw",
+                        systemImage: appState.isSharerOverlayVisible ? "pencil.slash" : "pencil.tip"
+                    )
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
+                Button {
+                    Task { await appState.stopSharing() }
+                } label: {
+                    Text("Stop Sharing").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
         }
         .padding(12)
         .background(
