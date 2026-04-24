@@ -58,16 +58,29 @@ launch() {
     # which is the real culprit we can't get from the crash stack alone.
     # MallocStackLoggingNoCompact + MallocScribble cost memory and CPU;
     # worth it for diagnosis, not for everyday use.
-    local zombie_env=""
+    local debug_env=""
     if [ "${CUPLE_DEBUG_ZOMBIES:-0}" = "1" ]; then
-        zombie_env="NSZombieEnabled=YES \
+        # Mode A: NSZombieEnabled. Lets every over-release *log* instead of
+        # crashing. Run this first to see which class the zombie is.
+        debug_env="NSZombieEnabled=YES \
 MallocStackLogging=1 \
 MallocStackLoggingNoCompact=1 \
 MallocScribble=1 \
 CFZombieLevel=17"
     fi
+    if [ "${CUPLE_DEBUG_GMALLOC:-0}" = "1" ]; then
+        # Mode B: libgmalloc. Turns every over-release into an IMMEDIATE
+        # crash at the *call site that did the extra release*, with a full
+        # stack trace in the crash report (not a post-mortem pool-pop stack
+        # that tells us nothing). Much slower; run this *after* mode A has
+        # confirmed it's an Obj-C over-release.
+        debug_env="$debug_env DYLD_INSERT_LIBRARIES=/usr/lib/libgmalloc.dylib \
+MALLOC_PROTECT_BEFORE=1 \
+MALLOC_FILL_SPACE=1 \
+MALLOC_STRICT_SIZE=1"
+    fi
 
-    env CUPLE_INSTANCE="$id" $zombie_env stdbuf -oL -eL "$BIN" 2>&1 \
+    env CUPLE_INSTANCE="$id" $debug_env stdbuf -oL -eL "$BIN" 2>&1 \
         | stdbuf -oL sed "s/^/[$id] /" >> "$LOG" &
     # `$!` is the PID of the last stage (sed); its pgid is shared with Cuple
     # because we're in job-control mode.
@@ -84,8 +97,12 @@ done
 echo
 echo "$COUNT instances running. Merged log: $LOG"
 if [ "${CUPLE_DEBUG_ZOMBIES:-0}" = "1" ]; then
-    echo "Zombie diagnostics ENABLED (NSZombieEnabled / MallocStackLogging)."
-    echo "After a crash repro, run: malloc_history <pid> <zombie-address>"
+    echo "Zombie diagnostics ENABLED. Over-released Obj-C objects will log"
+    echo "'message sent to deallocated instance' instead of crashing."
+fi
+if [ "${CUPLE_DEBUG_GMALLOC:-0}" = "1" ]; then
+    echo "libgmalloc ENABLED. Over-releases crash IMMEDIATELY at the caller"
+    echo "that did the extra release, with a stack trace in the .ips report."
 fi
 echo "Ctrl-C to stop."
 if [ "$COUNT" -eq 1 ]; then
