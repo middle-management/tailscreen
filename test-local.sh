@@ -68,6 +68,16 @@ MallocStackLoggingNoCompact=1 \
 MallocScribble=1 \
 CFZombieLevel=17"
     fi
+    if [ "${CUPLE_DEBUG_ASAN:-0}" = "1" ]; then
+        # Mode C: AddressSanitizer via Swift's -sanitize=address. Catches
+        # the use-after-free at the exact instruction where it happens with
+        # a full stack, unlike the post-mortem pool-pop crash. Needs a
+        # separate debug build: `swift build -Xswiftc -sanitize=address`
+        # (the ASan runtime is linked in). Much faster than libgmalloc and
+        # plays nicely with ScreenCaptureKit's XPC.
+        debug_env="$debug_env ASAN_OPTIONS=abort_on_error=1:halt_on_error=1:print_stacktrace=1"
+    fi
+
     if [ "${CUPLE_DEBUG_GMALLOC:-0}" = "1" ]; then
         # Mode B: libgmalloc. In theory catches over-releases at the caller.
         # In practice it's too slow for ScreenCaptureKit's XPC path —
@@ -103,6 +113,11 @@ echo "$COUNT instances running. Merged log: $LOG"
 if [ "${CUPLE_DEBUG_ZOMBIES:-0}" = "1" ]; then
     echo "Zombie diagnostics ENABLED. Over-released Obj-C objects will log"
     echo "'message sent to deallocated instance' instead of crashing."
+fi
+if [ "${CUPLE_DEBUG_ASAN:-0}" = "1" ]; then
+    echo "ASan ENABLED. Rebuild with:"
+    echo "  swift build -Xswiftc -sanitize=address"
+    echo "ASan will print a full stack at the use-after-free site on crash."
 fi
 if [ "${CUPLE_DEBUG_GMALLOC:-0}" = "1" ]; then
     echo "libgmalloc ENABLED. Over-releases crash IMMEDIATELY at the caller"
