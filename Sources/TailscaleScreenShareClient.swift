@@ -272,13 +272,11 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
             self.decoder = nil
         }
 
-        // Bisect step A: full teardown inside an explicit autoreleasepool.
-        // Earlier attempts to close window + nil renderer + nil window
-        // synchronously all SIGSEGV'd the next main-queue autoreleasepool
-        // pop. Wrapping the whole block in autoreleasepool drains any
-        // objects that Metal/CA autoreleased *inside this job* before the
-        // system's outer pool pop, so if the zombie is one of those it
-        // gets released while its buffers are still valid.
+        // Bisect step B: tear the renderer down fully, but only orderOut
+        // the window (no close(), no nil-out). Isolates whether the zombie
+        // originates from NSWindow.close() cascading release of the content
+        // view/CAMetalLayer/AVSampleBufferDisplayLayer graph, or from
+        // somewhere in the renderer's own invalidate() + release path.
         await MainActor.run {
             autoreleasepool {
                 if let obs = self.windowCloseObserver {
@@ -287,8 +285,10 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                 }
                 self.renderer?.invalidate()
                 self.renderer = nil
-                self.window?.close()
-                self.window = nil
+                self.window?.orderOut(nil)
+                // NOTE: leaving self.window set so the NSWindow isn't
+                // released in this pool. If this run is CLEAN, the zombie
+                // is in window.close()'s release cascade.
             }
         }
 
