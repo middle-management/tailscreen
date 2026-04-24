@@ -143,26 +143,30 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
 
     private func handleDecodedFrame(_ buffer: CVPixelBuffer) {
         // VTDecompressionSession delivers frames on its own callback thread.
-        // Hop to main exactly once to build the window the first time we
-        // learn the video size; thereafter the renderer stores buffers under
-        // its own lock and the CADisplayLink pulls them during vsync.
+        // Hand the buffer to the renderer on whatever thread this is — the
+        // renderer guards its slot with a lock. If the window isn't up yet
+        // `renderer` is nil; that's fine, the next frame lands once main
+        // finishes window creation.
+        let ns = lastReceiveUptimeNs
+        guard isConnected, !isDisconnecting else { return }
+        renderer?.setPixelBuffer(buffer, receiveUptimeNs: ns)
+
+        // First frame: hop to main once to build the window so we know the
+        // source dimensions. Deliberately don't capture `buffer` in the
+        // main-actor closure — Swift 6's region isolation analysis flags
+        // sending a non-Sendable `CVPixelBuffer` across the boundary, and
+        // we don't need it there anyway.
         if window == nil {
             let width = CVPixelBufferGetWidth(buffer)
             let height = CVPixelBufferGetHeight(buffer)
             let size = CGSize(width: width, height: height)
-            let ns = lastReceiveUptimeNs
-            Task { @MainActor [weak self, buffer] in
+            Task { @MainActor [weak self] in
                 guard let self = self, self.isConnected, !self.isDisconnecting else { return }
                 if self.window == nil {
                     self.createWindow(initialSize: size)
                 }
-                self.renderer?.setPixelBuffer(buffer, receiveUptimeNs: ns)
             }
-            return
         }
-
-        guard isConnected, !isDisconnecting else { return }
-        renderer?.setPixelBuffer(buffer, receiveUptimeNs: lastReceiveUptimeNs)
     }
 
     @MainActor
