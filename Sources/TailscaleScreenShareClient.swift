@@ -25,10 +25,25 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     private var isDisconnecting = false
     private let logger: TSLogger
     private var receiveTask: Task<Void, Never>?
+    /// Serializes writes on the connection. Without this, overlapping
+    /// `sendAnnotationOp` calls could interleave framed-message bytes.
+    private let writer = ConnectionWriter()
 
     init(renderer: MetalViewerRenderer) {
         self.renderer = renderer
         self.logger = TSLogger()
+    }
+
+    /// Transmit an annotation op to the sharer over the back-channel. Safe to
+    /// call concurrently; writes are serialized through ``ConnectionWriter``.
+    func sendAnnotationOp(_ op: AnnotationOp) async {
+        guard let connection = connection, isConnected else { return }
+        let data = ScreenShareMessage.annotation(op).encode()
+        do {
+            try await writer.send(data, over: connection)
+        } catch {
+            print("Client: sendAnnotationOp failed: \(error)")
+        }
     }
 
     func connect(to hostname: String, port: UInt16 = 7447, authKey: String? = nil, path: String? = nil) async throws {
@@ -143,6 +158,9 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                         }
                         self.lastReceiveUptimeNs = DispatchTime.now().uptimeNanoseconds
                         decoder?.decode(data: data, isKeyframe: isKeyframe)
+                    case .annotation:
+                        // Server never sends these downstream; ignore defensively.
+                        break
                     }
                 }
             } catch TailscaleError.readFailed {
@@ -241,4 +259,13 @@ extension Notification.Name {
     /// observes this and runs disconnect() so the UI tears down instead
     /// of sitting on a stale last frame.
     static let tailscreenViewerPeerClosed = Notification.Name("tailscreen.viewer.peerClosed")
+}
+
+/// Serializes `send(_:)` calls on an `OutgoingConnection`. Two concurrent
+/// sends would interleave framed-message bytes on the wire and desync the
+/// peer's parser.
+private actor ConnectionWriter {
+    func send(_ data: Data, over connection: OutgoingConnection) async throws {
+        try await connection.send(data)
+    }
 }

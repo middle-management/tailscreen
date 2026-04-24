@@ -39,6 +39,11 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     private let previewContext = CIContext(options: [.useSoftwareRenderer: false])
     private let previewMaxWidth: CGFloat = 280
 
+    /// Fires when a viewer sends an annotation op over the back-channel.
+    /// AppState routes these into the sharer's overlay window; the drawings
+    /// get captured into the video stream and distributed to every viewer.
+    var onAnnotationReceived: ((AnnotationOp) -> Void)?
+
     init(port: UInt16 = 7447) {
         self.port = port
         self.logger = TSLogger()
@@ -133,6 +138,10 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         let id = UUID()
         let sender = ClientSender(id: id, connection: connection) { [weak self] clientID in
             self?.removeClient(clientID)
+        }
+        sender.onAnnotationOp = { [weak self] op in
+            // Hops over to MainActor inside AppState; fire synchronously here.
+            self?.onAnnotationReceived?(op)
         }
 
         clients.withLock { $0[id] = sender }
@@ -299,6 +308,10 @@ fileprivate final class ClientSender: @unchecked Sendable {
     private let connection: IncomingConnection
     private let onClose: (UUID) -> Void
 
+    /// Fired for every annotation op received from this viewer over the
+    /// back-channel. Set before ``start()``.
+    var onAnnotationOp: ((AnnotationOp) -> Void)?
+
     private struct State {
         var queue: [Data] = []
         var queuedBytes = 0
@@ -310,7 +323,8 @@ fileprivate final class ClientSender: @unchecked Sendable {
 
     /// Viewer backlog cap. ~1s of 60Mbps = 7.5 MB; 12 MB leaves slack.
     private let backlogCapBytes = 12 * 1024 * 1024
-    private var task: Task<Void, Never>?
+    private var sendTask: Task<Void, Never>?
+    private var receiveTask: Task<Void, Never>?
 
     init(id: UUID, connection: IncomingConnection, onClose: @escaping (UUID) -> Void) {
         self.id = id
@@ -324,8 +338,46 @@ fileprivate final class ClientSender: @unchecked Sendable {
     }
 
     func start() {
-        task = Task.detached { [weak self] in
+        sendTask = Task.detached { [weak self] in
             await self?.drain()
+        }
+        receiveTask = Task.detached { [weak self] in
+            await self?.receiveAnnotations()
+        }
+    }
+
+    /// Reads from the viewer's end of the connection and surfaces annotation
+    /// ops via ``onAnnotationOp``. Any other message type (none exist today
+    /// upstream) is ignored. Terminates quietly when the viewer disconnects
+    /// or ``close()`` flips `closed`.
+    private func receiveAnnotations() async {
+        var parser = ScreenShareMessageParser()
+        while true {
+            let isClosed = state.withLock { $0.closed }
+            if isClosed { return }
+            do {
+                let chunk = try await connection.receive(maximumLength: 16 * 1024, timeout: 5_000)
+                if chunk.isEmpty { continue }
+                parser.append(chunk)
+                while let message = parser.next() {
+                    if case .annotation(let op) = message {
+                        onAnnotationOp?(op)
+                    }
+                    // Drop other types silently — viewer never legitimately
+                    // sends anything else today.
+                }
+            } catch TailscaleError.readFailed {
+                // Either a timeout we can retry on, or the viewer went away.
+                let isClosed = state.withLock { $0.closed }
+                if isClosed { return }
+                continue
+            } catch {
+                let isClosed = state.withLock { $0.closed }
+                if !isClosed {
+                    print("ClientSender[\(id)] receive error: \(error)")
+                }
+                return
+            }
         }
     }
 
@@ -408,7 +460,8 @@ fileprivate final class ClientSender: @unchecked Sendable {
 
         transition.waiter?.resume()
         await connection.close()
-        task?.cancel()
+        sendTask?.cancel()
+        receiveTask?.cancel()
         onClose(id)
     }
 }
