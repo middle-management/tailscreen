@@ -340,16 +340,28 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                 NotificationCenter.default.removeObserver(obs)
                 self.windowCloseObserver = nil
             }
-            // Just drop our references. Closing the NSWindow cascades release
-            // of its contentView, which releases the AVSampleBufferDisplayLayer
-            // and its underlying renderer at a time when no in-flight enqueue
-            // can still touch them. Calling flush() + removeFromSuperlayer()
-            // ourselves here raced with pending enqueueFrame Tasks and caused
-            // a SIGSEGV in objc_autoreleasePoolPop on the main queue.
-            self.displayLayer = nil
-            self.window?.close()
-            self.window = nil
+            // AVSampleBufferDisplayLayer has a background renderer that can
+            // schedule work on CATransaction boundaries. If we release the
+            // window + layer synchronously here, the next main-queue drain
+            // autoreleasepool pop can land on a zombie from that background
+            // scheduler and SIGSEGV in objc_release. Two safeguards:
+            //  1. Hide the window with orderOut() instead of close(); close()
+            //     immediately triggers full view-tree release on the current
+            //     runloop tick, which is exactly when the race happens.
+            //  2. Defer dropping our strong refs to the next runloop tick so
+            //     ARC release runs under its own fresh autoreleasepool,
+            //     outside the main-queue job that's about to pop.
+            self.window?.orderOut(nil)
             self.formatDescription = nil
+            let layer = self.displayLayer
+            let win = self.window
+            self.displayLayer = nil
+            self.window = nil
+            DispatchQueue.main.async {
+                _ = layer
+                win?.close()
+                _ = win
+            }
         }
 
         print("Client disconnected")

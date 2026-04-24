@@ -9,12 +9,12 @@ import TailscaleKit
 class AppState: ObservableObject {
     @Published var isSharing = false
     @Published var isConnected = false
+    @Published var connectedHostname: String?
     @Published var statusMessage = ""
     @Published var showAlert = false
     @Published var alertTitle = ""
     @Published var alertMessage = ""
     @Published var showConnectSheet = false
-    @Published var showIPSheet = false
 
     private var server: TailscaleScreenShareServer?
     private var client: TailscaleScreenShareClient?
@@ -58,6 +58,8 @@ class AppState: ObservableObject {
         }
         return ["Starting Tailscale..."]
     }
+
+    var rawTailscaleIPs: [String] { tailscaleIPs }
 
     /// Populate `availableDisplays` via ScreenCaptureKit. Safe to call any
     /// time the menu is opened; silently clears the list if the API errors
@@ -149,6 +151,7 @@ class AppState: ObservableObject {
             client = TailscaleScreenShareClient()
             try await client?.connect(to: host, port: 7447)
             isConnected = true
+            connectedHostname = host
         } catch {
             showAlertMessage(
                 title: "Connection Failed",
@@ -159,12 +162,16 @@ class AppState: ObservableObject {
 
     func connectToPeer(_ peer: CuplePeer) async {
         await connect(to: peer.tailscaleIP)
+        if isConnected {
+            connectedHostname = peer.hostname
+        }
     }
 
     func disconnect() async {
         await client?.disconnect()
         client = nil
         isConnected = false
+        connectedHostname = nil
     }
 
     func discoverPeers() async {

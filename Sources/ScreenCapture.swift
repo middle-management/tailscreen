@@ -94,8 +94,49 @@ class ScreenCapture: NSObject {
 
         try stream?.addStreamOutput(streamOutput!, type: .screen, sampleHandlerQueue: .global(qos: .userInteractive))
 
-        // Start capture
-        try await stream?.startCapture()
+        // Start capture with a 5s watchdog. SCStream's bridged async method
+        // occasionally leaks its continuation when the screen-recording
+        // daemon errors during startup — observed in the wild as
+        // "SWIFT TASK CONTINUATION MISUSE: _createCheckedThrowingContinuation
+        // leaked" right after a "Stream stopped with error: ... application
+        // connection being interrupted" line. Without the timeout the whole
+        // Tailscale server start path hangs forever.
+        guard let stream = stream else { return }
+        // Use the completion-handler variant of startCapture. The bridged
+        // async `try await stream.startCapture()` has been observed leaking
+        // its CheckedContinuation when the screen-recording daemon errors
+        // during startup, hanging the whole Tailscale server start path.
+        // Wrapping the completion handler ourselves plus a 5s watchdog gives
+        // a deterministic exit in either direction.
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            let box = ContinuationBox(cont)
+            stream.startCapture { error in
+                if let error = error {
+                    box.resume(throwing: error)
+                } else {
+                    box.resume()
+                }
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + 5) {
+                box.resume(throwing: ScreenCaptureError.startTimeout)
+            }
+        }
+    }
+
+    /// Dedupes CheckedContinuation resumptions so we can race Apple's
+    /// completion handler against a timeout without double-resuming.
+    private final class ContinuationBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var cont: CheckedContinuation<Void, Error>?
+        init(_ cont: CheckedContinuation<Void, Error>) { self.cont = cont }
+        func resume() {
+            lock.lock(); defer { lock.unlock() }
+            cont?.resume(); cont = nil
+        }
+        func resume(throwing error: Error) {
+            lock.lock(); defer { lock.unlock() }
+            cont?.resume(throwing: error); cont = nil
+        }
     }
 
     func stop() async {
@@ -132,4 +173,5 @@ private class StreamOutput: NSObject, SCStreamOutput {
 enum ScreenCaptureError: Error {
     case noDisplayAvailable
     case permissionDenied
+    case startTimeout
 }
