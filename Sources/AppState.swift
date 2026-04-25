@@ -60,6 +60,12 @@ class AppState: ObservableObject {
         tailscaleAuth.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }.store(in: &cancellables)
+
+        // Kick off auto-login as soon as the app launches, not on first
+        // menu open. tsnet's `node.up()` and the LocalAPI handshake take a
+        // few seconds; doing it eagerly means the menubar icon is already
+        // in its authenticated state by the time the user clicks.
+        triggerAutoLoginIfNeeded()
     }
 
     private var cancellables = Set<AnyCancellable>()
