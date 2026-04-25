@@ -1,6 +1,6 @@
 --- /dev/null
 +++ b/upstream/libtailscale/swift/TailscaleKit/PacketListener.swift
-@@ -0,0 +1,165 @@
+@@ -0,0 +1,142 @@
 +// Copyright (c) Tailscale Inc & AUTHORS
 +// SPDX-License-Identifier: BSD-3-Clause
 +
