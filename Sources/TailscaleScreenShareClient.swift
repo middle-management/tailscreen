@@ -155,19 +155,22 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
 
         isConnected = false
 
-        // Stop the receive loop and wait for it to exit BEFORE closing the
-        // Tailscale node. Closing the node rips the underlying fd out from
-        // under a concurrent read and segfaults tsnet.
+        // Close the connection FIRST so the receive loop's blocked
+        // `connection.receive(timeout: 5_000)` errors out immediately
+        // instead of running out its 5s poll timeout. Without this the
+        // user perceived a multi-second pause after clicking Disconnect.
+        // Then await the loop's exit, then close the node — closing the
+        // node before the loop exits rips the fd out from under a
+        // concurrent read and segfaults tsnet.
+        if let connection = connection {
+            await connection.close()
+            self.connection = nil
+        }
         if let receiveTask = receiveTask {
             receiveTask.cancel()
             _ = await receiveTask.value
         }
         receiveTask = nil
-
-        if let connection = connection {
-            await connection.close()
-            self.connection = nil
-        }
 
         if let node = node {
             try? await node.close()
