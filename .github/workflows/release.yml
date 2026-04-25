@@ -1,5 +1,19 @@
 name: Release
 
+# Builds a universal (arm64 + x86_64), signed, notarized, stapled
+# Tailscreen.app, zips it, and attaches it to a GitHub Release.
+# The release notes embed a ready-to-paste Homebrew cask stanza so a
+# tap can be bumped manually (or via `brew bump-cask-pr`).
+#
+# Required repository secrets:
+#   APPLE_DEVELOPER_ID_CERT_P12      base64-encoded .p12 of the
+#                                    "Developer ID Application" cert
+#   APPLE_DEVELOPER_ID_CERT_PASSWORD password protecting the .p12
+#   APPLE_NOTARY_API_KEY_P8          base64-encoded App Store Connect
+#                                    API key (.p8)
+#   APPLE_NOTARY_API_KEY_ID          API key id (10 chars)
+#   APPLE_NOTARY_API_ISSUER_ID       API issuer UUID
+
 on:
   push:
     tags:
@@ -7,122 +21,301 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release version (e.g., v1.0.0)'
+        description: 'Release tag (e.g., v1.0.0)'
         required: true
 
 jobs:
   release:
-    name: Create Release
-    runs-on: macos-13
+    name: Build & publish release
+    runs-on: macos-14
+
+    env:
+      APP_NAME: Tailscreen
+      BUNDLE_ID: com.tailscreen.app
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
-    - name: Get version
-      id: version
-      run: |
-        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-          echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
-        else
-          echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
-        fi
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
 
-    - name: Build release binary
-      run: swift build -c release
+      - name: Resolve version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ github.event.inputs.version }}"
+          else
+            tag="${GITHUB_REF#refs/tags/}"
+          fi
+          version="${tag#v}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
-    - name: Create application bundle
-      run: |
-        mkdir -p Tailscreen.app/Contents/MacOS
-        mkdir -p Tailscreen.app/Contents/Resources
+      - name: Apply libtailscale patches
+        working-directory: TailscaleKitPackage
+        run: make apply-patches
 
-        # Copy binary
-        cp .build/release/Tailscreen Tailscreen.app/Contents/MacOS/
+      - name: Build universal libtailscale.a
+        working-directory: TailscaleKitPackage/upstream/libtailscale
+        run: |
+          set -euxo pipefail
 
-        # Create Info.plist
-        cat > Tailscreen.app/Contents/Info.plist <<EOF
-        <?xml version="1.0" encoding="UTF-8"?>
-        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-        <plist version="1.0">
-        <dict>
-            <key>CFBundleDevelopmentRegion</key>
-            <string>en</string>
-            <key>CFBundleExecutable</key>
-            <string>Tailscreen</string>
-            <key>CFBundleIdentifier</key>
-            <string>com.tailscreen.app</string>
-            <key>CFBundleInfoDictionaryVersion</key>
-            <string>6.0</string>
-            <key>CFBundleName</key>
-            <string>Tailscreen</string>
-            <key>CFBundlePackageType</key>
-            <string>APPL</string>
-            <key>CFBundleShortVersionString</key>
-            <string>${{ steps.version.outputs.version }}</string>
-            <key>CFBundleVersion</key>
-            <string>1</string>
-            <key>LSMinimumSystemVersion</key>
-            <string>13.0</string>
-            <key>LSUIElement</key>
-            <true/>
-            <key>NSHighResolutionCapable</key>
-            <true/>
-        </dict>
-        </plist>
-        EOF
+          rm -f libtailscale.a libtailscale.h
 
-    - name: Create ZIP archive
-      run: |
-        zip -r Tailscreen-${{ steps.version.outputs.version }}-macOS.zip Tailscreen.app
+          GOARCH=arm64 \
+            CGO_CFLAGS="-arch arm64" \
+            CGO_LDFLAGS="-arch arm64" \
+            make c-archive
+          cp libtailscale.a /tmp/libtailscale-arm64.a
+          rm -f libtailscale.a
 
-    - name: Generate checksums
-      run: |
-        shasum -a 256 Tailscreen-${{ steps.version.outputs.version }}-macOS.zip > checksums.txt
-        cat checksums.txt
+          GOARCH=amd64 \
+            CGO_CFLAGS="-arch x86_64" \
+            CGO_LDFLAGS="-arch x86_64" \
+            make c-archive
+          cp libtailscale.a /tmp/libtailscale-amd64.a
 
-    - name: Create release notes
-      run: |
-        cat > release-notes.md <<EOF
-        # Tailscreen ${{ steps.version.outputs.version }}
+          lipo -create \
+            /tmp/libtailscale-arm64.a \
+            /tmp/libtailscale-amd64.a \
+            -output libtailscale.a
 
-        High-quality screen sharing over LAN for macOS.
+          lipo -info libtailscale.a
 
-        ## Installation
+      - name: Build universal Tailscreen binary
+        env:
+          PKG_CONFIG_PATH: ${{ github.workspace }}/TailscaleKitPackage
+        run: |
+          set -euxo pipefail
+          swift build -c release --arch arm64 --arch x86_64
+          # With multiple --arch flags, SwiftPM emits the universal
+          # binary under .build/apple/Products/Release/.
+          lipo -info .build/apple/Products/Release/${APP_NAME}
 
-        1. Download \`Tailscreen-${{ steps.version.outputs.version }}-macOS.zip\`
-        2. Unzip and move \`Tailscreen.app\` to your Applications folder
-        3. Right-click and select "Open" to bypass Gatekeeper (first time only)
-        4. Grant Screen Recording permission when prompted
+      - name: Assemble Tailscreen.app
+        run: |
+          set -euxo pipefail
+          APP="${APP_NAME}.app"
+          rm -rf "$APP"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          cp ".build/apple/Products/Release/${APP_NAME}" "$APP/Contents/MacOS/"
 
-        ## Requirements
+          cat > "$APP/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleDevelopmentRegion</key>
+              <string>en</string>
+              <key>CFBundleExecutable</key>
+              <string>${APP_NAME}</string>
+              <key>CFBundleIdentifier</key>
+              <string>${BUNDLE_ID}</string>
+              <key>CFBundleInfoDictionaryVersion</key>
+              <string>6.0</string>
+              <key>CFBundleName</key>
+              <string>${APP_NAME}</string>
+              <key>CFBundlePackageType</key>
+              <string>APPL</string>
+              <key>CFBundleShortVersionString</key>
+              <string>${{ steps.version.outputs.version }}</string>
+              <key>CFBundleVersion</key>
+              <string>${{ steps.version.outputs.version }}</string>
+              <key>LSMinimumSystemVersion</key>
+              <string>15.0</string>
+              <key>LSUIElement</key>
+              <true/>
+              <key>NSHighResolutionCapable</key>
+              <true/>
+          </dict>
+          </plist>
+          EOF
 
-        - macOS 13.0 (Ventura) or later
-        - Screen Recording permission
+      - name: Import signing certificate
+        env:
+          APPLE_DEVELOPER_ID_CERT_P12: ${{ secrets.APPLE_DEVELOPER_ID_CERT_P12 }}
+          APPLE_DEVELOPER_ID_CERT_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          CERT_PATH="$RUNNER_TEMP/cert.p12"
 
-        ## Features
+          echo "$APPLE_DEVELOPER_ID_CERT_P12" | base64 --decode > "$CERT_PATH"
 
-        - 📺 MenuBar app with SwiftUI interface
-        - 🎥 60 FPS screen capture at Retina resolution
-        - 🚀 Hardware-accelerated H.264 encoding
-        - 🌐 Direct peer-to-peer LAN streaming
-        - ⚡ Low latency optimized for real-time sharing
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" \
+            -k "$KEYCHAIN_PATH" \
+            -P "$APPLE_DEVELOPER_ID_CERT_PASSWORD" \
+            -T /usr/bin/codesign
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 
-        ## Checksums
+          rm -f "$CERT_PATH"
 
-        \`\`\`
-        $(cat checksums.txt)
-        \`\`\`
-        EOF
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
 
-    - name: Create Release
-      uses: softprops/action-gh-release@v1
-      with:
-        name: Tailscreen ${{ steps.version.outputs.version }}
-        body_path: release-notes.md
-        files: |
-          Tailscreen-${{ steps.version.outputs.version }}-macOS.zip
-          checksums.txt
-        draft: false
-        prerelease: false
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Codesign Tailscreen.app
+        run: |
+          set -euxo pipefail
+          if ! security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
+              | grep -q "Developer ID Application"; then
+            echo "::error::No Developer ID Application identity found in keychain"
+            exit 1
+          fi
+          IDENTITY_HASH="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
+            | awk '/Developer ID Application/ {print $2; exit}')"
+
+          /usr/bin/codesign \
+            --force \
+            --options runtime \
+            --timestamp \
+            --deep \
+            --sign "$IDENTITY_HASH" \
+            "${APP_NAME}.app"
+
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "${APP_NAME}.app"
+
+      - name: Notarize and staple
+        env:
+          APPLE_NOTARY_API_KEY_P8: ${{ secrets.APPLE_NOTARY_API_KEY_P8 }}
+          APPLE_NOTARY_API_KEY_ID: ${{ secrets.APPLE_NOTARY_API_KEY_ID }}
+          APPLE_NOTARY_API_ISSUER_ID: ${{ secrets.APPLE_NOTARY_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          KEY_PATH="$RUNNER_TEMP/notary-key.p8"
+          echo "$APPLE_NOTARY_API_KEY_P8" | base64 --decode > "$KEY_PATH"
+
+          NOTARIZE_ZIP="$RUNNER_TEMP/${APP_NAME}-notarize.zip"
+          /usr/bin/ditto -c -k --keepParent "${APP_NAME}.app" "$NOTARIZE_ZIP"
+
+          xcrun notarytool submit "$NOTARIZE_ZIP" \
+            --key "$KEY_PATH" \
+            --key-id "$APPLE_NOTARY_API_KEY_ID" \
+            --issuer "$APPLE_NOTARY_API_ISSUER_ID" \
+            --wait
+
+          xcrun stapler staple "${APP_NAME}.app"
+          xcrun stapler validate "${APP_NAME}.app"
+
+          rm -f "$KEY_PATH" "$NOTARIZE_ZIP"
+
+      - name: Package release zip and checksums
+        id: package
+        run: |
+          set -euxo pipefail
+          ZIP_NAME="${APP_NAME}-${{ steps.version.outputs.tag }}-macOS.zip"
+          /usr/bin/ditto -c -k --keepParent "${APP_NAME}.app" "$ZIP_NAME"
+          shasum -a 256 "$ZIP_NAME" > checksums.txt
+          SHA256="$(awk '{print $1}' checksums.txt)"
+          echo "zip_name=$ZIP_NAME"  >> "$GITHUB_OUTPUT"
+          echo "sha256=$SHA256"      >> "$GITHUB_OUTPUT"
+
+      - name: Compose release notes
+        run: |
+          cat > release-notes.md <<'EOF_OUTER'
+          # Tailscreen __TAG__
+
+          Secure screen sharing via Tailscale, for macOS.
+
+          ## Install via Homebrew cask
+
+          Add (or update) `Casks/tailscreen.rb` in your tap:
+
+          ```ruby
+          cask "tailscreen" do
+            version "__VERSION__"
+            sha256 "__SHA256__"
+
+            url "https://github.com/__REPO__/releases/download/v#{version}/Tailscreen-v#{version}-macOS.zip"
+            name "Tailscreen"
+            desc "Secure screen sharing via Tailscale"
+            homepage "https://github.com/__REPO__"
+
+            depends_on macos: ">= :sequoia"
+
+            app "Tailscreen.app"
+
+            zap trash: [
+              "~/Library/Application Support/Tailscreen",
+              "~/Library/Preferences/com.tailscreen.app.plist",
+            ]
+          end
+          ```
+
+          For subsequent releases:
+
+          ```sh
+          brew bump-cask-pr --version=__VERSION__ <user>/<tap>/tailscreen
+          ```
+
+          ## Manual install
+
+          1. Download `__ZIP__`
+          2. Unzip and move `Tailscreen.app` to your Applications folder
+          3. Grant Screen Recording permission when prompted
+
+          ## Requirements
+
+          - macOS 15.0 (Sequoia) or later
+
+          ## Checksums
+
+          ```
+          __CHECKSUMS__
+          ```
+          EOF_OUTER
+
+          # Substitute placeholders without re-quoting the heredoc.
+          python3 - <<'PY'
+          import os, pathlib
+          p = pathlib.Path("release-notes.md")
+          text = p.read_text()
+          repo = os.environ["GITHUB_REPOSITORY"]
+          checksums = pathlib.Path("checksums.txt").read_text().strip()
+          subs = {
+              "__TAG__":      os.environ["TAG"],
+              "__VERSION__":  os.environ["VERSION"],
+              "__SHA256__":   os.environ["SHA256"],
+              "__ZIP__":      os.environ["ZIP_NAME"],
+              "__REPO__":     repo,
+              "__CHECKSUMS__": checksums,
+          }
+          for k, v in subs.items():
+              text = text.replace(k, v)
+          p.write_text(text)
+          PY
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+          SHA256: ${{ steps.package.outputs.sha256 }}
+          ZIP_NAME: ${{ steps.package.outputs.zip_name }}
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+          ZIP_NAME: ${{ steps.package.outputs.zip_name }}
+        run: |
+          set -euxo pipefail
+          gh release create "$TAG" \
+            --title "Tailscreen $TAG" \
+            --notes-file release-notes.md \
+            "$ZIP_NAME" \
+            "checksums.txt"
+
+      - name: Cleanup keychain
+        if: always()
+        run: |
+          if [ -n "${KEYCHAIN_PATH:-}" ] && [ -f "$KEYCHAIN_PATH" ]; then
+            security delete-keychain "$KEYCHAIN_PATH" || true
+          fi
