@@ -27,6 +27,12 @@ final class DrawingOverlayView: NSView {
 
     var currentTool: AnnotationTool = .pen
 
+    /// Color used for new annotations made in this view. Defaults to the
+    /// palette's first entry; callers (sharer/viewer overlay setup)
+    /// override with the per-author color derived from a stable identity
+    /// so each participant draws in their own color.
+    var currentColor: Annotation.RGBA = Annotation.defaultColor
+
     /// When false, mouse events are ignored (passed through to the next
     /// responder). The view still renders existing annotations.
     var isInputEnabled: Bool = true
@@ -90,7 +96,7 @@ final class DrawingOverlayView: NSView {
             id: UUID(),
             tool: currentTool,
             points: [p],
-            color: Annotation.defaultColor,
+            color: currentColor,
             width: Annotation.defaultWidth
         )
         needsDisplay = true

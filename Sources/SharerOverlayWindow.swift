@@ -51,6 +51,7 @@ final class SharerOverlayWindow {
         let overlay = DrawingOverlayView(frame: NSRect(origin: .zero, size: screenFrame.size))
         overlay.autoresizingMask = [.width, .height]
         overlay.isInputEnabled = false
+        overlay.currentColor = Annotation.RGBA.paletteColor(forIdentity: Self.localIdentity())
         panel.contentView = overlay
 
         self.panel = panel
@@ -85,5 +86,16 @@ final class SharerOverlayWindow {
 
     func apply(remoteOp op: AnnotationOp) {
         overlay.apply(remoteOp: op)
+    }
+
+    /// Stable identity string used to derive this participant's drawing
+    /// color. Same algorithm as TailscaleScreenShareClient.localIdentity()
+    /// — combining hostname + CUPLE_INSTANCE makes two local processes on
+    /// the same Mac pick *different* colors (they have different instance
+    /// suffixes), while two real machines pick whatever their hostnames
+    /// hash to.
+    static func localIdentity() -> String {
+        let host = Host.current().localizedName ?? "cuple"
+        return "\(host)\(CupleInstance.hostnameSuffix)"
     }
 }
