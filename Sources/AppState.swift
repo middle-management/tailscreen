@@ -183,23 +183,39 @@ class AppState: ObservableObject {
         }
     }
 
-    /// Build (once) and return the shared viewer renderer. The window has no
-    /// close button — the only way to stop viewing is the menu's Disconnect,
-    /// which routes through `disconnect()` and orderOuts the window without
-    /// releasing it.
+    /// Holds a strong ref to the window's delegate; NSWindow.delegate is
+    /// weak. The delegate intercepts windowShouldClose so the close button
+    /// disconnects via AppState rather than letting AppKit destroy the
+    /// persistent NSWindow.
+    private var viewerWindowDelegate: ViewerWindowDelegate?
+
+    /// Build (once) and return the shared viewer renderer. The window's
+    /// close button maps to AppState.disconnect via a delegate that
+    /// returns false from windowShouldClose so AppKit never tears the
+    /// NSWindow + CAMetalLayer graph down (that release cascade was the
+    /// SIGSEGV source we bisected at length).
     func ensureViewer() -> MetalViewerRenderer {
         if let r = viewerRenderer { return r }
 
         let r = MetalViewerRenderer()
         let win = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1280, height: 720),
-            styleMask: [.titled, .miniaturizable, .resizable],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
         win.title = "Tailscale Screen Share"
         win.backgroundColor = .black
         win.isReleasedWhenClosed = false
+
+        let delegate = ViewerWindowDelegate { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self = self, self.isConnected else { return }
+                await self.disconnect()
+            }
+        }
+        win.delegate = delegate
+        self.viewerWindowDelegate = delegate
 
         let host = NSView(frame: win.contentView!.bounds)
         host.wantsLayer = true
@@ -454,5 +470,21 @@ private struct SimpleLogger: LogSink {
 
     func log(_ message: String) {
         print("[LocalAPI] \(message)")
+    }
+}
+
+/// NSWindowDelegate stand-in for the persistent viewer window. Returns
+/// `false` from `windowShouldClose` so AppKit never proceeds with the
+/// NSWindow.close() release cascade that crashed in earlier bisects;
+/// instead it routes the close button to AppState.disconnect, which
+/// orderOuts the window without releasing it.
+private final class ViewerWindowDelegate: NSObject, NSWindowDelegate {
+    private let onClose: () -> Void
+    init(onClose: @escaping () -> Void) {
+        self.onClose = onClose
+    }
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        onClose()
+        return false
     }
 }
