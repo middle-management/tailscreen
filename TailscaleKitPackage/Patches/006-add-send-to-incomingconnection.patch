@@ -24,7 +24,7 @@
 +            guard var ptr = buffer.baseAddress else { return }
 +            var remaining = buffer.count
 +            while remaining > 0 {
-+                let written = unistd.write(conn, ptr, remaining)
++                let written = Darwin.write(conn, ptr, remaining)
 +                if written <= 0 {
 +                    throw TailscaleError.shortWrite
 +                }

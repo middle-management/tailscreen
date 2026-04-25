@@ -62,6 +62,9 @@ make clean
 
 **Status:** Required for Swift Package Manager builds.
 
+### 009/010/011 (deleted)
+Previously swapped `unistd.read/write/close` → `Darwin.read/write/close` in the upstream Swift sources to fix Swift 6 module resolution. Upstream has since adopted the same fix in `main`; the standalone swap patches are no-ops and were removed. Patches 006/007 (which add new functions) now use `Darwin.*` directly.
+
 ### 013-add-tsnet-listen-packet-go.patch
 **Issue:** libtailscale upstream only exposes `tsnet.Server.Listen` (TCP). Go's `net.Listen` has no UDP variant, so `Listener(proto: .udp)` in the Swift wrapper fails at runtime.
 

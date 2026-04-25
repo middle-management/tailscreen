@@ -20,7 +20,7 @@
 +        }
 +
 +        var buffer = [UInt8](repeating: 0, count: maximumLength)
-+        let bytesRead = buffer.withUnsafeMutableBufferPointer { unistd.read(conn, $0.baseAddress, maximumLength) }
++        let bytesRead = buffer.withUnsafeMutableBufferPointer { Darwin.read(conn, $0.baseAddress, maximumLength) }
 +        if bytesRead <= 0 {
 +            throw TailscaleError.readFailed
 +        }

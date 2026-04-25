@@ -1,6 +1,6 @@
 --- a/upstream/libtailscale/tailscale.go
 +++ b/upstream/libtailscale/tailscale.go
-@@ -621,3 +621,139 @@ func TsnetEnableFunnelToLocalhostPlaintextHttp1(sd C.int, localhostPort C.int) C
+@@ -574,3 +574,139 @@ func TsnetEnableFunnelToLocalhostPlaintextHttp1(sd C.int, localhostPort C.int) C
 
  	return 0
  }
