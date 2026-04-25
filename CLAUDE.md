@@ -206,7 +206,14 @@ Never make this absolute — it breaks portability and CI. Both the `Tailscreen`
 ## CI/CD
 
 - `.github/workflows/build.yml` — `macos-latest`, Go 1.21, on push to `main` and `claude/**` and PRs to `main`. Runs `make build` then `make test`.
-- `.github/workflows/release.yml` — triggered by `v*` tags or manual dispatch. Builds release binary, packages a `.app` with Info.plist, ZIPs + checksums, publishes a GitHub release.
+- `.github/workflows/release.yml` — triggered when a GitHub release is **published** (or via `workflow_dispatch` with a tag input). Runs on `macos-14` (Apple Silicon, macOS 15 SDK):
+  - Cross-builds `libtailscale.a` for `arm64` and `amd64` (per-arch `GOARCH` + `CGO_CFLAGS=-arch …`), then `lipo`-merges into the symlink at `TailscaleKitPackage/lib/libtailscale.a`.
+  - `swift build -c release --arch arm64 --arch x86_64` produces a universal Mach-O at `.build/apple/Products/Release/Tailscreen`.
+  - Wraps it in `Tailscreen.app` with bundle id `se.middlemanagement.tailscreen`, `LSMinimumSystemVersion=15.0`, `LSUIElement=true`, version pulled from the release tag (`v1.2.3` → `1.2.3`).
+  - Codesigns with a Developer ID Application identity loaded into a temp keychain, notarizes via `xcrun notarytool --wait` using an App Store Connect API key, and staples.
+  - Zips with `ditto -c -k --keepParent` and uploads `Tailscreen-<tag>-macOS.zip` + `checksums.txt` to the triggering release with `gh release upload --clobber`.
+  - No release-notes or cask generation here — the tap repo owns cask formatting.
+  - Required secrets: `APPLE_DEVELOPER_ID_CERT_P12` (base64 .p12), `APPLE_DEVELOPER_ID_CERT_PASSWORD`, `APPLE_NOTARY_API_KEY_P8` (base64 .p8), `APPLE_NOTARY_API_KEY_ID`, `APPLE_NOTARY_API_ISSUER_ID`.
 
 ## Git workflow notes
 
