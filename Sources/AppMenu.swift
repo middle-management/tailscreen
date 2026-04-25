@@ -9,6 +9,14 @@ import AppKit
 /// window or the sharer's annotation panel.
 @MainActor
 enum AppMenu {
+    private static var installed = false
+
+    static func installIfNeeded() {
+        guard !installed else { return }
+        installed = true
+        install()
+    }
+
     static func install() {
         let main = NSMenu(title: "MainMenu")
 
