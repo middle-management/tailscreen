@@ -10,11 +10,49 @@ import AppKit
 @MainActor
 enum AppMenu {
     private static var installed = false
+    private static var activationObservers: [NSObjectProtocol] = []
 
     static func installIfNeeded() {
         guard !installed else { return }
         installed = true
         install()
+        wireActivationPolicy()
+    }
+
+    /// Without this, Cuple stays at `.accessory` activation policy (the
+    /// MenuBarExtra default). When the viewer/sharer window becomes key
+    /// macOS keeps showing whatever `.regular` app's menu bar was last
+    /// up — observed: "Zed" sitting above a Tailscale Screen Share
+    /// window. Promote to `.regular` while any of our windows is key,
+    /// drop back to `.accessory` when they aren't, so the Dock icon
+    /// stays absent in the idle state.
+    private static func wireActivationPolicy() {
+        let nc = NotificationCenter.default
+        let updatePolicy: () -> Void = {
+            let hasVisibleWindow = NSApp.windows.contains { w in
+                w.isVisible && w.canBecomeKey
+            }
+            let target: NSApplication.ActivationPolicy = hasVisibleWindow ? .regular : .accessory
+            if NSApp.activationPolicy() != target {
+                NSApp.setActivationPolicy(target)
+                if target == .regular {
+                    NSApp.activate(ignoringOtherApps: true)
+                }
+            }
+        }
+        let names: [Notification.Name] = [
+            NSWindow.didBecomeKeyNotification,
+            NSWindow.didResignKeyNotification,
+            NSWindow.didBecomeMainNotification,
+            NSWindow.willCloseNotification,
+            NSWindow.didChangeOcclusionStateNotification,
+        ]
+        for n in names {
+            let obs = nc.addObserver(forName: n, object: nil, queue: .main) { _ in
+                Task { @MainActor in updatePolicy() }
+            }
+            activationObservers.append(obs)
+        }
     }
 
     static func install() {
