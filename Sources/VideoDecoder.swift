@@ -172,9 +172,20 @@ final class VideoDecoder: @unchecked Sendable {
     }
 
     func shutdown() {
+        // Drain in-flight async decodes BEFORE invalidating. VT's
+        // Invalidate doesn't wait for submitted frames to finish; the
+        // output callback can fire after Invalidate returns, retain a
+        // CVPixelBuffer whose backing is gone, and SIGSEGV the caller
+        // (e.g. TailscaleScreenShareClient.handleDecodedFrame doing
+        // objc_retain on a dead pointer when the viewer's window-close
+        // button triggers disconnect mid-decode).
         queue.sync {
             if let session = session {
+                VTDecompressionSessionWaitForAsynchronousFrames(session)
+                self.onDecodedFrame = nil
                 VTDecompressionSessionInvalidate(session)
+            } else {
+                self.onDecodedFrame = nil
             }
             session = nil
             formatDescription = nil
