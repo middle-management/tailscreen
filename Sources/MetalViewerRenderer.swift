@@ -9,11 +9,11 @@ import QuartzCore
 /// renderer autoreleased work into the main-queue autorelease pool and
 /// produced a zombie-pointer SIGSEGV on teardown.
 ///
-/// Lifecycle is explicit: create, attach to a host view, feed pixel buffers
-/// via `setPixelBuffer`, then `invalidate()` on main before dropping the
-/// window. `CADisplayLink.invalidate()` detaches synchronously, and the
-/// display link's selector runs on the main runloop, so after invalidate
-/// returns no more render work is pending.
+/// Owned by `AppState` for the process lifetime — the disconnect race we
+/// hit when this owned its own window/Metal layer pair was bad enough that
+/// we now never tear either down. Between sessions, callers `clearPendingBuffer`
+/// to drop the last presented frame; the display link stays attached to the
+/// host view for the lifetime of the process.
 @available(macOS 14.0, *)
 final class MetalViewerRenderer: NSObject, @unchecked Sendable {
     let metalLayer: CAMetalLayer
@@ -113,27 +113,21 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
         lock.unlock()
     }
 
-    /// Stop the display link and release GPU resources. Safe to call from
-    /// main at any point in the lifecycle. `CADisplayLink.invalidate()`
-    /// detaches the timer from the runloop synchronously, and because the
-    /// selector fires on the main runloop no callback can race with this
-    /// call — after `invalidate()` returns, no more Metal work is enqueued.
+    /// Drop the latest frame so the next display-link tick presents a black
+    /// drawable. Safe to call from main; doesn't stop the link.
     @MainActor
-    func invalidate() {
-        if isInvalidated { return }
-        isInvalidated = true
-
-        if let link = displayLink {
-            link.invalidate()
-            self.displayLink = nil
-        }
-
+    func clearPendingBuffer() {
         lock.lock()
         pendingBuffer = nil
+        pendingReceiveUptimeNs = 0
         lock.unlock()
-
-        CVMetalTextureCacheFlush(textureCache, 0)
     }
+
+    /// No-op. Renderer is owned by `AppState` for the process lifetime; the
+    /// display link stays attached so reconnects can resume rendering without
+    /// reattaching to the host view. Kept for source compatibility.
+    @MainActor
+    func invalidate() {}
 
     deinit {
         displayLink?.invalidate()

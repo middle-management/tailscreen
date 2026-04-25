@@ -1,7 +1,9 @@
+import AppKit
 import Combine
 import CoreGraphics
 import Foundation
 import Observation
+import QuartzCore
 import SwiftUI
 import TailscaleKit
 
@@ -20,6 +22,16 @@ class AppState: ObservableObject {
     private var client: TailscaleScreenShareClient?
     private var node: TailscaleNode?
     private var tailscaleIPs: [String] = []
+
+    // Persistent viewer window + renderer. Owned for the process lifetime so
+    // disconnect never closes/releases an NSWindow + CAMetalLayer chain (the
+    // dealloc of those types autoreleases pooled IOSurfaces into the same
+    // main-queue pool a Swift Task is about to pop, producing a SIGSEGV in
+    // objc_release on every disconnect variant we tried). On disconnect we
+    // orderOut the window and clear the renderer's pending frame; on connect
+    // we reuse the existing instances.
+    @Published var viewerWindow: NSWindow?
+    private var viewerRenderer: MetalViewerRenderer?
 
     // Peer discovery
     @Published var availablePeers: [CuplePeer] = []
@@ -147,17 +159,87 @@ class AppState: ObservableObject {
     func connect(to host: String) async {
         guard !host.isEmpty else { return }
 
+        let renderer = ensureViewer()
         do {
-            client = TailscaleScreenShareClient()
-            try await client?.connect(to: host, port: 7447)
+            let c = TailscaleScreenShareClient(renderer: renderer)
+            client = c
+            try await c.connect(to: host, port: 7447)
             isConnected = true
             connectedHostname = host
+            // Order matters: with the app at .accessory activation policy
+            // (MenuBarExtra-only), makeKeyAndOrderFront silently no-ops
+            // because non-regular apps can't make a window key. Promote
+            // to .regular first, then activate, then bring the window
+            // up — same idea as AppMenu's activation policy toggle.
+            NSApp.setActivationPolicy(.regular)
+            NSApp.activate(ignoringOtherApps: true)
+            viewerWindow?.orderFrontRegardless()
+            viewerWindow?.makeKeyAndOrderFront(nil)
         } catch {
             showAlertMessage(
                 title: "Connection Failed",
                 message: "Could not connect to \(host): \(error.localizedDescription)")
             client = nil
         }
+    }
+
+    /// Holds a strong ref to the window's delegate; NSWindow.delegate is
+    /// weak. The delegate intercepts windowShouldClose so the close button
+    /// disconnects via AppState rather than letting AppKit destroy the
+    /// persistent NSWindow.
+    private var viewerWindowDelegate: ViewerWindowDelegate?
+
+    /// Build (once) and return the shared viewer renderer. The window's
+    /// close button maps to AppState.disconnect via a delegate that
+    /// returns false from windowShouldClose so AppKit never tears the
+    /// NSWindow + CAMetalLayer graph down (that release cascade was the
+    /// SIGSEGV source we bisected at length).
+    func ensureViewer() -> MetalViewerRenderer {
+        if let r = viewerRenderer { return r }
+
+        let r = MetalViewerRenderer()
+        let win = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1280, height: 720),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        win.title = "Tailscale Screen Share"
+        win.backgroundColor = .black
+        win.isReleasedWhenClosed = false
+
+        let delegate = ViewerWindowDelegate { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self = self, self.isConnected else { return }
+                await self.disconnect()
+            }
+        }
+        win.delegate = delegate
+        self.viewerWindowDelegate = delegate
+
+        let host = NSView(frame: win.contentView!.bounds)
+        host.wantsLayer = true
+        host.layer = CALayer()
+        host.layer?.backgroundColor = NSColor.black.cgColor
+        host.layer?.addSublayer(r.metalLayer)
+        r.metalLayer.frame = host.bounds
+        r.metalLayer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
+        win.contentView = host
+
+        // Center on the main screen so the first connect doesn't dump the
+        // window in the bottom-left corner.
+        if let screenFrame = NSScreen.main?.visibleFrame {
+            win.setFrameOrigin(NSPoint(
+                x: screenFrame.midX - win.frame.width / 2,
+                y: screenFrame.midY - win.frame.height / 2
+            ))
+        }
+
+        r.start(in: host)
+
+        self.viewerWindow = win
+        self.viewerRenderer = r
+        return r
     }
 
     func connectToPeer(_ peer: CuplePeer) async {
@@ -172,6 +254,11 @@ class AppState: ObservableObject {
         client = nil
         isConnected = false
         connectedHostname = nil
+        viewerRenderer?.clearPendingBuffer()
+        viewerWindow?.orderOut(nil)
+        // Drop back to .accessory so the Dock icon goes away when there's
+        // no viewer window up. connect() will promote back to .regular.
+        NSApp.setActivationPolicy(.accessory)
     }
 
     func discoverPeers() async {
@@ -383,5 +470,21 @@ private struct SimpleLogger: LogSink {
 
     func log(_ message: String) {
         print("[LocalAPI] \(message)")
+    }
+}
+
+/// NSWindowDelegate stand-in for the persistent viewer window. Returns
+/// `false` from `windowShouldClose` so AppKit never proceeds with the
+/// NSWindow.close() release cascade that crashed in earlier bisects;
+/// instead it routes the close button to AppState.disconnect, which
+/// orderOuts the window without releasing it.
+private final class ViewerWindowDelegate: NSObject, NSWindowDelegate {
+    private let onClose: () -> Void
+    init(onClose: @escaping () -> Void) {
+        self.onClose = onClose
+    }
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        onClose()
+        return false
     }
 }
