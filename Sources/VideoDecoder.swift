@@ -6,7 +6,7 @@ import AppKit
 final class VideoDecoder: @unchecked Sendable {
     var onDecodedFrame: ((CVPixelBuffer) -> Void)?
 
-    private let queue = DispatchQueue(label: "com.cuple.decoder")
+    private let queue = DispatchQueue(label: "com.tailscreen.decoder")
     private var session: VTDecompressionSession?
     private var formatDescription: CMFormatDescription?
 

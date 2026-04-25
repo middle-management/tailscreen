@@ -44,12 +44,12 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         self.logger = TSLogger()
     }
 
-    func start(hostname: String = "cuple-server", authKey: String? = nil, path: String? = nil, displayID: CGDirectDisplayID? = nil) async throws {
+    func start(hostname: String = "tailscreen-server", authKey: String? = nil, path: String? = nil, displayID: CGDirectDisplayID? = nil) async throws {
         guard !isRunning else { return }
 
         let statePath = path ?? {
             let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            return appSupport.appendingPathComponent("Cuple/tailscale\(CupleInstance.stateSuffix)").path
+            return appSupport.appendingPathComponent("Tailscreen/tailscale\(TailscreenInstance.stateSuffix)").path
         }()
         try? FileManager.default.createDirectory(atPath: statePath, withIntermediateDirectories: true)
 

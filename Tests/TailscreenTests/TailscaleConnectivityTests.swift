@@ -1,6 +1,6 @@
 import XCTest
 import Foundation
-@testable import Cuple
+@testable import Tailscreen
 import TailscaleKit
 
 /// End-to-end: two ephemeral Tailscale nodes in one process (server + client),
@@ -9,20 +9,20 @@ import TailscaleKit
 ///
 /// Requires a Tailscale auth key so each fresh node can register unattended.
 /// Two supported modes:
-///   * Real tailnet: set `TS_AUTHKEY` (or `CUPLE_TS_AUTHKEY`) to a reusable,
+///   * Real tailnet: set `TS_AUTHKEY` (or `TAILSCREEN_TS_AUTHKEY`) to a reusable,
 ///     ephemeral key from https://login.tailscale.com/admin/settings/keys.
 ///   * Local headscale: run `./scripts/e2e-test.sh`, which launches a
-///     disposable headscale in Docker and exports `CUPLE_TS_AUTHKEY` +
-///     `CUPLE_TS_CONTROL_URL=http://localhost:8080` for this test.
+///     disposable headscale in Docker and exports `TAILSCREEN_TS_AUTHKEY` +
+///     `TAILSCREEN_TS_CONTROL_URL=http://localhost:8080` for this test.
 /// If neither is set, the test is skipped.
 final class TailscaleConnectivityTests: XCTestCase {
     func testTwoNodesCanConnectAndExchangeBytes() async throws {
         let env = ProcessInfo.processInfo.environment
-        let authKey = env["CUPLE_TS_AUTHKEY"] ?? env["TS_AUTHKEY"]
-        let controlURL = env["CUPLE_TS_CONTROL_URL"] ?? env["TS_CONTROL_URL"] ?? kDefaultControlURL
+        let authKey = env["TAILSCREEN_TS_AUTHKEY"] ?? env["TS_AUTHKEY"]
+        let controlURL = env["TAILSCREEN_TS_CONTROL_URL"] ?? env["TS_CONTROL_URL"] ?? kDefaultControlURL
         try XCTSkipIf(
             authKey == nil || authKey?.isEmpty == true,
-            "Set CUPLE_TS_AUTHKEY (or run scripts/e2e-test.sh for local headscale)."
+            "Set TAILSCREEN_TS_AUTHKEY (or run scripts/e2e-test.sh for local headscale)."
         )
 
         let port: UInt16 = 17447
@@ -30,7 +30,7 @@ final class TailscaleConnectivityTests: XCTestCase {
         logger.log("control URL: \(controlURL)")
 
         let tmp = FileManager.default.temporaryDirectory
-            .appendingPathComponent("cuple-conn-test-\(UUID().uuidString)")
+            .appendingPathComponent("tailscreen-conn-test-\(UUID().uuidString)")
         let serverDir = tmp.appendingPathComponent("server").path
         let clientDir = tmp.appendingPathComponent("client").path
         try FileManager.default.createDirectory(atPath: serverDir, withIntermediateDirectories: true)
@@ -42,7 +42,7 @@ final class TailscaleConnectivityTests: XCTestCase {
         // Bring server node up.
         let serverNode = try TailscaleNode(
             config: Configuration(
-                hostName: "cuple-test-server-\(UUID().uuidString.prefix(6))",
+                hostName: "tailscreen-test-server-\(UUID().uuidString.prefix(6))",
                 path: serverDir,
                 authKey: authKey,
                 controlURL: controlURL,
@@ -61,7 +61,7 @@ final class TailscaleConnectivityTests: XCTestCase {
         // Bring client node up.
         let clientNode = try TailscaleNode(
             config: Configuration(
-                hostName: "cuple-test-client-\(UUID().uuidString.prefix(6))",
+                hostName: "tailscreen-test-client-\(UUID().uuidString.prefix(6))",
                 path: clientDir,
                 authKey: authKey,
                 controlURL: controlURL,
@@ -126,7 +126,7 @@ final class TailscaleConnectivityTests: XCTestCase {
         logger.log("server accepted from \(remote ?? "?")")
 
         // Client → server.
-        let payload = Data("hello from cuple test \(UUID().uuidString)".utf8)
+        let payload = Data("hello from tailscreen test \(UUID().uuidString)".utf8)
         try await client.send(payload)
 
         let received = try await incoming.receive(maximumLength: 4096, timeout: 10_000)

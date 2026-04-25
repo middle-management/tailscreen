@@ -2,14 +2,14 @@
 import PackageDescription
 
 let package = Package(
-    name: "Cuple",
+    name: "Tailscreen",
     platforms: [
         .macOS(.v15)
     ],
     products: [
         .executable(
-            name: "Cuple",
-            targets: ["Cuple"]
+            name: "Tailscreen",
+            targets: ["Tailscreen"]
         )
     ],
     dependencies: [
@@ -18,7 +18,7 @@ let package = Package(
     ],
     targets: [
         .executableTarget(
-            name: "Cuple",
+            name: "Tailscreen",
             dependencies: [
                 .product(name: "TailscaleKit", package: "TailscaleKitPackage")
             ],
@@ -28,9 +28,9 @@ let package = Package(
             ]
         ),
         .testTarget(
-            name: "CupleTests",
-            dependencies: ["Cuple"],
-            path: "Tests/CupleTests",
+            name: "TailscreenTests",
+            dependencies: ["Tailscreen"],
+            path: "Tests/TailscreenTests",
             linkerSettings: [
                 .unsafeFlags(["-L", "TailscaleKitPackage/lib"])
             ]

@@ -1,10 +1,10 @@
-# Agent Guide for Cuple
+# Agent Guide for Tailscreen
 
-This document provides guidance for AI agents working on the Cuple screen sharing application.
+This document provides guidance for AI agents working on the Tailscreen screen sharing application.
 
 ## Project Overview
 
-**Cuple** is a macOS menubar application for secure peer-to-peer screen sharing over Tailscale. It uses Tailscale's tsnet (ephemeral nodes) for encrypted, zero-configuration networking.
+**Tailscreen** is a macOS menubar application for secure peer-to-peer screen sharing over Tailscale. It uses Tailscale's tsnet (ephemeral nodes) for encrypted, zero-configuration networking.
 
 **Tech Stack:**
 - Swift 6.0 with strict concurrency checking
@@ -33,7 +33,7 @@ This document provides guidance for AI agents working on the Cuple screen sharin
    - Published properties for UI binding
 
 4. **TailscalePeerDiscovery** (`Sources/TailscalePeerDiscovery.swift`)
-   - Discovers other Cuple instances on tailnet
+   - Discovers other Tailscreen instances on tailnet
    - Uses LocalAPI to query peer status
    - Parallel TCP port checking with timeouts
    - Real-time peer monitoring via IPN bus
@@ -44,7 +44,7 @@ This document provides guidance for AI agents working on the Cuple screen sharin
    - Rate-limited netmap updates
    - MessageConsumer protocol implementation
 
-6. **CupleMetadataService** (`Sources/CupleMetadata.swift`)
+6. **TailscreenMetadataService** (`Sources/TailscreenMetadata.swift`)
    - Share metadata (resolution, name, hostname)
    - Request-to-share protocol
    - Peer-to-peer metadata exchange
@@ -64,7 +64,7 @@ This document provides guidance for AI agents working on the Cuple screen sharin
 ### Package Structure
 
 ```
-cuple/
+tailscreen/
 ├── Sources/                    # Swift source files
 ├── TailscaleKitPackage/       # Git submodule
 │   ├── upstream/              # TailscaleKit submodule
@@ -94,7 +94,7 @@ class ScreenShareClient: @unchecked Sendable {
 }
 
 // For data types
-struct CuplePeer: Identifiable, Sendable {
+struct TailscreenPeer: Identifiable, Sendable {
     // All stored properties must be Sendable
 }
 ```
@@ -233,7 +233,7 @@ watcher.stopWatching()
 metadataService.updateMetadata(isSharing: true, shareName: "My Screen")
 
 // Fetch peer metadata
-let metadata = try await CupleMetadataService.fetchMetadata(
+let metadata = try await TailscreenMetadataService.fetchMetadata(
     from: peerIP,
     port: 7447
 )
@@ -338,7 +338,7 @@ git push -u origin claude/tailscale-tsnet-exploration-01AeQUK8Y9cycVbFwuCqfaaa
 | Client | `Sources/TailscaleScreenShareClient.swift` | Viewing functionality |
 | Discovery | `Sources/TailscalePeerDiscovery.swift` | Peer finding |
 | IPN Watcher | `Sources/TailscaleIPNWatcher.swift` | Real-time peer status |
-| Metadata | `Sources/CupleMetadata.swift` | Metadata & requests |
+| Metadata | `Sources/TailscreenMetadata.swift` | Metadata & requests |
 | Auth | `Sources/TailscaleAuth.swift` | Authentication |
 | Screen capture | `Sources/ScreenCapture.swift` | macOS screen recording |
 

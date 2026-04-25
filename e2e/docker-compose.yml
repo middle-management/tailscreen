@@ -1,7 +1,7 @@
 services:
   headscale:
     image: headscale/headscale:0.26.1
-    container_name: cuple-headscale
+    container_name: tailscreen-headscale
     restart: unless-stopped
     ports:
       - "127.0.0.1:8080:8080"

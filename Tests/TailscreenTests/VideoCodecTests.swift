@@ -1,7 +1,7 @@
 import XCTest
 import CoreVideo
 import CoreMedia
-@testable import Cuple
+@testable import Tailscreen
 
 /// End-to-end: encode a synthetic frame with VideoEncoder, feed the captured
 /// SPS/PPS plus the AVCC output into VideoDecoder, and check we get a

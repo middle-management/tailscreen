@@ -1,6 +1,6 @@
 import Foundation
 
-// EXAMPLE: How to use Tailscale with Cuple
+// EXAMPLE: How to use Tailscale with Tailscreen
 // This file demonstrates the basic usage patterns
 
 // MARK: - Server Example
@@ -95,7 +95,7 @@ class TailscaleScreenShareManager {
         let server = TailscaleScreenShareServer()
         self.server = server
 
-        let hostname = hostname ?? Host.current().localizedName ?? "cuple-\(UUID().uuidString.prefix(8))"
+        let hostname = hostname ?? Host.current().localizedName ?? "tailscreen-\(UUID().uuidString.prefix(8))"
         try await server.start(hostname: hostname)
 
         isServerRunning = true
@@ -167,7 +167,7 @@ class AppState {
             if useTailscale {
                 let server = TailscaleScreenShareServer()
                 tailscaleServer = server
-                try? await server.start(hostname: Host.current().localizedName ?? "cuple")
+                try? await server.start(hostname: Host.current().localizedName ?? "tailscreen")
 
                 // Get and display Tailscale IPs
                 let ips = server.getIPAddresses()
@@ -240,7 +240,7 @@ Section("Network Mode") {
 @main
 struct TailscaleExampleApp {
     static func main() async {
-        print("Cuple Tailscale Integration Example\n")
+        print("Tailscreen Tailscale Integration Example\n")
         print("1. Run as server")
         print("2. Run as client\n")
 

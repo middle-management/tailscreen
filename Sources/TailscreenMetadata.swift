@@ -1,8 +1,8 @@
 import Foundation
 import AppKit
 
-/// Metadata about a Cuple screen share
-struct CupleMetadata: Codable, Sendable {
+/// Metadata about a Tailscreen screen share
+struct TailscreenMetadata: Codable, Sendable {
     var version: String = "1.0"
     let shareName: String
     let hostname: String
@@ -17,7 +17,7 @@ struct CupleMetadata: Codable, Sendable {
 }
 
 /// Request types for peer-to-peer communication
-enum CupleRequest: Codable, Sendable {
+enum TailscreenRequest: Codable, Sendable {
     case requestToShare(from: String)
     case acceptShare
     case declineShare
@@ -62,10 +62,10 @@ enum CupleRequest: Codable, Sendable {
     }
 }
 
-/// Service for managing Cuple metadata and requests
+/// Service for managing Tailscreen metadata and requests
 @MainActor
-class CupleMetadataService: ObservableObject {
-    @Published var currentMetadata: CupleMetadata?
+class TailscreenMetadataService: ObservableObject {
+    @Published var currentMetadata: TailscreenMetadata?
     @Published var pendingRequests: [PendingRequest] = []
 
     struct PendingRequest: Identifiable {
@@ -75,13 +75,13 @@ class CupleMetadataService: ObservableObject {
     }
 
     /// Get current screen resolution
-    private func getCurrentScreenResolution() -> CupleMetadata.ScreenResolution {
+    private func getCurrentScreenResolution() -> TailscreenMetadata.ScreenResolution {
         guard let screen = NSScreen.main else {
-            return CupleMetadata.ScreenResolution(width: 1920, height: 1080)
+            return TailscreenMetadata.ScreenResolution(width: 1920, height: 1080)
         }
 
         let frame = screen.frame
-        return CupleMetadata.ScreenResolution(
+        return TailscreenMetadata.ScreenResolution(
             width: Int(frame.width),
             height: Int(frame.height)
         )
@@ -92,7 +92,7 @@ class CupleMetadataService: ObservableObject {
         let hostname = Host.current().localizedName ?? "Unknown"
         let name = shareName ?? "\(hostname)'s Screen"
 
-        currentMetadata = CupleMetadata(
+        currentMetadata = TailscreenMetadata(
             shareName: name,
             hostname: hostname,
             screenResolution: getCurrentScreenResolution(),
@@ -120,7 +120,7 @@ class CupleMetadataService: ObservableObject {
     /// Create metadata JSON for API response
     func getMetadataJSON() throws -> Data {
         guard let metadata = currentMetadata else {
-            throw NSError(domain: "CupleMetadata", code: 1, userInfo: [NSLocalizedDescriptionKey: "No metadata available"])
+            throw NSError(domain: "TailscreenMetadata", code: 1, userInfo: [NSLocalizedDescriptionKey: "No metadata available"])
         }
         return try JSONEncoder().encode(metadata)
     }
@@ -132,27 +132,27 @@ class CupleMetadataService: ObservableObject {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
-        let cupleRequest = CupleRequest.requestToShare(from: hostname)
-        request.httpBody = try JSONEncoder().encode(cupleRequest)
+        let tailscreenRequest = TailscreenRequest.requestToShare(from: hostname)
+        request.httpBody = try JSONEncoder().encode(tailscreenRequest)
 
         let (_, response) = try await URLSession.shared.data(for: request)
 
         guard let httpResponse = response as? HTTPURLResponse,
               (200...299).contains(httpResponse.statusCode) else {
-            throw NSError(domain: "CupleMetadata", code: 2, userInfo: [NSLocalizedDescriptionKey: "Failed to send request"])
+            throw NSError(domain: "TailscreenMetadata", code: 2, userInfo: [NSLocalizedDescriptionKey: "Failed to send request"])
         }
     }
 
     /// Fetch metadata from a peer
-    static func fetchMetadata(from host: String, port: UInt16 = 7447) async throws -> CupleMetadata {
+    static func fetchMetadata(from host: String, port: UInt16 = 7447) async throws -> TailscreenMetadata {
         let url = URL(string: "http://\(host):\(port)/api/metadata")!
         let (data, response) = try await URLSession.shared.data(from: url)
 
         guard let httpResponse = response as? HTTPURLResponse,
               (200...299).contains(httpResponse.statusCode) else {
-            throw NSError(domain: "CupleMetadata", code: 3, userInfo: [NSLocalizedDescriptionKey: "Failed to fetch metadata"])
+            throw NSError(domain: "TailscreenMetadata", code: 3, userInfo: [NSLocalizedDescriptionKey: "Failed to fetch metadata"])
         }
 
-        return try JSONDecoder().decode(CupleMetadata.self, from: data)
+        return try JSONDecoder().decode(TailscreenMetadata.self, from: data)
     }
 }

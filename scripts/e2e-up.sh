@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Start local headscale + emit env vars for the Cuple connectivity test.
+# Start local headscale + emit env vars for the Tailscreen connectivity test.
 # Usage: eval "$(./scripts/e2e-up.sh)"
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE="docker compose -f $REPO_ROOT/e2e/docker-compose.yml"
-USER_NAME="cuple-test"
+USER_NAME="tailscreen-test"
 
 # All informational output goes to stderr so the caller can `eval $(...)` to
 # pick up only the export lines.
@@ -49,5 +49,5 @@ if [ -z "$KEY" ]; then
 fi
 
 log "ready. control_url=http://localhost:8080"
-echo "export CUPLE_TS_AUTHKEY=$KEY"
-echo "export CUPLE_TS_CONTROL_URL=http://localhost:8080"
+echo "export TAILSCREEN_TS_AUTHKEY=$KEY"
+echo "export TAILSCREEN_TS_CONTROL_URL=http://localhost:8080"
