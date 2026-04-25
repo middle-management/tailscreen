@@ -34,6 +34,37 @@ struct Annotation: Identifiable, Codable, Sendable, Equatable {
     static let defaultWidth: Double = 3.0
 }
 
+extension Annotation.RGBA {
+    /// Curated, visually-distinct palette for per-author drawing colors.
+    /// Indexed deterministically off a stable identity string so each
+    /// participant always draws in the same color across reconnects.
+    static let palette: [Annotation.RGBA] = [
+        .init(r: 0.95, g: 0.20, b: 0.25, a: 1.0),  // red
+        .init(r: 0.20, g: 0.55, b: 1.00, a: 1.0),  // blue
+        .init(r: 0.20, g: 0.78, b: 0.35, a: 1.0),  // green
+        .init(r: 1.00, g: 0.65, b: 0.10, a: 1.0),  // orange
+        .init(r: 0.70, g: 0.30, b: 0.95, a: 1.0),  // purple
+        .init(r: 0.10, g: 0.78, b: 0.85, a: 1.0),  // teal
+        .init(r: 0.95, g: 0.40, b: 0.70, a: 1.0),  // pink
+        .init(r: 0.85, g: 0.75, b: 0.10, a: 1.0),  // yellow
+    ]
+
+    /// Pick a palette color deterministically from any string identity.
+    /// Uses the truncated SipHash-style hash Swift exposes via String.hashValue
+    /// (per-launch random salt) — *don't* use this here. Instead fold the
+    /// UTF-8 bytes ourselves so the same identity → the same color across
+    /// process launches and across machines.
+    static func paletteColor(forIdentity identity: String) -> Annotation.RGBA {
+        var h: UInt64 = 1469598103934665603 // FNV-1a offset basis
+        for byte in identity.utf8 {
+            h ^= UInt64(byte)
+            h &*= 1099511628211
+        }
+        let idx = Int(h % UInt64(palette.count))
+        return palette[idx]
+    }
+}
+
 /// Operation on the shared annotation canvas. Only `.add`, `.undo` and
 /// `.clearAll` exist today. The wire format is JSON inside the framed
 /// `ScreenShareMessage.annotation` envelope.

@@ -315,6 +315,7 @@ class AppState: ObservableObject {
         // the overlay.
         let overlay = DrawingOverlayView(frame: host.bounds)
         overlay.autoresizingMask = [.width, .height]
+        overlay.currentColor = Annotation.RGBA.paletteColor(forIdentity: TailscaleScreenShareClient.localIdentity())
         host.addSubview(overlay)
         overlay.onOp = { [weak self] op in
             Task { [weak self] in await self?.client?.sendAnnotationOp(op) }

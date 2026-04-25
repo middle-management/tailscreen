@@ -246,6 +246,15 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         isConnected = false
         receiveTask?.cancel()
     }
+
+    /// Stable identity string used to derive this viewer's drawing color.
+    /// Mirrors SharerOverlayWindow.localIdentity() so a process that's
+    /// both a sharer and (separately) a viewer uses the *same* color in
+    /// both surfaces.
+    static func localIdentity() -> String {
+        let host = Host.current().localizedName ?? "cuple"
+        return "\(host)\(CupleInstance.hostnameSuffix)"
+    }
 }
 
 private struct TSLogger: LogSink {
