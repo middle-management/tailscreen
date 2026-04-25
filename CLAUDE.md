@@ -213,7 +213,7 @@ Never make this absolute — it breaks portability and CI. Both the `Tailscreen`
   - Codesigns with a Developer ID Application identity loaded into a temp keychain, notarizes via `xcrun notarytool --wait` using an App Store Connect API key, and staples.
   - Zips with `ditto -c -k --keepParent` and uploads `Tailscreen-<tag>-macOS.zip` + `checksums.txt` to the triggering release with `gh release upload --clobber`.
   - No release-notes or cask generation here — the tap repo owns cask formatting.
-  - Required secrets: `APPLE_DEVELOPER_ID_CERT_P12` (base64 .p12), `APPLE_DEVELOPER_ID_CERT_PASSWORD`, `APPLE_NOTARY_API_KEY_P8` (base64 .p8), `APPLE_NOTARY_API_KEY_ID`, `APPLE_NOTARY_API_ISSUER_ID`.
+  - Signing + notarization run only when **all** of these secrets are set: `APPLE_DEVELOPER_ID_CERT_P12` (base64 .p12), `APPLE_DEVELOPER_ID_CERT_PASSWORD`, `APPLE_NOTARY_API_KEY_P8` (base64 .p8), `APPLE_NOTARY_API_KEY_ID`, `APPLE_NOTARY_API_ISSUER_ID`. If any are missing, the workflow logs a warning and uploads an unsigned `.app` (useful for forks / dry runs).
 
 ## Git workflow notes
 
