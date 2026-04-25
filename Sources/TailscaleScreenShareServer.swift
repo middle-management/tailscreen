@@ -114,7 +114,10 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         guard let listener = listener else { return }
         while isRunning {
             do {
-                let connection = try await listener.accept(timeout: 10.0)
+                // Short poll window so Stop Sharing doesn't have to wait
+                // up to 10s for an in-flight accept() to release the
+                // Listener actor before listener.close() can run.
+                let connection = try await listener.accept(timeout: 1.0)
                 await attach(connection)
             } catch {
                 continue  // timeout — just keep polling
