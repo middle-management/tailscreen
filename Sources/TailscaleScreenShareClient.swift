@@ -96,7 +96,16 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
             do {
                 // Generous timeout so we don't spin; receive returns as soon as bytes arrive.
                 let chunk = try await connection.receive(maximumLength: 64 * 1024, timeout: 5_000)
-                if chunk.isEmpty { continue }
+                if chunk.isEmpty {
+                    // poll() returned positive but read() got 0 bytes —
+                    // that's EOF, the sharer closed the TCP connection.
+                    // Tell AppState so it runs disconnect() and tears
+                    // down our window/UI; otherwise the viewer sits
+                    // forever rendering the last decoded frame.
+                    print("Receive: peer closed connection (EOF)")
+                    NotificationCenter.default.post(name: .cupleViewerPeerClosed, object: nil)
+                    break
+                }
                 bytesReceived += chunk.count
 
                 parser.append(chunk)
@@ -202,4 +211,12 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
 private struct TSLogger: LogSink {
     var logFileHandle: Int32? = nil
     func log(_ message: String) { print("[Tailscale] \(message)") }
+}
+
+extension Notification.Name {
+    /// Posted from the viewer's receive loop when the sharer closes the
+    /// TCP control connection (read() == 0 after poll() = POLLIN). AppState
+    /// observes this and runs disconnect() so the UI tears down instead
+    /// of sitting on a stale last frame.
+    static let cupleViewerPeerClosed = Notification.Name("cuple.viewer.peerClosed")
 }

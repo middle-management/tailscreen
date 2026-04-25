@@ -237,26 +237,37 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     }
 
     func stop() async {
+        print("Server stopping…")
         isRunning = false
 
         // Stop capture first so no more frames arrive after the encoder is torn down.
         await screenCapture?.stop()
         screenCapture = nil
+        print("Server stop: capture done")
 
         encoder?.shutdown()
         encoder = nil
 
+        // Close every viewer's TCP connection in parallel, otherwise a
+        // slow `await sender.close()` per viewer queues their teardown
+        // serially. Without explicitly closing each connection here the
+        // viewer just sees no more frames and renders its last decoded
+        // pixel buffer forever (its receive loop sits in a 5s poll).
         let all = clients.withLock { state -> [ClientSender] in
             let values = Array(state.values)
             state.removeAll()
             return values
         }
-        for sender in all {
-            await sender.close()
+        await withTaskGroup(of: Void.self) { group in
+            for sender in all {
+                group.addTask { await sender.close() }
+            }
         }
+        print("Server stop: \(all.count) viewer(s) closed")
 
         await listener?.close()
         listener = nil
+        print("Server stop: listener closed")
 
         if let node = node {
             try? await node.close()

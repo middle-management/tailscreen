@@ -66,6 +66,20 @@ class AppState: ObservableObject {
         // few seconds; doing it eagerly means the menubar icon is already
         // in its authenticated state by the time the user clicks.
         triggerAutoLoginIfNeeded()
+
+        // Sharer dropped its end of the TCP connection — viewer needs to
+        // run its disconnect() so the UI doesn't sit on a stale last
+        // frame.
+        NotificationCenter.default.addObserver(
+            forName: .cupleViewerPeerClosed,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self = self, self.isConnected else { return }
+                await self.disconnect()
+            }
+        }
     }
 
     private var cancellables = Set<AnyCancellable>()
