@@ -94,16 +94,21 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         // Watchdog: if no bytes have arrived in this many seconds we
         // assume the sharer is gone. tsnet's userspace stack doesn't
         // always propagate RST/FIN across the WireGuard tunnel when
-        // the remote node closes — we observed the viewer rendering
-        // the same stale frame for 15+ seconds while the server had
-        // already printed "Server stopped".
-        let idleDisconnectAfterNs: UInt64 = 10_000_000_000  // 10s
+        // the remote node closes. With the sharer encoding at 60fps a
+        // 3-second silence is far longer than any normal gap; the
+        // tradeoff is that a transient network blip on a degraded
+        // tailnet can also force a disconnect, which feels right —
+        // user can hit Connect again to recover.
+        let idleDisconnectAfterNs: UInt64 = 3_000_000_000  // 3s
         var lastDataNs = DispatchTime.now().uptimeNanoseconds
 
         while isConnected {
             do {
-                // Generous timeout so we don't spin; receive returns as soon as bytes arrive.
-                let chunk = try await connection.receive(maximumLength: 64 * 1024, timeout: 5_000)
+                // Short poll so the idle watchdog below trips ~1s after
+                // the threshold instead of waiting for the full poll
+                // window. receive returns immediately when bytes arrive,
+                // so this doesn't increase latency for live frames.
+                let chunk = try await connection.receive(maximumLength: 64 * 1024, timeout: 1_000)
                 if chunk.isEmpty {
                     // poll() returned positive but read() got 0 bytes —
                     // that's EOF, the sharer closed the TCP connection.
