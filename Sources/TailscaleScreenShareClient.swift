@@ -272,40 +272,22 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
             self.decoder = nil
         }
 
-        // Bisect D: confirmed window.close() alone produces the zombie.
-        // Try draining the contentView graph in stages to give Apple
-        // frameworks time to release autoreleased intermediates between
-        // each step:
-        //   1. Detach the layer-hosting contentView (replace with empty).
-        //   2. Yield to runloop, draining any pool from the previous tick.
-        //   3. orderOut + close on the next tick.
-        //
-        // If this is CLEAN, the zombie was an intermediate from the layer
-        // graph being released in the same job as the window itself.
-        // If it CRASHES, even a multi-tick teardown can't avoid it and
-        // the leak workaround is the right answer.
+        // Bisect concluded: NSWindow.close() under any teardown ordering
+        // we tried (sync, autoreleasepool-wrapped, contentView-detach +
+        // multi-tick yield) produces a zombie that the next pool pop
+        // SIGSEGVs on. Apple framework leaves something autoreleased in
+        // the surrounding pool that we can't isolate without changing
+        // the framework. Workaround: orderOut the window, invalidate the
+        // display link, leave window + renderer retained by self until
+        // TailscaleScreenShareClient itself deallocates one runloop later
+        // under a fresh pool. Leaks one NSWindow per viewer session.
         await MainActor.run {
             if let obs = self.windowCloseObserver {
                 NotificationCenter.default.removeObserver(obs)
                 self.windowCloseObserver = nil
             }
             self.renderer?.invalidate()
-            self.renderer = nil
-            // Replace the contentView with an empty one. Releases the
-            // layer-hosting view (and its CAMetalLayer subtree) NOW,
-            // before the window closes.
-            self.window?.contentView = NSView()
             self.window?.orderOut(nil)
-        }
-        // Yield runloop so any autoreleased intermediates from the
-        // contentView swap drain under their own pool.
-        await Task.yield()
-        try? await Task.sleep(for: .milliseconds(50))
-        await MainActor.run {
-            autoreleasepool {
-                self.window?.close()
-                self.window = nil
-            }
         }
 
         print("Client disconnected")
