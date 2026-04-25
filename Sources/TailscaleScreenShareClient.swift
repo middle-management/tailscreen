@@ -1,23 +1,28 @@
-import Foundation
 import AppKit
-import AVFoundation
-import CoreMedia
 import CoreVideo
+import Foundation
 import TailscaleKit
 
 /// Screen-share viewer. Dials a peer over TailscaleKit, parses the framed
-/// protocol, and pipes the raw H.264 sample buffers straight into an
-/// `AVSampleBufferDisplayLayer` — no CIImage, no CGImage copies, no
-/// per-frame MainActor hop. The display layer handles hardware decode +
-/// presentation on its own thread.
+/// protocol, decodes H.264 via `VideoDecoder` (VTDecompressionSession), and
+/// presents the resulting `CVPixelBuffer`s on a `CAMetalLayer` driven by a
+/// `CADisplayLink`.
+///
+/// The previous implementation pushed sample buffers straight into an
+/// `AVSampleBufferDisplayLayer`; that layer owns a background renderer that
+/// autoreleases internal objects into whatever autorelease pool is active on
+/// the main queue. Disconnect + window teardown raced that background work
+/// and produced a repeatable `SIGSEGV` in `objc_release` on the next pool
+/// pop. Decoding and rendering ourselves removes the background actor and
+/// lets us tear everything down synchronously.
 @available(macOS 10.15, *)
 final class TailscaleScreenShareClient: @unchecked Sendable {
     var node: TailscaleNode?
 
     private var connection: OutgoingConnection?
     private var window: NSWindow?
-    private var displayLayer: AVSampleBufferDisplayLayer?
-    private var formatDescription: CMFormatDescription?
+    private var renderer: MetalViewerRenderer?
+    private var decoder: VideoDecoder?
     private var isConnected = false
     private var isDisconnecting = false
     private var windowCloseObserver: NSObjectProtocol?
@@ -68,6 +73,13 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         )
         try await connection.connect()
         self.connection = connection
+
+        let decoder = VideoDecoder()
+        decoder.onDecodedFrame = { [weak self] pixelBuffer in
+            self?.handleDecodedFrame(pixelBuffer)
+        }
+        self.decoder = decoder
+
         self.isConnected = true
         print("Connected to \(hostname)")
 
@@ -94,7 +106,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                     switch message {
                     case .parameterSets(let sps, let pps):
                         print("Client: received SPS/PPS (sps=\(sps.count)B pps=\(pps.count)B)")
-                        applyParameterSets(sps: sps, pps: pps)
+                        decoder?.setParameterSets(sps: sps, pps: pps)
                     case .frame(let data, let isKeyframe, let timestampNs):
                         framesReceived += 1
                         if framesReceived == 1 || framesReceived % 60 == 0 {
@@ -108,7 +120,8 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                             let latencyStr = latencyMs >= 0 ? String(format: "%.1fms", latencyMs) : "n/a"
                             print("Client: received frame #\(framesReceived) (kf=\(isKeyframe), \(data.count)B, total=\(bytesReceived)B, encode→recv=\(latencyStr))")
                         }
-                        await enqueueFrame(data: data, isKeyframe: isKeyframe)
+                        self.lastReceiveUptimeNs = DispatchTime.now().uptimeNanoseconds
+                        decoder?.decode(data: data, isKeyframe: isKeyframe)
                     }
                 }
             } catch TailscaleError.readFailed {
@@ -123,124 +136,37 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         }
     }
 
-    private func applyParameterSets(sps: Data, pps: Data) {
-        var newDesc: CMFormatDescription?
-        let status = sps.withUnsafeBytes { (spsBuf: UnsafeRawBufferPointer) -> OSStatus in
-            pps.withUnsafeBytes { (ppsBuf: UnsafeRawBufferPointer) -> OSStatus in
-                guard let spsBase = spsBuf.baseAddress?.assumingMemoryBound(to: UInt8.self),
-                      let ppsBase = ppsBuf.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
-                    return -1
-                }
-                let pointers: [UnsafePointer<UInt8>] = [spsBase, ppsBase]
-                let sizes: [Int] = [sps.count, pps.count]
-                return pointers.withUnsafeBufferPointer { ptrs in
-                    sizes.withUnsafeBufferPointer { szs in
-                        CMVideoFormatDescriptionCreateFromH264ParameterSets(
-                            allocator: kCFAllocatorDefault,
-                            parameterSetCount: 2,
-                            parameterSetPointers: ptrs.baseAddress!,
-                            parameterSetSizes: szs.baseAddress!,
-                            nalUnitHeaderLength: 4,
-                            formatDescriptionOut: &newDesc
-                        )
-                    }
-                }
-            }
-        }
-        guard status == noErr, let desc = newDesc else {
-            print("Client: failed to build H.264 format description (\(status))")
-            return
-        }
-        formatDescription = desc
-    }
+    /// Timestamp (mach uptime ns) when the most recent frame finished
+    /// arriving on the socket. Used only to measure recv→present latency;
+    /// last-writer-wins is fine for that purpose.
+    private var lastReceiveUptimeNs: UInt64 = 0
 
-    private func enqueueFrame(data: Data, isKeyframe: Bool) async {
-        guard let format = formatDescription else { return }
+    private func handleDecodedFrame(_ buffer: CVPixelBuffer) {
+        // VTDecompressionSession delivers frames on its own callback thread.
+        // Hand the buffer to the renderer on whatever thread this is — the
+        // renderer guards its slot with a lock. If the window isn't up yet
+        // `renderer` is nil; that's fine, the next frame lands once main
+        // finishes window creation.
+        let ns = lastReceiveUptimeNs
+        guard isConnected, !isDisconnecting else { return }
+        renderer?.setPixelBuffer(buffer, receiveUptimeNs: ns)
 
-        // Lazily create the window once we know the video dimensions. All
-        // subsequent frames skip the MainActor hop and enqueue directly on
-        // the layer's renderer, which AVFoundation documents as thread-safe.
+        // First frame: hop to main once to build the window so we know the
+        // source dimensions. Deliberately don't capture `buffer` in the
+        // main-actor closure — Swift 6's region isolation analysis flags
+        // sending a non-Sendable `CVPixelBuffer` across the boundary, and
+        // we don't need it there anyway.
         if window == nil {
-            let size = Self.size(of: format)
-            await MainActor.run { [weak self] in
+            let width = CVPixelBufferGetWidth(buffer)
+            let height = CVPixelBufferGetHeight(buffer)
+            let size = CGSize(width: width, height: height)
+            Task { @MainActor [weak self] in
                 guard let self = self, self.isConnected, !self.isDisconnecting else { return }
                 if self.window == nil {
                     self.createWindow(initialSize: size)
                 }
             }
         }
-
-        // Wrap the AVCC NAL units in a CMBlockBuffer owning its own copy.
-        var blockBuffer: CMBlockBuffer?
-        let allocStatus = CMBlockBufferCreateWithMemoryBlock(
-            allocator: kCFAllocatorDefault,
-            memoryBlock: nil,
-            blockLength: data.count,
-            blockAllocator: kCFAllocatorDefault,
-            customBlockSource: nil,
-            offsetToData: 0,
-            dataLength: data.count,
-            flags: 0,
-            blockBufferOut: &blockBuffer
-        )
-        guard allocStatus == kCMBlockBufferNoErr, let blockBuffer = blockBuffer else { return }
-
-        let copyStatus = data.withUnsafeBytes { ptr -> OSStatus in
-            guard let base = ptr.baseAddress else { return -1 }
-            return CMBlockBufferReplaceDataBytes(
-                with: base,
-                blockBuffer: blockBuffer,
-                offsetIntoDestination: 0,
-                dataLength: data.count
-            )
-        }
-        guard copyStatus == kCMBlockBufferNoErr else { return }
-
-        var sampleBuffer: CMSampleBuffer?
-        var sampleSizes = [data.count]
-        let sampleStatus = CMSampleBufferCreateReady(
-            allocator: kCFAllocatorDefault,
-            dataBuffer: blockBuffer,
-            formatDescription: format,
-            sampleCount: 1,
-            sampleTimingEntryCount: 0,
-            sampleTimingArray: nil,
-            sampleSizeEntryCount: 1,
-            sampleSizeArray: &sampleSizes,
-            sampleBufferOut: &sampleBuffer
-        )
-        guard sampleStatus == noErr, let sampleBuffer = sampleBuffer else { return }
-
-        // Tell the display layer to show this frame immediately, no reorder.
-        // Use CFArrayGetValueAtIndex instead of bridging the CFArray to
-        // [CFMutableDictionary] — the latter produces a bridged *copy* whose
-        // mutations don't reach the real per-sample attachment dictionary,
-        // and the Unmanaged pointer juggling involved has tripped
-        // objc_autoreleasePoolPop on disconnect.
-        if let attachmentsArray = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: true),
-           CFArrayGetCount(attachmentsArray) > 0 {
-            let raw = CFArrayGetValueAtIndex(attachmentsArray, 0)
-            let dict = unsafeBitCast(raw, to: CFMutableDictionary.self)
-            let displayKey = Unmanaged.passUnretained(kCMSampleAttachmentKey_DisplayImmediately).toOpaque()
-            let trueValue = Unmanaged.passUnretained(kCFBooleanTrue).toOpaque()
-            CFDictionarySetValue(dict, displayKey, trueValue)
-            if !isKeyframe {
-                let notSyncKey = Unmanaged.passUnretained(kCMSampleAttachmentKey_NotSync).toOpaque()
-                CFDictionarySetValue(dict, notSyncKey, trueValue)
-            }
-        }
-
-        // Enqueue directly from the receive-loop thread. The video renderer
-        // is documented thread-safe, and skipping the main-queue hop per
-        // frame dodges the repeatable SIGSEGV in objc_autoreleasePoolPop
-        // that showed up on every viewer disconnect.
-        guard isConnected, !isDisconnecting else { return }
-        displayLayer?.sampleBufferRenderer.enqueue(sampleBuffer)
-    }
-
-    private static func size(of format: CMFormatDescription) -> CGSize {
-        let dims = CMVideoFormatDescriptionGetDimensions(format)
-        return CGSize(width: CGFloat(dims.width), height: CGFloat(dims.height))
     }
 
     @MainActor
@@ -279,30 +205,43 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         contentView.layer = CALayer()
         contentView.layer?.backgroundColor = NSColor.black.cgColor
 
-        let displayLayer = AVSampleBufferDisplayLayer()
-        displayLayer.frame = contentView.bounds
-        displayLayer.videoGravity = .resizeAspect
-        displayLayer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
-        contentView.layer?.addSublayer(displayLayer)
+        let renderer = MetalViewerRenderer()
+        let metalLayer = renderer.metalLayer
+        metalLayer.frame = contentView.bounds
+        metalLayer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
+        contentView.layer?.addSublayer(metalLayer)
 
         window.contentView = contentView
         self.window = window
-        self.displayLayer = displayLayer
+        self.renderer = renderer
 
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
         window.orderFrontRegardless()
         print("Client: viewer window ordered front (size=\(Int(windowSize.width))x\(Int(windowSize.height)))")
 
-        self.windowCloseObserver = NotificationCenter.default.addObserver(
-            forName: NSWindow.willCloseNotification,
-            object: window,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in
-                await self?.disconnect()
-            }
-        }
+        // `NSView.displayLink(target:selector:)` needs the view to be on a
+        // screen, so start the link after ordering the window front.
+        renderer.start(in: contentView)
+
+        // Intentionally NO willCloseNotification observer. Every variant
+        // of "viewer-window-close-button → disconnect" raced something
+        // in the AppKit/CA teardown and crashed:
+        //
+        //   - sync disconnect inside willClose dispatch → null-receiver
+        //     in our own MainActor.run teardown
+        //   - 50ms-deferred disconnect → VT decoder callback fires after
+        //     shutdown drained, retains a CVPixelBuffer whose backing
+        //     VT had already freed; SIGSEGV on objc_msgSend_uncached
+        //   - removeObserver from inside its own dispatch → null lookup
+        //     in NotificationCenter's table
+        //
+        // For now: hide the window's close button entirely so the user
+        // can only disconnect via the menu (the safe path). The menu's
+        // Disconnect runs through AppState.disconnect which orders the
+        // operations correctly. Hiding the button is a UX compromise we
+        // can revisit once the underlying race is fixed.
+        window.standardWindowButton(.closeButton)?.isHidden = true
     }
 
     func disconnect() async {
@@ -333,21 +272,34 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
             self.node = nil
         }
 
+        // Shut the decoder down next. `shutdown` blocks on the decoder's
+        // serial queue, so once it returns no more frames can be delivered
+        // to the renderer.
+        if let decoder = decoder {
+            decoder.onDecodedFrame = nil
+            decoder.shutdown()
+            self.decoder = nil
+        }
+
+        // Bisect concluded: NSWindow.close() under any teardown ordering
+        // we tried (sync, autoreleasepool-wrapped, contentView-detach +
+        // multi-tick yield) produces a zombie that the next pool pop
+        // SIGSEGVs on. Apple framework leaves something autoreleased in
+        // the surrounding pool that we can't isolate without changing
+        // the framework. Workaround: orderOut the window, invalidate the
+        // display link, leave window + renderer retained by self until
+        // TailscaleScreenShareClient itself deallocates one runloop later
+        // under a fresh pool. Leaks one NSWindow per viewer session.
         await MainActor.run {
-            // Detach the willCloseNotification observer BEFORE hiding the
-            // window so its callback can't re-enter disconnect().
-            if let obs = self.windowCloseObserver {
-                NotificationCenter.default.removeObserver(obs)
-                self.windowCloseObserver = nil
-            }
-            self.formatDescription = nil
-            // Just hide the window. DO NOT call close(), DO NOT nil our
-            // strong refs to window/layer synchronously — every teardown
-            // attempt has produced a SIGSEGV in objc_release on the next
-            // runloop autoreleasepool pop. Leaving the window + layer
-            // retained until the process exits (or the user connects to
-            // something else) avoids the race entirely, at the cost of
-            // leaking one NSWindow per viewer session.
+            // Don't call NotificationCenter.removeObserver here. When the
+            // window's close button triggered this disconnect, we're still
+            // inside the willCloseNotification dispatch — removing the
+            // observer mid-dispatch crashed objc_msgSend_uncached at a
+            // null receiver. Leaking the observer is fine: the NSWindow
+            // it watches is also leaked by the workaround below, so it
+            // never fires again. Just drop our strong ref.
+            self.windowCloseObserver = nil
+            self.renderer?.invalidate()
             self.window?.orderOut(nil)
         }
 
