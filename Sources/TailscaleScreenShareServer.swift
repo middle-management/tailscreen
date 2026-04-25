@@ -321,7 +321,9 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             print("ScreenCapture: frame #\(frameCounter), \(count) viewer(s)")
         }
 
-        if frameCounter % 30 == 0, let callback = onPreviewImage {
+        // Emit on frame 1 too so the menubar SharingCard can land already
+        // populated and skip its "Capturing…" placeholder.
+        if (frameCounter == 1 || frameCounter % 30 == 0), let callback = onPreviewImage {
             if let image = buildPreviewImage(from: pixelBuffer) {
                 callback(image)
             }

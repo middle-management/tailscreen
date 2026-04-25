@@ -50,6 +50,13 @@ class AppState: ObservableObject {
     // Live thumbnail of the shared screen for the menu preview
     @Published var previewImage: NSImage?
 
+    // One-shot continuation used by `startSharing` to hold the `isSharing`
+    // flip until the first preview frame has landed, so SharingCard never
+    // renders its black "Capturing…" placeholder. Resumed from
+    // `srv.onPreviewImage`, by `waitForFirstPreview`'s timeout, or by
+    // `stopSharing` if the user bails out mid-wait.
+    private var pendingFirstPreview: CheckedContinuation<Void, Never>?
+
     // Authentication
     var tailscaleAuth = TailscaleAuth()
 
@@ -154,7 +161,12 @@ class AppState: ObservableObject {
                 }
                 srv.onPreviewImage = { [weak self] image in
                     Task { @MainActor [weak self] in
-                        self?.previewImage = image
+                        guard let self else { return }
+                        self.previewImage = image
+                        if let cont = self.pendingFirstPreview {
+                            self.pendingFirstPreview = nil
+                            cont.resume()
+                        }
                     }
                 }
 
@@ -200,6 +212,11 @@ class AppState: ObservableObject {
             // Update metadata
             metadataService.updateMetadata(isSharing: true, shareName: "\(hostname)'s Screen")
 
+            // Hold the UI on the picker until the first preview frame
+            // arrives, so SharingCard skips its black "Capturing…"
+            // placeholder and lands with the live thumbnail visible.
+            await waitForFirstPreview(timeout: .milliseconds(500))
+
             isSharing = true
         } catch {
             showAlertMessage(
@@ -208,6 +225,13 @@ class AppState: ObservableObject {
     }
 
     func stopSharing() async {
+        // Unblock any startSharing still waiting on the first preview, so
+        // a fast start→stop doesn't strand its continuation.
+        if let cont = pendingFirstPreview {
+            pendingFirstPreview = nil
+            cont.resume()
+        }
+
         await server?.stop()
         server = nil
         previewImage = nil
@@ -224,6 +248,22 @@ class AppState: ObservableObject {
         isSharerOverlayVisible = false
 
         isSharing = false
+    }
+
+    /// Suspend until the first preview frame lands or `timeout` elapses,
+    /// whichever comes first. Both resume paths run on the main actor and
+    /// gate on `pendingFirstPreview != nil`, so there's no double-resume.
+    private func waitForFirstPreview(timeout: Duration) async {
+        guard previewImage == nil else { return }
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            pendingFirstPreview = cont
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: timeout)
+                guard let self, let pending = self.pendingFirstPreview else { return }
+                self.pendingFirstPreview = nil
+                pending.resume()
+            }
+        }
     }
 
     /// Create the sharer overlay lazily so it's always present when needed —
