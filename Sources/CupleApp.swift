@@ -5,14 +5,6 @@ import SwiftUI
 struct CupleApp: App {
     @StateObject private var appState = AppState()
 
-    init() {
-        // Install a real NSMenu so the menu bar shows up when a viewer
-        // (or sharer overlay) window is key. Without this the
-        // MenuBarExtra-only app has no main menu and ⌘1–⌘5 / ⌘Z /
-        // ⇧⌘⌫ have no discoverable home.
-        AppMenu.install()
-    }
-
     var body: some Scene {
         // The menubar icon reflects current state: a slashed tv while
         // not yet authenticated, a "broadcasting" tv with a tower icon
@@ -23,6 +15,12 @@ struct CupleApp: App {
         MenuBarExtra("Cuple", systemImage: menubarIconName) {
             MenuBarView()
                 .environmentObject(appState)
+                .task {
+                    // Install the NSMenu the first time the menubar
+                    // popover renders. Doing this in CupleApp.init()
+                    // crashes — NSApp isn't set up yet at that point.
+                    AppMenu.installIfNeeded()
+                }
         }
         .menuBarExtraStyle(.window)
     }
