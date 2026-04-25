@@ -252,8 +252,8 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     /// both a sharer and (separately) a viewer uses the *same* color in
     /// both surfaces.
     static func localIdentity() -> String {
-        let host = Host.current().localizedName ?? "cuple"
-        return "\(host)\(CupleInstance.hostnameSuffix)"
+        let host = Host.current().localizedName ?? "tailscreen"
+        return "\(host)\(TailscreenInstance.hostnameSuffix)"
     }
 }
 

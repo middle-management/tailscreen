@@ -42,7 +42,7 @@ final class ViewerCommands: NSObject {
     /// File → Disconnect. Posts a notification AppState observes — that
     /// keeps menu wiring decoupled from the actor-isolated AppState.
     @objc func disconnectViewer(_ sender: Any?) {
-        NotificationCenter.default.post(name: .cupleDisconnectRequested, object: nil)
+        NotificationCenter.default.post(name: .tailscreenDisconnectRequested, object: nil)
     }
 }
 
@@ -78,5 +78,5 @@ extension ViewerCommands: NSMenuItemValidation {
 }
 
 extension Notification.Name {
-    static let cupleDisconnectRequested = Notification.Name("cuple.disconnect.requested")
+    static let tailscreenDisconnectRequested = Notification.Name("tailscreen.disconnect.requested")
 }

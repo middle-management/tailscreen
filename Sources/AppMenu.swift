@@ -19,7 +19,7 @@ enum AppMenu {
         wireActivationPolicy()
     }
 
-    /// Without this, Cuple stays at `.accessory` activation policy (the
+    /// Without this, Tailscreen stays at `.accessory` activation policy (the
     /// MenuBarExtra default). When the viewer/sharer window becomes key
     /// macOS keeps showing whatever `.regular` app's menu bar was last
     /// up — observed: "Zed" sitting above a Tailscale Screen Share
@@ -58,17 +58,17 @@ enum AppMenu {
     static func install() {
         let main = NSMenu(title: "MainMenu")
 
-        // ── Application menu (titled by the active app, "Cuple") ──
+        // ── Application menu (titled by the active app, "Tailscreen") ──
         let appMenuItem = NSMenuItem()
-        let appMenu = NSMenu(title: "Cuple")
+        let appMenu = NSMenu(title: "Tailscreen")
         appMenuItem.submenu = appMenu
 
-        appMenu.addItem(.init(title: "About Cuple",
+        appMenu.addItem(.init(title: "About Tailscreen",
                               action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
                               keyEquivalent: ""))
         appMenu.addItem(.separator())
 
-        let hide = NSMenuItem(title: "Hide Cuple",
+        let hide = NSMenuItem(title: "Hide Tailscreen",
                               action: #selector(NSApplication.hide(_:)),
                               keyEquivalent: "h")
         appMenu.addItem(hide)
@@ -84,7 +84,7 @@ enum AppMenu {
                               keyEquivalent: ""))
         appMenu.addItem(.separator())
 
-        appMenu.addItem(.init(title: "Quit Cuple",
+        appMenu.addItem(.init(title: "Quit Tailscreen",
                               action: #selector(NSApplication.terminate(_:)),
                               keyEquivalent: "q"))
 

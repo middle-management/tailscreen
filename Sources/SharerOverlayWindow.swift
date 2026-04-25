@@ -98,7 +98,7 @@ final class SharerOverlayWindow {
     /// suffixes), while two real machines pick whatever their hostnames
     /// hash to.
     static func localIdentity() -> String {
-        let host = Host.current().localizedName ?? "cuple"
-        return "\(host)\(CupleInstance.hostnameSuffix)"
+        let host = Host.current().localizedName ?? "tailscreen"
+        return "\(host)\(TailscreenInstance.hostnameSuffix)"
     }
 }

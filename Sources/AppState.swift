@@ -88,7 +88,7 @@ class AppState: ObservableObject {
 
         // File → Disconnect (⌘W) posts this; bounce to disconnect().
         NotificationCenter.default.addObserver(
-            forName: .cupleDisconnectRequested,
+            forName: .tailscreenDisconnectRequested,
             object: nil,
             queue: .main
         ) { [weak self] _ in
