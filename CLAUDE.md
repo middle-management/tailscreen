@@ -206,7 +206,7 @@ Never make this absolute — it breaks portability and CI. Both the `Tailscreen`
 ## CI/CD
 
 - `.github/workflows/build.yml` — `macos-latest`, Go 1.21, on push to `main` and `claude/**` and PRs to `main`. Runs `make build` then `make test`.
-- `.github/workflows/release.yml` — triggered when a GitHub release is **published** (or via `workflow_dispatch` with a tag input). Runs on `macos-14` (Apple Silicon, macOS 15 SDK):
+- `.github/workflows/release.yml` — triggered when a GitHub release is **published** (or via `workflow_dispatch` with a tag input). Runs on `macos-15` (Apple Silicon; needs Swift 6 toolchain — `macos-14` ships Swift 5.10):
   - Cross-builds `libtailscale.a` for `arm64` and `amd64` (per-arch `GOARCH` + `CGO_CFLAGS=-arch …`), then `lipo`-merges into the symlink at `TailscaleKitPackage/lib/libtailscale.a`.
   - `swift build -c release --arch arm64 --arch x86_64` produces a universal Mach-O at `.build/apple/Products/Release/Tailscreen`.
   - Wraps it in `Tailscreen.app` with bundle id `se.middlemanagement.tailscreen`, `LSMinimumSystemVersion=15.0`, `LSUIElement=true`, version pulled from the release tag (`v1.2.3` → `1.2.3`).

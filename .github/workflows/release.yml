@@ -26,7 +26,7 @@ on:
 jobs:
   release:
     name: Build & upload release assets
-    runs-on: macos-14
+    runs-on: macos-15
 
     env:
       APP_NAME: Tailscreen
