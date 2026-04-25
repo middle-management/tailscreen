@@ -406,21 +406,34 @@ class AppState: ObservableObject {
         win.delegate = delegate
         self.viewerWindowDelegate = delegate
 
-        let host = NSView(frame: win.contentView!.bounds)
+        // The host view explicitly aspect-fits both the metal layer and
+        // the annotation overlay to the video's pixel size. Without this
+        // the overlay covered the full window while `.resizeAspect`
+        // letterboxed the video — a click 50% across a 16:9 window
+        // streamed to a 16:10 sharer landed at ~46% of the captured
+        // screen, off by a noticeable amount.
+        let host = AspectFitHostView(frame: win.contentView!.bounds)
         host.wantsLayer = true
         host.layer = CALayer()
         host.layer?.backgroundColor = NSColor.black.cgColor
+        host.metalLayer = r.metalLayer
         host.layer?.addSublayer(r.metalLayer)
-        r.metalLayer.frame = host.bounds
-        r.metalLayer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
+        // Mirror any video-size changes onto the host so it relays out the
+        // overlay to the new aspect rect.
+        r.onVideoSizeChanged = { [weak host] size in
+            host?.videoSize = size
+        }
+        if r.videoSize != .zero {
+            host.videoSize = r.videoSize
+        }
 
         // Annotation overlay above the Metal layer. onOp forwards to the
         // active client's back-channel; the closure looks up `self.client`
         // each time, so the wiring survives reconnects without rebuilding
         // the overlay.
         let overlay = DrawingOverlayView(frame: host.bounds)
-        overlay.autoresizingMask = [.width, .height]
         overlay.currentColor = Annotation.RGBA.paletteColor(forIdentity: TailscaleScreenShareClient.localIdentity())
+        host.contentSubview = overlay
         host.addSubview(overlay)
         overlay.onOp = { [weak self] op in
             Task { [weak self] in await self?.client?.sendAnnotationOp(op) }
@@ -720,5 +733,59 @@ private final class ViewerWindowDelegate: NSObject, NSWindowDelegate {
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         onClose()
         return false
+    }
+}
+
+/// Container for the viewer window's video + annotation overlay. Lays
+/// both out at the aspect-fit rect of the source video inside the host
+/// bounds, so a click on the overlay maps 1:1 to a pixel on the sharer's
+/// captured screen no matter how the user resizes the window.
+private final class AspectFitHostView: NSView {
+    weak var metalLayer: CAMetalLayer?
+    weak var contentSubview: NSView?
+    var videoSize: CGSize = .zero {
+        didSet {
+            guard videoSize != oldValue else { return }
+            needsLayout = true
+        }
+    }
+
+    override func layout() {
+        super.layout()
+        let rect = aspectFitRect()
+        // CALayer frame changes go through an implicit animation by
+        // default — disable it so the layer snaps to the new aspect rect
+        // in lockstep with the overlay subview.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        metalLayer?.frame = rect
+        CATransaction.commit()
+        contentSubview?.frame = rect
+    }
+
+    override func resizeSubviews(withOldSize oldSize: NSSize) {
+        super.resizeSubviews(withOldSize: oldSize)
+        // NSView's autoresize machinery would otherwise stretch the
+        // overlay to fill bounds; we manage the frame ourselves.
+        needsLayout = true
+    }
+
+    private func aspectFitRect() -> CGRect {
+        let bounds = self.bounds
+        guard videoSize.width > 0, videoSize.height > 0,
+              bounds.width > 0, bounds.height > 0 else {
+            return bounds
+        }
+        let videoAspect = videoSize.width / videoSize.height
+        let viewAspect = bounds.width / bounds.height
+        if viewAspect > videoAspect {
+            // Wider than video — letterbox left/right.
+            let w = bounds.height * videoAspect
+            return CGRect(x: (bounds.width - w) / 2, y: 0, width: w, height: bounds.height)
+        } else {
+            // Taller than video — letterbox top/bottom.
+            let h = bounds.width / videoAspect
+            return CGRect(x: 0, y: (bounds.height - h) / 2, width: bounds.width, height: h)
+        }
     }
 }

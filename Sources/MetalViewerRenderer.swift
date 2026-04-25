@@ -22,6 +22,15 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
     /// milliseconds. Snapshot at the last presented frame; -1 if never set.
     private(set) var lastPresentLatencyMs: Double = -1
 
+    /// Native video resolution of the most recent decoded frame.
+    /// `(0,0)` until the first frame lands. Used by the host view to keep
+    /// the annotation overlay aligned to the letterboxed video rect — a
+    /// click at "the centre of the video" must still hit the same pixel
+    /// after the window is resized to a different aspect ratio.
+    private(set) var videoSize: CGSize = .zero
+    /// Fires (on the main thread) whenever `videoSize` changes.
+    var onVideoSizeChanged: ((CGSize) -> Void)?
+
     private let device: MTLDevice
     private let commandQueue: MTLCommandQueue
     private let pipelineState: MTLRenderPipelineState
@@ -174,6 +183,10 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
         if metalLayer.drawableSize.width != CGFloat(width)
             || metalLayer.drawableSize.height != CGFloat(height) {
             metalLayer.drawableSize = CGSize(width: width, height: height)
+            let newSize = CGSize(width: width, height: height)
+            videoSize = newSize
+            let cb = onVideoSizeChanged
+            DispatchQueue.main.async { cb?(newSize) }
         }
 
         guard let drawable = metalLayer.nextDrawable() else { return }
