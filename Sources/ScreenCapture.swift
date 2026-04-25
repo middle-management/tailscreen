@@ -56,13 +56,13 @@ class ScreenCapture: NSObject {
 
     func start(displayID: CGDirectDisplayID? = nil) async throws {
         // Get available content. SCShareableContent's bridged async call
-        // can hang indefinitely on first launch when macOS hasn't yet
-        // resolved the Screen Recording permission for our binary —
-        // observed as a server that prints "Listening on Tailscale port"
-        // and then nothing. Race the call against a 5s watchdog so the
-        // server start path always returns.
+        // can hang for a while on first launch while macOS resolves the
+        // Screen Recording permission and brings up the screencapture
+        // daemon. 5s was too aggressive — first-time permission grants
+        // routinely take longer than that. 30s is generous enough for
+        // a fresh machine while still bounded.
         print("ScreenCapture: requesting shareable content…")
-        availableContent = try await Self.fetchShareableContent(timeout: .seconds(5))
+        availableContent = try await Self.fetchShareableContent(timeout: .seconds(30))
         let displayCount = availableContent?.displays.count ?? 0
         print("ScreenCapture: got \(displayCount) display(s)")
 

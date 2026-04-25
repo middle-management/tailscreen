@@ -149,7 +149,26 @@ class AppState: ObservableObject {
                     }
                 }
 
-                try await srv.start(hostname: hostname, displayID: pickedID)
+                do {
+                    try await srv.start(hostname: hostname, displayID: pickedID)
+                } catch {
+                    // server.start cleans itself up (await self.stop()) on
+                    // capture failure; just drop our reference so a future
+                    // Start Sharing rebuilds from scratch.
+                    server = nil
+                    if case ScreenCaptureError.startTimeout = error {
+                        showAlertMessage(
+                            title: "Couldn't Start Sharing",
+                            message: "macOS didn't return shareable screens in time. If this is the first time you've shared, grant Cuple permission in System Settings → Privacy & Security → Screen Recording, then try again."
+                        )
+                    } else {
+                        showAlertMessage(
+                            title: "Couldn't Start Sharing",
+                            message: error.localizedDescription
+                        )
+                    }
+                    return
+                }
 
                 // Get the Tailscale IP addresses
                 let ips = try await srv.getIPAddresses()

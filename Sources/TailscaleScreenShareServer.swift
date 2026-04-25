@@ -104,9 +104,13 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             try await capture.start(displayID: displayID)
             print("ScreenCapture started (displayID=\(displayID.map { String($0) } ?? "default"))")
         } catch {
-            // Surface the error instead of silently swallowing it. Most common
-            // cause on first run: macOS Screen Recording permission missing.
+            // Most common cause on first run: macOS Screen Recording
+            // permission missing. Throw so AppState can roll the server
+            // back and show the user a useful alert instead of leaving a
+            // zombie listener with no capture source.
             print("ERROR: ScreenCapture failed to start: \(error)")
+            await self.stop()
+            throw error
         }
     }
 
