@@ -55,8 +55,16 @@ class ScreenCapture: NSObject {
     }
 
     func start(displayID: CGDirectDisplayID? = nil) async throws {
-        // Get available content
-        availableContent = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        // Get available content. SCShareableContent's bridged async call
+        // can hang indefinitely on first launch when macOS hasn't yet
+        // resolved the Screen Recording permission for our binary —
+        // observed as a server that prints "Listening on Tailscale port"
+        // and then nothing. Race the call against a 5s watchdog so the
+        // server start path always returns.
+        print("ScreenCapture: requesting shareable content…")
+        availableContent = try await Self.fetchShareableContent(timeout: .seconds(5))
+        let displayCount = availableContent?.displays.count ?? 0
+        print("ScreenCapture: got \(displayCount) display(s)")
 
         let display: SCDisplay
         if let wanted = displayID,
@@ -120,6 +128,49 @@ class ScreenCapture: NSObject {
             DispatchQueue.global().asyncAfter(deadline: .now() + 5) {
                 box.resume(throwing: ScreenCaptureError.startTimeout)
             }
+        }
+    }
+
+    /// Watchdogged `SCShareableContent.excludingDesktopWindows`. The
+    /// completion-handler variant exists since macOS 14, so we don't have
+    /// to fight Swift Concurrency over a leaked continuation here either.
+    private static func fetchShareableContent(timeout: Duration) async throws -> SCShareableContent {
+        // Smuggle SCShareableContent through @unchecked Sendable wrap;
+        // it isn't Sendable but it's effectively read-only after delivery
+        // and we hand it off on a controlled boundary.
+        let wrapped: ShareableContentWrap = try await withCheckedThrowingContinuation { (cont: CheckedContinuation<ShareableContentWrap, Error>) in
+            let box = ShareableContentBox(cont)
+            SCShareableContent.getExcludingDesktopWindows(false, onScreenWindowsOnly: true) { content, error in
+                if let error = error {
+                    box.resume(throwing: error)
+                } else if let content = content {
+                    box.resume(returning: ShareableContentWrap(value: content))
+                } else {
+                    box.resume(throwing: ScreenCaptureError.noDisplayAvailable)
+                }
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + Double(timeout.components.seconds)) {
+                box.resume(throwing: ScreenCaptureError.startTimeout)
+            }
+        }
+        return wrapped.value
+    }
+
+    private struct ShareableContentWrap: @unchecked Sendable {
+        let value: SCShareableContent
+    }
+
+    private final class ShareableContentBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var cont: CheckedContinuation<ShareableContentWrap, Error>?
+        init(_ cont: CheckedContinuation<ShareableContentWrap, Error>) { self.cont = cont }
+        func resume(returning value: ShareableContentWrap) {
+            lock.lock(); defer { lock.unlock() }
+            cont?.resume(returning: value); cont = nil
+        }
+        func resume(throwing error: Error) {
+            lock.lock(); defer { lock.unlock() }
+            cont?.resume(throwing: error); cont = nil
         }
     }
 
