@@ -224,25 +224,24 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         // screen, so start the link after ordering the window front.
         renderer.start(in: contentView)
 
-        self.windowCloseObserver = NotificationCenter.default.addObserver(
-            forName: NSWindow.willCloseNotification,
-            object: window,
-            queue: .main
-        ) { [weak self] _ in
-            // Defer a full beat so we're well clear of the willClose
-            // dispatch before touching anything. Running disconnect
-            // immediately (even via Task @MainActor) crashed inside
-            // the MainActor.run teardown on objc_msgSend_uncached at
-            // a null receiver — the close cascade had partially torn
-            // down the contentView/layer graph by the time disconnect's
-            // closure body executed. Letting AppKit finish the close
-            // first dodges that.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                Task { @MainActor in
-                    await self?.disconnect()
-                }
-            }
-        }
+        // Intentionally NO willCloseNotification observer. Every variant
+        // of "viewer-window-close-button → disconnect" raced something
+        // in the AppKit/CA teardown and crashed:
+        //
+        //   - sync disconnect inside willClose dispatch → null-receiver
+        //     in our own MainActor.run teardown
+        //   - 50ms-deferred disconnect → VT decoder callback fires after
+        //     shutdown drained, retains a CVPixelBuffer whose backing
+        //     VT had already freed; SIGSEGV on objc_msgSend_uncached
+        //   - removeObserver from inside its own dispatch → null lookup
+        //     in NotificationCenter's table
+        //
+        // For now: hide the window's close button entirely so the user
+        // can only disconnect via the menu (the safe path). The menu's
+        // Disconnect runs through AppState.disconnect which orders the
+        // operations correctly. Hiding the button is a UX compromise we
+        // can revisit once the underlying race is fixed.
+        window.standardWindowButton(.closeButton)?.isHidden = true
     }
 
     func disconnect() async {
