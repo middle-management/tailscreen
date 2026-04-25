@@ -166,8 +166,15 @@ class AppState: ObservableObject {
             try await c.connect(to: host, port: 7447)
             isConnected = true
             connectedHostname = host
-            viewerWindow?.makeKeyAndOrderFront(nil)
+            // Order matters: with the app at .accessory activation policy
+            // (MenuBarExtra-only), makeKeyAndOrderFront silently no-ops
+            // because non-regular apps can't make a window key. Promote
+            // to .regular first, then activate, then bring the window
+            // up — same idea as AppMenu's activation policy toggle.
+            NSApp.setActivationPolicy(.regular)
             NSApp.activate(ignoringOtherApps: true)
+            viewerWindow?.orderFrontRegardless()
+            viewerWindow?.makeKeyAndOrderFront(nil)
         } catch {
             showAlertMessage(
                 title: "Connection Failed",
@@ -233,6 +240,9 @@ class AppState: ObservableObject {
         connectedHostname = nil
         viewerRenderer?.clearPendingBuffer()
         viewerWindow?.orderOut(nil)
+        // Drop back to .accessory so the Dock icon goes away when there's
+        // no viewer window up. connect() will promote back to .regular.
+        NSApp.setActivationPolicy(.accessory)
     }
 
     func discoverPeers() async {
