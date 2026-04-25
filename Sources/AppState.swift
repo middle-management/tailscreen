@@ -124,23 +124,15 @@ class AppState: ObservableObject {
                 // If the user stops the ScreenCaptureKit stream from the
                 // macOS menubar, tear down sharing rather than leaving an
                 // empty server that's listening but has no capture source.
-                srv.onCaptureStopped = { [weak self] error in
+                srv.onCaptureStopped = { [weak self] _ in
+                    // The macOS Control Center "Stop" button is the only
+                    // common path here, and the menubar icon already
+                    // reflects the new idle state — popping an alert on
+                    // top of an action the user just took is pure
+                    // friction. Tear sharing down quietly.
                     Task { @MainActor [weak self] in
                         guard let self = self, self.isSharing else { return }
                         await self.stopSharing()
-                        // SCStreamErrorCode.userStopped (-3817) is what
-                        // macOS sends when the user clicks "Stop" in the
-                        // menubar Control Center — that's a normal stop,
-                        // not an error worth a popup. Anything else
-                        // (display lost, daemon crash, permission revoked)
-                        // is worth surfacing.
-                        if let error = error,
-                           (error as NSError).code != -3817 {
-                            self.showAlertMessage(
-                                title: "Sharing Stopped",
-                                message: "Screen capture ended: \(error.localizedDescription)"
-                            )
-                        }
                     }
                 }
                 srv.onPreviewImage = { [weak self] image in
