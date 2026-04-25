@@ -25,6 +25,10 @@ import TailscaleKit
 final class TailscaleScreenShareServer: @unchecked Sendable {
     private let port: UInt16
     var node: TailscaleNode?
+    /// True when this server created the tsnet node itself; false when it
+    /// borrowed a node owned by AppState. Controls whether `stop()` tears
+    /// the node down or just releases its reference.
+    private var ownsNode: Bool = true
     private var probeListener: Listener?
     private var packetListener: PacketListener?
     private var encoder: VideoEncoder?
@@ -77,34 +81,64 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// get captured into the video stream and distributed to every viewer.
     var onAnnotationReceived: ((AnnotationOp) -> Void)?
 
+    /// Invoked once the underlying `TailscaleNode` has been instantiated but
+    /// **before** `node.up()` is called. AppState uses this hook to subscribe
+    /// an IPN-bus watcher that opens the interactive-login URL in the user's
+    /// browser when tsnet emits a `BrowseToURL`. Without something listening
+    /// before `up()`, the call blocks indefinitely waiting on a login the
+    /// user can't see.
+    var nodeReadyBeforeUp: (@Sendable (TailscaleNode) async -> Void)?
+
     init(port: UInt16 = 7447) {
         self.port = port
         self.logger = TSLogger()
         self.rtpTimestampOriginNs = DispatchTime.now().uptimeNanoseconds
     }
 
-    func start(hostname: String = "tailscreen-server", authKey: String? = nil, path: String? = nil, displayID: CGDirectDisplayID? = nil) async throws {
+    func start(
+        hostname: String = "tailscreen-server",
+        authKey: String? = nil,
+        path: String? = nil,
+        displayID: CGDirectDisplayID? = nil,
+        existingNode: TailscaleNode? = nil
+    ) async throws {
         guard !isRunning else { return }
 
-        let statePath = path ?? {
-            let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            return appSupport.appendingPathComponent("Tailscreen/tailscale\(TailscreenInstance.stateSuffix)").path
-        }()
-        try? FileManager.default.createDirectory(atPath: statePath, withIntermediateDirectories: true)
+        let node: TailscaleNode
+        if let existing = existingNode {
+            // Reuse the AppState-owned node — same Tailscale identity used
+            // for sign-in. Avoids spinning up a second tsnet machine that
+            // would need its own browser login.
+            node = existing
+            self.node = existing
+            self.ownsNode = false
+            print("Screen-share server reusing existing Tailscale node")
+        } else {
+            let statePath = path ?? {
+                let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+                return appSupport.appendingPathComponent("Tailscreen/tailscale\(TailscreenInstance.stateSuffix)").path
+            }()
+            try? FileManager.default.createDirectory(atPath: statePath, withIntermediateDirectories: true)
 
-        print("Starting Tailscale server…")
+            print("Starting Tailscale server…")
 
-        let config = Configuration(
-            hostName: hostname,
-            path: statePath,
-            authKey: authKey,
-            controlURL: kDefaultControlURL,
-            ephemeral: true
-        )
+            let config = Configuration(
+                hostName: hostname,
+                path: statePath,
+                authKey: authKey,
+                controlURL: kDefaultControlURL,
+                ephemeral: true
+            )
 
-        let node = try TailscaleNode(config: config, logger: logger)
-        self.node = node
-        try await node.up()
+            let newNode = try TailscaleNode(config: config, logger: logger)
+            self.node = newNode
+            self.ownsNode = true
+            if let ready = nodeReadyBeforeUp {
+                await ready(newNode)
+            }
+            try await newNode.up()
+            node = newNode
+        }
 
         let ips = try await node.addrs()
         print("Tailscale connected — ip4=\(ips.ip4 ?? "-") ip6=\(ips.ip6 ?? "-")")
@@ -493,10 +527,14 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             for conn in conns { group.addTask { await conn.close() } }
         }
 
-        if let node = node {
+        // Only close the node if this server actually owns it. When AppState
+        // hands us its own node, AppState retains ownership and closes it on
+        // sign-out — closing it here would break peer discovery and the
+        // signed-in UI state.
+        if let node = node, ownsNode {
             try? await node.close()
-            self.node = nil
         }
+        self.node = nil
 
         print("Server stopped")
     }

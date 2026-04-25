@@ -1,5 +1,6 @@
 import ScreenCaptureKit
 import AppKit
+import CoreGraphics
 import CoreMedia
 import CoreVideo
 
@@ -24,6 +25,14 @@ class ScreenCapture: NSObject {
     static func requestPermission() async throws {
         // Request permission by attempting to get shareable content
         _ = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+    }
+
+    /// Non-prompting probe for Screen Recording authorization. Returns true
+    /// once the user has granted access in System Settings → Privacy &
+    /// Security. Used to gate eager `SCShareableContent` calls so the menu
+    /// doesn't trigger a TCC prompt at first launch.
+    static func hasPermission() -> Bool {
+        CGPreflightScreenCaptureAccess()
     }
 
     /// Enumerate the displays the user can share. Returns an empty array if

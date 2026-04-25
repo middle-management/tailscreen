@@ -25,7 +25,6 @@ struct MenuBarView: View {
         }
         .id(viewID)
         .onAppear {
-            appState.triggerAutoLoginIfNeeded()
             viewID = UUID()
         }
     }
@@ -261,6 +260,12 @@ private struct ViewingCard: View {
 
 /// Display picker shown when idle. One row per attached display; clicking
 /// a row starts sharing that display.
+///
+/// Before macOS Screen Recording permission has been granted, the underlying
+/// `SCShareableContent` call would pop a TCC prompt the moment the menu
+/// opens. To avoid that, the section renders a single "Share my screen" CTA
+/// instead of probing the displays — the prompt only fires when the user
+/// actually tries to share.
 private struct DisplayPickerSection: View {
     @EnvironmentObject var appState: AppState
     @State private var didKickOff = false
@@ -270,7 +275,28 @@ private struct DisplayPickerSection: View {
             SectionHeader(title: "SHARE A DISPLAY")
                 .padding(.top, 2)
 
-            if appState.availableDisplays.isEmpty {
+            if !appState.hasScreenRecordingPermission {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Tailscreen needs Screen Recording permission to share your display.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button {
+                        Task {
+                            await appState.startSharing(displayID: nil)
+                            // Re-probe once the user has interacted with the
+                            // OS prompt — populates the picker for next open.
+                            await appState.refreshDisplays()
+                        }
+                    } label: {
+                        Text("Share my screen").frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 4)
+            } else if appState.availableDisplays.isEmpty {
                 Text("No displays available")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)

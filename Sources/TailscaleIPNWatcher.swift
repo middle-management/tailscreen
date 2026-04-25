@@ -7,6 +7,12 @@ class TailscaleIPNWatcher: ObservableObject {
     @Published var peers: [String: TailscalePeerStatus] = [:]
     @Published var isWatching = false
 
+    /// Fires whenever tsnet asks the host app to send the user to a URL —
+    /// most commonly the interactive-login page during the first sign-in.
+    /// `node.up()` blocks until login completes, so without surfacing this
+    /// URL the app would hang forever on first launch with no auth state.
+    var onBrowseToURL: ((URL) -> Void)?
+
     private var messageProcessor: MessageProcessor?
     private let logger: TSLogger
 
@@ -22,7 +28,10 @@ class TailscaleIPNWatcher: ObservableObject {
 
         let client = LocalAPIClient(localNode: node, logger: logger)
 
-        // Watch for netmap updates with rate limiting to avoid excessive updates
+        // Watch for netmap updates with rate limiting to avoid excessive
+        // updates. `.initialState` is what makes tsnet replay the current
+        // browse-to-URL on first subscribe, so we catch it even if it was
+        // generated before this watcher started.
         let mask: Ipn.NotifyWatchOpt = [.initialState, .netmap, .rateLimitNetmaps]
 
         let consumer = IPNMessageConsumer(watcher: self)
@@ -42,6 +51,15 @@ class TailscaleIPNWatcher: ObservableObject {
     /// Handle incoming IPN notifications
     nonisolated func handleNotify(_ notify: Ipn.Notify) {
         Task { @MainActor in
+            // tsnet emits BrowseToURL whenever the user needs to visit a
+            // page in their browser — primarily the interactive-login URL
+            // during first sign-in. Forward to the host app so it can
+            // open it via NSWorkspace.
+            if let raw = notify.BrowseToURL, let url = URL(string: raw) {
+                logger.log("BrowseToURL: \(raw)")
+                onBrowseToURL?(url)
+            }
+
             // Process netmap updates to track peer status
             if let netmap = notify.NetMap, let peerMap = netmap.Peers {
                 var updatedPeers: [String: TailscalePeerStatus] = [:]

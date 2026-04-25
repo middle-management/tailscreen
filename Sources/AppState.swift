@@ -43,6 +43,12 @@ class AppState: ObservableObject {
     @Published var isDiscovering = false
     private var peerDiscovery: TailscalePeerDiscovery?
 
+    // IPN-bus watcher dedicated to surfacing the interactive-login URL.
+    // tsnet's `node.up()` blocks until login completes, so the only way to
+    // unblock it on a fresh device is to listen on the IPN bus and open
+    // the BrowseToURL it emits in the user's browser.
+    private var authIPNWatcher: TailscaleIPNWatcher?
+
     // Display selection
     @Published var availableDisplays: [DisplayInfo] = []
     @Published var selectedDisplayID: CGDirectDisplayID?
@@ -56,8 +62,6 @@ class AppState: ObservableObject {
     // Metadata and requests
     @Published var metadataService = TailscreenMetadataService()
 
-    // Track if auto-login has been triggered
-    private var hasTriggeredAutoLogin = false
     private var isLoggingIn = false
 
     init() {
@@ -66,11 +70,13 @@ class AppState: ObservableObject {
             self?.objectWillChange.send()
         }.store(in: &cancellables)
 
-        // Kick off auto-login as soon as the app launches, not on first
-        // menu open. tsnet's `node.up()` and the LocalAPI handshake take a
-        // few seconds; doing it eagerly means the menubar icon is already
-        // in its authenticated state by the time the user clicks.
-        triggerAutoLoginIfNeeded()
+        // No auto-login on launch. tsnet's `node.up()` blocks until the
+        // backend reaches Running, and if the on-disk state is stale or
+        // the ephemeral node was revoked it will emit a BrowseToURL —
+        // which would silently pop a browser tab the user never asked for.
+        // Always require an explicit "Sign in with Tailscale" click; if
+        // valid state exists the click resolves in well under a second
+        // (LocalAPI handshake only, no browser).
 
         // Sharer dropped its end of the TCP connection — viewer needs to
         // run its disconnect() so the UI doesn't sit on a stale last
@@ -113,7 +119,16 @@ class AppState: ObservableObject {
     /// Populate `availableDisplays` via ScreenCaptureKit. Safe to call any
     /// time the menu is opened; silently clears the list if the API errors
     /// (permission not granted yet).
+    ///
+    /// Skips the underlying `SCShareableContent` call entirely when Screen
+    /// Recording permission has not been granted, so opening the menubar
+    /// never triggers the TCC prompt — that prompt is deferred until the
+    /// user actually clicks "Share my screen".
     func refreshDisplays() async {
+        guard ScreenCapture.hasPermission() else {
+            availableDisplays = []
+            return
+        }
         do {
             let displays = try await ScreenCapture.listDisplays()
             availableDisplays = displays
@@ -123,6 +138,12 @@ class AppState: ObservableObject {
         } catch {
             availableDisplays = []
         }
+    }
+
+    /// True once macOS has granted Screen Recording. UI uses this to swap a
+    /// "Share my screen" CTA in for the display picker before first grant.
+    var hasScreenRecordingPermission: Bool {
+        ScreenCapture.hasPermission()
     }
 
     func startSharing(displayID: CGDirectDisplayID? = nil) async {
@@ -170,7 +191,15 @@ class AppState: ObservableObject {
                 }
 
                 do {
-                    try await srv.start(hostname: hostname, displayID: pickedID)
+                    // Reuse the AppState-owned tsnet node so the screen
+                    // share doesn't spin up a second machine that needs
+                    // its own browser sign-in.
+                    let sharedNode = try await getOrCreateNode()
+                    try await srv.start(
+                        hostname: hostname,
+                        displayID: pickedID,
+                        existingNode: sharedNode
+                    )
                 } catch {
                     // server.start cleans itself up (await self.stop()) on
                     // capture failure; just drop our reference so a future
@@ -259,7 +288,10 @@ class AppState: ObservableObject {
         do {
             let c = TailscaleScreenShareClient(renderer: renderer)
             client = c
-            try await c.connect(to: host, port: 7447)
+            // Reuse the AppState-owned tsnet node so connecting doesn't
+            // spin up a third machine + browser sign-in flow.
+            let sharedNode = try await getOrCreateNode()
+            try await c.connect(to: host, port: 7447, existingNode: sharedNode)
             isConnected = true
             connectedHostname = host
             // Order matters: with the app at .accessory activation policy
@@ -442,16 +474,6 @@ class AppState: ObservableObject {
         await login(silent: silent)
     }
 
-    /// Trigger auto-login only once on app startup
-    func triggerAutoLoginIfNeeded() {
-        guard !hasTriggeredAutoLogin else { return }
-        hasTriggeredAutoLogin = true
-
-        Task {
-            await initializeTailscaleAndLogin(silent: true)
-        }
-    }
-
     func login(silent: Bool = false) async {
         // Prevent multiple concurrent login attempts
         guard !isLoggingIn else {
@@ -497,38 +519,49 @@ class AppState: ObservableObject {
             return node
         }
 
-        // Use a state dir distinct from the screen-share server. Both nodes
-        // run in the same process and both need a Tailscale identity; pointing
-        // them at the same tailscaled.state gives them the same machine key,
-        // so tsnet's netmap sees a single confused peer listening twice and
-        // peer discovery from a second Tailscreen instance silently fails to dial.
+        // One tsnet node per process, used for sign-in *and* for the
+        // screen-share Listener / Client. An earlier two-node design
+        // (separate "-auth" node + per-feature ephemeral nodes) made every
+        // share + every connect pop a second / third browser login,
+        // because each tsnet node = a distinct machine in the tailnet.
         let statePath = {
             let appSupport = FileManager.default.urls(
                 for: .applicationSupportDirectory, in: .userDomainMask
             ).first!
-            return appSupport.appendingPathComponent("Tailscreen/tailscale-auth\(TailscreenInstance.stateSuffix)").path
+            return appSupport.appendingPathComponent("Tailscreen/tailscale\(TailscreenInstance.stateSuffix)").path
         }()
 
         // Create directory if needed
         try? FileManager.default.createDirectory(
             atPath: statePath, withIntermediateDirectories: true)
 
-        // Suffix "-auth" so this node doesn't share a hostname with the
-        // screen-share server node. Two tsnet nodes on the same tailnet
-        // with identical hostnames confuse routing/probing — peers
-        // receive `connection refused` on dial even though the server
-        // is actively listening.
+        // Persist the node in the tailnet across launches so the user only
+        // signs in once per Mac. `ephemeral: true` would garbage-collect
+        // the device server-side as soon as the app quits, forcing a
+        // browser login every relaunch — fine for CI but painful in daily
+        // use.
         let baseHostname = Host.current().localizedName ?? "tailscreen"
         let config = Configuration(
-            hostName: "\(baseHostname)\(TailscreenInstance.hostnameSuffix)-auth",
+            hostName: "\(baseHostname)\(TailscreenInstance.hostnameSuffix)",
             path: statePath,
             authKey: nil,
             controlURL: kDefaultControlURL,
-            ephemeral: true
+            ephemeral: false
         )
 
         let node = try TailscaleNode(config: config, logger: SimpleLogger())
         self.node = node
+
+        // Subscribe to the IPN bus *before* calling `up()`. tsnet's
+        // `tailscale_up` blocks until the backend reaches Running, which on
+        // a fresh device means waiting for the user to complete an
+        // interactive browser login. tsnet signals that login URL by
+        // emitting a BrowseToURL notify on the IPN bus — if nothing's
+        // listening when it fires, `up()` waits forever and the user
+        // never sees the link. Subscribing first guarantees we catch it.
+        if authIPNWatcher == nil {
+            authIPNWatcher = await startBrowseURLWatcher(node: node)
+        }
 
         // Bring the node up so discovery probes can actually route. Without
         // this the node's LocalAPI works (so login + status queries succeed),
@@ -537,6 +570,29 @@ class AppState: ObservableObject {
         try await node.up()
 
         return node
+    }
+
+    /// Spin up an IPN-bus watcher whose only job is to open the
+    /// browser-login URL tsnet emits during interactive sign-in. Returns
+    /// the running watcher so the caller can keep it alive for the lifetime
+    /// of the node it's tied to.
+    private func startBrowseURLWatcher(node: TailscaleNode) async -> TailscaleIPNWatcher? {
+        let watcher = TailscaleIPNWatcher()
+        watcher.onBrowseToURL = { url in
+            // Hop to the main actor — NSWorkspace must be touched there,
+            // and the IPN consumer fires from a background actor.
+            Task { @MainActor in
+                print("📱 [AppState] Opening login URL in browser: \(url)")
+                NSWorkspace.shared.open(url)
+            }
+        }
+        do {
+            try await watcher.startWatching(node: node)
+            return watcher
+        } catch {
+            print("📱 [AppState] Browse-URL watcher failed to start: \(error)")
+            return nil
+        }
     }
 
     func signOut() async {
@@ -558,6 +614,8 @@ class AppState: ObservableObject {
             server = nil
             try? await node?.close()
             node = nil
+            authIPNWatcher?.stopWatching()
+            authIPNWatcher = nil
             tailscaleIPs = []
 
         } catch {

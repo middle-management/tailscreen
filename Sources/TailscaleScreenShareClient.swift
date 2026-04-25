@@ -32,6 +32,10 @@ import TailscaleKit
 @available(macOS 10.15, *)
 final class TailscaleScreenShareClient: @unchecked Sendable {
     var node: TailscaleNode?
+    /// True when this client created the tsnet node itself; false when it
+    /// borrowed AppState's node. Controls whether `disconnect()` tears the
+    /// node down or just releases its reference.
+    private var ownsNode: Bool = true
 
     private var packetListener: PacketListener?
     private var serverAddr: String?
@@ -80,29 +84,45 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         }
     }
 
-    func connect(to hostname: String, port: UInt16 = 7447, authKey: String? = nil, path: String? = nil) async throws {
+    func connect(
+        to hostname: String,
+        port: UInt16 = 7447,
+        authKey: String? = nil,
+        path: String? = nil,
+        existingNode: TailscaleNode? = nil
+    ) async throws {
         guard !isConnected else { return }
 
-        let statePath = path ?? {
-            let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            return appSupport.appendingPathComponent("Tailscreen/tailscale-client\(TailscreenInstance.stateSuffix)").path
-        }()
-        try? FileManager.default.createDirectory(atPath: statePath, withIntermediateDirectories: true)
+        let node: TailscaleNode
+        if let existing = existingNode {
+            node = existing
+            self.node = existing
+            self.ownsNode = false
+            print("Screen-share client reusing existing Tailscale node")
+        } else {
+            let statePath = path ?? {
+                let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+                return appSupport.appendingPathComponent("Tailscreen/tailscale-client\(TailscreenInstance.stateSuffix)").path
+            }()
+            try? FileManager.default.createDirectory(atPath: statePath, withIntermediateDirectories: true)
 
-        print("Starting Tailscale client…")
+            print("Starting Tailscale client…")
 
-        let clientHostname = "tailscreen-client-\(UUID().uuidString.prefix(8))"
-        let config = Configuration(
-            hostName: clientHostname,
-            path: statePath,
-            authKey: authKey,
-            controlURL: kDefaultControlURL,
-            ephemeral: true
-        )
+            let clientHostname = "tailscreen-client-\(UUID().uuidString.prefix(8))"
+            let config = Configuration(
+                hostName: clientHostname,
+                path: statePath,
+                authKey: authKey,
+                controlURL: kDefaultControlURL,
+                ephemeral: true
+            )
 
-        let node = try TailscaleNode(config: config, logger: logger)
-        self.node = node
-        try await node.up()
+            let newNode = try TailscaleNode(config: config, logger: logger)
+            self.node = newNode
+            self.ownsNode = true
+            try await newNode.up()
+            node = newNode
+        }
 
         let ips = try await node.addrs()
         print("Tailscale connected — ip4=\(ips.ip4 ?? "-") ip6=\(ips.ip6 ?? "-")")
@@ -300,10 +320,10 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         }
         keepaliveTask = nil
 
-        if let node = node {
+        if let node = node, ownsNode {
             try? await node.close()
-            self.node = nil
         }
+        self.node = nil
 
         if let decoder = decoder {
             decoder.onDecodedFrame = nil
