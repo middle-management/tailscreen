@@ -91,6 +91,14 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         var parser = ScreenShareMessageParser()
         var bytesReceived = 0
         var framesReceived = 0
+        // Watchdog: if no bytes have arrived in this many seconds we
+        // assume the sharer is gone. tsnet's userspace stack doesn't
+        // always propagate RST/FIN across the WireGuard tunnel when
+        // the remote node closes — we observed the viewer rendering
+        // the same stale frame for 15+ seconds while the server had
+        // already printed "Server stopped".
+        let idleDisconnectAfterNs: UInt64 = 10_000_000_000  // 10s
+        var lastDataNs = DispatchTime.now().uptimeNanoseconds
 
         while isConnected {
             do {
@@ -106,6 +114,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                     NotificationCenter.default.post(name: .cupleViewerPeerClosed, object: nil)
                     break
                 }
+                lastDataNs = DispatchTime.now().uptimeNanoseconds
                 bytesReceived += chunk.count
 
                 parser.append(chunk)
@@ -133,6 +142,14 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                 }
             } catch TailscaleError.readFailed {
                 if !isConnected { break }
+                // Idle watchdog: silent for too long → assume sharer
+                // went away without an explicit FIN reaching us.
+                let nowNs = DispatchTime.now().uptimeNanoseconds
+                if nowNs &- lastDataNs > idleDisconnectAfterNs {
+                    print("Receive: idle for > 10s, assuming peer gone")
+                    NotificationCenter.default.post(name: .cupleViewerPeerClosed, object: nil)
+                    break
+                }
                 continue
             } catch {
                 if isConnected {
