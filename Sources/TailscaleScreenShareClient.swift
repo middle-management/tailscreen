@@ -272,23 +272,21 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
             self.decoder = nil
         }
 
-        // Bisect step B: tear the renderer down fully, but only orderOut
-        // the window (no close(), no nil-out). Isolates whether the zombie
-        // originates from NSWindow.close() cascading release of the content
-        // view/CAMetalLayer/AVSampleBufferDisplayLayer graph, or from
-        // somewhere in the renderer's own invalidate() + release path.
+        // Bisect C: window.close() *with* renderer still attached (no
+        // invalidate(), no renderer=nil). If this CRASHES, NSWindow.close
+        // alone is enough — the zombie is in the contentView → CAMetalLayer
+        // release cascade and we can't avoid it without a leak. If this is
+        // CLEAN, the crash needs both invalidate AND close in the same job,
+        // pointing at a CADisplayLink × CAMetalLayer interaction we can
+        // sequence around (e.g. invalidate, yield to runloop, then close).
         await MainActor.run {
             autoreleasepool {
                 if let obs = self.windowCloseObserver {
                     NotificationCenter.default.removeObserver(obs)
                     self.windowCloseObserver = nil
                 }
-                self.renderer?.invalidate()
-                self.renderer = nil
-                self.window?.orderOut(nil)
-                // NOTE: leaving self.window set so the NSWindow isn't
-                // released in this pool. If this run is CLEAN, the zombie
-                // is in window.close()'s release cascade.
+                self.window?.close()
+                self.window = nil
             }
         }
 
