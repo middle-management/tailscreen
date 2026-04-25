@@ -282,10 +282,14 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         // TailscaleScreenShareClient itself deallocates one runloop later
         // under a fresh pool. Leaks one NSWindow per viewer session.
         await MainActor.run {
-            if let obs = self.windowCloseObserver {
-                NotificationCenter.default.removeObserver(obs)
-                self.windowCloseObserver = nil
-            }
+            // Don't call NotificationCenter.removeObserver here. When the
+            // window's close button triggered this disconnect, we're still
+            // inside the willCloseNotification dispatch — removing the
+            // observer mid-dispatch crashed objc_msgSend_uncached at a
+            // null receiver. Leaking the observer is fine: the NSWindow
+            // it watches is also leaked by the workaround below, so it
+            // never fires again. Just drop our strong ref.
+            self.windowCloseObserver = nil
             self.renderer?.invalidate()
             self.window?.orderOut(nil)
         }
