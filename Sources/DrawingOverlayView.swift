@@ -21,6 +21,15 @@ final class DrawingOverlayView: NSView {
     private(set) var annotations: [Annotation] = []
     /// Shape currently being dragged; rendered along with ``annotations``.
     private var inProgress: Annotation?
+    /// mach-uptime ns of the last in-progress op we transmitted, for the
+    /// drag-time throttle.
+    private var lastDragEmitNs: UInt64 = 0
+    /// Minimum gap between in-progress `.add` ops sent during a drag.
+    /// 30 Hz keeps remote rendering smooth without flooding the TCP back-
+    /// channel — a typical 100-point pen stroke at 60 Hz mouse rate is
+    /// only ~3 KB/s after JSON, but throttling halves that and matches
+    /// most displays' refresh.
+    private static let dragEmitMinIntervalNs: UInt64 = 33_000_000
     /// Ids of shapes this view created locally, in creation order. Used to
     /// scope Cmd-Z to the local user's own strokes.
     private var localIDs: [UUID] = []
@@ -60,7 +69,14 @@ final class DrawingOverlayView: NSView {
     func apply(remoteOp op: AnnotationOp) {
         switch op {
         case .add(let ann):
-            annotations.append(ann)
+            // Upsert by id so progressive `.add` updates from the
+            // originator's mouseDragged stream replace the in-flight
+            // shape rather than stack duplicates.
+            if let idx = annotations.firstIndex(where: { $0.id == ann.id }) {
+                annotations[idx] = ann
+            } else {
+                annotations.append(ann)
+            }
         case .undo(let id):
             annotations.removeAll { $0.id == id }
         case .clearAll:
@@ -118,6 +134,16 @@ final class DrawingOverlayView: NSView {
         }
         inProgress = ip
         needsDisplay = true
+
+        // Stream the in-progress shape over the back-channel so the remote
+        // sees the stroke build up live instead of popping in only on
+        // mouseUp. Throttled to ~30 Hz; receivers upsert by id so each
+        // update replaces the previous in-progress shape.
+        let nowNs = DispatchTime.now().uptimeNanoseconds
+        if nowNs &- lastDragEmitNs >= Self.dragEmitMinIntervalNs {
+            lastDragEmitNs = nowNs
+            onOp?(.add(ip))
+        }
     }
 
     override func mouseUp(with event: NSEvent) {
