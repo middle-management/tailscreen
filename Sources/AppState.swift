@@ -85,6 +85,18 @@ class AppState: ObservableObject {
                 await self.disconnect()
             }
         }
+
+        // File → Disconnect (⌘W) posts this; bounce to disconnect().
+        NotificationCenter.default.addObserver(
+            forName: .cupleDisconnectRequested,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self = self, self.isConnected else { return }
+                await self.disconnect()
+            }
+        }
     }
 
     private var cancellables = Set<AnyCancellable>()
@@ -320,6 +332,9 @@ class AppState: ObservableObject {
         overlay.onOp = { [weak self] op in
             Task { [weak self] in await self?.client?.sendAnnotationOp(op) }
         }
+        // Plug this overlay into the app menu so Tools / Edit / File
+        // menu items act on it. ViewerCommands holds it weakly.
+        ViewerCommands.shared.activeOverlay = overlay
         self.viewerOverlay = overlay
 
         win.contentView = host

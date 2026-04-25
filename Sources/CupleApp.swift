@@ -1,8 +1,17 @@
+import AppKit
 import SwiftUI
 
 @main
 struct CupleApp: App {
     @StateObject private var appState = AppState()
+
+    init() {
+        // Install a real NSMenu so the menu bar shows up when a viewer
+        // (or sharer overlay) window is key. Without this the
+        // MenuBarExtra-only app has no main menu and ⌘1–⌘5 / ⌘Z /
+        // ⇧⌘⌫ have no discoverable home.
+        AppMenu.install()
+    }
 
     var body: some Scene {
         // The menubar icon reflects current state: a slashed tv while

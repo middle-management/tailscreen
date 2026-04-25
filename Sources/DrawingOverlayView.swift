@@ -162,12 +162,36 @@ final class DrawingOverlayView: NSView {
 
     override func rightMouseDown(with event: NSEvent) {
         guard isInputEnabled else { super.rightMouseDown(with: event); return }
+        clearAll()
+    }
+
+    // MARK: - Public command API (used by the app menu)
+
+    /// Pop the most recent locally-created shape; mirror the op to the
+    /// remote so peers see the undo. No-op if the local stack is empty.
+    func performLocalUndo() {
+        guard let id = localIDs.popLast() else { return }
+        annotations.removeAll { $0.id == id }
+        needsDisplay = true
+        onOp?(.undo(id))
+    }
+
+    /// Wipe every annotation everyone has drawn (local + remote) and
+    /// broadcast the clear. Bound to ⇧⌘⌫ from the Edit menu.
+    func clearAll() {
         annotations.removeAll()
         localIDs.removeAll()
         inProgress = nil
         needsDisplay = true
         onOp?(.clearAll)
     }
+
+    /// True iff there's at least one local shape that ``performLocalUndo``
+    /// could remove. Drives menu-item enablement.
+    var canUndo: Bool { !localIDs.isEmpty }
+
+    /// True iff at least one annotation exists anywhere on this canvas.
+    var canClearAll: Bool { !annotations.isEmpty || inProgress != nil }
 
     // MARK: - Keyboard
 
@@ -177,13 +201,12 @@ final class DrawingOverlayView: NSView {
             onEscape?()
             return
         }
-        // Cmd-Z — undo the most recent shape this view created.
+        // Cmd-Z — undo the most recent shape this view created. Kept here
+        // as a fallback for when the overlay is firstResponder; the app
+        // menu wires the same action via Edit → Undo.
         if event.modifierFlags.contains(.command),
            event.charactersIgnoringModifiers?.lowercased() == "z" {
-            guard let id = localIDs.popLast() else { return }
-            annotations.removeAll { $0.id == id }
-            needsDisplay = true
-            onOp?(.undo(id))
+            performLocalUndo()
             return
         }
         switch event.charactersIgnoringModifiers {
