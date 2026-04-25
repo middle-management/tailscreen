@@ -31,7 +31,7 @@ $(PATCH_MARKER):
 	@for patch in $(PATCHES_DIR)/*.patch; do \
 		if [ -f "$$patch" ]; then \
 			echo "   Applying $$(basename $$patch)..."; \
-			patch -p1 -N -r - < "$$patch" || true; \
+			patch -p1 -N -r - --no-backup-if-mismatch < "$$patch" || true; \
 		fi; \
 	done
 	@touch $(PATCH_MARKER)
@@ -45,7 +45,7 @@ unapply-patches:
 		for patch in $(PATCHES_DIR)/*.patch; do \
 			if [ -f "$$patch" ]; then \
 				echo "   Reverting $$(basename $$patch)..."; \
-				patch -p1 -R -r - < "$$patch" || true; \
+				patch -p1 -R -r - --no-backup-if-mismatch < "$$patch" || true; \
 			fi; \
 		done; \
 		rm -f $(PATCH_MARKER); \

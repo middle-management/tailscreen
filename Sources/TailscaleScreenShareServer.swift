@@ -195,7 +195,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// errors quickly and we tear the entry down with no noise.
     private func receiveAnnotations(from connection: IncomingConnection, id: UUID) async {
         defer {
-            annotationConnections.withLock { $0.removeValue(forKey: id) }
+            _ = annotationConnections.withLock { $0.removeValue(forKey: id) }
             Task { await connection.close() }
         }
         var parser = ScreenShareMessageParser()
