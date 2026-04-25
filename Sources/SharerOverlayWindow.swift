@@ -81,6 +81,9 @@ final class SharerOverlayWindow {
         if enabled {
             panel.orderFrontRegardless()
             panel.makeKey()
+            ViewerCommands.shared.activeOverlay = overlay
+        } else if ViewerCommands.shared.activeOverlay === overlay {
+            ViewerCommands.shared.activeOverlay = nil
         }
     }
 
