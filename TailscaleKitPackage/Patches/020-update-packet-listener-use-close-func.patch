@@ -1,0 +1,30 @@
+--- a/upstream/libtailscale/swift/TailscaleKit/PacketListener.swift	2026-04-25 21:05:53.282528685 +0000
++++ upstream/libtailscale/swift/TailscaleKit/PacketListener.swift	2026-04-25 21:06:15.621067760 +0000
+@@ -50,14 +50,24 @@
+ 
+     deinit {
+         if listener != 0 {
+-            Darwin.close(listener)
++            // tailscale_listen_packet_close closes both ends of the socketpair
++            // and calls pc.Close() on the Go side, releasing the netstack port
++            // binding synchronously. Do NOT also call Darwin.close(listener) —
++            // the Go side already closed that fd.
++            tailscale_listen_packet_close(listener)
+         }
+     }
+ 
+-    /// Closes the listener. Cannot be reopened.
++    /// Closes the listener synchronously, releasing the netstack UDP port
++    /// binding before returning. The listener cannot be reopened.
++    ///
++    /// This calls `tailscale_listen_packet_close`, which coordinates with the
++    /// Go bridge goroutines so that `pc.Close()` has run before this function
++    /// returns. Do not call `Darwin.close` on the underlying fd afterward —
++    /// the Go side already closed both ends of the socketpair.
+     public func close() {
+         if listener != 0 {
+-            Darwin.close(listener)
++            tailscale_listen_packet_close(listener)
+             listener = 0
+         }
+     }

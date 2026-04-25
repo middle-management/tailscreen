@@ -1,0 +1,21 @@
+--- a/upstream/libtailscale/tailscale.c	2026-04-25 21:05:21.068965091 +0000
++++ upstream/libtailscale/tailscale.c	2026-04-25 21:05:34.973065344 +0000
+@@ -24,6 +24,7 @@
+ extern int TsnetListen(int sd, char* net, char* addr, int* listenerOut);
+ extern int TsnetAccept(int ld, int* connOut);
+ extern int TsnetListenPacket(int sd, char* net, char* addr, int* listenerOut);
++extern int TsnetListenPacketClose(int fd);
+ extern int TsnetLoopback(int sd, char* addrOut, size_t addrLen, char* proxyOut, char* localOut);
+ extern int TsnetEnableFunnelToLocalhostPlaintextHttp1(int sd, int localhostPort);
+ 
+@@ -59,6 +60,10 @@
+ 	return TsnetListenPacket(sd, (char*)network, (char*)addr, (int*)listener_out);
+ }
+ 
++int tailscale_listen_packet_close(tailscale_listener fd) {
++	return TsnetListenPacketClose(fd);
++}
++
+ int tailscale_getremoteaddr(tailscale_listener l, tailscale_conn conn, char* buf, size_t buflen) {
+ 	return TsnetGetRemoteAddr(l, conn, buf, buflen);
+ }

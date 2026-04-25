@@ -1,0 +1,27 @@
+--- a/upstream/libtailscale/tailscale.h	2026-04-25 21:04:58.232066191 +0000
++++ upstream/libtailscale/tailscale.h	2026-04-25 21:05:06.445063648 +0000
+@@ -153,6 +153,24 @@
+ // Returns zero on success or -1 on error, call tailscale_errmsg for details.
+ extern int tailscale_listen_packet(tailscale sd, const char* network, const char* addr, tailscale_listener* listener_out);
+ 
++// tailscale_listen_packet_close closes a UDP packet listener opened by
++// tailscale_listen_packet, releasing the underlying netstack port binding
++// synchronously before returning.
++//
++// Unlike calling close(2) on the listener fd directly, this function
++// coordinates with the bridge goroutines on the Go side: it closes both
++// ends of the internal socketpair and calls PacketConn.Close() on the
++// netstack connection, so the port is immediately available for a subsequent
++// tailscale_listen_packet call on the same address.
++//
++// Callers must NOT call close(2) on fd after this function returns; the
++// Go side already closed both ends of the socketpair.
++//
++// Returns:
++//   0     - success
++//   EBADF - fd is not a live tailscale_listener from tailscale_listen_packet
++extern int tailscale_listen_packet_close(tailscale_listener fd);
++
+ 
+ // Returns the remote address for an incoming connection for a particular listener.  The address (eitehr ip4 or ip6)
+ // will ge written to buf on on success.
