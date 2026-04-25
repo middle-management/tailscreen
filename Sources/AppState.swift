@@ -114,7 +114,14 @@ class AppState: ObservableObject {
                     Task { @MainActor [weak self] in
                         guard let self = self, self.isSharing else { return }
                         await self.stopSharing()
-                        if let error = error {
+                        // SCStreamErrorCode.userStopped (-3817) is what
+                        // macOS sends when the user clicks "Stop" in the
+                        // menubar Control Center — that's a normal stop,
+                        // not an error worth a popup. Anything else
+                        // (display lost, daemon crash, permission revoked)
+                        // is worth surfacing.
+                        if let error = error,
+                           (error as NSError).code != -3817 {
                             self.showAlertMessage(
                                 title: "Sharing Stopped",
                                 message: "Screen capture ended: \(error.localizedDescription)"
