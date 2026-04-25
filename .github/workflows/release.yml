@@ -1,9 +1,8 @@
 name: Release
 
 # Builds a universal (arm64 + x86_64), signed, notarized, stapled
-# Tailscreen.app, zips it, and attaches it to a GitHub Release.
-# The release notes embed a ready-to-paste Homebrew cask stanza so a
-# tap can be bumped manually (or via `brew bump-cask-pr`).
+# Tailscreen.app, zips it, and uploads it to the GitHub Release that
+# triggered this run. Cask packaging lives in the tap repo.
 #
 # Required repository secrets:
 #   APPLE_DEVELOPER_ID_CERT_P12      base64-encoded .p12 of the
@@ -15,46 +14,46 @@ name: Release
 #   APPLE_NOTARY_API_ISSUER_ID       API issuer UUID
 
 on:
-  push:
-    tags:
-      - 'v*'
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
-      version:
-        description: 'Release tag (e.g., v1.0.0)'
+      tag:
+        description: 'Existing release tag to upload assets to (e.g., v1.0.0)'
         required: true
 
 jobs:
   release:
-    name: Build & publish release
+    name: Build & upload release assets
     runs-on: macos-14
 
     env:
       APP_NAME: Tailscreen
-      BUNDLE_ID: com.tailscreen.app
+      BUNDLE_ID: se.middlemanagement.tailscreen
 
     steps:
+      - name: Resolve version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ github.event.inputs.tag }}"
+          else
+            tag="${{ github.event.release.tag_name }}"
+          fi
+          version="${tag#v}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
       - name: Checkout code
         uses: actions/checkout@v4
         with:
+          ref: ${{ steps.version.outputs.tag }}
           submodules: recursive
 
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.21'
-
-      - name: Resolve version
-        id: version
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            tag="${{ github.event.inputs.version }}"
-          else
-            tag="${GITHUB_REF#refs/tags/}"
-          fi
-          version="${tag#v}"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Apply libtailscale patches
         working-directory: TailscaleKitPackage
@@ -220,98 +219,17 @@ jobs:
           echo "zip_name=$ZIP_NAME"  >> "$GITHUB_OUTPUT"
           echo "sha256=$SHA256"      >> "$GITHUB_OUTPUT"
 
-      - name: Compose release notes
-        run: |
-          cat > release-notes.md <<'EOF_OUTER'
-          # Tailscreen __TAG__
-
-          Secure screen sharing via Tailscale, for macOS.
-
-          ## Install via Homebrew cask
-
-          Add (or update) `Casks/tailscreen.rb` in your tap:
-
-          ```ruby
-          cask "tailscreen" do
-            version "__VERSION__"
-            sha256 "__SHA256__"
-
-            url "https://github.com/__REPO__/releases/download/v#{version}/Tailscreen-v#{version}-macOS.zip"
-            name "Tailscreen"
-            desc "Secure screen sharing via Tailscale"
-            homepage "https://github.com/__REPO__"
-
-            depends_on macos: ">= :sequoia"
-
-            app "Tailscreen.app"
-
-            zap trash: [
-              "~/Library/Application Support/Tailscreen",
-              "~/Library/Preferences/com.tailscreen.app.plist",
-            ]
-          end
-          ```
-
-          For subsequent releases:
-
-          ```sh
-          brew bump-cask-pr --version=__VERSION__ <user>/<tap>/tailscreen
-          ```
-
-          ## Manual install
-
-          1. Download `__ZIP__`
-          2. Unzip and move `Tailscreen.app` to your Applications folder
-          3. Grant Screen Recording permission when prompted
-
-          ## Requirements
-
-          - macOS 15.0 (Sequoia) or later
-
-          ## Checksums
-
-          ```
-          __CHECKSUMS__
-          ```
-          EOF_OUTER
-
-          # Substitute placeholders without re-quoting the heredoc.
-          python3 - <<'PY'
-          import os, pathlib
-          p = pathlib.Path("release-notes.md")
-          text = p.read_text()
-          repo = os.environ["GITHUB_REPOSITORY"]
-          checksums = pathlib.Path("checksums.txt").read_text().strip()
-          subs = {
-              "__TAG__":      os.environ["TAG"],
-              "__VERSION__":  os.environ["VERSION"],
-              "__SHA256__":   os.environ["SHA256"],
-              "__ZIP__":      os.environ["ZIP_NAME"],
-              "__REPO__":     repo,
-              "__CHECKSUMS__": checksums,
-          }
-          for k, v in subs.items():
-              text = text.replace(k, v)
-          p.write_text(text)
-          PY
-        env:
-          TAG: ${{ steps.version.outputs.tag }}
-          VERSION: ${{ steps.version.outputs.version }}
-          SHA256: ${{ steps.package.outputs.sha256 }}
-          ZIP_NAME: ${{ steps.package.outputs.zip_name }}
-
-      - name: Publish GitHub release
+      - name: Upload release assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.version.outputs.tag }}
           ZIP_NAME: ${{ steps.package.outputs.zip_name }}
         run: |
           set -euxo pipefail
-          gh release create "$TAG" \
-            --title "Tailscreen $TAG" \
-            --notes-file release-notes.md \
+          gh release upload "$TAG" \
             "$ZIP_NAME" \
-            "checksums.txt"
+            "checksums.txt" \
+            --clobber
 
       - name: Cleanup keychain
         if: always()
