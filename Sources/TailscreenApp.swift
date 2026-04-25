@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 @main
@@ -14,6 +15,12 @@ struct TailscreenApp: App {
         MenuBarExtra("Tailscreen", systemImage: menubarIconName) {
             MenuBarView()
                 .environmentObject(appState)
+                .task {
+                    // Install the NSMenu the first time the menubar
+                    // popover renders. Doing this in TailscreenApp.init()
+                    // crashes — NSApp isn't set up yet at that point.
+                    AppMenu.installIfNeeded()
+                }
         }
         .menuBarExtraStyle(.window)
     }

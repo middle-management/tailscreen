@@ -6,13 +6,16 @@ import Foundation
 ///
 ///     [1 byte: type][4 bytes big-endian: payload length][payload...]
 ///
-/// There are two message types:
+/// Message types:
 ///
-///     .parameterSets (0x01)
+///     .parameterSets (0x01)   — server→client
 ///         payload = [4 BE: spsLen][sps bytes][4 BE: ppsLen][pps bytes]
 ///
-///     .frame (0x02)
+///     .frame (0x02)           — server→client
 ///         payload = [1 byte: keyframe flag][8 BE: server timestamp ns][raw AVCC NAL units]
+///
+///     .annotation (0x03)      — client→server (back-channel for drawings)
+///         payload = JSON-encoded ``AnnotationOp``
 ///
 /// The timestamp uses `DispatchTime.now().uptimeNanoseconds` (mach_absolute_time),
 /// which is monotonic and consistent across processes on the same machine. Lets
@@ -20,12 +23,14 @@ import Foundation
 enum ScreenShareMessage {
     case parameterSets(sps: Data, pps: Data)
     case frame(data: Data, isKeyframe: Bool, timestampNs: UInt64)
+    case annotation(AnnotationOp)
 
     static let headerSize = 5
 
     enum MessageType: UInt8 {
         case parameterSets = 0x01
         case frame = 0x02
+        case annotation = 0x03
     }
 
     /// Serialize this message as a wire-format packet (header + payload).
@@ -45,6 +50,10 @@ enum ScreenShareMessage {
             payload.appendBigEndian(timestampNs)
             payload.append(data)
             return Self.frame(type: .frame, payload: payload)
+
+        case .annotation(let op):
+            let payload = (try? JSONEncoder().encode(op)) ?? Data()
+            return Self.frame(type: .annotation, payload: payload)
         }
     }
 
@@ -90,7 +99,16 @@ struct ScreenShareMessageParser {
             return decodeParameterSets(payload)
         case .frame:
             return decodeFrame(payload)
+        case .annotation:
+            return decodeAnnotation(payload)
         }
+    }
+
+    private func decodeAnnotation(_ payload: Data) -> ScreenShareMessage? {
+        guard let op = try? JSONDecoder().decode(AnnotationOp.self, from: Data(payload)) else {
+            return nil
+        }
+        return .annotation(op)
     }
 
     private func decodeParameterSets(_ payload: Data) -> ScreenShareMessage? {

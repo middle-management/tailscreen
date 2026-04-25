@@ -17,11 +17,15 @@ class AppState: ObservableObject {
     @Published var alertTitle = ""
     @Published var alertMessage = ""
     @Published var showConnectSheet = false
+    /// Whether the sharer's drawing overlay panel is currently visible and
+    /// accepting input. The panel itself is only created while sharing.
+    @Published var isSharerOverlayVisible = false
 
     private var server: TailscaleScreenShareServer?
     private var client: TailscaleScreenShareClient?
     private var node: TailscaleNode?
     private var tailscaleIPs: [String] = []
+    private var sharerOverlay: SharerOverlayWindow?
 
     // Persistent viewer window + renderer. Owned for the process lifetime so
     // disconnect never closes/releases an NSWindow + CAMetalLayer chain (the
@@ -32,6 +36,7 @@ class AppState: ObservableObject {
     // we reuse the existing instances.
     @Published var viewerWindow: NSWindow?
     private var viewerRenderer: MetalViewerRenderer?
+    private var viewerOverlay: DrawingOverlayView?
 
     // Peer discovery
     @Published var availablePeers: [TailscreenPeer] = []
@@ -72,6 +77,18 @@ class AppState: ObservableObject {
         // frame.
         NotificationCenter.default.addObserver(
             forName: .tailscreenViewerPeerClosed,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self = self, self.isConnected else { return }
+                await self.disconnect()
+            }
+        }
+
+        // File → Disconnect (⌘W) posts this; bounce to disconnect().
+        NotificationCenter.default.addObserver(
+            forName: .tailscreenDisconnectRequested,
             object: nil,
             queue: .main
         ) { [weak self] _ in
@@ -141,6 +158,17 @@ class AppState: ObservableObject {
                     }
                 }
 
+                // Viewer-originated annotations land directly on the sharer's
+                // overlay panel. ScreenCaptureKit captures the panel (nothing
+                // is excluded, see `ScreenCapture.swift:41`), so the drawings
+                // flow out to every viewer via the H.264 stream — no
+                // sharer→viewer broadcast needed.
+                srv.onAnnotationReceived = { [weak self] op in
+                    Task { @MainActor [weak self] in
+                        self?.ensureSharerOverlay().apply(remoteOp: op)
+                    }
+                }
+
                 do {
                     try await srv.start(hostname: hostname, displayID: pickedID)
                 } catch {
@@ -191,7 +219,37 @@ class AppState: ObservableObject {
         // Stop peer monitoring if active
         peerDiscovery?.stopRealTimeMonitoring()
 
+        sharerOverlay?.hide()
+        sharerOverlay = nil
+        isSharerOverlayVisible = false
+
         isSharing = false
+    }
+
+    /// Create the sharer overlay lazily so it's always present when needed —
+    /// either the sharer toggles input on, or a viewer sends us an op. The
+    /// panel needs to be on-screen for ScreenCaptureKit to pick up its
+    /// annotations and carry them into the video for every viewer.
+    @discardableResult
+    private func ensureSharerOverlay() -> SharerOverlayWindow {
+        if let overlay = sharerOverlay { return overlay }
+        let overlay = SharerOverlayWindow()
+        // Sharer's own strokes don't need to be transmitted; they appear in
+        // the video stream automatically.
+        overlay.onOp = { _ in }
+        overlay.show()
+        sharerOverlay = overlay
+        return overlay
+    }
+
+    /// Toggle whether the sharer can draw on their own screen. The panel is
+    /// always present while sharing (so viewer-originated drawings render);
+    /// this only flips input capture vs. click-through.
+    func toggleSharerOverlay() {
+        guard isSharing else { return }
+        let overlay = ensureSharerOverlay()
+        isSharerOverlayVisible.toggle()
+        overlay.setInputEnabled(isSharerOverlayVisible)
     }
 
     func connect(to host: String) async {
@@ -227,6 +285,11 @@ class AppState: ObservableObject {
     /// persistent NSWindow.
     private var viewerWindowDelegate: ViewerWindowDelegate?
 
+    /// Strong ref to the viewer toolbar's NSToolbarDelegate. NSWindow.toolbar
+    /// holds the toolbar itself but the delegate is weak; without this it
+    /// would dealloc and the toolbar would stop building items.
+    private var viewerToolbar: ViewerToolbar?
+
     /// Build (once) and return the shared viewer renderer. The window's
     /// close button maps to AppState.disconnect via a delegate that
     /// returns false from windowShouldClose so AppKit never tears the
@@ -246,6 +309,14 @@ class AppState: ObservableObject {
         win.backgroundColor = .black
         win.isReleasedWhenClosed = false
 
+        // Drawing toolbar: pen / line / arrow / rectangle / oval +
+        // undo + clear. Items target ViewerCommands.shared, same wiring
+        // the menubar's Tools/Edit menus use.
+        let toolbar = ViewerToolbar()
+        win.toolbar = toolbar.toolbar
+        win.toolbarStyle = .unified
+        self.viewerToolbar = toolbar
+
         let delegate = ViewerWindowDelegate { [weak self] in
             Task { @MainActor [weak self] in
                 guard let self = self, self.isConnected else { return }
@@ -262,7 +333,25 @@ class AppState: ObservableObject {
         host.layer?.addSublayer(r.metalLayer)
         r.metalLayer.frame = host.bounds
         r.metalLayer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
+
+        // Annotation overlay above the Metal layer. onOp forwards to the
+        // active client's back-channel; the closure looks up `self.client`
+        // each time, so the wiring survives reconnects without rebuilding
+        // the overlay.
+        let overlay = DrawingOverlayView(frame: host.bounds)
+        overlay.autoresizingMask = [.width, .height]
+        overlay.currentColor = Annotation.RGBA.paletteColor(forIdentity: TailscaleScreenShareClient.localIdentity())
+        host.addSubview(overlay)
+        overlay.onOp = { [weak self] op in
+            Task { [weak self] in await self?.client?.sendAnnotationOp(op) }
+        }
+        // Plug this overlay into the app menu so Tools / Edit / File
+        // menu items act on it. ViewerCommands holds it weakly.
+        ViewerCommands.shared.activeOverlay = overlay
+        self.viewerOverlay = overlay
+
         win.contentView = host
+        win.makeFirstResponder(overlay)
 
         // Center on the main screen so the first connect doesn't dump the
         // window in the bottom-left corner.
