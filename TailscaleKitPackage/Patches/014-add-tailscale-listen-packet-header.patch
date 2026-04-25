@@ -1,0 +1,32 @@
+--- a/upstream/libtailscale/tailscale.h
++++ b/upstream/libtailscale/tailscale.h
+@@ -131,6 +131,29 @@ typedef int tailscale_listener;
+ // Returns zero on success or -1 on error, call tailscale_errmsg for details.
+ extern int tailscale_listen(tailscale sd, const char* network, const char* addr, tailscale_listener* listener_out);
+
++// tailscale_listen_packet listens for UDP datagrams on the tailnet.
++//
++// It is the spiritual equivalent to socket(AF_INET, SOCK_DGRAM, 0) +
++// bind(2). Unlike tailscale_listen, there is no accept(): the returned
++// fd carries every datagram from every source. The caller demultiplexes
++// by the per-datagram source address.
++//
++// network is a NUL-terminated string of "udp", "udp4", or "udp6".
++// addr is a NUL-terminated string of an IP address and port (e.g.
++// "0.0.0.0:7447" or "[::]:7447"); per tsnet, the IP must be present.
++//
++// The returned fd is one half of a SOCK_DGRAM socketpair. Each datagram
++// on the wire is framed as:
++//
++//     [1 byte: addr_len N][N bytes: "ip:port"][payload]
++//
++// Reads return one such framed datagram per call (boundaries preserved
++// by SOCK_DGRAM). Writes must follow the same framing.
++//
++// Returns zero on success or -1 on error, call tailscale_errmsg for details.
++extern int tailscale_listen_packet(tailscale sd, const char* network, const char* addr, tailscale_listener* listener_out);
++
++
+ // Returns the remote address for an incoming connection for a particular listener.  The address (eitehr ip4 or ip6)
+ // will ge written to buf on on success.
+ // Returns:

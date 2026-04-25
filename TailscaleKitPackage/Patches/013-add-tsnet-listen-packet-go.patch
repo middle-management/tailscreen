@@ -1,0 +1,142 @@
+--- a/upstream/libtailscale/tailscale.go
++++ b/upstream/libtailscale/tailscale.go
+@@ -621,3 +621,141 @@ func TsnetEnableFunnelToLocalhostPlaintextHttp1(sd C.int, localhostPort C.int) C
+
+ 	return 0
+ }
++
++// packetListeners tracks tsnet UDP PacketConns surfaced to C as
++// SOCK_DGRAM socketpair fds. tsnet.Server.Listen does not support UDP
++// (Go's net.Listen has no UDP variant), so libtailscale upstream
++// only exposes TCP listeners. This adds a parallel UDP path via
++// tsnet.Server.ListenPacket. Each datagram on the socketpair is framed
++// as [1B addr_len][addr_bytes][payload] so the C side can preserve the
++// per-packet source/destination address — a real UDP socket gets that
++// from recvfrom/sendto, which the socketpair bridge can't pass through
++// natively.
++var packetListeners struct {
++	mu sync.Mutex
++	m  map[C.int]*packetListener
++}
++
++type packetListener struct {
++	s  *server
++	pc net.PacketConn
++	fd int // go side fd of socketpair
++}
++
++//export TsnetListenPacket
++func TsnetListenPacket(sd C.int, network, addr *C.char, listenerOut *C.int) C.int {
++	s := getServer(sd)
++	if s == nil {
++		return C.EBADF
++	}
++
++	networkStr := C.GoString(network)
++	pc, err := s.s.ListenPacket(networkStr, C.GoString(addr))
++	if err != nil {
++		return s.recErr(err)
++	}
++	s.started = true
++
++	fds, err := syscall.Socketpair(syscall.AF_LOCAL, syscall.SOCK_DGRAM, 0)
++	if err != nil {
++		pc.Close()
++		return s.recErr(err)
++	}
++
++	// macOS defaults SOCK_DGRAM unix socket buffers to a few KB. RTP at
++	// 60fps with the occasional keyframe burst will overflow that and
++	// the kernel will drop datagrams silently. 4 MB on each side is
++	// roughly half a second of 60Mbps video — enough headroom for a
++	// brief stall on the C side without losing frames.
++	const sockBuf = 4 * 1024 * 1024
++	syscall.SetsockoptInt(fds[0], syscall.SOL_SOCKET, syscall.SO_SNDBUF, sockBuf)
++	syscall.SetsockoptInt(fds[0], syscall.SOL_SOCKET, syscall.SO_RCVBUF, sockBuf)
++	syscall.SetsockoptInt(fds[1], syscall.SOL_SOCKET, syscall.SO_SNDBUF, sockBuf)
++	syscall.SetsockoptInt(fds[1], syscall.SOL_SOCKET, syscall.SO_RCVBUF, sockBuf)
++
++	goFd := fds[1]
++	fdC := C.int(fds[0])
++
++	pl := &packetListener{s: s, pc: pc, fd: goFd}
++	packetListeners.mu.Lock()
++	if packetListeners.m == nil {
++		packetListeners.m = map[C.int]*packetListener{}
++	}
++	packetListeners.m[fdC] = pl
++	packetListeners.mu.Unlock()
++
++	var cleanupOnce sync.Once
++	cleanup := func() {
++		cleanupOnce.Do(func() {
++			packetListeners.mu.Lock()
++			if cur, ok := packetListeners.m[fdC]; ok && cur.pc == pc {
++				delete(packetListeners.m, fdC)
++				syscall.Close(goFd)
++			}
++			packetListeners.mu.Unlock()
++			pc.Close()
++		})
++	}
++
++	// PacketConn → socketpair. Read each tailnet datagram, prepend its
++	// source address, write the framed message to the socketpair as one
++	// datagram. Closing pc (in cleanup) breaks the ReadFrom loop.
++	go func() {
++		defer cleanup()
++		var buf [1 << 16]byte
++		for {
++			n, srcAddr, err := pc.ReadFrom(buf[:])
++			if err != nil {
++				return
++			}
++			addrStr := srcAddr.String()
++			if len(addrStr) > 255 {
++				// IP:port should never exceed 255 bytes; drop rather
++				// than truncate to keep the framing unambiguous.
++				continue
++			}
++			out := make([]byte, 1+len(addrStr)+n)
++			out[0] = byte(len(addrStr))
++			copy(out[1:], addrStr)
++			copy(out[1+len(addrStr):], buf[:n])
++			if _, err := syscall.Write(goFd, out); err != nil {
++				return
++			}
++		}
++	}()
++
++	// socketpair → PacketConn. Read each framed message from the C
++	// side, resolve the destination address, write a UDP datagram. A
++	// short read or zero-length read means the C side closed its fd.
++	go func() {
++		defer cleanup()
++		var buf [1 << 16]byte
++		for {
++			n, err := syscall.Read(goFd, buf[:])
++			if err != nil || n == 0 {
++				return
++			}
++			if n < 1 {
++				continue
++			}
++			addrLen := int(buf[0])
++			if 1+addrLen > n {
++				continue // malformed; drop
++			}
++			addrStr := string(buf[1 : 1+addrLen])
++			payload := buf[1+addrLen : n]
++			udpAddr, err := net.ResolveUDPAddr(networkStr, addrStr)
++			if err != nil {
++				continue // bad addr; UDP is lossy, drop and move on
++			}
++			// Best-effort send. WriteTo errors on a single datagram
++			// (e.g. EHOSTUNREACH) shouldn't tear down the listener.
++			pc.WriteTo(payload, udpAddr)
++		}
++	}()
++
++	*listenerOut = fdC
++	return 0
++}

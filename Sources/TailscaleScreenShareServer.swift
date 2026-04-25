@@ -6,35 +6,68 @@ import Foundation
 import os
 import TailscaleKit
 
-/// Screen-share server that uses TailscaleKit as the transport.
+/// Screen-share server. Runs two listeners on the same port:
 ///
-/// Each accepted client gets its own ``ClientSender``; a slow viewer can't stall
-/// the capture pipeline or other viewers. When a viewer attaches, the server
-/// immediately pushes cached SPS/PPS (if any) and asks the encoder for a fresh
-/// IDR so the new viewer starts on a keyframe.
+///   - **TCP 7447**: presence beacon for peer discovery only. Accepts and
+///     immediately closes — `TailscalePeerDiscovery` probes this to detect
+///     "is Tailscreen running on that node?" without speaking any protocol.
+///   - **UDP 7447**: actual video stream. Carries RTP packets out to viewers
+///     and small control bytes (HELLO/KEEPALIVE/BYE/PLI) back from them. The
+///     same socket multiplexes both directions; we tell them apart by the
+///     first byte (RTP V=2 → 0x80–0xBF, control → 0x00–0x7F).
+///
+/// Viewers are tracked by their UDP source address. A viewer has to send a
+/// HELLO datagram to be added to the fan-out set; if no HELLO/KEEPALIVE
+/// arrives for `viewerIdleTimeout` seconds the viewer is dropped silently.
+/// There is no TCP-style accept queue and no per-viewer send pipeline — UDP
+/// send is non-blocking and a slow viewer just drops packets at the network
+/// boundary instead of stalling our process.
 final class TailscaleScreenShareServer: @unchecked Sendable {
     private let port: UInt16
     var node: TailscaleNode?
-    private var listener: Listener?
+    private var probeListener: Listener?
+    private var packetListener: PacketListener?
     private var encoder: VideoEncoder?
     private var screenCapture: ScreenCapture?
     private var lastWidth: Int = 0
     private var lastHeight: Int = 0
     private var isRunning = false
     private var frameCounter = 0
-    private var broadcastCounter = 0
     private let logger: TSLogger
 
-    private let clients = OSAllocatedUnfairLock<[UUID: ClientSender]>(initialState: [:])
+    /// Wall-clock anchor used to derive the 90 kHz RTP timestamp. Stays
+    /// fixed for the lifetime of the server so the timestamp space is
+    /// monotonic across encoder restarts.
+    private let rtpTimestampOriginNs: UInt64
 
-    /// Fires when the underlying ScreenCaptureKit stream ends on its own —
-    /// user clicked "Stop Screen Recording" in the menubar, display changed,
-    /// or the stream hit an error. AppState observes this to flip the
-    /// `isSharing` flag and tear the server down.
+    /// Per-viewer state. Keyed by the UDP source address ("ip:port") that
+    /// the HELLO arrived from — that's also the destination we echo packets
+    /// back to.
+    private struct Viewer {
+        let addr: String
+        let ssrc: UInt32
+        var nextSequence: UInt16
+        var lastSeenNs: UInt64
+    }
+
+    private let viewers = OSAllocatedUnfairLock<[String: Viewer]>(initialState: [:])
+    private let parameterSets = OSAllocatedUnfairLock<(sps: Data, pps: Data)?>(initialState: nil)
+    private let annotationConnections = OSAllocatedUnfairLock<[UUID: IncomingConnection]>(initialState: [:])
+
+    /// Tail of the broadcast chain. Each new frame's send job awaits this
+    /// before issuing its own sends, so frame N's packets fully drain
+    /// through the PacketListener actor before frame N+1 starts. Without
+    /// this, two concurrent send tasks could interleave at the actor and
+    /// receivers would see seq numbers go backwards within an AU.
+    private let broadcastTail = OSAllocatedUnfairLock<Task<Void, Never>?>(initialState: nil)
+
+    /// Drop viewers that have gone silent for this long. Tuned to be longer
+    /// than any reasonable HELLO/KEEPALIVE cadence (clients send
+    /// KEEPALIVE every 1s) but short enough that a crashed client is gone
+    /// before the next HELLO bursts.
+    private let viewerIdleTimeoutNs: UInt64 = 5_000_000_000
+
     var onCaptureStopped: ((Error?) -> Void)?
-
-    /// Fires at ~2 Hz with a scaled-down thumbnail of the latest captured
-    /// frame. Used by AppState to show a preview in the menu while sharing.
     var onPreviewImage: ((NSImage) -> Void)?
     private let previewContext = CIContext(options: [.useSoftwareRenderer: false])
     private let previewMaxWidth: CGFloat = 280
@@ -47,6 +80,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     init(port: UInt16 = 7447) {
         self.port = port
         self.logger = TSLogger()
+        self.rtpTimestampOriginNs = DispatchTime.now().uptimeNanoseconds
     }
 
     func start(hostname: String = "tailscreen-server", authKey: String? = nil, path: String? = nil, displayID: CGDirectDisplayID? = nil) async throws {
@@ -79,24 +113,35 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             throw TailscaleError.badInterfaceHandle
         }
 
-        let listener = try await Listener(
+        // TCP "presence beacon" so existing peer discovery (which probes
+        // by opening a TCP connection on this port) keeps working. We
+        // never speak any protocol on these sockets — accept and close.
+        let probeListener = try await Listener(
             tailscale: tailscaleHandle,
             proto: .tcp,
             address: ":\(port)",
             logger: logger
         )
-        self.listener = listener
-        print("Listening on Tailscale port \(port)")
+        self.probeListener = probeListener
+        print("TCP presence beacon listening on :\(port)")
+
+        // tsnet's ListenPacket requires an explicit IP. "0.0.0.0:\(port)"
+        // binds to the tailnet interface address tsnet routes for us.
+        let packetListener = try await PacketListener(
+            tailscale: tailscaleHandle,
+            address: "0.0.0.0:\(port)",
+            logger: logger
+        )
+        self.packetListener = packetListener
+        print("UDP video stream listening on :\(port)")
 
         isRunning = true
 
-        Task { [weak self] in
-            await self?.acceptConnections()
-        }
+        Task { [weak self] in await self?.acceptControlConnections() }
+        Task { [weak self] in await self?.receiveControlLoop() }
+        Task { [weak self] in await self?.sweepIdleViewers() }
 
         let capture = ScreenCapture()
-        // Wire the callback BEFORE starting so we don't drop the first few
-        // frames while the assignment hops over to MainActor.
         capture.onFrameCaptured = { [weak self] pixelBuffer in
             self?.handleCapturedFrame(pixelBuffer)
         }
@@ -109,58 +154,159 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             try await capture.start(displayID: displayID)
             print("ScreenCapture started (displayID=\(displayID.map { String($0) } ?? "default"))")
         } catch {
-            // Most common cause on first run: macOS Screen Recording
-            // permission missing. Throw so AppState can roll the server
-            // back and show the user a useful alert instead of leaving a
-            // zombie listener with no capture source.
             print("ERROR: ScreenCapture failed to start: \(error)")
             await self.stop()
             throw error
         }
     }
 
-    private func acceptConnections() async {
-        guard let listener = listener else { return }
+    /// Accept TCP connections on port 7447. The same listener serves two
+    /// roles, both of which look identical at the socket level:
+    ///
+    ///   * **Peer-discovery probe** (`TailscalePeerDiscovery.probeTailscreenPort`)
+    ///     opens a connection, sends nothing, then closes. The receive loop
+    ///     errors out on EOF and we move on — the probe got "connection
+    ///     succeeded" which is all it needed.
+    ///   * **Annotation back-channel** from a viewer streams framed
+    ///     ``ScreenShareMessage.annotation(...)`` payloads. We parse and
+    ///     surface each op via ``onAnnotationReceived``.
+    private func acceptControlConnections() async {
+        guard let listener = probeListener else { return }
         while isRunning {
             do {
-                // Short poll window so Stop Sharing doesn't have to wait
-                // up to 10s for an in-flight accept() to release the
-                // Listener actor before listener.close() can run.
-                let connection = try await listener.accept(timeout: 1.0)
-                await attach(connection)
+                let conn = try await listener.accept(timeout: 1.0)
+                let id = UUID()
+                annotationConnections.withLock { $0[id] = conn }
+                Task { [weak self] in
+                    await self?.receiveAnnotations(from: conn, id: id)
+                }
             } catch {
-                continue  // timeout — just keep polling
+                continue
             }
         }
     }
 
-    private func attach(_ connection: IncomingConnection) async {
-        let id = UUID()
-        let sender = ClientSender(id: id, connection: connection) { [weak self] clientID in
-            self?.removeClient(clientID)
+    /// Reads framed annotation messages from one viewer's TCP back-channel
+    /// until the connection closes or the server stops. A peer-discovery
+    /// probe just hangs up after a successful connect — the receive call
+    /// errors quickly and we tear the entry down with no noise.
+    private func receiveAnnotations(from connection: IncomingConnection, id: UUID) async {
+        defer {
+            annotationConnections.withLock { $0.removeValue(forKey: id) }
+            Task { await connection.close() }
         }
-        sender.onAnnotationOp = { [weak self] op in
-            // Hops over to MainActor inside AppState; fire synchronously here.
-            self?.onAnnotationReceived?(op)
+        var parser = ScreenShareMessageParser()
+        while isRunning {
+            do {
+                let chunk = try await connection.receive(maximumLength: 16 * 1024, timeout: 5_000)
+                if chunk.isEmpty { return }  // EOF — peer closed
+                parser.append(chunk)
+                while let message = parser.next() {
+                    if case .annotation(let op) = message {
+                        onAnnotationReceived?(op)
+                    }
+                }
+            } catch TailscaleError.readFailed {
+                if !isRunning { return }
+                continue  // poll timeout or transient — keep reading
+            } catch {
+                return
+            }
         }
-
-        clients.withLock { $0[id] = sender }
-
-        let addr = await connection.remoteAddress ?? "unknown"
-        print("New viewer: \(addr) [\(id)]")
-
-        if let cached = encoder?.cachedParameterSets {
-            sender.enqueue(.parameterSets(sps: cached.sps, pps: cached.pps), priority: .critical)
-        }
-        encoder?.requestKeyframe()
-
-        sender.start()
     }
 
-    private func removeClient(_ id: UUID) {
-        let removed = clients.withLock { $0.removeValue(forKey: id) }
-        if removed != nil {
-            print("Viewer disconnected [\(id)]")
+    /// Drains UDP datagrams and routes control bytes (HELLO/KEEPALIVE/BYE/PLI).
+    /// RTP packets shouldn't arrive at the server; if they do (a confused
+    /// client), they're dropped — we identify them by V=2 in byte 0.
+    private func receiveControlLoop() async {
+        guard let pl = packetListener else { return }
+        while isRunning {
+            do {
+                let (data, from) = try await pl.recv(timeout: 1_000)
+                handleIncoming(data: data, from: from)
+            } catch TailscaleError.readFailed {
+                continue  // poll timeout, just keep polling
+            } catch {
+                if isRunning {
+                    print("Server: receive error: \(error)")
+                }
+                break
+            }
+        }
+    }
+
+    private func handleIncoming(data: Data, from addr: String) {
+        guard !data.isEmpty else { return }
+        // V=2 (RTP) → drop; viewers don't send RTP up to us.
+        if !ScreenShareControlMessage.looksLikeControl(data) { return }
+        guard let kind = ScreenShareControlMessage.decode(data) else { return }
+
+        switch kind {
+        case .hello:
+            registerOrRefresh(addr: addr, isNew: true)
+        case .keepalive:
+            registerOrRefresh(addr: addr, isNew: false)
+        case .bye:
+            removeViewer(addr: addr)
+        case .pli:
+            registerOrRefresh(addr: addr, isNew: false)
+            encoder?.requestKeyframe()
+        }
+    }
+
+    private func registerOrRefresh(addr: String, isNew: Bool) {
+        let now = DispatchTime.now().uptimeNanoseconds
+        let (added, viewerCount) = viewers.withLock { state -> (Bool, Int) in
+            if var existing = state[addr] {
+                existing.lastSeenNs = now
+                state[addr] = existing
+                return (false, state.count)
+            }
+            let v = Viewer(
+                addr: addr,
+                ssrc: UInt32.random(in: 1...UInt32.max),
+                nextSequence: UInt16.random(in: 0...UInt16.max),
+                lastSeenNs: now
+            )
+            state[addr] = v
+            return (true, state.count)
+        }
+
+        if added || isNew {
+            print("Viewer \(added ? "joined" : "refreshed") \(addr) (total=\(viewerCount))")
+            // New viewer (or one that re-helloed): force a keyframe so
+            // they get something decodable immediately. We also push the
+            // last cached SPS/PPS in-band on the next IDR; that's handled
+            // in handleEncodedData.
+            encoder?.requestKeyframe()
+        }
+    }
+
+    private func removeViewer(addr: String) {
+        let removed = viewers.withLock { state -> Bool in
+            state.removeValue(forKey: addr) != nil
+        }
+        if removed {
+            print("Viewer disconnected \(addr)")
+        }
+    }
+
+    /// Periodically prunes viewers that haven't said anything in a while.
+    /// Covers the case where a viewer crashes without sending BYE — we
+    /// can't rely on UDP for "the other side is gone" the way TCP gives
+    /// us via FIN/RST.
+    private func sweepIdleViewers() async {
+        while isRunning {
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            let now = DispatchTime.now().uptimeNanoseconds
+            let dropped = viewers.withLock { state -> [String] in
+                let stale = state.filter { now &- $0.value.lastSeenNs > self.viewerIdleTimeoutNs }
+                for (addr, _) in stale { state.removeValue(forKey: addr) }
+                return Array(stale.keys)
+            }
+            for addr in dropped {
+                print("Viewer timeout \(addr)")
+            }
         }
     }
 
@@ -168,20 +314,18 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         guard isRunning else { return }
         frameCounter += 1
         if frameCounter == 1 || frameCounter % 60 == 0 {
-            let clientCount = clients.withLock { $0.count }
-            print("ScreenCapture: frame #\(frameCounter), \(clientCount) viewer(s)")
+            let count = viewers.withLock { $0.count }
+            print("ScreenCapture: frame #\(frameCounter), \(count) viewer(s)")
         }
 
-        // Emit a preview thumbnail ~2 Hz regardless of viewer count so the
-        // menubar preview stays live. Cheap at this cadence.
         if frameCounter % 30 == 0, let callback = onPreviewImage {
             if let image = buildPreviewImage(from: pixelBuffer) {
                 callback(image)
             }
         }
 
-        let hasClients = clients.withLock { !$0.isEmpty }
-        guard hasClients else { return }
+        let hasViewers = viewers.withLock { !$0.isEmpty }
+        guard hasViewers else { return }
 
         let width = CVPixelBufferGetWidth(pixelBuffer)
         let height = CVPixelBufferGetHeight(pixelBuffer)
@@ -196,13 +340,10 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
                 lastHeight = height
 
                 newEncoder.onParameterSets = { [weak self] sps, pps in
-                    print("VideoEncoder emitted SPS/PPS (sps=\(sps.count)B pps=\(pps.count)B)")
-                    self?.broadcast(.parameterSets(sps: sps, pps: pps), priority: .critical)
+                    self?.parameterSets.withLock { $0 = (sps, pps) }
                 }
                 newEncoder.onEncodedData = { [weak self] data, isKeyframe in
-                    let ts = DispatchTime.now().uptimeNanoseconds
-                    self?.broadcast(.frame(data: data, isKeyframe: isKeyframe, timestampNs: ts),
-                                    priority: isKeyframe ? .critical : .droppable)
+                    self?.broadcast(avccData: data, isKeyframe: isKeyframe)
                 }
                 encoder = newEncoder
             } catch {
@@ -224,24 +365,92 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
     }
 
-    private func broadcast(_ message: ScreenShareMessage, priority: ClientSender.Priority) {
-        let senders = clients.withLock { Array($0.values) }
-        broadcastCounter += 1
-        if broadcastCounter == 1 || broadcastCounter % 60 == 0 {
-            print("Broadcast #\(broadcastCounter) -> \(senders.count) viewer(s)")
+    /// Convert an encoded AVCC access unit into RTP packets and fan them out
+    /// to every registered viewer with a per-viewer SSRC and sequence number.
+    /// On IDR we prepend the cached SPS+PPS as Single NAL packets so the
+    /// access unit is fully self-contained — late-joining viewers can decode
+    /// the very first frame they observe.
+    private func broadcast(avccData: Data, isKeyframe: Bool) {
+        guard let pl = packetListener else { return }
+
+        var nals = AVCCParser.nalUnits(from: avccData)
+        if isKeyframe, let cached = parameterSets.withLock({ $0 }) {
+            // Order is significant: SPS, PPS, then the IDR slice(s).
+            nals = [cached.sps, cached.pps] + nals
         }
-        // Every ~5s of 60fps, log per-viewer queue depth. Reveals slow viewers
-        // whose droppable frames are being shed.
-        if senders.count > 1 && broadcastCounter % 300 == 0 {
-            let summary = senders.map { s -> String in
-                let (depth, bytes) = s.backlog()
-                return "\(s.id.uuidString.prefix(8))=\(depth)msg/\(bytes / 1024)KB"
-            }.joined(separator: " ")
-            print("Viewer backlog: \(summary)")
+        guard !nals.isEmpty else { return }
+
+        let rtpTs = currentRTPTimestamp()
+
+        // Snapshot viewer state and bump nextSequence atomically so two
+        // concurrent broadcasts can't issue overlapping seq ranges to the
+        // same viewer.
+        struct Plan {
+            let addr: String
+            let ssrc: UInt32
+            let startSeq: UInt16
         }
-        for sender in senders {
-            sender.enqueue(message, priority: priority)
+        // Predict packet count by packetizing once with seq=0/ssrc=0; each
+        // viewer then gets the same byte template with seq/ssrc rewritten.
+        let templates = H264Packetizer.packetize(
+            nals: nals, timestamp: rtpTs, ssrc: 0, startSequence: 0
+        )
+        let packetCount = UInt16(templates.count)
+
+        let plans = viewers.withLock { state -> [Plan] in
+            var out: [Plan] = []
+            // Snapshot keys before the lookup/update loop so we don't iterate
+            // a dict whose contents are mid-mutation.
+            let addrs = Array(state.keys)
+            out.reserveCapacity(addrs.count)
+            for addr in addrs {
+                guard var viewer = state[addr] else { continue }
+                out.append(Plan(addr: addr, ssrc: viewer.ssrc, startSeq: viewer.nextSequence))
+                viewer.nextSequence &+= packetCount
+                state[addr] = viewer
+            }
+            return out
         }
+
+        // Chain after the previous frame's send job. The encoder is bursty
+        // (one frame's worth of packets emitted in a single callback) but
+        // VT serializes its callbacks, so the chain stays short — at most
+        // one frame's worth of work in flight at a time.
+        let prev = broadcastTail.withLock { $0 }
+        let job = Task {
+            await prev?.value
+            for plan in plans {
+                for (i, template) in templates.enumerated() {
+                    var pkt = template
+                    let seq = plan.startSeq &+ UInt16(i)
+                    Self.rewriteRTPHeader(&pkt, sequence: seq, ssrc: plan.ssrc)
+                    // UDP is allowed to fail; PLI from the viewer will
+                    // recover any frame we couldn't push.
+                    try? await pl.send(pkt, to: plan.addr)
+                }
+            }
+        }
+        broadcastTail.withLock { $0 = job }
+    }
+
+    /// 90 kHz RTP timestamp, anchored at server start. Wraps every ~13 hours
+    /// at 90 kHz, which is fine — RTP timestamps are designed to wrap.
+    private func currentRTPTimestamp() -> UInt32 {
+        let elapsedNs = DispatchTime.now().uptimeNanoseconds &- rtpTimestampOriginNs
+        // Multiply nanoseconds by 9 then divide by 100_000 → ns × (90_000 / 1e9).
+        let ticks = (elapsedNs / 100_000) * 9
+        return UInt32(truncatingIfNeeded: ticks)
+    }
+
+    /// Overwrites bytes 2-3 (sequence) and 8-11 (SSRC) of an RTP packet.
+    /// Avoids re-encoding the whole header per viewer.
+    private static func rewriteRTPHeader(_ packet: inout Data, sequence: UInt16, ssrc: UInt32) {
+        packet[2] = UInt8((sequence >> 8) & 0xFF)
+        packet[3] = UInt8(sequence & 0xFF)
+        packet[8]  = UInt8((ssrc >> 24) & 0xFF)
+        packet[9]  = UInt8((ssrc >> 16) & 0xFF)
+        packet[10] = UInt8((ssrc >> 8) & 0xFF)
+        packet[11] = UInt8(ssrc & 0xFF)
     }
 
     func getIPAddresses() async throws -> (ip4: String?, ip6: String?) {
@@ -253,7 +462,6 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         print("Server stopping…")
         isRunning = false
 
-        // Stop capture first so no more frames arrive after the encoder is torn down.
         await screenCapture?.stop()
         screenCapture = nil
         print("Server stop: capture done")
@@ -261,26 +469,26 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         encoder?.shutdown()
         encoder = nil
 
-        // Close every viewer's TCP connection in parallel, otherwise a
-        // slow `await sender.close()` per viewer queues their teardown
-        // serially. Without explicitly closing each connection here the
-        // viewer just sees no more frames and renders its last decoded
-        // pixel buffer forever (its receive loop sits in a 5s poll).
-        let all = clients.withLock { state -> [ClientSender] in
+        viewers.withLock { $0.removeAll() }
+
+        await packetListener?.close()
+        packetListener = nil
+        print("Server stop: packet listener closed")
+
+        await probeListener?.close()
+        probeListener = nil
+        print("Server stop: probe listener closed")
+
+        // Close any in-flight annotation back-channels in parallel; their
+        // receive tasks will see the close and exit naturally.
+        let conns = annotationConnections.withLock { state -> [IncomingConnection] in
             let values = Array(state.values)
             state.removeAll()
             return values
         }
         await withTaskGroup(of: Void.self) { group in
-            for sender in all {
-                group.addTask { await sender.close() }
-            }
+            for conn in conns { group.addTask { await conn.close() } }
         }
-        print("Server stop: \(all.count) viewer(s) closed")
-
-        await listener?.close()
-        listener = nil
-        print("Server stop: listener closed")
 
         if let node = node {
             try? await node.close()
@@ -295,183 +503,9 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     }
 }
 
-/// One per viewer. Owns a background task that drains a bounded send queue.
-/// Critical messages (parameter sets, keyframes) always queue; droppable frames
-/// are discarded when the queue is already over its byte cap.
-fileprivate final class ClientSender: @unchecked Sendable {
-    enum Priority {
-        case critical
-        case droppable
-    }
-
-    let id: UUID
-    private let connection: IncomingConnection
-    private let onClose: (UUID) -> Void
-
-    /// Fired for every annotation op received from this viewer over the
-    /// back-channel. Set before ``start()``.
-    var onAnnotationOp: ((AnnotationOp) -> Void)?
-
-    private struct State {
-        var queue: [Data] = []
-        var queuedBytes = 0
-        var closed = false
-        var waiter: CheckedContinuation<Void, Never>?
-    }
-
-    private let state = OSAllocatedUnfairLock<State>(initialState: State())
-
-    /// Viewer backlog cap. ~1s of 60Mbps = 7.5 MB; 12 MB leaves slack.
-    private let backlogCapBytes = 12 * 1024 * 1024
-    private var sendTask: Task<Void, Never>?
-    private var receiveTask: Task<Void, Never>?
-
-    init(id: UUID, connection: IncomingConnection, onClose: @escaping (UUID) -> Void) {
-        self.id = id
-        self.connection = connection
-        self.onClose = onClose
-    }
-
-    /// Snapshot of (queueDepth, queuedBytes) for logging. Cheap: single lock.
-    func backlog() -> (depth: Int, bytes: Int) {
-        state.withLock { ($0.queue.count, $0.queuedBytes) }
-    }
-
-    func start() {
-        sendTask = Task.detached { [weak self] in
-            await self?.drain()
-        }
-        receiveTask = Task.detached { [weak self] in
-            await self?.receiveAnnotations()
-        }
-    }
-
-    /// Reads from the viewer's end of the connection and surfaces annotation
-    /// ops via ``onAnnotationOp``. Any other message type (none exist today
-    /// upstream) is ignored. Terminates quietly when the viewer disconnects
-    /// or ``close()`` flips `closed`.
-    private func receiveAnnotations() async {
-        var parser = ScreenShareMessageParser()
-        while true {
-            let isClosed = state.withLock { $0.closed }
-            if isClosed { return }
-            do {
-                let chunk = try await connection.receive(maximumLength: 16 * 1024, timeout: 5_000)
-                if chunk.isEmpty { continue }
-                parser.append(chunk)
-                while let message = parser.next() {
-                    if case .annotation(let op) = message {
-                        onAnnotationOp?(op)
-                    }
-                    // Drop other types silently — viewer never legitimately
-                    // sends anything else today.
-                }
-            } catch TailscaleError.readFailed {
-                // Either a timeout we can retry on, or the viewer went away.
-                let isClosed = state.withLock { $0.closed }
-                if isClosed { return }
-                continue
-            } catch {
-                let isClosed = state.withLock { $0.closed }
-                if !isClosed {
-                    print("ClientSender[\(id)] receive error: \(error)")
-                }
-                return
-            }
-        }
-    }
-
-    func enqueue(_ message: ScreenShareMessage, priority: Priority) {
-        let data = message.encode()
-
-        let waiterToResume: CheckedContinuation<Void, Never>? = state.withLock { s -> CheckedContinuation<Void, Never>? in
-            if s.closed { return nil }
-            if priority == .droppable && s.queuedBytes + data.count > backlogCapBytes {
-                return nil
-            }
-            s.queue.append(data)
-            s.queuedBytes += data.count
-            let w = s.waiter
-            s.waiter = nil
-            return w
-        }
-        waiterToResume?.resume()
-    }
-
-    private enum PopResult {
-        case closed
-        case item(Data)
-        case empty
-    }
-
-    private func drain() async {
-        while true {
-            guard let data = await nextItem() else { return }
-            do {
-                try await connection.send(data)
-            } catch {
-                print("ClientSender[\(id)] send failed: \(error)")
-                await close()
-                return
-            }
-        }
-    }
-
-    private func nextItem() async -> Data? {
-        while true {
-            let popped: PopResult = state.withLock { s -> PopResult in
-                if s.closed { return .closed }
-                if !s.queue.isEmpty {
-                    let data = s.queue.removeFirst()
-                    s.queuedBytes -= data.count
-                    return .item(data)
-                }
-                return .empty
-            }
-
-            switch popped {
-            case .closed: return nil
-            case .item(let d): return d
-            case .empty: break
-            }
-
-            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-                let shouldResumeImmediately = state.withLock { s -> Bool in
-                    if s.closed || !s.queue.isEmpty { return true }
-                    s.waiter = cont
-                    return false
-                }
-                if shouldResumeImmediately { cont.resume() }
-            }
-        }
-    }
-
-    func close() async {
-        let transition: (didClose: Bool, waiter: CheckedContinuation<Void, Never>?) = state.withLock { s in
-            if s.closed { return (false, nil) }
-            s.closed = true
-            s.queue.removeAll()
-            s.queuedBytes = 0
-            let w = s.waiter
-            s.waiter = nil
-            return (true, w)
-        }
-        guard transition.didClose else { return }
-
-        transition.waiter?.resume()
-        await connection.close()
-        sendTask?.cancel()
-        receiveTask?.cancel()
-        onClose(id)
-    }
-}
-
 private struct TSLogger: LogSink {
     var logFileHandle: Int32? = nil
     func log(_ message: String) {
-        // The listener prints "Listening for tcp on :PORT" on every accept()
-        // poll, which floods the console every 10s. Silence it; accept()
-        // successes are already logged by the server itself.
         if message.hasPrefix("Listening for ") { return }
         print("[Tailscale] \(message)")
     }
