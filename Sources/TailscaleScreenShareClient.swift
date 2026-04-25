@@ -229,8 +229,18 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
             object: window,
             queue: .main
         ) { [weak self] _ in
-            Task { @MainActor in
-                await self?.disconnect()
+            // Defer a full beat so we're well clear of the willClose
+            // dispatch before touching anything. Running disconnect
+            // immediately (even via Task @MainActor) crashed inside
+            // the MainActor.run teardown on objc_msgSend_uncached at
+            // a null receiver — the close cascade had partially torn
+            // down the contentView/layer graph by the time disconnect's
+            // closure body executed. Letting AppKit finish the close
+            // first dodges that.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                Task { @MainActor in
+                    await self?.disconnect()
+                }
             }
         }
     }
