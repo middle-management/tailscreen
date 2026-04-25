@@ -285,6 +285,11 @@ class AppState: ObservableObject {
     /// persistent NSWindow.
     private var viewerWindowDelegate: ViewerWindowDelegate?
 
+    /// Strong ref to the viewer toolbar's NSToolbarDelegate. NSWindow.toolbar
+    /// holds the toolbar itself but the delegate is weak; without this it
+    /// would dealloc and the toolbar would stop building items.
+    private var viewerToolbar: ViewerToolbar?
+
     /// Build (once) and return the shared viewer renderer. The window's
     /// close button maps to AppState.disconnect via a delegate that
     /// returns false from windowShouldClose so AppKit never tears the
@@ -303,6 +308,14 @@ class AppState: ObservableObject {
         win.title = "Tailscale Screen Share"
         win.backgroundColor = .black
         win.isReleasedWhenClosed = false
+
+        // Drawing toolbar: pen / line / arrow / rectangle / oval +
+        // undo + clear. Items target ViewerCommands.shared, same wiring
+        // the menubar's Tools/Edit menus use.
+        let toolbar = ViewerToolbar()
+        win.toolbar = toolbar.toolbar
+        win.toolbarStyle = .unified
+        self.viewerToolbar = toolbar
 
         let delegate = ViewerWindowDelegate { [weak self] in
             Task { @MainActor [weak self] in

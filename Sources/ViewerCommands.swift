@@ -21,9 +21,21 @@ final class ViewerCommands: NSObject {
     @objc func selectRectangleTool(_ sender: Any?) { setTool(.rectangle) }
     @objc func selectOvalTool(_ sender: Any?) { setTool(.oval) }
 
+    /// NSToolbarItemGroup with `selectionMode = .selectOne` calls its
+    /// action with the group as `sender`; the selectedIndex maps 1:1 to
+    /// the toolbar's tool order (pen, line, arrow, rectangle, oval).
+    @objc func toolbarSelectedTool(_ sender: Any?) {
+        guard let group = sender as? NSToolbarItemGroup else { return }
+        let tools: [AnnotationTool] = [.pen, .line, .arrow, .rectangle, .oval]
+        let idx = group.selectedIndex
+        guard tools.indices.contains(idx) else { return }
+        setTool(tools[idx])
+    }
+
     private func setTool(_ tool: AnnotationTool) {
         activeOverlay?.currentTool = tool
-        // Force the menu to re-validate so the checkmark moves.
+        // Force the menu (and any toolbar validation) to re-evaluate so
+        // the checkmark / selected segment moves.
         NSApp.mainMenu?.update()
     }
 
