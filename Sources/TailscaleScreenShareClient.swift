@@ -272,19 +272,37 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
             self.decoder = nil
         }
 
-        // Bisect C: window.close() *with* renderer still attached (no
-        // invalidate(), no renderer=nil). If this CRASHES, NSWindow.close
-        // alone is enough — the zombie is in the contentView → CAMetalLayer
-        // release cascade and we can't avoid it without a leak. If this is
-        // CLEAN, the crash needs both invalidate AND close in the same job,
-        // pointing at a CADisplayLink × CAMetalLayer interaction we can
-        // sequence around (e.g. invalidate, yield to runloop, then close).
+        // Bisect D: confirmed window.close() alone produces the zombie.
+        // Try draining the contentView graph in stages to give Apple
+        // frameworks time to release autoreleased intermediates between
+        // each step:
+        //   1. Detach the layer-hosting contentView (replace with empty).
+        //   2. Yield to runloop, draining any pool from the previous tick.
+        //   3. orderOut + close on the next tick.
+        //
+        // If this is CLEAN, the zombie was an intermediate from the layer
+        // graph being released in the same job as the window itself.
+        // If it CRASHES, even a multi-tick teardown can't avoid it and
+        // the leak workaround is the right answer.
+        await MainActor.run {
+            if let obs = self.windowCloseObserver {
+                NotificationCenter.default.removeObserver(obs)
+                self.windowCloseObserver = nil
+            }
+            self.renderer?.invalidate()
+            self.renderer = nil
+            // Replace the contentView with an empty one. Releases the
+            // layer-hosting view (and its CAMetalLayer subtree) NOW,
+            // before the window closes.
+            self.window?.contentView = NSView()
+            self.window?.orderOut(nil)
+        }
+        // Yield runloop so any autoreleased intermediates from the
+        // contentView swap drain under their own pool.
+        await Task.yield()
+        try? await Task.sleep(for: .milliseconds(50))
         await MainActor.run {
             autoreleasepool {
-                if let obs = self.windowCloseObserver {
-                    NotificationCenter.default.removeObserver(obs)
-                    self.windowCloseObserver = nil
-                }
                 self.window?.close()
                 self.window = nil
             }
