@@ -1,6 +1,6 @@
-# Cuple - Secure Screen Sharing via Tailscale
+# Tailscreen - Secure Screen Sharing via Tailscale
 
-[![Build Status](https://github.com/slaskis/cuple/actions/workflows/build.yml/badge.svg)](https://github.com/slaskis/cuple/actions/workflows/build.yml)
+[![Build Status](https://github.com/middle-management/tailscreen/actions/workflows/build.yml/badge.svg)](https://github.com/middle-management/tailscreen/actions/workflows/build.yml)
 
 A minimal macOS menubar app for high-quality, low-latency screen sharing using Tailscale's encrypted peer-to-peer network. Built with Swift Package Manager (no Xcode required).
 
@@ -35,7 +35,7 @@ This will:
 1. Build the libtailscale C library from the upstream submodule
 2. Apply necessary patches
 3. Build the Swift TailscaleKit wrapper
-4. Build the Cuple application
+4. Build the Tailscreen application
 
 For a release build:
 
@@ -43,7 +43,7 @@ For a release build:
 make release
 ```
 
-The executable will be at `.build/release/Cuple`
+The executable will be at `.build/release/Tailscreen`
 
 ## Running
 
@@ -56,19 +56,19 @@ swift run
 Or run the built executable:
 
 ```bash
-.build/release/Cuple
+.build/release/Tailscreen
 ```
 
 ## Testing on One Machine
 
-You can test Cuple on a single machine without needing two computers:
+You can test Tailscreen on a single machine without needing two computers:
 
 ### Quick Test (Easiest)
 
-1. Build and run Cuple:
+1. Build and run Tailscreen:
    ```bash
    make build
-   .build/debug/Cuple
+   .build/debug/Tailscreen
    ```
 
 2. Click **"Start Sharing"** in the menubar
@@ -85,17 +85,17 @@ To test like you have two separate machines:
 
 **Terminal 1:**
 ```bash
-CUPLE_INSTANCE=1 .build/debug/Cuple
-# Click "Start Sharing" when Cuple opens
+TAILSCREEN_INSTANCE=1 .build/debug/Tailscreen
+# Click "Start Sharing" when Tailscreen opens
 ```
 
 **Terminal 2:**
 ```bash
-CUPLE_INSTANCE=2 .build/debug/Cuple
+TAILSCREEN_INSTANCE=2 .build/debug/Tailscreen
 # Click "Browse Shares..." to find the first instance
 ```
 
-`CUPLE_INSTANCE` suffixes the Tailscale state directory and hostname so the two processes register as distinct tailnet nodes. Without it, both instances share `~/Library/Application Support/Cuple/tailscale`, get the same machine key, and the browser sees zero peers because it's looking at its own node.
+`TAILSCREEN_INSTANCE` suffixes the Tailscale state directory and hostname so the two processes register as distinct tailnet nodes. Without it, both instances share `~/Library/Application Support/Tailscreen/tailscale`, get the same machine key, and the browser sees zero peers because it's looking at its own node.
 
 **Note:** This tests the full Tailscale integration and peer discovery, but doesn't test actual network traversal or NAT punch-through since both instances are on the same machine.
 
@@ -133,7 +133,7 @@ Or use the "Actions" tab to manually trigger a release build.
 
 ### Sharing Your Screen
 
-1. Click the Cuple icon (📺) in the menubar
+1. Click the Tailscreen icon (📺) in the menubar
 2. Select "Start Sharing"
 3. Grant Screen Recording permission if prompted
 4. Tailscale will automatically connect (ephemeral node, auto-cleanup)
@@ -144,7 +144,7 @@ Or use the "Actions" tab to manually trigger a release build.
 
 **Option 1: Browse Shares (Easiest)**
 
-1. Click the Cuple icon (📺) in the menubar
+1. Click the Tailscreen icon (📺) in the menubar
 2. Select "Browse Shares..."
 3. Available shares will be automatically discovered
 4. Click "Connect" next to the share you want to view
@@ -152,7 +152,7 @@ Or use the "Actions" tab to manually trigger a release build.
 
 **Option 2: Manual Connection**
 
-1. Click the Cuple icon (📺) in the menubar
+1. Click the Tailscreen icon (📺) in the menubar
 2. Select "Connect to..."
 3. Enter the Tailscale hostname or IP address (e.g., "macbook-pro" or "100.x.x.x")
 4. A window will open showing the shared screen
@@ -229,7 +229,7 @@ Port: `7447` (TCP)
 
 ### "Permission Denied" when capturing screen
 - Go to System Settings > Privacy & Security > Screen Recording
-- Enable permission for Cuple or your Terminal app
+- Enable permission for Tailscreen or your Terminal app
 
 ### "Connection Failed"
 - Verify both computers are on the same Tailscale network (tailnet)

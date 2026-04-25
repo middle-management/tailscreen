@@ -20,7 +20,7 @@ test: tailscale
 
 release: tailscale
 	swift build -c release
-	@echo "Binary available at: .build/release/Cuple"
+	@echo "Binary available at: .build/release/Tailscreen"
 
 clean:
 	swift package clean
@@ -29,8 +29,8 @@ clean:
 
 install: release
 	@mkdir -p ~/bin
-	@cp .build/release/Cuple ~/bin/
-	@echo "Installed to ~/bin/Cuple"
+	@cp .build/release/Tailscreen ~/bin/
+	@echo "Installed to ~/bin/Tailscreen"
 
 # Bring up a local headscale control server for integration testing.
 # Prints `export ...` lines on stdout; run via `eval "$$(make e2e-up)"`.

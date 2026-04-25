@@ -2,24 +2,24 @@ import Foundation
 import TailscaleKit
 
 /// Represents a discovered peer on the Tailscale network
-struct CuplePeer: Identifiable, Sendable {
+struct TailscreenPeer: Identifiable, Sendable {
     let id: String
     let hostname: String
     let dnsName: String
     let tailscaleIP: String
     let isOnline: Bool
-    var isRunningCuple: Bool
-    var metadata: CupleMetadata?
+    var isRunningTailscreen: Bool
+    var metadata: TailscreenMetadata?
     var lastSeen: Date?
 }
 
-/// Discovers Cuple instances running on the Tailscale network
+/// Discovers Tailscreen instances running on the Tailscale network
 @MainActor
 class TailscalePeerDiscovery: ObservableObject {
-    @Published var availablePeers: [CuplePeer] = []
+    @Published var availablePeers: [TailscreenPeer] = []
     @Published var isDiscovering = false
 
-    private let cuplePort: UInt16 = 7447
+    private let tailscreenPort: UInt16 = 7447
     private let logger: TSLogger
     private var ipnWatcher: TailscaleIPNWatcher?
 
@@ -27,7 +27,7 @@ class TailscalePeerDiscovery: ObservableObject {
         self.logger = TSLogger()
     }
 
-    /// Discovers all peers on the tailnet and checks which ones are running Cuple
+    /// Discovers all peers on the tailnet and checks which ones are running Tailscreen
     func startDiscovery(node: TailscaleNode) async throws {
         isDiscovering = true
         defer { isDiscovering = false }
@@ -42,19 +42,19 @@ class TailscalePeerDiscovery: ObservableObject {
 
         logger.log("📡 Found \(status.Peer?.count ?? 0) peers on tailnet")
 
-        var peers: [CuplePeer] = []
+        var peers: [TailscreenPeer] = []
 
         // Process each peer
         for (peerKey, peerStatus) in status.Peer ?? [:] {
             guard peerStatus.Online else { continue }
 
-            let peer = CuplePeer(
+            let peer = TailscreenPeer(
                 id: peerKey,
                 hostname: peerStatus.HostName,
                 dnsName: peerStatus.DNSName,
                 tailscaleIP: peerStatus.TailscaleIPs?.first ?? "",
                 isOnline: peerStatus.Online,
-                isRunningCuple: false,
+                isRunningTailscreen: false,
                 metadata: nil,
                 lastSeen: nil
             )
@@ -64,53 +64,53 @@ class TailscalePeerDiscovery: ObservableObject {
 
         logger.log("✓ Found \(peers.count) online peers")
 
-        // Check which peers are running Cuple (in parallel).
+        // Check which peers are running Tailscreen (in parallel).
         // Uses the existing node to dial; must NOT spin up a new TailscaleNode
         // per probe — that takes several seconds per peer and blows the 2s timeout.
         guard let tailscaleHandle = await node.tailscale else {
-            logger.log("⚠️ node has no tailscale handle; skipping Cuple probe")
+            logger.log("⚠️ node has no tailscale handle; skipping Tailscreen probe")
             availablePeers = []
             return
         }
 
-        var updatedPeers: [CuplePeer] = []
+        var updatedPeers: [TailscreenPeer] = []
 
         for peer in peers {
-            logger.log("→ probing \(peer.hostname) @ \(peer.tailscaleIP):\(cuplePort)")
+            logger.log("→ probing \(peer.hostname) @ \(peer.tailscaleIP):\(tailscreenPort)")
         }
         await withTaskGroup(of: (String, Bool).self) { group in
             for peer in peers {
                 let ip = peer.tailscaleIP
                 let id = peer.id
                 group.addTask {
-                    let isRunning = await Self.probeCuplePort(
+                    let isRunning = await Self.probeTailscreenPort(
                         tailscale: tailscaleHandle,
                         host: ip,
-                        port: self.cuplePort,
+                        port: self.tailscreenPort,
                         logger: self.logger
                     )
                     return (id, isRunning)
                 }
             }
 
-            var cupleStatus: [String: Bool] = [:]
+            var tailscreenStatus: [String: Bool] = [:]
             for await (peerId, isRunning) in group {
-                cupleStatus[peerId] = isRunning
+                tailscreenStatus[peerId] = isRunning
             }
 
-            // Update peers with Cuple status
+            // Update peers with Tailscreen status
             for var peer in peers {
-                peer.isRunningCuple = cupleStatus[peer.id] ?? false
+                peer.isRunningTailscreen = tailscreenStatus[peer.id] ?? false
                 updatedPeers.append(peer)
             }
         }
 
-        // Only show peers that are running Cuple
-        let cuplePeers = updatedPeers.filter { $0.isRunningCuple }
+        // Only show peers that are running Tailscreen
+        let tailscreenPeers = updatedPeers.filter { $0.isRunningTailscreen }
 
-        logger.log("🎯 Found \(cuplePeers.count) peers running Cuple")
+        logger.log("🎯 Found \(tailscreenPeers.count) peers running Tailscreen")
 
-        availablePeers = cuplePeers
+        availablePeers = tailscreenPeers
     }
 
     /// Opens a raw TCP connection to `host:port` over the provided tsnet handle.
@@ -120,7 +120,7 @@ class TailscalePeerDiscovery: ObservableObject {
     /// dial to a peer can block a few seconds while tsnet sorts out the path,
     /// and a 2s window produced false negatives where the dial eventually
     /// succeeded server-side but after discovery had already given up.
-    private static func probeCuplePort(
+    private static func probeTailscreenPort(
         tailscale: TailscaleHandle,
         host: String,
         port: UInt16,
@@ -145,7 +145,7 @@ class TailscalePeerDiscovery: ObservableObject {
             }
             _ = connected
             await conn.close()
-            logger.log("✓ \(host):\(port) is running Cuple")
+            logger.log("✓ \(host):\(port) is running Tailscreen")
             return true
         } catch {
             // Log the reason so silent-negatives (wrong netmap, DERP fail,
@@ -206,13 +206,13 @@ class TailscalePeerDiscovery: ObservableObject {
             if let peerStatus = watcher.peers[availablePeers[i].id] {
                 let updatedPeer = availablePeers[i]
                 // Create new peer with updated status
-                availablePeers[i] = CuplePeer(
+                availablePeers[i] = TailscreenPeer(
                     id: updatedPeer.id,
                     hostname: peerStatus.hostname,
                     dnsName: peerStatus.dnsName,
                     tailscaleIP: peerStatus.tailscaleIPs.first ?? updatedPeer.tailscaleIP,
                     isOnline: peerStatus.online,
-                    isRunningCuple: updatedPeer.isRunningCuple,
+                    isRunningTailscreen: updatedPeer.isRunningTailscreen,
                     metadata: updatedPeer.metadata,
                     lastSeen: peerStatus.online ? Date() : updatedPeer.lastSeen
                 )
@@ -228,11 +228,11 @@ class TailscalePeerDiscovery: ObservableObject {
     }
 
     /// Fetch metadata for a specific peer
-    func fetchMetadata(for peer: CuplePeer) async -> CupleMetadata? {
+    func fetchMetadata(for peer: TailscreenPeer) async -> TailscreenMetadata? {
         do {
-            let metadata = try await CupleMetadataService.fetchMetadata(
+            let metadata = try await TailscreenMetadataService.fetchMetadata(
                 from: peer.tailscaleIP,
-                port: cuplePort
+                port: tailscreenPort
             )
             return metadata
         } catch {

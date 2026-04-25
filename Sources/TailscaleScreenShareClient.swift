@@ -36,13 +36,13 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
 
         let statePath = path ?? {
             let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            return appSupport.appendingPathComponent("Cuple/tailscale-client\(CupleInstance.stateSuffix)").path
+            return appSupport.appendingPathComponent("Tailscreen/tailscale-client\(TailscreenInstance.stateSuffix)").path
         }()
         try? FileManager.default.createDirectory(atPath: statePath, withIntermediateDirectories: true)
 
         print("Starting Tailscale client…")
 
-        let clientHostname = "cuple-client-\(UUID().uuidString.prefix(8))"
+        let clientHostname = "tailscreen-client-\(UUID().uuidString.prefix(8))"
         let config = Configuration(
             hostName: clientHostname,
             path: statePath,
@@ -116,7 +116,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                     // down our window/UI; otherwise the viewer sits
                     // forever rendering the last decoded frame.
                     print("Receive: peer closed connection (EOF)")
-                    NotificationCenter.default.post(name: .cupleViewerPeerClosed, object: nil)
+                    NotificationCenter.default.post(name: .tailscreenViewerPeerClosed, object: nil)
                     break
                 }
                 lastDataNs = DispatchTime.now().uptimeNanoseconds
@@ -152,7 +152,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                 let nowNs = DispatchTime.now().uptimeNanoseconds
                 if nowNs &- lastDataNs > idleDisconnectAfterNs {
                     print("Receive: idle for > 10s, assuming peer gone")
-                    NotificationCenter.default.post(name: .cupleViewerPeerClosed, object: nil)
+                    NotificationCenter.default.post(name: .tailscreenViewerPeerClosed, object: nil)
                     break
                 }
                 continue
@@ -240,5 +240,5 @@ extension Notification.Name {
     /// TCP control connection (read() == 0 after poll() = POLLIN). AppState
     /// observes this and runs disconnect() so the UI tears down instead
     /// of sitting on a stale last frame.
-    static let cupleViewerPeerClosed = Notification.Name("cuple.viewer.peerClosed")
+    static let tailscreenViewerPeerClosed = Notification.Name("tailscreen.viewer.peerClosed")
 }

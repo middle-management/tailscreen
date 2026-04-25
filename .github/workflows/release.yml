@@ -33,14 +33,14 @@ jobs:
 
     - name: Create application bundle
       run: |
-        mkdir -p Cuple.app/Contents/MacOS
-        mkdir -p Cuple.app/Contents/Resources
+        mkdir -p Tailscreen.app/Contents/MacOS
+        mkdir -p Tailscreen.app/Contents/Resources
 
         # Copy binary
-        cp .build/release/Cuple Cuple.app/Contents/MacOS/
+        cp .build/release/Tailscreen Tailscreen.app/Contents/MacOS/
 
         # Create Info.plist
-        cat > Cuple.app/Contents/Info.plist <<EOF
+        cat > Tailscreen.app/Contents/Info.plist <<EOF
         <?xml version="1.0" encoding="UTF-8"?>
         <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
         <plist version="1.0">
@@ -48,13 +48,13 @@ jobs:
             <key>CFBundleDevelopmentRegion</key>
             <string>en</string>
             <key>CFBundleExecutable</key>
-            <string>Cuple</string>
+            <string>Tailscreen</string>
             <key>CFBundleIdentifier</key>
-            <string>com.cuple.app</string>
+            <string>com.tailscreen.app</string>
             <key>CFBundleInfoDictionaryVersion</key>
             <string>6.0</string>
             <key>CFBundleName</key>
-            <string>Cuple</string>
+            <string>Tailscreen</string>
             <key>CFBundlePackageType</key>
             <string>APPL</string>
             <key>CFBundleShortVersionString</key>
@@ -73,24 +73,24 @@ jobs:
 
     - name: Create ZIP archive
       run: |
-        zip -r Cuple-${{ steps.version.outputs.version }}-macOS.zip Cuple.app
+        zip -r Tailscreen-${{ steps.version.outputs.version }}-macOS.zip Tailscreen.app
 
     - name: Generate checksums
       run: |
-        shasum -a 256 Cuple-${{ steps.version.outputs.version }}-macOS.zip > checksums.txt
+        shasum -a 256 Tailscreen-${{ steps.version.outputs.version }}-macOS.zip > checksums.txt
         cat checksums.txt
 
     - name: Create release notes
       run: |
         cat > release-notes.md <<EOF
-        # Cuple ${{ steps.version.outputs.version }}
+        # Tailscreen ${{ steps.version.outputs.version }}
 
         High-quality screen sharing over LAN for macOS.
 
         ## Installation
 
-        1. Download \`Cuple-${{ steps.version.outputs.version }}-macOS.zip\`
-        2. Unzip and move \`Cuple.app\` to your Applications folder
+        1. Download \`Tailscreen-${{ steps.version.outputs.version }}-macOS.zip\`
+        2. Unzip and move \`Tailscreen.app\` to your Applications folder
         3. Right-click and select "Open" to bypass Gatekeeper (first time only)
         4. Grant Screen Recording permission when prompted
 
@@ -117,10 +117,10 @@ jobs:
     - name: Create Release
       uses: softprops/action-gh-release@v1
       with:
-        name: Cuple ${{ steps.version.outputs.version }}
+        name: Tailscreen ${{ steps.version.outputs.version }}
         body_path: release-notes.md
         files: |
-          Cuple-${{ steps.version.outputs.version }}-macOS.zip
+          Tailscreen-${{ steps.version.outputs.version }}-macOS.zip
           checksums.txt
         draft: false
         prerelease: false

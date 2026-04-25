@@ -41,7 +41,7 @@ struct MenuBarView: View {
                 IdentityFooter()
                 Divider().padding(.vertical, 4)
                 MenuRow(
-                    "Quit Cuple",
+                    "Quit Tailscreen",
                     systemImage: nil,
                     shortcut: "⌘Q"
                 ) {
@@ -72,7 +72,7 @@ private struct WelcomeView: View {
                     .foregroundStyle(.secondary)
                     .padding(.top, 8)
 
-                Text("Welcome to Cuple")
+                Text("Welcome to Tailscreen")
                     .font(.system(size: 15, weight: .semibold))
 
                 Text("Sign in with Tailscale to share and view screens with your peers.")
@@ -109,7 +109,7 @@ private struct WelcomeView: View {
 
             Divider().padding(.vertical, 4)
 
-            MenuRow("Quit Cuple", systemImage: nil, shortcut: "⌘Q") {
+            MenuRow("Quit Tailscreen", systemImage: nil, shortcut: "⌘Q") {
                 NSApplication.shared.terminate(nil)
             }
             .keyboardShortcut("q", modifiers: .command)
@@ -414,7 +414,7 @@ private struct DevicesSection: View {
 
 private struct PeerMenuRow: View {
     @EnvironmentObject var appState: AppState
-    let peer: CuplePeer
+    let peer: TailscreenPeer
     let onConnect: () -> Void
     @State private var isHovered = false
 

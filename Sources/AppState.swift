@@ -34,7 +34,7 @@ class AppState: ObservableObject {
     private var viewerRenderer: MetalViewerRenderer?
 
     // Peer discovery
-    @Published var availablePeers: [CuplePeer] = []
+    @Published var availablePeers: [TailscreenPeer] = []
     @Published var isDiscovering = false
     private var peerDiscovery: TailscalePeerDiscovery?
 
@@ -49,7 +49,7 @@ class AppState: ObservableObject {
     var tailscaleAuth = TailscaleAuth()
 
     // Metadata and requests
-    @Published var metadataService = CupleMetadataService()
+    @Published var metadataService = TailscreenMetadataService()
 
     // Track if auto-login has been triggered
     private var hasTriggeredAutoLogin = false
@@ -71,7 +71,7 @@ class AppState: ObservableObject {
         // run its disconnect() so the UI doesn't sit on a stale last
         // frame.
         NotificationCenter.default.addObserver(
-            forName: .cupleViewerPeerClosed,
+            forName: .tailscreenViewerPeerClosed,
             object: nil,
             queue: .main
         ) { [weak self] _ in
@@ -114,7 +114,7 @@ class AppState: ObservableObject {
             // If Tailscale is already initialized, just start sharing
             // Otherwise, initialize it first
             if server == nil {
-                let hostname = "\(Host.current().localizedName ?? "cuple-share")\(CupleInstance.hostnameSuffix)"
+                let hostname = "\(Host.current().localizedName ?? "tailscreen-share")\(TailscreenInstance.hostnameSuffix)"
                 let srv = TailscaleScreenShareServer()
                 server = srv
                 if let pickedID = pickedID {
@@ -151,7 +151,7 @@ class AppState: ObservableObject {
                     if case ScreenCaptureError.startTimeout = error {
                         showAlertMessage(
                             title: "Couldn't Start Sharing",
-                            message: "macOS didn't return shareable screens in time. If this is the first time you've shared, grant Cuple permission in System Settings → Privacy & Security → Screen Recording, then try again."
+                            message: "macOS didn't return shareable screens in time. If this is the first time you've shared, grant Tailscreen permission in System Settings → Privacy & Security → Screen Recording, then try again."
                         )
                     } else {
                         showAlertMessage(
@@ -167,7 +167,7 @@ class AppState: ObservableObject {
                 tailscaleIPs = [ips.ip4, ips.ip6].compactMap { $0 }
             }
 
-            let hostname = "\(Host.current().localizedName ?? "cuple-share")\(CupleInstance.hostnameSuffix)"
+            let hostname = "\(Host.current().localizedName ?? "tailscreen-share")\(TailscreenInstance.hostnameSuffix)"
 
             // Update metadata
             metadataService.updateMetadata(isSharing: true, shareName: "\(hostname)'s Screen")
@@ -280,7 +280,7 @@ class AppState: ObservableObject {
         return r
     }
 
-    func connectToPeer(_ peer: CuplePeer) async {
+    func connectToPeer(_ peer: TailscreenPeer) async {
         await connect(to: peer.tailscaleIP)
         if isConnected {
             connectedHostname = peer.hostname
@@ -306,7 +306,7 @@ class AppState: ObservableObject {
             showAlertMessage(
                 title: "Discovery Failed",
                 message:
-                    "You need to be logged in to discover other Cuple instances."
+                    "You need to be logged in to discover other Tailscreen instances."
             )
             return
         }
@@ -412,12 +412,12 @@ class AppState: ObservableObject {
         // run in the same process and both need a Tailscale identity; pointing
         // them at the same tailscaled.state gives them the same machine key,
         // so tsnet's netmap sees a single confused peer listening twice and
-        // peer discovery from a second Cuple instance silently fails to dial.
+        // peer discovery from a second Tailscreen instance silently fails to dial.
         let statePath = {
             let appSupport = FileManager.default.urls(
                 for: .applicationSupportDirectory, in: .userDomainMask
             ).first!
-            return appSupport.appendingPathComponent("Cuple/tailscale-auth\(CupleInstance.stateSuffix)").path
+            return appSupport.appendingPathComponent("Tailscreen/tailscale-auth\(TailscreenInstance.stateSuffix)").path
         }()
 
         // Create directory if needed
@@ -429,9 +429,9 @@ class AppState: ObservableObject {
         // with identical hostnames confuse routing/probing — peers
         // receive `connection refused` on dial even though the server
         // is actively listening.
-        let baseHostname = Host.current().localizedName ?? "cuple"
+        let baseHostname = Host.current().localizedName ?? "tailscreen"
         let config = Configuration(
-            hostName: "\(baseHostname)\(CupleInstance.hostnameSuffix)-auth",
+            hostName: "\(baseHostname)\(TailscreenInstance.hostnameSuffix)-auth",
             path: statePath,
             authKey: nil,
             controlURL: kDefaultControlURL,
@@ -479,7 +479,7 @@ class AppState: ObservableObject {
         }
     }
 
-    func requestToShare(from peer: CuplePeer) async {
+    func requestToShare(from peer: TailscreenPeer) async {
         let hostname = Host.current().localizedName ?? "Unknown"
         do {
             try await metadataService.sendRequestToShare(

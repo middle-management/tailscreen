@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct CupleApp: App {
+struct TailscreenApp: App {
     @StateObject private var appState = AppState()
 
     var body: some Scene {
@@ -11,7 +11,7 @@ struct CupleApp: App {
         // share, and a plain tv at idle. SwiftUI re-evaluates this
         // expression whenever AppState publishes a change, so the icon
         // updates without explicit binding.
-        MenuBarExtra("Cuple", systemImage: menubarIconName) {
+        MenuBarExtra("Tailscreen", systemImage: menubarIconName) {
             MenuBarView()
                 .environmentObject(appState)
         }

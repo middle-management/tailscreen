@@ -39,7 +39,7 @@ log:
 dns:
   magic_dns: false
   override_local_dns: false
-  base_domain: cuple.test
+  base_domain: tailscreen.test
   nameservers:
     global: []
   search_domains: []

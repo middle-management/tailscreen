@@ -1,5 +1,5 @@
 import XCTest
-@testable import Cuple
+@testable import Tailscreen
 
 final class ScreenShareProtocolTests: XCTestCase {
     func testRoundTripFrame() throws {
