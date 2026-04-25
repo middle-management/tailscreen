@@ -125,15 +125,18 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         self.probeListener = probeListener
         print("TCP presence beacon listening on :\(port)")
 
-        // tsnet's ListenPacket requires an explicit IP. "0.0.0.0:\(port)"
-        // binds to the tailnet interface address tsnet routes for us.
+        // tsnet's ListenPacket requires an explicit tailnet IP — 0.0.0.0
+        // binds, but tsnet won't actually route inbound datagrams to it.
+        // Use the node's tailnet IPv4 (preferred) or IPv6 instead.
+        let bindIP = ips.ip4 ?? ips.ip6 ?? "0.0.0.0"
+        let bindAddr = ips.ip4 != nil ? "\(bindIP):\(port)" : "[\(bindIP)]:\(port)"
         let packetListener = try await PacketListener(
             tailscale: tailscaleHandle,
-            address: "0.0.0.0:\(port)",
+            address: bindAddr,
             logger: logger
         )
         self.packetListener = packetListener
-        print("UDP video stream listening on :\(port)")
+        print("UDP video stream listening on \(bindAddr)")
 
         isRunning = true
 

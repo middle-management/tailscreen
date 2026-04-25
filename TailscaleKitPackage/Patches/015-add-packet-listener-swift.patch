@@ -1,6 +1,6 @@
 --- /dev/null
 +++ b/upstream/libtailscale/swift/TailscaleKit/PacketListener.swift
-@@ -0,0 +1,142 @@
+@@ -0,0 +1,166 @@
 +// Copyright (c) Tailscale Inc & AUTHORS
 +// SPDX-License-Identifier: BSD-3-Clause
 +
@@ -70,50 +70,65 @@
 +    /// @returns The payload and the source address as "ip:port".
 +    /// @throws TailscaleError.readFailed on timeout or read error.
 +    public func recv(timeout: Int32 = 60_000) async throws -> (data: Data, from: String) {
-+        guard listener != 0 else {
++        let fd = listener
++        guard fd != 0 else {
 +            throw TailscaleError.listenerClosed
 +        }
 +
-+        var p = pollfd(fd: listener, events: Int16(POLLIN), revents: 0)
-+        let res = poll(&p, 1, timeout)
-+        if res == 0 {
-+            throw TailscaleError.readFailed
-+        }
-+        if res < 0 {
-+            throw TailscaleError.fromPosixErrCode(errno, "Poll failed")
-+        }
++        // Release actor isolation while poll() and read() block. The actor
++        // is a single mutually-exclusive context; a synchronous poll(1s)
++        // here would queue every concurrent send() behind us, deadlocking
++        // any tight send/recv pipeline (e.g. an RTP broadcaster sharing
++        // this listener with a control-plane recv loop).
++        let result: Result<(data: Data, from: String), TailscaleError> =
++            await withCheckedContinuation { cont in
++                DispatchQueue.global(qos: .userInitiated).async {
++                    var p = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
++                    let rc = poll(&p, 1, timeout)
++                    if rc == 0 {
++                        cont.resume(returning: .failure(.readFailed))
++                        return
++                    }
++                    if rc < 0 {
++                        cont.resume(returning: .failure(.fromPosixErrCode(errno, "Poll failed")))
++                        return
++                    }
 +
-+        var buffer = [UInt8](repeating: 0, count: Self.maxDatagramBytes)
-+        let bytesRead = buffer.withUnsafeMutableBufferPointer { buf -> Int in
-+            Darwin.read(listener, buf.baseAddress, buf.count)
++                    var buffer = [UInt8](repeating: 0, count: Self.maxDatagramBytes)
++                    let bytesRead = buffer.withUnsafeMutableBufferPointer { buf -> Int in
++                        Darwin.read(fd, buf.baseAddress, buf.count)
++                    }
++                    if bytesRead <= 0 {
++                        cont.resume(returning: .failure(.readFailed))
++                        return
++                    }
++                    let addrLen = Int(buffer[0])
++                    guard 1 + addrLen <= bytesRead else {
++                        cont.resume(returning: .failure(.readFailed))
++                        return
++                    }
++                    let addrBytes = Array(buffer[1..<(1 + addrLen)])
++                    guard let addrStr = String(bytes: addrBytes, encoding: .utf8) else {
++                        cont.resume(returning: .failure(.readFailed))
++                        return
++                    }
++                    let payload = Data(buffer[(1 + addrLen)..<bytesRead])
++                    cont.resume(returning: .success((payload, addrStr)))
++                }
++            }
++        switch result {
++        case .success(let v): return v
++        case .failure(let e): throw e
 +        }
-+        if bytesRead <= 0 {
-+            throw TailscaleError.readFailed
-+        }
-+
-+        // Decode the address prefix.
-+        guard bytesRead >= 1 else {
-+            throw TailscaleError.readFailed
-+        }
-+        let addrLen = Int(buffer[0])
-+        guard 1 + addrLen <= bytesRead else {
-+            throw TailscaleError.readFailed
-+        }
-+        let addrBytes = Array(buffer[1..<(1 + addrLen)])
-+        guard let addrStr = String(bytes: addrBytes, encoding: .utf8) else {
-+            throw TailscaleError.readFailed
-+        }
-+        let payload = Data(buffer[(1 + addrLen)..<bytesRead])
-+
-+        return (payload, addrStr)
 +    }
 +
 +    /// Send one UDP datagram to the given "ip:port" destination.
 +    /// Sends are best-effort; UDP semantics apply.
 +    ///
 +    /// @throws TailscaleError on a closed listener or framing/write error.
-+    public func send(_ data: Data, to destination: String) throws {
-+        guard listener != 0 else {
++    public func send(_ data: Data, to destination: String) async throws {
++        let fd = listener
++        guard fd != 0 else {
 +            throw TailscaleError.connectionClosed
 +        }
 +        guard let addrBytes = destination.data(using: .utf8) else {
@@ -125,19 +140,28 @@
 +            throw TailscaleError.shortWrite
 +        }
 +
-+        var framed = Data(capacity: 1 + addrBytes.count + data.count)
-+        framed.append(UInt8(addrBytes.count))
-+        framed.append(addrBytes)
-+        framed.append(data)
++        var buf = Data(capacity: 1 + addrBytes.count + data.count)
++        buf.append(UInt8(addrBytes.count))
++        buf.append(addrBytes)
++        buf.append(data)
++        let framed = buf
 +
-+        let written = framed.withUnsafeBytes { (buf: UnsafeRawBufferPointer) -> Int in
-+            guard let base = buf.baseAddress else { return -1 }
-+            return Darwin.write(listener, base, framed.count)
++        // Off-actor for the same reason as recv: Darwin.write can block
++        // when the socketpair buffer is full, and we do not want one slow
++        // write to freeze concurrent recv() callers.
++        let written: Int = await withCheckedContinuation { cont in
++            DispatchQueue.global(qos: .userInitiated).async {
++                let n = framed.withUnsafeBytes { (buf: UnsafeRawBufferPointer) -> Int in
++                    guard let base = buf.baseAddress else { return -1 }
++                    return Darwin.write(fd, base, framed.count)
++                }
++                cont.resume(returning: n)
++            }
 +        }
 +        // SOCK_DGRAM: a successful write delivers the whole datagram. A
-+        // partial write would mean kernel buffer pressure — at our framing
-+        // this is effectively never, but treat it as a drop and let the
-+        // application's retransmit-on-loss mechanism (PLI for RTP) recover.
++        // partial/failed write means the kernel dropped this datagram —
++        // treat it as a drop and let the application's retransmit-on-loss
++        // mechanism (PLI for RTP) recover.
 +        if written != framed.count {
 +            throw TailscaleError.shortWrite
 +        }
