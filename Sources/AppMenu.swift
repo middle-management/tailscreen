@@ -28,7 +28,7 @@ enum AppMenu {
     /// stays absent in the idle state.
     private static func wireActivationPolicy() {
         let nc = NotificationCenter.default
-        let updatePolicy: () -> Void = {
+        let updatePolicy: @Sendable @MainActor () -> Void = {
             let hasVisibleWindow = NSApp.windows.contains { w in
                 w.isVisible && w.canBecomeKey
             }

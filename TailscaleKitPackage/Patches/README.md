@@ -62,6 +62,26 @@ make clean
 
 **Status:** Required for Swift Package Manager builds.
 
+### 009/010/011 (deleted)
+Previously swapped `unistd.read/write/close` → `Darwin.read/write/close` in the upstream Swift sources to fix Swift 6 module resolution. Upstream has since adopted the same fix in `main`; the standalone swap patches are no-ops and were removed. Patches 006/007 (which add new functions) now use `Darwin.*` directly.
+
+### 013-add-tsnet-listen-packet-go.patch
+**Issue:** libtailscale upstream only exposes `tsnet.Server.Listen` (TCP). Go's `net.Listen` has no UDP variant, so `Listener(proto: .udp)` in the Swift wrapper fails at runtime.
+
+**Fix:** Adds a new `TsnetListenPacket` exported function that wraps `tsnet.Server.ListenPacket`. Bridges the Go `net.PacketConn` to a SOCK_DGRAM socketpair fd. Each datagram on the wire is framed as `[1B addr_len][addr_bytes][payload]` so the per-packet source/destination address survives the bridge.
+
+**Status:** Required for the UDP RTP transport. Worth upstreaming once stable.
+
+### 014-add-tailscale-listen-packet-header.patch
+**Issue:** Pairs with 013 — exposes the new function in `tailscale.h` so Swift can call it via the `libtailscale` C module.
+
+**Fix:** Adds `extern int tailscale_listen_packet(...)` with documentation of the on-wire framing.
+
+### 015-add-packet-listener-swift.patch
+**Issue:** Pairs with 013/014 — adds a Swift wrapper for the new C function.
+
+**Fix:** Creates `swift/TailscaleKit/PacketListener.swift` exposing a `PacketListener` actor with `recv(timeout:)` returning `(Data, sourceAddress)` and `send(_:to:)` taking a destination "ip:port". UDP datagrams in/out via the same fd; demultiplexing by source address is the caller's job.
+
 ## Creating New Patches
 
 1. Make your changes to files in `upstream/libtailscale/swift/TailscaleKit/`

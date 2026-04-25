@@ -3,44 +3,78 @@ import CoreVideo
 import Foundation
 import TailscaleKit
 
-/// Screen-share viewer. Dials a peer over TailscaleKit, parses the framed
-/// protocol, decodes H.264 via `VideoDecoder` (VTDecompressionSession), and
-/// hands the resulting `CVPixelBuffer`s to a shared `MetalViewerRenderer`.
+/// Screen-share viewer.
+///
+/// Both the client and server use the new `PacketListener` (UDP via tsnet's
+/// `ListenPacket`). The Dial-UDP path through `OutgoingConnection` is
+/// unsuitable here: libtailscale's existing `TsnetDial` uses a SOCK_STREAM
+/// socketpair under the hood, which streams bytes without preserving
+/// datagram boundaries — multiple writes can coalesce, incoming datagrams
+/// can split. Going through `PacketListener` (SOCK_DGRAM socketpair, see
+/// patches 013-015) keeps every datagram intact in both directions.
+///
+/// Flow on connect:
+///
+///   1. Bind a local UDP `PacketListener` on the node's tailnet IP at an
+///      ephemeral port. tsnet picks the port; the server learns it from
+///      the source address of the HELLO datagram.
+///   2. Send a HELLO control byte to the server's "ip:port".
+///   3. Receive RTP packets, reassemble into AVCC access units, decode.
+///   4. Periodically send KEEPALIVE so the server's idle sweeper doesn't
+///      drop us during quiet stretches.
+///
+/// On packet loss the depacketizer flags the next clean access unit; we
+/// react by sending a PLI back to the server, which forces a fresh IDR.
 ///
 /// The renderer (and the `NSWindow` it lives in) is owned by `AppState` for
-/// the process lifetime. The client never creates or destroys either: every
-/// `NSWindow.close()` ordering we tried raced something in the AppKit/CA
-/// teardown chain (autoreleased IOSurfaces / CVPixelBufferPool releases land
-/// in the same main-queue pool a Swift `Task` is about to pop, SIGSEGV in
-/// `objc_release`). Keeping the window alive and only `orderOut`-ing it on
-/// disconnect sidesteps the race entirely.
+/// the process lifetime — see the long comment that used to live here for
+/// the AppKit teardown race that motivated that.
 @available(macOS 10.15, *)
 final class TailscaleScreenShareClient: @unchecked Sendable {
     var node: TailscaleNode?
 
-    private var connection: OutgoingConnection?
+    private var packetListener: PacketListener?
+    private var serverAddr: String?
     private let renderer: MetalViewerRenderer
     private var decoder: VideoDecoder?
+    private var depacketizer = H264Depacketizer()
     private var isConnected = false
     private var isDisconnecting = false
     private let logger: TSLogger
     private var receiveTask: Task<Void, Never>?
-    /// Serializes writes on the connection. Without this, overlapping
-    /// `sendAnnotationOp` calls could interleave framed-message bytes.
-    private let writer = ConnectionWriter()
+    private var keepaliveTask: Task<Void, Never>?
+
+    /// Last-seen parameter sets, applied to the decoder on first sight and
+    /// re-applied if they change (resolution change, encoder restart). The
+    /// server emits SPS/PPS in-band as RTP packets at the head of every IDR,
+    /// so we don't need a separate parameter-sets message.
+    private var installedSPS: Data?
+    private var installedPPS: Data?
+
+    /// TCP back-channel for annotation ops. Separate from the UDP video
+    /// stream because strokes need reliable, ordered delivery — a dropped
+    /// UDP datagram would leave a visual gap mid-stroke. Goes to the same
+    /// host:port as the peer-discovery probe.
+    private var annotationChannel: OutgoingConnection?
+
+    /// Serializes writes on `annotationChannel` so concurrent
+    /// `sendAnnotationOp` calls (e.g. rapid stroke segments) don't
+    /// interleave framed-message bytes on the wire.
+    private let annotationWriter = ConnectionWriter()
 
     init(renderer: MetalViewerRenderer) {
         self.renderer = renderer
         self.logger = TSLogger()
     }
 
-    /// Transmit an annotation op to the sharer over the back-channel. Safe to
-    /// call concurrently; writes are serialized through ``ConnectionWriter``.
+    /// Transmit an annotation op to the sharer over the TCP back-channel.
+    /// Safe to call concurrently; writes are serialized through
+    /// ``ConnectionWriter``. Drops silently if the back-channel isn't open.
     func sendAnnotationOp(_ op: AnnotationOp) async {
-        guard let connection = connection, isConnected else { return }
+        guard let conn = annotationChannel, isConnected else { return }
         let data = ScreenShareMessage.annotation(op).encode()
         do {
-            try await writer.send(data, over: connection)
+            try await annotationWriter.send(data, over: conn)
         } catch {
             print("Client: sendAnnotationOp failed: \(error)")
         }
@@ -77,15 +111,20 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
             throw TailscaleError.badInterfaceHandle
         }
 
-        print("Dialing \(hostname):\(port)…")
-        let connection = try await OutgoingConnection(
+        // tsnet's ListenPacket needs an explicit IP. Bind on this node's
+        // tailnet IPv4 (preferred) or IPv6 with port 0 → kernel picks an
+        // ephemeral port. The server learns where to send RTP back to from
+        // the source address of our HELLO.
+        let bindIP = ips.ip4 ?? ips.ip6 ?? "0.0.0.0"
+        let bindAddr = ips.ip4 != nil ? "\(bindIP):0" : "[\(bindIP)]:0"
+        let pl = try await PacketListener(
             tailscale: tailscaleHandle,
-            to: "\(hostname):\(port)",
-            proto: .tcp,
+            address: bindAddr,
             logger: logger
         )
-        try await connection.connect()
-        self.connection = connection
+        self.packetListener = pl
+        self.serverAddr = formatAddr(host: hostname, port: port)
+        print("Bound local UDP, dialing \(serverAddr ?? "?")")
 
         let decoder = VideoDecoder()
         decoder.onDecodedFrame = { [weak self] pixelBuffer in
@@ -93,158 +132,192 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         }
         self.decoder = decoder
 
+        // Open the TCP annotation back-channel to the same host:port.
+        // Best-effort: a connect failure here doesn't break video, it just
+        // disables annotation streaming for this session.
+        do {
+            let conn = try await OutgoingConnection(
+                tailscale: tailscaleHandle,
+                to: "\(hostname):\(port)",
+                proto: .tcp,
+                logger: logger
+            )
+            try await conn.connect()
+            self.annotationChannel = conn
+            print("Annotation back-channel open to \(hostname):\(port)")
+        } catch {
+            print("Annotation back-channel failed to open: \(error) (annotations disabled)")
+        }
+
         self.isConnected = true
-        print("Connected to \(hostname)")
+
+        try await pl.send(ScreenShareControlMessage.encode(.hello), to: serverAddr!)
+        print("HELLO sent to \(serverAddr!)")
 
         receiveTask = Task { [weak self] in
             await self?.receiveLoop()
         }
+        keepaliveTask = Task { [weak self] in
+            await self?.keepaliveLoop()
+        }
+    }
+
+    /// IPv6 literals must be bracketed: "[::1]:7447", not "::1:7447". IPv4
+    /// addresses don't need brackets. Detection: presence of ":" outside a
+    /// trailing port is the IPv6 signal.
+    private func formatAddr(host: String, port: UInt16) -> String {
+        if host.contains(":") && !host.hasPrefix("[") {
+            return "[\(host)]:\(port)"
+        }
+        return "\(host):\(port)"
     }
 
     private func receiveLoop() async {
-        guard let connection = connection else { return }
-        var parser = ScreenShareMessageParser()
-        var bytesReceived = 0
-        var framesReceived = 0
-        // Watchdog: if no bytes have arrived in this many seconds we
-        // assume the sharer is gone. tsnet's userspace stack doesn't
-        // always propagate RST/FIN across the WireGuard tunnel when
-        // the remote node closes. With the sharer encoding at 60fps a
-        // 3-second silence is far longer than any normal gap; the
-        // tradeoff is that a transient network blip on a degraded
-        // tailnet can also force a disconnect, which feels right —
-        // user can hit Connect again to recover.
+        guard let pl = packetListener else { return }
+        var packetsReceived = 0
+        var framesDelivered = 0
         let idleDisconnectAfterNs: UInt64 = 3_000_000_000  // 3s
         var lastDataNs = DispatchTime.now().uptimeNanoseconds
 
         while isConnected {
             do {
-                // Short poll so the idle watchdog below trips ~1s after
-                // the threshold instead of waiting for the full poll
-                // window. receive returns immediately when bytes arrive,
-                // so this doesn't increase latency for live frames.
-                let chunk = try await connection.receive(maximumLength: 64 * 1024, timeout: 1_000)
-                if chunk.isEmpty {
-                    // poll() returned positive but read() got 0 bytes —
-                    // that's EOF, the sharer closed the TCP connection.
-                    // Tell AppState so it runs disconnect() and tears
-                    // down our window/UI; otherwise the viewer sits
-                    // forever rendering the last decoded frame.
-                    print("Receive: peer closed connection (EOF)")
-                    NotificationCenter.default.post(name: .tailscreenViewerPeerClosed, object: nil)
-                    break
+                // recv returns one UDP datagram. The server is the only
+                // party that should be sending to us (it learned our addr
+                // from the HELLO source); ignore datagrams from anywhere
+                // else as a precaution.
+                let (datagram, from) = try await pl.recv(timeout: 1_000)
+                if datagram.isEmpty { continue }
+                if from != serverAddr {
+                    // Don't pollute the depacketizer with packets from
+                    // unexpected senders. In practice this never happens
+                    // on a tailnet; safety net only.
+                    continue
                 }
                 lastDataNs = DispatchTime.now().uptimeNanoseconds
-                bytesReceived += chunk.count
+                packetsReceived += 1
 
-                parser.append(chunk)
-                while let message = parser.next() {
-                    switch message {
-                    case .parameterSets(let sps, let pps):
-                        print("Client: received SPS/PPS (sps=\(sps.count)B pps=\(pps.count)B)")
-                        decoder?.setParameterSets(sps: sps, pps: pps)
-                    case .frame(let data, let isKeyframe, let timestampNs):
-                        framesReceived += 1
-                        if framesReceived == 1 || framesReceived % 60 == 0 {
-                            let nowNs = DispatchTime.now().uptimeNanoseconds
-                            let latencyMs: Double
-                            if timestampNs > 0 && nowNs >= timestampNs {
-                                latencyMs = Double(nowNs - timestampNs) / 1_000_000.0
-                            } else {
-                                latencyMs = -1
-                            }
-                            let latencyStr = latencyMs >= 0 ? String(format: "%.1fms", latencyMs) : "n/a"
-                            print("Client: received frame #\(framesReceived) (kf=\(isKeyframe), \(data.count)B, total=\(bytesReceived)B, encode→recv=\(latencyStr))")
-                        }
-                        self.lastReceiveUptimeNs = DispatchTime.now().uptimeNanoseconds
-                        decoder?.decode(data: data, isKeyframe: isKeyframe)
-                    case .annotation:
-                        // Server never sends these downstream; ignore defensively.
-                        break
+                // Server shouldn't be sending us control bytes, but ignore
+                // them cleanly if it does. Real RTP has V=2 → 0x80–0xBF.
+                guard !ScreenShareControlMessage.looksLikeControl(datagram) else { continue }
+
+                if let au = depacketizer.ingest(datagram) {
+                    framesDelivered += 1
+                    if au.lostBeforeThisAU {
+                        try? await pl.send(ScreenShareControlMessage.encode(.pli), to: serverAddr!)
                     }
+                    if framesDelivered == 1 || framesDelivered % 60 == 0 {
+                        print("Client: AU #\(framesDelivered) (kf=\(au.containsIDR), \(au.avcc.count)B, packets=\(packetsReceived))")
+                    }
+                    self.lastReceiveUptimeNs = DispatchTime.now().uptimeNanoseconds
+                    deliverAU(au)
                 }
             } catch TailscaleError.readFailed {
                 if !isConnected { break }
-                // Idle watchdog: silent for too long → assume sharer
-                // went away without an explicit FIN reaching us.
                 let nowNs = DispatchTime.now().uptimeNanoseconds
                 if nowNs &- lastDataNs > idleDisconnectAfterNs {
-                    print("Receive: idle for > 10s, assuming peer gone")
+                    print("Receive: idle for > 3s, assuming server gone")
                     NotificationCenter.default.post(name: .tailscreenViewerPeerClosed, object: nil)
                     break
                 }
                 continue
             } catch {
-                if isConnected {
-                    print("Receive error: \(error)")
-                }
+                if isConnected { print("Receive error: \(error)") }
                 break
             }
         }
     }
 
-    /// Timestamp (mach uptime ns) when the most recent frame finished
-    /// arriving on the socket. Used only to measure recv→present latency;
-    /// last-writer-wins is fine for that purpose.
+    private func deliverAU(_ au: H264Depacketizer.AccessUnit) {
+        if au.containsIDR {
+            let nals = AVCCParser.nalUnits(from: au.avcc)
+            var sps: Data?
+            var pps: Data?
+            for nal in nals {
+                guard let header = nal.first else { continue }
+                switch header & 0x1F {
+                case 7: sps = nal
+                case 8: pps = nal
+                default: break
+                }
+            }
+            if let sps = sps, let pps = pps,
+               (sps != installedSPS || pps != installedPPS) {
+                installedSPS = sps
+                installedPPS = pps
+                decoder?.setParameterSets(sps: sps, pps: pps)
+            }
+        }
+        decoder?.decode(data: au.avcc, isKeyframe: au.containsIDR)
+    }
+
+    private func keepaliveLoop() async {
+        while isConnected {
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            guard isConnected, let pl = packetListener, let addr = serverAddr else { return }
+            try? await pl.send(ScreenShareControlMessage.encode(.keepalive), to: addr)
+        }
+    }
+
     private var lastReceiveUptimeNs: UInt64 = 0
 
     private func handleDecodedFrame(_ buffer: CVPixelBuffer) {
-        // VTDecompressionSession delivers frames on its own callback thread.
-        // The renderer guards its pending-frame slot with a lock, so handing
-        // the buffer over from any thread is safe.
         guard isConnected, !isDisconnecting else { return }
         renderer.setPixelBuffer(buffer, receiveUptimeNs: lastReceiveUptimeNs)
     }
 
     func disconnect() async {
-        // Idempotent. Disconnect can fire from the menu's Disconnect button
-        // and the receiveLoop's error path concurrently during teardown.
         if isDisconnecting { return }
         isDisconnecting = true
 
+        // Best-effort BYE so the server can drop us immediately rather than
+        // wait the full idle timeout. UDP send isn't guaranteed; if it
+        // doesn't arrive, the server's sweeper will collect us.
+        if let pl = packetListener, let addr = serverAddr, isConnected {
+            try? await pl.send(ScreenShareControlMessage.encode(.bye), to: addr)
+        }
+
         isConnected = false
 
-        // Close the connection FIRST so the receive loop's blocked
-        // `connection.receive(timeout: 5_000)` errors out immediately
-        // instead of running out its 5s poll timeout. Without this the
-        // user perceived a multi-second pause after clicking Disconnect.
-        // Then await the loop's exit, then close the node — closing the
-        // node before the loop exits rips the fd out from under a
-        // concurrent read and segfaults tsnet.
-        if let connection = connection {
-            await connection.close()
-            self.connection = nil
+        if let pl = packetListener {
+            await pl.close()
+            self.packetListener = nil
         }
+        serverAddr = nil
+
+        if let conn = annotationChannel {
+            await conn.close()
+            self.annotationChannel = nil
+        }
+
         if let receiveTask = receiveTask {
             receiveTask.cancel()
             _ = await receiveTask.value
         }
         receiveTask = nil
+        if let keepaliveTask = keepaliveTask {
+            keepaliveTask.cancel()
+            _ = await keepaliveTask.value
+        }
+        keepaliveTask = nil
 
         if let node = node {
             try? await node.close()
             self.node = nil
         }
 
-        // Shut the decoder down last. `shutdown` drains via
-        // `WaitForAsynchronousFrames` and blocks on the decoder's serial
-        // queue, so once it returns no more frames can be delivered to the
-        // renderer.
         if let decoder = decoder {
             decoder.onDecodedFrame = nil
             decoder.shutdown()
             self.decoder = nil
         }
 
-        // No window/renderer teardown here — both are app-lifetime singletons
-        // owned by AppState. AppState.disconnect handles orderOut + clearing
-        // the renderer's pending frame.
         print("Client disconnected")
     }
 
     deinit {
         isConnected = false
         receiveTask?.cancel()
+        keepaliveTask?.cancel()
     }
 
     /// Stable identity string used to derive this viewer's drawing color.
@@ -263,10 +336,9 @@ private struct TSLogger: LogSink {
 }
 
 extension Notification.Name {
-    /// Posted from the viewer's receive loop when the sharer closes the
-    /// TCP control connection (read() == 0 after poll() = POLLIN). AppState
-    /// observes this and runs disconnect() so the UI tears down instead
-    /// of sitting on a stale last frame.
+    /// Posted from the viewer's receive loop when the server appears to
+    /// have gone silent for longer than the idle threshold. AppState
+    /// observes this and runs disconnect() so the UI tears down.
     static let tailscreenViewerPeerClosed = Notification.Name("tailscreen.viewer.peerClosed")
 }
 
