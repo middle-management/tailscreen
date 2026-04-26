@@ -16,7 +16,6 @@ class AppState: ObservableObject {
     @Published var showAlert = false
     @Published var alertTitle = ""
     @Published var alertMessage = ""
-    @Published var showConnectSheet = false
     /// Whether the sharer's drawing overlay panel is currently visible and
     /// accepting input. The panel itself is only created while sharing.
     @Published var isSharerOverlayVisible = false
@@ -113,15 +112,6 @@ class AppState: ObservableObject {
     }
 
     private var cancellables = Set<AnyCancellable>()
-
-    var localIPAddresses: [String] {
-        if !tailscaleIPs.isEmpty {
-            return tailscaleIPs.map { "Tailscale: \($0)" }
-        }
-        return ["Starting Tailscale..."]
-    }
-
-    var rawTailscaleIPs: [String] { tailscaleIPs }
 
     /// Populate `availableDisplays` via ScreenCaptureKit. Safe to call any
     /// time the menu is opened; silently clears the list if the API errors
@@ -593,9 +583,9 @@ class AppState: ObservableObject {
         // the device server-side as soon as the app quits, forcing a
         // browser login every relaunch — fine for CI but painful in daily
         // use.
-        let baseHostname = Host.current().localizedName ?? "tailscreen"
+        let baseHostname = Host.current().localizedName ?? "mac"
         let config = Configuration(
-            hostName: "\(baseHostname)\(TailscreenInstance.hostnameSuffix)",
+            hostName: "tailscreen-\(baseHostname)\(TailscreenInstance.hostnameSuffix)",
             path: statePath,
             authKey: nil,
             controlURL: kDefaultControlURL,
