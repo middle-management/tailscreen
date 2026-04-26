@@ -1,4 +1,4 @@
-.PHONY: build run clean release install tailscale test e2e-up e2e-down test-e2e
+.PHONY: build run clean release install tailscale test e2e-up e2e-down test-e2e icon
 
 # Lets SwiftPM's systemLibrary target find libtailscale.pc at build time,
 # which in turn resolves the `-L` flag for libtailscale.a.
@@ -43,3 +43,21 @@ e2e-down:
 # One-shot: spin headscale, run the connectivity test, tear down.
 test-e2e: tailscale
 	@./scripts/e2e-test.sh
+
+# Regenerate the macOS .icns app icon from the source SVG. Requires
+# librsvg (`brew install librsvg`) and the system iconutil.
+ICON_SRC := docs/assets/tailscreen-with-stand.svg
+ICON_OUT := Resources/Tailscreen.icns
+ICONSET  := Resources/Tailscreen.iconset
+
+icon:
+	@command -v rsvg-convert >/dev/null 2>&1 || { echo "rsvg-convert missing — brew install librsvg"; exit 1; }
+	@rm -rf "$(ICONSET)" && mkdir -p "$(ICONSET)"
+	@for sz in 16 32 128 256 512; do \
+		rsvg-convert -w $$sz -h $$sz "$(ICON_SRC)" -o "$(ICONSET)/icon_$${sz}x$${sz}.png"; \
+		dbl=$$((sz * 2)); \
+		rsvg-convert -w $$dbl -h $$dbl "$(ICON_SRC)" -o "$(ICONSET)/icon_$${sz}x$${sz}@2x.png"; \
+	done
+	@iconutil -c icns "$(ICONSET)" -o "$(ICON_OUT)"
+	@rm -rf "$(ICONSET)"
+	@echo "Wrote $(ICON_OUT)"
