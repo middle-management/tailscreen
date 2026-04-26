@@ -10,13 +10,17 @@ permalink: /architecture/
 1. TOC
 {:toc}
 
-## High-level data flow
+Tailscreen is small. Twenty-six Swift files, one Go-built C archive, no
+external services. Most of the interesting work happens in the video
+pipeline; everything else is plumbing.
+
+## The whole picture
 
 ```
 TailscreenApp (@main)
   └─ AppState (@MainActor)
        ├─ TailscaleScreenShareServer
-       │    └─ ScreenCapture → VideoEncoder → RTPPacket → UDP/7447 (TailscaleNode.listenPacket)
+       │    └─ ScreenCapture → VideoEncoder → RTPPacket → UDP/7447
        │       + TCP/7447 (annotations + metadata)
        ├─ TailscaleScreenShareClient
        │    └─ UDP/7447 → RTP depacketize → VideoDecoder → MetalViewerRenderer
@@ -27,82 +31,144 @@ TailscreenApp (@main)
        └─ TailscreenMetadataService ── share name, resolution, request-to-share
 ```
 
-## Components
+If you've used a low-latency video stack before, this will look familiar.
+If you haven't, the rest of this page is the tour.
 
-### SwiftUI menubar
+## SwiftUI menubar
 
-- `TailscreenApp.swift` — `@main` entry; menubar lifecycle.
-- `MenuBarView.swift` — the SwiftUI views (menus, sheets, alerts).
-- `AppMenu.swift` — the native `NSMenu` (File → Disconnect, etc.).
-- `AppState.swift` — central `@MainActor` coordinator: sharing state,
-  connections, peer list, displays.
-- `MenuBarExtra` integration keeps the app out of the dock; the viewer is a
-  regular `NSWindow` held for the process lifetime.
+`TailscreenApp.swift` is the `@main` entry point. It owns the menubar
+lifecycle and not much else. The actual coordinator is `AppState.swift`,
+which is `@MainActor` and holds the truth: are we sharing, are we
+connecting, who are the peers, which display.
 
-### Screen capture
+`MenuBarView.swift` is where every SwiftUI view in the app lives. We
+deliberately did not split it into one-file-per-view; the view code is
+short enough that the cognitive cost of jumping between files would
+outweigh the cost of scrolling.
 
-- `ScreenCapture.swift` wraps `ScreenCaptureKit`.
-- Captures at native Retina resolution (2× scaling) and a 60 FPS target.
-- `CVPixelBuffer` outputs are pushed straight into the encoder — no copies,
-  no Swift heap allocation per frame.
+`AppMenu.swift` builds the native `NSMenu` (File → Disconnect, etc.)
+because some things SwiftUI's `MenuBarExtra` still doesn't do well in 2026.
 
-### Video pipeline
+The viewer window is a regular `NSWindow` and we hold it for the entire
+process lifetime. That's not laziness — releasing it on disconnect raced
+with VideoToolbox/Metal teardown in autoreleasepool and crashed. Holding
+the window is the fix.
 
-- `VideoEncoder.swift` — VideoToolbox H.264, low-latency profile, no frame
-  reordering, ~4 bits per pixel adaptive bitrate, keyframe every ~2 s or on
-  PLI from the receiver.
-- `RTPPacket.swift` — RFC 3984 packetizer/depacketizer; SPS/PPS sent in-band
-  on each keyframe.
-- `VideoDecoder.swift` — VideoToolbox H.264 decode.
-- `MetalViewerRenderer.swift` — `CAMetalLayer` rendering for the viewer
-  window.
+## Capture
 
-### Tailscale integration
+`ScreenCapture.swift` is a thin wrapper over `ScreenCaptureKit`. We
+capture at native Retina (2×) at a 60 fps target. The buffers come out as
+`CVPixelBuffer`s and go straight into the encoder — no copies, no Swift
+heap allocations per frame. If you're staring at the encoder wondering why
+it doesn't make defensive copies, that's why.
 
-- TailscaleKit (a local SwiftPM package wrapping `libtailscale`) provides an
-  ephemeral tsnet node with its own state directory.
-- `TailscalePeerDiscovery.swift` — enumerates peers via the tsnet LocalAPI
-  and parallel-probes TCP/7447 to identify which peers are running
-  Tailscreen.
-- `TailscaleIPNWatcher.swift` — subscribes to the IPN bus for live
-  online/offline events, so the menu reflects peer changes immediately.
-- `TailscaleAuth.swift` — tracks login state and triggers the browser-based
-  interactive login.
+## Video encode/decode
 
-### Annotations / control
+`VideoEncoder.swift` is VideoToolbox configured for the lowest latency we
+can talk it into:
 
-- `Annotation.swift` — stroke ops and the `AnnotationOp` data model.
-- `DrawingOverlayView.swift` — the viewer-side drawing UI.
-- `SharerOverlayWindow.swift` — a transparent `NSWindow` on the sharer's
-  Mac that renders inbound annotations.
-- `ScreenShareProtocol.swift` — TCP framing for annotation traffic.
-- `ViewerCommands.swift`, `ViewerToolbar.swift` — viewer toolbar (brightness,
-  magnifier, drawing tools).
+- Hardware encoder where available (everywhere on Apple Silicon).
+- Frame reordering disabled. No B-frames. Each frame depends only on
+  earlier frames, which means a packet loss can't strand future frames
+  waiting for a frame from the past.
+- ~4 bits per pixel adaptive bitrate, scaled by resolution.
+- Keyframe roughly every 2 seconds, or earlier when the receiver sends a
+  PLI (Picture Loss Indication).
 
-### Metadata channel
+`RTPPacket.swift` does packetize and depacketize per RFC 3984 — it knows
+about FU-A fragmentation, STAP-A aggregation, and SPS/PPS parameter sets.
+SPS/PPS go in-band on every keyframe so a viewer that connects partway
+through can sync without an out-of-band handshake.
 
-`TailscreenMetadata.swift` plus `TailscreenMetadataService` exchange:
+`VideoDecoder.swift` is the symmetric VideoToolbox decode path. The decoded
+`CVPixelBuffer`s feed straight into `MetalViewerRenderer.swift`, which uses
+a `CAMetalLayer` for the actual blit.
 
-- The share's display name and resolution.
-- Request-to-share prompts (so the sharer can confirm an incoming viewer
-  rather than silently accepting connections).
+## Tailscale integration
 
-## Concurrency notes
+This is the part that, if Tailscale didn't exist, we would have written and
+hated.
 
-- All UI-touching state is `@MainActor`: `AppState`, `MenuBarView`, and
-  anywhere an `NSWindow` is constructed.
-- Networking classes that handle their own thread safety are
-  `@unchecked Sendable` (`TailscaleScreenShareServer`,
-  `TailscaleScreenShareClient`).
-- `CVPixelBuffer` is **not** `Sendable`; preview thumbnails are converted to
-  `CGImage` before crossing back to `@MainActor`.
-- `deinit` does synchronous cleanup only — no `Task { ... self ... }` that
-  would capture `self` after deinit starts.
+[TailscaleKit](https://github.com/tailscale/libtailscale) is a Swift
+wrapper around `libtailscale` (the same C library used by Tailscale's own
+embeds). We pull it in as a local SwiftPM package at
+`./TailscaleKitPackage/` so we can apply our patches on top of the upstream
+Swift sources. (We have 16 patches at last count. They're all small. They
+add things like a `Foundation` import, glue imports for the C bridge,
+`send`/`receive` on connections, a public `logout`, listener poll-timeout
+handling, and our `tsnet ListenPacket` Swift wrapper for the UDP video
+path. The patches live in `TailscaleKitPackage/Patches/`.)
+
+Each Tailscreen session spins up an **ephemeral tsnet node**: a fresh
+Tailscale identity that lives only as long as the session. The Tailscale
+control plane registers it, hands it a key, and removes it again the
+moment Tailscreen closes. Your admin console doesn't fill up with
+"Tailscreen-2024-12-15-15-32-44" devices.
+
+`TailscalePeerDiscovery.swift` enumerates peers via the tsnet LocalAPI and
+opens TCP/7447 to each in parallel with a short timeout. Anything that
+accepts and replies with the Tailscreen handshake gets shown in **Browse
+Shares**.
+
+`TailscaleIPNWatcher.swift` subscribes to the IPN bus so the menu reflects
+peers coming online and offline immediately, not after the next discovery
+sweep.
+
+`TailscaleAuth.swift` handles the browser-based login. The sharp edge here
+is that interactive login only works after a tsnet node is initialized,
+which means after `Start Sharing` or `Connect to...` has been clicked at
+least once. There is no chicken-and-egg fix; that's just how `libtailscale`
+works.
+
+## Annotations
+
+`Annotation.swift` defines the data model — strokes, colors, op types.
+`DrawingOverlayView.swift` is the viewer-side drawing UI;
+`SharerOverlayWindow.swift` is the transparent `NSWindow` on the sharer's
+machine that the strokes get rendered into.
+
+The wire format is in `ScreenShareProtocol.swift`. It's TCP, framed,
+JSON-encoded. We use TCP rather than RTCP-style RTP feedback because losing
+a stroke segment is worse than the latency cost of TCP retransmits — the
+viewer would be drawing on something the sharer never sees.
+
+## Metadata
+
+`TailscreenMetadata.swift` and the in-process `TailscreenMetadataService`
+exchange three things over TCP/7447:
+
+- The share's display name (so the **Browse Shares** list says "Mike's
+  laptop" rather than `100.83.12.4`).
+- The display resolution.
+- Request-to-share prompts. The sharer can require manual confirmation
+  before any video is sent, so a Mac that's left "sharing" all day doesn't
+  silently start streaming the moment a peer connects.
+
+## Concurrency
+
+Swift 6 strict concurrency. Some specifics worth knowing if you're
+modifying:
+
+- Anything that touches UI is `@MainActor`. That includes `AppState`,
+  `MenuBarView`, and anywhere an `NSWindow` is constructed.
+- Networking classes that handle their own thread safety (the screen-share
+  server and client) are `@unchecked Sendable`. We're owning the
+  invariants, the compiler isn't checking them.
+- `CVPixelBuffer` is **not** `Sendable`. If you need to hop a captured
+  frame to `@MainActor` (we do this for preview thumbnails), convert to
+  `CGImage` first.
+- No `Task { ... self ... }` in `deinit`. The instance is being torn down;
+  capturing `self` after `deinit` starts is undefined behavior in Swift.
+  Cleanup in `deinit` is synchronous or it doesn't happen.
 
 ## What's not here
 
-- No iOS / iPadOS support — macOS 15+ only.
-- No central relay server. Tailscale's DERP infrastructure is the fallback
-  when direct connections aren't possible.
-- No recording or persistence — frames are encoded and transmitted in
-  real time, never stored.
+- **No iOS, no iPadOS.** macOS 15+ only. ScreenCaptureKit on iOS is a
+  different beast, and we're not going there.
+- **No central relay.** Tailscale's DERP is the only fallback when direct
+  P2P fails. Even DERP traffic is end-to-end encrypted; the relay only
+  sees ciphertext.
+- **No recording.** Frames go from camera → encoder → wire → decoder →
+  screen and are never written to disk. The Tailscale state directory at
+  `~/Library/Application Support/Tailscreen/tailscale` holds ephemeral
+  node state and that's it.

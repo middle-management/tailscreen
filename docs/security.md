@@ -6,67 +6,89 @@ permalink: /security/
 
 # Privacy & security
 
+The short version: we don't run a server, we don't see your traffic, your
+pixels go directly between two Macs over Tailscale's WireGuard tunnel, and
+nothing is recorded. The longer version is below.
+
 ## What's encrypted
 
-All traffic between Tailscreen peers is encrypted by Tailscale's WireGuard
-tunnel. There is no plaintext fallback, and no separate Tailscreen-level
-TLS — the WireGuard tunnel is the security boundary.
+Everything. All four channels documented in
+[Network Protocol]({% link protocol.md %}) — video, annotations, metadata,
+discovery probes — go through Tailscale's WireGuard tunnel. There is no
+plaintext fallback and there is no separate Tailscreen-level TLS layer.
+WireGuard is the security boundary; everything we send rides inside it.
 
-That covers all four channels documented in
-[Network Protocol]({% link protocol.md %}):
+If you're wondering "what cipher" or "what key exchange", that's
+WireGuard's answer to give, not ours: ChaCha20-Poly1305 and Curve25519
+Noise IK. Those choices are Tailscale's; we benefit from them.
 
-- Video (UDP/7447 RTP H.264).
-- Annotations (TCP/7447, length-prefixed JSON).
-- Metadata (TCP/7447, request/response).
-- Discovery probes (TCP/7447).
+## We don't run a server
 
-## Peer-to-peer by default
+There is no Tailscreen Inc., no Tailscreen-cloud, no telemetry endpoint,
+no "phone home". The authors don't operate any infrastructure that touches
+your traffic. The only third-party service in the picture is **Tailscale**,
+which you've already opted into separately. Specifically:
 
-Tailscale prefers a direct WireGuard connection between the two devices.
-When NAT or firewall rules prevent that, it falls back to a DERP relay
-operated by Tailscale Inc. — DERP traffic is still end-to-end encrypted; the
-relay only sees ciphertext.
+- The Tailscale **control plane** issues the ephemeral node identity and
+  exchanges the WireGuard public keys. It never sees session traffic.
+- Tailscale **DERP relays** can carry your encrypted bytes when direct
+  P2P fails. They cannot decrypt them — DERP is end-to-end encrypted on
+  top of being a TLS dumb pipe.
+- That's it.
 
-There is **no central Tailscreen server**. Anthropic / Middle Management /
-the Tailscreen authors do not run any infrastructure that touches your
-video, annotations, or metadata.
+If you don't trust Tailscale, you should not be using Tailscreen, because
+Tailscreen's security properties are downstream of Tailscale's. We didn't
+re-implement WireGuard.
 
-## What's stored
+## Nothing is stored
 
-Nothing. Frames are captured, encoded, transmitted, and discarded — there is
-no on-disk recording. The Tailscale state directory under
-`~/Library/Application Support/Tailscreen/tailscale` holds the ephemeral
-node's machine key and tailnet identity; that's it.
+No frame buffers, no annotations, no transcripts, nothing. Pixels go from
+ScreenCaptureKit → encoder → wire → decoder → display and are then
+discarded. The only on-disk state Tailscreen creates is the tsnet node
+state at `~/Library/Application Support/Tailscreen/tailscale`, which holds
+the ephemeral node's machine key. You can `rm -rf` it any time. (Doing so
+will force a fresh login the next time you start sharing.)
 
 ## Ephemeral nodes
 
-Each `Start Sharing` / `Connect to...` session spins up a fresh tsnet
-ephemeral node. When the session ends, Tailscale automatically removes the
-node from your tailnet — no stale devices accumulate in the Tailscale admin
-console.
+Each `Start Sharing` or `Connect to...` session spins up a fresh tsnet
+ephemeral node. When the session ends — explicitly via "Stop Sharing", or
+implicitly when the process exits — Tailscale removes the node from your
+tailnet automatically. You will not accumulate phantom devices in your
+admin console no matter how many times you start and stop.
 
-## macOS Screen Recording permission
+## The macOS Screen Recording prompt
 
-macOS forces an explicit user grant before any process can read pixel data
+macOS forces an explicit user grant before any process can read pixels
 from the display server. Tailscreen requests Screen Recording the first
-time you press **Start Sharing**, and the OS prompts you in
-**System Settings → Privacy & Security → Screen Recording**. Revoking the
-permission immediately blocks capture.
+time you press **Start Sharing**, the OS prompts you, and the permission
+takes effect after the next launch (this is macOS, not us — we'd skip the
+relaunch if we could).
+
+Revoking the permission in **System Settings → Privacy & Security →
+Screen Recording** immediately kills capture. There's no override.
 
 ## Access control
 
-Use Tailscale ACLs to restrict who on your tailnet can reach Tailscreen.
-The relevant rule is "allow TCP and UDP to port 7447 from the principals you
-trust." Anything not permitted by your tailnet ACLs cannot connect — even
-if they're on the same tailnet.
+If you want to be picky about who on your tailnet can connect to your
+shares, use Tailscale ACLs. The relevant rule is "allow TCP and UDP to
+port 7447 from the principals you trust." Anyone whose connection your
+ACLs reject can't reach Tailscreen, full stop — even if they're on the
+same tailnet as you. This is the right place to put fine-grained access
+control: tailnet ACLs are visible, auditable, and centralized.
 
-## Threats not in scope
+## Things we do not protect against
 
-Tailscreen does not defend against:
+We're not in the business of pretending Tailscreen is a defense against
+threats it cannot defend against. Things outside the threat model:
 
-- A compromised macOS user account on the sharing or viewing machine —
-  someone with local access can already see the screen.
-- Malicious code running inside the Tailscreen process. No sandboxing
-  beyond what macOS provides for an unsigned/signed app.
-- Compromised Tailscale credentials. If an attacker can join your tailnet,
-  ACLs are your only line of defense.
+- **Local user compromise.** Anyone with an active session on the sharing
+  Mac can already see the screen. We can't help you there.
+- **Malicious code in the Tailscreen process.** No sandboxing beyond what
+  macOS itself enforces on a signed app. If you're worried about supply-
+  chain attacks, build from source.
+- **Compromised Tailscale credentials.** If an attacker can join your
+  tailnet, they're inside your perimeter and ACLs are your only line of
+  defense. Use them.
+- **An adversary in your physical line of sight.** Yes, this is silly to
+  say, but they can read your screen with their eyes.

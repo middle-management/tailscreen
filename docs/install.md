@@ -10,39 +10,51 @@ permalink: /install/
 1. TOC
 {:toc}
 
-## Prebuilt release
+There are two ways in: grab a release, or build from source. Both end up
+with `Tailscreen.app`.
 
-The simplest path is to grab the latest signed, notarized
-`Tailscreen-<version>-macOS.zip` from the
-[Releases page](https://github.com/middle-management/tailscreen/releases),
-unzip it, and drag `Tailscreen.app` into `/Applications`.
+## From a release
 
-The release is a universal Mach-O (`arm64` + `x86_64`), built by the
-`release.yml` GitHub Actions workflow on `macos-15`.
+Go to the [Releases page](https://github.com/middle-management/tailscreen/releases),
+download `Tailscreen-<version>-macOS.zip`, unzip, drag to `/Applications`.
+Done.
 
-## Build from source
+The release zip is a universal binary (`arm64` + `x86_64`), built and
+notarized by `release.yml` on a `macos-15` runner. If the build secrets
+aren't configured (forks, dry runs), you'll get an unsigned `.app` instead
+— Gatekeeper will yell at you the first time you open it.
 
-Tailscreen is Swift Package Manager only — there is no Xcode project. The
-top-level [`Makefile`](https://github.com/middle-management/tailscreen/blob/main/Makefile)
-is the build entry point because it sets `PKG_CONFIG_PATH` so SwiftPM can
-find `libtailscale.pc`.
+## From source
 
-### Prerequisites
+The project is Swift Package Manager only. There is no Xcode project and
+there is no plan for one. Builds go through the top-level
+[`Makefile`](https://github.com/middle-management/tailscreen/blob/main/Makefile)
+because that's where `PKG_CONFIG_PATH` gets set so SwiftPM can find the C
+library it needs to link against.
 
-- macOS 15.0 (Sequoia) or later
-- Swift 6.0 toolchain
-- **Go 1.21+** — required at build time to compile `libtailscale.a`, the C
-  archive that TailscaleKit wraps. The Go toolchain is *not* needed at
-  runtime.
+### What you need installed
 
-### Clone with submodules
+- macOS 15.0 (Sequoia) or later.
+- Swift 6.0 toolchain. Xcode 16+ ships it; alternatively
+  [swift.org](https://swift.org/download/) has standalone installers.
+- **Go 1.21 or newer.** This is a build-time dependency, not a runtime one.
+  The Go compiler turns Tailscale's source into `libtailscale.a`, which the
+  Swift code then links against. Once you've built, you can uninstall Go and
+  the app keeps working.
 
-`TailscaleKitPackage/upstream/libtailscale` is a git submodule. Clone with
-`--recurse-submodules`, or run the init step after cloning:
+### Clone — with submodules
+
+Tailscale's C library lives in a submodule under
+`TailscaleKitPackage/upstream/libtailscale`. If you forget the recursive
+clone, the build will fail with a confusing missing-headers error. So:
 
 ```bash
 git clone --recurse-submodules https://github.com/middle-management/tailscreen.git
-# or, after a regular clone:
+```
+
+Or, if you've already done a regular clone:
+
+```bash
 git submodule update --init --recursive
 ```
 
@@ -52,53 +64,53 @@ git submodule update --init --recursive
 make build
 ```
 
-This will:
-
-1. Build the `libtailscale` C archive from the upstream submodule (Go).
-2. Apply the patches under `TailscaleKitPackage/Patches/` to the upstream
-   Swift sources.
-3. Build the Swift TailscaleKit wrapper.
-4. Build the Tailscreen application.
-
-The first build downloads Go modules, so network access is required.
+This compiles `libtailscale.a` from the Go submodule, applies the patches
+under `TailscaleKitPackage/Patches/` to the upstream Swift sources (more on
+that in [Contributing]({% link contributing.md %})), builds the TailscaleKit
+wrapper, and finally builds the app. First build pulls Go modules, so it
+needs internet.
 
 ### Run
 
 ```bash
 make run
-# or, manually:
+```
+
+Or build once and run the binary directly:
+
+```bash
 .build/debug/Tailscreen
 ```
 
-### Release build
+### Release build and install
 
 ```bash
-make release
-# binary: .build/release/Tailscreen
+make release           # → .build/release/Tailscreen
+make install           # release + copy to ~/bin/Tailscreen
 ```
 
-### Install to `~/bin`
+## Don't skip `make`
 
-```bash
-make install
-```
+The single most common build failure is running bare `swift build` first.
+That will fail to link, because `libtailscale.a` doesn't exist yet — the Go
+toolchain hasn't been invoked. Always do `make build` (or at least
+`make tailscale`) once. After that, `swift build` works fine for the rest of
+the build tree.
 
 ## Permissions
 
-On first launch, macOS will prompt for **Screen Recording** permission. Grant
-it in **System Settings → Privacy & Security → Screen Recording**, then quit
-and relaunch Tailscreen so the new permission is picked up.
+The first time you hit "Start Sharing", macOS will pop up a Screen Recording
+prompt. Approve it in **System Settings → Privacy & Security → Screen
+Recording**, then quit Tailscreen and relaunch. macOS will not pick up the
+new permission until the process restarts. This is macOS's rule, not ours.
 
-## Troubleshooting the build
+## Uninstall
 
-- **`swift build` fails with linker errors** — you skipped `make tailscale` /
-  `make build`. The Go build produces `libtailscale.a`; without it nothing
-  links. Always go through `make`.
-- **Submodule directory looks empty** — run
-  `git submodule update --init --recursive`.
-- **Want to modify TailscaleKit's Swift sources** — don't edit
-  `TailscaleKitPackage/Sources/` directly; those paths are symlinks into the
-  submodule. Add a patch under `TailscaleKitPackage/Patches/` and re-run
-  `make tailscale`.
+Quit Tailscreen, drag `Tailscreen.app` to the trash. If you want to nuke the
+ephemeral-node state too:
 
-More detail in [Contributing]({% link contributing.md %}).
+```bash
+rm -rf ~/Library/Application\ Support/Tailscreen
+```
+
+That's it. There's no installer, no daemon, no LaunchAgent.
