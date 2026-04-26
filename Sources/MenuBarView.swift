@@ -52,13 +52,33 @@ struct MenuBarView: View {
 private struct WelcomeView: View {
     @EnvironmentObject var appState: AppState
 
+    /// The brand artwork (display + stand variant) loaded from the
+    /// SwiftPM resource bundle. Cached at type level so we don't decode
+    /// the PDF every time the popover re-renders.
+    private static let brandImage: NSImage? = {
+        guard let url = Bundle.module.url(forResource: "WelcomeIcon", withExtension: "pdf") else {
+            return nil
+        }
+        return NSImage(contentsOf: url)
+    }()
+
     var body: some View {
         VStack(spacing: 0) {
             VStack(spacing: 12) {
-                Image(systemName: "tv")
-                    .font(.system(size: 34, weight: .light))
-                    .foregroundStyle(.secondary)
-                    .padding(.top, 8)
+                Group {
+                    if let brand = Self.brandImage {
+                        Image(nsImage: brand)
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Image(systemName: "tv")
+                            .font(.system(size: 56, weight: .light))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .frame(width: 64, height: 64)
+                .padding(.top, 8)
 
                 Text("Welcome to Tailscreen")
                     .font(.system(size: 15, weight: .semibold))

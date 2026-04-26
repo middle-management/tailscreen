@@ -54,10 +54,12 @@ struct TailscreenApp: App {
             return nil
         }
         img.isTemplate = true
-        // Standard menubar glyph height. AppKit scales the PDF
-        // accordingly and the user's "Menu bar size" preference still
-        // applies on top.
-        img.size = NSSize(width: 18, height: 18)
+        // Match the visual weight of the SF Symbol glyphs around us in
+        // the menubar (~22pt with default trim). The source artwork has
+        // generous internal padding, so a smaller image looks
+        // disproportionately thin next to symbols like Spotlight or
+        // Control Center.
+        img.size = NSSize(width: 22, height: 22)
         return img
     }()
 }
