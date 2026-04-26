@@ -1,0 +1,11 @@
+source "https://rubygems.org"
+
+# Mirrors what GitHub Pages / `actions/jekyll-build-pages` use in CI,
+# so `bundle exec jekyll serve` reproduces the deployed build locally.
+gem "github-pages", group: :jekyll_plugins
+gem "jekyll-remote-theme"
+gem "jekyll-seo-tag"
+
+# Windows / JRuby compatibility (harmless on macOS/Linux)
+gem "tzinfo-data", platforms: [:mingw, :mswin, :x64_mingw, :jruby]
+gem "wdm", "~> 0.1.1", platforms: [:mingw, :mswin, :x64_mingw]

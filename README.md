@@ -2,6 +2,8 @@
 
 [![Build Status](https://github.com/middle-management/tailscreen/actions/workflows/build.yml/badge.svg)](https://github.com/middle-management/tailscreen/actions/workflows/build.yml)
 
+📖 **Documentation:** <https://middle-management.github.io/tailscreen/>
+
 A minimal macOS menubar app for high-quality, low-latency screen sharing using Tailscale's encrypted peer-to-peer network. Built with Swift Package Manager (no Xcode required).
 
 ## Features
