@@ -118,17 +118,6 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     ) async throws {
         guard !isRunning else { return }
 
-        // Fast path: a previous share session left listeners + control
-        // loops up. tsnet's UDP `pc.Close()` is async on the Go side, so
-        // closing and re-binding the same port within a few hundred ms
-        // races and fails with "port is in use". Keeping listeners alive
-        // across stop/start avoids the race entirely.
-        if probeListener != nil && packetListener != nil {
-            print("Screen-share server resuming with existing listeners")
-            try await startCapturePipeline(displayID: displayID)
-            return
-        }
-
         let node: TailscaleNode
         if let existing = existingNode {
             // Reuse the AppState-owned node — same Tailscale identity used
@@ -189,29 +178,14 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         // Use the node's tailnet IPv4 (preferred) or IPv6 instead.
         let bindIP = ips.ip4 ?? ips.ip6 ?? "0.0.0.0"
         let bindAddr = ips.ip4 != nil ? "\(bindIP):\(port)" : "[\(bindIP)]:\(port)"
-        // The previous PacketConn release on the Go side is asynchronous —
-        // closing the C-side fd in `PacketListener.close()` only signals
-        // the bridge goroutines to exit, which then call `pc.Close()` on
-        // the netstack PacketConn. A re-share attempt within a few hundred
-        // ms can race that cleanup and see the port still bound. Retry the
-        // bind for up to ~2s with a small backoff before giving up; after
-        // the goroutines finish the bind succeeds immediately.
-        let packetListener = try await bindPacketListener(
+        let packetListener = try await PacketListener(
             tailscale: tailscaleHandle,
-            address: bindAddr
+            address: bindAddr,
+            logger: logger
         )
         self.packetListener = packetListener
         print("UDP video stream listening on \(bindAddr)")
 
-        try await startCapturePipeline(displayID: displayID)
-    }
-
-    /// Capture-side bring-up: flips `isRunning`, re-spawns the control
-    /// loops (which gate on `isRunning` and exit during `stop()`), and
-    /// kicks off ScreenCapture + encoder. Listeners are assumed already
-    /// bound. Used both during the first `start()` and when resuming
-    /// after a `stop()`.
-    private func startCapturePipeline(displayID: CGDirectDisplayID?) async throws {
         isRunning = true
 
         Task { [weak self] in await self?.acceptControlConnections() }
@@ -236,40 +210,6 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             await self.stop()
             throw error
         }
-    }
-
-    /// Open a UDP `PacketListener`, retrying briefly when the previous
-    /// session's netstack `PacketConn` hasn't released the bind yet. See
-    /// `start()` for why this race exists.
-    private func bindPacketListener(
-        tailscale: TailscaleHandle,
-        address: String
-    ) async throws -> PacketListener {
-        var lastError: Error?
-        for attempt in 0..<20 {
-            do {
-                return try await PacketListener(
-                    tailscale: tailscale,
-                    address: address,
-                    logger: logger
-                )
-            } catch {
-                lastError = error
-                // Match against both the raw debug description and the
-                // localized one — TailscaleError stringification varies by
-                // case and we only want to retry on the netstack
-                // "port is in use" message.
-                let desc = "\(error) \((error as? LocalizedError)?.errorDescription ?? "")"
-                guard desc.localizedCaseInsensitiveContains("in use") else {
-                    throw error
-                }
-                if attempt == 0 {
-                    print("UDP bind on \(address) busy from prior session, waiting…")
-                }
-                try await Task.sleep(for: .milliseconds(100))
-            }
-        }
-        throw lastError ?? TailscaleError.badInterfaceHandle
     }
 
     /// Accept TCP connections on port 7447. The same listener serves two
@@ -703,15 +643,8 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         return try await node.addrs()
     }
 
-    /// Stop the active screen-share session. Tears down the capture
-    /// pipeline (ScreenCapture + encoder + viewer set) but **leaves the
-    /// UDP/TCP listeners and background control loops alive**, so the next
-    /// `start()` can resume without re-binding port 7447. tsnet's UDP
-    /// `pc.Close()` is async on the Go side and a re-bind within ~hundreds
-    /// of ms hits "port is in use"; keeping the listener alive sidesteps
-    /// that. Use `shutdown()` for a full teardown that releases the port.
     func stop() async {
-        print("Server stopping (capture only, listeners stay)…")
+        print("Server stopping…")
         isRunning = false
 
         await screenCapture?.stop()
@@ -722,22 +655,14 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         encoder = nil
 
         viewers.withLock { $0.removeAll() }
-    }
-
-    /// Full teardown: stops capture *and* closes listeners + node. Call
-    /// when the user signs out or the app is quitting; not on every "stop
-    /// sharing" — see `stop()` for why listeners are kept alive otherwise.
-    func shutdown() async {
-        await stop()
-        print("Server shutdown: closing listeners…")
 
         await packetListener?.close()
         packetListener = nil
-        print("Server shutdown: packet listener closed")
+        print("Server stop: packet listener closed")
 
         await probeListener?.close()
         probeListener = nil
-        print("Server shutdown: probe listener closed")
+        print("Server stop: probe listener closed")
 
         // Close any in-flight annotation back-channels in parallel; their
         // receive tasks will see the close and exit naturally.
@@ -759,7 +684,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         }
         self.node = nil
 
-        print("Server shutdown complete")
+        print("Server stopped")
     }
 
     deinit {
