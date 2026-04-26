@@ -9,6 +9,12 @@ struct TailscreenMetadata: Codable, Sendable {
     let screenResolution: ScreenResolution
     let isSharing: Bool
     let timestamp: Date
+    /// Codec the sharer is currently encoding with. Optional for backward
+    /// compat with older peers that omit the field — when missing, assume
+    /// H.264 (the only codec older Tailscreen builds spoke). The viewer
+    /// also auto-detects from the RTP payload type, so this is mainly
+    /// informational for the UI.
+    var videoCodec: VideoCodec? = nil
 
     struct ScreenResolution: Codable, Sendable {
         let width: Int

@@ -120,7 +120,7 @@ final class RTPPacketTests: XCTestCase {
         XCTAssertEqual(packets.count, 3)
 
         let depacketizer = H264Depacketizer()
-        var au: H264Depacketizer.AccessUnit?
+        var au: VideoAccessUnit?
         for p in packets {
             if let result = depacketizer.ingest(p) { au = result }
         }
@@ -144,7 +144,7 @@ final class RTPPacketTests: XCTestCase {
         )
 
         let depacketizer = H264Depacketizer()
-        var au: H264Depacketizer.AccessUnit?
+        var au: VideoAccessUnit?
         for p in packets {
             if let result = depacketizer.ingest(p) { au = result }
         }
@@ -172,7 +172,7 @@ final class RTPPacketTests: XCTestCase {
         p1Packets.append(contentsOf: p2Packets)
 
         let depacketizer = H264Depacketizer()
-        var aus: [H264Depacketizer.AccessUnit] = []
+        var aus: [VideoAccessUnit] = []
         for p in p1Packets {
             if let result = depacketizer.ingest(p) { aus.append(result) }
         }
@@ -227,6 +227,138 @@ final class RTPPacketTests: XCTestCase {
         // wipe state and treat the second session as fresh.
         let au = try XCTUnwrap(depacketizer.ingest(secondSession[0]))
         XCTAssertFalse(au.lostBeforeThisAU)
+    }
+
+    // MARK: - HEVC
+
+    /// HEVC NAL header: F=0, Type=t, LayerId=0, TID=1.
+    /// byte 0 = (t & 0x3F) << 1; byte 1 = 0x01 (TID=1).
+    private static func hevcHeader(type: UInt8) -> [UInt8] {
+        return [(type & 0x3F) << 1, 0x01]
+    }
+
+    func testHEVCPayloadTypeIsDistinct() {
+        XCTAssertNotEqual(RTPHeader.h264PayloadType, RTPHeader.hevcPayloadType)
+    }
+
+    func testHEVCSingleNALRoundTrip() throws {
+        // VPS=32, SPS=33, PPS=34, IDR_W_RADL=19.
+        let vps = Data(Self.hevcHeader(type: 32) + [0x00, 0x00])
+        let sps = Data(Self.hevcHeader(type: 33) + [0x11, 0x22])
+        let pps = Data(Self.hevcHeader(type: 34) + [0x33])
+        var idr = Data(Self.hevcHeader(type: 19))
+        idr.append(contentsOf: [0xAA, 0xBB, 0xCC])
+
+        let packets = H265Packetizer.packetize(
+            nals: [vps, sps, pps, idr], timestamp: 11_111, ssrc: 0xCAFE_F00D, startSequence: 9
+        )
+        XCTAssertEqual(packets.count, 4)
+        for (i, p) in packets.enumerated() {
+            let (header, _) = try XCTUnwrap(RTPHeader.decode(from: p))
+            XCTAssertEqual(header.payloadType, RTPHeader.hevcPayloadType)
+            XCTAssertEqual(header.sequenceNumber, UInt16(9 + i))
+            XCTAssertEqual(header.marker, i == packets.count - 1)
+        }
+
+        let depacketizer = H265Depacketizer()
+        var au: VideoAccessUnit?
+        for p in packets {
+            if let result = depacketizer.ingest(p) { au = result }
+        }
+        let unwrapped = try XCTUnwrap(au)
+        XCTAssertEqual(unwrapped.codec, .hevc)
+        XCTAssertTrue(unwrapped.containsIDR)
+        XCTAssertEqual(unwrapped.timestamp, 11_111)
+        XCTAssertFalse(unwrapped.lostBeforeThisAU)
+        XCTAssertEqual(AVCCParser.nalUnits(from: unwrapped.avcc), [vps, sps, pps, idr])
+    }
+
+    func testHEVCFragmentedNALRoundTrip() throws {
+        let bodySize = H265Packetizer.maxPayloadBytes * 3 + 211
+        var slice = Data(Self.hevcHeader(type: 19))  // IDR slice
+        slice.append(contentsOf: (0..<bodySize).map { UInt8(($0 * 7) & 0xFF) })
+
+        let packets = H265Packetizer.packetize(
+            nals: [slice], timestamp: 22_222, ssrc: 1, startSequence: 0xFFFD
+        )
+
+        // FU mode reserves 3 bytes per packet (PayloadHdr 2 + FU header 1).
+        let fragSize = H265Packetizer.maxPayloadBytes - 3
+        let expected = (bodySize + fragSize - 1) / fragSize
+        XCTAssertEqual(packets.count, expected)
+
+        // Validate first/last fragment headers.
+        let first = packets.first!
+        let firstPayload = first.suffix(from: first.startIndex + RTPHeader.size)
+        let firstHdr0 = firstPayload[firstPayload.startIndex]
+        let firstFU = firstPayload[firstPayload.startIndex + 2]
+        XCTAssertEqual((firstHdr0 >> 1) & 0x3F, 49)            // FU type
+        XCTAssertEqual(firstFU & 0x3F, 19)                      // original type carried in FU header
+        XCTAssertNotEqual(firstFU & 0x80, 0)                    // S bit on first
+        XCTAssertEqual(firstFU & 0x40, 0)                       // E bit clear
+
+        let last = packets.last!
+        let lastPayload = last.suffix(from: last.startIndex + RTPHeader.size)
+        let lastFU = lastPayload[lastPayload.startIndex + 2]
+        XCTAssertEqual(lastFU & 0x80, 0)                        // S bit clear
+        XCTAssertNotEqual(lastFU & 0x40, 0)                     // E bit on last
+
+        let depacketizer = H265Depacketizer()
+        var au: VideoAccessUnit?
+        for p in packets {
+            if let result = depacketizer.ingest(p) { au = result }
+        }
+        let unwrapped = try XCTUnwrap(au)
+        XCTAssertEqual(unwrapped.codec, .hevc)
+        XCTAssertTrue(unwrapped.containsIDR)
+        XCTAssertFalse(unwrapped.lostBeforeThisAU)
+        XCTAssertEqual(AVCCParser.nalUnits(from: unwrapped.avcc), [slice])
+    }
+
+    func testHEVCDroppedPacketCorruptsAUAndSignalsLoss() {
+        let n1 = Data(Self.hevcHeader(type: 1) + [0xAA])
+        let n2 = Data(Self.hevcHeader(type: 1) + [0xBB])
+        let n3 = Data(Self.hevcHeader(type: 1) + [0xCC])
+
+        let packets = H265Packetizer.packetize(
+            nals: [n1, n2, n3], timestamp: 50, ssrc: 1, startSequence: 10
+        )
+        XCTAssertEqual(packets.count, 3)
+
+        let depacketizer = H265Depacketizer()
+        _ = depacketizer.ingest(packets[0])
+        let result = depacketizer.ingest(packets[2])
+        XCTAssertNil(result)  // torn AU dropped
+
+        let n4 = Data(Self.hevcHeader(type: 1) + [0xDD])
+        let next = H265Packetizer.packetize(
+            nals: [n4], timestamp: 60, ssrc: 1, startSequence: 13
+        )
+        let au = depacketizer.ingest(next[0])
+        XCTAssertNotNil(au)
+        XCTAssertTrue(au?.lostBeforeThisAU ?? false)
+    }
+
+    func testMultiCodecDepacketizerRoutesByPayloadType() throws {
+        // H.264 single NAL packet.
+        let h264NAL = Data([0x67, 0x42, 0x00, 0x1F, 0xAC])
+        let h264Packets = H264Packetizer.packetize(
+            nals: [h264NAL], timestamp: 1, ssrc: 1, startSequence: 0
+        )
+
+        // HEVC IDR single NAL packet.
+        var hevcNAL = Data(Self.hevcHeader(type: 19))
+        hevcNAL.append(contentsOf: [0xDE, 0xAD])
+        let hevcPackets = H265Packetizer.packetize(
+            nals: [hevcNAL], timestamp: 2, ssrc: 2, startSequence: 100
+        )
+
+        let mux = MultiCodecDepacketizer()
+        let h264AU = try XCTUnwrap(mux.ingest(h264Packets[0]))
+        XCTAssertEqual(h264AU.codec, .h264)
+        let hevcAU = try XCTUnwrap(mux.ingest(hevcPackets[0]))
+        XCTAssertEqual(hevcAU.codec, .hevc)
+        XCTAssertTrue(hevcAU.containsIDR)
     }
 }
 
