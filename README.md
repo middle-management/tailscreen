@@ -2,7 +2,7 @@
 
 [![Build Status](https://github.com/middle-management/tailscreen/actions/workflows/build.yml/badge.svg)](https://github.com/middle-management/tailscreen/actions/workflows/build.yml)
 
-📖 **Documentation:** <https://middle-management.github.io/tailscreen/>
+📖 **Documentation:** <https://tailscreen.dev>
 
 Screen sharing for people who don't want to install Zoom on their Mac to look at a friend's terminal for ten seconds.
 
@@ -63,7 +63,7 @@ make release      # → .build/release/Tailscreen
 make install      # → ~/bin/Tailscreen
 ```
 
-More detail in the [Install docs](https://middle-management.github.io/tailscreen/install/).
+More detail in the [Install docs](https://tailscreen.dev/install/).
 
 ## Run it
 
@@ -125,7 +125,7 @@ TailscreenApp (@main)
        └─ TailscreenMetadataService ── share name, resolution, request-to-share
 ```
 
-Twenty-six Swift files. The [Architecture docs](https://middle-management.github.io/tailscreen/architecture/) walk through them.
+Twenty-six Swift files. The [Architecture docs](https://tailscreen.dev/architecture/) walk through them.
 
 ## Network protocol
 
@@ -144,7 +144,7 @@ The same UDP socket also carries tiny one-byte control messages from viewer to s
 
 The annotation and metadata channels share the TCP socket on the same port, with a 1-byte type prefix and a 4-byte big-endian length. The full wire format is in [`Sources/ScreenShareProtocol.swift`](Sources/ScreenShareProtocol.swift). Why TCP for annotations? Because dropping a stroke segment is visible and confusing; dropping a video frame is invisible. The transport choice tracks the cost of loss.
 
-More detail in the [Network Protocol docs](https://middle-management.github.io/tailscreen/protocol/).
+More detail in the [Network Protocol docs](https://tailscreen.dev/protocol/).
 
 > There's a legacy single-stream framing (`[size:4][keyframe:1][data:N]`) in `Sources/ScreenShareServer.swift` and `Sources/ScreenShareClient.swift`. That's the **non-Tailscale** code path, kept as reference. The active path is everything described above.
 
@@ -156,7 +156,7 @@ More detail in the [Network Protocol docs](https://middle-management.github.io/t
 - **Ephemeral nodes.** Tailscale removes the node when the session ends.
 - **Tailscale ACLs are your access-control plane.** Allow TCP+UDP/7447 from the principals you trust; reject everyone else.
 
-[Privacy & Security docs](https://middle-management.github.io/tailscreen/security/).
+[Privacy & Security docs](https://tailscreen.dev/security/).
 
 ## Performance
 
@@ -169,7 +169,7 @@ Tailscale will try really hard to give you a direct WireGuard connection. When t
 
 ## Troubleshooting
 
-The full list lives in the [Troubleshooting docs](https://middle-management.github.io/tailscreen/troubleshooting/). The greatest hits:
+The full list lives in the [Troubleshooting docs](https://tailscreen.dev/troubleshooting/). The greatest hits:
 
 - **"Permission Denied" capturing the screen.** Toggle **System Settings → Privacy & Security → Screen Recording**, then *quit and relaunch* Tailscreen. macOS doesn't push the new permission to a running process.
 - **"Connection Failed".** Check Tailscale itself works first (`tailscale ping <hostname>`). Check ACLs allow TCP+UDP/7447. Get the hostname from **Show Tailscale Info**, not from memory.

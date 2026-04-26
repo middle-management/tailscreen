@@ -1,7 +1,7 @@
 title: Tailscreen
 description: Encrypted, low-latency peer-to-peer screen sharing over Tailscale — a macOS menubar app.
-url: https://middle-management.github.io
-baseurl: /tailscreen
+url: https://tailscreen.dev
+baseurl: ""
 repository: middle-management/tailscreen
 
 remote_theme: just-the-docs/just-the-docs
