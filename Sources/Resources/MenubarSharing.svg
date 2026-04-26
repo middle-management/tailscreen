@@ -1,0 +1,9 @@
+<!--
+  Menubar template glyph for the "actively sharing" state. Same outer
+  screen silhouette as MenubarIcon.svg (so the menubar item still
+  reads as Tailscreen) but with the screen filled solid — visual
+  echo of macOS's own screen-capture/recording badge.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="245 237 535 535" fill="#000000">
+  <rect x="251" y="297" width="524" height="416" rx="60" ry="60"/>
+</svg>

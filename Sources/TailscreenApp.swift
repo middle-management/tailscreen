@@ -29,36 +29,40 @@ struct TailscreenApp: App {
 
     @ViewBuilder
     private var menubarIcon: some View {
-        if appState.isSharing {
-            Image(systemName: "dot.radiowaves.left.and.right")
-        } else if appState.isConnected {
-            Image(systemName: "play.tv")
-        } else if let brand = Self.brandMenubarImage {
-            // Brand glyph for idle / unauth states. NSImage marked as a
-            // template so macOS auto-tints it for light/dark menubar.
-            Image(nsImage: brand)
+        if appState.isSharing, let img = Self.sharingImage {
+            Image(nsImage: img)
+        } else if appState.isConnected, let img = Self.viewingImage {
+            Image(nsImage: img)
+        } else if let img = Self.idleImage {
+            Image(nsImage: img)
         } else {
-            // Bundle resource missing — fall back to SF Symbols so the
+            // Bundle resources missing — fall back to SF Symbols so the
             // menu item still has *something* and never disappears.
             Image(systemName: appState.tailscaleAuth.isAuthenticated ? "tv" : "tv.slash")
         }
     }
 
-    /// Loaded once at first access. The PDF lives in `Sources/Resources/`
-    /// and is delivered via SwiftPM `Bundle.module`. `isTemplate = true`
-    /// is what tells AppKit to render it as a 1-bit menubar mask rather
-    /// than as the raw artwork.
-    private static let brandMenubarImage: NSImage? = {
-        guard let url = Bundle.module.url(forResource: "MenubarIcon", withExtension: "pdf"),
+    /// Idle / unauthenticated brand glyph (TV outline).
+    private static let idleImage = loadMenubarTemplate("MenubarIcon")
+
+    /// Active-sharing variant: same TV silhouette, screen filled solid
+    /// — visual echo of macOS's screen-recording badge.
+    private static let sharingImage = loadMenubarTemplate("MenubarSharing")
+
+    /// Active-viewing variant: TV outline with a centred play triangle.
+    private static let viewingImage = loadMenubarTemplate("MenubarViewing")
+
+    /// Load a PDF from `Sources/Resources/` (delivered via SwiftPM
+    /// `Bundle.module`), mark it as a menubar template image, and size it
+    /// to Apple HIG's 18pt status-item recommendation.
+    /// https://developer.apple.com/design/human-interface-guidelines/the-menu-bar#Menu-bar-extras
+    private static func loadMenubarTemplate(_ name: String) -> NSImage? {
+        guard let url = Bundle.module.url(forResource: name, withExtension: "pdf"),
               let img = NSImage(contentsOf: url) else {
             return nil
         }
         img.isTemplate = true
-        // Apple HIG sizes menu-bar status items at 18pt square. The PDF
-        // uses a square viewBox tight to the artwork bbox, so the
-        // glyph fills the 18pt box without distortion.
-        // https://developer.apple.com/design/human-interface-guidelines/the-menu-bar#Menu-bar-extras
         img.size = NSSize(width: 18, height: 18)
         return img
-    }()
+    }
 }

@@ -1,0 +1,18 @@
+<!--
+  Menubar template glyph for the "viewing a remote share" state.
+  Outline of the same TV silhouette plus a centred play triangle —
+  reads as "watching a stream on the Tailscreen monitor".
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="245 237 535 535" fill="#000000">
+  <!-- Screen outline -->
+  <rect x="251" y="297"
+        width="524" height="416"
+        rx="60" ry="60"
+        fill="none"
+        stroke="#000000"
+        stroke-width="40"/>
+  <!-- Centred play triangle. Sized to fit inside the screen with
+       comfortable padding; the geometric centre of the rect is
+       (513, 505), the triangle is anchored on that. -->
+  <path d="M 440 395 L 615 505 L 440 615 Z"/>
+</svg>
