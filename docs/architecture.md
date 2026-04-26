@@ -67,22 +67,35 @@ it doesn't make defensive copies, that's why.
 `VideoEncoder.swift` is VideoToolbox configured for the lowest latency we
 can talk it into:
 
+- **HEVC by default, H.264 as a fallback.** The sharer tries to set up a
+  hardware HEVC encoder at startup; if VideoToolbox refuses (mostly older
+  Intel Macs without HW HEVC), it transparently retries with H.264. The
+  viewer doesn't need to know in advance — it picks up the codec from the
+  RTP payload type and configures the decoder on the fly.
 - Hardware encoder where available (everywhere on Apple Silicon).
 - Frame reordering disabled. No B-frames. Each frame depends only on
   earlier frames, which means a packet loss can't strand future frames
   waiting for a frame from the past.
-- ~4 bits per pixel adaptive bitrate, scaled by resolution.
+- Adaptive bitrate based on resolution and a bits-per-pixel target. The
+  defaults are **0.06 bpp for HEVC** and **0.10 bpp for H.264** — HEVC's
+  intra-prediction modes earn back roughly 30% on screen content vs H.264,
+  so the same visual quality gets a smaller bitrate budget.
+- Profile is **HEVC Main** / **H.264 High** at AutoLevel.
 - Keyframe roughly every 2 seconds, or earlier when the receiver sends a
   PLI (Picture Loss Indication).
 
-`RTPPacket.swift` does packetize and depacketize per RFC 3984 — it knows
-about FU-A fragmentation, STAP-A aggregation, and SPS/PPS parameter sets.
-SPS/PPS go in-band on every keyframe so a viewer that connects partway
-through can sync without an out-of-band handshake.
+`RTPPacket.swift` packetizes and depacketizes per RFC 6184 (H.264) and
+RFC 7798 (HEVC). It knows about FU-A fragmentation, STAP-A aggregation,
+and the codec's parameter sets. Parameter sets go in-band on every
+keyframe — **SPS+PPS** for H.264, **VPS+SPS+PPS** for HEVC — so a viewer
+that connects partway through can spin up a decoder without an out-of-
+band handshake.
 
-`VideoDecoder.swift` is the symmetric VideoToolbox decode path. The decoded
-`CVPixelBuffer`s feed straight into `MetalViewerRenderer.swift`, which uses
-a `CAMetalLayer` for the actual blit.
+`VideoDecoder.swift` is the symmetric VideoToolbox decode path. It builds
+its `CMFormatDescription` from whichever parameter-set flavor came in
+on the wire, so the decoder follows the encoder's choice. The decoded
+`CVPixelBuffer`s feed straight into `MetalViewerRenderer.swift`, which
+uses a `CAMetalLayer` for the actual blit.
 
 ## Tailscale integration
 

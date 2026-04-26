@@ -6,13 +6,13 @@
 
 Screen sharing for people who don't want to install Zoom on their Mac to look at a friend's terminal for ten seconds.
 
-Tailscreen is a tiny macOS menubar app that streams one Mac's screen to another Mac over [Tailscale](https://tailscale.com/). It uses ScreenCaptureKit to grab pixels, VideoToolbox to encode H.264, and Tailscale's WireGuard tunnel to move bytes. There is no server. There is no port to forward. There is no account to create beyond Tailscale itself, which you probably already have.
+Tailscreen is a tiny macOS menubar app that streams one Mac's screen to another Mac over [Tailscale](https://tailscale.com/). It uses ScreenCaptureKit to grab pixels, VideoToolbox to encode HEVC (with H.264 as a fallback for older hardware), and Tailscale's WireGuard tunnel to move bytes. There is no server. There is no port to forward. There is no account to create beyond Tailscale itself, which you probably already have.
 
 You hit "Start Sharing", the other person hits "Browse Shares", they click your machine, a window opens. That's the whole thing.
 
 ## What you get
 
-- 60 fps full-Retina H.264 over the same WireGuard tunnel that Tailscale already gives you. Direct peer-to-peer when the network allows; Tailscale's DERP relays when it doesn't.
+- 60 fps full-Retina hardware-encoded HEVC (or H.264 on Macs whose VideoToolbox can't do HEVC) over the same WireGuard tunnel that Tailscale already gives you. Direct peer-to-peer when the network allows; Tailscale's DERP relays when it doesn't.
 - Automatic peer discovery — Tailscreen probes your tailnet and lists which machines are sharing. No IP-typing.
 - Ephemeral tsnet nodes. Each session spins up a fresh node and Tailscale tears it down when you're done; your admin console doesn't fill up with ghosts.
 - Two-way annotations over a reliable TCP back-channel, so strokes don't get dropped when video does.
@@ -133,12 +133,14 @@ One port — `7447` — on **both TCP and UDP**. Everything rides over Tailscale
 
 | Channel       | Transport | Purpose                                                              |
 | :------------ | :-------- | :------------------------------------------------------------------- |
-| Video         | UDP/7447  | H.264 over RTP (RFC 3984). Lossy on purpose.                         |
+| Video         | UDP/7447  | RTP — HEVC (RFC 7798) or H.264 (RFC 6184). Lossy on purpose.         |
 | Annotations   | TCP/7447  | Length-framed JSON. Reliable on purpose.                             |
 | Metadata      | TCP/7447  | Share name, resolution, request-to-share prompts.                    |
 | Discovery     | TCP/7447  | Probe across the tailnet to find Tailscreen peers.                   |
 
-H.264 NAL units packetized per RFC 3984; SPS/PPS in-band on every keyframe so a late-joining viewer can sync without a handshake. Keyframes roughly every 2s, or earlier on a PLI from the receiver. UDP loss is fine — that's the trade we wanted.
+The sharer prefers HEVC and falls back to H.264 if VideoToolbox refuses it (Intel Macs without HW HEVC). The viewer auto-detects from the **RTP payload type** — `97` for HEVC, `96` for H.264 — so there's no out-of-band negotiation. Parameter sets go in-band on every IDR frame: SPS+PPS for H.264, VPS+SPS+PPS for HEVC, so a late-joining viewer can spin up a decoder without a handshake. Keyframes roughly every 2s, or earlier on a PLI from the receiver. UDP loss is fine — that's the trade we wanted.
+
+The same UDP socket also carries tiny one-byte control messages from viewer to sharer: HELLO, KEEPALIVE, BYE, PLI. RTP packets always start with `0x80`-`0xBF` (V=2), so the leading byte unambiguously distinguishes the two.
 
 The annotation and metadata channels share the TCP socket on the same port, with a 1-byte type prefix and a 4-byte big-endian length. The full wire format is in [`Sources/ScreenShareProtocol.swift`](Sources/ScreenShareProtocol.swift). Why TCP for annotations? Because dropping a stroke segment is visible and confusing; dropping a video frame is invisible. The transport choice tracks the cost of loss.
 

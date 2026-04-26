@@ -18,19 +18,20 @@ Screen sharing for people who don't want to install Zoom on their Mac to look at
 
 Tailscreen is a tiny macOS menubar app that streams one Mac's screen to
 another Mac over [Tailscale](https://tailscale.com/). It uses ScreenCaptureKit
-to grab pixels, VideoToolbox to encode H.264, and Tailscale's WireGuard tunnel
-to move bytes. There is no server. There is no account to make (other than
-Tailscale itself, which you probably already have). There is no port to
-forward.
+to grab pixels, VideoToolbox to encode HEVC (with H.264 as a fallback for
+older hardware), and Tailscale's WireGuard tunnel to move bytes. There is no
+server. There is no account to make (other than Tailscale itself, which you
+probably already have). There is no port to forward.
 
 You hit "Start Sharing", the other person hits "Browse Shares", they click
 your machine, and a window opens. That's the whole thing.
 
 ## What you get
 
-- A 60 fps, full-Retina H.264 stream over the same WireGuard tunnel that
-  Tailscale already gives you. Direct peer-to-peer when the network allows;
-  Tailscale's DERP relays when it doesn't.
+- A 60 fps, full-Retina, hardware-encoded HEVC stream over the same
+  WireGuard tunnel that Tailscale already gives you. Direct peer-to-peer when
+  the network allows; Tailscale's DERP relays when it doesn't. Falls back to
+  H.264 on Macs whose VideoToolbox can't do HEVC.
 - Automatic peer discovery — Tailscreen probes your tailnet and shows you
   which machines are sharing. No IP-typing.
 - Ephemeral tsnet nodes. Each session spins up a fresh node and tears it down
