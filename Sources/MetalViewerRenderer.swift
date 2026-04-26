@@ -94,6 +94,11 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
         layer.isOpaque = true
         layer.contentsGravity = .resizeAspect
         layer.backgroundColor = NSColor.black.cgColor
+        // Tag the layer with sRGB so the compositor doesn't fall back to
+        // generic-RGB gamma assumptions on the captured BT.709 stream.
+        // Without this tag the same pixels can render visibly different
+        // shades of red on Display P3 displays vs sRGB displays.
+        layer.colorspace = CGColorSpace(name: CGColorSpace.sRGB)
         self.metalLayer = layer
 
         super.init()

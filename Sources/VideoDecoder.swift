@@ -10,11 +10,13 @@ final class VideoDecoder: @unchecked Sendable {
     private var session: VTDecompressionSession?
     private var formatDescription: CMFormatDescription?
 
-    /// Install explicit H.264 parameter sets. The server sends these before any frames,
-    /// and re-sends them on every IDR so late joiners can recover without guessing.
-    func setParameterSets(sps: Data, pps: Data) {
+    /// Install codec parameter sets. The server sends these before any
+    /// frames, and re-sends them on every IDR so late joiners can recover
+    /// without guessing. Switching codecs (e.g. server reconnects with a
+    /// different codec) tears down the session and rebuilds.
+    func setParameterSets(_ params: CodecParameterSets) {
         queue.async { [weak self] in
-            self?.applyParameterSets(sps: sps, pps: pps)
+            self?.applyParameterSets(params)
         }
     }
 
@@ -26,7 +28,32 @@ final class VideoDecoder: @unchecked Sendable {
         }
     }
 
-    private func applyParameterSets(sps: Data, pps: Data) {
+    private func applyParameterSets(_ params: CodecParameterSets) {
+        let newDesc: CMFormatDescription?
+        switch params {
+        case let .h264(sps, pps):
+            newDesc = Self.makeH264FormatDescription(sps: sps, pps: pps)
+        case let .hevc(vps, sps, pps):
+            newDesc = Self.makeHEVCFormatDescription(vps: vps, sps: sps, pps: pps)
+        }
+
+        guard let desc = newDesc else {
+            print("VideoDecoder: failed to build format description")
+            return
+        }
+
+        if let existing = formatDescription, CMFormatDescriptionEqual(existing, otherFormatDescription: desc) {
+            return
+        }
+
+        if let existingSession = session {
+            VTDecompressionSessionInvalidate(existingSession)
+            session = nil
+        }
+        formatDescription = desc
+    }
+
+    private static func makeH264FormatDescription(sps: Data, pps: Data) -> CMFormatDescription? {
         var newDesc: CMFormatDescription?
         let status = sps.withUnsafeBytes { (spsBuf: UnsafeRawBufferPointer) -> OSStatus in
             pps.withUnsafeBytes { (ppsBuf: UnsafeRawBufferPointer) -> OSStatus in
@@ -50,21 +77,46 @@ final class VideoDecoder: @unchecked Sendable {
                 }
             }
         }
-
-        guard status == noErr, let desc = newDesc else {
-            print("VideoDecoder: failed to build format description (\(status))")
-            return
+        guard status == noErr else {
+            print("VideoDecoder: H.264 format description failed (\(status))")
+            return nil
         }
+        return newDesc
+    }
 
-        if let existing = formatDescription, CMFormatDescriptionEqual(existing, otherFormatDescription: desc) {
-            return
+    private static func makeHEVCFormatDescription(vps: Data, sps: Data, pps: Data) -> CMFormatDescription? {
+        var newDesc: CMFormatDescription?
+        let status = vps.withUnsafeBytes { (vpsBuf: UnsafeRawBufferPointer) -> OSStatus in
+            sps.withUnsafeBytes { (spsBuf: UnsafeRawBufferPointer) -> OSStatus in
+                pps.withUnsafeBytes { (ppsBuf: UnsafeRawBufferPointer) -> OSStatus in
+                    guard let vpsBase = vpsBuf.baseAddress?.assumingMemoryBound(to: UInt8.self),
+                          let spsBase = spsBuf.baseAddress?.assumingMemoryBound(to: UInt8.self),
+                          let ppsBase = ppsBuf.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
+                        return -1
+                    }
+                    let pointers: [UnsafePointer<UInt8>] = [vpsBase, spsBase, ppsBase]
+                    let sizes: [Int] = [vps.count, sps.count, pps.count]
+                    return pointers.withUnsafeBufferPointer { ptrs in
+                        sizes.withUnsafeBufferPointer { szs in
+                            CMVideoFormatDescriptionCreateFromHEVCParameterSets(
+                                allocator: kCFAllocatorDefault,
+                                parameterSetCount: 3,
+                                parameterSetPointers: ptrs.baseAddress!,
+                                parameterSetSizes: szs.baseAddress!,
+                                nalUnitHeaderLength: 4,
+                                extensions: nil,
+                                formatDescriptionOut: &newDesc
+                            )
+                        }
+                    }
+                }
+            }
         }
-
-        if let existingSession = session {
-            VTDecompressionSessionInvalidate(existingSession)
-            session = nil
+        guard status == noErr else {
+            print("VideoDecoder: HEVC format description failed (\(status))")
+            return nil
         }
-        formatDescription = desc
+        return newDesc
     }
 
     private func decodeOnQueue(data: Data, isKeyframe: Bool) {

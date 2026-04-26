@@ -3,6 +3,22 @@ import CoreMedia
 import CoreVideo
 import Foundation
 
+/// Codec used on the wire. The sharer picks at startup (preferring HEVC
+/// when the host's VideoToolbox HW encoder accepts it); the viewer learns
+/// it from the RTP payload type. Distinct payload types (96/97) let the
+/// receiver demux without negotiation.
+enum VideoCodec: String, Codable, Sendable {
+    case h264
+    case hevc
+}
+
+/// Parameter sets needed to build a `CMFormatDescription` for the negotiated
+/// codec. H.264 carries SPS+PPS; HEVC additionally carries VPS.
+enum CodecParameterSets: Sendable, Equatable {
+    case h264(sps: Data, pps: Data)
+    case hevc(vps: Data, sps: Data, pps: Data)
+}
+
 private func compressionOutputCallback(
     outputCallbackRefCon: UnsafeMutableRawPointer?,
     sourceFrameRefCon: UnsafeMutableRawPointer?,
@@ -20,17 +36,17 @@ final class VideoEncoder: @unchecked Sendable {
     /// Fires from VideoToolbox's encoder thread; receivers must be thread-safe.
     var onEncodedData: ((Data, Bool) -> Void)?
 
-    /// Emits H.264 parameter sets (SPS, PPS) on every IDR so late joiners
-    /// can rebuild a decoder session. Fires before the matching frame.
-    var onParameterSets: ((_ sps: Data, _ pps: Data) -> Void)?
+    /// Emits codec parameter sets on every IDR so late joiners can rebuild
+    /// a decoder session. Fires before the matching frame.
+    var onParameterSets: ((CodecParameterSets) -> Void)?
 
     private let lock = NSLock()
     private var session: VTCompressionSession?
     private var frameCount: Int64 = 0
     private var fps: Int32 = 60
     private var forceNextKeyframe = false
-    private var lastSPS: Data?
-    private var lastPPS: Data?
+    private var lastParameterSets: CodecParameterSets?
+    private var activeCodec: VideoCodec = .h264
     /// Frames handed to VT that haven't come back through the output callback
     /// yet. Capped so we don't build up seconds of encoder backlog on busy
     /// pipelines (ScreenCaptureKit will happily deliver 60fps faster than VT
@@ -39,21 +55,69 @@ final class VideoEncoder: @unchecked Sendable {
     private var droppedAtInput: Int = 0
     private let maxInFlight = 2
 
+    /// Codec the encoder is currently configured for. `.h264` until the
+    /// first successful `setup`.
+    var codec: VideoCodec {
+        lock.lock(); defer { lock.unlock() }
+        return activeCodec
+    }
+
     /// - Parameters:
     ///   - width: pixel width
     ///   - height: pixel height
     ///   - fps: target frame rate
-    ///   - bitsPerPixel: quality knob. 0.08 is plenty for screen content and
-    ///     matters for latency because the previous 0.15 produced ~550 KB
-    ///     keyframes at Retina resolutions that stalled viewers for ~200 ms.
-    func setup(width: Int, height: Int, fps: Int32 = 60, bitsPerPixel: Double = 0.08) throws {
+    ///   - preferredCodec: codec to try first. We attempt that one and fall
+    ///     back to H.264 if VT refuses (e.g. an Intel Mac without HW HEVC).
+    ///   - bitsPerPixel: quality knob. HEVC's intra-prediction modes for
+    ///     screen content earn back ~30% efficiency vs H.264, so the HEVC
+    ///     default is lower. The previous H.264 value of 0.08 produced
+    ///     visible chroma blur on small text; 0.10 is a small step up that
+    ///     fits the existing 1.75× burst cap.
+    func setup(
+        width: Int,
+        height: Int,
+        fps: Int32 = 60,
+        preferredCodec: VideoCodec = .hevc,
+        bitsPerPixel: Double? = nil
+    ) throws {
+        let codecOrder: [VideoCodec] = preferredCodec == .hevc ? [.hevc, .h264] : [.h264]
+        var lastError: OSStatus = noErr
+        for codec in codecOrder {
+            let bpp = bitsPerPixel ?? Self.defaultBitsPerPixel(for: codec)
+            do {
+                try createSession(width: width, height: height, fps: fps, codec: codec, bitsPerPixel: bpp)
+                if codec != preferredCodec {
+                    print("VideoEncoder: \(preferredCodec) not available, fell back to \(codec)")
+                }
+                return
+            } catch VideoEncoderError.sessionCreationFailed(let status) {
+                lastError = status
+                print("VideoEncoder: \(codec) session creation failed (\(status))")
+                continue
+            }
+        }
+        throw VideoEncoderError.sessionCreationFailed(lastError)
+    }
+
+    /// Default `bitsPerPixel` for the given codec. HEVC encodes screen content
+    /// more efficiently so it gets a lower default for the same visual quality.
+    static func defaultBitsPerPixel(for codec: VideoCodec) -> Double {
+        switch codec {
+        case .hevc: return 0.06
+        case .h264: return 0.10
+        }
+    }
+
+    private func createSession(width: Int, height: Int, fps: Int32, codec: VideoCodec, bitsPerPixel: Double) throws {
         var newSession: VTCompressionSession?
+
+        let codecType: CMVideoCodecType = (codec == .hevc) ? kCMVideoCodecType_HEVC : kCMVideoCodecType_H264
 
         let status = VTCompressionSessionCreate(
             allocator: kCFAllocatorDefault,
             width: Int32(width),
             height: Int32(height),
-            codecType: kCMVideoCodecType_H264,
+            codecType: codecType,
             encoderSpecification: nil,
             imageBufferAttributes: nil,
             compressedDataAllocator: nil,
@@ -63,27 +127,29 @@ final class VideoEncoder: @unchecked Sendable {
         )
 
         guard status == noErr, let newSession = newSession else {
-            throw VideoEncoderError.sessionCreationFailed
+            throw VideoEncoderError.sessionCreationFailed(status)
         }
 
         VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue)
-        VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_ProfileLevel, value: kVTProfileLevel_H264_High_AutoLevel)
+        let profileLevel: CFString = (codec == .hevc)
+            ? kVTProfileLevel_HEVC_Main_AutoLevel
+            : kVTProfileLevel_H264_High_AutoLevel
+        VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_ProfileLevel, value: profileLevel)
         VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
         VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: fps as CFNumber)
 
-        let bitrate = Int(Double(width * height) * bitsPerPixel * Double(fps))
-        VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_AverageBitRate, value: bitrate as CFNumber)
+        // Tag the bitstream with BT.709 color so decoders don't have to
+        // guess. Without these, players have been observed picking BT.601
+        // on captured content and shifting reds noticeably.
+        VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_ColorPrimaries,
+                             value: kCVImageBufferColorPrimaries_ITU_R_709_2)
+        VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_TransferFunction,
+                             value: kCVImageBufferTransferFunction_ITU_R_709_2)
+        VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_YCbCrMatrix,
+                             value: kCVImageBufferYCbCrMatrix_ITU_R_709_2)
 
-        // Hard cap per-window bytes. Without this the encoder honors the
-        // average but is free to emit a ~10x spike on a single keyframe.
-        // Format: alternating [maxBytesInWindow, windowSeconds]. Allow 1.75x
-        // the per-second budget over a 500 ms window — generous enough for
-        // a single IDR but tight enough to prevent the burst tail latency.
-        let perSecondBytes = bitrate / 8
-        let windowBytes = Int(Double(perSecondBytes) * 1.75 / 2.0)
-        let windowSeconds = 0.5
-        let dataRateLimits = [windowBytes, windowSeconds] as CFArray
-        VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_DataRateLimits, value: dataRateLimits)
+        let bitrate = Self.computeBitrate(width: width, height: height, fps: Int(fps), bitsPerPixel: bitsPerPixel)
+        Self.applyBitrate(bitrate, to: newSession)
 
         // Emit each frame as soon as it's encoded — no pipelining — so the
         // wall-clock latency per frame stays predictable.
@@ -98,11 +164,40 @@ final class VideoEncoder: @unchecked Sendable {
         lock.lock()
         session = newSession
         self.fps = fps
+        self.activeCodec = codec
         frameCount = 0
         forceNextKeyframe = true  // first frame out should be an IDR
-        lastSPS = nil
-        lastPPS = nil
+        lastParameterSets = nil
         lock.unlock()
+    }
+
+    private static func computeBitrate(width: Int, height: Int, fps: Int, bitsPerPixel: Double) -> Int {
+        Int(Double(width * height) * bitsPerPixel * Double(fps))
+    }
+
+    /// Sets `AverageBitRate` plus the matching `DataRateLimits` window cap.
+    /// Without the latter the encoder honors the average but is free to emit
+    /// a ~10x spike on a single keyframe; we allow 1.75× the per-second
+    /// budget over a 500 ms window — generous enough for a single IDR but
+    /// tight enough to prevent the burst tail latency.
+    private static func applyBitrate(_ bitrate: Int, to session: VTCompressionSession) {
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate, value: bitrate as CFNumber)
+        let perSecondBytes = bitrate / 8
+        let windowBytes = Int(Double(perSecondBytes) * 1.75 / 2.0)
+        let windowSeconds = 0.5
+        let dataRateLimits = [windowBytes, windowSeconds] as CFArray
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_DataRateLimits, value: dataRateLimits)
+    }
+
+    /// Update the encoder's target bitrate while it's running. Used by the
+    /// adaptive-bitrate sweep on the server: cut on sustained PLI bursts,
+    /// recover on clean stream. Safe to call from any thread.
+    func setBitrate(_ bitrate: Int) {
+        lock.lock()
+        let s = session
+        lock.unlock()
+        guard let s = s else { return }
+        Self.applyBitrate(bitrate, to: s)
     }
 
     /// Request that the next encoded frame be an IDR. Safe from any thread.
@@ -162,6 +257,7 @@ final class VideoEncoder: @unchecked Sendable {
         // this frame one way or another.
         lock.lock()
         if inFlight > 0 { inFlight -= 1 }
+        let codec = activeCodec
         lock.unlock()
 
         guard status == noErr,
@@ -175,12 +271,11 @@ final class VideoEncoder: @unchecked Sendable {
         let dataCallback = onEncodedData
 
         if isKeyframe, let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer),
-           let (sps, pps) = Self.extractParameterSets(from: formatDescription) {
+           let params = Self.extractParameterSets(from: formatDescription, codec: codec) {
             lock.lock()
-            lastSPS = sps
-            lastPPS = pps
+            lastParameterSets = params
             lock.unlock()
-            paramCallback?(sps, pps)
+            paramCallback?(params)
         }
 
         guard let dataBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else { return }
@@ -195,7 +290,18 @@ final class VideoEncoder: @unchecked Sendable {
         dataCallback?(data, isKeyframe)
     }
 
-    private static func extractParameterSets(from formatDescription: CMFormatDescription) -> (sps: Data, pps: Data)? {
+    private static func extractParameterSets(from formatDescription: CMFormatDescription, codec: VideoCodec) -> CodecParameterSets? {
+        switch codec {
+        case .h264:
+            guard let (sps, pps) = extractH264(formatDescription: formatDescription) else { return nil }
+            return .h264(sps: sps, pps: pps)
+        case .hevc:
+            guard let (vps, sps, pps) = extractHEVC(formatDescription: formatDescription) else { return nil }
+            return .hevc(vps: vps, sps: sps, pps: pps)
+        }
+    }
+
+    private static func extractH264(formatDescription: CMFormatDescription) -> (sps: Data, pps: Data)? {
         var spsPtr: UnsafePointer<UInt8>?
         var spsSize = 0
         var count = 0
@@ -220,12 +326,49 @@ final class VideoEncoder: @unchecked Sendable {
         return (Data(bytes: sps, count: spsSize), Data(bytes: pps, count: ppsSize))
     }
 
+    private static func extractHEVC(formatDescription: CMFormatDescription) -> (vps: Data, sps: Data, pps: Data)? {
+        var vpsPtr: UnsafePointer<UInt8>?
+        var vpsSize = 0
+        var count = 0
+        var nalHeaderLength: Int32 = 0
+
+        let vpsStatus = CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(
+            formatDescription, parameterSetIndex: 0,
+            parameterSetPointerOut: &vpsPtr, parameterSetSizeOut: &vpsSize,
+            parameterSetCountOut: &count, nalUnitHeaderLengthOut: &nalHeaderLength
+        )
+        guard vpsStatus == noErr, let vps = vpsPtr, count >= 3 else { return nil }
+
+        var spsPtr: UnsafePointer<UInt8>?
+        var spsSize = 0
+        let spsStatus = CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(
+            formatDescription, parameterSetIndex: 1,
+            parameterSetPointerOut: &spsPtr, parameterSetSizeOut: &spsSize,
+            parameterSetCountOut: nil, nalUnitHeaderLengthOut: nil
+        )
+        guard spsStatus == noErr, let sps = spsPtr else { return nil }
+
+        var ppsPtr: UnsafePointer<UInt8>?
+        var ppsSize = 0
+        let ppsStatus = CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(
+            formatDescription, parameterSetIndex: 2,
+            parameterSetPointerOut: &ppsPtr, parameterSetSizeOut: &ppsSize,
+            parameterSetCountOut: nil, nalUnitHeaderLengthOut: nil
+        )
+        guard ppsStatus == noErr, let pps = ppsPtr else { return nil }
+
+        return (
+            Data(bytes: vps, count: vpsSize),
+            Data(bytes: sps, count: spsSize),
+            Data(bytes: pps, count: ppsSize)
+        )
+    }
+
     /// Last emitted parameter sets, if any. Thread-safe.
-    var cachedParameterSets: (sps: Data, pps: Data)? {
+    var cachedParameterSets: CodecParameterSets? {
         lock.lock()
         defer { lock.unlock() }
-        guard let sps = lastSPS, let pps = lastPPS else { return nil }
-        return (sps, pps)
+        return lastParameterSets
     }
 
     func shutdown() {
@@ -250,5 +393,5 @@ extension CMSampleBuffer {
 }
 
 enum VideoEncoderError: Error {
-    case sessionCreationFailed
+    case sessionCreationFailed(OSStatus)
 }

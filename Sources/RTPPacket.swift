@@ -1,10 +1,12 @@
 import Foundation
 
 /// RTP wire format used between the screen-share server and viewers (RFC 3550 +
-/// RFC 6184 H.264 payload). The same UDP socket also carries small "control"
-/// datagrams from the viewer back to the server (HELLO, KEEPALIVE, BYE, PLI).
-/// We disambiguate by the first byte: real RTP packets are V=2, so byte 0 is
-/// always in the range 0x80-0xBF; control packets use 0x00-0x7F.
+/// RFC 6184 H.264 payload + RFC 7798 HEVC payload). The same UDP socket also
+/// carries small "control" datagrams from the viewer back to the server (HELLO,
+/// KEEPALIVE, BYE, PLI). We disambiguate by the first byte: real RTP packets
+/// are V=2, so byte 0 is always in the range 0x80-0xBF; control packets use
+/// 0x00-0x7F. Codec is signalled by the RTP payload type (96 = H.264, 97 =
+/// HEVC) so a viewer can demux without out-of-band negotiation.
 ///
 /// Single byte at offset 0 of every datagram on the wire:
 ///
@@ -39,7 +41,11 @@ enum ScreenShareControlMessage: UInt8 {
 /// 12-byte fixed RTP header (no CSRC list, no extension).
 struct RTPHeader {
     static let size = 12
-    static let h264PayloadType: UInt8 = 96  // dynamic PT, RFC 6184 default
+    /// Dynamic payload type for H.264 (RFC 6184 default).
+    static let h264PayloadType: UInt8 = 96
+    /// Dynamic payload type for HEVC. 96 is taken; 97 is the next dynamic
+    /// PT and matches what most WebRTC stacks use for HEVC.
+    static let hevcPayloadType: UInt8 = 97
     static let clockHz: UInt32 = 90_000
 
     var marker: Bool
@@ -115,6 +121,17 @@ enum AVCCParser {
         }
         return nals
     }
+}
+
+/// Reassembled access unit. Both H.264 and HEVC depacketizers emit this
+/// shape; `codec` tells the receiver which parameter-set extraction path
+/// to take when `containsIDR` is true.
+struct VideoAccessUnit {
+    let avcc: Data
+    let containsIDR: Bool
+    let timestamp: UInt32
+    let lostBeforeThisAU: Bool
+    let codec: VideoCodec
 }
 
 /// RFC 6184 H.264 packetizer. Single NAL mode for small NALs, FU-A for
@@ -209,17 +226,6 @@ enum H264Packetizer {
 /// the decoder never sees a torn frame; the caller is expected to send a PLI
 /// in response so the encoder issues a fresh IDR.
 final class H264Depacketizer {
-    /// Output: one assembled access unit, plus whether it contains an IDR.
-    /// `lostBeforeThisAU` is true if we observed a sequence-number gap or had
-    /// to drop the in-progress AU due to loss; the caller uses this to
-    /// trigger a keyframe request.
-    struct AccessUnit {
-        let avcc: Data
-        let containsIDR: Bool
-        let timestamp: UInt32
-        let lostBeforeThisAU: Bool
-    }
-
     private var ssrc: UInt32?
     private var expectedSeq: UInt16?
     private var currentTimestamp: UInt32?
@@ -233,7 +239,7 @@ final class H264Depacketizer {
 
     /// Feed one received RTP packet. Returns a completed AU once the marker
     /// bit (or a timestamp change) signals end-of-frame; nil otherwise.
-    func ingest(_ packet: Data) -> AccessUnit? {
+    func ingest(_ packet: Data) -> VideoAccessUnit? {
         guard let (header, payloadOffset) = RTPHeader.decode(from: packet) else { return nil }
         guard header.payloadType == RTPHeader.h264PayloadType else { return nil }
 
@@ -340,7 +346,7 @@ final class H264Depacketizer {
         currentAU.append(nal)
     }
 
-    private func flushAU(timestamp: UInt32) -> AccessUnit? {
+    private func flushAU(timestamp: UInt32) -> VideoAccessUnit? {
         let wasCorrupted = currentAUCorrupted || currentAU.isEmpty
         let lostBefore = pendingLossSignal
         let avcc = currentAU
@@ -359,11 +365,12 @@ final class H264Depacketizer {
             return nil
         }
         pendingLossSignal = false
-        return AccessUnit(
+        return VideoAccessUnit(
             avcc: avcc,
             containsIDR: hasIDR,
             timestamp: timestamp,
-            lostBeforeThisAU: lostBefore
+            lostBeforeThisAU: lostBefore,
+            codec: .h264
         )
     }
 
@@ -377,6 +384,275 @@ final class H264Depacketizer {
         fuBuffer.removeAll(keepingCapacity: true)
         inFU = false
         pendingLossSignal = false
+    }
+}
+
+/// RFC 7798 HEVC packetizer. Same shape as the H.264 path — Single NAL for
+/// small NALs, FU mode for anything that wouldn't fit in one MTU. AP
+/// (aggregation packets) and PACI are intentionally unused; the depacketizer
+/// is correspondingly simpler.
+enum H265Packetizer {
+    static let maxPayloadBytes = H264Packetizer.maxPayloadBytes
+
+    static func packetize(
+        nals: [Data],
+        timestamp: UInt32,
+        ssrc: UInt32,
+        startSequence: UInt16
+    ) -> [Data] {
+        var chunks: [Data] = []
+        for nal in nals {
+            guard nal.count >= 2 else { continue }
+            if nal.count <= maxPayloadBytes {
+                chunks.append(nal)  // Single NAL: payload IS the NAL (header + body)
+            } else {
+                appendFU(nal: nal, into: &chunks)
+            }
+        }
+
+        var packets: [Data] = []
+        packets.reserveCapacity(chunks.count)
+        var seq = startSequence
+        for (index, payload) in chunks.enumerated() {
+            let isLast = index == chunks.count - 1
+            var packet = Data(capacity: RTPHeader.size + payload.count)
+            let header = RTPHeader(
+                marker: isLast,
+                payloadType: RTPHeader.hevcPayloadType,
+                sequenceNumber: seq,
+                timestamp: timestamp,
+                ssrc: ssrc
+            )
+            header.encode(into: &packet)
+            packet.append(payload)
+            packets.append(packet)
+            seq &+= 1
+        }
+        return packets
+    }
+
+    /// RFC 7798 §4.4.3 FU fragmentation. The two-byte payload header has
+    /// the FU type (49); the original NAL type rides in the 1-byte FU
+    /// header that follows. LayerId and TID are preserved from the input
+    /// NAL header so reassembly reconstructs an identical original NAL.
+    private static func appendFU(nal: Data, into chunks: inout [Data]) {
+        let nh0 = nal[nal.startIndex]
+        let nh1 = nal[nal.index(nal.startIndex, offsetBy: 1)]
+        let originalType = (nh0 >> 1) & 0x3F
+        let fBit = nh0 & 0x80
+        let layerIdHi = nh0 & 0x01  // top bit of LayerId rides in byte 0 LSB
+
+        // Build the PayloadHdr: F (preserved) | Type=49 | LayerId top bit
+        let payloadHdr0: UInt8 = fBit | (49 << 1) | layerIdHi
+        let payloadHdr1: UInt8 = nh1            // remaining LayerId + TID
+
+        let body = nal.dropFirst(2)
+        // Reserve 3 bytes per fragment for PayloadHdr (2) + FU header (1).
+        let fragSize = maxPayloadBytes - 3
+        var offset = body.startIndex
+        var first = true
+        while offset < body.endIndex {
+            let remaining = body.distance(from: offset, to: body.endIndex)
+            let take = min(fragSize, remaining)
+            let end = body.index(offset, offsetBy: take)
+            let isLast = end == body.endIndex
+
+            var fuHeader: UInt8 = originalType & 0x3F
+            if first { fuHeader |= 0x80 }       // S bit
+            if isLast { fuHeader |= 0x40 }      // E bit
+
+            var chunk = Data(capacity: 3 + take)
+            chunk.append(payloadHdr0)
+            chunk.append(payloadHdr1)
+            chunk.append(fuHeader)
+            chunk.append(body[offset..<end])
+            chunks.append(chunk)
+
+            offset = end
+            first = false
+        }
+    }
+}
+
+/// HEVC RFC 7798 depacketizer. Mirrors H264Depacketizer line for line; the
+/// only structural differences are the 2-byte NAL header, the 6-bit type
+/// field, and FU type 49 (vs FU-A 28 for H.264).
+final class H265Depacketizer {
+    private var ssrc: UInt32?
+    private var expectedSeq: UInt16?
+    private var currentTimestamp: UInt32?
+    private var currentAU: Data = Data()
+    private var currentHasIDR: Bool = false
+    private var currentAUCorrupted: Bool = false
+    private var fuBuffer: Data = Data()
+    private var inFU: Bool = false
+    private var pendingLossSignal: Bool = false
+
+    func ingest(_ packet: Data) -> VideoAccessUnit? {
+        guard let (header, payloadOffset) = RTPHeader.decode(from: packet) else { return nil }
+        guard header.payloadType == RTPHeader.hevcPayloadType else { return nil }
+
+        if let known = ssrc, known != header.ssrc {
+            reset()
+            ssrc = header.ssrc
+        } else if ssrc == nil {
+            ssrc = header.ssrc
+        }
+
+        if let expected = expectedSeq, header.sequenceNumber != expected {
+            currentAUCorrupted = true
+            pendingLossSignal = true
+            inFU = false
+            fuBuffer.removeAll(keepingCapacity: true)
+        }
+        expectedSeq = header.sequenceNumber &+ 1
+
+        if let prevTs = currentTimestamp, prevTs != header.timestamp {
+            currentAUCorrupted = true
+            currentAU.removeAll(keepingCapacity: true)
+            currentHasIDR = false
+            inFU = false
+            fuBuffer.removeAll(keepingCapacity: true)
+            pendingLossSignal = true
+        }
+        currentTimestamp = header.timestamp
+
+        let payload = packet[packet.index(packet.startIndex, offsetBy: payloadOffset)..<packet.endIndex]
+        if payload.count < 2 {
+            currentAUCorrupted = true
+        } else {
+            handlePayload(Data(payload))
+        }
+
+        if header.marker {
+            return flushAU(timestamp: header.timestamp)
+        }
+        return nil
+    }
+
+    private func handlePayload(_ payload: Data) {
+        let h0 = payload[payload.startIndex]
+        let nalType = (h0 >> 1) & 0x3F  // 6-bit HEVC NAL type
+
+        switch nalType {
+        case 0...47:
+            // Single NAL packet: payload IS the complete NAL (2-byte header + body).
+            appendNAL(payload)
+        case 49:
+            // FU: payload is [PayloadHdr:2][FU header:1][fragment...].
+            guard payload.count >= 3 else {
+                currentAUCorrupted = true
+                return
+            }
+            let payloadHdr0 = payload[payload.startIndex]
+            let payloadHdr1 = payload[payload.index(payload.startIndex, offsetBy: 1)]
+            let fuHeader = payload[payload.index(payload.startIndex, offsetBy: 2)]
+            let isStart = (fuHeader & 0x80) != 0
+            let isEnd = (fuHeader & 0x40) != 0
+            let originalType = fuHeader & 0x3F
+            let fragStart = payload.index(payload.startIndex, offsetBy: 3)
+            let fragment = payload[fragStart..<payload.endIndex]
+
+            if isStart {
+                fuBuffer.removeAll(keepingCapacity: true)
+                // Reconstruct the original NAL header: F + LayerId top bit
+                // come from PayloadHdr byte 0; original type goes in bits
+                // 1-6 of the same byte. Byte 1 (rest of LayerId + TID)
+                // passes through unchanged.
+                let fBit = payloadHdr0 & 0x80
+                let layerIdHi = payloadHdr0 & 0x01
+                let originalH0: UInt8 = fBit | ((originalType & 0x3F) << 1) | layerIdHi
+                fuBuffer.append(originalH0)
+                fuBuffer.append(payloadHdr1)
+                fuBuffer.append(fragment)
+                inFU = true
+            } else if inFU {
+                fuBuffer.append(fragment)
+            } else {
+                currentAUCorrupted = true
+                return
+            }
+
+            if isEnd && inFU {
+                appendNAL(fuBuffer)
+                fuBuffer.removeAll(keepingCapacity: true)
+                inFU = false
+            }
+        default:
+            // 48 = AP, 50 = PACI, 51-63 reserved. We never emit these;
+            // mark the AU corrupted rather than try to handle them.
+            currentAUCorrupted = true
+        }
+    }
+
+    private func appendNAL(_ nal: Data) {
+        guard nal.count >= 1 else { return }
+        let nalType = (nal[nal.startIndex] >> 1) & 0x3F
+        // 16..21 are IRAP NAL types (BLA/IDR/CRA). VT emits IDR_W_RADL
+        // (type 19) for forced keyframes; treat the whole IRAP range as
+        // "this AU is decodable from scratch".
+        if (16...21).contains(nalType) { currentHasIDR = true }
+        let len = UInt32(nal.count)
+        currentAU.appendBE(len)
+        currentAU.append(nal)
+    }
+
+    private func flushAU(timestamp: UInt32) -> VideoAccessUnit? {
+        let wasCorrupted = currentAUCorrupted || currentAU.isEmpty
+        let lostBefore = pendingLossSignal
+        let avcc = currentAU
+        let hasIDR = currentHasIDR
+
+        currentAU = Data()
+        currentHasIDR = false
+        currentAUCorrupted = false
+        inFU = false
+        fuBuffer.removeAll(keepingCapacity: true)
+        currentTimestamp = nil
+
+        if wasCorrupted {
+            return nil
+        }
+        pendingLossSignal = false
+        return VideoAccessUnit(
+            avcc: avcc,
+            containsIDR: hasIDR,
+            timestamp: timestamp,
+            lostBeforeThisAU: lostBefore,
+            codec: .hevc
+        )
+    }
+
+    private func reset() {
+        expectedSeq = nil
+        currentTimestamp = nil
+        currentAU.removeAll(keepingCapacity: true)
+        currentHasIDR = false
+        currentAUCorrupted = false
+        fuBuffer.removeAll(keepingCapacity: true)
+        inFU = false
+        pendingLossSignal = false
+    }
+}
+
+/// Routes incoming RTP packets to the right depacketizer based on the
+/// payload type. Used by the viewer so we don't need a separate negotiation
+/// step — whichever codec the server picked, the receiver discovers it
+/// from the first packet's PT.
+final class MultiCodecDepacketizer {
+    private let h264 = H264Depacketizer()
+    private let h265 = H265Depacketizer()
+
+    func ingest(_ packet: Data) -> VideoAccessUnit? {
+        guard let (header, _) = RTPHeader.decode(from: packet) else { return nil }
+        switch header.payloadType {
+        case RTPHeader.h264PayloadType:
+            return h264.ingest(packet)
+        case RTPHeader.hevcPayloadType:
+            return h265.ingest(packet)
+        default:
+            return nil
+        }
     }
 }
 

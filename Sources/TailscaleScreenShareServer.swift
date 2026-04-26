@@ -46,17 +46,31 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
 
     /// Per-viewer state. Keyed by the UDP source address ("ip:port") that
     /// the HELLO arrived from — that's also the destination we echo packets
-    /// back to.
+    /// back to. `pliTimestampsNs` is a small ring of recent PLI arrivals
+    /// used by the adaptive-bitrate sweep — losing more than a couple of
+    /// frames in 5 s is the signal to step bitrate down.
     private struct Viewer {
         let addr: String
         let ssrc: UInt32
         var nextSequence: UInt16
         var lastSeenNs: UInt64
+        var pliTimestampsNs: [UInt64] = []
     }
 
     private let viewers = OSAllocatedUnfairLock<[String: Viewer]>(initialState: [:])
-    private let parameterSets = OSAllocatedUnfairLock<(sps: Data, pps: Data)?>(initialState: nil)
+    private let parameterSets = OSAllocatedUnfairLock<CodecParameterSets?>(initialState: nil)
     private let annotationConnections = OSAllocatedUnfairLock<[UUID: IncomingConnection]>(initialState: [:])
+
+    /// Encoder bitrate the most recent `setup` produced, in bits/sec. The
+    /// adaptive-bitrate sweep treats this as the ceiling and never raises
+    /// above it. Recomputed on every encoder reinit (resolution change).
+    private let baselineBitrate = OSAllocatedUnfairLock<Int>(initialState: 0)
+    /// Current applied bitrate. Set equal to baseline at encoder setup,
+    /// then cut/raised by the adaptive sweep.
+    private let currentBitrate = OSAllocatedUnfairLock<Int>(initialState: 0)
+    /// Last time the sweep changed the bitrate. Used for hysteresis so we
+    /// don't oscillate.
+    private let lastBitrateChangeNs = OSAllocatedUnfairLock<UInt64>(initialState: 0)
 
     /// Tail of the broadcast chain. Each new frame's send job awaits this
     /// before issuing its own sends, so frame N's packets fully drain
@@ -203,6 +217,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         Task { [weak self] in await self?.acceptControlConnections() }
         Task { [weak self] in await self?.receiveControlLoop() }
         Task { [weak self] in await self?.sweepIdleViewers() }
+        Task { [weak self] in await self?.adaptiveBitrateSweep() }
 
         let capture = ScreenCapture()
         capture.onFrameCaptured = { [weak self] pixelBuffer in
@@ -347,7 +362,26 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             removeViewer(addr: addr)
         case .pli:
             registerOrRefresh(addr: addr, isNew: false)
+            recordPLI(from: addr)
             encoder?.requestKeyframe()
+        }
+    }
+
+    /// Append a PLI timestamp to the viewer's ring. The adaptive sweep
+    /// (every 5 s) reads these to decide whether to step bitrate down.
+    /// Drop the oldest entry once we hold more than 32 — at our
+    /// recovery cadence (PLI per missing AU, capped by the encoder's
+    /// keyframe production rate) this is comfortably more than a 5 s
+    /// window can ever observe.
+    private func recordPLI(from addr: String) {
+        let now = DispatchTime.now().uptimeNanoseconds
+        viewers.withLock { state in
+            guard var viewer = state[addr] else { return }
+            viewer.pliTimestampsNs.append(now)
+            if viewer.pliTimestampsNs.count > 32 {
+                viewer.pliTimestampsNs.removeFirst(viewer.pliTimestampsNs.count - 32)
+            }
+            state[addr] = viewer
         }
     }
 
@@ -434,12 +468,36 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             let newEncoder = VideoEncoder()
             do {
                 try newEncoder.setup(width: width, height: height, fps: 60)
-                print("VideoEncoder setup: \(width)x\(height) @ 60fps")
+                let codec = newEncoder.codec
+                print("VideoEncoder setup: \(width)x\(height) @ 60fps codec=\(codec)")
                 lastWidth = width
                 lastHeight = height
 
-                newEncoder.onParameterSets = { [weak self] sps, pps in
-                    self?.parameterSets.withLock { $0 = (sps, pps) }
+                // Anchor the adaptive-bitrate ceiling at this resolution's
+                // baseline. Done here (not in init) because we don't know
+                // the codec or pixel dimensions until VT actually accepts
+                // the encoder.
+                let bpp = VideoEncoder.defaultBitsPerPixel(for: codec)
+                let baseline = Int(Double(width * height) * bpp * 60.0)
+                baselineBitrate.withLock { $0 = baseline }
+                currentBitrate.withLock { $0 = baseline }
+                lastBitrateChangeNs.withLock { $0 = DispatchTime.now().uptimeNanoseconds }
+                // Wipe per-viewer PLI history — counts from a previous
+                // session at a different bitrate would mislead the sweep.
+                viewers.withLock { state in
+                    let keys = Array(state.keys)
+                    for key in keys {
+                        guard var viewer = state[key] else { continue }
+                        viewer.pliTimestampsNs.removeAll()
+                        state[key] = viewer
+                    }
+                }
+                // Drop cached parameter sets so the first IDR's SPS/PPS
+                // (and VPS if HEVC) are what late-joiners get.
+                parameterSets.withLock { $0 = nil }
+
+                newEncoder.onParameterSets = { [weak self] params in
+                    self?.parameterSets.withLock { $0 = params }
                 }
                 newEncoder.onEncodedData = { [weak self] data, isKeyframe in
                     self?.broadcast(avccData: data, isKeyframe: isKeyframe)
@@ -454,6 +512,79 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         encoder?.encode(pixelBuffer: pixelBuffer)
     }
 
+    /// Adaptive-bitrate control loop. Polls every 5 seconds; counts PLIs
+    /// received from each viewer in the last 5 s window, takes the worst
+    /// per-viewer rate (we encode once and fan out — the worst link is
+    /// the one we have to satisfy), and either:
+    ///
+    ///   * cuts bitrate by 25 % if PLIs exceed the loss threshold, or
+    ///   * recovers 10 % toward the baseline if the window was clean.
+    ///
+    /// Hysteresis: at least 5 s must elapse since the last change before
+    /// we cut, and at least 10 s before we step back up. Bitrate floor is
+    /// 30 % of the baseline so a temporarily-bad link doesn't push us into
+    /// unwatchable territory.
+    private func adaptiveBitrateSweep() async {
+        let windowNs: UInt64 = 5_000_000_000
+        let downHysteresisNs: UInt64 = 5_000_000_000
+        let upHysteresisNs: UInt64 = 10_000_000_000
+        let lossThreshold = 2  // PLIs per window before we cut
+
+        while isRunning {
+            try? await Task.sleep(nanoseconds: windowNs)
+            guard isRunning, encoder != nil else { continue }
+
+            let baseline = baselineBitrate.withLock { $0 }
+            let current = currentBitrate.withLock { $0 }
+            let lastChange = lastBitrateChangeNs.withLock { $0 }
+            guard baseline > 0 else { continue }
+            let floor = max(baseline * 3 / 10, 500_000)  // 30 % of baseline, never below 500 kbps
+            let now = DispatchTime.now().uptimeNanoseconds
+
+            let worstPLIs = viewers.withLock { state -> Int in
+                var worst = 0
+                let cutoff = now &- windowNs
+                let keys = Array(state.keys)
+                for key in keys {
+                    guard var viewer = state[key] else { continue }
+                    viewer.pliTimestampsNs.removeAll { $0 < cutoff }
+                    state[key] = viewer
+                    worst = max(worst, viewer.pliTimestampsNs.count)
+                }
+                return worst
+            }
+
+            let elapsedSinceChange = now &- lastChange
+            if worstPLIs > lossThreshold && elapsedSinceChange >= downHysteresisNs && current > floor {
+                let next = max(floor, current * 3 / 4)  // -25 %
+                applyAdaptiveBitrate(next, reason: "loss (\(worstPLIs) PLIs/5s)")
+            } else if worstPLIs == 0 && elapsedSinceChange >= upHysteresisNs && current < baseline {
+                let next = min(baseline, current + max(current / 10, 100_000))  // +10 %, min step 100 kbps
+                applyAdaptiveBitrate(next, reason: "clean window")
+            }
+        }
+    }
+
+    /// Push a new bitrate to the live encoder and update the bookkeeping
+    /// the sweep reads on the next tick. Forces a keyframe on a down-step
+    /// so viewers don't have to wait for the next periodic IDR to recover
+    /// at the new rate.
+    private func applyAdaptiveBitrate(_ bitrate: Int, reason: String) {
+        let prev = currentBitrate.withLock { existing -> Int in
+            let p = existing
+            existing = bitrate
+            return p
+        }
+        lastBitrateChangeNs.withLock { $0 = DispatchTime.now().uptimeNanoseconds }
+        encoder?.setBitrate(bitrate)
+        if bitrate < prev {
+            encoder?.requestKeyframe()
+        }
+        let kbps = Double(bitrate) / 1000.0
+        let prevKbps = Double(prev) / 1000.0
+        print("Adaptive bitrate: \(Int(prevKbps)) → \(Int(kbps)) kbps (\(reason))")
+    }
+
     private func buildPreviewImage(from pixelBuffer: CVPixelBuffer) -> NSImage? {
         let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
         let srcExtent = ciImage.extent
@@ -466,16 +597,23 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
 
     /// Convert an encoded AVCC access unit into RTP packets and fan them out
     /// to every registered viewer with a per-viewer SSRC and sequence number.
-    /// On IDR we prepend the cached SPS+PPS as Single NAL packets so the
-    /// access unit is fully self-contained — late-joining viewers can decode
-    /// the very first frame they observe.
+    /// On IDR we prepend the cached parameter sets as Single NAL packets so
+    /// the access unit is fully self-contained — late-joining viewers can
+    /// decode the very first frame they observe. (For HEVC that's VPS+SPS+
+    /// PPS; for H.264 it's SPS+PPS.)
     private func broadcast(avccData: Data, isKeyframe: Bool) {
         guard let pl = packetListener else { return }
+        guard let codec = encoder?.codec else { return }
 
         var nals = AVCCParser.nalUnits(from: avccData)
         if isKeyframe, let cached = parameterSets.withLock({ $0 }) {
-            // Order is significant: SPS, PPS, then the IDR slice(s).
-            nals = [cached.sps, cached.pps] + nals
+            switch cached {
+            case let .h264(sps, pps):
+                nals = [sps, pps] + nals
+            case let .hevc(vps, sps, pps):
+                // HEVC parameter-set order is significant: VPS, SPS, PPS.
+                nals = [vps, sps, pps] + nals
+            }
         }
         guard !nals.isEmpty else { return }
 
@@ -491,9 +629,17 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         }
         // Predict packet count by packetizing once with seq=0/ssrc=0; each
         // viewer then gets the same byte template with seq/ssrc rewritten.
-        let templates = H264Packetizer.packetize(
-            nals: nals, timestamp: rtpTs, ssrc: 0, startSequence: 0
-        )
+        let templates: [Data]
+        switch codec {
+        case .h264:
+            templates = H264Packetizer.packetize(
+                nals: nals, timestamp: rtpTs, ssrc: 0, startSequence: 0
+            )
+        case .hevc:
+            templates = H265Packetizer.packetize(
+                nals: nals, timestamp: rtpTs, ssrc: 0, startSequence: 0
+            )
+        }
         let packetCount = UInt16(templates.count)
 
         let plans = viewers.withLock { state -> [Plan] in

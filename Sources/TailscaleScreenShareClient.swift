@@ -41,19 +41,21 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     private var serverAddr: String?
     private let renderer: MetalViewerRenderer
     private var decoder: VideoDecoder?
-    private var depacketizer = H264Depacketizer()
+    /// Demultiplexes incoming RTP packets to the right codec depacketizer
+    /// based on the payload type — viewer auto-detects H.264 (PT 96) or
+    /// HEVC (PT 97) without out-of-band negotiation.
+    private var depacketizer = MultiCodecDepacketizer()
     private var isConnected = false
     private var isDisconnecting = false
     private let logger: TSLogger
     private var receiveTask: Task<Void, Never>?
     private var keepaliveTask: Task<Void, Never>?
 
-    /// Last-seen parameter sets, applied to the decoder on first sight and
-    /// re-applied if they change (resolution change, encoder restart). The
-    /// server emits SPS/PPS in-band as RTP packets at the head of every IDR,
-    /// so we don't need a separate parameter-sets message.
-    private var installedSPS: Data?
-    private var installedPPS: Data?
+    /// Last-installed parameter sets, applied to the decoder on first sight
+    /// and re-applied if they change (resolution change, encoder restart).
+    /// The server emits parameter sets in-band as RTP packets at the head
+    /// of every IDR, so we don't need a separate parameter-sets message.
+    private var installedParameters: CodecParameterSets?
 
     /// TCP back-channel for annotation ops. Separate from the UDP video
     /// stream because strokes need reliable, ordered delivery — a dropped
@@ -247,9 +249,26 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         }
     }
 
-    private func deliverAU(_ au: H264Depacketizer.AccessUnit) {
+    private func deliverAU(_ au: VideoAccessUnit) {
         if au.containsIDR {
-            let nals = AVCCParser.nalUnits(from: au.avcc)
+            if let params = Self.extractParameterSets(from: au) {
+                if params != installedParameters {
+                    installedParameters = params
+                    decoder?.setParameterSets(params)
+                }
+            }
+        }
+        decoder?.decode(data: au.avcc, isKeyframe: au.containsIDR)
+    }
+
+    /// Pulls parameter sets out of an IDR access unit. The server prepends
+    /// them in-band on every keyframe (SPS+PPS for H.264; VPS+SPS+PPS for
+    /// HEVC) so any AU flagged `containsIDR` should carry them. NAL types
+    /// 7/8 for H.264; 32/33/34 for HEVC.
+    private static func extractParameterSets(from au: VideoAccessUnit) -> CodecParameterSets? {
+        let nals = AVCCParser.nalUnits(from: au.avcc)
+        switch au.codec {
+        case .h264:
             var sps: Data?
             var pps: Data?
             for nal in nals {
@@ -260,14 +279,24 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                 default: break
                 }
             }
-            if let sps = sps, let pps = pps,
-               (sps != installedSPS || pps != installedPPS) {
-                installedSPS = sps
-                installedPPS = pps
-                decoder?.setParameterSets(sps: sps, pps: pps)
+            guard let sps = sps, let pps = pps else { return nil }
+            return .h264(sps: sps, pps: pps)
+        case .hevc:
+            var vps: Data?
+            var sps: Data?
+            var pps: Data?
+            for nal in nals {
+                guard let header = nal.first else { continue }
+                switch (header >> 1) & 0x3F {
+                case 32: vps = nal
+                case 33: sps = nal
+                case 34: pps = nal
+                default: break
+                }
             }
+            guard let vps = vps, let sps = sps, let pps = pps else { return nil }
+            return .hevc(vps: vps, sps: sps, pps: pps)
         }
-        decoder?.decode(data: au.avcc, isKeyframe: au.containsIDR)
     }
 
     private func keepaliveLoop() async {

@@ -4,30 +4,40 @@ import CoreMedia
 @testable import Tailscreen
 
 /// End-to-end: encode a synthetic frame with VideoEncoder, feed the captured
-/// SPS/PPS plus the AVCC output into VideoDecoder, and check we get a
+/// parameter sets plus the AVCC output into VideoDecoder, and check we get a
 /// pixel buffer back at the original resolution. Catches regressions in the
-/// parameter-set handoff and AVCC/Annex-B framing — the exact bug class the
-/// pipeline rewrite was fixing.
+/// parameter-set handoff and AVCC/Annex-B framing.
 ///
 /// These tests depend on VideoToolbox being able to actually encode on the
 /// host. Virtualized CI runners (notably GitHub Actions' macOS images) often
 /// have no paravirt video driver and emit no frames; in that case the tests
 /// skip with a clear message rather than timing out.
 final class VideoCodecTests: XCTestCase {
-    func testEncodeKeyframeDecodesBack() throws {
+    func testEncodeKeyframeDecodesBack_DefaultCodec() throws {
+        try runEncodeDecodeRoundTrip(preferredCodec: .hevc)
+    }
+
+    func testEncodeKeyframeDecodesBack_H264() throws {
+        try runEncodeDecodeRoundTrip(preferredCodec: .h264)
+    }
+
+    private func runEncodeDecodeRoundTrip(preferredCodec: VideoCodec) throws {
         let width = 640
         let height = 480
         let pixelBuffer = try Self.makePixelBuffer(width: width, height: height)
 
         let encoder = VideoEncoder()
-        try encoder.setup(width: width, height: height, fps: 30, bitsPerPixel: 0.2)
+        try encoder.setup(
+            width: width, height: height, fps: 30,
+            preferredCodec: preferredCodec, bitsPerPixel: 0.2
+        )
         defer { encoder.shutdown() }
 
         let collector = Collector()
         let encodedKeyframe = XCTestExpectation(description: "encoder emits keyframe with parameter sets")
 
-        encoder.onParameterSets = { sps, pps in
-            collector.setParams(sps: sps, pps: pps)
+        encoder.onParameterSets = { params in
+            collector.setParams(params)
         }
         encoder.onEncodedData = { data, isKeyframe in
             if collector.recordFirstKeyframe(data: data, isKeyframe: isKeyframe) {
@@ -42,13 +52,22 @@ final class VideoCodecTests: XCTestCase {
         try Self.skipIfNotProduced(result)
 
         let snapshot = collector.snapshot()
-        let sps = try XCTUnwrap(snapshot.sps, "encoder never emitted SPS")
-        let pps = try XCTUnwrap(snapshot.pps, "encoder never emitted PPS")
+        let params = try XCTUnwrap(snapshot.params, "encoder never emitted parameter sets")
         let frame = try XCTUnwrap(snapshot.frame, "encoder never emitted a keyframe")
-        XCTAssertFalse(sps.isEmpty)
-        XCTAssertFalse(pps.isEmpty)
         XCTAssertFalse(frame.isEmpty)
         XCTAssertTrue(snapshot.isKey)
+
+        // Sanity check: the params shape should match the codec the encoder
+        // actually used (which may differ from `preferredCodec` if VT fell
+        // back, e.g. on a host without HW HEVC).
+        switch (encoder.codec, params) {
+        case (.h264, .h264(let sps, let pps)):
+            XCTAssertFalse(sps.isEmpty); XCTAssertFalse(pps.isEmpty)
+        case (.hevc, .hevc(let vps, let sps, let pps)):
+            XCTAssertFalse(vps.isEmpty); XCTAssertFalse(sps.isEmpty); XCTAssertFalse(pps.isEmpty)
+        default:
+            XCTFail("encoder.codec=\(encoder.codec) but params shape doesn't match")
+        }
 
         let decoder = VideoDecoder()
         defer { decoder.shutdown() }
@@ -59,7 +78,7 @@ final class VideoCodecTests: XCTestCase {
             decoded.fulfill()
         }
 
-        decoder.setParameterSets(sps: sps, pps: pps)
+        decoder.setParameterSets(params)
         decoder.decode(data: frame, isKeyframe: true)
         let decodeResult = XCTWaiter.wait(for: [decoded], timeout: 5.0)
         try Self.skipIfNotProduced(decodeResult, producer: "VideoToolbox decoder")
@@ -84,10 +103,7 @@ final class VideoCodecTests: XCTestCase {
         let result = XCTWaiter.wait(for: [gotCallback], timeout: 5.0)
         try Self.skipIfNotProduced(result)
 
-        let cached = encoder.cachedParameterSets
-        XCTAssertNotNil(cached, "cachedParameterSets should be populated after a keyframe")
-        XCTAssertFalse(cached?.sps.isEmpty ?? true)
-        XCTAssertFalse(cached?.pps.isEmpty ?? true)
+        XCTAssertNotNil(encoder.cachedParameterSets, "cachedParameterSets should be populated after a keyframe")
     }
 
     private static func skipIfNotProduced(_ result: XCTWaiter.Result, producer: String = "VideoToolbox encoder") throws {
@@ -101,30 +117,28 @@ final class VideoCodecTests: XCTestCase {
     /// Thread-safe capture of the encoder's async output.
     private final class Collector: @unchecked Sendable {
         private let lock = NSLock()
-        private var sps: Data?
-        private var pps: Data?
+        private var params: CodecParameterSets?
         private var frame: Data?
         private var isKey = false
 
-        func setParams(sps: Data, pps: Data) {
+        func setParams(_ p: CodecParameterSets) {
             lock.lock(); defer { lock.unlock() }
-            self.sps = sps
-            self.pps = pps
+            self.params = p
         }
 
         /// Returns true exactly once, on the first keyframe we see (and only if
         /// the parameter sets are already cached).
         func recordFirstKeyframe(data: Data, isKeyframe: Bool) -> Bool {
             lock.lock(); defer { lock.unlock() }
-            guard frame == nil, isKeyframe, sps != nil, pps != nil else { return false }
+            guard frame == nil, isKeyframe, params != nil else { return false }
             frame = data
             isKey = isKeyframe
             return true
         }
 
-        func snapshot() -> (sps: Data?, pps: Data?, frame: Data?, isKey: Bool) {
+        func snapshot() -> (params: CodecParameterSets?, frame: Data?, isKey: Bool) {
             lock.lock(); defer { lock.unlock() }
-            return (sps, pps, frame, isKey)
+            return (params, frame, isKey)
         }
     }
 
