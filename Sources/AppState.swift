@@ -156,14 +156,10 @@ class AppState: ObservableObject {
     func startSharing(displayID: CGDirectDisplayID? = nil) async {
         do {
             let pickedID = displayID ?? selectedDisplayID
-            let hostname = "\(Host.current().localizedName ?? "tailscreen-share")\(TailscreenInstance.hostnameSuffix)"
-
-            // First time through: build the server and wire callbacks.
-            // Subsequent calls (after a stopSharing) reuse the server so
-            // the same UDP/TCP listener instance carries through; tearing
-            // it down and re-binding the same port hits tsnet's async
-            // PacketConn close race.
+            // If Tailscale is already initialized, just start sharing
+            // Otherwise, initialize it first
             if server == nil {
+                let hostname = "\(Host.current().localizedName ?? "tailscreen-share")\(TailscreenInstance.hostnameSuffix)"
                 let srv = TailscaleScreenShareServer()
                 server = srv
                 if let pickedID = pickedID {
@@ -205,43 +201,42 @@ class AppState: ObservableObject {
                         self?.ensureSharerOverlay().apply(remoteOp: op)
                     }
                 }
-            } else if let pickedID = pickedID {
-                selectedDisplayID = pickedID
-            }
 
-            guard let srv = server else { return }
-
-            do {
-                // Reuse the AppState-owned tsnet node so the screen
-                // share doesn't spin up a second machine that needs
-                // its own browser sign-in.
-                let sharedNode = try await getOrCreateNode()
-                try await srv.start(
-                    hostname: hostname,
-                    displayID: pickedID,
-                    existingNode: sharedNode
-                )
-            } catch {
-                // server.start cleans up its own capture pipeline on
-                // failure (await self.stop()); leave the server instance
-                // in place so the next attempt reuses its listeners.
-                if case ScreenCaptureError.startTimeout = error {
-                    showAlertMessage(
-                        title: "Couldn't Start Sharing",
-                        message: "macOS didn't return shareable screens in time. If this is the first time you've shared, grant Tailscreen permission in System Settings → Privacy & Security → Screen Recording, then try again."
+                do {
+                    // Reuse the AppState-owned tsnet node so the screen
+                    // share doesn't spin up a second machine that needs
+                    // its own browser sign-in.
+                    let sharedNode = try await getOrCreateNode()
+                    try await srv.start(
+                        hostname: hostname,
+                        displayID: pickedID,
+                        existingNode: sharedNode
                     )
-                } else {
-                    showAlertMessage(
-                        title: "Couldn't Start Sharing",
-                        message: error.localizedDescription
-                    )
+                } catch {
+                    // server.start cleans itself up (await self.stop()) on
+                    // capture failure; just drop our reference so a future
+                    // Start Sharing rebuilds from scratch.
+                    server = nil
+                    if case ScreenCaptureError.startTimeout = error {
+                        showAlertMessage(
+                            title: "Couldn't Start Sharing",
+                            message: "macOS didn't return shareable screens in time. If this is the first time you've shared, grant Tailscreen permission in System Settings → Privacy & Security → Screen Recording, then try again."
+                        )
+                    } else {
+                        showAlertMessage(
+                            title: "Couldn't Start Sharing",
+                            message: error.localizedDescription
+                        )
+                    }
+                    return
                 }
-                return
+
+                // Get the Tailscale IP addresses
+                let ips = try await srv.getIPAddresses()
+                tailscaleIPs = [ips.ip4, ips.ip6].compactMap { $0 }
             }
 
-            // Get the Tailscale IP addresses
-            let ips = try await srv.getIPAddresses()
-            tailscaleIPs = [ips.ip4, ips.ip6].compactMap { $0 }
+            let hostname = "\(Host.current().localizedName ?? "tailscreen-share")\(TailscreenInstance.hostnameSuffix)"
 
             // Update metadata
             metadataService.updateMetadata(isSharing: true, shareName: "\(hostname)'s Screen")
@@ -266,11 +261,8 @@ class AppState: ObservableObject {
             cont.resume()
         }
 
-        // Tear down the capture pipeline but keep the server (and its
-        // tsnet UDP/TCP listeners) alive. The next startSharing reuses
-        // them — re-binding the same port within tsnet's async PacketConn
-        // close window fails with "port is in use".
         await server?.stop()
+        server = nil
         previewImage = nil
         tailscaleIPs = []
 
@@ -670,9 +662,8 @@ class AppState: ObservableObject {
                 await disconnect()
             }
 
-            // Reset Tailscale state — full teardown including the share
-            // server's listeners and its node ref.
-            await server?.shutdown()
+            // Reset Tailscale state
+            await server?.stop()
             server = nil
             try? await node?.close()
             node = nil

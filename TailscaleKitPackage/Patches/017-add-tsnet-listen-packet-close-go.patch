@@ -1,0 +1,116 @@
+--- a/upstream/libtailscale/tailscale.go	2026-04-25 21:04:19.952745553 +0000
++++ upstream/libtailscale/tailscale.go	2026-04-25 21:04:25.293105968 +0000
+@@ -637,9 +637,36 @@
+ }
+ 
+ type packetListener struct {
+-	s  *server
+-	pc net.PacketConn
+-	fd int // go side fd of socketpair
++	s    *server
++	pc   net.PacketConn
++	fd   int    // go side fd of socketpair
++	cFd  C.int  // C side fd (key in packetListeners.m)
++	once sync.Once
++}
++
++// closeOnce releases the listener exactly once regardless of which caller
++// arrives first — the external TsnetListenPacketClose or a bridge goroutine
++// exiting on its own (e.g. due to a write error). sync.Once guarantees the
++// body runs at most once even under concurrent calls.
++//
++// Ordering inside the body matters:
++//  1. Remove from the map first (under lock) so no new caller can see this pl.
++//  2. Close the Go side of the socketpair (goFd) — unblocks syscall.Read in
++//     the socketpair→PacketConn goroutine.
++//  3. Close the C side of the socketpair (cFd) — fd is owned by Go end-to-end
++//     when called from TsnetListenPacketClose; Swift must not call Darwin.close
++//     on the same fd afterward.
++//  4. Close pc outside the lock — unblocks pc.ReadFrom in the other goroutine
++//     and synchronously releases the netstack port binding.
++func (pl *packetListener) closeOnce() {
++	pl.once.Do(func() {
++		packetListeners.mu.Lock()
++		delete(packetListeners.m, pl.cFd)
++		_ = syscall.Close(pl.fd)
++		_ = syscall.Close(int(pl.cFd))
++		packetListeners.mu.Unlock()
++		pl.pc.Close()
++	})
+ }
+ 
+ //export TsnetListenPacket
+@@ -676,7 +703,7 @@
+ 	goFd := fds[1]
+ 	fdC := C.int(fds[0])
+ 
+-	pl := &packetListener{s: s, pc: pc, fd: goFd}
++	pl := &packetListener{s: s, pc: pc, fd: goFd, cFd: fdC}
+ 	packetListeners.mu.Lock()
+ 	if packetListeners.m == nil {
+ 		packetListeners.m = map[C.int]*packetListener{}
+@@ -684,24 +711,11 @@
+ 	packetListeners.m[fdC] = pl
+ 	packetListeners.mu.Unlock()
+ 
+-	var cleanupOnce sync.Once
+-	cleanup := func() {
+-		cleanupOnce.Do(func() {
+-			packetListeners.mu.Lock()
+-			if cur, ok := packetListeners.m[fdC]; ok && cur.pc == pc {
+-				delete(packetListeners.m, fdC)
+-				syscall.Close(goFd)
+-			}
+-			packetListeners.mu.Unlock()
+-			pc.Close()
+-		})
+-	}
+-
+ 	// PacketConn → socketpair. Read each tailnet datagram, prepend its
+ 	// source address, write the framed message to the socketpair as one
+-	// datagram. Closing pc (in cleanup) breaks the ReadFrom loop.
++	// datagram. Closing pc (via pl.closeOnce) breaks the ReadFrom loop.
+ 	go func() {
+-		defer cleanup()
++		defer pl.closeOnce()
+ 		var buf [1 << 16]byte
+ 		for {
+ 			n, srcAddr, err := pc.ReadFrom(buf[:])
+@@ -728,7 +742,7 @@
+ 	// side, resolve the destination address, write a UDP datagram. A
+ 	// short read or zero-length read means the C side closed its fd.
+ 	go func() {
+-		defer cleanup()
++		defer pl.closeOnce()
+ 		var buf [1 << 16]byte
+ 		for {
+ 			n, err := syscall.Read(goFd, buf[:])
+@@ -757,3 +771,28 @@
+ 	*listenerOut = fdC
+ 	return 0
+ }
++
++// TsnetListenPacketClose closes the UDP packet listener identified by fdC.
++//
++// Unlike the C side calling Darwin.close(fd), this function closes the
++// listener synchronously: it calls pc.Close() on the underlying netstack
++// PacketConn before returning, so the port is immediately available for a
++// subsequent TsnetListenPacket call on the same address.
++//
++// It is safe to call concurrently with the bridge goroutines; sync.Once
++// ensures the teardown body executes exactly once regardless of which caller
++// arrives first.
++//
++// Returns 0 on success, EBADF if fdC is not a live packet listener.
++//
++//export TsnetListenPacketClose
++func TsnetListenPacketClose(fdC C.int) C.int {
++	packetListeners.mu.Lock()
++	pl, ok := packetListeners.m[fdC]
++	packetListeners.mu.Unlock()
++	if !ok {
++		return C.EBADF
++	}
++	pl.closeOnce()
++	return 0
++}
