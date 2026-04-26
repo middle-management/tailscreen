@@ -54,12 +54,14 @@ struct TailscreenApp: App {
             return nil
         }
         img.isTemplate = true
-        // Match the visual weight of the SF Symbol glyphs around us in
-        // the menubar (~22pt with default trim). The source artwork has
-        // generous internal padding, so a smaller image looks
-        // disproportionately thin next to symbols like Spotlight or
-        // Control Center.
-        img.size = NSSize(width: 22, height: 22)
+        // Sized to match macOS's own menubar items (e.g. the
+        // screen-sharing badge): the glyph wants to fill the menubar
+        // height. The source PDF uses a tight landscape viewBox
+        // (535x430), so set NSSize to the same aspect — height matches
+        // a menubar item, width is proportional. AppKit doesn't clip
+        // wider-than-tall menubar images.
+        let h: CGFloat = 22
+        img.size = NSSize(width: h * (535.0 / 430.0), height: h)
         return img
     }()
 }
