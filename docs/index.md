@@ -5,6 +5,10 @@ nav_order: 1
 permalink: /
 ---
 
+<p align="center">
+  <img src="{{ '/assets/logo.png' | relative_url }}" alt="Tailscreen logo" width="180">
+</p>
+
 # Tailscreen
 {: .fs-9 }
 

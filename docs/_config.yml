@@ -3,6 +3,7 @@ description: Encrypted, low-latency peer-to-peer screen sharing over Tailscale â
 url: https://tailscreen.dev
 baseurl: ""
 repository: middle-management/tailscreen
+logo: "/assets/logo.png"
 
 remote_theme: just-the-docs/just-the-docs
 
