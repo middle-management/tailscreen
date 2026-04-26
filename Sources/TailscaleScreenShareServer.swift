@@ -193,24 +193,59 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         Task { [weak self] in await self?.sweepIdleViewers() }
         Task { [weak self] in await self?.adaptiveBitrateSweep() }
 
-        let capture = ScreenCapture()
-        capture.onFrameCaptured = { [weak self] pixelBuffer in
-            self?.handleCapturedFrame(pixelBuffer)
-        }
-        capture.onStreamStopped = { [weak self] error in
-            self?.onCaptureStopped?(error)
-        }
-        screenCapture = capture
+        // ScreenCaptureKit's startCapture occasionally drops its underlying
+        // XPC connection mid-bring-up — the SCStreamDelegate logs
+        // "Failed during stream due to application connection being
+        // interrupted" and the startCapture completion handler never fires,
+        // so our 5s watchdog throws `startTimeout`. Easy to provoke by
+        // running two Tailscreen processes on the same Mac (each pokes the
+        // screen-recording daemon during startup). Retry the whole capture
+        // bring-up a couple of times before surfacing the failure — in
+        // practice the second attempt almost always succeeds.
+        let maxAttempts = 3
+        for attempt in 1...maxAttempts {
+            let capture = ScreenCapture()
+            capture.onFrameCaptured = { [weak self] pixelBuffer in
+                self?.handleCapturedFrame(pixelBuffer)
+            }
+            capture.onStreamStopped = { [weak self] error in
+                self?.onCaptureStopped?(error)
+            }
+            screenCapture = capture
 
-        do {
-            try await capture.start(displayID: displayID)
-            print("ScreenCapture started (displayID=\(displayID.map { String($0) } ?? "default"))")
-        } catch {
-            print("ERROR: ScreenCapture failed to start: \(error)")
-            await self.stop()
-            throw error
+            do {
+                try await capture.start(displayID: displayID)
+                print("ScreenCapture started (displayID=\(displayID.map { String($0) } ?? "default"))")
+                return
+            } catch {
+                await capture.stop()
+                screenCapture = nil
+
+                let last = attempt == maxAttempts
+                if last || !Self.isScreenCaptureRetriable(error) {
+                    print("ERROR: ScreenCapture failed to start: \(error)")
+                    await self.stop()
+                    throw error
+                }
+                print("ScreenCapture start attempt \(attempt) failed: \(error). Retrying…")
+                // Linear backoff — long enough for ScreenCaptureKit's
+                // daemon connection to settle, short enough that the user
+                // sees the share come up within ~half a second.
+                try? await Task.sleep(for: .milliseconds(200 * attempt))
+            }
         }
     }
+
+    /// True for the transient ScreenCaptureKit startup failures the retry
+    /// loop should swallow. Permission denials, missing displays, etc. fall
+    /// through and surface to the caller immediately.
+    private static func isScreenCaptureRetriable(_ error: Error) -> Bool {
+        if case ScreenCaptureError.startTimeout = error { return true }
+        let desc = error.localizedDescription.lowercased()
+        return desc.contains("application connection being interrupted")
+            || desc.contains("connection invalid")
+    }
+
 
     /// Accept TCP connections on port 7447. The same listener serves two
     /// roles, both of which look identical at the socket level:
