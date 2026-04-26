@@ -1,10 +1,11 @@
 <!--
-  Tight-cropped variant of docs/assets/tailscreen-no-stand.svg used as the
-  macOS menubar template image. The source SVG places the glyph inside a
-  1024x1024 viewBox with ~50% padding, which makes the menubar icon look
-  thin next to neighbouring SF Symbols. This file uses a viewBox sized to
-  the path's actual bounding box (~245,290 → 780,720) so the glyph fills
-  the image and matches the visual weight of Spotlight/Control Center.
+  Tight-cropped variant of docs/assets/favicon.svg used as the macOS
+  menubar template image. The source SVG places the glyph inside a
+  1024x1024 viewBox with ~50% padding, which makes the menubar icon
+  look thin next to neighbouring SF Symbols. This file uses a viewBox
+  sized to the path's actual bounding box (~245,290 → 780,720) so the
+  glyph fills the image and matches the visual weight of Spotlight /
+  Control Center.
 -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="245 237 535 535" fill="#000000">
 <path d="

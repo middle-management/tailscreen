@@ -46,7 +46,7 @@ test-e2e: tailscale
 
 # Regenerate the macOS .icns app icon from the source SVG. Requires
 # librsvg (`brew install librsvg`) and the system iconutil.
-ICON_SRC := docs/assets/tailscreen-with-stand.svg
+ICON_SRC := docs/assets/logo.svg
 ICON_OUT := Resources/Tailscreen.icns
 ICONSET  := Resources/Tailscreen.iconset
 
@@ -68,5 +68,5 @@ icon:
 	@rsvg-convert -f pdf Sources/Resources/MenubarIcon.svg    -o Sources/Resources/MenubarIcon.pdf
 	@rsvg-convert -f pdf Sources/Resources/MenubarSharing.svg -o Sources/Resources/MenubarSharing.pdf
 	@rsvg-convert -f pdf Sources/Resources/MenubarViewing.svg -o Sources/Resources/MenubarViewing.pdf
-	@rsvg-convert -f pdf docs/assets/tailscreen-with-stand.svg -o Sources/Resources/WelcomeIcon.pdf
+	@rsvg-convert -f pdf docs/assets/logo.svg -o Sources/Resources/WelcomeIcon.pdf
 	@echo "Wrote Sources/Resources/{MenubarIcon,MenubarSharing,MenubarViewing,WelcomeIcon}.pdf"
