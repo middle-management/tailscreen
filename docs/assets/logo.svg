@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 200" role="img" aria-label="Tailscreen">
+  <title>Tailscreen</title>
+  <rect x="32" y="44" width="176" height="124" rx="20" ry="20"
+        fill="none" stroke="#1f2c4a" stroke-width="13" stroke-linejoin="round"/>
+  <path d="M97,80
+           C 110,94 124,114 130,134
+           C 132,148 124,158 110,164
+           C 96,168 80,168 70,166
+           C 78,150 90,138 100,128
+           C 90,112 88,96 94,82
+           C 94,79 96,78 97,80 Z"
+        fill="#1f2c4a"/>
+</svg>

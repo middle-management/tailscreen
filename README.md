@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/logo.png" alt="Tailscreen logo" width="180">
+  <img src="docs/assets/logo.svg" alt="Tailscreen logo" width="180">
 </p>
 
 # Tailscreen

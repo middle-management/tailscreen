@@ -6,7 +6,7 @@ permalink: /
 ---
 
 <p align="center">
-  <img src="{{ '/assets/logo.png' | relative_url }}" alt="Tailscreen logo" width="180">
+  <img src="{{ '/assets/logo.svg' | relative_url }}" alt="Tailscreen logo" width="180">
 </p>
 
 # Tailscreen
