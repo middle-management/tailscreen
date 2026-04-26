@@ -6,18 +6,7 @@ struct MenuBarView: View {
     @State private var viewID = UUID()
 
     var body: some View {
-        Group {
-            // SwiftUI sheets inside a MenuBarExtra(.window) popover cause the
-            // popover itself to dismiss: the sheet opens in a separate NSWindow
-            // that becomes key, and the menubar popover auto-closes on focus
-            // loss. Render the "sheets" as inline views instead, swapping the
-            // menu list out for whichever one is active.
-            if appState.showConnectSheet {
-                ConnectSheet()
-            } else {
-                mainView
-            }
-        }
+        mainView
         .alert(appState.alertTitle, isPresented: $appState.showAlert) {
             Button("OK", role: .cancel) {}
         } message: {
@@ -403,10 +392,6 @@ private struct DevicesSection: View {
             .padding(.bottom, 2)
 
             content
-
-            MenuRow("Connect to address…", systemImage: "keyboard") {
-                appState.showConnectSheet = true
-            }
         }
         .padding(.bottom, 4)
         .onAppear {
@@ -508,43 +493,51 @@ private struct PeerMenuRow: View {
 
 private struct IdentityFooter: View {
     @EnvironmentObject var appState: AppState
+    @State private var isHovered = false
 
     var body: some View {
         if let profile = appState.tailscaleAuth.userProfile {
             VStack(alignment: .leading, spacing: 2) {
                 Divider().padding(.vertical, 4)
 
-                HStack(spacing: 8) {
-                    Image(systemName: "person.crop.circle.fill")
-                        .font(.system(size: 20))
-                        .foregroundStyle(.secondary)
-
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(profile.displayName)
-                            .font(.system(size: 12, weight: .medium))
-                            .lineLimit(1)
-                        Text(profile.loginName)
-                            .font(.system(size: 11))
-                            .foregroundStyle(.tertiary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
-
-                    Spacer()
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 4)
-
-                MenuRow("Copy Tailscale address", systemImage: "doc.on.doc") {
-                    let ip = appState.rawTailscaleIPs.first ?? ""
-                    guard !ip.isEmpty else { return }
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(ip, forType: .string)
-                }
-
-                MenuRow("Sign out", systemImage: "rectangle.portrait.and.arrow.right") {
+                Button {
                     Task { await appState.signOut() }
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: isHovered
+                            ? "rectangle.portrait.and.arrow.right"
+                            : "person.crop.circle.fill")
+                            .font(.system(size: 18))
+                            .frame(width: 22, height: 22)
+                            .foregroundStyle(isHovered ? .primary : .secondary)
+
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(isHovered ? "Sign out" : profile.displayName)
+                                .font(.system(size: 12, weight: .medium))
+                                .lineLimit(1)
+                            Text(isHovered
+                                ? "End your Tailscale session"
+                                : profile.loginName)
+                                .font(.system(size: 11))
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .background(
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(isHovered ? Color.primary.opacity(0.08) : Color.clear)
+                        .padding(.horizontal, 4)
+                )
+                .onHover { isHovered = $0 }
+                .help("Sign out of Tailscale")
             }
         }
     }
@@ -624,55 +617,3 @@ struct MenuRow: View {
     }
 }
 
-// MARK: - Connect sheet
-
-struct ConnectSheet: View {
-    @EnvironmentObject var appState: AppState
-    @State private var hostname = ""
-
-    private func dismiss() { appState.showConnectSheet = false }
-
-    private var isValid: Bool {
-        !hostname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    private func submit() {
-        guard isValid else { return }
-        let host = hostname.trimmingCharacters(in: .whitespacesAndNewlines)
-        Task {
-            await appState.connect(to: host)
-            dismiss()
-        }
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Connect to address")
-                    .font(.system(size: 14, weight: .semibold))
-                Text("Enter a Tailscale hostname or IP.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-            }
-
-            TextField("hostname or 100.x.x.x", text: $hostname)
-                .textFieldStyle(.roundedBorder)
-                .onSubmit(submit)
-
-            HStack(spacing: 8) {
-                Spacer()
-                Button("Cancel") { dismiss() }
-                    .keyboardShortcut(.escape, modifiers: [])
-                    .controlSize(.regular)
-
-                Button("Connect", action: submit)
-                    .keyboardShortcut(.return, modifiers: [])
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.regular)
-                    .disabled(!isValid)
-            }
-        }
-        .padding(16)
-        .frame(width: 280)
-    }
-}
