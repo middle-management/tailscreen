@@ -200,6 +200,15 @@ class ScreenCapture: NSObject {
     }
 
     func stop() async {
+        // Clear callbacks before tearing the SCStream down. The
+        // SCStreamDelegate.didStopWithError can fire asynchronously *after*
+        // `stopCapture()` returns; if a new ScreenCapture has been
+        // installed in the meantime that late callback would route through
+        // the old wrapper and trigger another `stopSharing`, killing the
+        // freshly started session. Nilling the callbacks first means the
+        // late delegate fire is a no-op.
+        onFrameCaptured = nil
+        onStreamStopped = nil
         try? await stream?.stopCapture()
         stream = nil
         streamOutput = nil
