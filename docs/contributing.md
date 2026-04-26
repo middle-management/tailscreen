@@ -12,7 +12,7 @@ permalink: /contributing/
 
 The codebase is small enough that you can hold most of it in your head
 after a couple of hours. This page is a tour through the layout, the
-build, and the parts that bit us hard enough that we want to warn you.
+build, and the rough edges that are worth knowing about up front.
 
 `CLAUDE.md` at the repo root is the deeper version of this page,
 file-by-file. Read it before touching the video pipeline or the

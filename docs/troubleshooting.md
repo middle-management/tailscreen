@@ -16,16 +16,15 @@ interesting failure modes.
 
 ## "Permission Denied" when capturing screen
 
-You haven't granted Screen Recording yet, or you granted it and didn't
-relaunch.
+Screen Recording either hasn't been granted yet, or it was granted but
+Tailscreen wasn't relaunched.
 
 1. **System Settings → Privacy & Security → Screen Recording.**
 2. Toggle **Tailscreen** on. (If you launched it from Terminal, you may
    need to toggle Terminal on instead — macOS attaches the permission to
    the launching process.)
 3. **Quit Tailscreen completely and relaunch it.** macOS does not push the
-   new permission to a running process. This is a macOS rule. We've tried
-   to find a way around it. There isn't one.
+   new permission to a running process, so a restart is required.
 
 ## "Connection Failed"
 
@@ -38,16 +37,16 @@ Walk this checklist in order:
    menu prints exactly what the viewer should type.
 3. Check your tailnet ACLs allow TCP **and** UDP on port 7447 from the
    viewer to the sharer. The default Tailscale ACL is "everything to
-   everything" and will work fine. If you've tightened ACLs and forgot
-   to allow 7447, that's your problem.
+   everything" and will work fine. If you've tightened ACLs, double-check
+   that 7447 is still allowed.
 4. Try `tailscale ping <viewer-hostname>` from the sharer's command line.
-   If that doesn't work, neither will Tailscreen — the issue is below
-   us.
+   If that doesn't work, neither will Tailscreen — the issue is in the
+   underlying Tailscale connection, not Tailscreen.
 
 ## Two local instances see no peers
 
-This is the single most common "this doesn't work" report. It's always
-this:
+This is by far the most common cause of an empty peer list when testing
+locally:
 
 > Both instances are using the same Tailscale state directory at
 > `~/Library/Application Support/Tailscreen/tailscale`. They both end up
@@ -91,8 +90,8 @@ If `tailscale status` confirms `direct` and it's still bad:
 - Run `iperf3` between the two Macs and check the actual end-to-end
   bandwidth. Wi-Fi delivers a small fraction of its negotiated link rate
   in the real world.
-- If the result is bad: switch one or both ends to wired Ethernet. This is
-  the single biggest fix.
+- If the result is bad: switch one or both ends to wired Ethernet. That's
+  usually the biggest single improvement you can make.
 - If the result is good and the video is still bad: open Console.app,
   filter for `Tailscreen`, and look for VideoToolbox errors. Encoder
   starvation or decoder backpressure produces logs.

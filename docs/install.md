@@ -89,20 +89,19 @@ make release           # → .build/release/Tailscreen
 make install           # release + copy to ~/bin/Tailscreen
 ```
 
-## Don't skip `make`
+## Always start with `make`
 
-The single most common build failure is running bare `swift build` first.
-That will fail to link, because `libtailscale.a` doesn't exist yet — the Go
-toolchain hasn't been invoked. Always do `make build` (or at least
-`make tailscale`) once. After that, `swift build` works fine for the rest of
-the build tree.
+The most common first-time build failure is running bare `swift build`. It
+fails to link because `libtailscale.a` doesn't exist yet — the Go toolchain
+hasn't been invoked. Run `make build` (or at least `make tailscale`) once
+first. After that, `swift build` works fine for the rest of the build tree.
 
 ## Permissions
 
 The first time you hit "Start Sharing", macOS will pop up a Screen Recording
 prompt. Approve it in **System Settings → Privacy & Security → Screen
 Recording**, then quit Tailscreen and relaunch. macOS will not pick up the
-new permission until the process restarts. This is macOS's rule, not ours.
+new permission until the process restarts.
 
 ## Uninstall
 
