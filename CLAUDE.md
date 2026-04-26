@@ -205,7 +205,7 @@ Never make this absolute — it breaks portability and CI. Both the `Tailscreen`
 
 ## CI/CD
 
-- `.github/workflows/build.yml` — `macos-latest`, Go 1.21, on push to `main` and `claude/**` and PRs to `main`. Runs `make build` then `make test`.
+- `.github/workflows/build.yml` — `macos-latest`, Go 1.21. Runs on push to `main` and on PRs (any base). Skips doc-only changes (`**.md`, `LICENSE`, `.gitignore`). `concurrency.cancel-in-progress` cancels older runs on the same ref. Direct pushes to `claude/**` no longer trigger CI — PRs cover them. Runs `make build` then `make test`.
 - `.github/workflows/release.yml` — triggered when a GitHub release is **published** (or via `workflow_dispatch` with a tag input). Runs on `macos-15` (Apple Silicon; needs Swift 6 toolchain — `macos-14` ships Swift 5.10):
   - Cross-builds `libtailscale.a` for `arm64` and `amd64` (per-arch `GOARCH` + `CGO_CFLAGS=-arch …`), then `lipo`-merges into the symlink at `TailscaleKitPackage/lib/libtailscale.a`.
   - `swift build -c release --arch arm64 --arch x86_64` produces a universal Mach-O at `.build/apple/Products/Release/Tailscreen`.

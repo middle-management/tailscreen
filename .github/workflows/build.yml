@@ -1,10 +1,27 @@
 name: Build
 
+# CI runs only on pushes to `main` (post-merge verification) and on
+# pull-requests. Direct pushes to `claude/**` feature branches no longer
+# trigger CI — the same branch's PR already covers it, and macOS minutes
+# are 10× Linux. Doc-only edits skip CI entirely.
 on:
   push:
-    branches: [ main, claude/** ]
-  pull_request:
     branches: [ main ]
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
+      - '.gitignore'
+  pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
+      - '.gitignore'
+
+# A new push to the same branch cancels the previous in-flight build —
+# avoids paying for runs the user no longer cares about.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -20,6 +37,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.21'
+          cache-dependency-path: TailscaleKitPackage/upstream/libtailscale/go.sum
 
       - name: Build
         run: make build
