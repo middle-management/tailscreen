@@ -54,14 +54,11 @@ struct TailscreenApp: App {
             return nil
         }
         img.isTemplate = true
-        // Sized to match macOS's own menubar items (e.g. the
-        // screen-sharing badge): the glyph wants to fill the menubar
-        // height. The source PDF uses a tight landscape viewBox
-        // (535x430), so set NSSize to the same aspect — height matches
-        // a menubar item, width is proportional. AppKit doesn't clip
-        // wider-than-tall menubar images.
-        let h: CGFloat = 22
-        img.size = NSSize(width: h * (535.0 / 430.0), height: h)
+        // Apple HIG sizes menu-bar status items at 18pt square. The PDF
+        // uses a square viewBox tight to the artwork bbox, so the
+        // glyph fills the 18pt box without distortion.
+        // https://developer.apple.com/design/human-interface-guidelines/the-menu-bar#Menu-bar-extras
+        img.size = NSSize(width: 18, height: 18)
         return img
     }()
 }

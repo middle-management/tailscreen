@@ -6,7 +6,7 @@
   the path's actual bounding box (~245,290 → 780,720) so the glyph fills
   the image and matches the visual weight of Spotlight/Control Center.
 -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="245 290 535 430" fill="#000000">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="245 237 535 535" fill="#000000">
 <path d="
 M289.305664,450.000000
 C289.322937,489.999817 289.326416,529.499634 289.380524,568.999390
