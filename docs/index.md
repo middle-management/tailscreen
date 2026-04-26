@@ -8,7 +8,7 @@ permalink: /
 # Tailscreen
 {: .fs-9 }
 
-Screen sharing for people who don't want to install Zoom on their Mac to look at a friend's terminal for ten seconds.
+Lightweight screen sharing between Macs, for the times when spinning up a full conferencing app feels like overkill.
 {: .fs-6 .fw-300 }
 
 [Install]({% link install.md %}){: .btn .btn-primary .fs-5 .mb-4 .mb-md-0 .mr-2 }
@@ -20,8 +20,8 @@ Tailscreen is a tiny macOS menubar app that streams one Mac's screen to
 another Mac over [Tailscale](https://tailscale.com/). It uses ScreenCaptureKit
 to grab pixels, VideoToolbox to encode HEVC (with H.264 as a fallback for
 older hardware), and Tailscale's WireGuard tunnel to move bytes. There is no
-server. There is no account to make (other than Tailscale itself, which you
-probably already have). There is no port to forward.
+server. There is no account to make beyond Tailscale itself. There is no port
+to forward.
 
 You hit "Start Sharing", the other person hits "Browse Shares", they click
 your machine, and a window opens. That's the whole thing.
@@ -44,7 +44,7 @@ your machine, and a window opens. That's the whole thing.
 
 ## What you need
 
-- macOS 15 (Sequoia) or later. Not 14, not iOS, not Linux.
+- macOS 15 (Sequoia) or later. Earlier macOS versions, iOS, and Linux aren't supported.
 - Swift 6 toolchain if you're building from source. Otherwise just grab a
   release.
 - A Tailscale account. The free personal tier is fine.

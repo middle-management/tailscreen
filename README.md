@@ -4,9 +4,9 @@
 
 📖 **Documentation:** <https://tailscreen.dev>
 
-Screen sharing for people who don't want to install Zoom on their Mac to look at a friend's terminal for ten seconds.
+Lightweight screen sharing between Macs, for the times when spinning up a full conferencing app feels like overkill.
 
-Tailscreen is a tiny macOS menubar app that streams one Mac's screen to another Mac over [Tailscale](https://tailscale.com/). It uses ScreenCaptureKit to grab pixels, VideoToolbox to encode HEVC (with H.264 as a fallback for older hardware), and Tailscale's WireGuard tunnel to move bytes. There is no server. There is no port to forward. There is no account to create beyond Tailscale itself, which you probably already have.
+Tailscreen is a tiny macOS menubar app that streams one Mac's screen to another Mac over [Tailscale](https://tailscale.com/). It uses ScreenCaptureKit to grab pixels, VideoToolbox to encode HEVC (with H.264 as a fallback for older hardware), and Tailscale's WireGuard tunnel to move bytes. There is no server, no port to forward, and no account to create beyond Tailscale itself.
 
 You hit "Start Sharing", the other person hits "Browse Shares", they click your machine, a window opens. That's the whole thing.
 
@@ -20,7 +20,7 @@ You hit "Start Sharing", the other person hits "Browse Shares", they click your 
 
 ## What you need
 
-- macOS 15 (Sequoia) or later. Not 14, not iOS, not Linux.
+- macOS 15 (Sequoia) or later. Earlier macOS versions, iOS, and Linux aren't supported.
 - Swift 6 toolchain if you're building from source. Otherwise just grab a release.
 - A Tailscale account. The free personal tier is fine.
 - Screen Recording permission. macOS will ask the first time.
@@ -78,7 +78,7 @@ swift run                       # or: make run
 
 1. Click the 📺 in the menubar.
 2. **Start Sharing**.
-3. Approve Screen Recording when macOS prompts you, then quit and relaunch — macOS doesn't push the new permission to a running process. (This is macOS's rule, not ours.)
+3. Approve Screen Recording when macOS prompts you, then quit and relaunch — macOS doesn't push the new permission to a running process.
 4. **Show Tailscale Info** prints the hostname and 100.x.x.x to share with whoever's connecting.
 
 ### Viewing
@@ -104,7 +104,7 @@ You can exercise the full peer-discovery path on a single machine:
 ./test-local.sh 3      # N instances
 ```
 
-Each child gets `TAILSCREEN_INSTANCE=<i>`, which suffixes the Tailscale state directory and hostname. **Don't skip this.** If two processes share the state dir at `~/Library/Application Support/Tailscreen/tailscale`, they reuse the same machine key, the tailnet thinks they're the same device, and **Browse Shares** returns zero results. This is the single most common "why doesn't this work" report. It's always this.
+Each child gets `TAILSCREEN_INSTANCE=<i>`, which suffixes the Tailscale state directory and hostname. **This step matters.** If two processes share the state dir at `~/Library/Application Support/Tailscreen/tailscale`, they reuse the same machine key, the tailnet treats them as the same device, and **Browse Shares** comes back empty. It's by far the most common cause of an empty peer list when testing locally.
 
 This setup tests Tailscale integration and peer discovery. It does **not** test NAT traversal — both processes share the same network stack. For that, use two actual machines.
 
@@ -125,7 +125,7 @@ TailscreenApp (@main)
        └─ TailscreenMetadataService ── share name, resolution, request-to-share
 ```
 
-Twenty-six Swift files. The [Architecture docs](https://tailscreen.dev/architecture/) walk through them.
+The [Architecture docs](https://tailscreen.dev/architecture/) walk through each Swift file in detail.
 
 ## Network protocol
 
@@ -165,16 +165,16 @@ Tailscale will try really hard to give you a direct WireGuard connection. When t
 - Wired Ethernet > Wi-Fi for the most consistent latency. This is the single biggest fix.
 - Disable Wi-Fi power saving.
 - Check `tailscale status` — `direct` is what you want. `relay "..."` means DERP.
-- Don't run a 10 GB cloud sync at the same time.
+- Pause large background uploads (cloud sync, backups) while you're sharing — they can crowd out the video stream.
 
 ## Troubleshooting
 
 The full list lives in the [Troubleshooting docs](https://tailscreen.dev/troubleshooting/). The greatest hits:
 
 - **"Permission Denied" capturing the screen.** Toggle **System Settings → Privacy & Security → Screen Recording**, then *quit and relaunch* Tailscreen. macOS doesn't push the new permission to a running process.
-- **"Connection Failed".** Check Tailscale itself works first (`tailscale ping <hostname>`). Check ACLs allow TCP+UDP/7447. Get the hostname from **Show Tailscale Info**, not from memory.
+- **"Connection Failed".** Check that Tailscale itself works first (`tailscale ping <hostname>`), and that your ACLs allow TCP+UDP/7447. Copying the hostname from **Show Tailscale Info** avoids easy-to-miss typos.
 - **Black viewer window.** **Disconnect** and reconnect — that forces a fresh keyframe.
-- **Build fails with linker errors.** You skipped `make`. Run `make build` once, then `swift build` works.
+- **Build fails with linker errors.** This usually means `libtailscale.a` hasn't been built yet. Run `make build` once, then `swift build` works.
 
 ## CI/CD
 

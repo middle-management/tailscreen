@@ -62,8 +62,8 @@ admin console no matter how many times you start and stop.
 macOS forces an explicit user grant before any process can read pixels
 from the display server. Tailscreen requests Screen Recording the first
 time you press **Start Sharing**, the OS prompts you, and the permission
-takes effect after the next launch (this is macOS, not us — we'd skip the
-relaunch if we could).
+takes effect after the next launch — macOS doesn't apply it to a process
+that's already running, so a restart is required.
 
 Revoking the permission in **System Settings → Privacy & Security →
 Screen Recording** immediately kills capture. There's no override.

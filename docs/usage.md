@@ -41,9 +41,9 @@ tailnet can see it.
 
 ## Viewing a shared screen
 
-You have two options. The first is what you actually want.
+You have two options. Browse Shares is usually the easier one.
 
-### The good one: Browse Shares
+### Browse Shares
 
 1. Click the 📺 in the menubar.
 2. Pick **Browse Shares...**.
@@ -53,7 +53,7 @@ You have two options. The first is what you actually want.
 
 A window opens. You're done.
 
-### The other one: Connect to...
+### Connect to...
 
 For when you already know the hostname or IP and don't want to wait for
 discovery to finish.
@@ -97,12 +97,11 @@ detail: it suffixes the Tailscale state directory and hostname (so you get
 `wisp-1`, `wisp-2`, etc.) and the processes register as different tailnet
 nodes.
 
-If you skip this and just launch the binary twice, both processes will
-share `~/Library/Application Support/Tailscreen/tailscale`, both will use
-the same machine key, the tailnet will think they're the same device, and
-**Browse Shares** will return zero results — because each instance is
-looking at its own node and excluding it. This is the single most common
-"why doesn't this work" report. It always turns out to be this.
+Without it, both processes share `~/Library/Application Support/Tailscreen/tailscale`,
+they reuse the same machine key, the tailnet treats them as the same
+device, and **Browse Shares** comes back empty — each instance is looking
+at its own node and excluding it. It's by far the most common cause of an
+empty peer list when testing locally.
 
 Logs from all children are merged into `/tmp/tailscreen-merged.log`
 (`TAILSCREEN_LOG=...` to override). Ctrl-C kills the whole process group.
@@ -128,5 +127,6 @@ Things you can do:
   through DERP. Direct connections show as `direct`. If you're stuck on
   DERP, it's almost always a NAT or firewall issue on one side, not
   Tailscale.
-- **Don't run a 10 GB cloud sync at the same time.** This is more of a
-  "don't punch yourself in the face" tip but it shows up.
+- **Pause large background uploads.** Cloud sync, backups, or anything
+  saturating the upstream link will crowd out the video and show up as
+  stutters — pause them while you share.

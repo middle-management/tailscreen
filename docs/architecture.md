@@ -10,8 +10,8 @@ permalink: /architecture/
 1. TOC
 {:toc}
 
-Tailscreen is small. Twenty-six Swift files, one Go-built C archive, no
-external services. Most of the interesting work happens in the video
+Tailscreen is small: a couple of dozen Swift files, one Go-built C archive,
+and no external services. Most of the interesting work happens in the video
 pipeline; everything else is plumbing.
 
 ## The whole picture
