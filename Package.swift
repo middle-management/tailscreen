@@ -23,6 +23,11 @@ let package = Package(
                 .product(name: "TailscaleKit", package: "TailscaleKitPackage")
             ],
             path: "Sources",
+            resources: [
+                // Vector PDF used as the menubar template image (loaded
+                // via Bundle.module and rendered with isTemplate = true).
+                .process("Resources")
+            ],
             linkerSettings: [
                 .unsafeFlags(["-L", "TailscaleKitPackage/lib"])
             ]

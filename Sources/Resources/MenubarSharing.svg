@@ -1,0 +1,21 @@
+<!--
+  Menubar template glyph for the "actively sharing" state. Outer TV
+  silhouette (matching the brand's bezel-rounded rectangle) plus a
+  smaller filled inner rectangle representing the powered-on screen
+  — visually echoes macOS's screen-capture/recording badge while
+  keeping the brand's TV identity.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="245 237 535 535" fill="#000000">
+  <!-- Outer TV bezel — matches the brand silhouette's rounded rect. -->
+  <rect x="251" y="297"
+        width="524" height="416"
+        rx="60" ry="60"
+        fill="none"
+        stroke="#000000"
+        stroke-width="40"/>
+  <!-- Inner screen, filled solid. Inset from the bezel by enough
+       padding that the bezel reads cleanly at 18pt. -->
+  <rect x="320" y="360"
+        width="386" height="290"
+        rx="24" ry="24"/>
+</svg>
