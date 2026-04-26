@@ -480,7 +480,7 @@ class AppState: ObservableObject {
             showAlertMessage(
                 title: "Discovery Failed",
                 message:
-                    "You need to be logged in to discover other Tailscreen instances."
+                    "Sign in with Tailscale first to discover other Tailscreen instances on your tailnet."
             )
             return
         }
