@@ -62,6 +62,10 @@ icon:
 	@rm -rf "$(ICONSET)"
 	@echo "Wrote $(ICON_OUT)"
 	@echo "Regenerating in-app PDFs…"
-	@rsvg-convert -f pdf docs/assets/tailscreen-no-stand.svg -o Sources/Resources/MenubarIcon.pdf
+	@# MenubarIcon uses a tight-viewBox variant so the glyph fills the
+	@# template image and matches the visual weight of neighbouring SF
+	@# Symbols in the menubar. WelcomeIcon uses the full with-stand
+	@# artwork at its native viewBox.
+	@rsvg-convert -f pdf Sources/Resources/MenubarIcon.svg -o Sources/Resources/MenubarIcon.pdf
 	@rsvg-convert -f pdf docs/assets/tailscreen-with-stand.svg -o Sources/Resources/WelcomeIcon.pdf
 	@echo "Wrote Sources/Resources/{MenubarIcon,WelcomeIcon}.pdf"
