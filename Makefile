@@ -61,3 +61,6 @@ icon:
 	@iconutil -c icns "$(ICONSET)" -o "$(ICON_OUT)"
 	@rm -rf "$(ICONSET)"
 	@echo "Wrote $(ICON_OUT)"
+	@echo "Regenerating menubar template PDF…"
+	@rsvg-convert -f pdf docs/assets/tailscreen-no-stand.svg -o Sources/Resources/MenubarIcon.pdf
+	@echo "Wrote Sources/Resources/MenubarIcon.pdf"
