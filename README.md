@@ -31,6 +31,14 @@ You hit "Start Sharing", the other person hits "Browse Shares", they click your 
 
 ## Install
 
+### Homebrew
+
+```bash
+brew install middle-management/tap/tailscreen
+```
+
+Pulls the signed, notarized universal build from the latest release. Cask formula lives in [middle-management/homebrew-tap](https://github.com/middle-management/homebrew-tap).
+
 ### From a release
 
 Grab the latest `Tailscreen-<version>-macOS.zip` from [Releases](https://github.com/middle-management/tailscreen/releases), unzip, drag to `/Applications`. The release zip is a universal binary, signed and notarized when the build secrets are configured.

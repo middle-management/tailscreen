@@ -10,8 +10,32 @@ permalink: /install/
 1. TOC
 {:toc}
 
-There are two ways in: grab a release, or build from source. Both end up
-with `Tailscreen.app`.
+There are three ways in: install with Homebrew, grab a release, or build
+from source. All three end up with `Tailscreen.app`.
+
+## Homebrew
+
+```bash
+brew install middle-management/tap/tailscreen
+```
+
+This is a cask, so it drops `Tailscreen.app` into `/Applications` and pulls
+the same signed, notarized universal binary that the release page hosts.
+The formula lives in
+[middle-management/homebrew-tap](https://github.com/middle-management/homebrew-tap)
+and gets bumped automatically when a new GitHub release is published.
+
+To upgrade later:
+
+```bash
+brew upgrade --cask tailscreen
+```
+
+To remove:
+
+```bash
+brew uninstall --cask tailscreen
+```
 
 ## From a release
 
