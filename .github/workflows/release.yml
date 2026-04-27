@@ -107,6 +107,11 @@ jobs:
           rm -rf "$APP"
           mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
           cp ".build/apple/Products/Release/${APP_NAME}" "$APP/Contents/MacOS/"
+          # SwiftPM resource bundle backing `Bundle.module` (menubar PDFs,
+          # WelcomeIcon, etc.). Without this the app fatals on launch with
+          # "unable to find bundle named Tailscreen_Tailscreen".
+          cp -R ".build/apple/Products/Release/${APP_NAME}_${APP_NAME}.bundle" \
+            "$APP/Contents/Resources/"
           cp Resources/Tailscreen.icns "$APP/Contents/Resources/${APP_NAME}.icns"
 
           cat > "$APP/Contents/Info.plist" <<EOF
