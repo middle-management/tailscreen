@@ -200,13 +200,25 @@ jobs:
         if: steps.signing.outputs.enabled == 'true'
         run: |
           set -euxo pipefail
-          if ! security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
-              | grep -q "Developer ID Application"; then
-            echo "::error::No Developer ID Application identity found in keychain"
+
+          # Surface what's actually in the keychain so failures here are
+          # debuggable from the log alone.
+          echo "--- All identities in build keychain ---"
+          security find-identity "$KEYCHAIN_PATH" || true
+          echo "--- Valid codesigning identities (search list) ---"
+          # Search across the user keychain list (build keychain + login +
+          # System Roots) so the Apple Developer ID intermediate is visible
+          # for chain validation. Restricting to $KEYCHAIN_PATH alone makes
+          # `-v` reject the cert because the chain can't be built.
+          security find-identity -v -p codesigning || true
+          echo "--------------------------------------------------"
+
+          IDENTITY_HASH="$(security find-identity -v -p codesigning \
+            | awk '/Developer ID Application/ {print $2; exit}')"
+          if [ -z "$IDENTITY_HASH" ]; then
+            echo "::error::No valid 'Developer ID Application' codesigning identity. See identity dump above — common causes: .p12 missing private key, cert chain not trusted (Apple WWDR intermediate missing), or wrong cert type (Apple Development / Mac Developer instead of Developer ID Application)."
             exit 1
           fi
-          IDENTITY_HASH="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
-            | awk '/Developer ID Application/ {print $2; exit}')"
 
           /usr/bin/codesign \
             --force \
