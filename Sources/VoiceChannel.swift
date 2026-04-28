@@ -134,24 +134,85 @@ import AVFoundation
 private final class TapBuffer: @unchecked Sendable {
     private let channel: VoiceChannel
     private var accumulator: [Float] = []
-    private var loggedMismatch = false
+    private let converter: AVAudioConverter?
+    private let targetFormat: AVAudioFormat
+    private let sourceSampleRate: Double
 
-    init(channel: VoiceChannel) {
+    var usesConverter: Bool { converter != nil }
+
+    init?(channel: VoiceChannel, sourceFormat: AVAudioFormat) {
         self.channel = channel
+        self.sourceSampleRate = sourceFormat.sampleRate
+        guard let target = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 48_000,
+            channels: 1,
+            interleaved: false
+        ) else { return nil }
+        self.targetFormat = target
+
+        if sourceFormat.sampleRate == 48_000 && sourceFormat.channelCount == 1
+            && sourceFormat.commonFormat == .pcmFormatFloat32 {
+            // Already in target format; skip the converter.
+            self.converter = nil
+        } else {
+            guard let conv = AVAudioConverter(from: sourceFormat, to: target) else {
+                print("MicCapture: AVAudioConverter init failed for \(sourceFormat) → \(target)")
+                return nil
+            }
+            self.converter = conv
+        }
     }
 
-    func process(_ buffer: AVAudioPCMBuffer, format: AVAudioFormat) {
-        guard format.sampleRate == 48_000,
-              format.channelCount == 1,
-              let channelData = buffer.floatChannelData?[0] else {
-            if !loggedMismatch {
-                loggedMismatch = true
-                print("MicCapture: input format \(format.sampleRate) Hz, \(format.channelCount) ch — expected 48 kHz mono. Dropping audio.")
-            }
+    func process(_ buffer: AVAudioPCMBuffer) {
+        // Fast path: input already 48 kHz mono Float32.
+        if converter == nil {
+            guard let cd = buffer.floatChannelData?[0] else { return }
+            let frameCount = Int(buffer.frameLength)
+            let samples = Array(UnsafeBufferPointer(start: cd, count: frameCount))
+            appendAndDrain(samples)
             return
         }
-        let frameCount = Int(buffer.frameLength)
-        let samples = Array(UnsafeBufferPointer(start: channelData, count: frameCount))
+
+        guard let converter = converter else { return }
+
+        // Output capacity: input frames scaled by sample-rate ratio + slack
+        // for converter buffering.
+        let ratio = 48_000.0 / sourceSampleRate
+        let outCap = AVAudioFrameCount(Double(buffer.frameLength) * ratio + 64)
+        guard outCap > 0,
+              let outBuf = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: outCap)
+        else { return }
+
+        final class OneShot: @unchecked Sendable {
+            var done = false
+            var buffer: AVAudioPCMBuffer?
+        }
+        let flag = OneShot()
+        flag.buffer = buffer
+        var error: NSError?
+        let inputBlock: AVAudioConverterInputBlock = { [flag] _, statusOut in
+            if flag.done {
+                statusOut.pointee = .endOfStream
+                return nil
+            }
+            flag.done = true
+            statusOut.pointee = .haveData
+            return flag.buffer
+        }
+        let status = converter.convert(to: outBuf, error: &error, withInputFrom: inputBlock)
+        if status == .error {
+            print("MicCapture: AVAudioConverter convert failed: \(error?.localizedDescription ?? "unknown")")
+            return
+        }
+        guard let cd = outBuf.floatChannelData?[0] else { return }
+        let frameCount = Int(outBuf.frameLength)
+        guard frameCount > 0 else { return }
+        let samples = Array(UnsafeBufferPointer(start: cd, count: frameCount))
+        appendAndDrain(samples)
+    }
+
+    private func appendAndDrain(_ samples: [Float]) {
         accumulator.append(contentsOf: samples)
         while accumulator.count >= 1024 {
             let frame = Array(accumulator.prefix(1024))
@@ -213,8 +274,15 @@ final class MicCapture {
         playerNodes.append(player)
 
         let inputFormat = engine.inputNode.outputFormat(forBus: 0)
-        let buffer = TapBuffer(channel: channel)
+        guard let buffer = TapBuffer(channel: channel, sourceFormat: inputFormat) else {
+            throw NSError(
+                domain: "Tailscreen.VoiceChannel",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "Could not configure audio converter for \(inputFormat)"]
+            )
+        }
         self.tapBuffer = buffer
+        print("MicCapture: input format \(inputFormat) → 48 kHz mono Float32 (converter=\(buffer.usesConverter))")
         Self.installTap(on: engine.inputNode, format: inputFormat, buffer: buffer)
 
         try engine.start()
@@ -247,7 +315,7 @@ final class MicCapture {
             bufferSize: 1024,
             format: format
         ) { avBuffer, _ in
-            buffer.process(avBuffer, format: format)
+            buffer.process(avBuffer)
         }
     }
 
