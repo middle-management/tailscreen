@@ -374,6 +374,9 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             registerOrRefresh(addr: addr, isNew: false)
             recordPLI(from: addr)
             encoder?.requestKeyframe()
+        case .helloAck:
+            // HELLO_ACK is server→viewer only; ignore if a viewer mistakenly sends it.
+            break
         }
     }
 
