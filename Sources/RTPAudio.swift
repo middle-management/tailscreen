@@ -4,6 +4,10 @@ import Foundation
 /// 48 kHz audio clock and a stable per-channel SSRC. The RTP timestamp
 /// advances by 1024 (the AU's frame count) per packet — this matches the
 /// AAC frame rate at 48 kHz.
+///
+/// Not thread-safe: the mutable sequence + timestamp counters require the
+/// caller to serialize `packetize(au:)` calls. `VoiceChannel` confines
+/// every call to its internal serial queue.
 final class AudioRTPPacketizer {
     let ssrc: UInt32
     private var sequence: UInt16
