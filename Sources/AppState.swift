@@ -19,6 +19,10 @@ class AppState: ObservableObject {
     /// Whether the sharer's drawing overlay panel is currently visible and
     /// accepting input. The panel itself is only created while sharing.
     @Published var isSharerOverlayVisible = false
+    @Published var isMicOn = false
+
+    private var voiceChannel: VoiceChannel?
+    private var micCapture: MicCapture?
 
     /// Snapshot of viewers currently connected to our screen-share server.
     /// Empty when not sharing or when nobody has joined yet. Populated from
@@ -212,6 +216,21 @@ class AppState: ObservableObject {
                     }
                 }
 
+                // Sharer's audio SSRC is fixed at 0. Build the channel up
+                // front so HELLO_ACK assignment for viewers can route
+                // through, and inbound viewer audio can be decoded.
+                do {
+                    let voice = try VoiceChannel(localSSRC: 0) { [weak srv] packet in
+                        srv?.sendAudioRTP(packet)
+                    }
+                    self.voiceChannel = voice
+                    srv.onAudioReceived = { [weak voice] packet in
+                        voice?.receive(packet)
+                    }
+                } catch {
+                    print("AppState: failed to create VoiceChannel for sharer: \(error)")
+                }
+
                 do {
                     // Reuse the AppState-owned tsnet node so the screen
                     // share doesn't spin up a second machine that needs
@@ -273,6 +292,10 @@ class AppState: ObservableObject {
 
         await server?.stop()
         server = nil
+        micCapture?.stop()
+        micCapture = nil
+        voiceChannel = nil
+        isMicOn = false
         previewImage = nil
         currentViewers = []
         tailscaleIPs = []
@@ -332,6 +355,40 @@ class AppState: ObservableObject {
         overlay.setInputEnabled(isSharerOverlayVisible)
     }
 
+    /// Toggle the local microphone. Lazily requests permission and starts
+    /// the AVAudioEngine on first unmute. Voice plumbing is built when a
+    /// share session begins; toggleMic just enables/disables capture.
+    func toggleMic() async {
+        guard let voice = voiceChannel else {
+            showAlertMessage(
+                title: "Voice Not Ready",
+                message: "Voice is only available during an active share."
+            )
+            return
+        }
+        if isMicOn {
+            micCapture?.stop()
+            voice.isMuted = true
+            isMicOn = false
+            return
+        }
+        do {
+            if micCapture == nil {
+                micCapture = MicCapture(channel: voice)
+            }
+            try await micCapture?.start()
+            voice.isMuted = false
+            isMicOn = true
+        } catch {
+            micCapture = nil
+            showAlertMessage(
+                title: "Microphone Unavailable",
+                message: "Tailscreen could not start the microphone: \(error.localizedDescription). Check System Settings → Privacy & Security → Microphone."
+            )
+            isMicOn = false
+        }
+    }
+
     func connect(to host: String) async {
         guard !host.isEmpty else { return }
 
@@ -343,6 +400,27 @@ class AppState: ObservableObject {
             // spin up a third machine + browser sign-in flow.
             let sharedNode = try await getOrCreateNode()
             try await c.connect(to: host, port: 7447, existingNode: sharedNode)
+
+            c.onAudioSSRCAssigned = { [weak self, weak c] ssrc in
+                Task { @MainActor [weak self, weak c] in
+                    guard let self = self, let c = c else { return }
+                    do {
+                        let voice = try VoiceChannel(localSSRC: ssrc) { [weak c] packet in
+                            Task { await c?.sendAudioRTP(packet) }
+                        }
+                        self.voiceChannel = voice
+                        c.onAudioReceived = { [weak voice] packet in
+                            voice?.receive(packet)
+                        }
+                    } catch {
+                        self.showAlertMessage(
+                            title: "Voice Init Failed",
+                            message: error.localizedDescription
+                        )
+                    }
+                }
+            }
+
             isConnected = true
             connectedHostname = host
             // Order matters: with the app at .accessory activation policy
@@ -475,6 +553,10 @@ class AppState: ObservableObject {
     func disconnect() async {
         await client?.disconnect()
         client = nil
+        micCapture?.stop()
+        micCapture = nil
+        voiceChannel = nil
+        isMicOn = false
         isConnected = false
         connectedHostname = nil
         viewerRenderer?.clearPendingBuffer()

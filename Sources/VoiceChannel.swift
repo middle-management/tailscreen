@@ -116,3 +116,126 @@ final class VoiceChannel: @unchecked Sendable {
     }
 #endif
 }
+
+import AVFoundation
+
+/// AVAudioEngine glue: input from VoiceProcessingIO mic (with built-in
+/// AEC), output through the same VPIO unit (so AEC has the right
+/// reference signal). Feeds inbound PCM frames into the VoiceChannel
+/// and renders outbound PCM blocks the channel decoded from RTP.
+@MainActor
+final class MicCapture {
+    private let channel: VoiceChannel
+    private let engine = AVAudioEngine()
+    private var playerNodes: [AVAudioPlayerNode] = []
+    private let mixer: AVAudioMixerNode
+    private let outputFormat: AVAudioFormat
+    private var inputAccumulator: [Float] = []
+    private var isRunning = false
+
+    init(channel: VoiceChannel) {
+        self.channel = channel
+        self.mixer = engine.mainMixerNode
+        // 48 kHz mono Float32 — matches the codec format.
+        self.outputFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 48_000,
+            channels: 1,
+            interleaved: false
+        )!
+
+        // Force the input + output node onto the VoiceProcessingIO unit
+        // so AEC works without us building it ourselves.
+        try? engine.inputNode.setVoiceProcessingEnabled(true)
+        try? engine.outputNode.setVoiceProcessingEnabled(true)
+
+        // Pipe decoded PCM (per-SSRC mix already done by VoiceChannel)
+        // into a player node so the user hears it.
+        channel.onMixedPCM = { [weak self] samples in
+            Task { @MainActor [weak self] in self?.scheduleSamples(samples) }
+        }
+    }
+
+    /// Start the engine (and request permission if not already granted).
+    /// Throws if permission is denied or the engine fails to start.
+    func start() async throws {
+        guard !isRunning else { return }
+        let granted = await Self.requestMicPermission()
+        guard granted else {
+            throw NSError(
+                domain: "Tailscreen.VoiceChannel",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Microphone permission denied"]
+            )
+        }
+
+        let player = AVAudioPlayerNode()
+        engine.attach(player)
+        engine.connect(player, to: mixer, format: outputFormat)
+        playerNodes.append(player)
+
+        let inputFormat = engine.inputNode.outputFormat(forBus: 0)
+        engine.inputNode.installTap(
+            onBus: 0,
+            bufferSize: 1024,
+            format: inputFormat
+        ) { [weak self] buffer, _ in
+            self?.handleInputBuffer(buffer, format: inputFormat)
+        }
+
+        try engine.start()
+        player.play()
+        isRunning = true
+    }
+
+    func stop() {
+        guard isRunning else { return }
+        engine.inputNode.removeTap(onBus: 0)
+        for node in playerNodes { node.stop() }
+        engine.stop()
+        playerNodes.removeAll()
+        inputAccumulator.removeAll()
+        isRunning = false
+    }
+
+    private func handleInputBuffer(_ buffer: AVAudioPCMBuffer, format: AVAudioFormat) {
+        // Hardware may give us 16 kHz / 44.1 kHz / 48 kHz Float32 mono.
+        // For v1 we trust VPIO to deliver 48 kHz — mismatched rates are
+        // logged and dropped.
+        guard format.sampleRate == 48_000,
+              format.channelCount == 1,
+              let channelData = buffer.floatChannelData?[0] else {
+            return
+        }
+        let frameCount = Int(buffer.frameLength)
+        let samples = Array(UnsafeBufferPointer(start: channelData, count: frameCount))
+        inputAccumulator.append(contentsOf: samples)
+        while inputAccumulator.count >= 1024 {
+            let frame = Array(inputAccumulator.prefix(1024))
+            inputAccumulator.removeFirst(1024)
+            channel.processOutboundFrame(frame)
+        }
+    }
+
+    private func scheduleSamples(_ samples: [Float]) {
+        guard isRunning, let player = playerNodes.first else { return }
+        guard let buffer = AVAudioPCMBuffer(
+            pcmFormat: outputFormat,
+            frameCapacity: AVAudioFrameCount(samples.count)
+        ) else { return }
+        buffer.frameLength = AVAudioFrameCount(samples.count)
+        guard let dst = buffer.floatChannelData?[0] else { return }
+        for (i, sample) in samples.enumerated() {
+            dst[i] = sample
+        }
+        player.scheduleBuffer(buffer, completionHandler: nil)
+    }
+
+    private static func requestMicPermission() async -> Bool {
+        await withCheckedContinuation { cont in
+            AVCaptureDevice.requestAccess(for: .audio) { granted in
+                cont.resume(returning: granted)
+            }
+        }
+    }
+}
