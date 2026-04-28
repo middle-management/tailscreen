@@ -56,6 +56,12 @@ final class ViewerCommands: NSObject {
     @objc func disconnectViewer(_ sender: Any?) {
         NotificationCenter.default.post(name: .tailscreenDisconnectRequested, object: nil)
     }
+
+    /// File → Microphone. Posts a notification AppState observes to
+    /// toggle the local mic on/off during an active share or connection.
+    @objc func toggleMicrophone(_ sender: Any?) {
+        NotificationCenter.default.post(name: .tailscreenToggleMicrophone, object: nil)
+    }
 }
 
 extension ViewerCommands: NSMenuItemValidation {
@@ -83,6 +89,8 @@ extension ViewerCommands: NSMenuItemValidation {
             return overlay?.canClearAll ?? false
         case #selector(disconnectViewer(_:)):
             return true
+        case #selector(toggleMicrophone(_:)):
+            return true
         default:
             return true
         }
@@ -91,4 +99,5 @@ extension ViewerCommands: NSMenuItemValidation {
 
 extension Notification.Name {
     static let tailscreenDisconnectRequested = Notification.Name("tailscreen.disconnect.requested")
+    static let tailscreenToggleMicrophone = Notification.Name("tailscreen.toggleMicrophone")
 }

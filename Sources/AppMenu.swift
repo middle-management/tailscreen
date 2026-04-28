@@ -99,6 +99,12 @@ enum AppMenu {
         disconnect.target = ViewerCommands.shared
         fileMenu.addItem(disconnect)
 
+        let micItem = NSMenuItem(title: "Microphone",
+                                 action: #selector(ViewerCommands.toggleMicrophone(_:)),
+                                 keyEquivalent: "")
+        micItem.target = ViewerCommands.shared
+        fileMenu.addItem(micItem)
+
         // ── Edit ──
         let editItem = NSMenuItem()
         let editMenu = NSMenu(title: "Edit")

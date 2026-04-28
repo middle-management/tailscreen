@@ -127,6 +127,17 @@ class AppState: ObservableObject {
                 await self.disconnect()
             }
         }
+
+        // File → Microphone / toolbar mic button posts this; bounce to toggleMic().
+        NotificationCenter.default.addObserver(
+            forName: .tailscreenToggleMicrophone,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                await self?.toggleMic()
+            }
+        }
     }
 
     private var cancellables = Set<AnyCancellable>()
