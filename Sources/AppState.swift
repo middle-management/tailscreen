@@ -404,6 +404,11 @@ class AppState: ObservableObject {
             c.onAudioSSRCAssigned = { [weak self, weak c] ssrc in
                 Task { @MainActor [weak self, weak c] in
                     guard let self = self, let c = c else { return }
+                    self.micCapture?.stop()
+                    self.micCapture = nil
+                    self.voiceChannel?.reset()
+                    self.voiceChannel = nil
+                    self.isMicOn = false
                     do {
                         let voice = try VoiceChannel(localSSRC: ssrc) { [weak c] packet in
                             Task { await c?.sendAudioRTP(packet) }

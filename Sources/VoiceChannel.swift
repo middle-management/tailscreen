@@ -132,6 +132,7 @@ final class MicCapture {
     private let outputFormat: AVAudioFormat
     private var inputAccumulator: [Float] = []
     private var isRunning = false
+    private var loggedMismatch = false
 
     init(channel: VoiceChannel) {
         self.channel = channel
@@ -160,6 +161,7 @@ final class MicCapture {
     /// Throws if permission is denied or the engine fails to start.
     func start() async throws {
         guard !isRunning else { return }
+        loggedMismatch = false
         let granted = await Self.requestMicPermission()
         guard granted else {
             throw NSError(
@@ -201,10 +203,14 @@ final class MicCapture {
     private func handleInputBuffer(_ buffer: AVAudioPCMBuffer, format: AVAudioFormat) {
         // Hardware may give us 16 kHz / 44.1 kHz / 48 kHz Float32 mono.
         // For v1 we trust VPIO to deliver 48 kHz — mismatched rates are
-        // logged and dropped.
+        // logged once per session and dropped.
         guard format.sampleRate == 48_000,
               format.channelCount == 1,
               let channelData = buffer.floatChannelData?[0] else {
+            if !loggedMismatch {
+                loggedMismatch = true
+                print("MicCapture: input format \(format.sampleRate) Hz, \(format.channelCount) ch — expected 48 kHz mono. Dropping audio.")
+            }
             return
         }
         let frameCount = Int(buffer.frameLength)
