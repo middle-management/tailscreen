@@ -215,13 +215,7 @@ final class MicCapture {
         let inputFormat = engine.inputNode.outputFormat(forBus: 0)
         let buffer = TapBuffer(channel: channel)
         self.tapBuffer = buffer
-        engine.inputNode.installTap(
-            onBus: 0,
-            bufferSize: 1024,
-            format: inputFormat
-        ) { [buffer] avBuffer, _ in
-            buffer.process(avBuffer, format: inputFormat)
-        }
+        Self.installTap(on: engine.inputNode, format: inputFormat, buffer: buffer)
 
         try engine.start()
         player.play()
@@ -236,6 +230,25 @@ final class MicCapture {
         playerNodes.removeAll()
         tapBuffer = nil
         isRunning = false
+    }
+
+    /// Install the input tap from a nonisolated context so the closure
+    /// AVAudioEngine retains does not inherit `@MainActor` isolation from
+    /// `start()`. Without this, the audio render thread invoking the tap
+    /// trips Swift 6's `dispatch_assert_queue` check (SIGTRAP) on the very
+    /// first buffer.
+    nonisolated private static func installTap(
+        on inputNode: AVAudioInputNode,
+        format: AVAudioFormat,
+        buffer: TapBuffer
+    ) {
+        inputNode.installTap(
+            onBus: 0,
+            bufferSize: 1024,
+            format: format
+        ) { avBuffer, _ in
+            buffer.process(avBuffer, format: format)
+        }
     }
 
     private func scheduleSamples(_ samples: [Float]) {
