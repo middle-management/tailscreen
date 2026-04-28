@@ -8,6 +8,10 @@ import Foundation
 /// thread) and network callbacks (TailscaleKit reader task) call into
 /// public methods which dispatch onto the queue. State only mutates on
 /// the queue.
+///
+/// Marked `@unchecked Sendable`: all stored mutable state (`_isMuted`,
+/// `decoders`, `brokenSSRCs`) is touched only from `queue`. `onMixedPCM`
+/// is the documented exception — set it once before any `receive(_:)`.
 final class VoiceChannel: @unchecked Sendable {
     let localSSRC: UInt32
     var isMuted: Bool {
@@ -19,9 +23,14 @@ final class VoiceChannel: @unchecked Sendable {
     /// RTP packet. Caller should pass it to the network layer.
     private let onSend: (Data) -> Void
 
-    /// Invoked on the internal queue every time the decoder produces a
-    /// block of mixed PCM samples ready to render. The MicCapture glue
-    /// schedules these into the playback engine.
+    /// Invoked on the internal queue when the decoder produces a block of
+    /// PCM samples for one inbound RTP audio packet. One call per packet
+    /// per remote SSRC — mixing across peers is the caller's job (the
+    /// audio engine in `MicCapture` schedules them into a shared player).
+    ///
+    /// Set this once before the first `receive(_:)` call. Mutating it
+    /// concurrently with packet ingestion is unsafe; the queue reads it
+    /// without synchronization.
     var onMixedPCM: (([Float]) -> Void)?
 
     private let queue = DispatchQueue(label: "VoiceChannel")
@@ -30,6 +39,7 @@ final class VoiceChannel: @unchecked Sendable {
     private let packetizer: AudioRTPPacketizer
     private let depacketizer = AudioRTPDepacketizer()
     private var decoders: [UInt32: AACDecoder] = [:]
+    private var brokenSSRCs: Set<UInt32> = []
 
     init(localSSRC: UInt32, onSend: @escaping (Data) -> Void) throws {
         self.localSSRC = localSSRC
@@ -60,6 +70,7 @@ final class VoiceChannel: @unchecked Sendable {
             guard let parsed = self.depacketizer.unpack(packet) else { return }
             // Drop our own loopback if the network somehow returned it.
             guard parsed.ssrc != self.localSSRC else { return }
+            guard !self.brokenSSRCs.contains(parsed.ssrc) else { return }
             do {
                 let decoder = try self.ensureDecoder(for: parsed.ssrc)
                 let samples = try decoder.decode(au: parsed.au)
@@ -67,7 +78,16 @@ final class VoiceChannel: @unchecked Sendable {
                     self.onMixedPCM?(samples)
                 }
             } catch {
-                print("VoiceChannel: decode failed for ssrc=\(parsed.ssrc): \(error)")
+                if self.decoders[parsed.ssrc] == nil {
+                    // Decoder init failed for this SSRC — blacklist so we
+                    // don't spam stderr at 50 Hz.
+                    self.brokenSSRCs.insert(parsed.ssrc)
+                    print("VoiceChannel: decoder init failed for ssrc=\(parsed.ssrc): \(error). Dropping further packets from this SSRC.")
+                } else {
+                    // Decode (not init) failed — log once per packet but
+                    // keep the decoder; transient corruption is normal.
+                    print("VoiceChannel: decode failed for ssrc=\(parsed.ssrc): \(error)")
+                }
             }
         }
     }
@@ -77,6 +97,7 @@ final class VoiceChannel: @unchecked Sendable {
     func reset() {
         queue.async {
             self.decoders.removeAll()
+            self.brokenSSRCs.removeAll()
         }
     }
 
