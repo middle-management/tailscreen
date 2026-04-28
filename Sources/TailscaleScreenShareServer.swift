@@ -65,6 +65,10 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     private struct Viewer {
         let addr: String
         let ssrc: UInt32
+        /// SSRC the sharer assigns to this viewer for *audio* (sent in
+        /// HELLO_ACK). Distinct from `ssrc` above, which the server uses
+        /// when sending video *to* this viewer.
+        let audioSSRC: UInt32
         var nextSequence: UInt16
         var lastSeenNs: UInt64
         var pliTimestampsNs: [UInt64] = []
@@ -125,6 +129,11 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// of the current roster; replace the UI's list wholesale rather than
     /// diffing. Callback may run on any thread; bounce to `@MainActor`.
     var onViewersChanged: (@Sendable ([ViewerInfo]) -> Void)?
+
+    /// Fires on every inbound audio RTP packet from any viewer. AppState
+    /// pipes these into the local VoiceChannel so the sharer can hear
+    /// viewers.
+    var onAudioReceived: ((Data) -> Void)?
 
     /// Invoked once the underlying `TailscaleNode` has been instantiated but
     /// **before** `node.up()` is called. AppState uses this hook to subscribe
@@ -359,13 +368,27 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
 
     private func handleIncoming(data: Data, from addr: String) {
         guard !data.isEmpty else { return }
-        // V=2 (RTP) → drop; viewers don't send RTP up to us.
-        if !ScreenShareControlMessage.looksLikeControl(data) { return }
+        if !ScreenShareControlMessage.looksLikeControl(data) {
+            // RTP from a viewer is only allowed for audio (PT=98). Anything
+            // else (video PTs) is dropped.
+            if let (header, _) = RTPHeader.decode(from: data),
+               header.payloadType == RTPHeader.aacPayloadType {
+                handleInboundAudioRTP(data, from: addr)
+            }
+            return
+        }
         guard let kind = ScreenShareControlMessage.decode(data) else { return }
 
         switch kind {
         case .hello:
             registerOrRefresh(addr: addr, isNew: true)
+            if let assignedSSRC = (viewers.withLock { $0[addr]?.audioSSRC }) {
+                Task { [weak self] in
+                    guard let pl = self?.packetListener else { return }
+                    let ack = ScreenShareControlMessage.encodeHelloAck(ssrc: assignedSSRC)
+                    try? await pl.send(ack, to: addr)
+                }
+            }
         case .keepalive:
             registerOrRefresh(addr: addr, isNew: false)
         case .bye:
@@ -375,9 +398,30 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             recordPLI(from: addr)
             encoder?.requestKeyframe()
         case .helloAck:
-            // HELLO_ACK is server→viewer only; ignore if a viewer mistakenly sends it.
+            // Server never receives HELLO_ACK from a viewer; ignore.
             break
         }
+    }
+
+    /// Relay one inbound audio RTP packet to all other viewers and pass
+    /// a copy to the local VoiceChannel via `onAudioReceived`. The packet
+    /// is forwarded byte-for-byte (no transcode) so the receiving viewer
+    /// sees the original sender's SSRC.
+    private func handleInboundAudioRTP(_ packet: Data, from sender: String) {
+        // Verify the sender is registered; drop spoofed packets.
+        let recipients = viewers.withLock { state -> [String] in
+            guard state[sender] != nil else { return [] }
+            return state.keys.filter { $0 != sender }
+        }
+        if let pl = packetListener {
+            Task { [weak self] in
+                guard self != nil else { return }
+                for addr in recipients {
+                    try? await pl.send(packet, to: addr)
+                }
+            }
+        }
+        onAudioReceived?(packet)
     }
 
     /// Append a PLI timestamp to the viewer's ring. The adaptive sweep
@@ -409,6 +453,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             let v = Viewer(
                 addr: addr,
                 ssrc: UInt32.random(in: 1...UInt32.max),
+                audioSSRC: UInt32.random(in: 1...UInt32.max),
                 nextSequence: UInt16.random(in: 0...UInt16.max),
                 lastSeenNs: now
             )
@@ -787,6 +832,19 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         packet[9]  = UInt8((ssrc >> 16) & 0xFF)
         packet[10] = UInt8((ssrc >> 8) & 0xFF)
         packet[11] = UInt8(ssrc & 0xFF)
+    }
+
+    /// Send one outbound audio RTP packet (sharer's mic) to all viewers.
+    /// VoiceChannel calls this from its onSend closure.
+    func sendAudioRTP(_ packet: Data) {
+        guard let pl = packetListener else { return }
+        let recipients = viewers.withLock { Array($0.keys) }
+        Task { [weak self] in
+            guard self != nil else { return }
+            for addr in recipients {
+                try? await pl.send(packet, to: addr)
+            }
+        }
     }
 
     func getIPAddresses() async throws -> (ip4: String?, ip6: String?) {
