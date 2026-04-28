@@ -1,5 +1,4 @@
 import AudioToolbox
-import AVFoundation
 import Foundation
 
 enum AACCodecError: Error {
@@ -50,12 +49,15 @@ final class AACEncoder {
 
         // Target ~32 kbps for voice — fine quality, low bandwidth.
         var bitrate: UInt32 = 32_000
-        AudioConverterSetProperty(
+        let bitrateStatus = AudioConverterSetProperty(
             conv,
             kAudioConverterEncodeBitRate,
             UInt32(MemoryLayout<UInt32>.size),
             &bitrate
         )
+        if bitrateStatus != noErr {
+            print("AACEncoder: setting bitrate to \(bitrate) failed (OSStatus=\(bitrateStatus))")
+        }
     }
 
     deinit {
@@ -93,29 +95,29 @@ final class AACEncoder {
         )
         var ioPackets: UInt32 = 1
 
-        let status = AudioConverterFillComplexBuffer(
-            converter,
-            { _, ioNumberDataPackets, ioData, _, inUserData in
-                guard let inUserData = inUserData else { return -1 }
-                let ctx = Unmanaged<AACEncoder.EncodeContext>.fromOpaque(inUserData).takeUnretainedValue()
-                if ctx.consumed {
-                    ioNumberDataPackets.pointee = 0
-                    return noErr
-                }
-                ctx.buffer.withUnsafeMutableBufferPointer { ptr in
-                    ioData.pointee.mBuffers.mData = UnsafeMutableRawPointer(ptr.baseAddress)
-                    ioData.pointee.mBuffers.mDataByteSize = UInt32(ptr.count * MemoryLayout<Float>.size)
+        let status = withExtendedLifetime(context) {
+            AudioConverterFillComplexBuffer(
+                converter,
+                { _, ioNumberDataPackets, ioData, _, inUserData in
+                    guard let inUserData = inUserData else { return -1 }
+                    let ctx = Unmanaged<AACEncoder.EncodeContext>.fromOpaque(inUserData).takeUnretainedValue()
+                    if ctx.consumed {
+                        ioNumberDataPackets.pointee = 0
+                        return noErr
+                    }
+                    ioData.pointee.mBuffers.mData = UnsafeMutableRawPointer(ctx.storage)
+                    ioData.pointee.mBuffers.mDataByteSize = UInt32(ctx.count * MemoryLayout<Float>.size)
                     ioData.pointee.mBuffers.mNumberChannels = 1
-                }
-                ioNumberDataPackets.pointee = AACEncoder.frameCount
-                ctx.consumed = true
-                return noErr
-            },
-            contextPtr,
-            &ioPackets,
-            &outBufferList,
-            &packetDesc
-        )
+                    ioNumberDataPackets.pointee = AACEncoder.frameCount
+                    ctx.consumed = true
+                    return noErr
+                },
+                contextPtr,
+                &ioPackets,
+                &outBufferList,
+                &packetDesc
+            )
+        }
 
         guard status == noErr else { throw AACCodecError.encode(status) }
         guard ioPackets > 0 else { return nil }
@@ -126,10 +128,25 @@ final class AACEncoder {
 
     /// Hold the input buffer alive across the AudioConverter callback and
     /// signal one-shot consumption.
-    final class EncodeContext {
-        var buffer: [Float]
+    private final class EncodeContext {
+        let storage: UnsafeMutablePointer<Float>
+        let count: Int
         var consumed: Bool = false
-        init(buffer: [Float]) { self.buffer = buffer }
+
+        init(buffer: [Float]) {
+            self.count = buffer.count
+            self.storage = UnsafeMutablePointer<Float>.allocate(capacity: buffer.count)
+            buffer.withUnsafeBufferPointer { src in
+                if let base = src.baseAddress {
+                    self.storage.initialize(from: base, count: buffer.count)
+                }
+            }
+        }
+
+        deinit {
+            storage.deinitialize(count: count)
+            storage.deallocate()
+        }
     }
 }
 
@@ -197,46 +214,60 @@ final class AACDecoder {
             )
             var ioPackets: UInt32 = Self.frameCount
 
-            let status = AudioConverterFillComplexBuffer(
-                converter,
-                { _, ioNumberDataPackets, ioData, ioPacketDesc, inUserData in
-                    guard let inUserData = inUserData else { return -1 }
-                    let ctx = Unmanaged<AACDecoder.DecodeContext>.fromOpaque(inUserData).takeUnretainedValue()
-                    if ctx.consumed {
-                        ioNumberDataPackets.pointee = 0
-                        return noErr
-                    }
-                    ctx.au.withUnsafeBytes { raw in
-                        ioData.pointee.mBuffers.mData = UnsafeMutableRawPointer(mutating: raw.baseAddress)
-                        ioData.pointee.mBuffers.mDataByteSize = UInt32(ctx.au.count)
+            let status = withExtendedLifetime(context) {
+                AudioConverterFillComplexBuffer(
+                    converter,
+                    { _, ioNumberDataPackets, ioData, ioPacketDesc, inUserData in
+                        guard let inUserData = inUserData else { return -1 }
+                        let ctx = Unmanaged<AACDecoder.DecodeContext>.fromOpaque(inUserData).takeUnretainedValue()
+                        if ctx.consumed {
+                            ioNumberDataPackets.pointee = 0
+                            return noErr
+                        }
+                        ioData.pointee.mBuffers.mData = ctx.storage
+                        ioData.pointee.mBuffers.mDataByteSize = UInt32(ctx.count)
                         ioData.pointee.mBuffers.mNumberChannels = 1
-                    }
-                    ioNumberDataPackets.pointee = 1
-                    ctx.packetDesc = AudioStreamPacketDescription(
-                        mStartOffset: 0,
-                        mVariableFramesInPacket: 0,
-                        mDataByteSize: UInt32(ctx.au.count)
-                    )
-                    if let ioPacketDesc = ioPacketDesc {
-                        ioPacketDesc.pointee = withUnsafeMutablePointer(to: &ctx.packetDesc) { $0 }
-                    }
-                    ctx.consumed = true
-                    return noErr
-                },
-                contextPtr,
-                &ioPackets,
-                &outBufferList,
-                nil
-            )
+                        ioNumberDataPackets.pointee = 1
+                        ctx.packetDesc = AudioStreamPacketDescription(
+                            mStartOffset: 0,
+                            mVariableFramesInPacket: 0,
+                            mDataByteSize: UInt32(ctx.count)
+                        )
+                        if let ioPacketDesc = ioPacketDesc {
+                            ioPacketDesc.pointee = withUnsafeMutablePointer(to: &ctx.packetDesc) { $0 }
+                        }
+                        ctx.consumed = true
+                        return noErr
+                    },
+                    contextPtr,
+                    &ioPackets,
+                    &outBufferList,
+                    nil
+                )
+            }
             guard status == noErr else { throw AACCodecError.decode(status) }
             return Array(ptr.prefix(Int(ioPackets)))
         }
     }
 
-    final class DecodeContext {
-        let au: Data
+    private final class DecodeContext {
+        let storage: UnsafeMutableRawPointer
+        let count: Int
         var consumed: Bool = false
         var packetDesc = AudioStreamPacketDescription()
-        init(au: Data) { self.au = au }
+
+        init(au: Data) {
+            self.count = au.count
+            self.storage = UnsafeMutableRawPointer.allocate(byteCount: max(1, au.count), alignment: 1)
+            au.withUnsafeBytes { src in
+                if let base = src.baseAddress, au.count > 0 {
+                    self.storage.copyMemory(from: base, byteCount: au.count)
+                }
+            }
+        }
+
+        deinit {
+            storage.deallocate()
+        }
     }
 }
