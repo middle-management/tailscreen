@@ -70,19 +70,27 @@ class AppState: ObservableObject {
 
     private var isLoggingIn = false
 
+    // Gates whether the IPN-bus BrowseToURL handler actually opens a
+    // browser tab. False during silent session restore at launch (so a
+    // stale state file can't pop an unsolicited sign-in tab); flipped to
+    // true when the user explicitly initiates `login()`.
+    private var interactiveLoginRequested = false
+
     init() {
         // Observe changes in tailscaleAuth and propagate them
         tailscaleAuth.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }.store(in: &cancellables)
 
-        // No auto-login on launch. tsnet's `node.up()` blocks until the
-        // backend reaches Running, and if the on-disk state is stale or
-        // the ephemeral node was revoked it will emit a BrowseToURL —
-        // which would silently pop a browser tab the user never asked for.
-        // Always require an explicit "Sign in with Tailscale" click; if
-        // valid state exists the click resolves in well under a second
-        // (LocalAPI handshake only, no browser).
+        // Try to restore a previous session silently. If on-disk Tailscale
+        // state is valid, `up()` returns quickly and the user is signed in
+        // without clicking anything. If the state is stale or missing, the
+        // BrowseToURL the IPN bus emits is suppressed (see
+        // `interactiveLoginRequested`) so no browser tab pops unsolicited —
+        // the user still sees the "Sign in with Tailscale" CTA.
+        Task { @MainActor [weak self] in
+            await self?.attemptSessionRestore()
+        }
 
         // Sharer dropped its end of the TCP connection — viewer needs to
         // run its disconnect() so the UI doesn't sit on a stale last
@@ -517,6 +525,48 @@ class AppState: ObservableObject {
         await login(silent: silent)
     }
 
+    /// Bring the persistent tsnet node up at launch with browser-open
+    /// suppressed and check whether the on-disk state already authenticates
+    /// us. If yes, the menu flips to its signed-in form without the user
+    /// ever clicking. If no (stale or empty state), the suppressed
+    /// BrowseToURL is dropped silently and the user still sees the
+    /// "Sign in with Tailscale" CTA.
+    private func attemptSessionRestore() async {
+        // Skip when the state directory is empty — the very first launch
+        // has nothing to restore, and bringing the node up would just
+        // emit a BrowseToURL we're going to drop anyway.
+        let appSupport = FileManager.default.urls(
+            for: .applicationSupportDirectory, in: .userDomainMask
+        ).first!
+        let statePath = appSupport
+            .appendingPathComponent("Tailscreen/tailscale\(TailscreenInstance.stateSuffix)")
+            .path
+        let contents = (try? FileManager.default.contentsOfDirectory(atPath: statePath)) ?? []
+        guard !contents.isEmpty else {
+            print("📱 [AppState] No saved Tailscale state at \(statePath); skipping silent restore")
+            return
+        }
+
+        // `interactiveLoginRequested` defaults to false, so any BrowseToURL
+        // emitted during this `up()` is dropped by the watcher. If the
+        // state is valid, `up()` returns quickly without ever emitting
+        // one; if it's stale, `up()` will block in the background — that's
+        // fine, it just sits there until the user clicks Sign In.
+        do {
+            let node = try await getOrCreateNode()
+            await tailscaleAuth.checkAuthStatus(node: node)
+            if tailscaleAuth.isAuthenticated {
+                let ips = try await node.addrs()
+                self.tailscaleIPs = [ips.ip4, ips.ip6].compactMap { $0 }
+                print("📱 [AppState] Restored signed-in Tailscale session")
+            } else {
+                print("📱 [AppState] No valid saved session; awaiting explicit sign-in")
+            }
+        } catch {
+            print("📱 [AppState] Silent restore skipped: \(error)")
+        }
+    }
+
     func login(silent: Bool = false) async {
         // Prevent multiple concurrent login attempts
         guard !isLoggingIn else {
@@ -524,7 +574,13 @@ class AppState: ObservableObject {
             return
         }
         isLoggingIn = true
-        defer { isLoggingIn = false }
+        // Allow the IPN BrowseToURL handler to actually open a browser
+        // tab — we're here because the user explicitly asked to sign in.
+        interactiveLoginRequested = true
+        defer {
+            isLoggingIn = false
+            interactiveLoginRequested = false
+        }
 
         do {
             print("📱 [AppState] Starting login flow...")
@@ -621,10 +677,20 @@ class AppState: ObservableObject {
     /// of the node it's tied to.
     private func startBrowseURLWatcher(node: TailscaleNode) async -> TailscaleIPNWatcher? {
         let watcher = TailscaleIPNWatcher()
-        watcher.onBrowseToURL = { url in
+        watcher.onBrowseToURL = { [weak self] url in
             // Hop to the main actor — NSWorkspace must be touched there,
             // and the IPN consumer fires from a background actor.
             Task { @MainActor in
+                guard let self else { return }
+                guard self.interactiveLoginRequested else {
+                    // Silent restore in progress: dropping the BrowseToURL
+                    // keeps a stale-state launch from popping a sign-in
+                    // tab the user never asked for. The user clicking
+                    // "Sign in with Tailscale" flips the flag and the
+                    // next emitted URL gets opened.
+                    print("📱 [AppState] Suppressing BrowseToURL during silent restore")
+                    return
+                }
                 print("📱 [AppState] Opening login URL in browser: \(url)")
                 NSWorkspace.shared.open(url)
             }
