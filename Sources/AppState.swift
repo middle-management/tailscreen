@@ -232,6 +232,8 @@ class AppState: ObservableObject {
                 // Sharer's audio SSRC is fixed at 0. Build the channel up
                 // front so HELLO_ACK assignment for viewers can route
                 // through, and inbound viewer audio can be decoded.
+                // Start playback engine immediately so the sharer can hear
+                // viewers without first toggling their own mic on.
                 do {
                     let voice = try VoiceChannel(localSSRC: 0) { [weak srv] packet in
                         srv?.sendAudioRTP(packet)
@@ -240,10 +242,13 @@ class AppState: ObservableObject {
                     srv.onAudioReceived = { [weak voice] packet in
                         voice?.receive(packet)
                     }
+                    let cap = MicCapture(channel: voice)
+                    try cap.startPlayback()
+                    self.micCapture = cap
                 } catch {
                     showAlertMessage(
                         title: "Voice Init Failed",
-                        message: "Microphone capture could not be initialized: \(error.localizedDescription). Voice will be unavailable for this share session."
+                        message: "Voice could not be initialized: \(error.localizedDescription). Voice will be unavailable for this share session."
                     )
                 }
 
@@ -371,11 +376,12 @@ class AppState: ObservableObject {
         overlay.setInputEnabled(isSharerOverlayVisible)
     }
 
-    /// Toggle the local microphone. Lazily requests permission and starts
-    /// the AVAudioEngine on first unmute. Voice plumbing is built when a
-    /// share session begins; toggleMic just enables/disables capture.
+    /// Toggle outbound microphone capture. The playback engine is started
+    /// at session-start time, so listening always works; toggleMic only
+    /// flips capture on/off (and lazily requests mic permission on first
+    /// enable).
     func toggleMic() async {
-        guard let voice = voiceChannel else {
+        guard let voice = voiceChannel, let cap = micCapture else {
             showAlertMessage(
                 title: "Voice Not Ready",
                 message: "Voice is only available during an active share."
@@ -383,20 +389,16 @@ class AppState: ObservableObject {
             return
         }
         if isMicOn {
-            micCapture?.stop()
+            cap.disableCapture()
             voice.isMuted = true
             isMicOn = false
             return
         }
         do {
-            if micCapture == nil {
-                micCapture = MicCapture(channel: voice)
-            }
-            try await micCapture?.start()
+            try await cap.enableCapture()
             voice.isMuted = false
             isMicOn = true
         } catch {
-            micCapture = nil
             showAlertMessage(
                 title: "Microphone Unavailable",
                 message: "Tailscreen could not start the microphone: \(error.localizedDescription). Check System Settings → Privacy & Security → Microphone."
@@ -435,6 +437,9 @@ class AppState: ObservableObject {
                         c.onAudioReceived = { [weak voice] packet in
                             voice?.receive(packet)
                         }
+                        let cap = MicCapture(channel: voice)
+                        try cap.startPlayback()
+                        self.micCapture = cap
                     } catch {
                         self.showAlertMessage(
                             title: "Voice Init Failed",

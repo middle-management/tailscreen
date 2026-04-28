@@ -40,6 +40,9 @@ final class VoiceChannel: @unchecked Sendable {
     private let depacketizer = AudioRTPDepacketizer()
     private var decoders: [UInt32: AACDecoder] = [:]
     private var brokenSSRCs: Set<UInt32> = []
+    private var sentCount: Int = 0
+    private var recvCount: Int = 0
+    private var playedCount: Int = 0
 
     init(localSSRC: UInt32, onSend: @escaping (Data) -> Void) throws {
         self.localSSRC = localSSRC
@@ -56,6 +59,10 @@ final class VoiceChannel: @unchecked Sendable {
             do {
                 guard let au = try self.encoder.encode(pcm: pcm) else { return }
                 let packet = self.packetizer.packetize(au: au)
+                self.sentCount += 1
+                if self.sentCount == 1 || self.sentCount % 100 == 0 {
+                    print("VoiceChannel[ssrc=\(self.localSSRC)]: sent #\(self.sentCount) (\(packet.count) bytes)")
+                }
                 self.onSend(packet)
             } catch {
                 print("VoiceChannel: encode failed: \(error)")
@@ -68,6 +75,10 @@ final class VoiceChannel: @unchecked Sendable {
     func receive(_ packet: Data) {
         queue.async {
             guard let parsed = self.depacketizer.unpack(packet) else { return }
+            self.recvCount += 1
+            if self.recvCount == 1 || self.recvCount % 100 == 0 {
+                print("VoiceChannel[ssrc=\(self.localSSRC)]: recv #\(self.recvCount) from ssrc=\(parsed.ssrc) (\(parsed.au.count) bytes)")
+            }
             // Drop our own loopback if the network somehow returned it.
             guard parsed.ssrc != self.localSSRC else { return }
             guard !self.brokenSSRCs.contains(parsed.ssrc) else { return }
@@ -75,6 +86,10 @@ final class VoiceChannel: @unchecked Sendable {
                 let decoder = try self.ensureDecoder(for: parsed.ssrc)
                 let samples = try decoder.decode(au: parsed.au)
                 if !samples.isEmpty {
+                    self.playedCount += 1
+                    if self.playedCount == 1 || self.playedCount % 100 == 0 {
+                        print("VoiceChannel[ssrc=\(self.localSSRC)]: decoded #\(self.playedCount) from ssrc=\(parsed.ssrc) (\(samples.count) samples, mixedPCM=\(self.onMixedPCM != nil ? "wired" : "nil"))")
+                    }
                     self.onMixedPCM?(samples)
                 }
             } catch {
@@ -230,7 +245,8 @@ final class MicCapture {
     private let mixer: AVAudioMixerNode
     private let outputFormat: AVAudioFormat
     private var tapBuffer: TapBuffer?
-    private var isRunning = false
+    private var isPlaying = false
+    private(set) var isCapturing = false
 
     init(channel: VoiceChannel) {
         self.channel = channel
@@ -243,11 +259,6 @@ final class MicCapture {
             interleaved: false
         )!
 
-        // Force the input + output node onto the VoiceProcessingIO unit
-        // so AEC works without us building it ourselves.
-        try? engine.inputNode.setVoiceProcessingEnabled(true)
-        try? engine.outputNode.setVoiceProcessingEnabled(true)
-
         // Pipe decoded PCM (per-SSRC mix already done by VoiceChannel)
         // into a player node so the user hears it.
         channel.onMixedPCM = { [weak self] samples in
@@ -255,10 +266,27 @@ final class MicCapture {
         }
     }
 
-    /// Start the engine (and request permission if not already granted).
-    /// Throws if permission is denied or the engine fails to start.
-    func start() async throws {
-        guard !isRunning else { return }
+    /// Start the playback half of the engine. Builds the player → mixer →
+    /// output graph and starts the engine without touching the input node,
+    /// so listening works without prompting for microphone permission.
+    func startPlayback() throws {
+        guard !isPlaying else { return }
+        let player = AVAudioPlayerNode()
+        engine.attach(player)
+        engine.connect(player, to: mixer, format: outputFormat)
+        playerNodes.append(player)
+        try engine.start()
+        player.play()
+        isPlaying = true
+        print("MicCapture: playback engine started (output-only, no mic).")
+    }
+
+    /// Enable microphone capture. Requests permission, restarts the engine
+    /// with VoiceProcessingIO enabled (for hardware AEC), and installs the
+    /// input tap. Throws if permission is denied or the engine reconfigure
+    /// fails.
+    func enableCapture() async throws {
+        guard !isCapturing else { return }
         let granted = await Self.requestMicPermission()
         guard granted else {
             throw NSError(
@@ -268,13 +296,16 @@ final class MicCapture {
             )
         }
 
-        let player = AVAudioPlayerNode()
-        engine.attach(player)
-        engine.connect(player, to: mixer, format: outputFormat)
-        playerNodes.append(player)
+        // setVoiceProcessingEnabled requires the engine to be stopped.
+        if isPlaying { engine.stop() }
+        try? engine.inputNode.setVoiceProcessingEnabled(true)
+        try? engine.outputNode.setVoiceProcessingEnabled(true)
 
         let inputFormat = engine.inputNode.outputFormat(forBus: 0)
         guard let buffer = TapBuffer(channel: channel, sourceFormat: inputFormat) else {
+            // Try to restart playback even if capture setup fails.
+            try? engine.start()
+            for player in playerNodes { player.play() }
             throw NSError(
                 domain: "Tailscreen.VoiceChannel",
                 code: 2,
@@ -282,22 +313,36 @@ final class MicCapture {
             )
         }
         self.tapBuffer = buffer
-        print("MicCapture: input format \(inputFormat) → 48 kHz mono Float32 (converter=\(buffer.usesConverter))")
+        print("MicCapture: enabling capture, input \(inputFormat) → 48 kHz mono Float32 (converter=\(buffer.usesConverter))")
         Self.installTap(on: engine.inputNode, format: inputFormat, buffer: buffer)
 
         try engine.start()
-        player.play()
-        isRunning = true
+        for player in playerNodes { player.play() }
+        isCapturing = true
+    }
+
+    /// Disable microphone capture. Removes the tap; engine stays running
+    /// for playback.
+    func disableCapture() {
+        guard isCapturing else { return }
+        engine.inputNode.removeTap(onBus: 0)
+        tapBuffer = nil
+        isCapturing = false
+        print("MicCapture: capture disabled.")
     }
 
     func stop() {
-        guard isRunning else { return }
-        engine.inputNode.removeTap(onBus: 0)
-        for node in playerNodes { node.stop() }
-        engine.stop()
-        playerNodes.removeAll()
-        tapBuffer = nil
-        isRunning = false
+        if isCapturing {
+            engine.inputNode.removeTap(onBus: 0)
+            tapBuffer = nil
+            isCapturing = false
+        }
+        if isPlaying {
+            for node in playerNodes { node.stop() }
+            engine.stop()
+            playerNodes.removeAll()
+            isPlaying = false
+        }
     }
 
     /// Install the input tap from a nonisolated context so the closure
@@ -320,7 +365,7 @@ final class MicCapture {
     }
 
     private func scheduleSamples(_ samples: [Float]) {
-        guard isRunning, let player = playerNodes.first else { return }
+        guard isPlaying, let player = playerNodes.first else { return }
         guard let buffer = AVAudioPCMBuffer(
             pcmFormat: outputFormat,
             frameCapacity: AVAudioFrameCount(samples.count)
