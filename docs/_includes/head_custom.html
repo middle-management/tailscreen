@@ -1,2 +1,13 @@
 <link rel="icon" type="image/svg+xml" href="{{ '/assets/favicon.svg' | relative_url }}">
 <link rel="mask-icon" href="{{ '/assets/favicon.svg' | relative_url }}" color="#000000">
+<script>
+  (function() {
+    var media = window.matchMedia('(prefers-color-scheme: dark)');
+    function sync() {
+      if (typeof jtd === 'undefined' || !jtd.setTheme) return;
+      jtd.setTheme(media.matches ? 'dark' : 'light');
+    }
+    document.addEventListener('DOMContentLoaded', sync);
+    media.addEventListener('change', sync);
+  })();
+</script>
