@@ -47,6 +47,18 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     private var depacketizer = MultiCodecDepacketizer()
     private var isConnected = false
     private var isDisconnecting = false
+
+    /// Audio SSRC the sharer assigned via HELLO_ACK. nil until the ack
+    /// arrives; the VoiceChannel waits on this before sending mic audio.
+    private(set) var assignedAudioSSRC: UInt32?
+
+    /// Fires when the sharer assigns us an audio SSRC. AppState uses this
+    /// to lazily build the local VoiceChannel.
+    var onAudioSSRCAssigned: ((UInt32) -> Void)?
+
+    /// Fires on every inbound audio RTP packet (PT=98). AppState pipes
+    /// this into VoiceChannel.receive(_:).
+    var onAudioReceived: ((Data) -> Void)?
     private let logger: TSLogger
     private var receiveTask: Task<Void, Never>?
     private var keepaliveTask: Task<Void, Never>?
@@ -84,6 +96,13 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         } catch {
             print("Client: sendAnnotationOp failed: \(error)")
         }
+    }
+
+    /// Send one outbound audio RTP packet up to the sharer. VoiceChannel
+    /// calls this from its onSend closure.
+    func sendAudioRTP(_ packet: Data) async {
+        guard isConnected, let pl = packetListener, let addr = serverAddr else { return }
+        try? await pl.send(packet, to: addr)
     }
 
     func connect(
@@ -218,9 +237,23 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                 lastDataNs = DispatchTime.now().uptimeNanoseconds
                 packetsReceived += 1
 
-                // Server shouldn't be sending us control bytes, but ignore
-                // them cleanly if it does. Real RTP has V=2 → 0x80–0xBF.
-                guard !ScreenShareControlMessage.looksLikeControl(datagram) else { continue }
+                // Control bytes: handle HELLO_ACK (assigns our audio SSRC);
+                // other control messages (should not arrive) are ignored.
+                if ScreenShareControlMessage.looksLikeControl(datagram) {
+                    if let ssrc = ScreenShareControlMessage.decodeHelloAck(datagram) {
+                        if assignedAudioSSRC != ssrc {
+                            assignedAudioSSRC = ssrc
+                            onAudioSSRCAssigned?(ssrc)
+                        }
+                    }
+                    continue
+                }
+                // Audio RTP (PT=98): route to VoiceChannel, skip video path.
+                if let (header, _) = RTPHeader.decode(from: datagram),
+                   header.payloadType == RTPHeader.aacPayloadType {
+                    onAudioReceived?(datagram)
+                    continue
+                }
 
                 if let au = depacketizer.ingest(datagram) {
                     framesDelivered += 1
