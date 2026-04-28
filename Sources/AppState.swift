@@ -412,11 +412,12 @@ class AppState: ObservableObject {
         do {
             let c = TailscaleScreenShareClient(renderer: renderer)
             client = c
-            // Reuse the AppState-owned tsnet node so connecting doesn't
-            // spin up a third machine + browser sign-in flow.
-            let sharedNode = try await getOrCreateNode()
-            try await c.connect(to: host, port: 7447, existingNode: sharedNode)
 
+            // Install the audio callback BEFORE connecting. HELLO_ACK can
+            // arrive on the receive loop the moment connect() returns (or
+            // even slightly before, if the loop is scheduled fast); a
+            // callback installed afterwards races and may miss the only
+            // assignment the client ever surfaces.
             c.onAudioSSRCAssigned = { [weak self, weak c] ssrc in
                 Task { @MainActor [weak self, weak c] in
                     guard let self = self, let c = c else { return }
@@ -442,6 +443,11 @@ class AppState: ObservableObject {
                     }
                 }
             }
+
+            // Reuse the AppState-owned tsnet node so connecting doesn't
+            // spin up a third machine + browser sign-in flow.
+            let sharedNode = try await getOrCreateNode()
+            try await c.connect(to: host, port: 7447, existingNode: sharedNode)
 
             isConnected = true
             connectedHostname = host
