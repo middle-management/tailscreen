@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 
 /// Builds an NSToolbar for the viewer window so users can pick a drawing
 /// tool / undo / clear without going to the menu bar. All actions route
@@ -22,14 +23,32 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
 
     let toolbar: NSToolbar
 
-    override init() {
+    private weak var appState: AppState?
+    private weak var micToolbarItem: NSToolbarItem?
+    private var micCancellable: AnyCancellable?
+
+    init(appState: AppState? = nil) {
         let tb = NSToolbar(identifier: Self.identifier)
         tb.displayMode = .iconOnly
         tb.allowsUserCustomization = false
         tb.autosavesConfiguration = false
         self.toolbar = tb
+        self.appState = appState
         super.init()
         tb.delegate = self
+
+        if let appState = appState {
+            micCancellable = appState.$isMicOn
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] isOn in
+                    self?.updateMicIcon(isOn: isOn)
+                }
+        }
+    }
+
+    private func updateMicIcon(isOn: Bool) {
+        let symbol = isOn ? "mic.fill" : "mic.slash"
+        micToolbarItem?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
     }
 
     // MARK: - NSToolbarDelegate
@@ -63,12 +82,14 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
                 action: #selector(ViewerCommands.clearAllAnnotations(_:))
             )
         case Self.microphone:
-            return makeButton(
+            let item = makeButton(
                 id: itemIdentifier,
                 label: "Mic",
-                symbol: "mic.slash",
+                symbol: appState?.isMicOn == true ? "mic.fill" : "mic.slash",
                 action: #selector(ViewerCommands.toggleMicrophone(_:))
             )
+            micToolbarItem = item
+            return item
         default:
             return nil
         }

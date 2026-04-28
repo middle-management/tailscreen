@@ -138,6 +138,8 @@ class AppState: ObservableObject {
                 await self?.toggleMic()
             }
         }
+
+        ViewerCommands.shared.appState = self
     }
 
     private var cancellables = Set<AnyCancellable>()
@@ -239,7 +241,10 @@ class AppState: ObservableObject {
                         voice?.receive(packet)
                     }
                 } catch {
-                    print("AppState: failed to create VoiceChannel for sharer: \(error)")
+                    showAlertMessage(
+                        title: "Voice Init Failed",
+                        message: "Microphone capture could not be initialized: \(error.localizedDescription). Voice will be unavailable for this share session."
+                    )
                 }
 
                 do {
@@ -415,6 +420,7 @@ class AppState: ObservableObject {
             c.onAudioSSRCAssigned = { [weak self, weak c] ssrc in
                 Task { @MainActor [weak self, weak c] in
                     guard let self = self, let c = c else { return }
+                    guard self.voiceChannel == nil else { return }
                     self.micCapture?.stop()
                     self.micCapture = nil
                     self.voiceChannel?.reset()
@@ -489,7 +495,7 @@ class AppState: ObservableObject {
         // Drawing toolbar: pen / line / arrow / rectangle / oval +
         // undo + clear. Items target ViewerCommands.shared, same wiring
         // the menubar's Tools/Edit menus use.
-        let toolbar = ViewerToolbar()
+        let toolbar = ViewerToolbar(appState: self)
         win.toolbar = toolbar.toolbar
         win.toolbarStyle = .unified
         self.viewerToolbar = toolbar

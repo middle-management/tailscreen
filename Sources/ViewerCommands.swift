@@ -13,6 +13,9 @@ final class ViewerCommands: NSObject {
     /// window becomes/resigns key.
     weak var activeOverlay: DrawingOverlayView?
 
+    /// Set by AppState during init so menu validation can read mic state.
+    weak var appState: AppState?
+
     // MARK: - Tools
 
     @objc func selectPenTool(_ sender: Any?) { setTool(.pen) }
@@ -90,7 +93,10 @@ extension ViewerCommands: NSMenuItemValidation {
         case #selector(disconnectViewer(_:)):
             return true
         case #selector(toggleMicrophone(_:)):
-            return true
+            let isOn = appState?.isMicOn ?? false
+            menuItem.state = isOn ? .on : .off
+            menuItem.title = isOn ? "Mute Microphone" : "Unmute Microphone"
+            return appState != nil
         default:
             return true
         }

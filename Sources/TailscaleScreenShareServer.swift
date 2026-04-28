@@ -450,10 +450,14 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
                 state[addr] = existing
                 return (false, state.count)
             }
+            var newAudioSSRC: UInt32
+            repeat {
+                newAudioSSRC = UInt32.random(in: 1...UInt32.max)
+            } while state.values.contains(where: { $0.audioSSRC == newAudioSSRC })
             let v = Viewer(
                 addr: addr,
                 ssrc: UInt32.random(in: 1...UInt32.max),
-                audioSSRC: UInt32.random(in: 1...UInt32.max),
+                audioSSRC: newAudioSSRC,
                 nextSequence: UInt16.random(in: 0...UInt16.max),
                 lastSeenNs: now
             )
