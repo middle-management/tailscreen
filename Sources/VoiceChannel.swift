@@ -60,7 +60,7 @@ final class VoiceChannel: @unchecked Sendable {
                 guard let au = try self.encoder.encode(pcm: pcm) else { return }
                 let packet = self.packetizer.packetize(au: au)
                 self.sentCount += 1
-                if self.sentCount == 1 || self.sentCount % 100 == 0 {
+                if self.sentCount == 1 || self.sentCount % 50 == 0 {
                     print("VoiceChannel[ssrc=\(self.localSSRC)]: sent #\(self.sentCount) (\(packet.count) bytes)")
                 }
                 self.onSend(packet)
@@ -76,7 +76,7 @@ final class VoiceChannel: @unchecked Sendable {
         queue.async {
             guard let parsed = self.depacketizer.unpack(packet) else { return }
             self.recvCount += 1
-            if self.recvCount == 1 || self.recvCount % 100 == 0 {
+            if self.recvCount == 1 || self.recvCount % 50 == 0 {
                 print("VoiceChannel[ssrc=\(self.localSSRC)]: recv #\(self.recvCount) from ssrc=\(parsed.ssrc) (\(parsed.au.count) bytes)")
             }
             // Drop our own loopback if the network somehow returned it.
@@ -87,7 +87,7 @@ final class VoiceChannel: @unchecked Sendable {
                 let samples = try decoder.decode(au: parsed.au)
                 if !samples.isEmpty {
                     self.playedCount += 1
-                    if self.playedCount == 1 || self.playedCount % 100 == 0 {
+                    if self.playedCount == 1 || self.playedCount % 50 == 0 {
                         print("VoiceChannel[ssrc=\(self.localSSRC)]: decoded #\(self.playedCount) from ssrc=\(parsed.ssrc) (\(samples.count) samples, mixedPCM=\(self.onMixedPCM != nil ? "wired" : "nil"))")
                     }
                     self.onMixedPCM?(samples)
@@ -364,16 +364,28 @@ final class MicCapture {
         }
     }
 
+    private var scheduledCount: Int = 0
+
     private func scheduleSamples(_ samples: [Float]) {
-        guard isPlaying, let player = playerNodes.first else { return }
+        guard isPlaying, let player = playerNodes.first else {
+            print("MicCapture: scheduleSamples drop — isPlaying=\(isPlaying), players=\(playerNodes.count)")
+            return
+        }
         guard let buffer = AVAudioPCMBuffer(
             pcmFormat: outputFormat,
             frameCapacity: AVAudioFrameCount(samples.count)
         ) else { return }
         buffer.frameLength = AVAudioFrameCount(samples.count)
         guard let dst = buffer.floatChannelData?[0] else { return }
+        var peak: Float = 0
         for (i, sample) in samples.enumerated() {
             dst[i] = sample
+            let abs = sample < 0 ? -sample : sample
+            if abs > peak { peak = abs }
+        }
+        scheduledCount += 1
+        if scheduledCount == 1 || scheduledCount % 50 == 0 {
+            print("MicCapture: scheduled #\(scheduledCount) (\(samples.count) frames, peak=\(peak), playerPlaying=\(player.isPlaying), engineRunning=\(engine.isRunning))")
         }
         player.scheduleBuffer(buffer, completionHandler: nil)
     }
