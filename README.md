@@ -122,6 +122,20 @@ Each child gets `TAILSCREEN_INSTANCE=<i>`, which suffixes the Tailscale state di
 
 This setup tests Tailscale integration and peer discovery. It does **not** test NAT traversal — both processes share the same network stack. For that, use two actual machines.
 
+### Voice (manual)
+
+Two-way voice rides on the same UDP socket as video, gated to active share sessions. Both ends are muted by default — unmute via the toolbar mic button (viewer) or **File → Microphone** (sharer). The first unmute prompts for microphone access; macOS uses VoiceProcessingIO for built-in echo cancellation.
+
+To verify:
+
+1. Start two instances locally: `./test-local.sh 2`.
+2. Sharer: open the menubar → **Share my screen**.
+3. Viewer (other instance): open the menubar → connect to the sharer.
+4. On the viewer, click the toolbar mic icon. Grant microphone access on the prompt.
+5. Speak. The sharer should hear you (use headphones to keep AEC honest).
+6. On the sharer, open **File → Microphone**. Speak. The viewer should hear you.
+7. Add a third instance (`./test-local.sh 3`) and have all three speak in turn — each should hear the other two without echo. The sharer relays audio between viewers without transcoding (SFU-style); each receiver decodes per-SSRC and mixes locally.
+
 ## Network protocol
 
 One port — `7447` — on **both TCP and UDP**. Everything rides over Tailscale's WireGuard tunnel.
