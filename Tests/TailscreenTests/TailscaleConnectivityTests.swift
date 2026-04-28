@@ -1,5 +1,6 @@
 import XCTest
 import Foundation
+import os
 @testable import Tailscreen
 import TailscaleKit
 
@@ -148,6 +149,92 @@ final class TailscaleConnectivityTests: XCTestCase {
         await listener.close()
         try await serverNode.close()
         try await clientNode.close()
+    }
+
+    func testVoiceRoundtripBetweenTwoNodes() async throws {
+        let env = ProcessInfo.processInfo.environment
+        let authKey = env["TAILSCREEN_TS_AUTHKEY"] ?? env["TS_AUTHKEY"]
+        try XCTSkipIf(
+            authKey == nil || authKey?.isEmpty == true,
+            "Set TAILSCREEN_TS_AUTHKEY (or run scripts/e2e-test.sh for local headscale)."
+        )
+        // TailscaleScreenShareServer/Client hardcode kDefaultControlURL when
+        // they create their own node; a local-headscale run sets
+        // TAILSCREEN_TS_CONTROL_URL to http://localhost:8080, which they
+        // would ignore. Skip in that case rather than silently connect to the
+        // wrong control plane.
+        let controlURL = env["TAILSCREEN_TS_CONTROL_URL"] ?? env["TS_CONTROL_URL"] ?? kDefaultControlURL
+        try XCTSkipIf(
+            controlURL != kDefaultControlURL,
+            "TailscaleScreenShareServer/Client don't accept a controlURL parameter; skipping under local-headscale."
+        )
+
+        let server = TailscaleScreenShareServer()
+        let receivedAudioPackets = OSAllocatedUnfairLock<Int>(initialState: 0)
+        server.onAudioReceived = { _ in
+            receivedAudioPackets.withLock { $0 += 1 }
+        }
+        let serverHostname = "voice-test-server-\(UUID().uuidString.prefix(6))"
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tailscreen-voice-test-\(UUID().uuidString)")
+        let serverDir = tmp.appendingPathComponent("server").path
+        let clientDir = tmp.appendingPathComponent("client").path
+        try FileManager.default.createDirectory(atPath: serverDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: clientDir, withIntermediateDirectories: true)
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: tmp)
+        }
+
+        try await server.start(
+            hostname: serverHostname,
+            authKey: authKey,
+            path: serverDir
+        )
+        addTeardownBlock { Task { await server.stop() } }
+
+        let ips = try await server.getIPAddresses()
+        guard let serverIP = ips.ip4 ?? ips.ip6 else {
+            XCTFail("server has no tailnet IP")
+            return
+        }
+
+        // Build a viewer-side client.
+        let renderer = await MainActor.run { MetalViewerRenderer() }
+        let client = TailscaleScreenShareClient(renderer: renderer)
+
+        let assigned = expectation(description: "HELLO_ACK assigned")
+        client.onAudioSSRCAssigned = { _ in assigned.fulfill() }
+        try await client.connect(
+            to: serverIP,
+            port: 7447,
+            authKey: authKey,
+            path: clientDir
+        )
+        await fulfillment(of: [assigned], timeout: 30)
+        addTeardownBlock { Task { await client.disconnect() } }
+
+        guard let assignedSSRC = client.assignedAudioSSRC else {
+            XCTFail("client did not receive an audio SSRC")
+            return
+        }
+
+        // Send 10 frames of synthetic PCM audio from the viewer.
+        let voice = try VoiceChannel(localSSRC: assignedSSRC) { packet in
+            Task { await client.sendAudioRTP(packet) }
+        }
+        voice.isMuted = false
+        let pcm = (0..<1024).map { Float(sin(2 * .pi * 440 * Double($0) / 48_000)) }
+        for _ in 0..<10 { voice.processOutboundFrame(pcm) }
+
+        // Wait for packets to flow through real tsnet transport.
+        try await Task.sleep(nanoseconds: 1_500_000_000)
+
+        let count = receivedAudioPackets.withLock { $0 }
+        XCTAssertGreaterThan(count, 0, "server should receive audio RTP from viewer")
+
+        // Cleanup.
+        await client.disconnect()
+        await server.stop()
     }
 }
 
