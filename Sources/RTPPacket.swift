@@ -44,21 +44,14 @@ enum ScreenShareControlMessage: UInt8 {
     static func encodeHelloAck(ssrc: UInt32) -> Data {
         var data = Data(capacity: 5)
         data.append(helloAck.rawValue)
-        data.append(UInt8((ssrc >> 24) & 0xFF))
-        data.append(UInt8((ssrc >> 16) & 0xFF))
-        data.append(UInt8((ssrc >> 8) & 0xFF))
-        data.append(UInt8(ssrc & 0xFF))
+        data.appendBE(ssrc)
         return data
     }
 
     /// Parse a HELLO_ACK datagram. Returns the SSRC, or nil if malformed.
     static func decodeHelloAck(_ data: Data) -> UInt32? {
         guard data.count == 5, data[data.startIndex] == helloAck.rawValue else { return nil }
-        var ssrc: UInt32 = 0
-        for i in 1...4 {
-            ssrc = (ssrc << 8) | UInt32(data[data.startIndex + i])
-        }
-        return ssrc
+        return data.readBE(UInt32.self, at: data.startIndex + 1)
     }
 }
 
@@ -73,7 +66,7 @@ struct RTPHeader {
     /// Dynamic payload type for AAC-LC voice. RFC 3640 reserves no fixed
     /// number for AAC; 98 follows H.264 (96) + HEVC (97).
     static let aacPayloadType: UInt8 = 98
-    /// Audio sample-rate-derived RTP clock for AAC at 48 kHz mono.
+    /// RTP clock rate for AAC audio at 48 kHz.
     static let audioClockHz: UInt32 = 48_000
     static let clockHz: UInt32 = 90_000
 
