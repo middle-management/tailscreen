@@ -22,7 +22,7 @@ test: tailscale
 # double-resumed continuations, callback ordering bugs that compile fine
 # under Swift 6 strict concurrency. Slower (~3x), so kept off `make test`.
 test-tsan: tailscale
-	swift test -Xswiftc -sanitize=thread
+	swift test --sanitize=thread
 
 # SwiftLint over Sources/Tests/Examples. Install once: `brew install swiftlint`.
 # Existing violations are frozen in .swiftlint-baseline.json; only NEW
