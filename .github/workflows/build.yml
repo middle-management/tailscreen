@@ -44,3 +44,31 @@ jobs:
 
       - name: Run tests
         run: make test
+
+  lint:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install SwiftLint
+        run: brew install swiftlint
+      - name: Run SwiftLint (baseline-gated)
+        run: make lint
+
+  test-tsan:
+    # Thread Sanitizer build. Catches lock/continuation races that
+    # strict-concurrency lets through. Allowed to fail (TSan can flag
+    # known-OK patterns in third-party C code) — informational only.
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+          cache-dependency-path: TailscaleKitPackage/upstream/libtailscale/go.sum
+      - name: Build libtailscale
+        run: make tailscale
+      - name: Run tests under TSan
+        run: make test-tsan

@@ -1,4 +1,4 @@
-.PHONY: build run clean release install tailscale test e2e-up e2e-down test-e2e icon
+.PHONY: build run clean release install tailscale test test-tsan lint lint-baseline e2e-up e2e-down test-e2e icon
 
 # Lets SwiftPM's systemLibrary target find libtailscale.pc at build time,
 # which in turn resolves the `-L` flag for libtailscale.a.
@@ -17,6 +17,25 @@ run: tailscale
 
 test: tailscale
 	swift test
+
+# Thread sanitizer build of the test suite. Catches data races on locks,
+# double-resumed continuations, callback ordering bugs that compile fine
+# under Swift 6 strict concurrency. Slower (~3x), so kept off `make test`.
+test-tsan: tailscale
+	swift test -Xswiftc -sanitize=thread
+
+# SwiftLint over Sources/Tests/Examples. Install once: `brew install swiftlint`.
+# Existing violations are frozen in .swiftlint-baseline.json; only NEW
+# warnings/errors fail the run. Refresh baseline via `make lint-baseline`
+# after a real cleanup pass.
+lint:
+	@command -v swiftlint >/dev/null 2>&1 || { echo "swiftlint missing — brew install swiftlint"; exit 1; }
+	@swiftlint lint --baseline .swiftlint-baseline.json --strict --quiet
+
+lint-baseline:
+	@command -v swiftlint >/dev/null 2>&1 || { echo "swiftlint missing — brew install swiftlint"; exit 1; }
+	@swiftlint lint --write-baseline .swiftlint-baseline.json --quiet
+	@echo "Wrote .swiftlint-baseline.json"
 
 release: tailscale
 	swift build -c release
