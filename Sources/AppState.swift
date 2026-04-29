@@ -20,6 +20,12 @@ class AppState: ObservableObject {
     /// accepting input. The panel itself is only created while sharing.
     @Published var isSharerOverlayVisible = false
 
+    /// Snapshot of viewers currently connected to our screen-share server.
+    /// Empty when not sharing or when nobody has joined yet. Populated from
+    /// `TailscaleScreenShareServer.onViewersChanged`; the SharingCard reads
+    /// this to render "N watching: …" with friendly hostnames.
+    @Published var currentViewers: [ViewerInfo] = []
+
     private var server: TailscaleScreenShareServer?
     private var client: TailscaleScreenShareClient?
     private var node: TailscaleNode?
@@ -192,6 +198,12 @@ class AppState: ObservableObject {
                     }
                 }
 
+                srv.onViewersChanged = { [weak self] viewers in
+                    Task { @MainActor [weak self] in
+                        self?.currentViewers = viewers
+                    }
+                }
+
                 do {
                     // Reuse the AppState-owned tsnet node so the screen
                     // share doesn't spin up a second machine that needs
@@ -254,6 +266,7 @@ class AppState: ObservableObject {
         await server?.stop()
         server = nil
         previewImage = nil
+        currentViewers = []
         tailscaleIPs = []
 
         // Update metadata

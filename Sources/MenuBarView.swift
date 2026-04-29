@@ -172,6 +172,8 @@ private struct SharingCard: View {
                 Spacer(minLength: 0)
             }
 
+            ViewersList(viewers: appState.currentViewers)
+
             Group {
                 if let image = appState.previewImage {
                     Image(nsImage: image)
@@ -223,6 +225,35 @@ private struct SharingCard: View {
         )
         .padding(.horizontal, 8)
         .padding(.bottom, 6)
+    }
+}
+
+/// Single-line viewer roster shown inside the SharingCard. Hostnames come
+/// from the netmap lookup in `TailscaleScreenShareServer.resolveHostname`;
+/// rows that haven't resolved yet (or whose peer isn't in the netmap) fall
+/// back to the raw Tailscale IP. Truncates to keep the SharingCard
+/// vertical layout stable as viewers come and go.
+private struct ViewersList: View {
+    let viewers: [ViewerInfo]
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: viewers.isEmpty ? "person" : "person.2.fill")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            Text(label)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var label: String {
+        if viewers.isEmpty { return "No viewers yet" }
+        let names = viewers.map { $0.hostname ?? $0.tailscaleIP }
+        return "\(viewers.count) watching: " + names.joined(separator: ", ")
     }
 }
 
