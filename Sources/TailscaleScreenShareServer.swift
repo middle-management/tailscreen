@@ -202,7 +202,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         // screen-recording daemon during startup). Retry the whole capture
         // bring-up a couple of times before surfacing the failure — in
         // practice the second attempt almost always succeeds.
-        let maxAttempts = 3
+        let maxAttempts = 4
         for attempt in 1...maxAttempts {
             let capture = ScreenCapture()
             capture.onFrameCaptured = { [weak self] pixelBuffer in
@@ -228,10 +228,13 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
                     throw error
                 }
                 print("ScreenCapture start attempt \(attempt) failed: \(error). Retrying…")
-                // Linear backoff — long enough for ScreenCaptureKit's
-                // daemon connection to settle, short enough that the user
-                // sees the share come up within ~half a second.
-                try? await Task.sleep(for: .milliseconds(200 * attempt))
+                // Exponential backoff. "application connection being
+                // interrupted" is replayd's XPC link dropping during
+                // bring-up; sub-second waits land before the daemon has
+                // recovered and we just trigger the same failure again.
+                // 750ms / 1.5s / 3s gives replayd room to come back without
+                // making the user wait forever.
+                try? await Task.sleep(for: .milliseconds(750 * attempt))
             }
         }
     }

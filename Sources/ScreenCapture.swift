@@ -3,6 +3,7 @@ import AppKit
 import CoreGraphics
 import CoreMedia
 import CoreVideo
+import os
 
 /// Serializable summary of an SCDisplay so AppState can expose a display
 /// picker in the menu without exposing ScreenCaptureKit types to the UI.
@@ -21,6 +22,12 @@ class ScreenCapture: NSObject {
     /// Fires when the SCStream terminates on its own — e.g. user clicked the
     /// menubar "Stop Screen Recording" item, or the stream hit an error.
     var onStreamStopped: ((Error?) -> Void)?
+
+    /// Set while `start()` is awaiting `startCapture`. SCStream sometimes
+    /// fires `didStopWithError` synchronously without ever resolving the
+    /// startCapture completion handler, so we tee the delegate error into
+    /// this box to fail fast instead of waiting for the watchdog.
+    private let pendingStart = OSAllocatedUnfairLock<ContinuationBox?>(initialState: nil)
 
     static func requestPermission() async throws {
         // Request permission by attempting to get shareable content
@@ -127,14 +134,24 @@ class ScreenCapture: NSObject {
         // a deterministic exit in either direction.
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             let box = ContinuationBox(cont)
+            let pendingLock = pendingStart
+            pendingLock.withLock { $0 = box }
             stream.startCapture { error in
+                pendingLock.withLock { $0 = nil }
                 if let error = error {
                     box.resume(throwing: error)
                 } else {
                     box.resume()
                 }
             }
-            DispatchQueue.global().asyncAfter(deadline: .now() + 5) {
+            // Cold-start watchdog. Apple's startCapture has been observed
+            // to never resolve when replayd's XPC link drops mid-handshake;
+            // the SCStreamDelegate's didStopWithError fires (handled below)
+            // and otherwise this 10s timer is the deterministic exit. 10s
+            // covers a slow first-run permission grant without leaving the
+            // user staring forever.
+            DispatchQueue.global().asyncAfter(deadline: .now() + 10) {
+                pendingLock.withLock { $0 = nil }
                 box.resume(throwing: ScreenCaptureError.startTimeout)
             }
         }
@@ -222,6 +239,16 @@ class ScreenCapture: NSObject {
 extension ScreenCapture: SCStreamDelegate {
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         print("Stream stopped with error: \(error.localizedDescription)")
+        // If this fires while `start()` is still awaiting startCapture, fail
+        // the start immediately rather than letting the 10s watchdog burn —
+        // replayd is telling us the bring-up isn't going to complete.
+        let pending = pendingStart.withLock { box -> ContinuationBox? in
+            let b = box; box = nil; return b
+        }
+        if let pending {
+            pending.resume(throwing: error)
+            return
+        }
         onStreamStopped?(error)
     }
 }
