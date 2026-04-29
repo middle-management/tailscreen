@@ -12,7 +12,7 @@ Lightweight screen sharing between Macs, for the times when spinning up a full c
 
 Tailscreen is a tiny macOS menubar app that streams one Mac's screen to another Mac over [Tailscale](https://tailscale.com/). It uses ScreenCaptureKit to grab pixels, VideoToolbox to encode HEVC (with H.264 as a fallback for older hardware), and Tailscale's WireGuard tunnel to move bytes. There is no server, no port to forward, and no account to create beyond Tailscale itself.
 
-You hit "Start Sharing", the other person hits "Browse Shares", they click your machine, a window opens. That's the whole thing.
+You click your display, the other person clicks your machine in their device list, a window opens. That's the whole thing.
 
 ## What you get
 
@@ -86,26 +86,28 @@ swift run                       # or: make run
 
 ## Use it
 
-### Sharing
+### First launch
 
 1. Click the 📺 in the menubar.
-2. **Start Sharing**.
-3. Approve Screen Recording when macOS prompts you, then quit and relaunch — macOS doesn't push the new permission to a running process.
-4. **Show Tailscale Info** prints the hostname and 100.x.x.x to share with whoever's connecting.
+2. **Sign in with Tailscale** — opens a browser tab to authenticate the ephemeral tsnet node against your tailnet.
+
+You stay signed in across restarts. The identity footer at the bottom of the panel shows who you are; click it to sign out.
+
+### Sharing
+
+1. Click the 📺.
+2. Under **SHARE A DISPLAY**, click the display you want to share. On the very first share, macOS will ask for Screen Recording permission — approve it, then quit and relaunch (macOS doesn't push the new permission to a running process).
+3. The panel switches to a green "Sharing your screen" card with a live thumbnail. **Stop Sharing** ends the session; **Draw** opens the annotation overlay.
 
 ### Viewing
 
-The good way:
-
 1. Click the 📺.
-2. **Browse Shares...**.
-3. Tailscreen probes your tailnet and lists shares. Click **Connect**.
+2. Tailscreen auto-populates the **DEVICES** list with peers on your tailnet (refresh with the ⟳ button). Online peers show a green dot.
+3. Click a device row to connect. A viewer window opens.
 
-The other way: **Connect to...** and type a Tailscale hostname (`macbook-pro`) or IP (`100.x.x.x`).
+The panel switches to a "Viewing *hostname*" card. **Disconnect** there or close the window to end the session.
 
-### Stopping
-
-**Stop Sharing** on the sharer side; **Disconnect** or close the window on the viewer. Ephemeral tsnet nodes get torn down automatically — nothing to clean up in the Tailscale admin console.
+Ephemeral tsnet nodes get torn down automatically — nothing to clean up in the Tailscale admin console.
 
 ## Testing on one Mac
 
@@ -116,28 +118,9 @@ You can exercise the full peer-discovery path on a single machine:
 ./test-local.sh 3      # N instances
 ```
 
-Each child gets `TAILSCREEN_INSTANCE=<i>`, which suffixes the Tailscale state directory and hostname. **This step matters.** If two processes share the state dir at `~/Library/Application Support/Tailscreen/tailscale`, they reuse the same machine key, the tailnet treats them as the same device, and **Browse Shares** comes back empty. It's by far the most common cause of an empty peer list when testing locally.
+Each child gets `TAILSCREEN_INSTANCE=<i>`, which suffixes the Tailscale state directory and hostname. **This step matters.** If two processes share the state dir at `~/Library/Application Support/Tailscreen/tailscale`, they reuse the same machine key, the tailnet treats them as the same device, and the **DEVICES** list comes back empty. It's by far the most common cause of an empty peer list when testing locally.
 
 This setup tests Tailscale integration and peer discovery. It does **not** test NAT traversal — both processes share the same network stack. For that, use two actual machines.
-
-## Architecture, briefly
-
-```
-TailscreenApp (@main)
-  └─ AppState (@MainActor)
-       ├─ TailscaleScreenShareServer
-       │    └─ ScreenCapture → VideoEncoder → RTPPacket → UDP/7447
-       │       + TCP/7447 (annotations + metadata)
-       ├─ TailscaleScreenShareClient
-       │    └─ UDP/7447 → RTP depacketize → VideoDecoder → MetalViewerRenderer
-       │       + TCP/7447 (annotations out)
-       ├─ TailscalePeerDiscovery   ── LocalAPI + TCP probe
-       ├─ TailscaleIPNWatcher      ── IPN bus subscription
-       ├─ TailscaleAuth            ── browser-based login
-       └─ TailscreenMetadataService ── share name, resolution, request-to-share
-```
-
-The [Architecture docs](https://tailscreen.dev/architecture/) walk through each Swift file in detail.
 
 ## Network protocol
 
@@ -184,7 +167,7 @@ Tailscale will try really hard to give you a direct WireGuard connection. When t
 The full list lives in the [Troubleshooting docs](https://tailscreen.dev/troubleshooting/). The greatest hits:
 
 - **"Permission Denied" capturing the screen.** Toggle **System Settings → Privacy & Security → Screen Recording**, then *quit and relaunch* Tailscreen. macOS doesn't push the new permission to a running process.
-- **"Connection Failed".** Check that Tailscale itself works first (`tailscale ping <hostname>`), and that your ACLs allow TCP+UDP/7447. Copying the hostname from **Show Tailscale Info** avoids easy-to-miss typos.
+- **"Connection Failed".** Check that Tailscale itself works first (`tailscale ping <hostname>`), and that your ACLs allow TCP+UDP/7447. If a peer is missing from the **DEVICES** list, hit the ⟳ refresh button — discovery probes can race with peers coming online.
 - **Black viewer window.** **Disconnect** and reconnect — that forces a fresh keyframe.
 - **Build fails with linker errors.** This usually means `libtailscale.a` hasn't been built yet. Run `make build` once, then `swift build` works.
 
