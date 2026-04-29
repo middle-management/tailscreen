@@ -244,6 +244,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// through and surface to the caller immediately.
     private static func isScreenCaptureRetriable(_ error: Error) -> Bool {
         if case ScreenCaptureError.startTimeout = error { return true }
+        if case ScreenCaptureError.noFramesDelivered = error { return true }
         let desc = error.localizedDescription.lowercased()
         return desc.contains("application connection being interrupted")
             || desc.contains("connection invalid")

@@ -29,6 +29,12 @@ class ScreenCapture: NSObject {
     /// this box to fail fast instead of waiting for the watchdog.
     private let pendingStart = OSAllocatedUnfairLock<ContinuationBox?>(initialState: nil)
 
+    /// Flips true the first time the stream output delivers a sample.
+    /// `start()` waits for it after `startCapture` resumes; if no frame
+    /// arrives within the watchdog window we throw a retriable error
+    /// because replayd is awake but not pumping.
+    private let firstFrameSeen = OSAllocatedUnfairLock<Bool>(initialState: false)
+
     static func requestPermission() async throws {
         // Request permission by attempting to get shareable content
         _ = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
@@ -110,9 +116,16 @@ class ScreenCapture: NSObject {
         // Create stream
         stream = SCStream(filter: filter, configuration: config, delegate: self)
 
-        // Create and add output
+        // Create and add output. Tee first-frame arrival through
+        // firstFrameSeen so start() can wait for it after startCapture
+        // resumes — replayd sometimes ack's startup but never pumps
+        // samples right after a prior attempt's XPC interruption, and
+        // we want to retry from scratch rather than sit on a dead stream.
         streamOutput = StreamOutput()
+        let firstFrameSignal = firstFrameSeen
+        firstFrameSignal.withLock { $0 = false }
         streamOutput?.onFrameCaptured = { [weak self] pixelBuffer in
+            firstFrameSignal.withLock { $0 = true }
             self?.onFrameCaptured?(pixelBuffer)
         }
 
@@ -155,6 +168,21 @@ class ScreenCapture: NSObject {
                 box.resume(throwing: ScreenCaptureError.startTimeout)
             }
         }
+
+        // startCapture has acked. Wait for the first sample to confirm
+        // replayd is actually pumping — if it isn't (post-XPC-interrupt
+        // half-dead state) the caller's retry loop will tear the stream
+        // down and bring up a fresh one.
+        try await waitForFirstFrame(timeout: .seconds(3))
+    }
+
+    private func waitForFirstFrame(timeout: Duration) async throws {
+        let deadlineNs = DispatchTime.now().uptimeNanoseconds &+ UInt64(timeout.components.seconds) * 1_000_000_000
+        while DispatchTime.now().uptimeNanoseconds < deadlineNs {
+            if firstFrameSeen.withLock({ $0 }) { return }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        throw ScreenCaptureError.noFramesDelivered
     }
 
     /// Watchdogged `SCShareableContent.excludingDesktopWindows`. The
@@ -270,4 +298,8 @@ enum ScreenCaptureError: Error {
     case noDisplayAvailable
     case permissionDenied
     case startTimeout
+    /// startCapture resolved successfully but no sample buffers arrived
+    /// before the first-frame watchdog expired. Retriable — usually a
+    /// half-dead replayd left over from a previous interrupted bring-up.
+    case noFramesDelivered
 }
