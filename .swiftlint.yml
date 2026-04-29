@@ -1,0 +1,72 @@
+included:
+  - Sources
+  - Tests
+  - Examples
+
+excluded:
+  - .build
+  - TailscaleKitPackage/upstream
+  - TailscaleKitPackage/Sources
+  - Sources/ScreenShareClient.swift
+  - Sources/ScreenShareServer.swift
+
+# Bug-class rules first; style rules opt-in only when they catch real risk.
+disabled_rules:
+  - line_length
+  - file_length
+  - type_body_length
+  - function_body_length
+  - todo
+  - identifier_name
+  - large_tuple
+  - cyclomatic_complexity
+  - nesting
+
+opt_in_rules:
+  - force_unwrapping
+  - implicitly_unwrapped_optional
+  - overridden_super_call
+  - prohibited_super_call
+  - empty_count
+  - first_where
+  - last_where
+  - contains_over_first_not_nil
+  - contains_over_filter_count
+  - contains_over_filter_is_empty
+  - reduce_into
+  - sorted_first_last
+  - weak_delegate
+  - private_action
+  - private_outlet
+  - operator_usage_whitespace
+  - redundant_nil_coalescing
+  - empty_string
+  - fallthrough
+  - fatal_error_message
+  - explicit_init
+  - convenience_type
+  - discouraged_object_literal
+  - discouraged_optional_boolean
+  - discouraged_optional_collection
+  - empty_collection_literal
+  - flatmap_over_map_reduce
+  - joined_default_parameter
+  - prefer_self_type_over_type_of_self
+  - redundant_type_annotation
+  - toggle_bool
+  - unowned_variable_capture
+  - vertical_parameter_alignment_on_call
+  - yoda_condition
+
+force_cast: error
+force_try: error
+force_unwrapping:
+  severity: error
+
+# Some Swift-6 strict concurrency code legitimately uses `as!` against
+# C bridge types; flag everything else as a warning, not error.
+analyzer_rules:
+  - unused_declaration
+  - unused_import
+
+reporter: "github-actions-logging"

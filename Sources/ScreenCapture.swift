@@ -3,6 +3,7 @@ import AppKit
 import CoreGraphics
 import CoreMedia
 import CoreVideo
+import os
 
 /// Serializable summary of an SCDisplay so AppState can expose a display
 /// picker in the menu without exposing ScreenCaptureKit types to the UI.
@@ -21,6 +22,18 @@ class ScreenCapture: NSObject {
     /// Fires when the SCStream terminates on its own — e.g. user clicked the
     /// menubar "Stop Screen Recording" item, or the stream hit an error.
     var onStreamStopped: ((Error?) -> Void)?
+
+    /// Set while `start()` is awaiting `startCapture`. SCStream sometimes
+    /// fires `didStopWithError` synchronously without ever resolving the
+    /// startCapture completion handler, so we tee the delegate error into
+    /// this box to fail fast instead of waiting for the watchdog.
+    private let pendingStart = OSAllocatedUnfairLock<ContinuationBox?>(initialState: nil)
+
+    /// Flips true the first time the stream output delivers a sample.
+    /// `start()` waits for it after `startCapture` resumes; if no frame
+    /// arrives within the watchdog window we throw a retriable error
+    /// because replayd is awake but not pumping.
+    private let firstFrameSeen = OSAllocatedUnfairLock<Bool>(initialState: false)
 
     static func requestPermission() async throws {
         // Request permission by attempting to get shareable content
@@ -103,9 +116,16 @@ class ScreenCapture: NSObject {
         // Create stream
         stream = SCStream(filter: filter, configuration: config, delegate: self)
 
-        // Create and add output
+        // Create and add output. Tee first-frame arrival through
+        // firstFrameSeen so start() can wait for it after startCapture
+        // resumes — replayd sometimes ack's startup but never pumps
+        // samples right after a prior attempt's XPC interruption, and
+        // we want to retry from scratch rather than sit on a dead stream.
         streamOutput = StreamOutput()
+        let firstFrameSignal = firstFrameSeen
+        firstFrameSignal.withLock { $0 = false }
         streamOutput?.onFrameCaptured = { [weak self] pixelBuffer in
+            firstFrameSignal.withLock { $0 = true }
             self?.onFrameCaptured?(pixelBuffer)
         }
 
@@ -127,17 +147,42 @@ class ScreenCapture: NSObject {
         // a deterministic exit in either direction.
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             let box = ContinuationBox(cont)
+            let pendingLock = pendingStart
+            pendingLock.withLock { $0 = box }
             stream.startCapture { error in
+                pendingLock.withLock { $0 = nil }
                 if let error = error {
                     box.resume(throwing: error)
                 } else {
                     box.resume()
                 }
             }
-            DispatchQueue.global().asyncAfter(deadline: .now() + 5) {
+            // Cold-start watchdog. Apple's startCapture has been observed
+            // to never resolve when replayd's XPC link drops mid-handshake;
+            // the SCStreamDelegate's didStopWithError fires (handled below)
+            // and otherwise this 10s timer is the deterministic exit. 10s
+            // covers a slow first-run permission grant without leaving the
+            // user staring forever.
+            DispatchQueue.global().asyncAfter(deadline: .now() + 10) {
+                pendingLock.withLock { $0 = nil }
                 box.resume(throwing: ScreenCaptureError.startTimeout)
             }
         }
+
+        // startCapture has acked. Wait for the first sample to confirm
+        // replayd is actually pumping — if it isn't (post-XPC-interrupt
+        // half-dead state) the caller's retry loop will tear the stream
+        // down and bring up a fresh one.
+        try await waitForFirstFrame(timeout: .seconds(3))
+    }
+
+    private func waitForFirstFrame(timeout: Duration) async throws {
+        let deadlineNs = DispatchTime.now().uptimeNanoseconds &+ UInt64(timeout.components.seconds) * 1_000_000_000
+        while DispatchTime.now().uptimeNanoseconds < deadlineNs {
+            if firstFrameSeen.withLock({ $0 }) { return }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        throw ScreenCaptureError.noFramesDelivered
     }
 
     /// Watchdogged `SCShareableContent.excludingDesktopWindows`. The
@@ -222,6 +267,16 @@ class ScreenCapture: NSObject {
 extension ScreenCapture: SCStreamDelegate {
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         print("Stream stopped with error: \(error.localizedDescription)")
+        // If this fires while `start()` is still awaiting startCapture, fail
+        // the start immediately rather than letting the 10s watchdog burn —
+        // replayd is telling us the bring-up isn't going to complete.
+        let pending = pendingStart.withLock { box -> ContinuationBox? in
+            let b = box; box = nil; return b
+        }
+        if let pending {
+            pending.resume(throwing: error)
+            return
+        }
         onStreamStopped?(error)
     }
 }
@@ -243,4 +298,8 @@ enum ScreenCaptureError: Error {
     case noDisplayAvailable
     case permissionDenied
     case startTimeout
+    /// startCapture resolved successfully but no sample buffers arrived
+    /// before the first-frame watchdog expired. Retriable — usually a
+    /// half-dead replayd left over from a previous interrupted bring-up.
+    case noFramesDelivered
 }
