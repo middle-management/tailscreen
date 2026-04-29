@@ -22,6 +22,19 @@ import TailscaleKit
 /// There is no TCP-style accept queue and no per-viewer send pipeline — UDP
 /// send is non-blocking and a slow viewer just drops packets at the network
 /// boundary instead of stalling our process.
+
+/// Public-facing snapshot of one connected viewer. Built from the server's
+/// internal `Viewer` plus a netmap lookup against the live `TailscaleNode`
+/// to translate the source IP into a friendly hostname. `hostname` is `nil`
+/// until the lookup completes (or if the peer isn't in the netmap), in
+/// which case the UI should fall back to `tailscaleIP`.
+struct ViewerInfo: Sendable, Identifiable, Hashable {
+    let id: String           // matches the server's internal viewer key ("ip:port")
+    let tailscaleIP: String
+    var hostname: String?
+    let connectedAt: Date
+}
+
 final class TailscaleScreenShareServer: @unchecked Sendable {
     private let port: UInt16
     var node: TailscaleNode?
@@ -61,6 +74,18 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     private let parameterSets = OSAllocatedUnfairLock<CodecParameterSets?>(initialState: nil)
     private let annotationConnections = OSAllocatedUnfairLock<[UUID: IncomingConnection]>(initialState: [:])
 
+    /// Public projection of `viewers` that the UI can read without touching
+    /// the internal RTP bookkeeping. Kept in lockstep with `viewers` from
+    /// the same lifecycle hooks (`registerOrRefresh`, `removeViewer`,
+    /// `sweepIdleViewers`, `stop`). `Viewer` is intentionally not Sendable —
+    /// `ViewerInfo` is the safe, value-type snapshot.
+    private let viewerInfos = OSAllocatedUnfairLock<[String: ViewerInfo]>(initialState: [:])
+
+    /// IP → hostname cache. Filled lazily by `resolveHostname` from the
+    /// LocalAPI backend status. Avoids re-querying tsnet on every
+    /// reconnect / KEEPALIVE storm. Cleared in `stop()`.
+    private let peerNameCache = OSAllocatedUnfairLock<[String: String]>(initialState: [:])
+
     /// Encoder bitrate the most recent `setup` produced, in bits/sec. The
     /// adaptive-bitrate sweep treats this as the ceiling and never raises
     /// above it. Recomputed on every encoder reinit (resolution change).
@@ -94,6 +119,12 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// AppState routes these into the sharer's overlay window; the drawings
     /// get captured into the video stream and distributed to every viewer.
     var onAnnotationReceived: ((AnnotationOp) -> Void)?
+
+    /// Fires whenever the connected-viewer set changes — join, BYE, idle
+    /// timeout, hostname resolved, or `stop()`. The argument is a snapshot
+    /// of the current roster; replace the UI's list wholesale rather than
+    /// diffing. Callback may run on any thread; bounce to `@MainActor`.
+    var onViewersChanged: (@Sendable ([ViewerInfo]) -> Void)?
 
     /// Invoked once the underlying `TailscaleNode` has been instantiated but
     /// **before** `node.up()` is called. AppState uses this hook to subscribe
@@ -378,6 +409,24 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             return (true, state.count)
         }
 
+        if added {
+            let ip = ipFromAddr(addr)
+            let cached = peerNameCache.withLock { $0[ip] }
+            let info = ViewerInfo(
+                id: addr,
+                tailscaleIP: ip,
+                hostname: cached,
+                connectedAt: Date()
+            )
+            viewerInfos.withLock { $0[addr] = info }
+            notifyViewersChanged()
+            if cached == nil {
+                Task { [weak self] in
+                    await self?.resolveHostnameAndUpdate(for: addr, ip: ip)
+                }
+            }
+        }
+
         if added || isNew {
             print("Viewer \(added ? "joined" : "refreshed") \(addr) (total=\(viewerCount))")
             // New viewer (or one that re-helloed): force a keyframe so
@@ -393,8 +442,62 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             state.removeValue(forKey: addr) != nil
         }
         if removed {
+            viewerInfos.withLock { _ = $0.removeValue(forKey: addr) }
+            notifyViewersChanged()
             print("Viewer disconnected \(addr)")
         }
+    }
+
+    /// Snapshot the current roster (sorted by connection time so the UI
+    /// list is stable) and hand it to `onViewersChanged`. Cheap enough to
+    /// call on every join/leave — the lock window is tiny and the roster
+    /// is at most a handful of entries.
+    private func notifyViewersChanged() {
+        guard let cb = onViewersChanged else { return }
+        let snapshot = viewerInfos.withLock { state -> [ViewerInfo] in
+            state.values.sorted { $0.connectedAt < $1.connectedAt }
+        }
+        cb(snapshot)
+    }
+
+    /// Strip the trailing `:port` from a UDP source address. Splits on the
+    /// last `:` so IPv6 literals like `[fd7a::1]:54321` stay intact (the
+    /// brackets get included in the IP part — fine, the netmap match
+    /// handles both forms via prefix comparison).
+    private func ipFromAddr(_ addr: String) -> String {
+        guard let lastColon = addr.lastIndex(of: ":") else { return addr }
+        var ip = String(addr[..<lastColon])
+        if ip.hasPrefix("["), ip.hasSuffix("]") {
+            ip = String(ip.dropFirst().dropLast())
+        }
+        return ip
+    }
+
+    /// Look the viewer's IP up in the tsnet netmap and patch its hostname
+    /// in `viewerInfos` if found. Best-effort — failures leave the row as
+    /// "ip only" and the UI falls back to showing the IP. Cached so
+    /// repeated reconnects from the same peer don't re-query LocalAPI.
+    private func resolveHostnameAndUpdate(for addr: String, ip: String) async {
+        guard let node = self.node else { return }
+        let client = LocalAPIClient(localNode: node, logger: logger)
+        guard let status = try? await client.backendStatus() else { return }
+        var resolved: String?
+        for (_, peer) in status.Peer ?? [:] {
+            if let ips = peer.TailscaleIPs, ips.contains(ip) {
+                resolved = peer.HostName
+                break
+            }
+        }
+        guard let hostname = resolved, !hostname.isEmpty else { return }
+        peerNameCache.withLock { $0[ip] = hostname }
+        let changed = viewerInfos.withLock { state -> Bool in
+            guard var info = state[addr] else { return false }
+            guard info.hostname != hostname else { return false }
+            info.hostname = hostname
+            state[addr] = info
+            return true
+        }
+        if changed { notifyViewersChanged() }
     }
 
     /// Periodically prunes viewers that haven't said anything in a while.
@@ -409,6 +512,12 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
                 let stale = state.filter { now &- $0.value.lastSeenNs > self.viewerIdleTimeoutNs }
                 for (addr, _) in stale { state.removeValue(forKey: addr) }
                 return Array(stale.keys)
+            }
+            if !dropped.isEmpty {
+                viewerInfos.withLock { state in
+                    for addr in dropped { state.removeValue(forKey: addr) }
+                }
+                notifyViewersChanged()
             }
             for addr in dropped {
                 print("Viewer timeout \(addr)")
@@ -690,6 +799,9 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         encoder = nil
 
         viewers.withLock { $0.removeAll() }
+        viewerInfos.withLock { $0.removeAll() }
+        peerNameCache.withLock { $0.removeAll() }
+        notifyViewersChanged()
 
         await packetListener?.close()
         packetListener = nil
