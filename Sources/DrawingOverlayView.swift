@@ -12,7 +12,7 @@ import AppKit
 /// Input:
 ///   • Left mouse drag  — draw the current tool's shape.
 ///   • Right click      — clear all annotations.
-///   • 1–5              — select tool (pen/line/arrow/rectangle/oval).
+///   • 1–6              — select tool (pen/line/arrow/rectangle/oval/click).
 ///   • Cmd-Z            — undo the last shape created by this view.
 ///   • Esc              — request the host to hide the overlay.
 @MainActor
@@ -131,6 +131,11 @@ final class DrawingOverlayView: NSView {
             // Two-point shapes: keep [start, current].
             let start = ip.points.first ?? p
             ip = Annotation(id: ip.id, tool: ip.tool, points: [start, p], color: ip.color, width: ip.width)
+        case .click:
+            // Click is a single-point marker — let the cursor follow the
+            // drag so the user can fine-tune position before mouseUp, but
+            // never accumulate points.
+            ip = Annotation(id: ip.id, tool: ip.tool, points: [p], color: ip.color, width: ip.width)
         }
         inProgress = ip
         needsDisplay = true
@@ -149,8 +154,9 @@ final class DrawingOverlayView: NSView {
     override func mouseUp(with event: NSEvent) {
         guard isInputEnabled, let ip = inProgress else { return }
         inProgress = nil
-        // Discard trivial clicks (no drag).
-        if ip.points.count < 2 {
+        // Single-point shapes (click) commit on mouseUp without requiring a
+        // drag. Other tools discard trivial clicks (no drag).
+        if ip.tool != .click && ip.points.count < 2 {
             needsDisplay = true
             return
         }
@@ -215,6 +221,7 @@ final class DrawingOverlayView: NSView {
         case "3": currentTool = .arrow
         case "4": currentTool = .rectangle
         case "5": currentTool = .oval
+        case "6": currentTool = .click
         default:
             super.keyDown(with: event)
         }
@@ -302,6 +309,31 @@ final class DrawingOverlayView: NSView {
                 height: abs(last.y - first.y)
             )
             NSBezierPath(ovalIn: rect).apply(strokeWidth: CGFloat(annotation.width))
+
+        case .click:
+            // Bullseye marker: filled center dot + outer ring. Sized off
+            // the stroke width so the marker scales with the user's pen
+            // width preference.
+            let w = CGFloat(annotation.width)
+            let outerRadius = max(14.0, w * 6)
+            let innerRadius = max(3.0, w * 1.2)
+            let outer = NSRect(
+                x: first.x - outerRadius,
+                y: first.y - outerRadius,
+                width: outerRadius * 2,
+                height: outerRadius * 2
+            )
+            let outerPath = NSBezierPath(ovalIn: outer)
+            outerPath.lineWidth = w
+            outerPath.stroke()
+            let inner = NSRect(
+                x: first.x - innerRadius,
+                y: first.y - innerRadius,
+                width: innerRadius * 2,
+                height: innerRadius * 2
+            )
+            color.setFill()
+            NSBezierPath(ovalIn: inner).fill()
         }
     }
 }

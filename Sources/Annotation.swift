@@ -8,6 +8,9 @@ enum AnnotationTool: String, Codable, Sendable, CaseIterable {
     case arrow
     case rectangle
     case oval
+    /// Single-point "click here" marker — drops a target/bullseye at the
+    /// cursor location with no drag required.
+    case click
 }
 
 /// A single drawn shape. All coordinates are normalized to [0, 1] in the video

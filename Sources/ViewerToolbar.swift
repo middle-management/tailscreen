@@ -72,12 +72,13 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
         // NSToolbarItemGroup with selectionMode = .selectOne gives radio
         // behaviour — clicking one tool deselects the others. The selected
         // index drives ViewerCommands.setTool().
-        let labels  = ["Pen", "Line", "Arrow", "Rect", "Oval"]
+        let labels  = ["Pen", "Line", "Arrow", "Rect", "Oval", "Click"]
         let symbols = ["pencil.tip",
                        "line.diagonal",
                        "arrow.up.right",
                        "rectangle",
-                       "circle"]
+                       "circle",
+                       "scope"]
 
         let group = NSToolbarItemGroup(
             itemIdentifier: Self.toolGroup,

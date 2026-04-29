@@ -20,13 +20,14 @@ final class ViewerCommands: NSObject {
     @objc func selectArrowTool(_ sender: Any?) { setTool(.arrow) }
     @objc func selectRectangleTool(_ sender: Any?) { setTool(.rectangle) }
     @objc func selectOvalTool(_ sender: Any?) { setTool(.oval) }
+    @objc func selectClickTool(_ sender: Any?) { setTool(.click) }
 
     /// NSToolbarItemGroup with `selectionMode = .selectOne` calls its
     /// action with the group as `sender`; the selectedIndex maps 1:1 to
-    /// the toolbar's tool order (pen, line, arrow, rectangle, oval).
+    /// the toolbar's tool order (pen, line, arrow, rectangle, oval, click).
     @objc func toolbarSelectedTool(_ sender: Any?) {
         guard let group = sender as? NSToolbarItemGroup else { return }
-        let tools: [AnnotationTool] = [.pen, .line, .arrow, .rectangle, .oval]
+        let tools: [AnnotationTool] = [.pen, .line, .arrow, .rectangle, .oval, .click]
         let idx = group.selectedIndex
         guard tools.indices.contains(idx) else { return }
         setTool(tools[idx])
@@ -76,6 +77,9 @@ extension ViewerCommands: NSMenuItemValidation {
             return overlay != nil
         case #selector(selectOvalTool(_:)):
             menuItem.state = (overlay?.currentTool == .oval) ? .on : .off
+            return overlay != nil
+        case #selector(selectClickTool(_:)):
+            menuItem.state = (overlay?.currentTool == .click) ? .on : .off
             return overlay != nil
         case #selector(undoLastAnnotation(_:)):
             return overlay?.canUndo ?? false
