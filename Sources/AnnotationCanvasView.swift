@@ -5,10 +5,12 @@ import SwiftUI
 /// shape data is pulled from an ``AnnotationCanvasModel`` injected by the
 /// host.
 ///
-/// Each annotation is its own `Shape` view composed via `ForEach`, so
-/// SwiftUI diffs the list and only the changed shape re-renders during a
-/// drag (the in-progress stroke). Click ripples animate themselves via
-/// `withAnimation` in `onAppear`, no timer needed.
+/// Each annotation is its own SwiftUI view composed via `ForEach`, so the
+/// list diffs and only the changed shape re-renders during a drag (the
+/// in-progress stroke). Ephemeral tools (clicks today) live in the same
+/// `annotations` list and animate themselves via `withAnimation` in
+/// `onAppear`; the model removes them from the list after their lifetime,
+/// at which point SwiftUI tears their views down.
 ///
 /// Pointer input arrives via a single zero-distance ``DragGesture``, which
 /// fires for both taps and drags. Keyboard and right-click are handled by
@@ -22,13 +24,10 @@ struct AnnotationCanvasView: View {
         GeometryReader { geo in
             ZStack {
                 ForEach(model.annotations) { ann in
-                    annotationView(ann)
+                    committedView(ann)
                 }
                 if let ip = model.inProgress {
-                    annotationView(ip)
-                }
-                ForEach(model.ephemeralClicks) { click in
-                    EphemeralClickView(click: click)
+                    inProgressView(ip)
                 }
             }
             .contentShape(Rectangle())
@@ -50,25 +49,45 @@ struct AnnotationCanvasView: View {
         }
     }
 
+    /// Render a committed annotation. Ephemeral tools get their animated
+    /// view; everything else falls through to ``AnnotationShape``.
     @ViewBuilder
-    private func annotationView(_ ann: Annotation) -> some View {
-        if ann.tool == .click {
-            // In-progress click marker (bullseye). Committed clicks live in
-            // `ephemeralClicks` instead and animate via EphemeralClickView.
-            ClickMarker(annotation: ann)
+    private func committedView(_ ann: Annotation) -> some View {
+        if AnnotationCanvasModel.ephemeralLifetime(for: ann.tool) != nil {
+            EphemeralAnnotationView(annotation: ann)
                 .allowsHitTesting(false)
         } else {
-            AnnotationShape(annotation: ann)
-                .stroke(
-                    ann.color.swiftUI,
-                    style: StrokeStyle(
-                        lineWidth: CGFloat(ann.width),
-                        lineCap: .round,
-                        lineJoin: .round
-                    )
-                )
-                .allowsHitTesting(false)
+            strokedShape(ann)
         }
+    }
+
+    /// Render the in-progress shape. For ephemeral tools the user sees a
+    /// static preview during the drag (e.g. the click bullseye following
+    /// the cursor); the animated form fires on `pointerUp` once the
+    /// annotation moves into the committed list.
+    @ViewBuilder
+    private func inProgressView(_ ann: Annotation) -> some View {
+        switch ann.tool {
+        case .click:
+            ClickMarker(annotation: ann)
+                .allowsHitTesting(false)
+        default:
+            strokedShape(ann)
+        }
+    }
+
+    @ViewBuilder
+    private func strokedShape(_ ann: Annotation) -> some View {
+        AnnotationShape(annotation: ann)
+            .stroke(
+                ann.color.swiftUI,
+                style: StrokeStyle(
+                    lineWidth: CGFloat(ann.width),
+                    lineCap: .round,
+                    lineJoin: .round
+                )
+            )
+            .allowsHitTesting(false)
     }
 
     private static func normalize(_ point: CGPoint, in size: CGSize) -> CGPoint {
@@ -147,7 +166,8 @@ private struct AnnotationShape: Shape {
             ))
 
         case .click:
-            // Drawn by ClickMarker (stroke + fill) instead of a single Shape.
+            // Click is rendered by ClickMarker / EphemeralAnnotationView,
+            // not as a stroked path.
             break
         }
         return path
@@ -184,12 +204,31 @@ private struct ClickMarker: View {
     }
 }
 
-/// Animated click ripple — two staggered expanding rings + a fading center
-/// dot. Each component animates via `withAnimation` in `onAppear`; the
-/// model removes the click from `ephemeralClicks` after the lifetime
-/// elapses, at which point SwiftUI removes the view.
-private struct EphemeralClickView: View {
-    let click: AnnotationCanvasModel.EphemeralClick
+/// Animated view for a committed ephemeral annotation. Today only handles
+/// `.click` (two staggered expanding rings + a fading center dot). When new
+/// ephemeral tools land, dispatch off `annotation.tool` here.
+private struct EphemeralAnnotationView: View {
+    let annotation: Annotation
+
+    var body: some View {
+        switch annotation.tool {
+        case .click:
+            ClickRippleView(annotation: annotation)
+        default:
+            // Permanent tools shouldn't end up here, but render statically
+            // as a safe fallback if a new ephemeral tool is added without
+            // a view to match.
+            EmptyView()
+        }
+    }
+}
+
+/// Two staggered expanding rings + a fading center dot. Each component
+/// animates via `withAnimation` in `onAppear`; the model removes the
+/// annotation from the canvas list after the lifetime elapses, at which
+/// point SwiftUI tears this view down.
+private struct ClickRippleView: View {
+    let annotation: Annotation
 
     /// Eased progress 0→1 for each component. Driving them as separate
     /// state values lets the easing curves and durations differ.
@@ -200,13 +239,12 @@ private struct EphemeralClickView: View {
     private static let totalDuration: Double = AnnotationCanvasModel.clickAnimationDuration
 
     var body: some View {
-        let ann = click.annotation
-        let color = ann.color
-        let lineWidth = CGFloat(ann.width)
+        let color = annotation.color
+        let lineWidth = CGFloat(annotation.width)
         let startR = max(8.0, lineWidth * 3)
         let endR = max(48.0, lineWidth * 14)
         let dotR = max(3.0, lineWidth * 1.5)
-        let center = ann.points.first ?? .zero
+        let center = annotation.points.first ?? .zero
 
         GeometryReader { geo in
             let cx = center.x * geo.size.width
