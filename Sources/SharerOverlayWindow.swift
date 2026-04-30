@@ -1,13 +1,15 @@
 import AppKit
+import CoreGraphics
 
 /// Borderless transparent NSPanel that floats above the sharer's desktop at
 /// `.statusBar` level, so ScreenCaptureKit (which captures the whole display
 /// with no window exclusions — see `ScreenCapture.swift:41`) streams
 /// annotations into the video for every viewer.
 ///
-/// The panel is always full-screen. Toggling "Draw on Screen" shows/hides it
-/// and also flips `ignoresMouseEvents` so clicks fall through when drawing is
-/// off but the panel stays around (preserving existing strokes across toggles).
+/// The panel is always full-screen on the shared display. Toggling "Draw on
+/// Screen" shows/hides it and also flips `ignoresMouseEvents` so clicks fall
+/// through when drawing is off but the panel stays around (preserving
+/// existing strokes across toggles).
 @MainActor
 final class SharerOverlayWindow {
     /// Subclass of NSPanel that accepts key events even though it's borderless
@@ -29,8 +31,14 @@ final class SharerOverlayWindow {
         set { model.onOp = newValue }
     }
 
-    init() {
-        let screenFrame = NSScreen.main?.frame ?? NSRect(x: 0, y: 0, width: 1920, height: 1080)
+    /// `displayID` selects which screen the overlay covers — the panel must
+    /// sit on the display ScreenCaptureKit is capturing or remote drawings
+    /// land on the wrong monitor and never reach the video. Falls back to
+    /// the main screen when no display is specified or the ID can't be
+    /// resolved (e.g. the screen was unplugged mid-session).
+    init(displayID: CGDirectDisplayID? = nil) {
+        let screen = Self.screen(forDisplayID: displayID) ?? NSScreen.main
+        let screenFrame = screen?.frame ?? NSRect(x: 0, y: 0, width: 1920, height: 1080)
 
         let panel = DrawingPanel(
             contentRect: screenFrame,
@@ -106,5 +114,16 @@ final class SharerOverlayWindow {
     static func localIdentity() -> String {
         let host = Host.current().localizedName ?? "tailscreen"
         return "\(host)\(TailscreenInstance.hostnameSuffix)"
+    }
+
+    /// Map a `CGDirectDisplayID` to the matching `NSScreen` via
+    /// `NSScreenNumber` in the device description. Returns nil when the ID
+    /// is nil or no attached screen reports it.
+    private static func screen(forDisplayID displayID: CGDirectDisplayID?) -> NSScreen? {
+        guard let displayID else { return nil }
+        return NSScreen.screens.first { screen in
+            let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID
+            return number == displayID
+        }
     }
 }
