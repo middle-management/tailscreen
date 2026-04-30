@@ -1,4 +1,5 @@
 import AppKit
+import CoreAudio
 import SwiftUI
 
 struct MenuBarView: View {
@@ -226,6 +227,7 @@ private struct SharingCard: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+                .help("Toggle mic (⌃⌥M)")
 
                 Button {
                     Task { await appState.stopSharing() }
@@ -235,6 +237,8 @@ private struct SharingCard: View {
                 .buttonStyle(.bordered)
                 .controlSize(.small)
             }
+
+            AudioDevicePickers()
         }
         .padding(12)
         .background(
@@ -242,6 +246,55 @@ private struct SharingCard: View {
         )
         .padding(.horizontal, 8)
         .padding(.bottom, 6)
+    }
+}
+
+/// Compact input + output device pickers. Used inside both
+/// SharingCard and ViewingCard — anywhere voice playback is active.
+/// Refreshes the device list on appear so hot-plugged devices show
+/// up the next time the popover opens. `nil` selection means "follow
+/// system default"; that's also the initial value, so newly-launched
+/// instances inherit whatever the user has set in System Settings.
+private struct AudioDevicePickers: View {
+    @EnvironmentObject var appState: AppState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Image(systemName: "mic")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 14)
+                Picker("", selection: Binding(
+                    get: { appState.selectedInputDeviceID },
+                    set: { appState.selectInputDevice($0) }
+                )) {
+                    Text("System default").tag(AudioDeviceID?.none)
+                    ForEach(appState.availableInputDevices) { device in
+                        Text(device.name).tag(AudioDeviceID?.some(device.id))
+                    }
+                }
+                .labelsHidden()
+                .controlSize(.small)
+            }
+            HStack(spacing: 6) {
+                Image(systemName: "speaker.wave.2")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 14)
+                Picker("", selection: Binding(
+                    get: { appState.selectedOutputDeviceID },
+                    set: { appState.selectOutputDevice($0) }
+                )) {
+                    Text("System default").tag(AudioDeviceID?.none)
+                    ForEach(appState.availableOutputDevices) { device in
+                        Text(device.name).tag(AudioDeviceID?.some(device.id))
+                    }
+                }
+                .labelsHidden()
+                .controlSize(.small)
+            }
+        }
+        .font(.system(size: 11))
+        .onAppear { appState.refreshAudioDevices() }
     }
 }
 
@@ -298,13 +351,30 @@ private struct ViewingCard: View {
                 Spacer(minLength: 0)
             }
 
-            Button {
-                Task { await appState.disconnect() }
-            } label: {
-                Text("Disconnect").frame(maxWidth: .infinity)
+            HStack(spacing: 6) {
+                Button {
+                    Task { await appState.toggleMic() }
+                } label: {
+                    Label(
+                        appState.isMicOn ? "Mute Mic" : "Unmute Mic",
+                        systemImage: appState.isMicOn ? "mic.fill" : "mic.slash"
+                    )
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("Toggle mic (⌃⌥M)")
+
+                Button {
+                    Task { await appState.disconnect() }
+                } label: {
+                    Text("Disconnect").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
+
+            AudioDevicePickers()
         }
         .padding(12)
         .background(

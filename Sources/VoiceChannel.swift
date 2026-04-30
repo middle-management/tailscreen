@@ -364,6 +364,67 @@ final class MicCapture {
         ProcessInfo.processInfo.environment["TAILSCREEN_VOICE_TEST_TONE"] == "1"
     }
 
+    /// Optional per-engine device override. `nil` means "follow the
+    /// system default" — AVAudioEngine's default behavior. Set via
+    /// `setInputDevice` / `setOutputDevice`; applied at engine start
+    /// time, so changes only take effect after the next
+    /// engine.stop()/start() cycle (handled by the toggle paths and
+    /// the `setDevice` methods themselves).
+    private var inputDeviceID: AudioDeviceID?
+    private var outputDeviceID: AudioDeviceID?
+
+    /// Apply a new input device. If capture is currently running, we
+    /// tear it down and restart so the new device takes effect (the
+    /// underlying I/O unit only honors the device override at start
+    /// time). Pass `nil` to revert to the system default.
+    func setInputDevice(_ deviceID: AudioDeviceID?) async {
+        inputDeviceID = deviceID
+        if isCapturing {
+            disableCapture()
+            try? await enableCapture()
+        }
+    }
+
+    /// Apply a new output device. Restarts the playback engine if it
+    /// was running so the new device takes effect.
+    func setOutputDevice(_ deviceID: AudioDeviceID?) {
+        outputDeviceID = deviceID
+        guard isPlaying else { return }
+        engine.stop()
+        for player in playerNodes { player.stop() }
+        applyOutputDevice()
+        do {
+            try engine.start()
+        } catch {
+            print("MicCapture: failed to restart engine after output device change: \(error)")
+        }
+    }
+
+    /// Push the configured device IDs down to the AudioUnits sitting
+    /// underneath `engine.inputNode` / `engine.outputNode`. Called
+    /// every time we (re)start the engine. Engine must be stopped at
+    /// the call site — `kAudioOutputUnitProperty_CurrentDevice` is
+    /// only honored when the unit isn't running.
+    private func applyInputDevice() {
+        guard let id = inputDeviceID else { return }
+        if let unit = engine.inputNode.audioUnit {
+            let status = AudioDevices.bind(deviceID: id, to: unit)
+            if status != noErr {
+                print("MicCapture: failed to bind input device \(id): OSStatus=\(status)")
+            }
+        }
+    }
+
+    private func applyOutputDevice() {
+        guard let id = outputDeviceID else { return }
+        if let unit = engine.outputNode.audioUnit {
+            let status = AudioDevices.bind(deviceID: id, to: unit)
+            if status != noErr {
+                print("MicCapture: failed to bind output device \(id): OSStatus=\(status)")
+            }
+        }
+    }
+
     init(channel: VoiceChannel) {
         self.channel = channel
         self.mixer = engine.mainMixerNode
@@ -407,6 +468,7 @@ final class MicCapture {
         engine.attach(player)
         engine.connect(player, to: mixer, format: outputFormat)
         playerNodes.append(player)
+        applyOutputDevice()
         try engine.start()
         // Don't call player.play() yet. scheduleSamples kicks
         // playback off only after `jitterBufferThreshold` buffers
@@ -487,6 +549,8 @@ final class MicCapture {
         // first buffer.
         Self.installTap(on: engine.inputNode, buffer: buffer)
 
+        applyInputDevice()
+        applyOutputDevice()
         try engine.start()
         for player in playerNodes { player.play() }
         print("MicCapture: capture started, engineRunning=\(engine.isRunning), inputSinkConnected=\(inputSinkConnected), inputSinkMixer.outputVolume=\(inputSinkMixer.outputVolume)")

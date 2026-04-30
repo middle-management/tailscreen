@@ -119,6 +119,12 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     private let previewContext = CIContext(options: [.useSoftwareRenderer: false])
     private let previewMaxWidth: CGFloat = 280
 
+    /// Display we last brought capture up against. Cached so
+    /// `restartCapture()` can rebuild the SCStream against the same
+    /// display the user originally picked, without forcing the caller
+    /// to track that state.
+    private var lastDisplayID: CGDirectDisplayID?
+
     /// Fires when a viewer sends an annotation op over the back-channel.
     /// AppState routes these into the sharer's overlay window; the drawings
     /// get captured into the video stream and distributed to every viewer.
@@ -242,6 +248,23 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         // screen-recording daemon during startup). Retry the whole capture
         // bring-up a couple of times before surfacing the failure — in
         // practice the second attempt almost always succeeds.
+        lastDisplayID = displayID
+        try await startCaptureWithRetries(displayID: displayID)
+    }
+
+    /// Bring up an `SCStream` for the given display, retrying through
+    /// replayd's transient XPC drops. Used by both initial `start()`
+    /// and `restartCapture()`.
+    private func startCaptureWithRetries(displayID: CGDirectDisplayID?) async throws {
+        // ScreenCaptureKit's startCapture occasionally drops its underlying
+        // XPC connection mid-bring-up — the SCStreamDelegate logs
+        // "Failed during stream due to application connection being
+        // interrupted" and the startCapture completion handler never fires,
+        // so our 5s watchdog throws `startTimeout`. Easy to provoke by
+        // running two Tailscreen processes on the same Mac (each pokes the
+        // screen-recording daemon during startup). Retry the whole capture
+        // bring-up a couple of times before surfacing the failure — in
+        // practice the second attempt almost always succeeds.
         let maxAttempts = 4
         for attempt in 1...maxAttempts {
             let capture = ScreenCapture()
@@ -264,7 +287,6 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
                 let last = attempt == maxAttempts
                 if last || !Self.isScreenCaptureRetriable(error) {
                     print("ERROR: ScreenCapture failed to start: \(error)")
-                    await self.stop()
                     throw error
                 }
                 print("ScreenCapture start attempt \(attempt) failed: \(error). Retrying…")
@@ -277,6 +299,21 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
                 try? await Task.sleep(for: .milliseconds(750 * attempt))
             }
         }
+    }
+
+    /// Called by the host (`AppState`) after the SCStream died
+    /// mid-flight. Tries to bring capture up again on the same display,
+    /// without disturbing the UDP/TCP listeners or the connected
+    /// viewer set. On success, video resumes flowing and viewers
+    /// recover transparently. On failure, the caller is expected to
+    /// fall back to `stop()` and surface the error to the user.
+    func restartCapture() async throws {
+        guard isRunning else { return }
+        if let existing = screenCapture {
+            await existing.stop()
+            screenCapture = nil
+        }
+        try await startCaptureWithRetries(displayID: lastDisplayID)
     }
 
     /// True for the transient ScreenCaptureKit startup failures the retry

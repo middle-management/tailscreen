@@ -1,5 +1,7 @@
 import AppKit
+import Carbon.HIToolbox
 import Combine
+import CoreAudio
 import CoreGraphics
 import Foundation
 import Observation
@@ -21,8 +23,21 @@ class AppState: ObservableObject {
     @Published var isSharerOverlayVisible = false
     @Published var isMicOn = false
 
+    /// Audio devices available on the system. Refreshed every time
+    /// the popover opens (and before any picker rendering) — calling
+    /// `AudioDevices.all()` is cheap.
+    @Published var availableInputDevices: [AudioDevice] = []
+    @Published var availableOutputDevices: [AudioDevice] = []
+
+    /// User-selected device IDs. `nil` = follow system default. Set
+    /// via `selectInputDevice(_:)` / `selectOutputDevice(_:)`, which
+    /// also push the change down into the live `MicCapture` engine.
+    @Published var selectedInputDeviceID: AudioDeviceID?
+    @Published var selectedOutputDeviceID: AudioDeviceID?
+
     private var voiceChannel: VoiceChannel?
     private var micCapture: MicCapture?
+    private var micHotkey: GlobalHotkey?
 
     /// Snapshot of viewers currently connected to our screen-share server.
     /// Empty when not sharing or when nobody has joined yet. Populated from
@@ -139,6 +154,18 @@ class AppState: ObservableObject {
             }
         }
 
+        // ⌃⌥M from anywhere — toggle mic without finding the menubar
+        // popover or clicking through. Useful during a screen share
+        // when the popover isn't visible.
+        micHotkey = GlobalHotkey(
+            keyCode: UInt32(kVK_ANSI_M),
+            modifiers: .controlOptionMask
+        ) { [weak self] in
+            Task { @MainActor [weak self] in
+                await self?.toggleMic()
+            }
+        }
+
         ViewerCommands.shared.appState = self
     }
 
@@ -187,18 +214,27 @@ class AppState: ObservableObject {
                     selectedDisplayID = pickedID
                 }
 
-                // If the user stops the ScreenCaptureKit stream from the
-                // macOS menubar, tear down sharing rather than leaving an
-                // empty server that's listening but has no capture source.
+                // SCStream can die from two distinct causes:
+                //   1. User clicks the macOS Control Center "Stop" button —
+                //      genuine intent to stop, tear down.
+                //   2. replayd drops its XPC connection mid-stream —
+                //      transient, recoverable, viewer is still connected
+                //      and waiting for video. Try to bring capture back up
+                //      first; only fall through to a teardown if recovery
+                //      fails. The two cases are hard to tell apart from
+                //      the SCStream error alone, so we just always try
+                //      restartCapture once before giving up.
                 srv.onCaptureStopped = { [weak self] _ in
-                    // The macOS Control Center "Stop" button is the only
-                    // common path here, and the menubar icon already
-                    // reflects the new idle state — popping an alert on
-                    // top of an action the user just took is pure
-                    // friction. Tear sharing down quietly.
                     Task { @MainActor [weak self] in
-                        guard let self = self, self.isSharing else { return }
-                        await self.stopSharing()
+                        guard let self, self.isSharing else { return }
+                        guard let server = self.server else { return }
+                        do {
+                            try await server.restartCapture()
+                            print("ScreenCapture: restarted after mid-stream stop.")
+                        } catch {
+                            print("ScreenCapture: restart failed (\(error)); tearing sharing down.")
+                            await self.stopSharing()
+                        }
                     }
                 }
                 srv.onPreviewImage = { [weak self] image in
@@ -263,9 +299,10 @@ class AppState: ObservableObject {
                         existingNode: sharedNode
                     )
                 } catch {
-                    // server.start cleans itself up (await self.stop()) on
-                    // capture failure; just drop our reference so a future
+                    // Tear down anything `start` brought up before throwing —
+                    // listeners, encoder, capture pipeline — so a future
                     // Start Sharing rebuilds from scratch.
+                    await srv.stop()
                     server = nil
                     if case ScreenCaptureError.startTimeout = error {
                         showAlertMessage(
@@ -380,6 +417,33 @@ class AppState: ObservableObject {
     /// at session-start time, so listening always works; toggleMic only
     /// flips capture on/off (and lazily requests mic permission on first
     /// enable).
+    /// Refresh `availableInputDevices` / `availableOutputDevices`.
+    /// Call before any device-picker UI renders (e.g. when the
+    /// popover opens). Cheap — a few HAL property reads.
+    func refreshAudioDevices() {
+        availableInputDevices = AudioDevices.inputs()
+        availableOutputDevices = AudioDevices.outputs()
+        // If the user's previous pick was unplugged, fall back to
+        // the system default so the picker doesn't sit on a stale ID.
+        if let id = selectedInputDeviceID, !availableInputDevices.contains(where: { $0.id == id }) {
+            selectedInputDeviceID = nil
+        }
+        if let id = selectedOutputDeviceID, !availableOutputDevices.contains(where: { $0.id == id }) {
+            selectedOutputDeviceID = nil
+        }
+    }
+
+    func selectInputDevice(_ deviceID: AudioDeviceID?) {
+        selectedInputDeviceID = deviceID
+        guard let cap = micCapture else { return }
+        Task { @MainActor in await cap.setInputDevice(deviceID) }
+    }
+
+    func selectOutputDevice(_ deviceID: AudioDeviceID?) {
+        selectedOutputDeviceID = deviceID
+        micCapture?.setOutputDevice(deviceID)
+    }
+
     func toggleMic() async {
         guard let voice = voiceChannel, let cap = micCapture else {
             showAlertMessage(
