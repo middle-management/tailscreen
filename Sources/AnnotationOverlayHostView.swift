@@ -30,7 +30,7 @@ final class AnnotationOverlayHostView: NSView {
             hostingView.leadingAnchor.constraint(equalTo: leadingAnchor),
             hostingView.trailingAnchor.constraint(equalTo: trailingAnchor),
             hostingView.topAnchor.constraint(equalTo: topAnchor),
-            hostingView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            hostingView.bottomAnchor.constraint(equalTo: bottomAnchor)
         ])
     }
 
