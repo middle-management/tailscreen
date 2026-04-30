@@ -23,6 +23,12 @@ struct AnnotationCanvasView: View {
     var body: some View {
         GeometryReader { geo in
             ZStack {
+                // Fully transparent fill so the ZStack always occupies the
+                // GeometryReader. Without it, an empty annotations list
+                // would collapse the ZStack to zero size, leaving no hit
+                // area for the DragGesture — first click never lands and
+                // the canvas can never gain its first annotation.
+                Color.clear
                 ForEach(model.annotations) { ann in
                     committedView(ann)
                 }
@@ -118,8 +124,24 @@ private struct AnnotationShape: Shape {
 
         switch annotation.tool {
         case .pen:
+            // Quadratic-midpoint smoothing: each input sample becomes a
+            // control point and the curve passes through the midpoints
+            // between samples. Cheap, requires no extra state, and turns
+            // the polyline of mouse-sample dots into a smooth stroke
+            // without introducing perceptible lag.
             path.move(to: first)
-            for p in pts.dropFirst() { path.addLine(to: p) }
+            if pts.count == 2 {
+                path.addLine(to: pts[1])
+            } else if pts.count > 2 {
+                for i in 1..<pts.count - 1 {
+                    let mid = CGPoint(
+                        x: (pts[i].x + pts[i + 1].x) / 2,
+                        y: (pts[i].y + pts[i + 1].y) / 2
+                    )
+                    path.addQuadCurve(to: mid, control: pts[i])
+                }
+                if let last = pts.last { path.addLine(to: last) }
+            }
 
         case .line:
             guard let last = pts.last, pts.count >= 2 else { return path }
