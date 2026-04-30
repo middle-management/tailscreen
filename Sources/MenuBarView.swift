@@ -210,6 +210,23 @@ private struct SharingCard: View {
                 .buttonStyle(.bordered)
                 .controlSize(.small)
 
+                // Sharer-side mic toggle. The global File → Microphone
+                // menu item only activates when one of our windows is
+                // key, and the sharer has no viewer window — so the
+                // popover is the only place the sharer can reach this
+                // control.
+                Button {
+                    Task { await appState.toggleMic() }
+                } label: {
+                    Label(
+                        appState.isMicOn ? "Mute Mic" : "Unmute Mic",
+                        systemImage: appState.isMicOn ? "mic.fill" : "mic.slash"
+                    )
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
                 Button {
                     Task { await appState.stopSharing() }
                 } label: {

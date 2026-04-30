@@ -6,6 +6,13 @@ enum AACCodecError: Error {
     case encode(OSStatus)
     case decode(OSStatus)
     case unexpectedFrameCount(Int)
+
+    /// Sentinel `OSStatus` used by the encoder/decoder input callbacks
+    /// to tell `AudioConverterFillComplexBuffer` "no more data right
+    /// now" without triggering end-of-stream semantics. Any non-zero
+    /// status would do; we use four-char-code 'NOIN' so it's
+    /// recognizable in logs.
+    static let kNoMoreInputThisCall = OSStatus(bitPattern: 0x4E4F494E) // 'NOIN'
 }
 
 /// Encodes 48 kHz mono Float32 PCM into AAC-LC access units, one AU per
@@ -47,8 +54,11 @@ final class AACEncoder {
         }
         self.converter = conv
 
-        // Target ~32 kbps for voice — fine quality, low bandwidth.
-        var bitrate: UInt32 = 32_000
+        // 64 kbps voice. Originally tried 32k — too aggressive,
+        // tone reproduction had audible quantization noise even on
+        // a clean sine. 64k is plenty for one-channel speech and
+        // still under 8 KB/s on the wire.
+        var bitrate: UInt32 = 64_000
         let bitrateStatus = AudioConverterSetProperty(
             conv,
             kAudioConverterEncodeBitRate,
@@ -58,6 +68,37 @@ final class AACEncoder {
         if bitrateStatus != noErr {
             print("AACEncoder: setting bitrate to \(bitrate) failed (OSStatus=\(bitrateStatus))")
         }
+    }
+
+    /// The encoder's magic cookie (AudioSpecificConfig wrapped in
+    /// whatever blob AudioToolbox prefers — ESDS on macOS). The
+    /// decoder must be primed with the same cookie before
+    /// `AudioConverterFillComplexBuffer`, otherwise it decodes raw
+    /// AAC AUs against a default config and produces well-formed
+    /// noise instead of audio.
+    func magicCookie() -> Data? {
+        guard let converter = converter else { return nil }
+        var size: UInt32 = 0
+        let sizeStatus = AudioConverterGetPropertyInfo(
+            converter,
+            kAudioConverterCompressionMagicCookie,
+            &size,
+            nil
+        )
+        guard sizeStatus == noErr, size > 0 else { return nil }
+        var data = Data(count: Int(size))
+        let getStatus = data.withUnsafeMutableBytes { rawPtr -> OSStatus in
+            guard let baseAddr = rawPtr.baseAddress else { return -1 }
+            var sz = size
+            return AudioConverterGetProperty(
+                converter,
+                kAudioConverterCompressionMagicCookie,
+                &sz,
+                baseAddr
+            )
+        }
+        guard getStatus == noErr else { return nil }
+        return data
     }
 
     deinit {
@@ -102,8 +143,15 @@ final class AACEncoder {
                     guard let inUserData = inUserData else { return -1 }
                     let ctx = Unmanaged<AACEncoder.EncodeContext>.fromOpaque(inUserData).takeUnretainedValue()
                     if ctx.consumed {
+                        // Signal "no more input THIS round" — NOT
+                        // end-of-stream. Returning 0 packets + noErr
+                        // would tell AudioConverter the stream is over,
+                        // it would flush a final packet, and then
+                        // permanently refuse further input. A non-zero
+                        // status code keeps the encoder primed for the
+                        // next FillComplexBuffer call.
                         ioNumberDataPackets.pointee = 0
-                        return noErr
+                        return AACCodecError.kNoMoreInputThisCall
                     }
                     ioData.pointee.mBuffers.mData = UnsafeMutableRawPointer(ctx.storage)
                     ioData.pointee.mBuffers.mDataByteSize = UInt32(ctx.count * MemoryLayout<Float>.size)
@@ -119,7 +167,13 @@ final class AACEncoder {
             )
         }
 
-        guard status == noErr else { throw AACCodecError.encode(status) }
+        // The callback returns `kNoMoreInputThisCall` to indicate "no
+        // more input right now". AudioConverterFillComplexBuffer
+        // propagates that status when it can't produce a packet —
+        // treat it as a benign nil-return rather than a hard error.
+        if status != noErr && status != AACCodecError.kNoMoreInputThisCall {
+            throw AACCodecError.encode(status)
+        }
         guard ioPackets > 0 else { return nil }
 
         let outSize = Int(outBufferList.mBuffers.mDataByteSize)
@@ -187,7 +241,36 @@ final class AACDecoder {
             throw AACCodecError.converterCreate(status)
         }
         self.converter = conv
+
+        // Prime the decoder with the encoder's magic cookie. Both
+        // ends configure AAC-LC mono 48kHz, so a freshly-built local
+        // encoder produces the exact same cookie the remote sender
+        // used. Without this, AudioConverter decodes raw AAC AUs
+        // against an inferred-from-ASBD config and emits noise.
+        if let cookie = AACDecoder.sharedCookie {
+            cookie.withUnsafeBytes { rawPtr in
+                guard let baseAddr = rawPtr.baseAddress else { return }
+                let setStatus = AudioConverterSetProperty(
+                    conv,
+                    kAudioConverterDecompressionMagicCookie,
+                    UInt32(cookie.count),
+                    baseAddr
+                )
+                if setStatus != noErr {
+                    print("AACDecoder: setting magic cookie failed (OSStatus=\(setStatus))")
+                }
+            }
+        } else {
+            print("AACDecoder: no magic cookie available; decoder may emit noise.")
+        }
     }
+
+    /// AAC-LC mono 48 kHz cookie, derived once from a throwaway
+    /// encoder. Cached so we don't rebuild an encoder per decoder.
+    private static let sharedCookie: Data? = {
+        guard let enc = try? AACEncoder() else { return nil }
+        return enc.magicCookie()
+    }()
 
     deinit {
         if let conv = converter { AudioConverterDispose(conv) }
@@ -221,8 +304,10 @@ final class AACDecoder {
                         guard let inUserData = inUserData else { return -1 }
                         let ctx = Unmanaged<AACDecoder.DecodeContext>.fromOpaque(inUserData).takeUnretainedValue()
                         if ctx.consumed {
+                            // See encoder callback for rationale —
+                            // returning noErr+0 packets latches EOS.
                             ioNumberDataPackets.pointee = 0
-                            return noErr
+                            return AACCodecError.kNoMoreInputThisCall
                         }
                         ioData.pointee.mBuffers.mData = ctx.storage
                         ioData.pointee.mBuffers.mDataByteSize = UInt32(ctx.count)
@@ -245,7 +330,9 @@ final class AACDecoder {
                     nil
                 )
             }
-            guard status == noErr else { throw AACCodecError.decode(status) }
+            if status != noErr && status != AACCodecError.kNoMoreInputThisCall {
+                throw AACCodecError.decode(status)
+            }
             return Array(ptr.prefix(Int(ioPackets)))
         }
     }
@@ -260,7 +347,7 @@ final class AACDecoder {
             self.count = au.count
             self.storage = UnsafeMutableRawPointer.allocate(byteCount: max(1, au.count), alignment: 1)
             au.withUnsafeBytes { src in
-                if let base = src.baseAddress, au.count > 0 {
+                if let base = src.baseAddress, !au.isEmpty {
                     self.storage.copyMemory(from: base, byteCount: au.count)
                 }
             }

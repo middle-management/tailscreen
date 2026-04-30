@@ -15,7 +15,7 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
     private static let arrow      = NSToolbarItem.Identifier("tool.arrow")
     private static let rectangle  = NSToolbarItem.Identifier("tool.rectangle")
     private static let oval       = NSToolbarItem.Identifier("tool.oval")
-    private static let microphone  = NSToolbarItem.Identifier("action.microphone")
+    private static let microphone = NSToolbarItem.Identifier("action.microphone")
     private static let undo       = NSToolbarItem.Identifier("action.undo")
     private static let clearAll   = NSToolbarItem.Identifier("action.clearAll")
 

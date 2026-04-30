@@ -22,11 +22,13 @@ final class RTPAudioTests: XCTestCase {
         let p1 = pack.packetize(au: au)
         let p2 = pack.packetize(au: au)
 
-        let ts1 = RTPHeader.decode(from: p1)?.header.timestamp
-        let ts2 = RTPHeader.decode(from: p2)?.header.timestamp
-        XCTAssertNotNil(ts1)
-        XCTAssertNotNil(ts2)
-        XCTAssertEqual(ts2! &- ts1!, 1024)
+        guard let ts1 = RTPHeader.decode(from: p1)?.header.timestamp,
+              let ts2 = RTPHeader.decode(from: p2)?.header.timestamp
+        else {
+            XCTFail("RTPHeader.decode returned nil")
+            return
+        }
+        XCTAssertEqual(ts2 &- ts1, 1024)
     }
 
     func testSequenceWraparound() {
