@@ -11,21 +11,22 @@ import AppKit
 @MainActor
 final class SharerOverlayWindow {
     /// Subclass of NSPanel that accepts key events even though it's borderless
-    /// — required so keyDown reaches the DrawingOverlayView for tool shortcuts.
+    /// — required so keyDown reaches the overlay host for tool shortcuts.
     private final class DrawingPanel: NSPanel {
         override var canBecomeKey: Bool { true }
         override var canBecomeMain: Bool { false }
     }
 
     let panel: NSPanel
-    let overlay: DrawingOverlayView
+    let model: AnnotationCanvasModel
+    private let host: AnnotationOverlayHostView
 
     /// Fired by the overlay whenever the sharer draws / clears / undoes.
     /// AppState wires this to nothing (sharer's drawings appear in the video
     /// stream naturally) — we keep it here for symmetry with the viewer.
     var onOp: ((AnnotationOp) -> Void)? {
-        get { overlay.onOp }
-        set { overlay.onOp = newValue }
+        get { model.onOp }
+        set { model.onOp = newValue }
     }
 
     init() {
@@ -48,16 +49,20 @@ final class SharerOverlayWindow {
         // Accept mouse events even when our app isn't frontmost.
         panel.becomesKeyOnlyIfNeeded = false
 
-        let overlay = DrawingOverlayView(frame: NSRect(origin: .zero, size: screenFrame.size))
-        overlay.autoresizingMask = [.width, .height]
-        overlay.isInputEnabled = false
-        overlay.currentColor = Annotation.RGBA.paletteColor(forIdentity: Self.localIdentity())
-        panel.contentView = overlay
+        let model = AnnotationCanvasModel()
+        model.isInputEnabled = false
+        model.currentColor = Annotation.RGBA.paletteColor(forIdentity: Self.localIdentity())
+
+        let host = AnnotationOverlayHostView(model: model)
+        host.frame = NSRect(origin: .zero, size: screenFrame.size)
+        host.autoresizingMask = [.width, .height]
+        panel.contentView = host
 
         self.panel = panel
-        self.overlay = overlay
+        self.model = model
+        self.host = host
 
-        overlay.onEscape = { [weak self] in
+        model.onEscape = { [weak self] in
             self?.setInputEnabled(false)
         }
     }
@@ -77,24 +82,25 @@ final class SharerOverlayWindow {
     /// and "active drawing" (the sharer can draw + use shortcuts).
     func setInputEnabled(_ enabled: Bool) {
         panel.ignoresMouseEvents = !enabled
-        overlay.isInputEnabled = enabled
+        model.isInputEnabled = enabled
         if enabled {
             panel.orderFrontRegardless()
             panel.makeKey()
-            ViewerCommands.shared.activeOverlay = overlay
-        } else if ViewerCommands.shared.activeOverlay === overlay {
+            panel.makeFirstResponder(host)
+            ViewerCommands.shared.activeOverlay = model
+        } else if ViewerCommands.shared.activeOverlay === model {
             ViewerCommands.shared.activeOverlay = nil
         }
     }
 
     func apply(remoteOp op: AnnotationOp) {
-        overlay.apply(remoteOp: op)
+        model.apply(remoteOp: op)
     }
 
     /// Stable identity string used to derive this participant's drawing
     /// color. Same algorithm as TailscaleScreenShareClient.localIdentity()
-    /// — combining hostname + CUPLE_INSTANCE makes two local processes on
-    /// the same Mac pick *different* colors (they have different instance
+    /// — combining hostname + TAILSCREEN_INSTANCE makes two local processes
+    /// on the same Mac pick *different* colors (they have different instance
     /// suffixes), while two real machines pick whatever their hostnames
     /// hash to.
     static func localIdentity() -> String {

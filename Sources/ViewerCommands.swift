@@ -1,17 +1,18 @@
 import AppKit
 
 /// Single object that NSMenu items target. Routes selectors to whichever
-/// ``DrawingOverlayView`` is currently active (last keyed window's overlay).
-/// AppMenu installs `mainMenu`'s items with `target = ViewerCommands.shared`,
-/// so menus light up wherever the user happens to be drawing.
+/// ``AnnotationCanvasModel`` is currently active (last keyed window's
+/// overlay). AppMenu installs `mainMenu`'s items with
+/// `target = ViewerCommands.shared`, so menus light up wherever the user
+/// happens to be drawing.
 @MainActor
 final class ViewerCommands: NSObject {
     static let shared = ViewerCommands()
 
-    /// Weakly held so a viewer-window teardown doesn't keep the overlay
+    /// Weakly held so a viewer-window teardown doesn't keep the canvas
     /// alive past its window. Updated by the overlay's host whenever its
     /// window becomes/resigns key.
-    weak var activeOverlay: DrawingOverlayView?
+    weak var activeOverlay: AnnotationCanvasModel?
 
     // MARK: - Tools
 
