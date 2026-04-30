@@ -52,7 +52,11 @@ final class AnnotationCanvasModel: ObservableObject {
     private static let dragEmitMinIntervalNs: UInt64 = 33_000_000
 
     struct EphemeralClick: Identifiable, Equatable {
-        var id: UUID { annotation.id }
+        /// Unique per-instance id so a retransmit (which replaces an existing
+        /// entry in `ephemeralClicks`) appears as a brand-new view to
+        /// SwiftUI — restarting the ripple animation, matching the AppKit
+        /// behaviour where the timer reset.
+        let id = UUID()
         let annotation: Annotation
         let startTime: CFTimeInterval
     }

@@ -1,15 +1,14 @@
 import SwiftUI
-import QuartzCore
 
 /// SwiftUI renderer for the shared annotation canvas. Used by both the
 /// sharer's borderless overlay panel and the viewer's window overlay; the
 /// shape data is pulled from an ``AnnotationCanvasModel`` injected by the
 /// host.
 ///
-/// Rendering uses ``Canvas`` for the static + in-progress shapes and a
-/// ``TimelineView(.animation)`` layered on top that only exists while
-/// ephemeral click ripples are live — so an idle overlay holds no recurring
-/// runloop work.
+/// Each annotation is its own `Shape` view composed via `ForEach`, so
+/// SwiftUI diffs the list and only the changed shape re-renders during a
+/// drag (the in-progress stroke). Click ripples animate themselves via
+/// `withAnimation` in `onAppear`, no timer needed.
 ///
 /// Pointer input arrives via a single zero-distance ``DragGesture``, which
 /// fires for both taps and drags. Keyboard and right-click are handled by
@@ -22,27 +21,14 @@ struct AnnotationCanvasView: View {
     var body: some View {
         GeometryReader { geo in
             ZStack {
-                Canvas { ctx, size in
-                    for ann in model.annotations {
-                        Self.draw(annotation: ann, in: &ctx, size: size)
-                    }
-                    if let ip = model.inProgress {
-                        Self.draw(annotation: ip, in: &ctx, size: size)
-                    }
+                ForEach(model.annotations) { ann in
+                    annotationView(ann)
                 }
-
-                if !model.ephemeralClicks.isEmpty {
-                    TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: false)) { _ in
-                        Canvas { ctx, size in
-                            let now = CACurrentMediaTime()
-                            for click in model.ephemeralClicks {
-                                let elapsed = now - click.startTime
-                                let progress = max(0, min(1, elapsed / AnnotationCanvasModel.clickAnimationDuration))
-                                Self.drawEphemeralClick(click.annotation, progress: progress, in: &ctx, size: size)
-                            }
-                        }
-                    }
-                    .allowsHitTesting(false)
+                if let ip = model.inProgress {
+                    annotationView(ip)
+                }
+                ForEach(model.ephemeralClicks) { click in
+                    EphemeralClickView(click: click)
                 }
             }
             .contentShape(Rectangle())
@@ -64,7 +50,26 @@ struct AnnotationCanvasView: View {
         }
     }
 
-    // MARK: - Coordinates
+    @ViewBuilder
+    private func annotationView(_ ann: Annotation) -> some View {
+        if ann.tool == .click {
+            // In-progress click marker (bullseye). Committed clicks live in
+            // `ephemeralClicks` instead and animate via EphemeralClickView.
+            ClickMarker(annotation: ann)
+                .allowsHitTesting(false)
+        } else {
+            AnnotationShape(annotation: ann)
+                .stroke(
+                    ann.color.swiftUI,
+                    style: StrokeStyle(
+                        lineWidth: CGFloat(ann.width),
+                        lineCap: .round,
+                        lineJoin: .round
+                    )
+                )
+                .allowsHitTesting(false)
+        }
+    }
 
     private static func normalize(_ point: CGPoint, in size: CGSize) -> CGPoint {
         let w = max(size.width, 1)
@@ -74,148 +79,183 @@ struct AnnotationCanvasView: View {
             y: max(0, min(1, point.y / h))
         )
     }
+}
 
-    private static func denormalize(_ p: CGPoint, in size: CGSize) -> CGPoint {
-        // Canvas coords are top-left origin, same as our normalized space.
-        CGPoint(x: p.x * size.width, y: p.y * size.height)
-    }
+// MARK: - Shapes
 
-    private static func swiftUIColor(_ rgba: Annotation.RGBA) -> Color {
-        Color(.sRGB, red: rgba.r, green: rgba.g, blue: rgba.b, opacity: rgba.a)
-    }
+/// A single committed or in-progress annotation as a SwiftUI `Shape`. The
+/// path stays in normalized coordinates internally and scales itself to
+/// whatever rect SwiftUI lays it out in.
+private struct AnnotationShape: Shape {
+    let annotation: Annotation
 
-    // MARK: - Shape drawing
-
-    private static func draw(annotation: Annotation, in ctx: inout GraphicsContext, size: CGSize) {
-        let color = swiftUIColor(annotation.color)
-        let lineWidth = CGFloat(annotation.width)
-        let style = StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round)
-        let pts = annotation.points.map { denormalize($0, in: size) }
-        guard let first = pts.first else { return }
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        let pts = annotation.points.map {
+            CGPoint(x: rect.minX + $0.x * rect.width,
+                    y: rect.minY + $0.y * rect.height)
+        }
+        guard let first = pts.first else { return path }
 
         switch annotation.tool {
         case .pen:
-            var path = Path()
             path.move(to: first)
             for p in pts.dropFirst() { path.addLine(to: p) }
-            ctx.stroke(path, with: .color(color), style: style)
 
         case .line:
-            guard let last = pts.last, pts.count >= 2 else { return }
-            var path = Path()
+            guard let last = pts.last, pts.count >= 2 else { return path }
             path.move(to: first)
             path.addLine(to: last)
-            ctx.stroke(path, with: .color(color), style: style)
 
         case .arrow:
-            guard let last = pts.last, pts.count >= 2 else { return }
-            var shaft = Path()
-            shaft.move(to: first)
-            shaft.addLine(to: last)
-            ctx.stroke(shaft, with: .color(color), style: style)
+            guard let last = pts.last, pts.count >= 2 else { return path }
+            path.move(to: first)
+            path.addLine(to: last)
             // Arrowhead: two short segments at ±150° from the shaft direction.
             let dx = last.x - first.x
             let dy = last.y - first.y
             let ang = atan2(dy, dx)
-            let headLen = max(12.0, lineWidth * 4)
+            let headLen = max(12.0, CGFloat(annotation.width) * 4)
             let headAng = CGFloat.pi * 5 / 6
-            var head = Path()
-            head.move(to: last)
-            head.addLine(to: CGPoint(
+            path.move(to: last)
+            path.addLine(to: CGPoint(
                 x: last.x + cos(ang + headAng) * headLen,
                 y: last.y + sin(ang + headAng) * headLen
             ))
-            head.move(to: last)
-            head.addLine(to: CGPoint(
+            path.move(to: last)
+            path.addLine(to: CGPoint(
                 x: last.x + cos(ang - headAng) * headLen,
                 y: last.y + sin(ang - headAng) * headLen
             ))
-            ctx.stroke(head, with: .color(color), style: style)
 
         case .rectangle:
-            guard let last = pts.last, pts.count >= 2 else { return }
-            let rect = CGRect(
+            guard let last = pts.last, pts.count >= 2 else { return path }
+            path.addRect(CGRect(
                 x: min(first.x, last.x),
                 y: min(first.y, last.y),
                 width: abs(last.x - first.x),
                 height: abs(last.y - first.y)
-            )
-            ctx.stroke(Path(rect), with: .color(color), style: style)
+            ))
 
         case .oval:
-            guard let last = pts.last, pts.count >= 2 else { return }
-            let rect = CGRect(
+            guard let last = pts.last, pts.count >= 2 else { return path }
+            path.addEllipse(in: CGRect(
                 x: min(first.x, last.x),
                 y: min(first.y, last.y),
                 width: abs(last.x - first.x),
                 height: abs(last.y - first.y)
-            )
-            ctx.stroke(Path(ellipseIn: rect), with: .color(color), style: style)
+            ))
 
         case .click:
-            // Bullseye marker: filled center dot + outer ring. Sized off
-            // the stroke width so the marker scales with pen width.
-            let outerRadius = max(14.0, lineWidth * 6)
-            let innerRadius = max(3.0, lineWidth * 1.2)
-            let outer = CGRect(
-                x: first.x - outerRadius,
-                y: first.y - outerRadius,
-                width: outerRadius * 2,
-                height: outerRadius * 2
-            )
-            ctx.stroke(Path(ellipseIn: outer), with: .color(color), lineWidth: lineWidth)
-            let inner = CGRect(
-                x: first.x - innerRadius,
-                y: first.y - innerRadius,
-                width: innerRadius * 2,
-                height: innerRadius * 2
-            )
-            ctx.fill(Path(ellipseIn: inner), with: .color(color))
+            // Drawn by ClickMarker (stroke + fill) instead of a single Shape.
+            break
+        }
+        return path
+    }
+}
+
+/// Static bullseye for an in-progress click annotation: outer stroked ring +
+/// filled center dot. Sized off the stroke width so a thicker pen draws a
+/// louder marker.
+private struct ClickMarker: View {
+    let annotation: Annotation
+
+    var body: some View {
+        let lineWidth = CGFloat(annotation.width)
+        let outerR = max(14.0, lineWidth * 6)
+        let innerR = max(3.0, lineWidth * 1.2)
+        let color = annotation.color.swiftUI
+        let center = annotation.points.first ?? .zero
+
+        GeometryReader { geo in
+            let cx = center.x * geo.size.width
+            let cy = center.y * geo.size.height
+            ZStack {
+                Circle()
+                    .stroke(color, lineWidth: lineWidth)
+                    .frame(width: outerR * 2, height: outerR * 2)
+                    .position(x: cx, y: cy)
+                Circle()
+                    .fill(color)
+                    .frame(width: innerR * 2, height: innerR * 2)
+                    .position(x: cx, y: cy)
+            }
+        }
+    }
+}
+
+/// Animated click ripple — two staggered expanding rings + a fading center
+/// dot. Each component animates via `withAnimation` in `onAppear`; the
+/// model removes the click from `ephemeralClicks` after the lifetime
+/// elapses, at which point SwiftUI removes the view.
+private struct EphemeralClickView: View {
+    let click: AnnotationCanvasModel.EphemeralClick
+
+    /// Eased progress 0→1 for each component. Driving them as separate
+    /// state values lets the easing curves and durations differ.
+    @State private var ring1: Double = 0
+    @State private var ring2: Double = 0
+    @State private var dotFade: Double = 0
+
+    private static let totalDuration: Double = AnnotationCanvasModel.clickAnimationDuration
+
+    var body: some View {
+        let ann = click.annotation
+        let color = ann.color
+        let lineWidth = CGFloat(ann.width)
+        let startR = max(8.0, lineWidth * 3)
+        let endR = max(48.0, lineWidth * 14)
+        let dotR = max(3.0, lineWidth * 1.5)
+        let center = ann.points.first ?? .zero
+
+        GeometryReader { geo in
+            let cx = center.x * geo.size.width
+            let cy = center.y * geo.size.height
+            ZStack {
+                ring(progress: ring1, lineWidth: lineWidth, color: color, startR: startR, endR: endR)
+                    .position(x: cx, y: cy)
+                ring(progress: ring2, lineWidth: lineWidth, color: color, startR: startR, endR: endR)
+                    .position(x: cx, y: cy)
+                Circle()
+                    .fill(color.swiftUI.opacity((1 - dotFade) * color.a))
+                    .frame(width: dotR * 2, height: dotR * 2)
+                    .position(x: cx, y: cy)
+            }
+        }
+        .allowsHitTesting(false)
+        .onAppear {
+            // Ring 1: full lifetime, ease-out, opacity 1→0.
+            withAnimation(.easeOut(duration: Self.totalDuration)) {
+                ring1 = 1
+            }
+            // Ring 2: starts at 25% of the lifetime, runs for the rest.
+            withAnimation(.easeOut(duration: Self.totalDuration * 0.75)
+                .delay(Self.totalDuration * 0.25)) {
+                ring2 = 1
+            }
+            // Center dot: fades out over the first 60% of the lifetime.
+            withAnimation(.easeOut(duration: Self.totalDuration * 0.6)) {
+                dotFade = 1
+            }
         }
     }
 
-    // MARK: - Ripple
+    /// Single expanding ring driven by `progress` 0→1.
+    @ViewBuilder
+    private func ring(progress: Double, lineWidth: CGFloat, color: Annotation.RGBA,
+                      startR: CGFloat, endR: CGFloat) -> some View {
+        let radius = startR + CGFloat(progress) * (endR - startR)
+        let alpha = (1.0 - progress) * color.a
+        Circle()
+            .stroke(color.swiftUI.opacity(alpha), lineWidth: lineWidth)
+            .frame(width: radius * 2, height: radius * 2)
+    }
+}
 
-    /// Two staggered expanding rings + a fading center dot. Same shape as
-    /// the original AppKit drawing — tweaked thresholds match the previous
-    /// behaviour 1:1 so the ripple visual reads identical.
-    private static func drawEphemeralClick(_ annotation: Annotation, progress: Double, in ctx: inout GraphicsContext, size: CGSize) {
-        let pts = annotation.points.map { denormalize($0, in: size) }
-        guard let center = pts.first else { return }
-        let baseColor = annotation.color
-        let lineWidth = CGFloat(annotation.width)
-        let startRadius = max(8.0, lineWidth * 3)
-        let endRadius = max(48.0, lineWidth * 14)
+// MARK: - Color bridge
 
-        for stagger in [0.0, 0.25] {
-            let local = (progress - stagger) / (1.0 - stagger)
-            guard local > 0, local < 1 else { continue }
-            let eased = 1 - pow(1 - local, 2) // ease-out quad
-            let radius = startRadius + CGFloat(eased) * (endRadius - startRadius)
-            let alpha = (1.0 - local) * baseColor.a
-            let rect = CGRect(
-                x: center.x - radius,
-                y: center.y - radius,
-                width: radius * 2,
-                height: radius * 2
-            )
-            let ringColor = Color(.sRGB, red: baseColor.r, green: baseColor.g, blue: baseColor.b, opacity: alpha)
-            ctx.stroke(Path(ellipseIn: rect), with: .color(ringColor), lineWidth: lineWidth)
-        }
-
-        // Center dot pulses for the first ~60% of the animation, then fades.
-        let dotProgress = min(1.0, progress / 0.6)
-        let dotAlpha = (1.0 - dotProgress) * baseColor.a
-        if dotAlpha > 0 {
-            let innerR = max(3.0, lineWidth * 1.5)
-            let inner = CGRect(
-                x: center.x - innerR,
-                y: center.y - innerR,
-                width: innerR * 2,
-                height: innerR * 2
-            )
-            let dotColor = Color(.sRGB, red: baseColor.r, green: baseColor.g, blue: baseColor.b, opacity: dotAlpha)
-            ctx.fill(Path(ellipseIn: inner), with: .color(dotColor))
-        }
+extension Annotation.RGBA {
+    var swiftUI: Color {
+        Color(.sRGB, red: r, green: g, blue: b, opacity: a)
     }
 }
