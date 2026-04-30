@@ -313,7 +313,10 @@ class AppState: ObservableObject {
     @discardableResult
     private func ensureSharerOverlay() -> SharerOverlayWindow {
         if let overlay = sharerOverlay { return overlay }
-        let overlay = SharerOverlayWindow()
+        // Anchor the overlay panel to the display we're actually capturing
+        // so remote drawings appear on the shared screen instead of the
+        // sharer's main monitor.
+        let overlay = SharerOverlayWindow(displayID: selectedDisplayID)
         // Sharer's own strokes don't need to be transmitted; they appear in
         // the video stream automatically.
         overlay.onOp = { _ in }
