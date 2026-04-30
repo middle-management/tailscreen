@@ -1,4 +1,5 @@
 import AppKit
+import QuartzCore
 
 /// NSView that renders and captures annotations. Used both as the viewer's
 /// overlay (subview of the viewer window's contentView, sitting above the
@@ -12,7 +13,7 @@ import AppKit
 /// Input:
 ///   • Left mouse drag  — draw the current tool's shape.
 ///   • Right click      — clear all annotations.
-///   • 1–5              — select tool (pen/line/arrow/rectangle/oval).
+///   • 1–6              — select tool (pen/line/arrow/rectangle/oval/click).
 ///   • Cmd-Z            — undo the last shape created by this view.
 ///   • Esc              — request the host to hide the overlay.
 @MainActor
@@ -21,6 +22,21 @@ final class DrawingOverlayView: NSView {
     private(set) var annotations: [Annotation] = []
     /// Shape currently being dragged; rendered along with ``annotations``.
     private var inProgress: Annotation?
+    /// Live click markers, each with a wall-clock start time. Click is an
+    /// attention-grabbing ripple that auto-disappears after
+    /// ``clickAnimationDuration`` — it never lands in ``annotations`` and
+    /// participates in neither undo nor clear-all (it self-prunes).
+    private var ephemeralClicks: [EphemeralClick] = []
+    /// 60 Hz tick that drives ripple animation + pruning. Lives only while
+    /// at least one ephemeral click is on screen, then nils out.
+    private var clickAnimationTimer: Timer?
+    /// Total lifetime of a click ripple, start to fully gone.
+    private static let clickAnimationDuration: CFTimeInterval = 0.8
+
+    private struct EphemeralClick {
+        let annotation: Annotation
+        let startTime: CFTimeInterval
+    }
     /// mach-uptime ns of the last in-progress op we transmitted, for the
     /// drag-time throttle.
     private var lastDragEmitNs: UInt64 = 0
@@ -69,10 +85,14 @@ final class DrawingOverlayView: NSView {
     func apply(remoteOp op: AnnotationOp) {
         switch op {
         case .add(let ann):
-            // Upsert by id so progressive `.add` updates from the
-            // originator's mouseDragged stream replace the in-flight
-            // shape rather than stack duplicates.
-            if let idx = annotations.firstIndex(where: { $0.id == ann.id }) {
+            if ann.tool == .click {
+                // Click is ephemeral on both ends — start the ripple
+                // animation when the peer's mouseUp lands here.
+                addEphemeralClick(ann)
+            } else if let idx = annotations.firstIndex(where: { $0.id == ann.id }) {
+                // Upsert by id so progressive `.add` updates from the
+                // originator's mouseDragged stream replace the in-flight
+                // shape rather than stack duplicates.
                 annotations[idx] = ann
             } else {
                 annotations.append(ann)
@@ -81,6 +101,7 @@ final class DrawingOverlayView: NSView {
             annotations.removeAll { $0.id == id }
         case .clearAll:
             annotations.removeAll()
+            ephemeralClicks.removeAll()
         }
         needsDisplay = true
     }
@@ -131,6 +152,11 @@ final class DrawingOverlayView: NSView {
             // Two-point shapes: keep [start, current].
             let start = ip.points.first ?? p
             ip = Annotation(id: ip.id, tool: ip.tool, points: [start, p], color: ip.color, width: ip.width)
+        case .click:
+            // Click is a single-point marker — let the cursor follow the
+            // drag so the user can fine-tune position before mouseUp, but
+            // never accumulate points.
+            ip = Annotation(id: ip.id, tool: ip.tool, points: [p], color: ip.color, width: ip.width)
         }
         inProgress = ip
         needsDisplay = true
@@ -139,16 +165,29 @@ final class DrawingOverlayView: NSView {
         // sees the stroke build up live instead of popping in only on
         // mouseUp. Throttled to ~30 Hz; receivers upsert by id so each
         // update replaces the previous in-progress shape.
-        let nowNs = DispatchTime.now().uptimeNanoseconds
-        if nowNs &- lastDragEmitNs >= Self.dragEmitMinIntervalNs {
-            lastDragEmitNs = nowNs
-            onOp?(.add(ip))
+        // Click is ephemeral and animates on its own timeline — emitting
+        // mid-drag would start the ripple early on the remote, so wait
+        // for mouseUp and send a single `.add`.
+        if ip.tool != .click {
+            let nowNs = DispatchTime.now().uptimeNanoseconds
+            if nowNs &- lastDragEmitNs >= Self.dragEmitMinIntervalNs {
+                lastDragEmitNs = nowNs
+                onOp?(.add(ip))
+            }
         }
     }
 
     override func mouseUp(with event: NSEvent) {
         guard isInputEnabled, let ip = inProgress else { return }
         inProgress = nil
+        if ip.tool == .click {
+            // Click commits as an ephemeral ripple — never enters
+            // `annotations`/`localIDs`, so it can't be undone or
+            // cleared (it disappears on its own).
+            addEphemeralClick(ip)
+            onOp?(.add(ip))
+            return
+        }
         // Discard trivial clicks (no drag).
         if ip.points.count < 2 {
             needsDisplay = true
@@ -181,6 +220,7 @@ final class DrawingOverlayView: NSView {
     func clearAll() {
         annotations.removeAll()
         localIDs.removeAll()
+        ephemeralClicks.removeAll()
         inProgress = nil
         needsDisplay = true
         onOp?(.clearAll)
@@ -215,6 +255,7 @@ final class DrawingOverlayView: NSView {
         case "3": currentTool = .arrow
         case "4": currentTool = .rectangle
         case "5": currentTool = .oval
+        case "6": currentTool = .click
         default:
             super.keyDown(with: event)
         }
@@ -223,9 +264,19 @@ final class DrawingOverlayView: NSView {
     // MARK: - Drawing
 
     override func draw(_ dirtyRect: NSRect) {
-        // Render every committed shape, then the in-progress one on top.
+        // Render every committed shape, the in-progress one, then the
+        // ephemeral click ripples last so they sit on top of any
+        // overlapping permanent annotations.
         for ann in annotations { draw(annotation: ann) }
         if let ip = inProgress { draw(annotation: ip) }
+        if !ephemeralClicks.isEmpty {
+            let now = CACurrentMediaTime()
+            for click in ephemeralClicks {
+                let elapsed = now - click.startTime
+                let progress = max(0, min(1, elapsed / Self.clickAnimationDuration))
+                drawEphemeralClick(click.annotation, progress: progress)
+            }
+        }
     }
 
     private func draw(annotation: Annotation) {
@@ -302,6 +353,138 @@ final class DrawingOverlayView: NSView {
                 height: abs(last.y - first.y)
             )
             NSBezierPath(ovalIn: rect).apply(strokeWidth: CGFloat(annotation.width))
+
+        case .click:
+            // Bullseye marker: filled center dot + outer ring. Sized off
+            // the stroke width so the marker scales with the user's pen
+            // width preference.
+            let w = CGFloat(annotation.width)
+            let outerRadius = max(14.0, w * 6)
+            let innerRadius = max(3.0, w * 1.2)
+            let outer = NSRect(
+                x: first.x - outerRadius,
+                y: first.y - outerRadius,
+                width: outerRadius * 2,
+                height: outerRadius * 2
+            )
+            let outerPath = NSBezierPath(ovalIn: outer)
+            outerPath.lineWidth = w
+            outerPath.stroke()
+            let inner = NSRect(
+                x: first.x - innerRadius,
+                y: first.y - innerRadius,
+                width: innerRadius * 2,
+                height: innerRadius * 2
+            )
+            color.setFill()
+            NSBezierPath(ovalIn: inner).fill()
+        }
+    }
+
+    // MARK: - Ephemeral click ripple
+
+    /// Insert an animated click marker. Idempotent on annotation id —
+    /// a re-arrival of the same id resets the ripple's start time so a
+    /// retransmit doesn't stack two overlapping ripples.
+    private func addEphemeralClick(_ annotation: Annotation) {
+        let now = CACurrentMediaTime()
+        if let idx = ephemeralClicks.firstIndex(where: { $0.annotation.id == annotation.id }) {
+            ephemeralClicks[idx] = EphemeralClick(annotation: annotation, startTime: now)
+        } else {
+            ephemeralClicks.append(EphemeralClick(annotation: annotation, startTime: now))
+        }
+        if clickAnimationTimer == nil {
+            startClickAnimationTimer()
+        }
+        needsDisplay = true
+    }
+
+    /// Drive ephemeral click animation at ~60 Hz. Stops itself once the
+    /// ephemeral list is drained so an idle overlay holds no runloop work.
+    private func startClickAnimationTimer() {
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let now = CACurrentMediaTime()
+                self.ephemeralClicks.removeAll {
+                    now - $0.startTime > Self.clickAnimationDuration
+                }
+                if self.ephemeralClicks.isEmpty {
+                    self.clickAnimationTimer?.invalidate()
+                    self.clickAnimationTimer = nil
+                }
+                self.needsDisplay = true
+            }
+        }
+        // Common runloop mode keeps the ripple animating during menu
+        // tracking and live-resize, where the default mode would pause it.
+        RunLoop.main.add(timer, forMode: .common)
+        clickAnimationTimer = timer
+    }
+
+    /// Two staggered expanding rings + a fading center dot. The ripple
+    /// scales off the annotation's stroke width so a thicker pen draws
+    /// a louder marker.
+    private func drawEphemeralClick(_ annotation: Annotation, progress: Double) {
+        let pts = annotation.points.map(denormalized)
+        guard let center = pts.first else { return }
+        let baseColor = NSColor(
+            srgbRed: CGFloat(annotation.color.r),
+            green: CGFloat(annotation.color.g),
+            blue: CGFloat(annotation.color.b),
+            alpha: CGFloat(annotation.color.a)
+        )
+        let w = CGFloat(annotation.width)
+        let startRadius = max(8.0, w * 3)
+        let endRadius = max(48.0, w * 14)
+
+        // Two rings; the second starts a beat later so the marker reads
+        // as a pulse rather than a single ring.
+        for stagger in [0.0, 0.25] {
+            let local = (progress - stagger) / (1.0 - stagger)
+            guard local > 0, local < 1 else { continue }
+            let eased = 1 - pow(1 - local, 2) // ease-out quad
+            let radius = startRadius + CGFloat(eased) * (endRadius - startRadius)
+            let alpha = CGFloat(1.0 - local) * CGFloat(annotation.color.a)
+            let rect = NSRect(
+                x: center.x - radius,
+                y: center.y - radius,
+                width: radius * 2,
+                height: radius * 2
+            )
+            let ring = NSBezierPath(ovalIn: rect)
+            ring.lineWidth = w
+            baseColor.withAlphaComponent(alpha).setStroke()
+            ring.stroke()
+        }
+
+        // Center dot pulses for the first ~60% of the animation, then
+        // fades out so nothing is left behind.
+        let dotProgress = min(1.0, progress / 0.6)
+        let dotAlpha = CGFloat(1.0 - dotProgress) * CGFloat(annotation.color.a)
+        if dotAlpha > 0 {
+            let innerR = max(3.0, w * 1.5)
+            let inner = NSRect(
+                x: center.x - innerR,
+                y: center.y - innerR,
+                width: innerR * 2,
+                height: innerR * 2
+            )
+            baseColor.withAlphaComponent(dotAlpha).setFill()
+            NSBezierPath(ovalIn: inner).fill()
+        }
+    }
+
+    // MARK: - Lifecycle
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        super.viewWillMove(toWindow: newWindow)
+        if newWindow == nil {
+            // Detached from window — no point continuing to fire the
+            // ripple timer (and it would otherwise leak the runloop ref).
+            clickAnimationTimer?.invalidate()
+            clickAnimationTimer = nil
+            ephemeralClicks.removeAll()
         }
     }
 }

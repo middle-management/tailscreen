@@ -130,6 +130,7 @@ enum AppMenu {
             ("Arrow",     "3", #selector(ViewerCommands.selectArrowTool(_:))),
             ("Rectangle", "4", #selector(ViewerCommands.selectRectangleTool(_:))),
             ("Oval",      "5", #selector(ViewerCommands.selectOvalTool(_:))),
+            ("Click", "6", #selector(ViewerCommands.selectClickTool(_:)))
         ]
         for (title, key, action) in toolDefs {
             let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
