@@ -41,7 +41,7 @@ class AppState: ObservableObject {
     // we reuse the existing instances.
     @Published var viewerWindow: NSWindow?
     private var viewerRenderer: MetalViewerRenderer?
-    private var viewerOverlay: DrawingOverlayView?
+    private var viewerOverlay: AnnotationOverlayHostView?
 
     // Peer discovery
     @Published var availablePeers: [TailscreenPeer] = []
@@ -434,16 +434,18 @@ class AppState: ObservableObject {
         // active client's back-channel; the closure looks up `self.client`
         // each time, so the wiring survives reconnects without rebuilding
         // the overlay.
-        let overlay = DrawingOverlayView(frame: host.bounds)
-        overlay.currentColor = Annotation.RGBA.paletteColor(forIdentity: TailscaleScreenShareClient.localIdentity())
-        host.contentSubview = overlay
-        host.addSubview(overlay)
-        overlay.onOp = { [weak self] op in
+        let overlayModel = AnnotationCanvasModel()
+        overlayModel.currentColor = Annotation.RGBA.paletteColor(forIdentity: TailscaleScreenShareClient.localIdentity())
+        overlayModel.onOp = { [weak self] op in
             Task { [weak self] in await self?.client?.sendAnnotationOp(op) }
         }
-        // Plug this overlay into the app menu so Tools / Edit / File
-        // menu items act on it. ViewerCommands holds it weakly.
-        ViewerCommands.shared.activeOverlay = overlay
+        let overlay = AnnotationOverlayHostView(model: overlayModel)
+        overlay.frame = host.bounds
+        host.contentSubview = overlay
+        host.addSubview(overlay)
+        // Plug this canvas into the app menu so Tools / Edit / File menu
+        // items act on it. ViewerCommands holds the model weakly.
+        ViewerCommands.shared.activeOverlay = overlayModel
         self.viewerOverlay = overlay
 
         win.contentView = host
