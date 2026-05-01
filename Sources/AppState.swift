@@ -6,6 +6,7 @@ import CoreGraphics
 import Foundation
 import Observation
 import QuartzCore
+import ScreenCaptureKit
 import SwiftUI
 import TailscaleKit
 
@@ -216,17 +217,23 @@ class AppState: ObservableObject {
 
                 // SCStream can die from two distinct causes:
                 //   1. User clicks the macOS Control Center "Stop" button —
-                //      genuine intent to stop, tear down.
-                //   2. replayd drops its XPC connection mid-stream —
-                //      transient, recoverable, viewer is still connected
-                //      and waiting for video. Try to bring capture back up
-                //      first; only fall through to a teardown if recovery
-                //      fails. The two cases are hard to tell apart from
-                //      the SCStream error alone, so we just always try
-                //      restartCapture once before giving up.
-                srv.onCaptureStopped = { [weak self] _ in
+                //      reported as SCStreamErrorDomain / .userStopped. Tear
+                //      sharing down quietly; the menubar icon already
+                //      reflects the new idle state.
+                //   2. replayd drops its XPC connection mid-stream — any
+                //      other error (or nil). Transient, recoverable,
+                //      viewer is still connected and waiting for video.
+                //      Try restartCapture once; only fall through to a
+                //      teardown if recovery fails.
+                srv.onCaptureStopped = { [weak self] error in
                     Task { @MainActor [weak self] in
                         guard let self, self.isSharing else { return }
+                        if let nsErr = error as NSError?,
+                           nsErr.domain == SCStreamError.errorDomain,
+                           nsErr.code == SCStreamError.Code.userStopped.rawValue {
+                            await self.stopSharing()
+                            return
+                        }
                         guard let server = self.server else { return }
                         do {
                             try await server.restartCapture()
@@ -495,7 +502,7 @@ class AppState: ObservableObject {
                     self.isMicOn = false
                     do {
                         let voice = try VoiceChannel(localSSRC: ssrc) { [weak c] packet in
-                            Task { await c?.sendAudioRTP(packet) }
+                            c?.sendAudioRTP(packet)
                         }
                         self.voiceChannel = voice
                         c.onAudioReceived = { [weak voice] packet in

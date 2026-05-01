@@ -40,9 +40,6 @@ final class VoiceChannel: @unchecked Sendable {
     private let depacketizer = AudioRTPDepacketizer()
     private var decoders: [UInt32: AACDecoder] = [:]
     private var brokenSSRCs: Set<UInt32> = []
-    private var sentCount: Int = 0
-    private var recvCount: Int = 0
-    private var playedCount: Int = 0
 
     init(localSSRC: UInt32, onSend: @escaping (Data) -> Void) throws {
         self.localSSRC = localSSRC
@@ -53,28 +50,12 @@ final class VoiceChannel: @unchecked Sendable {
 
     /// Push exactly 1024 PCM samples (one AAC AU's worth) for outbound
     /// transmission. No-op when muted.
-    private var inboundFrameCount: Int = 0
-    private var encodeNilCount: Int = 0
     func processOutboundFrame(_ pcm: [Float]) {
         queue.async {
-            self.inboundFrameCount += 1
-            if self.inboundFrameCount == 1 || self.inboundFrameCount == 2 || self.inboundFrameCount % 50 == 0 {
-                print("VoiceChannel[ssrc=\(self.localSSRC)]: inbound frame #\(self.inboundFrameCount), muted=\(self._isMuted), pcm.count=\(pcm.count)")
-            }
             guard !self._isMuted else { return }
             do {
-                guard let au = try self.encoder.encode(pcm: pcm) else {
-                    self.encodeNilCount += 1
-                    if self.encodeNilCount == 1 || self.encodeNilCount == 2 || self.encodeNilCount % 50 == 0 {
-                        print("VoiceChannel: encoder returned nil #\(self.encodeNilCount)")
-                    }
-                    return
-                }
+                guard let au = try self.encoder.encode(pcm: pcm) else { return }
                 let packet = self.packetizer.packetize(au: au)
-                self.sentCount += 1
-                if self.sentCount == 1 || self.sentCount % 50 == 0 {
-                    print("VoiceChannel[ssrc=\(self.localSSRC)]: sent #\(self.sentCount) (\(packet.count) bytes)")
-                }
                 self.onSend(packet)
             } catch {
                 print("VoiceChannel: encode failed: \(error)")
@@ -87,10 +68,6 @@ final class VoiceChannel: @unchecked Sendable {
     func receive(_ packet: Data) {
         queue.async {
             guard let parsed = self.depacketizer.unpack(packet) else { return }
-            self.recvCount += 1
-            if self.recvCount == 1 || self.recvCount % 50 == 0 {
-                print("VoiceChannel[ssrc=\(self.localSSRC)]: recv #\(self.recvCount) from ssrc=\(parsed.ssrc) (\(parsed.au.count) bytes)")
-            }
             // Drop our own loopback if the network somehow returned it.
             guard parsed.ssrc != self.localSSRC else { return }
             guard !self.brokenSSRCs.contains(parsed.ssrc) else { return }
@@ -104,10 +81,6 @@ final class VoiceChannel: @unchecked Sendable {
                     // glitch. Anything beyond [-1, 1] would clip the
                     // speakers into painful clicks, so clamp here.
                     let samples = raw.map { max(-1.0, min(1.0, $0)) }
-                    self.playedCount += 1
-                    if self.playedCount == 1 || self.playedCount % 50 == 0 {
-                        print("VoiceChannel[ssrc=\(self.localSSRC)]: decoded #\(self.playedCount) from ssrc=\(parsed.ssrc) (\(samples.count) samples, mixedPCM=\(self.onMixedPCM != nil ? "wired" : "nil"))")
-                    }
                     self.onMixedPCM?(samples)
                 }
             } catch {
@@ -233,13 +206,7 @@ private final class TapBuffer: @unchecked Sendable {
         return true
     }
 
-    private var fireCount: Int = 0
-
     func process(_ buffer: AVAudioPCMBuffer) {
-        fireCount += 1
-        if fireCount == 1 || fireCount == 2 || fireCount == 5 || fireCount % 50 == 0 {
-            print("MicCapture: tap fire #\(fireCount), \(buffer.frameLength) frames in \(buffer.format)")
-        }
         guard ensureConverter(for: buffer.format) else { return }
 
         // Always extract just channel 0 (mic with VPIO; for raw input
@@ -309,24 +276,16 @@ private final class TapBuffer: @unchecked Sendable {
         }
         guard let cd = outBuf.floatChannelData?[0] else { return }
         let frameCount = Int(outBuf.frameLength)
-        if fireCount == 1 || fireCount == 2 || fireCount % 50 == 0 {
-            print("MicCapture: convert fire #\(fireCount) status=\(status.rawValue) frames=\(frameCount)")
-        }
         guard frameCount > 0 else { return }
         let samples = Array(UnsafeBufferPointer(start: cd, count: frameCount))
         appendAndDrain(samples)
     }
 
-    private var drainCount: Int = 0
     private func appendAndDrain(_ samples: [Float]) {
         accumulator.append(contentsOf: samples)
         while accumulator.count >= 1024 {
             let frame = Array(accumulator.prefix(1024))
             accumulator.removeFirst(1024)
-            drainCount += 1
-            if drainCount == 1 || drainCount == 2 || drainCount % 50 == 0 {
-                print("MicCapture: drain #\(drainCount), accumulator=\(accumulator.count)")
-            }
             channel.processOutboundFrame(frame)
         }
     }
@@ -553,7 +512,7 @@ final class MicCapture {
         applyOutputDevice()
         try engine.start()
         for player in playerNodes { player.play() }
-        print("MicCapture: capture started, engineRunning=\(engine.isRunning), inputSinkConnected=\(inputSinkConnected), inputSinkMixer.outputVolume=\(inputSinkMixer.outputVolume)")
+        print("MicCapture: capture started (engineRunning=\(engine.isRunning)).")
 
         isCapturing = true
     }
@@ -722,8 +681,10 @@ final class MicCapture {
         }
     }
 
+    /// Counts scheduled buffers since last `startPlayback()`. Used by the
+    /// jitter-buffer kick: we don't call `player.play()` until at least
+    /// `jitterBufferThreshold` buffers have been queued ahead.
     private var scheduledCount: Int = 0
-    private var droppedCount: Int = 0
 
     /// Number of buffers to queue ahead before kicking playback off.
     /// Each buffer is 1024 samples ≈ 21.33 ms at 48 kHz, so 3 buffers
@@ -747,34 +708,19 @@ final class MicCapture {
     private var pendingBuffers: Int = 0
 
     private func scheduleSamples(_ samples: [Float]) {
-        guard isPlaying, let player = playerNodes.first else {
-            print("MicCapture: scheduleSamples drop — isPlaying=\(isPlaying), players=\(playerNodes.count)")
-            return
-        }
-        if pendingBuffers >= maxPendingBuffers {
-            droppedCount += 1
-            if droppedCount == 1 || droppedCount % 50 == 0 {
-                print("MicCapture: dropping buffer #\(droppedCount) — queue at cap (\(pendingBuffers))")
-            }
-            return
-        }
+        guard isPlaying, let player = playerNodes.first else { return }
+        if pendingBuffers >= maxPendingBuffers { return }
         guard let buffer = AVAudioPCMBuffer(
             pcmFormat: outputFormat,
             frameCapacity: AVAudioFrameCount(samples.count)
         ) else { return }
         buffer.frameLength = AVAudioFrameCount(samples.count)
         guard let dst = buffer.floatChannelData?[0] else { return }
-        var peak: Float = 0
         for (i, sample) in samples.enumerated() {
             dst[i] = sample
-            let abs = sample < 0 ? -sample : sample
-            if abs > peak { peak = abs }
         }
         scheduledCount += 1
         pendingBuffers += 1
-        if scheduledCount == 1 || scheduledCount % 50 == 0 {
-            print("MicCapture: scheduled #\(scheduledCount) (pending=\(pendingBuffers), peak=\(peak), playerPlaying=\(player.isPlaying), engineRunning=\(engine.isRunning))")
-        }
         player.scheduleBuffer(buffer) { [weak self] in
             // Completion fires on AVAudioPlayer's render thread.
             // Hop to MainActor before mutating @MainActor state.

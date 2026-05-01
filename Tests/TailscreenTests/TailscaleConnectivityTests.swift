@@ -220,7 +220,7 @@ final class TailscaleConnectivityTests: XCTestCase {
 
         // Send 10 frames of synthetic PCM audio from the viewer.
         let voice = try VoiceChannel(localSSRC: assignedSSRC) { packet in
-            Task { await client.sendAudioRTP(packet) }
+            client.sendAudioRTP(packet)
         }
         voice.isMuted = false
         let pcm = (0..<1024).map { Float(sin(2 * .pi * 440 * Double($0) / 48_000)) }
