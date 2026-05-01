@@ -35,7 +35,7 @@ struct MenuBarView: View {
                     shortcut: "⌘Q"
                 ) {
                     Task {
-                        if appState.isSharing { await appState.stopSharing() }
+                        if appState.isSharing { await appState.stopSharing(reason: "QuitTailscreen") }
                         if appState.isConnected { await appState.disconnect() }
                         NSApplication.shared.terminate(nil)
                     }
@@ -153,6 +153,18 @@ private struct SharingCard: View {
         return "\(res.width) × \(res.height)"
     }
 
+    /// Aspect ratio of the shared display, used to size the preview
+    /// container. Falls back to 16:9 until the metadata service has
+    /// reported a resolution so we don't show a 1:1 black square in
+    /// the gap.
+    private var screenAspect: CGFloat {
+        if let res = appState.metadataService.currentMetadata?.screenResolution,
+           res.height > 0 {
+            return CGFloat(res.width) / CGFloat(res.height)
+        }
+        return 16.0 / 9.0
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 10) {
@@ -175,14 +187,15 @@ private struct SharingCard: View {
 
             ViewersList(viewers: appState.currentViewers)
 
+            // Preview container is locked to the shared display's aspect
+            // so the image fills it cleanly instead of collapsing into a
+            // narrow strip with black bars when SwiftUI's intrinsic
+            // sizing kicks in.
             Group {
                 if let image = appState.previewImage {
                     Image(nsImage: image)
                         .resizable()
-                        .scaledToFit()
-                        .frame(maxWidth: .infinity)
-                        .background(Color.black)
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                        .aspectRatio(contentMode: .fill)
                 } else {
                     HStack(spacing: 6) {
                         ProgressView().controlSize(.small).scaleEffect(0.7)
@@ -190,52 +203,46 @@ private struct SharingCard: View {
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                     }
-                    .frame(maxWidth: .infinity, minHeight: 60)
-                    .background(
-                        RoundedRectangle(cornerRadius: 6)
-                            .fill(Color.black.opacity(0.15))
-                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
+            .aspectRatio(screenAspect, contentMode: .fit)
+            .frame(maxWidth: .infinity)
+            .background(Color.black.opacity(appState.previewImage == nil ? 0.15 : 1.0))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
 
+            // Three buttons in 280px popover would truncate ("Unmut…",
+            // "Stop Shari…"). Icon-only for Draw + Mic; full label only
+            // on the destructive action so it stays prominent.
             HStack(spacing: 6) {
                 Button {
                     appState.toggleSharerOverlay()
                 } label: {
-                    Label(
-                        appState.isSharerOverlayVisible ? "Stop Drawing" : "Draw",
-                        systemImage: appState.isSharerOverlayVisible ? "pencil.slash" : "pencil.tip"
-                    )
-                    .frame(maxWidth: .infinity)
+                    Image(systemName: appState.isSharerOverlayVisible ? "pencil.slash" : "pencil.tip")
+                        .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+                .help(appState.isSharerOverlayVisible ? "Stop Drawing" : "Draw")
 
-                // Sharer-side mic toggle. The global File → Microphone
-                // menu item only activates when one of our windows is
-                // key, and the sharer has no viewer window — so the
-                // popover is the only place the sharer can reach this
-                // control.
                 Button {
                     Task { await appState.toggleMic() }
                 } label: {
-                    Label(
-                        appState.isMicOn ? "Mute Mic" : "Unmute Mic",
-                        systemImage: appState.isMicOn ? "mic.fill" : "mic.slash"
-                    )
-                    .frame(maxWidth: .infinity)
+                    Image(systemName: appState.isMicOn ? "mic.fill" : "mic.slash")
+                        .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .help("Toggle mic (⌃⌥M)")
+                .help(appState.isMicOn ? "Mute Mic (⌃⌥M)" : "Unmute Mic (⌃⌥M)")
 
                 Button {
-                    Task { await appState.stopSharing() }
+                    Task { await appState.stopSharing(reason: "StopSharingButton") }
                 } label: {
                     Text("Stop Sharing").frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+                .layoutPriority(1)
             }
 
             AudioDevicePickers()

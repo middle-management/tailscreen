@@ -138,6 +138,14 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// to track that state.
     private var lastDisplayID: CGDirectDisplayID?
 
+    /// In-flight `restartCapture()` work. `stop()` awaits this before
+    /// tearing down the SCStream, otherwise a concurrent restart can
+    /// finish bringing up a new SCStream *after* `stop()` already
+    /// nulled out `screenCapture`, leaving a live capture that nothing
+    /// owns — visible as the macOS screen-recording badge stuck on
+    /// after the user clicked Stop Sharing.
+    private let restartTask = OSAllocatedUnfairLock<Task<Error?, Never>?>(initialState: nil)
+
     /// Fires when a viewer sends an annotation op over the back-channel.
     /// AppState routes these into the sharer's overlay window; the drawings
     /// get captured into the video stream and distributed to every viewer.
@@ -281,6 +289,14 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         // practice the second attempt almost always succeeds.
         let maxAttempts = 4
         for attempt in 1...maxAttempts {
+            // Bail out if `stop()` flipped `isRunning` while we were
+            // mid-loop. Without this, the retry loop keeps building
+            // and starting new SCStreams after teardown, which
+            // surfaces as the macOS screen-recording badge stuck on
+            // after Stop Sharing.
+            if !isRunning {
+                throw CancellationError()
+            }
             let capture = ScreenCapture()
             capture.onFrameCaptured = { [weak self] pixelBuffer in
                 self?.handleCapturedFrame(pixelBuffer)
@@ -292,8 +308,19 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
 
             do {
                 try await capture.start(displayID: displayID)
+                // Same race guard post-await: stop() may have run
+                // while `capture.start` was in flight. If so, tear
+                // the brand-new SCStream down before it can deliver
+                // a single frame.
+                if !isRunning {
+                    await capture.stop()
+                    screenCapture = nil
+                    throw CancellationError()
+                }
                 print("ScreenCapture started (displayID=\(displayID.map { String($0) } ?? "default"))")
                 return
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
                 await capture.stop()
                 screenCapture = nil
@@ -323,11 +350,40 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// fall back to `stop()` and surface the error to the user.
     func restartCapture() async throws {
         guard isRunning else { return }
-        if let existing = screenCapture {
-            await existing.stop()
-            screenCapture = nil
+        // Run the actual restart inside a tracked Task so `stop()` can
+        // await it. Without this synchronization, stop() can race with
+        // the final `screenCapture = capture` assignment inside
+        // `startCaptureWithRetries` and leave the new SCStream alive
+        // after teardown.
+        let work = Task { [weak self] () -> Error? in
+            guard let self else { return nil }
+            if let existing = self.screenCapture {
+                // Disconnect the stop callback before tearing down, otherwise
+                // SCStream's `didStopWithError` fires → `onStreamStopped` →
+                // host calls `restartCapture` again → infinite recursion.
+                existing.onStreamStopped = nil
+                await existing.stop()
+                self.screenCapture = nil
+            }
+            do {
+                try await self.startCaptureWithRetries(displayID: self.lastDisplayID)
+            } catch {
+                if !self.isRunning {
+                    await self.screenCapture?.stop()
+                    self.screenCapture = nil
+                }
+                return error
+            }
+            if !self.isRunning {
+                await self.screenCapture?.stop()
+                self.screenCapture = nil
+            }
+            return nil
         }
-        try await startCaptureWithRetries(displayID: lastDisplayID)
+        restartTask.withLock { $0 = work }
+        let result = await work.value
+        restartTask.withLock { $0 = nil }
+        if let result { throw result }
     }
 
     /// True for the transient ScreenCaptureKit startup failures the retry
@@ -935,6 +991,19 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     func stop() async {
         print("Server stopping…")
         isRunning = false
+
+        // Drain any in-flight `restartCapture` before we touch
+        // `screenCapture`. The restart's final assignment otherwise
+        // races with our nil-out and orphans a live SCStream — the
+        // macOS screen-recording badge stays on after Stop Sharing.
+        let pending = restartTask.withLock { task -> Task<Error?, Never>? in
+            let t = task
+            task = nil
+            return t
+        }
+        if let pending {
+            _ = await pending.value
+        }
 
         // Best-effort SERVER_BYE first, so viewers tear down on the spot
         // instead of waiting out their 15 s no-video timer. We send while

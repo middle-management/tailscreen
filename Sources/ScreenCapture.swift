@@ -182,11 +182,18 @@ class ScreenCapture: NSObject {
     }
 
     private func waitForFirstFrame(timeout: Duration) async throws {
-        let deadlineNs = DispatchTime.now().uptimeNanoseconds &+ UInt64(timeout.components.seconds) * 1_000_000_000
+        let startNs = DispatchTime.now().uptimeNanoseconds
+        let deadlineNs = startNs &+ UInt64(timeout.components.seconds) * 1_000_000_000
         while DispatchTime.now().uptimeNanoseconds < deadlineNs {
-            if firstFrameSeen.withLock({ $0 }) { return }
+            if firstFrameSeen.withLock({ $0 }) {
+                let elapsedMs = (DispatchTime.now().uptimeNanoseconds &- startNs) / 1_000_000
+                print("ScreenCapture: first frame after \(elapsedMs)ms")
+                return
+            }
             try await Task.sleep(for: .milliseconds(50))
         }
+        let elapsedMs = (DispatchTime.now().uptimeNanoseconds &- startNs) / 1_000_000
+        print("ScreenCapture: noFramesDelivered after \(elapsedMs)ms — replayd acked startCapture but never pumped a sample. Likely another Tailscreen process holds the bundle's screen-capture slot, or macOS replayd is wedged. Quit other instances or restart Tailscreen.")
         throw ScreenCaptureError.noFramesDelivered
     }
 
@@ -259,9 +266,42 @@ class ScreenCapture: NSObject {
         // late delegate fire is a no-op.
         onFrameCaptured = nil
         onStreamStopped = nil
-        try? await stream?.stopCapture()
+        if let stream = stream {
+            await Self.stopCaptureWatchdogged(stream: stream)
+        }
         stream = nil
         streamOutput = nil
+    }
+
+    /// Wraps `SCStream.stopCapture(completionHandler:)` in a 3 s
+    /// watchdog. Apple's bridged `stopCapture()` async variant has been
+    /// observed to leak its CheckedContinuation when the stream is
+    /// already in a broken state (e.g. immediately after replayd
+    /// dropped its XPC link mid-startCapture). Without this, the await
+    /// here hangs forever, hanging `capture.stop` → `server.stop` →
+    /// `AppState.stopSharing`. Logs the leaked-continuation warning
+    /// from Apple are visible in the merged log; we route around them
+    /// by ignoring the completion entirely after the deadline.
+    private static func stopCaptureWatchdogged(stream: SCStream) async {
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            let box = StopCaptureBox(cont)
+            stream.stopCapture { _ in
+                box.resume()
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + 3) {
+                box.resume()
+            }
+        }
+    }
+
+    private final class StopCaptureBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var cont: CheckedContinuation<Void, Never>?
+        init(_ cont: CheckedContinuation<Void, Never>) { self.cont = cont }
+        func resume() {
+            lock.lock(); defer { lock.unlock() }
+            cont?.resume(); cont = nil
+        }
     }
 
     func captureFrame() {

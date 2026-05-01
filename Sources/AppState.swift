@@ -229,7 +229,7 @@ class AppState: ObservableObject {
                     Task { @MainActor [weak self] in
                         guard let self, self.isSharing else { return }
                         if Self.isUserInitiatedCaptureStop(error) {
-                            await self.stopSharing()
+                            await self.stopSharing(reason: "SCStream userStopped: \(error?.localizedDescription ?? "nil")")
                             return
                         }
                         guard let server = self.server else { return }
@@ -238,7 +238,7 @@ class AppState: ObservableObject {
                             print("ScreenCapture: restarted after mid-stream stop.")
                         } catch {
                             print("ScreenCapture: restart failed (\(error)); tearing sharing down.")
-                            await self.stopSharing()
+                            await self.stopSharing(reason: "SCStream restart failed: \(error)")
                         }
                     }
                 }
@@ -309,10 +309,21 @@ class AppState: ObservableObject {
                     // Start Sharing rebuilds from scratch.
                     await srv.stop()
                     server = nil
+                    // `CancellationError` here means the user clicked Stop
+                    // Sharing while we were mid-bring-up; suppress the
+                    // failure alert because the cancellation was intentional.
+                    if error is CancellationError {
+                        return
+                    }
                     if case ScreenCaptureError.startTimeout = error {
                         showAlertMessage(
                             title: "Couldn't Start Sharing",
                             message: "macOS didn't return shareable screens in time. If this is the first time you've shared, grant Tailscreen permission in System Settings → Privacy & Security → Screen Recording, then try again."
+                        )
+                    } else if case ScreenCaptureError.noFramesDelivered = error {
+                        showAlertMessage(
+                            title: "Couldn't Start Sharing",
+                            message: "macOS accepted the screen-capture request but never delivered any frames. This usually means another Tailscreen process is already sharing — quit other instances and try again. If the problem persists, run `killall replayd` in Terminal (macOS will auto-restart it) or reboot."
                         )
                     } else {
                         showAlertMessage(
@@ -345,7 +356,8 @@ class AppState: ObservableObject {
         }
     }
 
-    func stopSharing() async {
+    func stopSharing(reason: String = "<unknown>", caller: String = #function) async {
+        print("stopSharing: called by \(caller) (reason=\(reason))")
         // Unblock any startSharing still waiting on the first preview, so
         // a fast start→stop doesn't strand its continuation.
         if let cont = pendingFirstPreview {
@@ -924,7 +936,7 @@ class AppState: ObservableObject {
 
             // Stop sharing if active
             if isSharing {
-                await stopSharing()
+                await stopSharing(reason: "signOut")
             }
 
             // Disconnect if connected
