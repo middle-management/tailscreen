@@ -68,11 +68,13 @@ final class VideoEncoder: @unchecked Sendable {
     ///   - fps: target frame rate
     ///   - preferredCodec: codec to try first. We attempt that one and fall
     ///     back to H.264 if VT refuses (e.g. an Intel Mac without HW HEVC).
-    ///   - bitsPerPixel: quality knob. HEVC's intra-prediction modes for
-    ///     screen content earn back ~30% efficiency vs H.264, so the HEVC
-    ///     default is lower. The previous H.264 value of 0.08 produced
-    ///     visible chroma blur on small text; 0.10 is a small step up that
-    ///     fits the existing 1.75× burst cap.
+    ///   - bitsPerPixel: ceiling for the rate-control window. We drive the
+    ///     encoder primarily by `kVTCompressionPropertyKey_Quality` and use
+    ///     `bitsPerPixel × width × height × fps` as the upper bound enforced
+    ///     via `DataRateLimits`. HEVC's intra-prediction modes for screen
+    ///     content earn back ~30% efficiency vs H.264, so the HEVC default
+    ///     is lower; idle screens routinely settle far below the ceiling
+    ///     because Quality lets the encoder skip bits when nothing changed.
     func setup(
         width: Int,
         height: Int,
@@ -99,11 +101,14 @@ final class VideoEncoder: @unchecked Sendable {
         throw VideoEncoderError.sessionCreationFailed(lastError)
     }
 
-    /// Default `bitsPerPixel` for the given codec. HEVC encodes screen content
-    /// more efficiently so it gets a lower default for the same visual quality.
+    /// Default `bitsPerPixel` ceiling for the given codec. HEVC encodes
+    /// screen content more efficiently so it gets a lower ceiling for the
+    /// same visual quality. Note this is now a ceiling, not an average —
+    /// idle steady-state bandwidth typically falls well below it because
+    /// `kVTCompressionPropertyKey_Quality` drives the actual rate.
     static func defaultBitsPerPixel(for codec: VideoCodec) -> Double {
         switch codec {
-        case .hevc: return 0.06
+        case .hevc: return 0.08
         case .h264: return 0.10
         }
     }
@@ -148,6 +153,29 @@ final class VideoEncoder: @unchecked Sendable {
         VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_YCbCrMatrix,
                              value: kCVImageBufferYCbCrMatrix_ITU_R_709_2)
 
+        // Force the high-quality real-time path. RealTime=true alone leaves
+        // VT free to pick a cheaper trade-off; these flip the explicit
+        // tiebreakers toward quality. Both are best-effort — older or
+        // future VT versions may not honor them, hence we ignore status.
+        VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality, value: kCFBooleanFalse)
+        VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_MaximizePowerEfficiency, value: kCFBooleanFalse)
+
+        // HEVC: keep more reference frames around. Screen content has lots
+        // of recurring patterns (cursor blink, scrollback redraw, repeating
+        // UI chrome) that compress dramatically better with a deeper
+        // reference window. The decoder reads the new buffering depth from
+        // the SPS automatically.
+        if codec == .hevc {
+            VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_ReferenceBufferCount, value: 4 as CFNumber)
+        }
+
+        // Drive rate control by perceptual quality with a hard ceiling
+        // (DataRateLimits, set in applyBitrate). Idle screens then send
+        // near-zero bits while busy frames spend up to the ceiling — the
+        // right shape for screen sharing. If the encoder ignores Quality,
+        // the ceiling alone still bounds bandwidth.
+        VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_Quality, value: 0.7 as CFNumber)
+
         let bitrate = Self.computeBitrate(width: width, height: height, fps: Int(fps), bitsPerPixel: bitsPerPixel)
         Self.applyBitrate(bitrate, to: newSession)
 
@@ -175,13 +203,14 @@ final class VideoEncoder: @unchecked Sendable {
         Int(Double(width * height) * bitsPerPixel * Double(fps))
     }
 
-    /// Sets `AverageBitRate` plus the matching `DataRateLimits` window cap.
-    /// Without the latter the encoder honors the average but is free to emit
-    /// a ~10x spike on a single keyframe; we allow 1.75× the per-second
-    /// budget over a 500 ms window — generous enough for a single IDR but
-    /// tight enough to prevent the burst tail latency.
+    /// Sets the bandwidth ceiling via `DataRateLimits`. We deliberately do
+    /// NOT set `AverageBitRate`: rate control runs primarily off
+    /// `kVTCompressionPropertyKey_Quality` (configured once in
+    /// `createSession`), and this function configures the upper bound the
+    /// encoder is allowed to peak to. We allow 1.75× the per-second budget
+    /// over a 500 ms window — generous enough for a single IDR burst but
+    /// tight enough to prevent burst tail latency.
     private static func applyBitrate(_ bitrate: Int, to session: VTCompressionSession) {
-        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate, value: bitrate as CFNumber)
         let perSecondBytes = bitrate / 8
         let windowBytes = Int(Double(perSecondBytes) * 1.75 / 2.0)
         let windowSeconds = 0.5
@@ -189,9 +218,11 @@ final class VideoEncoder: @unchecked Sendable {
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_DataRateLimits, value: dataRateLimits)
     }
 
-    /// Update the encoder's target bitrate while it's running. Used by the
-    /// adaptive-bitrate sweep on the server: cut on sustained PLI bursts,
-    /// recover on clean stream. Safe to call from any thread.
+    /// Update the encoder's bandwidth ceiling while it's running. Used by
+    /// the adaptive-bitrate sweep on the server: cut on sustained PLI
+    /// bursts, recover on clean stream. The encoder's actual rate is
+    /// driven by Quality and may sit well below this ceiling on idle
+    /// content. Safe to call from any thread.
     func setBitrate(_ bitrate: Int) {
         lock.lock()
         let s = session
