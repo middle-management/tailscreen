@@ -370,3 +370,38 @@ private extension Data {
         append(UInt8(value & 0xFF))
     }
 }
+
+final class HelloAckTests: XCTestCase {
+    func testEncodeProducesFiveBytes() {
+        let data = ScreenShareControlMessage.encodeHelloAck(ssrc: 0xDEADBEEF)
+        XCTAssertEqual(data.count, 5)
+        XCTAssertEqual(data[0], 0x04)
+        XCTAssertEqual(data[1], 0xDE)
+        XCTAssertEqual(data[2], 0xAD)
+        XCTAssertEqual(data[3], 0xBE)
+        XCTAssertEqual(data[4], 0xEF)
+    }
+
+    func testDecodeRoundtrip() {
+        let data = ScreenShareControlMessage.encodeHelloAck(ssrc: 12345)
+        XCTAssertEqual(ScreenShareControlMessage.decodeHelloAck(data), 12345)
+    }
+
+    func testDecodeRejectsWrongLength() {
+        XCTAssertNil(ScreenShareControlMessage.decodeHelloAck(Data([0x04, 0x00, 0x00])))
+    }
+
+    func testDecodeRejectsWrongTag() {
+        XCTAssertNil(ScreenShareControlMessage.decodeHelloAck(Data([0x00, 0x00, 0x00, 0x00, 0x00])))
+    }
+
+    func testLooksLikeControlStillTrueForHelloAck() {
+        let data = ScreenShareControlMessage.encodeHelloAck(ssrc: 1)
+        XCTAssertTrue(ScreenShareControlMessage.looksLikeControl(data))
+    }
+
+    func testRTPHeaderAACPayloadType() {
+        XCTAssertEqual(RTPHeader.aacPayloadType, 98)
+        XCTAssertEqual(RTPHeader.audioClockHz, 48_000)
+    }
+}

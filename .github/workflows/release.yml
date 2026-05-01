@@ -143,6 +143,8 @@ jobs:
               <true/>
               <key>NSHighResolutionCapable</key>
               <true/>
+              <key>NSMicrophoneUsageDescription</key>
+              <string>Tailscreen uses your microphone for two-way voice during screen sharing.</string>
           </dict>
           </plist>
           EOF

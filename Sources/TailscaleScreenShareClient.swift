@@ -1,6 +1,7 @@
 import AppKit
 import CoreVideo
 import Foundation
+import os
 import TailscaleKit
 
 /// Screen-share viewer.
@@ -47,6 +48,18 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     private var depacketizer = MultiCodecDepacketizer()
     private var isConnected = false
     private var isDisconnecting = false
+
+    /// Audio SSRC the sharer assigned via HELLO_ACK. nil until the ack
+    /// arrives; the VoiceChannel waits on this before sending mic audio.
+    private(set) var assignedAudioSSRC: UInt32?
+
+    /// Fires when the sharer assigns us an audio SSRC. AppState uses this
+    /// to lazily build the local VoiceChannel.
+    var onAudioSSRCAssigned: ((UInt32) -> Void)?
+
+    /// Fires on every inbound audio RTP packet (PT=98). AppState pipes
+    /// this into VoiceChannel.receive(_:).
+    var onAudioReceived: ((Data) -> Void)?
     private let logger: TSLogger
     private var receiveTask: Task<Void, Never>?
     private var keepaliveTask: Task<Void, Never>?
@@ -86,11 +99,32 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         }
     }
 
+    /// Tail of the audio send chain. Each call to `sendAudioRTP` parks
+    /// on the previous one's job before issuing its own send. Stops
+    /// detached `Task`s from piling up when `pl.send` stalls (poor link,
+    /// peer reachability change) — at 50 Hz a backed-up actor would
+    /// otherwise grow an unbounded queue.
+    private let audioSendTail = OSAllocatedUnfairLock<Task<Void, Never>?>(initialState: nil)
+
+    /// Send one outbound audio RTP packet up to the sharer. VoiceChannel
+    /// calls this from its onSend closure. Fire-and-forget; serialised
+    /// internally via `audioSendTail`.
+    func sendAudioRTP(_ packet: Data) {
+        guard isConnected, let pl = packetListener, let addr = serverAddr else { return }
+        let prev = audioSendTail.withLock { $0 }
+        let job = Task {
+            await prev?.value
+            try? await pl.send(packet, to: addr)
+        }
+        audioSendTail.withLock { $0 = job }
+    }
+
     func connect(
         to hostname: String,
         port: UInt16 = 7447,
         authKey: String? = nil,
         path: String? = nil,
+        controlURL: String = kDefaultControlURL,
         existingNode: TailscaleNode? = nil
     ) async throws {
         guard !isConnected else { return }
@@ -114,8 +148,8 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
             let config = Configuration(
                 hostName: clientHostname,
                 path: statePath,
-                authKey: authKey ?? TailscreenInstance.authKey,
-                controlURL: TailscreenInstance.controlURLOverride ?? kDefaultControlURL,
+                authKey: authKey,
+                controlURL: controlURL,
                 ephemeral: true
             )
 
@@ -223,17 +257,34 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                 lastDataNs = DispatchTime.now().uptimeNanoseconds
                 packetsReceived += 1
 
-                // The server sends one control byte at us — SERVER_BYE on
-                // `Stop Sharing` — and otherwise streams RTP. Real RTP
-                // has V=2 → 0x80–0xBF, so a leading non-V=2 byte is a
-                // control packet we need to interpret rather than feed to
-                // the depacketizer.
+                // The server sends control bytes at us:
+                //   - SERVER_BYE on `Stop Sharing` — tear down immediately
+                //     instead of waiting out the no-video idle timer.
+                //   - HELLO_ACK in response to our HELLO — assigns the
+                //     audio SSRC we'll use to send mic packets.
+                // Real RTP has V=2 → 0x80–0xBF, so a leading non-V=2 byte
+                // is a control packet we need to interpret.
                 if ScreenShareControlMessage.looksLikeControl(datagram) {
-                    if ScreenShareControlMessage.decode(datagram) == .serverBye {
+                    switch ScreenShareControlMessage.decode(datagram) {
+                    case .serverBye:
                         print("Receive: SERVER_BYE — sharer stopped")
                         NotificationCenter.default.post(name: .tailscreenViewerPeerClosed, object: nil)
+                        return
+                    case .helloAck:
+                        if let ssrc = ScreenShareControlMessage.decodeHelloAck(datagram),
+                           assignedAudioSSRC != ssrc {
+                            assignedAudioSSRC = ssrc
+                            onAudioSSRCAssigned?(ssrc)
+                        }
+                    default:
                         break
                     }
+                    continue
+                }
+                // Audio RTP (PT=98): route to VoiceChannel, skip video path.
+                if let (header, _) = RTPHeader.decode(from: datagram),
+                   header.payloadType == RTPHeader.aacPayloadType {
+                    onAudioReceived?(datagram)
                     continue
                 }
 

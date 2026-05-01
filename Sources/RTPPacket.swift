@@ -14,16 +14,19 @@ import Foundation
 ///     0x01 (KEEPALIVE)  viewer → server: I'm still here
 ///     0x02 (BYE)        viewer → server: drop me from the fan-out set
 ///     0x03 (PLI)        viewer → server: I lost something, please send IDR
-///     0x04 (SERVER_BYE) server → viewer: I'm stopping, drop the session
+///     0x04 (HELLO_ACK)  server → viewer: 4-byte SSRC payload — assigns the
+///                       viewer's audio SSRC. Sent in response to HELLO.
+///     0x05 (SERVER_BYE) server → viewer: I'm stopping, drop the session
 ///     0x80..0xBF        RTP packet (V=2)
 enum ScreenShareControlMessage: UInt8 {
     case hello = 0x00
     case keepalive = 0x01
     case bye = 0x02
     case pli = 0x03
+    case helloAck = 0x04
     /// Sharer→viewer "I'm gone." Lets the viewer tear down immediately on
     /// `Stop Sharing` instead of waiting out the 15 s no-video idle timer.
-    case serverBye = 0x04
+    case serverBye = 0x05
 
     static func encode(_ kind: ScreenShareControlMessage) -> Data {
         Data([kind.rawValue])
@@ -40,6 +43,20 @@ enum ScreenShareControlMessage: UInt8 {
         guard let first = data.first else { return false }
         return (first & 0xC0) != 0x80
     }
+
+    /// Encode a HELLO_ACK with a 4-byte big-endian SSRC payload.
+    static func encodeHelloAck(ssrc: UInt32) -> Data {
+        var data = Data(capacity: 5)
+        data.append(helloAck.rawValue)
+        data.appendBE(ssrc)
+        return data
+    }
+
+    /// Parse a HELLO_ACK datagram. Returns the SSRC, or nil if malformed.
+    static func decodeHelloAck(_ data: Data) -> UInt32? {
+        guard data.count == 5, data[data.startIndex] == helloAck.rawValue else { return nil }
+        return data.readBE(UInt32.self, at: data.startIndex + 1)
+    }
 }
 
 /// 12-byte fixed RTP header (no CSRC list, no extension).
@@ -50,6 +67,11 @@ struct RTPHeader {
     /// Dynamic payload type for HEVC. 96 is taken; 97 is the next dynamic
     /// PT and matches what most WebRTC stacks use for HEVC.
     static let hevcPayloadType: UInt8 = 97
+    /// Dynamic payload type for AAC-LC voice. RFC 3640 reserves no fixed
+    /// number for AAC; 98 follows H.264 (96) + HEVC (97).
+    static let aacPayloadType: UInt8 = 98
+    /// RTP clock rate for AAC audio at 48 kHz.
+    static let audioClockHz: UInt32 = 48_000
     static let clockHz: UInt32 = 90_000
 
     var marker: Bool

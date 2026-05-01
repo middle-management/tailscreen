@@ -1,4 +1,5 @@
 import AppKit
+import CoreAudio
 import SwiftUI
 
 struct MenuBarView: View {
@@ -34,7 +35,7 @@ struct MenuBarView: View {
                     shortcut: "⌘Q"
                 ) {
                     Task {
-                        if appState.isSharing { await appState.stopSharing() }
+                        if appState.isSharing { await appState.stopSharing(reason: "QuitTailscreen") }
                         if appState.isConnected { await appState.disconnect() }
                         NSApplication.shared.terminate(nil)
                     }
@@ -152,6 +153,18 @@ private struct SharingCard: View {
         return "\(res.width) × \(res.height)"
     }
 
+    /// Aspect ratio of the shared display, used to size the preview
+    /// container. Falls back to 16:9 until the metadata service has
+    /// reported a resolution so we don't show a 1:1 black square in
+    /// the gap.
+    private var screenAspect: CGFloat {
+        if let res = appState.metadataService.currentMetadata?.screenResolution,
+           res.height > 0 {
+            return CGFloat(res.width) / CGFloat(res.height)
+        }
+        return 16.0 / 9.0
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 10) {
@@ -174,14 +187,15 @@ private struct SharingCard: View {
 
             ViewersList(viewers: appState.currentViewers)
 
+            // Preview container is locked to the shared display's aspect
+            // so the image fills it cleanly instead of collapsing into a
+            // narrow strip with black bars when SwiftUI's intrinsic
+            // sizing kicks in.
             Group {
                 if let image = appState.previewImage {
                     Image(nsImage: image)
                         .resizable()
-                        .scaledToFit()
-                        .frame(maxWidth: .infinity)
-                        .background(Color.black)
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                        .aspectRatio(contentMode: .fill)
                 } else {
                     HStack(spacing: 6) {
                         ProgressView().controlSize(.small).scaleEffect(0.7)
@@ -189,35 +203,49 @@ private struct SharingCard: View {
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                     }
-                    .frame(maxWidth: .infinity, minHeight: 60)
-                    .background(
-                        RoundedRectangle(cornerRadius: 6)
-                            .fill(Color.black.opacity(0.15))
-                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
+            .aspectRatio(screenAspect, contentMode: .fit)
+            .frame(maxWidth: .infinity)
+            .background(Color.black.opacity(appState.previewImage == nil ? 0.15 : 1.0))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
 
+            // Three buttons in 280px popover would truncate ("Unmut…",
+            // "Stop Shari…"). Icon-only for Draw + Mic; full label only
+            // on the destructive action so it stays prominent.
             HStack(spacing: 6) {
                 Button {
                     appState.toggleSharerOverlay()
                 } label: {
-                    Label(
-                        appState.isSharerOverlayVisible ? "Stop Drawing" : "Draw",
-                        systemImage: appState.isSharerOverlayVisible ? "pencil.slash" : "pencil.tip"
-                    )
-                    .frame(maxWidth: .infinity)
+                    Image(systemName: appState.isSharerOverlayVisible ? "pencil.slash" : "pencil.tip")
+                        .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+                .help(appState.isSharerOverlayVisible ? "Stop Drawing" : "Draw")
 
                 Button {
-                    Task { await appState.stopSharing() }
+                    Task { await appState.toggleMic() }
+                } label: {
+                    Image(systemName: appState.isMicOn ? "mic.fill" : "mic.slash")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help(appState.isMicOn ? "Mute Mic (⌃⌥M)" : "Unmute Mic (⌃⌥M)")
+
+                Button {
+                    Task { await appState.stopSharing(reason: "StopSharingButton") }
                 } label: {
                     Text("Stop Sharing").frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+                .layoutPriority(1)
             }
+
+            AudioDevicePickers()
         }
         .padding(12)
         .background(
@@ -225,6 +253,55 @@ private struct SharingCard: View {
         )
         .padding(.horizontal, 8)
         .padding(.bottom, 6)
+    }
+}
+
+/// Compact input + output device pickers. Used inside both
+/// SharingCard and ViewingCard — anywhere voice playback is active.
+/// Refreshes the device list on appear so hot-plugged devices show
+/// up the next time the popover opens. `nil` selection means "follow
+/// system default"; that's also the initial value, so newly-launched
+/// instances inherit whatever the user has set in System Settings.
+private struct AudioDevicePickers: View {
+    @EnvironmentObject var appState: AppState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Image(systemName: "mic")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 14)
+                Picker("", selection: Binding(
+                    get: { appState.selectedInputDeviceID },
+                    set: { appState.selectInputDevice($0) }
+                )) {
+                    Text("System default").tag(AudioDeviceID?.none)
+                    ForEach(appState.availableInputDevices) { device in
+                        Text(device.name).tag(AudioDeviceID?.some(device.id))
+                    }
+                }
+                .labelsHidden()
+                .controlSize(.small)
+            }
+            HStack(spacing: 6) {
+                Image(systemName: "speaker.wave.2")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 14)
+                Picker("", selection: Binding(
+                    get: { appState.selectedOutputDeviceID },
+                    set: { appState.selectOutputDevice($0) }
+                )) {
+                    Text("System default").tag(AudioDeviceID?.none)
+                    ForEach(appState.availableOutputDevices) { device in
+                        Text(device.name).tag(AudioDeviceID?.some(device.id))
+                    }
+                }
+                .labelsHidden()
+                .controlSize(.small)
+            }
+        }
+        .font(.system(size: 11))
+        .onAppear { appState.refreshAudioDevices() }
     }
 }
 
@@ -281,13 +358,30 @@ private struct ViewingCard: View {
                 Spacer(minLength: 0)
             }
 
-            Button {
-                Task { await appState.disconnect() }
-            } label: {
-                Text("Disconnect").frame(maxWidth: .infinity)
+            HStack(spacing: 6) {
+                Button {
+                    Task { await appState.toggleMic() }
+                } label: {
+                    Label(
+                        appState.isMicOn ? "Mute Mic" : "Unmute Mic",
+                        systemImage: appState.isMicOn ? "mic.fill" : "mic.slash"
+                    )
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("Toggle mic (⌃⌥M)")
+
+                Button {
+                    Task { await appState.disconnect() }
+                } label: {
+                    Text("Disconnect").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
+
+            AudioDevicePickers()
         }
         .padding(12)
         .background(

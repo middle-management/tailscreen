@@ -1,9 +1,12 @@
 import AppKit
+import Carbon.HIToolbox
 import Combine
+import CoreAudio
 import CoreGraphics
 import Foundation
 import Observation
 import QuartzCore
+import ScreenCaptureKit
 import SwiftUI
 import TailscaleKit
 
@@ -19,6 +22,23 @@ class AppState: ObservableObject {
     /// Whether the sharer's drawing overlay panel is currently visible and
     /// accepting input. The panel itself is only created while sharing.
     @Published var isSharerOverlayVisible = false
+    @Published var isMicOn = false
+
+    /// Audio devices available on the system. Refreshed every time
+    /// the popover opens (and before any picker rendering) — calling
+    /// `AudioDevices.all()` is cheap.
+    @Published var availableInputDevices: [AudioDevice] = []
+    @Published var availableOutputDevices: [AudioDevice] = []
+
+    /// User-selected device IDs. `nil` = follow system default. Set
+    /// via `selectInputDevice(_:)` / `selectOutputDevice(_:)`, which
+    /// also push the change down into the live `MicCapture` engine.
+    @Published var selectedInputDeviceID: AudioDeviceID?
+    @Published var selectedOutputDeviceID: AudioDeviceID?
+
+    private var voiceChannel: VoiceChannel?
+    private var micCapture: MicCapture?
+    private var micHotkey: GlobalHotkey?
 
     /// Snapshot of viewers currently connected to our screen-share server.
     /// Empty when not sharing or when nobody has joined yet. Populated from
@@ -123,6 +143,31 @@ class AppState: ObservableObject {
                 await self.disconnect()
             }
         }
+
+        // File → Microphone / toolbar mic button posts this; bounce to toggleMic().
+        NotificationCenter.default.addObserver(
+            forName: .tailscreenToggleMicrophone,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                await self?.toggleMic()
+            }
+        }
+
+        // ⌃⌥M from anywhere — toggle mic without finding the menubar
+        // popover or clicking through. Useful during a screen share
+        // when the popover isn't visible.
+        micHotkey = GlobalHotkey(
+            keyCode: UInt32(kVK_ANSI_M),
+            modifiers: .controlOptionMask
+        ) { [weak self] in
+            Task { @MainActor [weak self] in
+                await self?.toggleMic()
+            }
+        }
+
+        ViewerCommands.shared.appState = self
     }
 
     private var cancellables = Set<AnyCancellable>()
@@ -170,18 +215,31 @@ class AppState: ObservableObject {
                     selectedDisplayID = pickedID
                 }
 
-                // If the user stops the ScreenCaptureKit stream from the
-                // macOS menubar, tear down sharing rather than leaving an
-                // empty server that's listening but has no capture source.
-                srv.onCaptureStopped = { [weak self] _ in
-                    // The macOS Control Center "Stop" button is the only
-                    // common path here, and the menubar icon already
-                    // reflects the new idle state — popping an alert on
-                    // top of an action the user just took is pure
-                    // friction. Tear sharing down quietly.
+                // SCStream can die from two distinct causes:
+                //   1. User clicks the macOS Control Center "Stop" button —
+                //      reported as SCStreamErrorDomain / .userStopped. Tear
+                //      sharing down quietly; the menubar icon already
+                //      reflects the new idle state.
+                //   2. replayd drops its XPC connection mid-stream — any
+                //      other error (or nil). Transient, recoverable,
+                //      viewer is still connected and waiting for video.
+                //      Try restartCapture once; only fall through to a
+                //      teardown if recovery fails.
+                srv.onCaptureStopped = { [weak self] error in
                     Task { @MainActor [weak self] in
-                        guard let self = self, self.isSharing else { return }
-                        await self.stopSharing()
+                        guard let self, self.isSharing else { return }
+                        if Self.isUserInitiatedCaptureStop(error) {
+                            await self.stopSharing(reason: "SCStream userStopped: \(error?.localizedDescription ?? "nil")")
+                            return
+                        }
+                        guard let server = self.server else { return }
+                        do {
+                            try await server.restartCapture()
+                            print("ScreenCapture: restarted after mid-stream stop.")
+                        } catch {
+                            print("ScreenCapture: restart failed (\(error)); tearing sharing down.")
+                            await self.stopSharing(reason: "SCStream restart failed: \(error)")
+                        }
                     }
                 }
                 srv.onPreviewImage = { [weak self] image in
@@ -212,6 +270,29 @@ class AppState: ObservableObject {
                     }
                 }
 
+                // Sharer's audio SSRC is fixed at 0. Build the channel up
+                // front so HELLO_ACK assignment for viewers can route
+                // through, and inbound viewer audio can be decoded.
+                // Start playback engine immediately so the sharer can hear
+                // viewers without first toggling their own mic on.
+                do {
+                    let voice = try VoiceChannel(localSSRC: 0) { [weak srv] packet in
+                        srv?.sendAudioRTP(packet)
+                    }
+                    self.voiceChannel = voice
+                    srv.onAudioReceived = { [weak voice] packet in
+                        voice?.receive(packet)
+                    }
+                    let cap = MicCapture(channel: voice)
+                    try cap.startPlayback()
+                    self.micCapture = cap
+                } catch {
+                    showAlertMessage(
+                        title: "Voice Init Failed",
+                        message: "Voice could not be initialized: \(error.localizedDescription). Voice will be unavailable for this share session."
+                    )
+                }
+
                 do {
                     // Reuse the AppState-owned tsnet node so the screen
                     // share doesn't spin up a second machine that needs
@@ -223,14 +304,26 @@ class AppState: ObservableObject {
                         existingNode: sharedNode
                     )
                 } catch {
-                    // server.start cleans itself up (await self.stop()) on
-                    // capture failure; just drop our reference so a future
+                    // Tear down anything `start` brought up before throwing —
+                    // listeners, encoder, capture pipeline — so a future
                     // Start Sharing rebuilds from scratch.
+                    await srv.stop()
                     server = nil
+                    // `CancellationError` here means the user clicked Stop
+                    // Sharing while we were mid-bring-up; suppress the
+                    // failure alert because the cancellation was intentional.
+                    if error is CancellationError {
+                        return
+                    }
                     if case ScreenCaptureError.startTimeout = error {
                         showAlertMessage(
                             title: "Couldn't Start Sharing",
                             message: "macOS didn't return shareable screens in time. If this is the first time you've shared, grant Tailscreen permission in System Settings → Privacy & Security → Screen Recording, then try again."
+                        )
+                    } else if case ScreenCaptureError.noFramesDelivered = error {
+                        showAlertMessage(
+                            title: "Couldn't Start Sharing",
+                            message: "macOS accepted the screen-capture request but never delivered any frames. This usually means another Tailscreen process is already sharing — quit other instances and try again. If the problem persists, run `killall replayd` in Terminal (macOS will auto-restart it) or reboot."
                         )
                     } else {
                         showAlertMessage(
@@ -263,7 +356,8 @@ class AppState: ObservableObject {
         }
     }
 
-    func stopSharing() async {
+    func stopSharing(reason: String = "<unknown>", caller: String = #function) async {
+        print("stopSharing: called by \(caller) (reason=\(reason))")
         // Unblock any startSharing still waiting on the first preview, so
         // a fast start→stop doesn't strand its continuation.
         if let cont = pendingFirstPreview {
@@ -273,6 +367,10 @@ class AppState: ObservableObject {
 
         await server?.stop()
         server = nil
+        micCapture?.stop()
+        micCapture = nil
+        voiceChannel = nil
+        isMicOn = false
         previewImage = nil
         currentViewers = []
         tailscaleIPs = []
@@ -325,6 +423,18 @@ class AppState: ObservableObject {
         return overlay
     }
 
+    /// True when the SCStream stopped because the user clicked the
+    /// macOS Control Center "Stop" button. SCStream surfaces this as
+    /// `SCStreamError.Code.userStopped`. Anything else (replayd XPC
+    /// drop, transient SCK failures, nil) is treated as recoverable
+    /// and triggers `restartCapture()`. Pulled out as a static so the
+    /// decision logic is unit-testable without standing up a stream.
+    nonisolated static func isUserInitiatedCaptureStop(_ error: Error?) -> Bool {
+        guard let nsErr = error as NSError? else { return false }
+        return nsErr.domain == SCStreamError.errorDomain
+            && nsErr.code == SCStreamError.Code.userStopped.rawValue
+    }
+
     /// Toggle whether the sharer can draw on their own screen. The panel is
     /// always present while sharing (so viewer-originated drawings render);
     /// this only flips input capture vs. click-through.
@@ -335,6 +445,64 @@ class AppState: ObservableObject {
         overlay.setInputEnabled(isSharerOverlayVisible)
     }
 
+    /// Toggle outbound microphone capture. The playback engine is started
+    /// at session-start time, so listening always works; toggleMic only
+    /// flips capture on/off (and lazily requests mic permission on first
+    /// enable).
+    /// Refresh `availableInputDevices` / `availableOutputDevices`.
+    /// Call before any device-picker UI renders (e.g. when the
+    /// popover opens). Cheap — a few HAL property reads.
+    func refreshAudioDevices() {
+        availableInputDevices = AudioDevices.inputs()
+        availableOutputDevices = AudioDevices.outputs()
+        // If the user's previous pick was unplugged, fall back to
+        // the system default so the picker doesn't sit on a stale ID.
+        if let id = selectedInputDeviceID, !availableInputDevices.contains(where: { $0.id == id }) {
+            selectedInputDeviceID = nil
+        }
+        if let id = selectedOutputDeviceID, !availableOutputDevices.contains(where: { $0.id == id }) {
+            selectedOutputDeviceID = nil
+        }
+    }
+
+    func selectInputDevice(_ deviceID: AudioDeviceID?) {
+        selectedInputDeviceID = deviceID
+        guard let cap = micCapture else { return }
+        Task { @MainActor in await cap.setInputDevice(deviceID) }
+    }
+
+    func selectOutputDevice(_ deviceID: AudioDeviceID?) {
+        selectedOutputDeviceID = deviceID
+        micCapture?.setOutputDevice(deviceID)
+    }
+
+    func toggleMic() async {
+        guard let voice = voiceChannel, let cap = micCapture else {
+            showAlertMessage(
+                title: "Voice Not Ready",
+                message: "Voice is only available during an active share."
+            )
+            return
+        }
+        if isMicOn {
+            cap.disableCapture()
+            voice.isMuted = true
+            isMicOn = false
+            return
+        }
+        do {
+            try await cap.enableCapture()
+            voice.isMuted = false
+            isMicOn = true
+        } catch {
+            showAlertMessage(
+                title: "Microphone Unavailable",
+                message: "Tailscreen could not start the microphone: \(error.localizedDescription). Check System Settings → Privacy & Security → Microphone."
+            )
+            isMicOn = false
+        }
+    }
+
     func connect(to host: String) async {
         guard !host.isEmpty else { return }
 
@@ -342,10 +510,46 @@ class AppState: ObservableObject {
         do {
             let c = TailscaleScreenShareClient(renderer: renderer)
             client = c
+
+            // Install the audio callback BEFORE connecting. HELLO_ACK can
+            // arrive on the receive loop the moment connect() returns (or
+            // even slightly before, if the loop is scheduled fast); a
+            // callback installed afterwards races and may miss the only
+            // assignment the client ever surfaces.
+            c.onAudioSSRCAssigned = { [weak self, weak c] ssrc in
+                Task { @MainActor [weak self, weak c] in
+                    guard let self = self, let c = c else { return }
+                    guard self.voiceChannel == nil else { return }
+                    self.micCapture?.stop()
+                    self.micCapture = nil
+                    self.voiceChannel?.reset()
+                    self.voiceChannel = nil
+                    self.isMicOn = false
+                    do {
+                        let voice = try VoiceChannel(localSSRC: ssrc) { [weak c] packet in
+                            c?.sendAudioRTP(packet)
+                        }
+                        self.voiceChannel = voice
+                        c.onAudioReceived = { [weak voice] packet in
+                            voice?.receive(packet)
+                        }
+                        let cap = MicCapture(channel: voice)
+                        try cap.startPlayback()
+                        self.micCapture = cap
+                    } catch {
+                        self.showAlertMessage(
+                            title: "Voice Init Failed",
+                            message: error.localizedDescription
+                        )
+                    }
+                }
+            }
+
             // Reuse the AppState-owned tsnet node so connecting doesn't
             // spin up a third machine + browser sign-in flow.
             let sharedNode = try await getOrCreateNode()
             try await c.connect(to: host, port: 7447, existingNode: sharedNode)
+
             isConnected = true
             connectedHostname = host
             // Order matters: with the app at .accessory activation policy
@@ -398,7 +602,7 @@ class AppState: ObservableObject {
         // Drawing toolbar: pen / line / arrow / rectangle / oval +
         // undo + clear. Items target ViewerCommands.shared, same wiring
         // the menubar's Tools/Edit menus use.
-        let toolbar = ViewerToolbar()
+        let toolbar = ViewerToolbar(appState: self)
         win.toolbar = toolbar.toolbar
         win.toolbarStyle = .unified
         self.viewerToolbar = toolbar
@@ -480,6 +684,10 @@ class AppState: ObservableObject {
     func disconnect() async {
         await client?.disconnect()
         client = nil
+        micCapture?.stop()
+        micCapture = nil
+        voiceChannel = nil
+        isMicOn = false
         isConnected = false
         connectedHostname = nil
         viewerRenderer?.clearPendingBuffer()
@@ -728,7 +936,7 @@ class AppState: ObservableObject {
 
             // Stop sharing if active
             if isSharing {
-                await stopSharing()
+                await stopSharing(reason: "signOut")
             }
 
             // Disconnect if connected
