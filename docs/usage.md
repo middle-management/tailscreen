@@ -23,6 +23,11 @@ up its own ephemeral tsnet node when you start sharing or connecting, and
 Tailscale removes the node automatically when you stop. Your admin console
 stays clean.
 
+If you'd rather not use Tailscale's hosted control plane — you run
+[headscale](https://github.com/juanfont/headscale), say, or you want a
+fully airgapped tailnet — see
+[Self-hosted control planes]({% link self-hosted.md %}).
+
 ## Sharing your screen
 
 1. Click the 📺 in the menubar.

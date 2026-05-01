@@ -40,6 +40,12 @@ If you don't trust Tailscale, you should not be using Tailscreen, because
 Tailscreen's security properties are downstream of Tailscale's. We didn't
 re-implement WireGuard.
 
+If you'd rather not trust Tailscale's *hosted* control plane specifically,
+you can point Tailscreen at a self-hosted
+[headscale](https://github.com/juanfont/headscale) instance — see
+[Self-hosted control planes]({% link self-hosted.md %}). The WireGuard
+trust story is unchanged either way.
+
 ## Nothing is stored
 
 No frame buffers, no annotations, no transcripts, nothing. Pixels go from

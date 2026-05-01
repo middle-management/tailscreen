@@ -23,4 +23,23 @@ enum TailscreenInstance {
     static var hostnameSuffix: String {
         id.isEmpty ? "" : "-\(id)"
     }
+
+    /// Override the Tailscale control plane URL — point Tailscreen at a
+    /// self-hosted headscale (or other tsnet-compatible) instance instead of
+    /// `controlplane.tailscale.com`. Returns nil when unset so callers fall
+    /// through to `kDefaultControlURL`.
+    static var controlURLOverride: String? {
+        let raw = ProcessInfo.processInfo.environment["TAILSCREEN_TS_CONTROL_URL"] ?? ""
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// Pre-shared Tailscale auth key for unattended sign-in. Useful with
+    /// headscale, kiosks, or any setup where the interactive browser-login
+    /// flow isn't viable. nil falls through to interactive login.
+    static var authKey: String? {
+        let raw = ProcessInfo.processInfo.environment["TAILSCREEN_TS_AUTHKEY"] ?? ""
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
 }
