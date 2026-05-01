@@ -10,16 +10,20 @@ import Foundation
 ///
 /// Single byte at offset 0 of every datagram on the wire:
 ///
-///     0x00 (HELLO)     viewer → server: register me, please send IDR
-///     0x01 (KEEPALIVE) viewer → server: I'm still here
-///     0x02 (BYE)       viewer → server: drop me from the fan-out set
-///     0x03 (PLI)       viewer → server: I lost something, please send IDR
-///     0x80..0xBF       RTP packet (V=2)
+///     0x00 (HELLO)      viewer → server: register me, please send IDR
+///     0x01 (KEEPALIVE)  viewer → server: I'm still here
+///     0x02 (BYE)        viewer → server: drop me from the fan-out set
+///     0x03 (PLI)        viewer → server: I lost something, please send IDR
+///     0x04 (SERVER_BYE) server → viewer: I'm stopping, drop the session
+///     0x80..0xBF        RTP packet (V=2)
 enum ScreenShareControlMessage: UInt8 {
     case hello = 0x00
     case keepalive = 0x01
     case bye = 0x02
     case pli = 0x03
+    /// Sharer→viewer "I'm gone." Lets the viewer tear down immediately on
+    /// `Stop Sharing` instead of waiting out the 15 s no-video idle timer.
+    case serverBye = 0x04
 
     static func encode(_ kind: ScreenShareControlMessage) -> Data {
         Data([kind.rawValue])

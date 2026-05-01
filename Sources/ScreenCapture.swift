@@ -106,7 +106,12 @@ class ScreenCapture: NSObject {
         config.width = Int(display.width) * scale
         config.height = Int(display.height) * scale
         config.minimumFrameInterval = CMTime(value: 1, timescale: 60)
-        config.pixelFormat = kCVPixelFormatType_32BGRA
+        // Full-range NV12 — matches what VideoToolbox wants natively, so the
+        // encoder skips an internal BGRA→YUV conversion (cheaper, and removes
+        // a 601/709 ambiguity that was crushing near-black UI surfaces under
+        // the limited-range default). The encoder tags the bitstream
+        // full-range so the decoder reads the right range from the VUI.
+        config.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
         config.showsCursor = true
         config.queueDepth = 5
 
