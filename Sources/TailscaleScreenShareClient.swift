@@ -114,8 +114,8 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
             let config = Configuration(
                 hostName: clientHostname,
                 path: statePath,
-                authKey: authKey,
-                controlURL: kDefaultControlURL,
+                authKey: authKey ?? TailscreenInstance.authKey,
+                controlURL: TailscreenInstance.controlURLOverride ?? kDefaultControlURL,
                 ephemeral: true
             )
 

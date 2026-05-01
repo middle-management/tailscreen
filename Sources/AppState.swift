@@ -661,8 +661,8 @@ class AppState: ObservableObject {
         let config = Configuration(
             hostName: "tailscreen-\(baseHostname)\(TailscreenInstance.hostnameSuffix)",
             path: statePath,
-            authKey: nil,
-            controlURL: kDefaultControlURL,
+            authKey: TailscreenInstance.authKey,
+            controlURL: TailscreenInstance.controlURLOverride ?? kDefaultControlURL,
             ephemeral: false
         )
 
