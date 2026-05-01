@@ -1,17 +1,18 @@
 import AppKit
 
 /// Single object that NSMenu items target. Routes selectors to whichever
-/// ``DrawingOverlayView`` is currently active (last keyed window's overlay).
-/// AppMenu installs `mainMenu`'s items with `target = ViewerCommands.shared`,
-/// so menus light up wherever the user happens to be drawing.
+/// ``AnnotationCanvasModel`` is currently active (last keyed window's
+/// overlay). AppMenu installs `mainMenu`'s items with
+/// `target = ViewerCommands.shared`, so menus light up wherever the user
+/// happens to be drawing.
 @MainActor
 final class ViewerCommands: NSObject {
     static let shared = ViewerCommands()
 
-    /// Weakly held so a viewer-window teardown doesn't keep the overlay
+    /// Weakly held so a viewer-window teardown doesn't keep the canvas
     /// alive past its window. Updated by the overlay's host whenever its
     /// window becomes/resigns key.
-    weak var activeOverlay: DrawingOverlayView?
+    weak var activeOverlay: AnnotationCanvasModel?
 
     /// Set by AppState during init so menu validation can read mic state.
     weak var appState: AppState?
@@ -23,13 +24,14 @@ final class ViewerCommands: NSObject {
     @objc func selectArrowTool(_ sender: Any?) { setTool(.arrow) }
     @objc func selectRectangleTool(_ sender: Any?) { setTool(.rectangle) }
     @objc func selectOvalTool(_ sender: Any?) { setTool(.oval) }
+    @objc func selectClickTool(_ sender: Any?) { setTool(.click) }
 
     /// NSToolbarItemGroup with `selectionMode = .selectOne` calls its
     /// action with the group as `sender`; the selectedIndex maps 1:1 to
-    /// the toolbar's tool order (pen, line, arrow, rectangle, oval).
+    /// the toolbar's tool order (pen, line, arrow, rectangle, oval, click).
     @objc func toolbarSelectedTool(_ sender: Any?) {
         guard let group = sender as? NSToolbarItemGroup else { return }
-        let tools: [AnnotationTool] = [.pen, .line, .arrow, .rectangle, .oval]
+        let tools: [AnnotationTool] = [.pen, .line, .arrow, .rectangle, .oval, .click]
         let idx = group.selectedIndex
         guard tools.indices.contains(idx) else { return }
         setTool(tools[idx])
@@ -85,6 +87,9 @@ extension ViewerCommands: NSMenuItemValidation {
             return overlay != nil
         case #selector(selectOvalTool(_:)):
             menuItem.state = (overlay?.currentTool == .oval) ? .on : .off
+            return overlay != nil
+        case #selector(selectClickTool(_:)):
+            menuItem.state = (overlay?.currentTool == .click) ? .on : .off
             return overlay != nil
         case #selector(undoLastAnnotation(_:)):
             return overlay?.canUndo ?? false

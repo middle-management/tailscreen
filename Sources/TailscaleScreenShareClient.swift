@@ -232,7 +232,12 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         guard let pl = packetListener else { return }
         var packetsReceived = 0
         var framesDelivered = 0
-        let idleDisconnectAfterNs: UInt64 = 3_000_000_000  // 3s
+        // Match the sharer's 15 s idle sweep so a sharer that's just
+        // pausing video (e.g. backgrounded SCStream while the user
+        // switches Spaces) doesn't fully tear our session down. The
+        // sharer's own watchdog will still notice if we've truly gone
+        // silent for >15 s, at which point both ends time out together.
+        let idleDisconnectAfterNs: UInt64 = 15_000_000_000
         var lastDataNs = DispatchTime.now().uptimeNanoseconds
 
         while isConnected {
@@ -252,14 +257,27 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                 lastDataNs = DispatchTime.now().uptimeNanoseconds
                 packetsReceived += 1
 
-                // Control bytes: handle HELLO_ACK (assigns our audio SSRC);
-                // other control messages (should not arrive) are ignored.
+                // The server sends control bytes at us:
+                //   - SERVER_BYE on `Stop Sharing` — tear down immediately
+                //     instead of waiting out the no-video idle timer.
+                //   - HELLO_ACK in response to our HELLO — assigns the
+                //     audio SSRC we'll use to send mic packets.
+                // Real RTP has V=2 → 0x80–0xBF, so a leading non-V=2 byte
+                // is a control packet we need to interpret.
                 if ScreenShareControlMessage.looksLikeControl(datagram) {
-                    if let ssrc = ScreenShareControlMessage.decodeHelloAck(datagram) {
-                        if assignedAudioSSRC != ssrc {
+                    switch ScreenShareControlMessage.decode(datagram) {
+                    case .serverBye:
+                        print("Receive: SERVER_BYE — sharer stopped")
+                        NotificationCenter.default.post(name: .tailscreenViewerPeerClosed, object: nil)
+                        return
+                    case .helloAck:
+                        if let ssrc = ScreenShareControlMessage.decodeHelloAck(datagram),
+                           assignedAudioSSRC != ssrc {
                             assignedAudioSSRC = ssrc
                             onAudioSSRCAssigned?(ssrc)
                         }
+                    default:
+                        break
                     }
                     continue
                 }
@@ -285,7 +303,8 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                 if !isConnected { break }
                 let nowNs = DispatchTime.now().uptimeNanoseconds
                 if nowNs &- lastDataNs > idleDisconnectAfterNs {
-                    print("Receive: idle for > 3s, assuming server gone")
+                    let idleMs = (nowNs &- lastDataNs) / 1_000_000
+                    print("Receive: idle for \(idleMs) ms, assuming server gone")
                     NotificationCenter.default.post(name: .tailscreenViewerPeerClosed, object: nil)
                     break
                 }
@@ -348,8 +367,11 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     }
 
     private func keepaliveLoop() async {
+        // 500 ms cadence so a dropped UDP keepalive (or a one-off Task
+        // scheduling stall) doesn't push us past the server's 15 s idle
+        // sweep. Two missed sends in a row still leaves ~14 s of slack.
         while isConnected {
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            try? await Task.sleep(nanoseconds: 500_000_000)
             guard isConnected, let pl = packetListener, let addr = serverAddr else { return }
             try? await pl.send(ScreenShareControlMessage.encode(.keepalive), to: addr)
         }

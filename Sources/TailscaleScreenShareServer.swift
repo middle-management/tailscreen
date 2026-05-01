@@ -116,11 +116,16 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// rather than piling up unbounded.
     private let audioBroadcastTail = OSAllocatedUnfairLock<Task<Void, Never>?>(initialState: nil)
 
-    /// Drop viewers that have gone silent for this long. Tuned to be longer
-    /// than any reasonable HELLO/KEEPALIVE cadence (clients send
-    /// KEEPALIVE every 1s) but short enough that a crashed client is gone
-    /// before the next HELLO bursts.
-    private let viewerIdleTimeoutNs: UInt64 = 5_000_000_000
+    /// Drop viewers that have gone silent for this long. Has to absorb a
+    /// run of consecutive UDP keepalive losses plus any Task scheduling
+    /// jitter from the cooperative pool — the previous 5 s value was
+    /// tight enough that a brief network/CPU stall would drop a healthy
+    /// viewer mid-session, which then triggered the viewer's own 3 s
+    /// "no video" disconnect and tore the whole call down. Clients send
+    /// KEEPALIVE every 500 ms, so 15 s tolerates ~30 consecutive misses
+    /// while still collecting a truly crashed viewer well before any
+    /// HELLO retry would.
+    private let viewerIdleTimeoutNs: UInt64 = 15_000_000_000
 
     var onCaptureStopped: ((Error?) -> Void)?
     var onPreviewImage: ((NSImage) -> Void)?
@@ -451,6 +456,10 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         case .helloAck:
             // Server never receives HELLO_ACK from a viewer; ignore.
             break
+        case .serverBye:
+            // SERVER_BYE is server→viewer only. A viewer sending it is
+            // either confused or malicious; drop the packet on the floor.
+            return
         }
     }
 
@@ -624,19 +633,21 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         while isRunning {
             try? await Task.sleep(nanoseconds: 1_000_000_000)
             let now = DispatchTime.now().uptimeNanoseconds
-            let dropped = viewers.withLock { state -> [String] in
+            let dropped = viewers.withLock { state -> [(addr: String, idleNs: UInt64)] in
                 let stale = state.filter { now &- $0.value.lastSeenNs > self.viewerIdleTimeoutNs }
+                let result = stale.map { (addr: $0.key, idleNs: now &- $0.value.lastSeenNs) }
                 for (addr, _) in stale { state.removeValue(forKey: addr) }
-                return Array(stale.keys)
+                return result
             }
             if !dropped.isEmpty {
                 viewerInfos.withLock { state in
-                    for addr in dropped { state.removeValue(forKey: addr) }
+                    for entry in dropped { state.removeValue(forKey: entry.addr) }
                 }
                 notifyViewersChanged()
             }
-            for addr in dropped {
-                print("Viewer timeout \(addr)")
+            for entry in dropped {
+                let idleMs = Int(entry.idleNs / 1_000_000)
+                print("Viewer timeout \(entry.addr) (idle \(idleMs) ms)")
             }
         }
     }
@@ -924,6 +935,28 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     func stop() async {
         print("Server stopping…")
         isRunning = false
+
+        // Best-effort SERVER_BYE first, so viewers tear down on the spot
+        // instead of waiting out their 15 s no-video timer. We send while
+        // the packet listener is still healthy and *before* tearing down
+        // capture/encoder — issuing SERVER_BYE after listener close (or
+        // even just before, racing with the close) loses the datagrams
+        // because libtailscale's `pc.Close()` discards anything still
+        // buffered in the Go-side socketpair. Three redundant sends per
+        // viewer mitigate single-packet UDP loss; the brief sleep that
+        // follows gives tsnet's bridge goroutines time to actually emit
+        // the datagrams onto the wire before we close the listener.
+        let goodbyeAddrs = viewers.withLock { Array($0.keys) }
+        if let pl = packetListener, !goodbyeAddrs.isEmpty {
+            let payload = ScreenShareControlMessage.encode(.serverBye)
+            for _ in 0..<3 {
+                for addr in goodbyeAddrs {
+                    try? await pl.send(payload, to: addr)
+                }
+            }
+            print("Server stop: SERVER_BYE sent to \(goodbyeAddrs.count) viewer(s)")
+            try? await Task.sleep(for: .milliseconds(200))
+        }
 
         await screenCapture?.stop()
         screenCapture = nil
