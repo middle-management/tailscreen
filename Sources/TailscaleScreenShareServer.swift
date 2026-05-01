@@ -167,6 +167,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         hostname: String = "tailscreen-server",
         authKey: String? = nil,
         path: String? = nil,
+        controlURL: String = kDefaultControlURL,
         displayID: CGDirectDisplayID? = nil,
         existingNode: TailscaleNode? = nil
     ) async throws {
@@ -194,7 +195,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
                 hostName: hostname,
                 path: statePath,
                 authKey: authKey,
-                controlURL: kDefaultControlURL,
+                controlURL: controlURL,
                 ephemeral: true
             )
 

@@ -228,9 +228,7 @@ class AppState: ObservableObject {
                 srv.onCaptureStopped = { [weak self] error in
                     Task { @MainActor [weak self] in
                         guard let self, self.isSharing else { return }
-                        if let nsErr = error as NSError?,
-                           nsErr.domain == SCStreamError.errorDomain,
-                           nsErr.code == SCStreamError.Code.userStopped.rawValue {
+                        if Self.isUserInitiatedCaptureStop(error) {
                             await self.stopSharing()
                             return
                         }
@@ -408,6 +406,18 @@ class AppState: ObservableObject {
         overlay.show()
         sharerOverlay = overlay
         return overlay
+    }
+
+    /// True when the SCStream stopped because the user clicked the
+    /// macOS Control Center "Stop" button. SCStream surfaces this as
+    /// `SCStreamError.Code.userStopped`. Anything else (replayd XPC
+    /// drop, transient SCK failures, nil) is treated as recoverable
+    /// and triggers `restartCapture()`. Pulled out as a static so the
+    /// decision logic is unit-testable without standing up a stream.
+    nonisolated static func isUserInitiatedCaptureStop(_ error: Error?) -> Bool {
+        guard let nsErr = error as NSError? else { return false }
+        return nsErr.domain == SCStreamError.errorDomain
+            && nsErr.code == SCStreamError.Code.userStopped.rawValue
     }
 
     /// Toggle whether the sharer can draw on their own screen. The panel is

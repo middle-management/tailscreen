@@ -124,6 +124,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         port: UInt16 = 7447,
         authKey: String? = nil,
         path: String? = nil,
+        controlURL: String = kDefaultControlURL,
         existingNode: TailscaleNode? = nil
     ) async throws {
         guard !isConnected else { return }
@@ -148,7 +149,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                 hostName: clientHostname,
                 path: statePath,
                 authKey: authKey,
-                controlURL: kDefaultControlURL,
+                controlURL: controlURL,
                 ephemeral: true
             )
 
