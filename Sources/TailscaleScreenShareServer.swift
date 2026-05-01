@@ -108,6 +108,14 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// receivers would see seq numbers go backwards within an AU.
     private let broadcastTail = OSAllocatedUnfairLock<Task<Void, Never>?>(initialState: nil)
 
+    /// Same idea as `broadcastTail`, but for audio: every audio fan-out
+    /// (sharer mic out, viewer-to-viewer relay) chains through here so
+    /// we don't spawn a fresh detached `Task` per ~21 ms AU × N viewers.
+    /// Under congestion the chain provides natural backpressure — the
+    /// next packet's job parks on the previous one's `await prev?.value`
+    /// rather than piling up unbounded.
+    private let audioBroadcastTail = OSAllocatedUnfairLock<Task<Void, Never>?>(initialState: nil)
+
     /// Drop viewers that have gone silent for this long. Tuned to be longer
     /// than any reasonable HELLO/KEEPALIVE cadence (clients send
     /// KEEPALIVE every 1s) but short enough that a crashed client is gone
@@ -159,6 +167,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         hostname: String = "tailscreen-server",
         authKey: String? = nil,
         path: String? = nil,
+        controlURL: String = kDefaultControlURL,
         displayID: CGDirectDisplayID? = nil,
         existingNode: TailscaleNode? = nil
     ) async throws {
@@ -186,7 +195,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
                 hostName: hostname,
                 path: statePath,
                 authKey: authKey,
-                controlURL: kDefaultControlURL,
+                controlURL: controlURL,
                 ephemeral: true
             )
 
@@ -410,7 +419,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             // else (video PTs) is dropped.
             if let (header, _) = RTPHeader.decode(from: data),
                header.payloadType == RTPHeader.aacPayloadType {
-                handleInboundAudioRTP(data, from: addr)
+                handleInboundAudioRTP(data, header: header, from: addr)
             }
             return
         }
@@ -418,6 +427,11 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
 
         switch kind {
         case .hello:
+            // Re-ack on every HELLO, not just first registration. A viewer
+            // that lost its assigned SSRC (process restart, NAT rebind that
+            // changes our `addr` for it) must receive the ack again to send
+            // audio. registerOrRefresh always populates `audioSSRC`, so the
+            // lookup never fails for a known viewer.
             registerOrRefresh(addr: addr, isNew: true)
             if let assignedSSRC = (viewers.withLock { $0[addr]?.audioSSRC }) {
                 Task { [weak self] in
@@ -444,19 +458,28 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// a copy to the local VoiceChannel via `onAudioReceived`. The packet
     /// is forwarded byte-for-byte (no transcode) so the receiving viewer
     /// sees the original sender's SSRC.
-    private func handleInboundAudioRTP(_ packet: Data, from sender: String) {
-        // Verify the sender is registered; drop spoofed packets.
-        let recipients = viewers.withLock { state -> [String] in
-            guard state[sender] != nil else { return [] }
-            return state.keys.filter { $0 != sender }
+    private func handleInboundAudioRTP(_ packet: Data, header: RTPHeader, from sender: String) {
+        // Verify the sender is registered AND the embedded SSRC matches the
+        // one we assigned to this address. Without the SSRC check, a
+        // registered viewer could spoof another viewer's audio by stuffing
+        // its SSRC into the RTP header.
+        let validated = viewers.withLock { state -> (valid: Bool, recipients: [String]) in
+            guard let viewer = state[sender], viewer.audioSSRC == header.ssrc else {
+                return (false, [])
+            }
+            return (true, state.keys.filter { $0 != sender })
         }
-        if let pl = packetListener {
-            Task { [weak self] in
-                guard self != nil else { return }
+        guard validated.valid else { return }
+        if !validated.recipients.isEmpty, let pl = packetListener {
+            let recipients = validated.recipients
+            let prev = audioBroadcastTail.withLock { $0 }
+            let job = Task {
+                await prev?.value
                 for addr in recipients {
                     try? await pl.send(packet, to: addr)
                 }
             }
+            audioBroadcastTail.withLock { $0 = job }
         }
         onAudioReceived?(packet)
     }
@@ -876,16 +899,21 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     }
 
     /// Send one outbound audio RTP packet (sharer's mic) to all viewers.
-    /// VoiceChannel calls this from its onSend closure.
+    /// VoiceChannel calls this from its onSend closure. Chains through
+    /// `audioBroadcastTail` so a slow `pl.send` parks the next packet's
+    /// job rather than piling up detached Tasks at 50 Hz × N viewers.
     func sendAudioRTP(_ packet: Data) {
         guard let pl = packetListener else { return }
         let recipients = viewers.withLock { Array($0.keys) }
-        Task { [weak self] in
-            guard self != nil else { return }
+        guard !recipients.isEmpty else { return }
+        let prev = audioBroadcastTail.withLock { $0 }
+        let job = Task {
+            await prev?.value
             for addr in recipients {
                 try? await pl.send(packet, to: addr)
             }
         }
+        audioBroadcastTail.withLock { $0 = job }
     }
 
     func getIPAddresses() async throws -> (ip4: String?, ip6: String?) {

@@ -6,6 +6,8 @@ enum AACCodecError: Error {
     case encode(OSStatus)
     case decode(OSStatus)
     case unexpectedFrameCount(Int)
+    case missingMagicCookie
+    case setMagicCookie(OSStatus)
 
     /// Sentinel `OSStatus` used by the encoder/decoder input callbacks
     /// to tell `AudioConverterFillComplexBuffer` "no more data right
@@ -246,22 +248,26 @@ final class AACDecoder {
         // ends configure AAC-LC mono 48kHz, so a freshly-built local
         // encoder produces the exact same cookie the remote sender
         // used. Without this, AudioConverter decodes raw AAC AUs
-        // against an inferred-from-ASBD config and emits noise.
-        if let cookie = AACDecoder.sharedCookie {
-            cookie.withUnsafeBytes { rawPtr in
-                guard let baseAddr = rawPtr.baseAddress else { return }
-                let setStatus = AudioConverterSetProperty(
-                    conv,
-                    kAudioConverterDecompressionMagicCookie,
-                    UInt32(cookie.count),
-                    baseAddr
-                )
-                if setStatus != noErr {
-                    print("AACDecoder: setting magic cookie failed (OSStatus=\(setStatus))")
-                }
-            }
-        } else {
-            print("AACDecoder: no magic cookie available; decoder may emit noise.")
+        // against an inferred-from-ASBD config and emits noise — so
+        // fail init outright rather than silently producing garbage.
+        guard let cookie = AACDecoder.sharedCookie else {
+            AudioConverterDispose(conv)
+            self.converter = nil
+            throw AACCodecError.missingMagicCookie
+        }
+        let setStatus = cookie.withUnsafeBytes { rawPtr -> OSStatus in
+            guard let baseAddr = rawPtr.baseAddress else { return -1 }
+            return AudioConverterSetProperty(
+                conv,
+                kAudioConverterDecompressionMagicCookie,
+                UInt32(cookie.count),
+                baseAddr
+            )
+        }
+        if setStatus != noErr {
+            AudioConverterDispose(conv)
+            self.converter = nil
+            throw AACCodecError.setMagicCookie(setStatus)
         }
     }
 

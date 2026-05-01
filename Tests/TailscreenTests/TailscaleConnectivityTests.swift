@@ -158,16 +158,7 @@ final class TailscaleConnectivityTests: XCTestCase {
             authKey == nil || authKey?.isEmpty == true,
             "Set TAILSCREEN_TS_AUTHKEY (or run scripts/e2e-test.sh for local headscale)."
         )
-        // TailscaleScreenShareServer/Client hardcode kDefaultControlURL when
-        // they create their own node; a local-headscale run sets
-        // TAILSCREEN_TS_CONTROL_URL to http://localhost:8080, which they
-        // would ignore. Skip in that case rather than silently connect to the
-        // wrong control plane.
         let controlURL = env["TAILSCREEN_TS_CONTROL_URL"] ?? env["TS_CONTROL_URL"] ?? kDefaultControlURL
-        try XCTSkipIf(
-            controlURL != kDefaultControlURL,
-            "TailscaleScreenShareServer/Client don't accept a controlURL parameter; skipping under local-headscale."
-        )
 
         let server = TailscaleScreenShareServer()
         let receivedAudioPackets = OSAllocatedUnfairLock<Int>(initialState: 0)
@@ -188,7 +179,8 @@ final class TailscaleConnectivityTests: XCTestCase {
         try await server.start(
             hostname: serverHostname,
             authKey: authKey,
-            path: serverDir
+            path: serverDir,
+            controlURL: controlURL
         )
         addTeardownBlock { Task { await server.stop() } }
 
@@ -208,7 +200,8 @@ final class TailscaleConnectivityTests: XCTestCase {
             to: serverIP,
             port: 7447,
             authKey: authKey,
-            path: clientDir
+            path: clientDir,
+            controlURL: controlURL
         )
         await fulfillment(of: [assigned], timeout: 30)
         addTeardownBlock { Task { await client.disconnect() } }
@@ -220,7 +213,7 @@ final class TailscaleConnectivityTests: XCTestCase {
 
         // Send 10 frames of synthetic PCM audio from the viewer.
         let voice = try VoiceChannel(localSSRC: assignedSSRC) { packet in
-            Task { await client.sendAudioRTP(packet) }
+            client.sendAudioRTP(packet)
         }
         voice.isMuted = false
         let pcm = (0..<1024).map { Float(sin(2 * .pi * 440 * Double($0) / 48_000)) }

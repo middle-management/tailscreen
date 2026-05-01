@@ -1,6 +1,7 @@
 import AppKit
 import CoreVideo
 import Foundation
+import os
 import TailscaleKit
 
 /// Screen-share viewer.
@@ -98,11 +99,24 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         }
     }
 
+    /// Tail of the audio send chain. Each call to `sendAudioRTP` parks
+    /// on the previous one's job before issuing its own send. Stops
+    /// detached `Task`s from piling up when `pl.send` stalls (poor link,
+    /// peer reachability change) — at 50 Hz a backed-up actor would
+    /// otherwise grow an unbounded queue.
+    private let audioSendTail = OSAllocatedUnfairLock<Task<Void, Never>?>(initialState: nil)
+
     /// Send one outbound audio RTP packet up to the sharer. VoiceChannel
-    /// calls this from its onSend closure.
-    func sendAudioRTP(_ packet: Data) async {
+    /// calls this from its onSend closure. Fire-and-forget; serialised
+    /// internally via `audioSendTail`.
+    func sendAudioRTP(_ packet: Data) {
         guard isConnected, let pl = packetListener, let addr = serverAddr else { return }
-        try? await pl.send(packet, to: addr)
+        let prev = audioSendTail.withLock { $0 }
+        let job = Task {
+            await prev?.value
+            try? await pl.send(packet, to: addr)
+        }
+        audioSendTail.withLock { $0 = job }
     }
 
     func connect(
@@ -110,6 +124,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         port: UInt16 = 7447,
         authKey: String? = nil,
         path: String? = nil,
+        controlURL: String = kDefaultControlURL,
         existingNode: TailscaleNode? = nil
     ) async throws {
         guard !isConnected else { return }
@@ -134,7 +149,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                 hostName: clientHostname,
                 path: statePath,
                 authKey: authKey,
-                controlURL: kDefaultControlURL,
+                controlURL: controlURL,
                 ephemeral: true
             )
 
