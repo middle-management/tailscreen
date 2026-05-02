@@ -133,17 +133,7 @@ class TailscalePeerDiscovery: ObservableObject {
                 proto: .tcp,
                 logger: logger
             )
-            let connected: Void = try await withThrowingTaskGroup(of: Void.self) { group in
-                group.addTask { try await conn.connect() }
-                group.addTask {
-                    try await Task.sleep(for: .seconds(8))
-                    throw TimeoutError()
-                }
-                defer { group.cancelAll() }
-                _ = try await group.next()
-                return ()
-            }
-            _ = connected
+            try await connectOrTimeout(conn: conn, seconds: 8)
             await conn.close()
             logger.log("✓ \(host):\(port) is running Tailscreen")
             return true
@@ -155,27 +145,50 @@ class TailscalePeerDiscovery: ObservableObject {
         }
     }
 
-    /// Helper to run async operations with a timeout
-    private func withTimeout<T: Sendable>(
-        seconds: TimeInterval, operation: @escaping @Sendable () async throws -> T
-    ) async throws -> T {
-        try await withThrowingTaskGroup(of: T.self) { group in
-            group.addTask {
-                try await operation()
-            }
-
-            group.addTask {
-                try await Task.sleep(for: .seconds(seconds))
-                throw TimeoutError()
-            }
-
-            guard let result = try await group.next() else {
-                throw TimeoutError()
-            }
-
-            group.cancelAll()
-            return result
-        }
+    /// Calls `conn.connect()` in an unstructured task so that the blocking
+    /// `tailscale_dial` C call does not hold a Swift actor-hop continuation
+    /// open when the calling task is cancelled or times out.
+    ///
+    /// Three independent paths race to resume the continuation exactly once:
+    ///   1. The unstructured task delivers the `connect()` result (success or error).
+    ///   2. A DispatchQueue watchdog fires after `seconds`, resuming with `TimeoutError`.
+    ///   3. `withTaskCancellationHandler`'s `onCancel` fires immediately when the
+    ///      calling task is cancelled, resuming with `CancellationError`.
+    ///
+    /// `ConnectBox` is a resume-once guard that silently drops whichever of the
+    /// three arrives second and third.
+    private static func connectOrTimeout(conn: OutgoingConnection, seconds: Double) async throws {
+        let box = ConnectBox()
+        try await withTaskCancellationHandler(
+            operation: {
+                try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+                    box.setCont(cont)
+                    // If onCancel fired before the continuation was stored, the
+                    // handler was a no-op; catch that here via isCancelled.
+                    if Task.isCancelled {
+                        box.resume(throwing: CancellationError())
+                        return
+                    }
+                    // Unstructured task: not a structured child, so the group/task
+                    // that owns this probe does NOT need to await tailscale_dial to
+                    // finish before propagating a timeout or cancellation.
+                    Task.detached {
+                        do {
+                            try await conn.connect()
+                            box.resume()
+                        } catch {
+                            box.resume(throwing: error)
+                        }
+                    }
+                    // Watchdog ensures the continuation is always resumed even if
+                    // tailscale_dial blocks indefinitely (e.g., ACL-dropped SYN).
+                    DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + seconds) {
+                        box.resume(throwing: TimeoutError())
+                    }
+                }
+            },
+            onCancel: { box.resume(throwing: CancellationError()) }
+        )
     }
 
     /// Start real-time monitoring of peer status using IPN bus
@@ -244,6 +257,37 @@ class TailscalePeerDiscovery: ObservableObject {
 }
 
 struct TimeoutError: Error {}
+
+// MARK: - Continuation helpers
+
+/// Thread-safe, resume-once wrapper for a `CheckedContinuation<Void, Error>`.
+///
+/// Guards against double-resume when `connectOrTimeout`'s three racing
+/// resumers (connect task, watchdog, cancellation handler) all try to
+/// settle the same continuation.
+private final class ConnectBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cont: CheckedContinuation<Void, Error>?
+
+    /// Called once, synchronously inside `withCheckedThrowingContinuation`.
+    func setCont(_ cont: CheckedContinuation<Void, Error>) {
+        lock.withLock { self.cont = cont }
+    }
+
+    func resume() {
+        lock.withLock {
+            cont?.resume()
+            cont = nil
+        }
+    }
+
+    func resume(throwing error: Error) {
+        lock.withLock {
+            cont?.resume(throwing: error)
+            cont = nil
+        }
+    }
+}
 
 // MARK: - Logger Implementation
 
