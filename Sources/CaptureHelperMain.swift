@@ -119,7 +119,6 @@ private final class CaptureHelperRunner {
     private var encoder: VideoEncoder?
     private var lastWidth: Int = 0
     private var lastHeight: Int = 0
-    private var firstFrameSent = false
 
     init(displayID: CGDirectDisplayID, writer: HelperFrameWriter) {
         self.displayID = displayID
@@ -173,11 +172,24 @@ private final class CaptureHelperRunner {
                 writer.writeLog("capture-helper: encoder \(codec) \(width)x\(height) @60fps")
                 lastWidth = width
                 lastHeight = height
-                newEncoder.onParameterSets = { [weak self] params in
-                    Task { @MainActor [weak self] in self?.emitParameterSets(params, width: width, height: height) }
+                // Capture `writer` directly so the callback writes
+                // synchronously from the encoder's serial output thread.
+                // VideoEncoder fires onParameterSets THEN onEncodedData
+                // back-to-back for keyframes; routing through
+                // `Task @MainActor` reorders them and main ends up
+                // broadcasting an AVCC AU before SPS/PPS arrive,
+                // which the viewer's decoder can't decode → black
+                // screen. Writing inline preserves the order.
+                let w = writer
+                let firstFrameFlag = FirstFrameFlag()
+                newEncoder.onParameterSets = { params in
+                    Self.writeParameterSets(w, params: params, width: width, height: height)
                 }
-                newEncoder.onEncodedData = { [weak self] data, isKeyframe in
-                    Task { @MainActor [weak self] in self?.emitAccessUnit(data, isKeyframe: isKeyframe) }
+                newEncoder.onEncodedData = { data, isKeyframe in
+                    if firstFrameFlag.markIfFirst() {
+                        w.writeFirstFrame()
+                    }
+                    w.writeAccessUnit(data, containsKeyframe: isKeyframe)
                 }
                 encoder = newEncoder
             } catch {
@@ -189,7 +201,20 @@ private final class CaptureHelperRunner {
         encoder?.encode(pixelBuffer: pixelBuffer)
     }
 
-    private func emitParameterSets(_ params: CodecParameterSets, width: Int, height: Int) {
+    /// One-shot atomic flag for "have we written the firstFrame
+    /// signal yet". Touched only from the encoder's serial output
+    /// thread, but `@unchecked Sendable` lets the runner construct
+    /// it on @MainActor and hand it across.
+    final class FirstFrameFlag: @unchecked Sendable {
+        private var sent = false
+        func markIfFirst() -> Bool {
+            if sent { return false }
+            sent = true
+            return true
+        }
+    }
+
+    nonisolated static func writeParameterSets(_ writer: HelperFrameWriter, params: CodecParameterSets, width: Int, height: Int) {
         let codecByte: UInt8
         var paramSets: [Data] = []
         switch params {
@@ -203,11 +228,4 @@ private final class CaptureHelperRunner {
         writer.writeParameterSets(codec: codecByte, width: width, height: height, paramSets: paramSets)
     }
 
-    private func emitAccessUnit(_ data: Data, isKeyframe: Bool) {
-        if !firstFrameSent {
-            firstFrameSent = true
-            writer.writeFirstFrame()
-        }
-        writer.writeAccessUnit(data, containsKeyframe: isKeyframe)
-    }
 }

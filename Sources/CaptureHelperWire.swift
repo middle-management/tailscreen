@@ -60,7 +60,7 @@ enum CaptureHelperWire {
 /// Streamed-frame writer. Helper-side; uses blocking `FileHandle.write`
 /// onto stdout. Synchronous on purpose — encoder thread blocks if main
 /// can't keep up, providing natural backpressure.
-final class HelperFrameWriter {
+final class HelperFrameWriter: @unchecked Sendable {
     private let handle: FileHandle
     init(handle: FileHandle) { self.handle = handle }
 
