@@ -35,8 +35,8 @@ struct MenuBarView: View {
                     shortcut: "⌘Q"
                 ) {
                     Task {
-                        if appState.isSharing { await appState.stopSharing(reason: "QuitTailscreen") }
-                        if appState.isConnected { await appState.disconnect() }
+                        if appState.sharingState == .active { await appState.stopSharing(reason: "QuitTailscreen") }
+                        if appState.connectionState == .viewing { await appState.disconnect() }
                         NSApplication.shared.terminate(nil)
                     }
                 }
@@ -134,13 +134,82 @@ private struct StatusSection: View {
     @EnvironmentObject var appState: AppState
 
     var body: some View {
-        if appState.isSharing {
-            SharingCard()
-        } else if appState.isConnected {
-            ViewingCard()
-        } else {
-            DisplayPickerSection()
+        switch (appState.sharingState, appState.connectionState) {
+        case (.active, _): SharingCard()
+        case (_, .viewing): ViewingCard()
+        case (.starting, _): StartingShareCard()
+        case (_, .connecting): ConnectingCard()
+        default: DisplayPickerSection()
         }
+    }
+}
+
+/// Transitional state between peer click and `connectionState =
+/// .viewing`. Mirror of `StartingShareCard` for the receive side.
+private struct ConnectingCard: View {
+    @EnvironmentObject var appState: AppState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.9)
+                    .padding(.top, 2)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Connecting\(appState.connectedHostname.map { " to \($0)…" } ?? "…")")
+                        .font(.system(size: 13, weight: .semibold))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Text("Negotiating the WireGuard tunnel and waiting for the first frame.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 10).fill(Color.secondary.opacity(0.08))
+        )
+        .padding(.horizontal, 8)
+        .padding(.bottom, 6)
+    }
+}
+
+/// Transitional state between display click and `sharingState == .active`.
+/// SCStream bring-up can take 5–10 s when replayd is unhappy
+/// (multiple retries, watchdog timeouts). Without this card the
+/// popover sits silently on the display picker the whole time and
+/// looks like the click did nothing.
+private struct StartingShareCard: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.9)
+                    .padding(.top, 2)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Starting share…")
+                        .font(.system(size: 13, weight: .semibold))
+                    Text("Bringing up screen capture. macOS may take a few seconds.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 10).fill(Color.secondary.opacity(0.08))
+        )
+        .padding(.horizontal, 8)
+        .padding(.bottom, 6)
     }
 }
 
@@ -165,6 +234,15 @@ private struct SharingCard: View {
         return 16.0 / 9.0
     }
 
+    /// Approximate preview height. The popover is 280 px wide, with
+    /// 8 px outer padding + 12 px SharingCard inner padding on each
+    /// side, leaving ~240 px of content width. Multiply by the
+    /// inverse of the screen aspect to get the matching height.
+    private var previewHeight: CGFloat {
+        let contentWidth: CGFloat = 240
+        return contentWidth / max(0.1, screenAspect)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 10) {
@@ -187,29 +265,33 @@ private struct SharingCard: View {
 
             ViewersList(viewers: appState.currentViewers)
 
-            // Preview container is locked to the shared display's aspect
-            // so the image fills it cleanly instead of collapsing into a
-            // narrow strip with black bars when SwiftUI's intrinsic
-            // sizing kicks in.
-            Group {
-                if let image = appState.previewImage {
-                    Image(nsImage: image)
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                } else {
-                    HStack(spacing: 6) {
-                        ProgressView().controlSize(.small).scaleEffect(0.7)
-                        Text("Capturing…")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
+            // GeometryReader measures the popover's actual width, which
+            // we feed into a derived height via the shared display's
+            // aspect ratio. This is more robust than chaining
+            // `.aspectRatio` + `.frame(maxWidth: .infinity)` on a Color,
+            // which SwiftUI sometimes resolves to a single-line strip
+            // when the parent VStack distributes height tightly.
+            GeometryReader { geo in
+                let height = geo.size.width / max(0.1, screenAspect)
+                ZStack {
+                    Color.black.opacity(appState.previewImage == nil ? 0.15 : 1.0)
+                    if let image = appState.previewImage {
+                        Image(nsImage: image)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                    } else {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small).scaleEffect(0.7)
+                            Text("Capturing…")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                        }
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
+                .frame(width: geo.size.width, height: height)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
             }
-            .aspectRatio(screenAspect, contentMode: .fit)
-            .frame(maxWidth: .infinity)
-            .background(Color.black.opacity(appState.previewImage == nil ? 0.15 : 1.0))
-            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .frame(height: previewHeight)
 
             // Three buttons in 280px popover would truncate ("Unmut…",
             // "Stop Shari…"). Icon-only for Draw + Mic; full label only
@@ -506,7 +588,7 @@ private struct DevicesSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
-                Text("DEVICES")
+                Text("AVAILABLE SCREENS")
                     .font(.system(size: 10, weight: .semibold))
                     .tracking(0.6)
                     .foregroundStyle(.tertiary)
@@ -530,7 +612,7 @@ private struct DevicesSection: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(appState.isDiscovering)
-                .help("Refresh devices")
+                .help("Refresh screens")
             }
             .padding(.horizontal, 14)
             .padding(.top, 6)
@@ -551,14 +633,14 @@ private struct DevicesSection: View {
         if appState.isDiscovering && appState.availablePeers.isEmpty {
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small).scaleEffect(0.7)
-                Text("Looking for devices…")
+                Text("Looking for screens…")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
             }
             .frame(height: 28)
             .padding(.horizontal, 14)
         } else if appState.availablePeers.isEmpty {
-            Text("No devices found on your tailnet")
+            Text("No screens available on your tailnet")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
                 .frame(height: 28)
@@ -566,6 +648,11 @@ private struct DevicesSection: View {
         } else {
             let maxRows = 6
             let rowHeight: CGFloat = 28
+            // `.frame(height:)` (not `maxHeight:`) commits to the
+            // row count's height so SwiftUI's intrinsic sizing can't
+            // collapse the ScrollView when its content negotiates a
+            // smaller natural size — observed as an "empty" peer
+            // section even though discovery had 1+ peers.
             ScrollView {
                 VStack(spacing: 0) {
                     ForEach(appState.availablePeers) { peer in
@@ -576,7 +663,7 @@ private struct DevicesSection: View {
                 }
             }
             .frame(
-                maxHeight: rowHeight * CGFloat(min(appState.availablePeers.count, maxRows))
+                height: rowHeight * CGFloat(min(appState.availablePeers.count, maxRows))
             )
         }
     }

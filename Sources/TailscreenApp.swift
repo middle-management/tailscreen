@@ -29,9 +29,9 @@ struct TailscreenApp: App {
 
     @ViewBuilder
     private var menubarIcon: some View {
-        if appState.isSharing, let img = Self.sharingImage {
+        if appState.sharingState == .active, let img = Self.sharingImage {
             Image(nsImage: img)
-        } else if appState.isConnected, let img = Self.viewingImage {
+        } else if appState.connectionState == .viewing, let img = Self.viewingImage {
             Image(nsImage: img)
         } else if let img = Self.idleImage {
             Image(nsImage: img)
