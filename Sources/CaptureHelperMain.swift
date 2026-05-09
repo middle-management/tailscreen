@@ -22,25 +22,18 @@ enum CaptureHelperMain {
             exit(64)
         }
 
-        // Move our binary frame protocol off FD 1 onto FD 4. ScreenCapture
-        // and friends call `print()` freely, which writes to FD 1; if FD 1
-        // were our framed-protocol channel, every print would corrupt the
-        // stream. Redirect FD 1 → stderr (FD 2) so prints flow to the
-        // helper's stderr (which the main process inherits), and put the
-        // framed protocol on FD 4 (which main attaches via a Pipe).
-        let frameFD: Int32 = 4
-        // Sanity: if FD 4 isn't open (e.g. running from a shell with no
-        // explicit redirect), fall back to FD 1 with a stderr-only mode.
-        var st = stat()
-        let frameAvailable = fstat(frameFD, &st) == 0
-        let outFD: Int32 = frameAvailable ? frameFD : 1
-        if frameAvailable {
-            // Redirect Swift print()/FD1 to stderr so they don't pollute
-            // our binary protocol on FD 4.
+        // Save the real stdout (FD 1) and redirect FD 1 → stderr so that
+        // every `print()` and any stray write to FD 1 from inside our
+        // existing capture stack lands in stderr instead of corrupting
+        // the binary frame protocol. The frame writer writes to the
+        // saved FD, which is still connected to the parent's pipe.
+        let savedStdout = dup(1)
+        if savedStdout >= 0 {
             _ = dup2(2, 1)
         }
-        let writer = HelperFrameWriter(handle: FileHandle(fileDescriptor: outFD, closeOnDealloc: false))
-        writer.writeLog("capture-helper: starting for displayID=\(displayID) frameFD=\(outFD)")
+        let frameFD: Int32 = savedStdout >= 0 ? savedStdout : 1
+        let writer = HelperFrameWriter(handle: FileHandle(fileDescriptor: frameFD, closeOnDealloc: false))
+        writer.writeLog("capture-helper: starting for displayID=\(displayID) frameFD=\(frameFD)")
 
         Task { @MainActor in
             let runner = CaptureHelperRunner(displayID: CGDirectDisplayID(displayID), writer: writer)
