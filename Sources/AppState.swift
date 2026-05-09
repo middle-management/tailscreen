@@ -224,7 +224,29 @@ class AppState: ObservableObject {
         ScreenCapture.hasPermission()
     }
 
+    /// Open Apple's `SCContentSharingPicker`, await the user's
+    /// selection, then start a share with the resulting filter.
+    /// The picker route opens replayd's user-consent gate, which
+    /// closes the "completion.ok-but-no-frames" failure mode that
+    /// the manual `SCContentFilter` path hits intermittently.
+    func presentSharePicker() async {
+        guard let filter = await SCPickerCoordinator.shared.pickFilter() else {
+            // Cancelled — nothing to do, popover already shows
+            // display picker / idle state.
+            return
+        }
+        await startSharing(filter: filter)
+    }
+
+    func startSharing(filter: SCContentFilter) async {
+        await startSharingInternal(displayID: nil, filter: SendableFilter(filter))
+    }
+
     func startSharing(displayID: CGDirectDisplayID? = nil) async {
+        await startSharingInternal(displayID: displayID, filter: nil)
+    }
+
+    private func startSharingInternal(displayID: CGDirectDisplayID?, filter: SendableFilter?) async {
         sharingState = .starting
         // Cleanup contract: any path out of this function (success,
         // failure, cancellation) leaves `sharingState` consistent.
@@ -333,6 +355,7 @@ class AppState: ObservableObject {
                     try await srv.start(
                         hostname: hostname,
                         displayID: pickedID,
+                        filter: filter,
                         existingNode: sharedNode
                     )
                 } catch {
@@ -411,6 +434,10 @@ class AppState: ObservableObject {
         previewImage = nil
         currentViewers = []
         tailscaleIPs = []
+        // Tell SCContentSharingPicker we're done — clears any
+        // "ready to share" UI hint Apple may have left up alongside
+        // the recording badge.
+        SCPickerCoordinator.shared.reset()
 
         // Update metadata
         metadataService.updateMetadata(isSharing: false)

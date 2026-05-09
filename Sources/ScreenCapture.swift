@@ -118,7 +118,66 @@ class ScreenCapture: NSObject {
         return "Display \(index + 1)"
     }
 
+    /// Start capture from a pre-built `SCContentFilter`, typically one
+    /// the user just chose via `SCContentSharingPicker`. The filter
+    /// already encodes the source (display, window, or app) plus any
+    /// exclusions Apple's picker UI gathered. Going through the picker
+    /// also opens replayd's user-consent gate, dramatically reducing
+    /// the "completion.ok but no frames" failure mode.
+    func start(filter: SCContentFilter) async throws {
+        try await runStart { config, _ in
+            let scale = Int(NSScreen.main?.backingScaleFactor ?? 1)
+            let rect = filter.contentRect
+            config.width = Int(rect.width) * scale
+            config.height = Int(rect.height) * scale
+            return filter
+        }
+    }
+
     func start(displayID: CGDirectDisplayID? = nil) async throws {
+        try await runStart { config, _ in
+            // Get available content. SCShareableContent's bridged async call
+            // can hang for a while on first launch while macOS resolves the
+            // Screen Recording permission and brings up the screencapture
+            // daemon. 5s was too aggressive — first-time permission grants
+            // routinely take longer than that. 30s is generous enough for
+            // a fresh machine while still bounded.
+            self.logEvent("start.fetchShareableContent.begin")
+            self.availableContent = try await Self.fetchShareableContent(timeout: .seconds(30))
+            let displayCount = self.availableContent?.displays.count ?? 0
+            self.logEvent("start.fetchShareableContent.done", extra: "displays=\(displayCount)")
+
+            let display: SCDisplay
+            if let wanted = displayID,
+               let match = self.availableContent?.displays.first(where: { $0.displayID == wanted }) {
+                display = match
+            } else if let first = self.availableContent?.displays.first {
+                display = first
+            } else {
+                throw ScreenCaptureError.noDisplayAvailable
+            }
+
+            // Capture at the display's native pixel resolution. SCDisplay reports
+            // width/height in points, so we multiply by the main screen's backing
+            // scale factor (1 on non-Retina, 2 or 3 on Retina).
+            let scale = Int(NSScreen.main?.backingScaleFactor ?? 1)
+            config.width = Int(display.width) * scale
+            config.height = Int(display.height) * scale
+            return SCContentFilter(display: display, excludingWindows: [])
+        }
+    }
+
+    /// Shared lifecycle: poison/cool-down guards, config defaults,
+    /// SCStream construction, output addition, watchdogged
+    /// startCapture, first-frame wait. The `filterBuilder` closure
+    /// fills in the path-specific bits — building the
+    /// `SCContentFilter` and finalizing the `SCStreamConfiguration`'s
+    /// width/height. Both `start(displayID:)` and `start(filter:)`
+    /// route through here so the lifecycle invariants stay in one
+    /// place.
+    private func runStart(
+        filterBuilder: (SCStreamConfiguration, ScreenCapture) async throws -> SCContentFilter
+    ) async throws {
         // Refuse early if a prior SCStream poisoned the bundle's
         // replayd slot inside the cool-down window. After the window
         // we let the user try again — replayd sometimes recovers on
@@ -131,19 +190,11 @@ class ScreenCapture: NSObject {
                 logEvent("start.refused", extra: "bundleSlotPoisoned remaining=\(remainMs)ms")
                 throw ScreenCaptureError.bundleSlotPoisoned
             }
-            // Cool-down elapsed — clear the flag and let the attempt
-            // proceed. If it fails again the flag will reset.
             Self.bundlePoisonedAtNs.withLock { $0 = nil }
             logEvent("start.poison.cleared", extra: "elapsed=\(elapsedNs / 1_000_000)ms")
         }
         // Replayd needs a brief cool-down between stop and the next
-        // start on the same bundle. If we start within ~1 s of the
-        // last stop, the new SCStream comes up and immediately fires
-        // didStopWithError(-3805 "application connection being
-        // interrupted"). Worse, that interrupt poisons the bundle's
-        // slot — every subsequent startCapture acks but never
-        // delivers a sample, until process exit. Waiting out the
-        // cool-down here avoids the poison entirely.
+        // start on the same bundle (see `lastStopAtNs` doc comment).
         let cooldownMs: UInt64 = 2000
         if let lastStop = Self.lastStopAtNs.withLock({ $0 }) {
             let elapsedNs = DispatchTime.now().uptimeNanoseconds &- lastStop
@@ -154,34 +205,8 @@ class ScreenCapture: NSObject {
                 try await Task.sleep(for: .milliseconds(Int(waitMs)))
             }
         }
-        // Get available content. SCShareableContent's bridged async call
-        // can hang for a while on first launch while macOS resolves the
-        // Screen Recording permission and brings up the screencapture
-        // daemon. 5s was too aggressive — first-time permission grants
-        // routinely take longer than that. 30s is generous enough for
-        // a fresh machine while still bounded.
-        logEvent("start.fetchShareableContent.begin")
-        availableContent = try await Self.fetchShareableContent(timeout: .seconds(30))
-        let displayCount = availableContent?.displays.count ?? 0
-        logEvent("start.fetchShareableContent.done", extra: "displays=\(displayCount)")
 
-        let display: SCDisplay
-        if let wanted = displayID,
-           let match = availableContent?.displays.first(where: { $0.displayID == wanted }) {
-            display = match
-        } else if let first = availableContent?.displays.first {
-            display = first
-        } else {
-            throw ScreenCaptureError.noDisplayAvailable
-        }
-
-        // Capture at the display's native pixel resolution. SCDisplay reports
-        // width/height in points, so we multiply by the main screen's backing
-        // scale factor (1 on non-Retina, 2 or 3 on Retina).
-        let scale = Int(NSScreen.main?.backingScaleFactor ?? 1)
         let config = SCStreamConfiguration()
-        config.width = Int(display.width) * scale
-        config.height = Int(display.height) * scale
         config.minimumFrameInterval = CMTime(value: 1, timescale: 60)
         // Full-range NV12 — matches what VideoToolbox wants natively, so the
         // encoder skips an internal BGRA→YUV conversion (cheaper, and removes
@@ -191,12 +216,10 @@ class ScreenCapture: NSObject {
         config.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
         config.showsCursor = true
         config.queueDepth = 5
-        logEvent("start.config", extra: "displayID=\(display.displayID) size=\(config.width)x\(config.height) fps=60 pixelFormat=420f queueDepth=5")
 
-        // Create content filter for the main display
-        let filter = SCContentFilter(display: display, excludingWindows: [])
+        let filter = try await filterBuilder(config, self)
+        logEvent("start.config", extra: "size=\(config.width)x\(config.height) fps=60 pixelFormat=420f queueDepth=5")
 
-        // Create stream
         stream = SCStream(filter: filter, configuration: config, delegate: self)
 
         // Create and add output. Tee first-frame arrival through
@@ -262,7 +285,19 @@ class ScreenCapture: NSObject {
             // covers a slow first-run permission grant without leaving the
             // user staring forever.
             DispatchQueue.global().asyncAfter(deadline: .now() + 10) {
-                pendingLock.withLock { $0 = nil }
+                // Only fire if completion hasn't already arrived.
+                // The completion handler clears `pendingLock`; if
+                // it's already nil the box is drained and this
+                // watchdog is a no-op. Without this guard we'd
+                // poison the bundle slot on every successful share
+                // 10 s after start, refusing the next legitimate
+                // share for 30 s.
+                let stillPending = pendingLock.withLock { box -> Bool in
+                    guard box != nil else { return false }
+                    box = nil
+                    return true
+                }
+                guard stillPending else { return }
                 print("ScreenCapture[\(sid)] startCapture.watchdog.fired after 10000ms")
                 Self.bundlePoisonedAtNs.withLock { $0 = DispatchTime.now().uptimeNanoseconds }
                 box.resume(throwing: ScreenCaptureError.startTimeout)
@@ -423,6 +458,13 @@ class ScreenCapture: NSObject {
         let elapsedMs = (DispatchTime.now().uptimeNanoseconds &- startedNs) / 1_000_000
         if watchdogFired {
             print("ScreenCapture[\(sessionID)] stopCapture.watchdog.fired after \(elapsedMs)ms (completion handler never invoked — replayd state orphaned)")
+            // Apple's stopCapture never finished its handshake →
+            // the SCStream is orphaned in replayd's process-wide
+            // tracking. Mark the bundle poisoned so the next start
+            // refuses fast and the user gets the "restart Tailscreen"
+            // alert instead of getting a half-working share whose
+            // recording badge persists after Stop.
+            bundlePoisonedAtNs.withLock { $0 = DispatchTime.now().uptimeNanoseconds }
         }
     }
 

@@ -474,64 +474,54 @@ private struct ViewingCard: View {
     }
 }
 
-/// Display picker shown when idle. One row per attached display; clicking
-/// a row starts sharing that display.
-///
-/// Before macOS Screen Recording permission has been granted, the underlying
-/// `SCShareableContent` call would pop a TCC prompt the moment the menu
-/// opens. To avoid that, the section renders a single "Share my screen" CTA
-/// instead of probing the displays — the prompt only fires when the user
-/// actually tries to share.
+/// Idle-state CTA: opens Apple's `SCContentSharingPicker` for the
+/// user to pick a display, window, or app. Replaces the older
+/// in-popover display list — going through Apple's picker opens
+/// replayd's user-consent gate, dramatically reducing the
+/// "completion.ok-but-no-frames" failure mode the manual filter
+/// path hit intermittently.
 private struct DisplayPickerSection: View {
     @EnvironmentObject var appState: AppState
-    @State private var didKickOff = false
+    @State private var isHovered = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            SectionHeader(title: "SHARE A DISPLAY")
-                .padding(.top, 2)
-
-            if !appState.hasScreenRecordingPermission {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Tailscreen needs Screen Recording permission to share your display.")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Button {
-                        Task {
-                            await appState.startSharing(displayID: nil)
-                            // Re-probe once the user has interacted with the
-                            // OS prompt — populates the picker for next open.
-                            await appState.refreshDisplays()
-                        }
-                    } label: {
-                        Text("Share my screen").frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 4)
-            } else if appState.availableDisplays.isEmpty {
-                Text("No displays available")
-                    .font(.system(size: 12))
+        Button {
+            Task { await appState.presentSharePicker() }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "rectangle.on.rectangle")
+                    .font(.system(size: 13))
+                    .frame(width: 16, alignment: .center)
                     .foregroundStyle(.secondary)
-                    .frame(height: 28)
-                    .padding(.horizontal, 14)
-            } else {
-                ForEach(appState.availableDisplays) { display in
-                    DisplayRow(display: display) {
-                        Task { await appState.startSharing(displayID: display.id) }
-                    }
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Share a screen")
+                        .font(.system(size: 13))
+                    Text("Pick a display, window, or app")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                }
+
+                Spacer(minLength: 0)
+
+                if isHovered {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.tertiary)
                 }
             }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .contentShape(Rectangle())
         }
-        .padding(.bottom, 6)
-        .onAppear {
-            guard !didKickOff else { return }
-            didKickOff = true
-            Task { await appState.refreshDisplays() }
-        }
+        .buttonStyle(.plain)
+        .background(
+            RoundedRectangle(cornerRadius: 5)
+                .fill(isHovered ? Color.primary.opacity(0.08) : Color.clear)
+                .padding(.horizontal, 4)
+        )
+        .onHover { isHovered = $0 }
+        .padding(.bottom, 4)
     }
 }
 

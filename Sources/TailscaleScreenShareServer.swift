@@ -4,6 +4,7 @@ import CoreImage
 import CoreVideo
 import Foundation
 import os
+import ScreenCaptureKit
 import TailscaleKit
 
 /// Screen-share server. Runs two listeners on the same port:
@@ -138,6 +139,14 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// to track that state.
     private var lastDisplayID: CGDirectDisplayID?
 
+    /// SCContentFilter the user picked via SCContentSharingPicker, if
+    /// any. Mirror of `lastDisplayID` for the picker-driven path.
+    /// `restartCapture()` reuses whichever of the two is set.
+    /// Wrapped in `SendableFilter` so the server (which crosses
+    /// isolation domains) can hand it back into ScreenCapture under
+    /// Swift 6's strict concurrency checks.
+    private var lastFilter: SendableFilter?
+
     /// In-flight `restartCapture()` work. `stop()` awaits this before
     /// tearing down the SCStream, otherwise a concurrent restart can
     /// finish bringing up a new SCStream *after* `stop()` already
@@ -182,6 +191,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         path: String? = nil,
         controlURL: String = kDefaultControlURL,
         displayID: CGDirectDisplayID? = nil,
+        filter: SendableFilter? = nil,
         existingNode: TailscaleNode? = nil
     ) async throws {
         guard !isRunning else { return }
@@ -271,13 +281,14 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         // bring-up a couple of times before surfacing the failure — in
         // practice the second attempt almost always succeeds.
         lastDisplayID = displayID
-        try await startCaptureWithRetries(displayID: displayID)
+        lastFilter = filter
+        try await startCaptureWithRetries(displayID: displayID, filter: filter)
     }
 
     /// Bring up an `SCStream` for the given display, retrying through
     /// replayd's transient XPC drops. Used by both initial `start()`
     /// and `restartCapture()`.
-    private func startCaptureWithRetries(displayID: CGDirectDisplayID?) async throws {
+    private func startCaptureWithRetries(displayID: CGDirectDisplayID?, filter: SendableFilter? = nil) async throws {
         // ScreenCaptureKit's startCapture occasionally drops its underlying
         // XPC connection mid-bring-up — the SCStreamDelegate logs
         // "Failed during stream due to application connection being
@@ -307,7 +318,11 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             screenCapture = capture
 
             do {
-                try await capture.start(displayID: displayID)
+                if let filter {
+                    try await capture.start(filter: filter.value)
+                } else {
+                    try await capture.start(displayID: displayID)
+                }
                 // Same race guard post-await: stop() may have run
                 // while `capture.start` was in flight. If so, tear
                 // the brand-new SCStream down before it can deliver
@@ -317,7 +332,8 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
                     screenCapture = nil
                     throw CancellationError()
                 }
-                print("ScreenCapture started (displayID=\(displayID.map { String($0) } ?? "default"))")
+                let source = filter != nil ? "picker-filter" : "displayID=\(displayID.map { String($0) } ?? "default")"
+                print("ScreenCapture started (\(source))")
                 return
             } catch is CancellationError {
                 throw CancellationError()
@@ -368,7 +384,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
                 self.screenCapture = nil
             }
             do {
-                try await self.startCaptureWithRetries(displayID: self.lastDisplayID)
+                try await self.startCaptureWithRetries(displayID: self.lastDisplayID, filter: self.lastFilter)
             } catch {
                 if !self.isRunning {
                     await self.screenCapture?.stop()
