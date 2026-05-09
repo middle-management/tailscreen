@@ -4,6 +4,7 @@ import CoreImage
 import CoreVideo
 import Foundation
 import os
+import ScreenCaptureKit
 import TailscaleKit
 
 /// Screen-share server. Runs two listeners on the same port:
@@ -335,6 +336,20 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         }
         helper.onPreviewImage = { [weak self] image in
             self?.onPreviewImage?(image)
+        }
+        helper.onUserStopped = { [weak self] in
+            print("HelperScreenCapture: user stopped via Control Center")
+            self?.helperCapture = nil
+            // Surface as the same userStopped error the in-process
+            // path emits so AppState's existing
+            // `isUserInitiatedCaptureStop` branch tears the share
+            // down quietly instead of trying to recover.
+            let err = NSError(
+                domain: SCStreamError.errorDomain,
+                code: SCStreamError.Code.userStopped.rawValue,
+                userInfo: [NSLocalizedDescriptionKey: "User stopped capture"]
+            )
+            self?.onCaptureStopped?(err)
         }
         helper.onUnexpectedExit = { [weak self] reason in
             guard let self else { return }

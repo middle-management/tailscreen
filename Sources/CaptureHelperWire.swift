@@ -34,6 +34,12 @@ enum CaptureHelperWire {
         /// (~280 px wide). Helper emits roughly once per second; we
         /// don't need 60 fps for a popover preview.
         case previewJPEG = 0x04
+        /// User clicked the macOS Control Center's "Stop" button.
+        /// Distinct from `fatal` because the main process should
+        /// tear the share down rather than respawn the helper —
+        /// respawning would immediately reopen the very recording
+        /// the user just turned off.
+        case userStopped = 0x05
         /// UTF-8 log line from the helper, surfaced into the main
         /// process's merged log so investigation doesn't need to
         /// open the helper's separate stderr.
@@ -94,6 +100,8 @@ final class HelperFrameWriter: @unchecked Sendable {
     func writeFirstFrame() { write(type: .firstFrame, payload: Data()) }
 
     func writePreviewJPEG(_ jpeg: Data) { write(type: .previewJPEG, payload: jpeg) }
+
+    func writeUserStopped() { write(type: .userStopped, payload: Data()) }
 
     func writeLog(_ line: String) {
         guard let data = line.data(using: .utf8) else { return }

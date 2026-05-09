@@ -33,6 +33,10 @@ final class HelperScreenCapture: @unchecked Sendable {
     /// Fires when the helper exits unexpectedly (process death without
     /// a prior `stop()` call). The reason describes how it died.
     var onUnexpectedExit: ((String) -> Void)?
+    /// Fires when the helper reports the user clicked the macOS
+    /// Control Center "Stop" button. Distinct from `onUnexpectedExit`
+    /// so the server tears the share down instead of respawning.
+    var onUserStopped: (() -> Void)?
 
     private let queueLabel: String
     private var process: Process?
@@ -187,6 +191,10 @@ final class HelperScreenCapture: @unchecked Sendable {
                 let msg = String(data: payload, encoding: .utf8) ?? "<no msg>"
                 stoppedIntentionally = true  // helper is exiting on purpose
                 onUnexpectedExit?("fatal: \(msg)")
+                return
+            case .userStopped:
+                stoppedIntentionally = true
+                onUserStopped?()
                 return
             }
         }

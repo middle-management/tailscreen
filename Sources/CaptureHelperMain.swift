@@ -134,7 +134,15 @@ private final class CaptureHelperRunner {
         }
         captureWrapper.onStreamStopped = { [weak self] error in
             Task { @MainActor [weak self] in
-                self?.writer.writeFatal("SCStream stopped: \(error?.localizedDescription ?? "nil")")
+                guard let self else { return }
+                if Self.isUserStopped(error) {
+                    self.writer.writeLog("SCStream stopped by user (Control Center)")
+                    self.writer.writeUserStopped()
+                    // Give the wire flush a moment, then exit cleanly.
+                    try? await Task.sleep(for: .milliseconds(50))
+                    exit(0)
+                }
+                self.writer.writeFatal("SCStream stopped: \(error?.localizedDescription ?? "nil")")
                 exit(1)
             }
         }
@@ -250,6 +258,16 @@ private final class CaptureHelperRunner {
         CGImageDestinationAddImage(dest, cg, options as CFDictionary)
         guard CGImageDestinationFinalize(dest) else { return nil }
         return mutable as Data
+    }
+
+    /// True when SCStream's `didStopWithError` payload is the
+    /// `userStopped` Control Center signal (vs. replayd's many
+    /// internal-error variants).
+    static func isUserStopped(_ error: Error?) -> Bool {
+        guard let error else { return false }
+        let nsErr = error as NSError
+        return nsErr.domain == SCStreamError.errorDomain
+            && nsErr.code == SCStreamError.Code.userStopped.rawValue
     }
 
     nonisolated static func writeParameterSets(_ writer: HelperFrameWriter, params: CodecParameterSets, width: Int, height: Int) {
