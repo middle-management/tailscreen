@@ -331,13 +331,15 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
                     throw error
                 }
                 print("ScreenCapture start attempt \(attempt) failed: \(error). Retrying…")
-                // Exponential backoff. "application connection being
-                // interrupted" is replayd's XPC link dropping during
-                // bring-up; sub-second waits land before the daemon has
-                // recovered and we just trigger the same failure again.
-                // 750ms / 1.5s / 3s gives replayd room to come back without
-                // making the user wait forever.
-                try? await Task.sleep(for: .milliseconds(750 * attempt))
+                // Backoff. "Application connection being interrupted"
+                // is replayd's XPC link dropping during bring-up; under
+                // contention from another same-bundle process it can
+                // take several seconds to settle. Earlier 750/1500/2250
+                // ms wasn't enough — observed two-instance test runs
+                // burn through all 4 attempts before replayd recovers.
+                // 1.5/3/4.5/6 s tracks observed recovery times and
+                // still gives up before the user's patience.
+                try? await Task.sleep(for: .milliseconds(1500 * attempt))
             }
         }
     }
@@ -389,7 +391,17 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// True for the transient ScreenCaptureKit startup failures the retry
     /// loop should swallow. Permission denials, missing displays, etc. fall
     /// through and surface to the caller immediately.
+    ///
+    /// `noFramesDelivered` IS retriable: replayd's per-bundle slot
+    /// often needs a few seconds to cool down after a previous stop
+    /// before it'll pump frames again. The longer per-retry backoff
+    /// gives it that time. Persistent noFramesDelivered across all
+    /// attempts surfaces the "another instance / wedged replayd"
+    /// alert.
     private static func isScreenCaptureRetriable(_ error: Error) -> Bool {
+        // bundleSlotPoisoned is sticky for the process — retrying
+        // here just hits the same poison guard until process exit.
+        if case ScreenCaptureError.bundleSlotPoisoned = error { return false }
         if case ScreenCaptureError.startTimeout = error { return true }
         if case ScreenCaptureError.noFramesDelivered = error { return true }
         let desc = error.localizedDescription.lowercased()

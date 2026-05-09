@@ -10,10 +10,32 @@ import ScreenCaptureKit
 import SwiftUI
 import TailscaleKit
 
+/// Sharing-side lifecycle. `idle` → `starting` (user clicked a
+/// display, SCStream coming up, retry loop running) → `active`
+/// (first preview frame landed, viewers can join) → `idle`. Replaces
+/// the older `isSharing` / `isStartingShare` bool pair so we can't
+/// end up in inconsistent in-between states.
+enum SharingState: Equatable {
+    case idle
+    case starting
+    case active
+}
+
+/// Viewer-side lifecycle. `idle` → `connecting` (user clicked a
+/// peer, tsnet dial + HELLO in flight) → `viewing` (decoder up,
+/// frames rendering) → `idle`. Mirror of `SharingState` so the
+/// popover can show "Connecting…" instead of silently sitting on
+/// the device picker while the network handshake completes.
+enum ConnectionState: Equatable {
+    case idle
+    case connecting
+    case viewing
+}
+
 @MainActor
 class AppState: ObservableObject {
-    @Published var isSharing = false
-    @Published var isConnected = false
+    @Published var sharingState: SharingState = .idle
+    @Published var connectionState: ConnectionState = .idle
     @Published var connectedHostname: String?
     @Published var statusMessage = ""
     @Published var showAlert = false
@@ -127,7 +149,7 @@ class AppState: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
-                guard let self = self, self.isConnected else { return }
+                guard let self = self, self.connectionState == .viewing else { return }
                 await self.disconnect()
             }
         }
@@ -139,7 +161,7 @@ class AppState: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
-                guard let self = self, self.isConnected else { return }
+                guard let self = self, self.connectionState == .viewing else { return }
                 await self.disconnect()
             }
         }
@@ -203,6 +225,16 @@ class AppState: ObservableObject {
     }
 
     func startSharing(displayID: CGDirectDisplayID? = nil) async {
+        sharingState = .starting
+        // Cleanup contract: any path out of this function (success,
+        // failure, cancellation) leaves `sharingState` consistent.
+        // Success sets `.active` below. Every failure / catch sets
+        // `.idle` explicitly via `await stopSharing` or
+        // `sharingState = .idle`. Defer here is the safety net for
+        // any path we forgot.
+        defer {
+            if sharingState == .starting { sharingState = .idle }
+        }
         do {
             let pickedID = displayID ?? selectedDisplayID
             // If Tailscale is already initialized, just start sharing
@@ -227,7 +259,7 @@ class AppState: ObservableObject {
                 //      teardown if recovery fails.
                 srv.onCaptureStopped = { [weak self] error in
                     Task { @MainActor [weak self] in
-                        guard let self, self.isSharing else { return }
+                        guard let self, self.sharingState == .active else { return }
                         if Self.isUserInitiatedCaptureStop(error) {
                             await self.stopSharing(reason: "SCStream userStopped: \(error?.localizedDescription ?? "nil")")
                             return
@@ -320,6 +352,11 @@ class AppState: ObservableObject {
                             title: "Couldn't Start Sharing",
                             message: "macOS didn't return shareable screens in time. If this is the first time you've shared, grant Tailscreen permission in System Settings → Privacy & Security → Screen Recording, then try again."
                         )
+                    } else if case ScreenCaptureError.bundleSlotPoisoned = error {
+                        showAlertMessage(
+                            title: "Restart Required",
+                            message: "macOS's screen-recording daemon is in a stuck state for Tailscreen and won't deliver any more frames until the app restarts. This usually follows a startCapture timeout or a stream interruption. Quit Tailscreen (⌘Q) and reopen — sharing will work again."
+                        )
                     } else if case ScreenCaptureError.noFramesDelivered = error {
                         showAlertMessage(
                             title: "Couldn't Start Sharing",
@@ -349,7 +386,7 @@ class AppState: ObservableObject {
             // placeholder and lands with the live thumbnail visible.
             await waitForFirstPreview(timeout: .milliseconds(500))
 
-            isSharing = true
+            sharingState = .active
         } catch {
             showAlertMessage(
                 title: "Error", message: "Failed to start sharing: \(error.localizedDescription)")
@@ -385,7 +422,7 @@ class AppState: ObservableObject {
         sharerOverlay = nil
         isSharerOverlayVisible = false
 
-        isSharing = false
+        sharingState = .idle
     }
 
     /// Suspend until the first preview frame lands or `timeout` elapses,
@@ -439,7 +476,7 @@ class AppState: ObservableObject {
     /// always present while sharing (so viewer-originated drawings render);
     /// this only flips input capture vs. click-through.
     func toggleSharerOverlay() {
-        guard isSharing else { return }
+        guard sharingState == .active else { return }
         let overlay = ensureSharerOverlay()
         isSharerOverlayVisible.toggle()
         overlay.setInputEnabled(isSharerOverlayVisible)
@@ -506,6 +543,10 @@ class AppState: ObservableObject {
     func connect(to host: String) async {
         guard !host.isEmpty else { return }
 
+        connectionState = .connecting
+        defer {
+            if connectionState == .connecting { connectionState = .idle }
+        }
         let renderer = ensureViewer()
         do {
             let c = TailscaleScreenShareClient(renderer: renderer)
@@ -550,7 +591,7 @@ class AppState: ObservableObject {
             let sharedNode = try await getOrCreateNode()
             try await c.connect(to: host, port: 7447, existingNode: sharedNode)
 
-            isConnected = true
+            connectionState = .viewing
             connectedHostname = host
             // Order matters: with the app at .accessory activation policy
             // (MenuBarExtra-only), makeKeyAndOrderFront silently no-ops
@@ -609,7 +650,7 @@ class AppState: ObservableObject {
 
         let delegate = ViewerWindowDelegate { [weak self] in
             Task { @MainActor [weak self] in
-                guard let self = self, self.isConnected else { return }
+                guard let self = self, self.connectionState == .viewing else { return }
                 await self.disconnect()
             }
         }
@@ -676,7 +717,7 @@ class AppState: ObservableObject {
 
     func connectToPeer(_ peer: TailscreenPeer) async {
         await connect(to: peer.tailscaleIP)
-        if isConnected {
+        if connectionState == .viewing {
             connectedHostname = peer.hostname
         }
     }
@@ -688,7 +729,7 @@ class AppState: ObservableObject {
         micCapture = nil
         voiceChannel = nil
         isMicOn = false
-        isConnected = false
+        connectionState = .idle
         connectedHostname = nil
         viewerRenderer?.clearPendingBuffer()
         viewerWindow?.orderOut(nil)
@@ -935,12 +976,12 @@ class AppState: ObservableObject {
             try await tailscaleAuth.signOut()
 
             // Stop sharing if active
-            if isSharing {
+            if sharingState == .active {
                 await stopSharing(reason: "signOut")
             }
 
             // Disconnect if connected
-            if isConnected {
+            if connectionState == .viewing {
                 await disconnect()
             }
 
