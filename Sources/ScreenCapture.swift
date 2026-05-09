@@ -14,7 +14,7 @@ struct DisplayInfo: Identifiable, Sendable, Hashable {
     let height: Int
 }
 
-class ScreenCapture: NSObject {
+class ScreenCapture: NSObject, @unchecked Sendable {
     private var stream: SCStream?
     private var streamOutput: StreamOutput?
     private var availableContent: SCShareableContent?
