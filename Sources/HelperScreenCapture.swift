@@ -21,9 +21,15 @@ final class HelperScreenCapture: @unchecked Sendable {
     var onAccessUnit: ((Data, Bool) -> Void)?
     /// Codec parameter sets, sent once per encoder configuration.
     var onParameterSets: ((CodecParameterSets) -> Void)?
+    /// Encoded resolution, surfaced once per parameter-sets emit so
+    /// the server can anchor its adaptive-bitrate baseline.
+    var onEncoderResolution: ((Int, Int) -> Void)?
     /// Fires the first time the helper's encoder produces a frame —
     /// signal for the SharingCard's "first preview" gate.
     var onFirstFrame: (() -> Void)?
+    /// Helper sent a downsampled preview JPEG for the SharingCard
+    /// thumbnail. ~1 Hz cadence.
+    var onPreviewImage: ((NSImage) -> Void)?
     /// Fires when the helper exits unexpectedly (process death without
     /// a prior `stop()` call). The reason describes how it died.
     var onUnexpectedExit: ((String) -> Void)?
@@ -34,6 +40,8 @@ final class HelperScreenCapture: @unchecked Sendable {
     private var stdoutHandle: FileHandle?
     private var readerThread: Thread?
     private var stoppedIntentionally = false
+    private var debugAUCount = 0
+    private var debugParamsLogged = false
 
     init() {
         queueLabel = "HelperScreenCapture-\(UUID().uuidString.prefix(8))"
@@ -137,15 +145,40 @@ final class HelperScreenCapture: @unchecked Sendable {
             switch type {
             case .accessUnit:
                 guard payload.count >= 1 else { continue }
-                let isKeyframe = payload[0] != 0
-                let avcc = payload.dropFirst()
-                onAccessUnit?(Data(avcc), isKeyframe)
+                let isKeyframe = payload[payload.startIndex] != 0
+                let avcc = Data(payload[payload.index(after: payload.startIndex)...])
+                debugAUCount += 1
+                if debugAUCount <= 3 {
+                    let first = avcc.prefix(8).map { String(format: "%02x", $0) }.joined(separator: " ")
+                    print("HelperScreenCapture: AU#\(debugAUCount) kf=\(isKeyframe) \(avcc.count)B first8=[\(first)]")
+                }
+                onAccessUnit?(avcc, isKeyframe)
             case .parameterSets:
+                if payload.count >= 9 {
+                    let w = Int(readBE32(payload, offset: 1))
+                    let h = Int(readBE32(payload, offset: 5))
+                    if w > 0 && h > 0 {
+                        onEncoderResolution?(w, h)
+                    }
+                }
                 if let params = decodeParameterSets(payload) {
+                    if !debugParamsLogged {
+                        debugParamsLogged = true
+                        switch params {
+                        case .h264(let sps, let pps):
+                            print("HelperScreenCapture: paramSets H264 sps=\(sps.count)B pps=\(pps.count)B")
+                        case .hevc(let vps, let sps, let pps):
+                            print("HelperScreenCapture: paramSets HEVC vps=\(vps.count)B sps=\(sps.count)B pps=\(pps.count)B")
+                        }
+                    }
                     onParameterSets?(params)
                 }
             case .firstFrame:
                 onFirstFrame?()
+            case .previewJPEG:
+                if let img = NSImage(data: payload) {
+                    onPreviewImage?(img)
+                }
             case .logLine:
                 if let s = String(data: payload, encoding: .utf8) {
                     print("helper: \(s)")

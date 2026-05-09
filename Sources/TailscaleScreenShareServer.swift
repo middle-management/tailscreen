@@ -148,6 +148,12 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// to pick H.264 vs HEVC RTP payload type.
     private var helperCodec: VideoCodec?
 
+    /// Sliding-window restart counter for helper-process crashes.
+    /// Each unexpected exit pushes its timestamp; we tolerate up to
+    /// 3 exits within a 30 s window, after which we give up and
+    /// surface the failure as a normal capture stop.
+    private var helperCrashTimestampsNs: [UInt64] = []
+
     /// In-flight `restartCapture()` work. `stop()` awaits this before
     /// tearing down the SCStream, otherwise a concurrent restart can
     /// finish bringing up a new SCStream *after* `stop()` already
@@ -308,18 +314,54 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             case .hevc: self?.helperCodec = .hevc
             }
         }
+        helper.onEncoderResolution = { [weak self] width, height in
+            guard let self else { return }
+            self.lastWidth = width
+            self.lastHeight = height
+            // Anchor the adaptive-bitrate ceiling. `defaultBitsPerPixel`
+            // wants a codec; default to HEVC's value if helperCodec
+            // hasn't landed yet — encoder will overwrite it on its
+            // next emit anyway.
+            let codec: VideoCodec = self.helperCodec ?? .hevc
+            let bpp = VideoEncoder.defaultBitsPerPixel(for: codec)
+            let baseline = Int(Double(width * height) * bpp * 60.0)
+            self.baselineBitrate.withLock { $0 = baseline }
+            self.currentBitrate.withLock { $0 = baseline }
+            self.lastBitrateChangeNs.withLock { $0 = DispatchTime.now().uptimeNanoseconds }
+            print("HelperScreenCapture: anchored baseline bitrate \(baseline / 1000) kbps for \(width)x\(height) \(codec)")
+        }
         helper.onFirstFrame = { [weak self] in
-            // Build a placeholder NSImage (helper-mode skips preview thumbnails
-            // for now — see TODO; the SharingCard will render its black
-            // "Capturing…" placeholder until we add a preview channel).
             self?.frameCounter = 1
         }
+        helper.onPreviewImage = { [weak self] image in
+            self?.onPreviewImage?(image)
+        }
         helper.onUnexpectedExit = { [weak self] reason in
+            guard let self else { return }
             print("HelperScreenCapture: unexpected exit (\(reason))")
-            // Surface as if SCStream errored, so AppState can react.
-            let err = NSError(domain: "Tailscreen.HelperScreenCapture", code: 1,
-                              userInfo: [NSLocalizedDescriptionKey: reason])
-            self?.onCaptureStopped?(err)
+            self.helperCapture = nil
+            // Sliding-window restart: tolerate ≤3 crashes in 30 s,
+            // give up after that. Each crash invalidates replayd's
+            // slot for that PID, so respawning gets a fresh process
+            // with no inherited bad state.
+            let now = DispatchTime.now().uptimeNanoseconds
+            let windowNs: UInt64 = 30_000_000_000
+            self.helperCrashTimestampsNs.removeAll { now &- $0 > windowNs }
+            self.helperCrashTimestampsNs.append(now)
+            if self.helperCrashTimestampsNs.count > 3 || !self.isRunning {
+                let err = NSError(domain: "Tailscreen.HelperScreenCapture", code: 1,
+                                  userInfo: [NSLocalizedDescriptionKey: reason])
+                self.onCaptureStopped?(err)
+                return
+            }
+            print("HelperScreenCapture: restarting (crash #\(self.helperCrashTimestampsNs.count) in window)")
+            do {
+                try self.startHelperCapture(displayID: self.lastDisplayID)
+            } catch {
+                let err = NSError(domain: "Tailscreen.HelperScreenCapture", code: 2,
+                                  userInfo: [NSLocalizedDescriptionKey: "respawn failed: \(error)"])
+                self.onCaptureStopped?(err)
+            }
         }
         try helper.start(displayID: displayID ?? CGMainDisplayID())
         helperCapture = helper
@@ -579,6 +621,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             registerOrRefresh(addr: addr, isNew: false)
             recordPLI(from: addr)
             encoder?.requestKeyframe()
+            helperCapture?.requestKeyframe()
         case .helloAck:
             // Server never receives HELLO_ACK from a viewer; ignore.
             break
@@ -685,6 +728,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             // last cached SPS/PPS in-band on the next IDR; that's handled
             // in handleEncodedData.
             encoder?.requestKeyframe()
+            helperCapture?.requestKeyframe()
         }
     }
 
@@ -869,7 +913,11 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
 
         while isRunning {
             try? await Task.sleep(nanoseconds: windowNs)
-            guard isRunning, encoder != nil else { continue }
+            // Either an in-process encoder OR a live helper-mode
+            // capture qualifies the sweep — both expose `setBitrate`
+            // and produce keyframes on demand.
+            let hasActiveEncoder = encoder != nil || helperCapture != nil
+            guard isRunning, hasActiveEncoder else { continue }
 
             let baseline = baselineBitrate.withLock { $0 }
             let current = currentBitrate.withLock { $0 }
@@ -914,8 +962,10 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         }
         lastBitrateChangeNs.withLock { $0 = DispatchTime.now().uptimeNanoseconds }
         encoder?.setBitrate(bitrate)
+        helperCapture?.setBitrate(bitrate)
         if bitrate < prev {
             encoder?.requestKeyframe()
+            helperCapture?.requestKeyframe()
         }
         let kbps = Double(bitrate) / 1000.0
         let prevKbps = Double(prev) / 1000.0

@@ -1,8 +1,11 @@
 import Foundation
 import ScreenCaptureKit
 import AppKit
+import CoreImage
 import CoreMedia
 import CoreVideo
+import ImageIO
+import UniformTypeIdentifiers
 
 /// Entry point for `Tailscreen --capture-helper`. Owns the SCStream
 /// + VideoEncoder pipeline; pipes encoded access units back to the
@@ -159,7 +162,20 @@ private final class CaptureHelperRunner {
         encoder?.setBitrate(bps)
     }
 
+    private var frameCounter: UInt64 = 0
+    private let previewContext = CIContext(options: [.useSoftwareRenderer: false])
+    private let previewMaxWidth: CGFloat = 280
+
     private func handleFrame(_ pixelBuffer: CVPixelBuffer) {
+        frameCounter &+= 1
+        // Downsample + JPEG-encode every ~half-second worth of frames
+        // for the SharingCard thumbnail. Skipping to a low rate keeps
+        // the pipe traffic dominated by the actual H.264/HEVC AUs.
+        if frameCounter == 1 || frameCounter % 30 == 0 {
+            if let jpeg = buildPreviewJPEG(from: pixelBuffer) {
+                writer.writePreviewJPEG(jpeg)
+            }
+        }
         let width = CVPixelBufferGetWidth(pixelBuffer)
         let height = CVPixelBufferGetHeight(pixelBuffer)
 
@@ -212,6 +228,28 @@ private final class CaptureHelperRunner {
             sent = true
             return true
         }
+    }
+
+    /// Downsample the captured CVPixelBuffer to ~280 px wide and
+    /// encode JPEG bytes for the SharingCard thumbnail. Mirrors the
+    /// in-process server's `buildPreviewImage` but emits raw JPEG
+    /// instead of an NSImage since the wire protocol only carries
+    /// bytes.
+    private func buildPreviewJPEG(from pixelBuffer: CVPixelBuffer) -> Data? {
+        let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
+        let srcExtent = ciImage.extent
+        guard srcExtent.width > 0 else { return nil }
+        let scale = min(1.0, previewMaxWidth / srcExtent.width)
+        let scaled = ciImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        guard let cg = previewContext.createCGImage(scaled, from: scaled.extent) else { return nil }
+        let mutable = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(mutable, UTType.jpeg.identifier as CFString, 1, nil) else {
+            return nil
+        }
+        let options: [CFString: Any] = [kCGImageDestinationLossyCompressionQuality: 0.7]
+        CGImageDestinationAddImage(dest, cg, options as CFDictionary)
+        guard CGImageDestinationFinalize(dest) else { return nil }
+        return mutable as Data
     }
 
     nonisolated static func writeParameterSets(_ writer: HelperFrameWriter, params: CodecParameterSets, width: Int, height: Int) {

@@ -29,6 +29,11 @@ enum CaptureHelperWire {
         /// delivered its first sample. Payload empty. Drives the
         /// main app's "first preview" gate without scraping logs.
         case firstFrame = 0x03
+        /// Downsampled JPEG of the most recent captured frame for the
+        /// SharingCard's thumbnail. Payload = raw JPEG bytes
+        /// (~280 px wide). Helper emits roughly once per second; we
+        /// don't need 60 fps for a popover preview.
+        case previewJPEG = 0x04
         /// UTF-8 log line from the helper, surfaced into the main
         /// process's merged log so investigation doesn't need to
         /// open the helper's separate stderr.
@@ -87,6 +92,8 @@ final class HelperFrameWriter: @unchecked Sendable {
     }
 
     func writeFirstFrame() { write(type: .firstFrame, payload: Data()) }
+
+    func writePreviewJPEG(_ jpeg: Data) { write(type: .previewJPEG, payload: jpeg) }
 
     func writeLog(_ line: String) {
         guard let data = line.data(using: .utf8) else { return }
