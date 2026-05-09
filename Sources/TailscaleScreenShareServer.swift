@@ -1,7 +1,5 @@
 import AppKit
 import CoreGraphics
-import CoreImage
-import CoreVideo
 import Foundation
 import os
 import ScreenCaptureKit
@@ -45,12 +43,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     private var ownsNode: Bool = true
     private var probeListener: Listener?
     private var packetListener: PacketListener?
-    private var encoder: VideoEncoder?
-    private var screenCapture: ScreenCapture?
-    private var lastWidth: Int = 0
-    private var lastHeight: Int = 0
     private var isRunning = false
-    private var frameCounter = 0
     private let logger: TSLogger
 
     /// Wall-clock anchor used to derive the 90 kHz RTP timestamp. Stays
@@ -130,8 +123,6 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
 
     var onCaptureStopped: ((Error?) -> Void)?
     var onPreviewImage: ((NSImage) -> Void)?
-    private let previewContext = CIContext(options: [.useSoftwareRenderer: false])
-    private let previewMaxWidth: CGFloat = 280
 
     /// Display we last brought capture up against. Cached so
     /// `restartCapture()` can rebuild the SCStream against the same
@@ -139,9 +130,9 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// to track that state.
     private var lastDisplayID: CGDirectDisplayID?
 
-    /// Helper-process wrapper, when running in helper mode (default).
-    /// Owns the child Tailscreen process running `--capture-helper`.
-    /// Mutually exclusive with `screenCapture` / `encoder`.
+    /// Helper-process wrapper. Owns the child Tailscreen process
+    /// running `--capture-helper`, which holds the SCStream and
+    /// VideoEncoder.
     private var helperCapture: HelperScreenCapture?
 
     /// Codec the helper's encoder is producing. Set when the helper
@@ -156,11 +147,11 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     private var helperCrashTimestampsNs: [UInt64] = []
 
     /// In-flight `restartCapture()` work. `stop()` awaits this before
-    /// tearing down the SCStream, otherwise a concurrent restart can
-    /// finish bringing up a new SCStream *after* `stop()` already
-    /// nulled out `screenCapture`, leaving a live capture that nothing
-    /// owns — visible as the macOS screen-recording badge stuck on
-    /// after the user clicked Stop Sharing.
+    /// tearing down `helperCapture`, otherwise a concurrent restart
+    /// can finish spawning a new helper *after* `stop()` already
+    /// nulled out `helperCapture`, leaving an orphaned child process
+    /// holding replayd's slot — visible as the macOS screen-recording
+    /// badge stuck on after the user clicked Stop Sharing.
     private let restartTask = OSAllocatedUnfairLock<Task<Error?, Never>?>(initialState: nil)
 
     /// Fires when a viewer sends an annotation op over the back-channel.
@@ -278,29 +269,8 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         Task { [weak self] in await self?.sweepIdleViewers() }
         Task { [weak self] in await self?.adaptiveBitrateSweep() }
 
-        // ScreenCaptureKit's startCapture occasionally drops its underlying
-        // XPC connection mid-bring-up — the SCStreamDelegate logs
-        // "Failed during stream due to application connection being
-        // interrupted" and the startCapture completion handler never fires,
-        // so our 5s watchdog throws `startTimeout`. Easy to provoke by
-        // running two Tailscreen processes on the same Mac (each pokes the
-        // screen-recording daemon during startup). Retry the whole capture
-        // bring-up a couple of times before surfacing the failure — in
-        // practice the second attempt almost always succeeds.
         lastDisplayID = displayID
-        if Self.useHelperProcess {
-            try startHelperCapture(displayID: displayID)
-        } else {
-            try await startCaptureWithRetries(displayID: displayID)
-        }
-    }
-
-    /// Default: route capture through a child process so Stop Sharing
-    /// reliably clears replayd's slot via process death. Override with
-    /// `TAILSCREEN_DISABLE_CAPTURE_HELPER=1` to fall back to the
-    /// in-process path (handy for debugging this branch).
-    private static var useHelperProcess: Bool {
-        ProcessInfo.processInfo.environment["TAILSCREEN_DISABLE_CAPTURE_HELPER"] != "1"
+        try startHelperCapture(displayID: displayID)
     }
 
     private func startHelperCapture(displayID: CGDirectDisplayID?) throws {
@@ -317,8 +287,6 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         }
         helper.onEncoderResolution = { [weak self] width, height in
             guard let self else { return }
-            self.lastWidth = width
-            self.lastHeight = height
             // Anchor the adaptive-bitrate ceiling. `defaultBitsPerPixel`
             // wants a codec; default to HEVC's value if helperCodec
             // hasn't landed yet — encoder will overwrite it on its
@@ -331,17 +299,13 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             self.lastBitrateChangeNs.withLock { $0 = DispatchTime.now().uptimeNanoseconds }
             print("HelperScreenCapture: anchored baseline bitrate \(baseline / 1000) kbps for \(width)x\(height) \(codec)")
         }
-        helper.onFirstFrame = { [weak self] in
-            self?.frameCounter = 1
-        }
         helper.onPreviewImage = { [weak self] image in
             self?.onPreviewImage?(image)
         }
         helper.onUserStopped = { [weak self] in
             print("HelperScreenCapture: user stopped via Control Center")
             self?.helperCapture = nil
-            // Surface as the same userStopped error the in-process
-            // path emits so AppState's existing
+            // Surface a userStopped SCStreamError so AppState's
             // `isUserInitiatedCaptureStop` branch tears the share
             // down quietly instead of trying to recover.
             let err = NSError(
@@ -385,115 +349,51 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
 
     private func handleHelperAccessUnit(_ avcc: Data, isKeyframe: Bool) {
         guard isRunning else { return }
-        frameCounter += 1
         broadcast(avccData: avcc, isKeyframe: isKeyframe)
     }
 
-    /// Bring up an `SCStream` for the given display, retrying through
-    /// replayd's transient XPC drops. Used by both initial `start()`
-    /// and `restartCapture()`.
-    private func startCaptureWithRetries(displayID: CGDirectDisplayID?) async throws {
-        // ScreenCaptureKit's startCapture occasionally drops its underlying
-        // XPC connection mid-bring-up — the SCStreamDelegate logs
-        // "Failed during stream due to application connection being
-        // interrupted" and the startCapture completion handler never fires,
-        // so our 5s watchdog throws `startTimeout`. Easy to provoke by
-        // running two Tailscreen processes on the same Mac (each pokes the
-        // screen-recording daemon during startup). Retry the whole capture
-        // bring-up a couple of times before surfacing the failure — in
-        // practice the second attempt almost always succeeds.
-        let maxAttempts = 4
-        for attempt in 1...maxAttempts {
-            // Bail out if `stop()` flipped `isRunning` while we were
-            // mid-loop. Without this, the retry loop keeps building
-            // and starting new SCStreams after teardown, which
-            // surfaces as the macOS screen-recording badge stuck on
-            // after Stop Sharing.
-            if !isRunning {
-                throw CancellationError()
-            }
-            let capture = ScreenCapture()
-            capture.onFrameCaptured = { [weak self] pixelBuffer in
-                self?.handleCapturedFrame(pixelBuffer)
-            }
-            capture.onStreamStopped = { [weak self] error in
-                self?.onCaptureStopped?(error)
-            }
-            screenCapture = capture
-
-            do {
-                try await capture.start(displayID: displayID)
-                // Same race guard post-await: stop() may have run
-                // while `capture.start` was in flight. If so, tear
-                // the brand-new SCStream down before it can deliver
-                // a single frame.
-                if !isRunning {
-                    await capture.stop()
-                    screenCapture = nil
-                    throw CancellationError()
-                }
-                print("ScreenCapture started (displayID=\(displayID.map { String($0) } ?? "default"))")
-                return
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                await capture.stop()
-                screenCapture = nil
-
-                let last = attempt == maxAttempts
-                if last || !Self.isScreenCaptureRetriable(error) {
-                    print("ERROR: ScreenCapture failed to start: \(error)")
-                    throw error
-                }
-                print("ScreenCapture start attempt \(attempt) failed: \(error). Retrying…")
-                // Backoff. "Application connection being interrupted"
-                // is replayd's XPC link dropping during bring-up; under
-                // contention from another same-bundle process it can
-                // take several seconds to settle. Earlier 750/1500/2250
-                // ms wasn't enough — observed two-instance test runs
-                // burn through all 4 attempts before replayd recovers.
-                // 1.5/3/4.5/6 s tracks observed recovery times and
-                // still gives up before the user's patience.
-                try? await Task.sleep(for: .milliseconds(1500 * attempt))
-            }
-        }
-    }
-
-    /// Called by the host (`AppState`) after the SCStream died
-    /// mid-flight. Tries to bring capture up again on the same display,
-    /// without disturbing the UDP/TCP listeners or the connected
-    /// viewer set. On success, video resumes flowing and viewers
-    /// recover transparently. On failure, the caller is expected to
-    /// fall back to `stop()` and surface the error to the user.
+    /// Called by the host (`AppState`) after the helper-process
+    /// capture died mid-flight. Spawns a fresh helper on the same
+    /// display, without disturbing the UDP/TCP listeners or the
+    /// connected viewer set. On success, video resumes flowing and
+    /// viewers recover transparently. On failure, the caller is
+    /// expected to fall back to `stop()` and surface the error to
+    /// the user.
+    ///
+    /// Note: the helper itself self-restarts up to 3 times in 30 s
+    /// via `onUnexpectedExit`. This entry point is the
+    /// AppState-driven recovery path that runs after that budget is
+    /// exhausted (or for any other externally-observed stream
+    /// death). It resets the crash budget so the user gets a fresh
+    /// run of auto-restarts.
     func restartCapture() async throws {
         guard isRunning else { return }
-        // Run the actual restart inside a tracked Task so `stop()` can
-        // await it. Without this synchronization, stop() can race with
-        // the final `screenCapture = capture` assignment inside
-        // `startCaptureWithRetries` and leave the new SCStream alive
-        // after teardown.
+        // Run the restart inside a tracked Task so `stop()` can
+        // await it. Without this synchronization, stop() can race
+        // with `helperCapture = helper` inside `startHelperCapture`
+        // and leave a child process alive after teardown — visible
+        // as the macOS screen-recording badge stuck on after Stop
+        // Sharing.
         let work = Task { [weak self] () -> Error? in
             guard let self else { return nil }
-            if let existing = self.screenCapture {
-                // Disconnect the stop callback before tearing down, otherwise
-                // SCStream's `didStopWithError` fires → `onStreamStopped` →
-                // host calls `restartCapture` again → infinite recursion.
-                existing.onStreamStopped = nil
+            if let existing = self.helperCapture {
+                self.helperCapture = nil
                 await existing.stop()
-                self.screenCapture = nil
             }
+            self.helperCrashTimestampsNs.removeAll()
             do {
-                try await self.startCaptureWithRetries(displayID: self.lastDisplayID)
+                guard self.isRunning else { throw CancellationError() }
+                try self.startHelperCapture(displayID: self.lastDisplayID)
             } catch {
                 if !self.isRunning {
-                    await self.screenCapture?.stop()
-                    self.screenCapture = nil
+                    await self.helperCapture?.stop()
+                    self.helperCapture = nil
                 }
                 return error
             }
             if !self.isRunning {
-                await self.screenCapture?.stop()
-                self.screenCapture = nil
+                await self.helperCapture?.stop()
+                self.helperCapture = nil
             }
             return nil
         }
@@ -502,28 +402,6 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         restartTask.withLock { $0 = nil }
         if let result { throw result }
     }
-
-    /// True for the transient ScreenCaptureKit startup failures the retry
-    /// loop should swallow. Permission denials, missing displays, etc. fall
-    /// through and surface to the caller immediately.
-    ///
-    /// `noFramesDelivered` IS retriable: replayd's per-bundle slot
-    /// often needs a few seconds to cool down after a previous stop
-    /// before it'll pump frames again. The longer per-retry backoff
-    /// gives it that time. Persistent noFramesDelivered across all
-    /// attempts surfaces the "another instance / wedged replayd"
-    /// alert.
-    private static func isScreenCaptureRetriable(_ error: Error) -> Bool {
-        // bundleSlotPoisoned is sticky for the process — retrying
-        // here just hits the same poison guard until process exit.
-        if case ScreenCaptureError.bundleSlotPoisoned = error { return false }
-        if case ScreenCaptureError.startTimeout = error { return true }
-        if case ScreenCaptureError.noFramesDelivered = error { return true }
-        let desc = error.localizedDescription.lowercased()
-        return desc.contains("application connection being interrupted")
-            || desc.contains("connection invalid")
-    }
-
 
     /// Accept TCP connections on port 7447. The same listener serves two
     /// roles, both of which look identical at the socket level:
@@ -635,7 +513,6 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         case .pli:
             registerOrRefresh(addr: addr, isNew: false)
             recordPLI(from: addr)
-            encoder?.requestKeyframe()
             helperCapture?.requestKeyframe()
         case .helloAck:
             // Server never receives HELLO_ACK from a viewer; ignore.
@@ -741,8 +618,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             // New viewer (or one that re-helloed): force a keyframe so
             // they get something decodable immediately. We also push the
             // last cached SPS/PPS in-band on the next IDR; that's handled
-            // in handleEncodedData.
-            encoder?.requestKeyframe()
+            // by `broadcast(avccData:isKeyframe:)`.
             helperCapture?.requestKeyframe()
         }
     }
@@ -837,77 +713,6 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         }
     }
 
-    private func handleCapturedFrame(_ pixelBuffer: CVPixelBuffer) {
-        guard isRunning else { return }
-        frameCounter += 1
-        if frameCounter == 1 || frameCounter % 60 == 0 {
-            let count = viewers.withLock { $0.count }
-            print("ScreenCapture: frame #\(frameCounter), \(count) viewer(s)")
-        }
-
-        // Emit on frame 1 too so the menubar SharingCard can land already
-        // populated and skip its "Capturing…" placeholder.
-        if (frameCounter == 1 || frameCounter % 30 == 0), let callback = onPreviewImage {
-            if let image = buildPreviewImage(from: pixelBuffer) {
-                callback(image)
-            }
-        }
-
-        let hasViewers = viewers.withLock { !$0.isEmpty }
-        guard hasViewers else { return }
-
-        let width = CVPixelBufferGetWidth(pixelBuffer)
-        let height = CVPixelBufferGetHeight(pixelBuffer)
-
-        if encoder == nil || width != lastWidth || height != lastHeight {
-            encoder?.shutdown()
-            let newEncoder = VideoEncoder()
-            do {
-                try newEncoder.setup(width: width, height: height, fps: 60)
-                let codec = newEncoder.codec
-                print("VideoEncoder setup: \(width)x\(height) @ 60fps codec=\(codec)")
-                lastWidth = width
-                lastHeight = height
-
-                // Anchor the adaptive-bitrate ceiling at this resolution's
-                // baseline. Done here (not in init) because we don't know
-                // the codec or pixel dimensions until VT actually accepts
-                // the encoder.
-                let bpp = VideoEncoder.defaultBitsPerPixel(for: codec)
-                let baseline = Int(Double(width * height) * bpp * 60.0)
-                baselineBitrate.withLock { $0 = baseline }
-                currentBitrate.withLock { $0 = baseline }
-                lastBitrateChangeNs.withLock { $0 = DispatchTime.now().uptimeNanoseconds }
-                // Wipe per-viewer PLI history — counts from a previous
-                // session at a different bitrate would mislead the sweep.
-                viewers.withLock { state in
-                    let keys = Array(state.keys)
-                    for key in keys {
-                        guard var viewer = state[key] else { continue }
-                        viewer.pliTimestampsNs.removeAll()
-                        state[key] = viewer
-                    }
-                }
-                // Drop cached parameter sets so the first IDR's SPS/PPS
-                // (and VPS if HEVC) are what late-joiners get.
-                parameterSets.withLock { $0 = nil }
-
-                newEncoder.onParameterSets = { [weak self] params in
-                    self?.parameterSets.withLock { $0 = params }
-                }
-                newEncoder.onEncodedData = { [weak self] data, isKeyframe in
-                    self?.broadcast(avccData: data, isKeyframe: isKeyframe)
-                }
-                encoder = newEncoder
-            } catch {
-                print("VideoEncoder setup failed: \(error)")
-                return
-            }
-        }
-
-        encoder?.encode(pixelBuffer: pixelBuffer)
-    }
-
     /// Adaptive-bitrate control loop. Polls every 5 seconds; counts PLIs
     /// received from each viewer in the last 5 s window, takes the worst
     /// per-viewer rate (we encode once and fan out — the worst link is
@@ -928,11 +733,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
 
         while isRunning {
             try? await Task.sleep(nanoseconds: windowNs)
-            // Either an in-process encoder OR a live helper-mode
-            // capture qualifies the sweep — both expose `setBitrate`
-            // and produce keyframes on demand.
-            let hasActiveEncoder = encoder != nil || helperCapture != nil
-            guard isRunning, hasActiveEncoder else { continue }
+            guard isRunning, helperCapture != nil else { continue }
 
             let baseline = baselineBitrate.withLock { $0 }
             let current = currentBitrate.withLock { $0 }
@@ -976,25 +777,13 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             return p
         }
         lastBitrateChangeNs.withLock { $0 = DispatchTime.now().uptimeNanoseconds }
-        encoder?.setBitrate(bitrate)
         helperCapture?.setBitrate(bitrate)
         if bitrate < prev {
-            encoder?.requestKeyframe()
             helperCapture?.requestKeyframe()
         }
         let kbps = Double(bitrate) / 1000.0
         let prevKbps = Double(prev) / 1000.0
         print("Adaptive bitrate: \(Int(prevKbps)) → \(Int(kbps)) kbps (\(reason))")
-    }
-
-    private func buildPreviewImage(from pixelBuffer: CVPixelBuffer) -> NSImage? {
-        let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
-        let srcExtent = ciImage.extent
-        guard srcExtent.width > 0 else { return nil }
-        let scale = min(1.0, previewMaxWidth / srcExtent.width)
-        let scaled = ciImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
-        guard let cg = previewContext.createCGImage(scaled, from: scaled.extent) else { return nil }
-        return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
     }
 
     /// Convert an encoded AVCC access unit into RTP packets and fan them out
@@ -1005,10 +794,9 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// PPS; for H.264 it's SPS+PPS.)
     private func broadcast(avccData: Data, isKeyframe: Bool) {
         guard let pl = packetListener else { return }
-        // Codec source depends on which capture path is active. The
-        // in-process encoder owns it directly; the helper-process path
-        // caches it from the parameter-sets blob the helper sends.
-        guard let codec = encoder?.codec ?? helperCodec else { return }
+        // Codec is cached from the parameter-sets blob the helper
+        // sends right after its first encoded frame.
+        guard let codec = helperCodec else { return }
 
         var nals = AVCCParser.nalUnits(from: avccData)
         if isKeyframe, let cached = parameterSets.withLock({ $0 }) {
@@ -1131,9 +919,9 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         isRunning = false
 
         // Drain any in-flight `restartCapture` before we touch
-        // `screenCapture`. The restart's final assignment otherwise
-        // races with our nil-out and orphans a live SCStream — the
-        // macOS screen-recording badge stays on after Stop Sharing.
+        // `helperCapture`. The restart's final assignment otherwise
+        // races with our nil-out and orphans a child helper process —
+        // the macOS screen-recording badge stays on after Stop Sharing.
         let pending = restartTask.withLock { task -> Task<Error?, Never>? in
             let t = task
             task = nil
@@ -1145,8 +933,8 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
 
         // Best-effort SERVER_BYE first, so viewers tear down on the spot
         // instead of waiting out their 15 s no-video timer. We send while
-        // the packet listener is still healthy and *before* tearing down
-        // capture/encoder — issuing SERVER_BYE after listener close (or
+        // the packet listener is still healthy and *before* tearing the
+        // helper down — issuing SERVER_BYE after listener close (or
         // even just before, racing with the close) loses the datagrams
         // because libtailscale's `pc.Close()` discards anything still
         // buffered in the Go-side socketpair. Three redundant sends per
@@ -1165,15 +953,10 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             try? await Task.sleep(for: .milliseconds(200))
         }
 
-        await screenCapture?.stop()
-        screenCapture = nil
         await helperCapture?.stop()
         helperCapture = nil
         helperCodec = nil
         print("Server stop: capture done")
-
-        encoder?.shutdown()
-        encoder = nil
 
         viewers.withLock { $0.removeAll() }
         viewerInfos.withLock { $0.removeAll() }

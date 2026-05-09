@@ -111,9 +111,10 @@ private extension Data {
     }
 }
 
-/// SCStream + VideoEncoder lifecycle inside the helper. Mirrors the
-/// shape of `TailscaleScreenShareServer.handleCapturedFrame` but
-/// streams output to stdout instead of fanning out RTP.
+/// SCStream + VideoEncoder lifecycle inside the helper. Captured
+/// pixel buffers go through `VideoEncoder` and the resulting access
+/// units are written to the framed wire on stdout instead of fanning
+/// out as RTP.
 @MainActor
 private final class CaptureHelperRunner {
     private let displayID: CGDirectDisplayID
@@ -239,10 +240,10 @@ private final class CaptureHelperRunner {
     }
 
     /// Downsample the captured CVPixelBuffer to ~280 px wide and
-    /// encode JPEG bytes for the SharingCard thumbnail. Mirrors the
-    /// in-process server's `buildPreviewImage` but emits raw JPEG
-    /// instead of an NSImage since the wire protocol only carries
-    /// bytes.
+    /// encode JPEG bytes for the SharingCard thumbnail. Emits raw
+    /// JPEG (rather than `NSImage`) because the wire protocol only
+    /// carries bytes — the parent reconstructs an `NSImage` on the
+    /// other side via `HelperScreenCapture.onPreviewImage`.
     private func buildPreviewJPEG(from pixelBuffer: CVPixelBuffer) -> Data? {
         let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
         let srcExtent = ciImage.extent

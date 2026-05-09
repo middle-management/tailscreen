@@ -136,9 +136,13 @@ works.
 ## Annotations
 
 `Annotation.swift` defines the data model — strokes, colors, op types.
-`DrawingOverlayView.swift` is the viewer-side drawing UI;
-`SharerOverlayWindow.swift` is the transparent `NSWindow` on the sharer's
-machine that the strokes get rendered into.
+`AnnotationCanvasModel.swift` holds the shared annotation state;
+`AnnotationCanvasView.swift` is the SwiftUI canvas; and
+`AnnotationOverlayHostView.swift` wraps it in an AppKit `NSPanel` so the
+borderless overlay can receive keyDown and first-mouse events that
+SwiftUI alone can't reach. The viewer hosts this overlay over the video
+window; the sharer's `SharerOverlayWindow.swift` floats it over the
+shared display so strokes get captured into the H.264 stream.
 
 The wire format is in `ScreenShareProtocol.swift`. It's TCP, framed,
 JSON-encoded. We use TCP rather than RTCP-style RTP feedback because losing

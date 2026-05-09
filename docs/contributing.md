@@ -180,14 +180,21 @@ Map of common changes to the files you'll touch:
 - **Video pipeline** — `RTPPacket.swift`, `VideoEncoder.swift`,
   `VideoDecoder.swift`, `MetalViewerRenderer.swift`. Read them together;
   they form one logical unit.
+- **Capture / encoder lifecycle** — `CaptureHelperMain.swift`,
+  `HelperScreenCapture.swift`, `CaptureHelperWire.swift`,
+  `ScreenCapture.swift`. Capture runs in the helper subprocess; the
+  main process owns only `HelperScreenCapture`.
+- **Audio / voice** — `AudioDevices.swift`, `AACCodec.swift`,
+  `RTPAudio.swift`, `VoiceChannel.swift`.
 - **Annotations** — `Annotation.swift`, `ScreenShareProtocol.swift`,
-  `DrawingOverlayView.swift`, `SharerOverlayWindow.swift`,
+  `AnnotationCanvasModel.swift`, `AnnotationCanvasView.swift`,
+  `AnnotationOverlayHostView.swift`, `SharerOverlayWindow.swift`,
   `ViewerCommands.swift`.
 - **Networking and discovery** — `TailscaleScreenShareServer.swift`,
   `TailscaleScreenShareClient.swift`, `TailscalePeerDiscovery.swift`,
   `TailscaleIPNWatcher.swift`, `TailscreenMetadata.swift`.
 - **UI and state** — `AppState.swift`, `MenuBarView.swift`,
-  `AppMenu.swift`, `ViewerToolbar.swift`.
+  `AppMenu.swift`, `ViewerToolbar.swift`, `GlobalHotkey.swift`.
 - **Build** — `Makefile`, `Package.swift`,
   `TailscaleKitPackage/Makefile`, `TailscaleKitPackage/Patches/`.
 
