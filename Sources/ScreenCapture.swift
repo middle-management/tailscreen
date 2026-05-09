@@ -14,7 +14,7 @@ struct DisplayInfo: Identifiable, Sendable, Hashable {
     let height: Int
 }
 
-class ScreenCapture: NSObject {
+class ScreenCapture: NSObject, @unchecked Sendable {
     private var stream: SCStream?
     private var streamOutput: StreamOutput?
     private var availableContent: SCShareableContent?
@@ -90,16 +90,26 @@ class ScreenCapture: NSObject {
         CGPreflightScreenCaptureAccess()
     }
 
-    /// Enumerate the displays the user can share. Returns an empty array if
-    /// permission has not been granted yet.
+    /// Enumerate the displays the user can share. Uses `NSScreen` so
+    /// the main process never has to touch `SCShareableContent` —
+    /// fetching shareable content registers the *parent* with `replayd`,
+    /// which then refuses the helper child's `SCStream` with
+    /// "application connection being interrupted". `NSScreen` reads
+    /// from a separate, screen-recording-permission-free path.
     static func listDisplays() async throws -> [DisplayInfo] {
-        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-        return content.displays.enumerated().map { idx, d in
-            DisplayInfo(
-                id: d.displayID,
-                name: Self.humanName(for: d, index: idx),
-                width: Int(d.width),
-                height: Int(d.height)
+        return NSScreen.screens.compactMap { screen in
+            let key = NSDeviceDescriptionKey("NSScreenNumber")
+            guard let displayID = screen.deviceDescription[key] as? CGDirectDisplayID else {
+                return nil
+            }
+            let scale = screen.backingScaleFactor
+            let pxWidth = Int(screen.frame.width * scale)
+            let pxHeight = Int(screen.frame.height * scale)
+            return DisplayInfo(
+                id: displayID,
+                name: screen.localizedName,
+                width: pxWidth,
+                height: pxHeight
             )
         }
     }

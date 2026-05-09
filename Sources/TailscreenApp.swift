@@ -1,7 +1,6 @@
 import AppKit
 import SwiftUI
 
-@main
 struct TailscreenApp: App {
     @StateObject private var appState = AppState()
 
