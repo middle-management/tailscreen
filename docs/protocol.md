@@ -22,17 +22,15 @@ below is happening inside an authenticated, encrypted pipe.
 | Metadata      | TCP/7447  | Share name, resolution, request-to-share prompts.                    |
 | Discovery     | TCP/7447  | Probe across the tailnet to find Tailscreen peers.                   |
 
-A note for anyone planning to make `7447` configurable: it's hardcoded in
-four places — `TailscalePeerDiscovery`, `TailscaleScreenShareServer`,
-`TailscaleScreenShareClient`, and `TailscreenMetadataService`. You'll need
-to change all four together, or the discovery will quietly fail to find
-anything.
+A note for anyone planning to make `7447` configurable: it's hardcoded
+across the discovery, server, client, and metadata paths. Search for
+`7447` and update everywhere it appears, or discovery will quietly fail to
+find anything.
 
 ## Video — UDP RTP
 
 NAL units packetized per RFC 6184 (H.264) and RFC 7798 (HEVC) on top of
-RFC 3550 RTP. The implementation is in
-[`RTPPacket.swift`](https://github.com/middle-management/tailscreen/blob/main/Sources/RTPPacket.swift).
+RFC 3550 RTP.
 
 Three things worth calling out:
 
@@ -91,8 +89,7 @@ the network code, but it's why the receive path looks the way it does.
 
 ## Annotations / control — TCP
 
-Length-prefixed framing on top of TCP, defined in
-[`ScreenShareProtocol.swift`](https://github.com/middle-management/tailscreen/blob/main/Sources/ScreenShareProtocol.swift):
+Length-prefixed framing on top of TCP:
 
 ```
 [type: 1 byte][len: 4 bytes, big-endian UInt32][payload: N bytes]
@@ -112,10 +109,10 @@ loss.
 
 ## Metadata — TCP request/response
 
-`TailscreenMetadataService` listens on the same TCP/7447 socket and
-responds to a few simple request types: "who are you?", "what's your
-resolution?", and the request-to-share prompt that lets the sharer require
-manual approval before video starts flowing.
+The metadata service listens on the same TCP/7447 socket and responds to a
+few simple request types: "who are you?", "what's your resolution?", and
+the request-to-share prompt that lets the sharer require manual approval
+before video starts flowing.
 
 This isn't its own port for a reason: opening a second port would mean a
 second hole in any tailnet ACL and a second TCP probe in discovery. One
@@ -123,12 +120,11 @@ port, multiple channels, separated by the framing byte.
 
 ## Discovery probe
 
-`TailscalePeerDiscovery` enumerates peers from the local tsnet LocalAPI,
-then opens TCP/7447 to each peer in parallel with a short timeout. Peers
-that accept and reply with the Tailscreen handshake show up in **Browse
-Shares**. Peers that don't, don't.
+Discovery enumerates peers from the local tsnet LocalAPI, then opens
+TCP/7447 to each peer in parallel with a short timeout. Peers that accept
+and reply with the Tailscreen handshake show up in **Browse Shares**.
+Peers that don't, don't.
 
 The probe is parallel because tailnets get big, and a serial probe of 50
 peers with a 500ms timeout each is 25 seconds of staring at a spinner.
 Parallel, it's 500ms total.
-

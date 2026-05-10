@@ -43,10 +43,10 @@ Go to the [Releases page](https://github.com/middle-management/tailscreen/releas
 download `Tailscreen-<version>-macOS.zip`, unzip, drag to `/Applications`.
 Done.
 
-The release zip is a universal binary (`arm64` + `x86_64`), built and
-notarized by `release.yml` on a `macos-15` runner. If the build secrets
-aren't configured (forks, dry runs), you'll get an unsigned `.app` instead
-— Gatekeeper will yell at you the first time you open it.
+The release zip is a universal binary (`arm64` + `x86_64`), built,
+codesigned and notarized by CI. If the build secrets aren't configured
+(forks, dry runs), you'll get an unsigned `.app` instead — Gatekeeper will
+yell at you the first time you open it.
 
 ## From source
 

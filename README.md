@@ -151,7 +151,7 @@ The sharer prefers HEVC and falls back to H.264 if VideoToolbox refuses it (Inte
 
 The same UDP socket also carries tiny one-byte control messages from viewer to sharer: HELLO, KEEPALIVE, BYE, PLI. RTP packets always start with `0x80`-`0xBF` (V=2), so the leading byte unambiguously distinguishes the two.
 
-The annotation and metadata channels share the TCP socket on the same port, with a 1-byte type prefix and a 4-byte big-endian length. The full wire format is in [`Sources/ScreenShareProtocol.swift`](Sources/ScreenShareProtocol.swift). Why TCP for annotations? Because dropping a stroke segment is visible and confusing; dropping a video frame is invisible. The transport choice tracks the cost of loss.
+The annotation and metadata channels share the TCP socket on the same port, with a 1-byte type prefix and a 4-byte big-endian length. Why TCP for annotations? Because dropping a stroke segment is visible and confusing; dropping a video frame is invisible. The transport choice tracks the cost of loss.
 
 More detail in the [Network Protocol docs](https://tailscreen.dev/protocol/).
 
@@ -185,9 +185,7 @@ The full list lives in the [Troubleshooting docs](https://tailscreen.dev/trouble
 
 ## CI/CD
 
-- `.github/workflows/build.yml` — `make build` + `make test` on every PR and push.
-- `.github/workflows/release.yml` — fires on a published release. Cross-builds a universal binary, codesigns and notarizes when secrets are present, uploads the zip + checksums.
-- `.github/workflows/pages.yml` — builds and deploys the docs site when `docs/` changes.
+CI builds and tests on every PR. A published GitHub release triggers a universal-binary build, which codesigns and notarizes when the Apple secrets are configured and uploads the zipped `.app` plus a checksums file. Docs are deployed when `docs/` changes.
 
 To cut a release:
 
