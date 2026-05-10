@@ -155,8 +155,6 @@ The annotation and metadata channels share the TCP socket on the same port, with
 
 More detail in the [Network Protocol docs](https://tailscreen.dev/protocol/).
 
-> There's a legacy single-stream framing (`[size:4][keyframe:1][data:N]`) in `Sources/ScreenShareServer.swift` and `Sources/ScreenShareClient.swift`. That's the **non-Tailscale** code path, kept as reference. The active path is everything described above.
-
 ## Privacy & security
 
 - **Encrypted.** All four channels ride inside Tailscale's WireGuard tunnel. There is no plaintext fallback and no separate Tailscreen-level TLS layer.

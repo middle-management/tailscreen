@@ -286,10 +286,11 @@ class AppState: ObservableObject {
                 }
 
                 // Viewer-originated annotations land directly on the sharer's
-                // overlay panel. ScreenCaptureKit captures the panel (nothing
-                // is excluded, see `ScreenCapture.swift:41`), so the drawings
-                // flow out to every viewer via the H.264 stream — no
-                // sharer→viewer broadcast needed.
+                // overlay panel. ScreenCaptureKit captures the panel (the
+                // helper's `SCContentFilter` excludes nothing — see
+                // `ScreenCapture.start`), so the drawings flow out to every
+                // viewer via the H.264 stream — no sharer→viewer broadcast
+                // needed.
                 srv.onAnnotationReceived = { [weak self] op in
                     Task { @MainActor [weak self] in
                         self?.ensureSharerOverlay().apply(remoteOp: op)

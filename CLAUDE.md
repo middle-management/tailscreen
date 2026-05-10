@@ -22,7 +22,6 @@ Runtime needs: Screen Recording permission, and either interactive Tailscale log
 tailscreen/
 ├── Sources/                    # Tailscreen executable (Swift)
 ├── Tests/TailscreenTests/      # Unit + connectivity tests
-├── Examples/                   # Standalone API usage demo
 ├── TailscaleKitPackage/        # Local SwiftPM dep wrapping libtailscale
 │   ├── upstream/libtailscale/  # Git submodule (tailscale/libtailscale)
 │   ├── Sources/  lib/  include/   # Symlinks into upstream
@@ -37,15 +36,17 @@ tailscreen/
 └── test-local.sh               # Multi-instance local launcher
 ```
 
-### Sources/ (26 files)
+### Sources/ (35 files)
 
 | File | Role |
 |------|------|
 | `TailscreenApp.swift` | `@main` entry; menubar lifecycle |
+| `AppEntry.swift` | Process-mode dispatcher: main menubar app vs. `--capture-helper` subprocess |
 | `AppState.swift` | Central `@MainActor` coordinator (sharing, connecting, peers, displays) |
 | `MenuBarView.swift` | All SwiftUI views (menus, sheets, alerts) |
 | `AppMenu.swift` | Native `NSMenu` setup (File → Disconnect, etc.) |
-| `TailscaleScreenShareServer.swift` | Server: capture → encode → RTP fan-out |
+| `GlobalHotkey.swift` | Carbon-based system-wide hotkey registration |
+| `TailscaleScreenShareServer.swift` | Server: spawn capture-helper → RTP fan-out (UDP) + annotation back-channel (TCP) |
 | `TailscaleScreenShareClient.swift` | Client: RTP recv → decode → render; sends annotations back |
 | `TailscalePeerDiscovery.swift` | LocalAPI peer enumeration + parallel TCP/7447 probing |
 | `TailscaleIPNWatcher.swift` | IPN-bus watcher for live online/offline events |
@@ -54,27 +55,38 @@ tailscreen/
 | `TailscreenMetadata.swift` | Share metadata + request-to-share protocol |
 | `TailscreenInstance.swift` | `TAILSCREEN_INSTANCE` env handling for local multi-process testing |
 | `ScreenShareProtocol.swift` | Wire format for annotation back-channel |
+| `CaptureHelperMain.swift` | Helper subprocess: owns `SCStream` + `VideoEncoder`, writes encoded AUs to stdout |
+| `CaptureHelperWire.swift` | Framed binary protocol (type + length + payload) over the helper's stdin/stdout |
+| `HelperScreenCapture.swift` | Main-process side: spawns `--capture-helper`, parses framed output, exposes encoder controls |
+| `ScreenCapture.swift` | `SCStream` lifecycle wrapper used inside the helper subprocess (retries through replayd hiccups, watchdogs) + static `listDisplays`/`hasPermission` for the parent (NSScreen-based, never touches `SCShareableContent`) |
 | `RTPPacket.swift` | H.264 RTP packetize / depacketize (RFC 3984), SPS/PPS extraction |
-| `VideoEncoder.swift` | VideoToolbox H.264 encode (low-latency, no reordering) |
-| `VideoDecoder.swift` | VideoToolbox H.264 decode |
-| `ScreenCapture.swift` | ScreenCaptureKit setup (60 fps, Retina 2x) |
+| `RTPAudio.swift` | RTP packetize / depacketize for AAC audio (one AU per packet, 48 kHz clock, stable SSRC) |
+| `VideoEncoder.swift` | VideoToolbox H.264/HEVC encode (low-latency, no reordering); runs inside the helper |
+| `VideoDecoder.swift` | VideoToolbox H.264/HEVC decode |
+| `AACCodec.swift` | AAC-LC encode/decode via AudioToolbox (mono, 48 kHz) |
+| `AudioDevices.swift` | CoreAudio device enumeration + system-default lookup for audio pickers |
+| `VoiceChannel.swift` | Bidirectional voice pipeline: PCM ↔ AAC ↔ RTP, with mixing |
 | `MetalViewerRenderer.swift` | `CAMetalLayer` rendering for the viewer window |
 | `Annotation.swift` | `AnnotationOp` data + stroke ops |
-| `DrawingOverlayView.swift` | Annotation drawing UI |
-| `SharerOverlayWindow.swift` | `NSWindow` showing inbound annotations on the sharer |
+| `AnnotationCanvasModel.swift` | Shared annotation state for sharer overlay and viewer overlay |
+| `AnnotationCanvasView.swift` | SwiftUI canvas renderer for annotations |
+| `AnnotationOverlayHostView.swift` | AppKit host wrapping the SwiftUI canvas inside an `NSPanel` (handles keyDown / first-mouse that SwiftUI can't reach on borderless panels) |
+| `SharerOverlayWindow.swift` | `NSPanel` showing inbound annotations on the sharer |
 | `ViewerCommands.swift` | Annotation/control command types and serialization |
 | `ViewerToolbar.swift` | Viewer window toolbar (brightness, magnifier, etc.) |
 | `NetworkHelper.swift` | Socket/network utilities |
-| `ScreenShareClient.swift` | Legacy non-Tailscale client (kept for reference) |
-| `ScreenShareServer.swift` | Legacy non-Tailscale server (kept for reference) |
 
 ### Tests/TailscreenTests/
 
 | File | Notes |
 |------|-------|
-| `RTPPacketTests.swift` | Packetize/depacketize roundtrip |
+| `RTPPacketTests.swift` | H.264 RTP packetize/depacketize roundtrip |
+| `RTPAudioTests.swift` | AAC RTP packetize/depacketize roundtrip |
 | `ScreenShareProtocolTests.swift` | TCP frame parsing |
-| `VideoCodecTests.swift` | Encoder/decoder roundtrip |
+| `VideoCodecTests.swift` | VideoEncoder/VideoDecoder roundtrip |
+| `AACCodecTests.swift` | AAC encoder/decoder roundtrip |
+| `VoiceChannelTests.swift` | Voice pipeline (PCM↔AAC↔RTP) |
+| `CaptureStopDecisionTests.swift` | `AppState.isUserInitiatedCaptureStop` decision table |
 | `TailscaleConnectivityTests.swift` | E2E: two ephemeral nodes in-process; **needs** `TAILSCREEN_TS_AUTHKEY` (+ optional `TAILSCREEN_TS_CONTROL_URL`). Skipped/failing without those. |
 
 ## Build & run
@@ -148,31 +160,44 @@ Memory-debug modes (set before invoking the script):
 
 ## Architecture & data flow
 
+Capture and encoding live in a separate **helper subprocess** (`Tailscreen --capture-helper`), spawned per share. Process death is the only reliable signal that clears `replayd`'s per-bundle slot, so isolating SCStream + VideoToolbox in a child means Stop Sharing always works — no stuck menubar recording badge.
+
 ```
-TailscreenApp (@main)
-  └─ AppState (@MainActor)
-       ├─ TailscaleScreenShareServer
-       │    └─ ScreenCapture → VideoEncoder → RTPPacket → UDP/7447 (TailscaleNode.listenPacket)
-       │       + TCP/7447 (annotations + metadata)
-       ├─ TailscaleScreenShareClient
-       │    └─ UDP/7447 → RTP depacketize → VideoDecoder → MetalViewerRenderer
-       │       + TCP/7447 (annotations out)
-       ├─ TailscalePeerDiscovery   ── LocalAPI + TCP probe
-       ├─ TailscaleIPNWatcher      ── IPN bus subscription
-       ├─ TailscaleAuth            ── browser-based login
-       └─ TailscreenMetadataService ── share name, resolution, request-to-share
+TailscreenApp (@main, AppEntry dispatch)
+ ├─ Main process
+ │   └─ AppState (@MainActor)
+ │        ├─ TailscaleScreenShareServer
+ │        │    ├─ HelperScreenCapture ──spawn──▶ capture-helper subprocess
+ │        │    │     (encoded AUs come back over framed stdout)
+ │        │    └─ RTPPacket → UDP/7447 (TailscaleNode.listenPacket)
+ │        │       + TCP/7447 (annotations + metadata)
+ │        ├─ TailscaleScreenShareClient
+ │        │    └─ UDP/7447 → RTP depacketize → VideoDecoder → MetalViewerRenderer
+ │        │       + TCP/7447 (annotations out)
+ │        ├─ VoiceChannel (PCM ↔ AAC ↔ RTP, bidi over UDP/7447)
+ │        ├─ TailscalePeerDiscovery   ── LocalAPI + TCP probe
+ │        ├─ TailscaleIPNWatcher      ── IPN bus subscription
+ │        ├─ TailscaleAuth            ── browser-based login
+ │        └─ TailscreenMetadataService ── share name, resolution, request-to-share
+ └─ capture-helper subprocess (--capture-helper)
+      └─ ScreenCapture(SCStream) → VideoEncoder → CaptureHelperWire (stdout)
 ```
 
 The viewer window (`NSWindow` + `MetalViewerRenderer`) is held for the process lifetime to avoid an autoreleasepool teardown race with VideoToolbox/Metal on disconnect.
 
 ## Network protocol — port 7447 (TCP **and** UDP)
 
-- **Video — UDP RTP (RFC 3984).** AVCC NAL units; SPS/PPS in-band on keyframes; PLI-driven keyframe roughly every 2 s. No buffering; UDP loss is accepted. Packetizer/depacketizer in `RTPPacket.swift`.
+- **Video — UDP RTP (RFC 3984).** AVCC NAL units; SPS/PPS in-band on keyframes; PLI-driven keyframe roughly every 2 s. No buffering; UDP loss is accepted. Packetizer/depacketizer in `RTPPacket.swift`. Codec is H.264 or HEVC depending on what VideoToolbox negotiated in the helper — the sharer broadcasts whichever the helper emits, payload type carried per-packet.
+- **Audio — UDP RTP, separate SSRC space.** AAC-LC, mono, 48 kHz, one access unit per packet. Packetizer/depacketizer in `RTPAudio.swift`. Sharer→viewer + viewer→sharer + viewer-to-viewer relay (server forwards inbound viewer audio byte-for-byte after validating the source-assigned SSRC).
 - **Annotations / control — TCP, framed.** `[type:1][len:4 BE][payload:N]`, payload is JSON-encoded `AnnotationOp`. Defined in `ScreenShareProtocol.swift`. TCP gives reliable delivery so strokes don't drop.
 - **Metadata — TCP request/response on the same port.** `TailscreenMetadataService` exchanges share name, resolution, and "request-to-share" prompts.
 - **Discovery probe.** `TailscalePeerDiscovery` parallel-probes TCP/7447 across the tailnet to identify Tailscreen instances.
 
-> Note: an older single-stream TCP framing `[size:4][keyframe:1][data:N]` exists in `ScreenShareServer.swift` / `ScreenShareClient.swift` (legacy, non-Tailscale path). The active Tailscale path is RTP/UDP for video plus the framed TCP control channel above. Don't confuse the two when editing.
+## Capture-helper IPC
+
+- **Spawn.** `HelperScreenCapture` `Process()`-execs the same binary with `--capture-helper`. Stdin and stdout are pipes; stderr streams through to the parent's terminal.
+- **Wire.** `CaptureHelperWire.swift` defines a framed binary protocol — `[type:1][len:4 BE][payload:N]`. Message types: encoded access unit (AVCC), parameter sets (H.264 SPS/PPS or HEVC VPS/SPS/PPS), encoder-resolution change, preview thumbnail, log line, fatal, user-stopped, control commands (`requestKeyframe`, `setBitrate`).
+- **Lifecycle.** Helper writes encoded AUs directly from the encoder thread to preserve order. On Control Center "Stop", the helper sends `userStopped` and exits 0; the parent surfaces that as `SCStreamError.userStopped` so AppState's existing branch tears the share down quietly. Any other helper exit triggers up to 3 auto-restarts within a 30 s window before giving up.
 
 ## Swift 6 conventions used here
 
@@ -202,6 +227,9 @@ Never make this absolute — it breaks portability and CI. Both the `Tailscreen`
 - **Port 7447 is hardcoded** in `TailscalePeerDiscovery`, `TailscaleScreenShareServer`, `TailscaleScreenShareClient`, and `TailscreenMetadataService`. If you ever make it configurable, change all four.
 - **Auth flow needs an active node** — interactive login only works after `Start Sharing` or `Connect to…` has initialized the tsnet node.
 - **CI uses submodules.** Workflows already pass `submodules: recursive`; if you add a new workflow that builds, do the same.
+- **Don't call `SCShareableContent` from the main process.** It registers the parent with `replayd`, and the helper child's subsequent `SCStream` then fails with "application connection being interrupted". The display picker uses `NSScreen` instead — see `ScreenCapture.listDisplays()`. Permission probing uses `CGPreflightScreenCaptureAccess`, never `SCShareableContent`.
+- **Don't add SCStream lifecycle to the main process.** All capture lives in the helper subprocess (`CaptureHelperMain.swift` + the `ScreenCapture` instance methods it drives). The main-process `TailscaleScreenShareServer` only spawns the helper and broadcasts what comes back.
+- **Stop Sharing badge stuck on** — usually means a helper subprocess was orphaned by a stop/restart race. The `restartTask` lock in `TailscaleScreenShareServer` is what guards this; if you touch capture restart, preserve the await-pending-restart-then-teardown ordering.
 
 ## CI/CD
 
@@ -226,7 +254,9 @@ Never make this absolute — it breaks portability and CI. Both the `Tailscreen`
 ## Pointers for changes
 
 - Touching the video pipeline → read `RTPPacket.swift`, `VideoEncoder.swift`, `VideoDecoder.swift`, `MetalViewerRenderer.swift` together.
-- Touching annotations → `Annotation.swift`, `ScreenShareProtocol.swift`, `DrawingOverlayView.swift`, `SharerOverlayWindow.swift`, `ViewerCommands.swift`.
+- Touching capture / encoder lifecycle → `CaptureHelperMain.swift`, `HelperScreenCapture.swift`, `CaptureHelperWire.swift`, `ScreenCapture.swift`, `VideoEncoder.swift`. Capture runs in the helper subprocess; the main process only owns `HelperScreenCapture`.
+- Touching audio / voice → `AudioDevices.swift`, `AACCodec.swift`, `RTPAudio.swift`, `VoiceChannel.swift`.
+- Touching annotations → `Annotation.swift`, `ScreenShareProtocol.swift`, `AnnotationCanvasModel.swift`, `AnnotationCanvasView.swift`, `AnnotationOverlayHostView.swift`, `SharerOverlayWindow.swift`, `ViewerCommands.swift`.
 - Touching networking / discovery → `TailscaleScreenShareServer.swift`, `TailscaleScreenShareClient.swift`, `TailscalePeerDiscovery.swift`, `TailscaleIPNWatcher.swift`, `TailscreenMetadata.swift`.
-- Touching UI/state → `AppState.swift`, `MenuBarView.swift`, `AppMenu.swift`, `ViewerToolbar.swift`.
+- Touching UI/state → `AppState.swift`, `MenuBarView.swift`, `AppMenu.swift`, `ViewerToolbar.swift`, `GlobalHotkey.swift`.
 - Touching the build → `Makefile`, `Package.swift`, `TailscaleKitPackage/Makefile`, `TailscaleKitPackage/Patches/`.

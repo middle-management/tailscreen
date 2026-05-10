@@ -3,8 +3,9 @@ import CoreGraphics
 
 /// Borderless transparent NSPanel that floats above the sharer's desktop at
 /// `.statusBar` level, so ScreenCaptureKit (which captures the whole display
-/// with no window exclusions — see `ScreenCapture.swift:41`) streams
-/// annotations into the video for every viewer.
+/// with no window exclusions — see the `SCContentFilter(excludingWindows: [])`
+/// in `ScreenCapture.start`) streams annotations into the video for every
+/// viewer.
 ///
 /// The panel is always full-screen on the shared display. Toggling "Draw on
 /// Screen" shows/hides it and also flips `ignoresMouseEvents` so clicks fall

@@ -132,19 +132,3 @@ The probe is parallel because tailnets get big, and a serial probe of 50
 peers with a 500ms timeout each is 25 seconds of staring at a spinner.
 Parallel, it's 500ms total.
 
-## A footnote about the legacy framing
-
-There's an older single-stream framing in
-[`ScreenShareServer.swift`](https://github.com/middle-management/tailscreen/blob/main/Sources/ScreenShareServer.swift)
-and
-[`ScreenShareClient.swift`](https://github.com/middle-management/tailscreen/blob/main/Sources/ScreenShareClient.swift):
-
-```
-[size: 4 bytes][keyframe: 1 byte][data: N bytes]
-```
-
-This is the **non-Tailscale** code path — kept as reference for the
-pre-tsnet design. The active path is everything else on this page (RTP
-over UDP for video, framed TCP for everything else). If you're modifying
-networking code and end up in `ScreenShareServer.swift` thinking "this is
-the protocol", back out — that's not the file you want.
