@@ -30,10 +30,9 @@ variables.
 ## What's supported
 
 Any tsnet-compatible control plane. Tailscreen's CI continuously verifies
-against [headscale 0.26.1](https://github.com/juanfont/headscale)
-(see [`e2e/docker-compose.yml`](https://github.com/middle-management/tailscreen/blob/main/e2e/docker-compose.yml)
-and the connectivity test in
-[`Tests/TailscreenTests/TailscaleConnectivityTests.swift`](https://github.com/middle-management/tailscreen/blob/main/Tests/TailscreenTests/TailscaleConnectivityTests.swift)).
+against [headscale](https://github.com/juanfont/headscale) (the
+end-to-end test boots a local headscale via Docker Compose, mints an
+ephemeral pre-auth key, and runs the full connectivity test against it).
 Other control planes that implement the tsnet/Tailscale control protocol
 should work — they're just not exercised by CI.
 

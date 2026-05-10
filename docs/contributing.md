@@ -14,15 +14,14 @@ The codebase is small enough that you can hold most of it in your head
 after a couple of hours. This page is a tour through the layout, the
 build, and the rough edges that are worth knowing about up front.
 
-`CLAUDE.md` at the repo root is the deeper version of this page,
-file-by-file. Read it before touching the video pipeline or the
-networking layer.
+`CLAUDE.md` at the repo root has the same orientation in a denser form,
+aimed at AI assistants working in the tree.
 
 ## Repository layout
 
 ```
 tailscreen/
-├── Sources/                    # Tailscreen executable (Swift, ~26 files)
+├── Sources/                    # Tailscreen executable (Swift)
 ├── Tests/TailscreenTests/      # Unit + connectivity tests
 ├── Examples/                   # Standalone API usage demo
 ├── TailscaleKitPackage/        # Local SwiftPM dep wrapping libtailscale
@@ -33,7 +32,7 @@ tailscreen/
 │   └── libtailscale.pc         # pkg-config file (consumed via PKG_CONFIG_PATH)
 ├── e2e/docker-compose.yml      # Local headscale control plane
 ├── scripts/e2e-{up,down,test}.sh
-├── .github/workflows/          # build.yml, release.yml, pages.yml
+├── .github/workflows/
 ├── docs/                       # this site
 ├── Package.swift
 ├── Makefile                    # build entry point — always go through this
@@ -69,8 +68,8 @@ git submodule update --init --recursive
 ```
 
 The patches under `TailscaleKitPackage/Patches/` get applied on top of the
-upstream Swift sources during `make tailscale`. There are 16 of them at
-last count, all small. They add things like:
+upstream Swift sources during `make tailscale`. They're all small. They
+add things like:
 
 - A `Foundation` import the upstream forgets in some files.
 - Glue imports for the C-bridge types.
@@ -87,9 +86,8 @@ modify a `.patch` file instead and re-run `make tailscale`.
 
 ## Auth keys for connectivity tests
 
-`Tests/TailscreenTests/TailscaleConnectivityTests.swift` spins up two
-ephemeral tsnet nodes in-process and tests the full transport. It needs
-an auth key.
+The connectivity tests spin up two ephemeral tsnet nodes in-process and
+test the full transport. They need an auth key.
 
 ### Local headscale (preferred for CI and dev)
 
@@ -106,9 +104,9 @@ swift test --filter TailscaleConnectivityTests
 make e2e-down
 ```
 
-`scripts/e2e-up.sh` brings up `e2e/docker-compose.yml` (headscale 0.26.1
-on `localhost:8080`), creates a user, and mints a reusable ephemeral
-pre-auth key.
+`scripts/e2e-up.sh` brings up `e2e/docker-compose.yml` (headscale on
+`localhost:8080`), creates a user, and mints a reusable ephemeral pre-auth
+key.
 
 ### Real tailnet
 
@@ -152,51 +150,26 @@ Merged stdout/stderr lands in `/tmp/tailscreen-merged.log` (override with
 ## Branch policy
 
 AI sessions develop on a `claude/...` branch — **don't push directly to
-`main`**. The active branch is named in the per-session prompt.
-
-The `Build` workflow runs on push to `main`, on push to `claude/**`, and
-on PRs to `main`.
+`main`**. The active branch is named in the per-session prompt. CI runs
+on PRs.
 
 ## CI
 
-Three workflows under `.github/workflows/`:
-
-- **`build.yml`** — `macos-latest`, Go 1.21, runs `make build` + `make test`
-  on every PR and push.
-- **`release.yml`** — fires when a GitHub release is **published**. Cross-
-  builds a universal Mach-O, codesigns + notarizes (when secrets are
-  present), uploads `Tailscreen-<tag>-macOS.zip` + `checksums.txt`. The
-  signing/notarization secrets are: `APPLE_DEVELOPER_ID_CERT_P12`,
-  `APPLE_DEVELOPER_ID_CERT_PASSWORD`, `APPLE_NOTARY_API_KEY_P8`,
-  `APPLE_NOTARY_API_KEY_ID`, `APPLE_NOTARY_API_ISSUER_ID`. Without all
-  five, the workflow uploads an unsigned `.app` and prints a warning.
-- **`pages.yml`** — builds and deploys *this* docs site when anything
-  under `docs/` changes.
+CI builds and runs tests on every PR. A published GitHub release triggers
+a universal-binary build, which codesigns and notarizes when the Apple
+secrets are configured and uploads the zipped `.app` plus a checksums file
+to the release. Without all of those secrets the workflow logs a warning
+and uploads an unsigned build (useful for forks). A separate workflow
+deploys this docs site when anything under `docs/` changes.
 
 ## Where to start reading
 
-Map of common changes to the files you'll touch:
-
-- **Video pipeline** — `RTPPacket.swift`, `VideoEncoder.swift`,
-  `VideoDecoder.swift`, `MetalViewerRenderer.swift`. Read them together;
-  they form one logical unit.
-- **Capture / encoder lifecycle** — `CaptureHelperMain.swift`,
-  `HelperScreenCapture.swift`, `CaptureHelperWire.swift`,
-  `ScreenCapture.swift`. Capture runs in the helper subprocess; the
-  main process owns only `HelperScreenCapture`.
-- **Audio / voice** — `AudioDevices.swift`, `AACCodec.swift`,
-  `RTPAudio.swift`, `VoiceChannel.swift`.
-- **Annotations** — `Annotation.swift`, `ScreenShareProtocol.swift`,
-  `AnnotationCanvasModel.swift`, `AnnotationCanvasView.swift`,
-  `AnnotationOverlayHostView.swift`, `SharerOverlayWindow.swift`,
-  `ViewerCommands.swift`.
-- **Networking and discovery** — `TailscaleScreenShareServer.swift`,
-  `TailscaleScreenShareClient.swift`, `TailscalePeerDiscovery.swift`,
-  `TailscaleIPNWatcher.swift`, `TailscreenMetadata.swift`.
-- **UI and state** — `AppState.swift`, `MenuBarView.swift`,
-  `AppMenu.swift`, `ViewerToolbar.swift`, `GlobalHotkey.swift`.
-- **Build** — `Makefile`, `Package.swift`,
-  `TailscaleKitPackage/Makefile`, `TailscaleKitPackage/Patches/`.
+The codebase is small. The areas worth reading end-to-end are the video
+pipeline (capture → encode → RTP → decode → render), the capture-helper
+subprocess boundary (the helper owns `SCStream` and the encoder; the main
+process only spawns it and broadcasts what comes back), and the Tailscale
+integration (peer discovery, IPN bus, auth). Audio/voice and annotations
+are smaller, self-contained subsystems. Use `rg` to find specific files.
 
 ## Editing the docs site
 
@@ -213,4 +186,4 @@ bundle exec jekyll serve --baseurl ""
 Each page is a Markdown file under `docs/` with a `nav_order:` front-
 matter key. To add a new page: drop a Markdown file in `docs/`, set its
 `nav_order` and `permalink`, link to it from `docs/index.md`, push. The
-`pages.yml` workflow handles the rest.
+deploy workflow handles the rest.
