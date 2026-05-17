@@ -517,6 +517,57 @@ final class RTPPacketTests: XCTestCase {
         XCTAssertTrue(h2_2.marker)
     }
 
+    // MARK: - Depacketizer pre-allocation
+
+    /// Large fragmented AU (~600 KB) should reassemble correctly. This
+    /// exercises the pre-allocated `currentAU` buffer — if pre-allocation
+    /// were sized wrong, Data would still grow on demand, but this test
+    /// also verifies bytes survive that growth intact.
+    func testLargeFragmentedAUDepacketizesCorrectly() throws {
+        let packetizer = H264Packetizer()
+        // Build a ~600 KB IDR slice (10x typical 60 KB P-frame).
+        let bodySize = 600 * 1024
+        var slice = Data([0x65])  // IDR slice NAL header
+        slice.append(contentsOf: (0..<bodySize).map { UInt8(($0 * 31) & 0xFF) })
+
+        let packets = packetizer.packetize(
+            nals: [slice], timestamp: 5_000, ssrc: 1, startSequence: 0
+        )
+        XCTAssertGreaterThan(packets.count, 500)  // ~600 KB / ~1098 frag
+
+        let depacketizer = H264Depacketizer()
+        var au: VideoAccessUnit?
+        for p in packets {
+            if let result = depacketizer.ingest(p) { au = result }
+        }
+        let unwrapped = try XCTUnwrap(au)
+        XCTAssertTrue(unwrapped.containsIDR)
+        XCTAssertEqual(AVCCParser.nalUnits(from: unwrapped.avcc), [slice])
+    }
+
+    /// Many AUs in a row through one depacketizer instance — the buffer
+    /// pre-allocation should keep `currentAU` capacity stable across
+    /// flushes (each new AU starts with the pre-reserved capacity, not
+    /// growing from zero).
+    func testDepacketizerHandlesManyAUsInARow() throws {
+        let packetizer = H264Packetizer()
+        let depacketizer = H264Depacketizer()
+
+        let nal = Data([0x41] + (0..<500).map { UInt8($0 & 0xFF) })
+
+        for i in 0..<100 {
+            let packets = packetizer.packetize(
+                nals: [nal], timestamp: UInt32(i * 90), ssrc: 1, startSequence: UInt16(i)
+            )
+            var au: VideoAccessUnit?
+            for p in packets {
+                if let result = depacketizer.ingest(p) { au = result }
+            }
+            let unwrapped = try XCTUnwrap(au)
+            XCTAssertEqual(unwrapped.timestamp, UInt32(i * 90))
+            XCTAssertEqual(AVCCParser.nalUnits(from: unwrapped.avcc), [nal])
+        }
+    }
 }
 
 private extension Data {

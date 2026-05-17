@@ -317,16 +317,38 @@ final class H264Packetizer {
 /// the decoder never sees a torn frame; the caller is expected to send a PLI
 /// in response so the encoder issues a fresh IDR.
 final class H264Depacketizer {
+    /// Starting reserved capacity for `currentAU`. Sized to cover a typical
+    /// 1080p/4K HEVC or H.264 keyframe (~1–2 MB) so the per-NAL `append`
+    /// path doesn't cause Data to repeatedly reallocate-and-copy as the AU
+    /// grows. Anything larger is handled by Data's normal exponential
+    /// growth on overflow.
+    static let initialAUCapacity = 2 * 1024 * 1024  // 2 MB
+
+    /// Starting reserved capacity for `fuBuffer`. Sized to cover the
+    /// largest individual NAL we'd realistically see fragmented over FU-A
+    /// (one big slice NAL inside a keyframe).
+    static let initialFUCapacity = 256 * 1024  // 256 KB
+
     private var ssrc: UInt32?
     private var expectedSeq: UInt16?
     private var currentTimestamp: UInt32?
-    private var currentAU: Data = Data()
+    private var currentAU: Data
     private var currentHasIDR: Bool = false
     private var currentAUCorrupted: Bool = false
-    private var fuBuffer: Data = Data()
+    private var fuBuffer: Data
     private var fuNALHeader: UInt8 = 0
     private var inFU: Bool = false
     private var pendingLossSignal: Bool = false
+
+    init() {
+        var au = Data()
+        au.reserveCapacity(Self.initialAUCapacity)
+        self.currentAU = au
+
+        var fu = Data()
+        fu.reserveCapacity(Self.initialFUCapacity)
+        self.fuBuffer = fu
+    }
 
     /// Feed one received RTP packet. Returns a completed AU once the marker
     /// bit (or a timestamp change) signals end-of-frame; nil otherwise.
@@ -443,7 +465,15 @@ final class H264Depacketizer {
         let avcc = currentAU
         let hasIDR = currentHasIDR
 
-        currentAU = Data()
+        // Replace `currentAU` with a freshly-reserved buffer so the next AU
+        // doesn't pay quadratic-style reallocation cost as `append` fills
+        // it. We can't `removeAll(keepingCapacity:)` here because `avcc`
+        // shares this buffer via COW; mutating it would either trigger COW
+        // (defeating the reuse) or alias bytes the consumer is about to
+        // read. A fresh allocation is the safe, correct choice.
+        var fresh = Data()
+        fresh.reserveCapacity(Self.initialAUCapacity)
+        currentAU = fresh
         currentHasIDR = false
         currentAUCorrupted = false
         inFU = false
@@ -603,15 +633,29 @@ final class H265Packetizer {
 /// only structural differences are the 2-byte NAL header, the 6-bit type
 /// field, and FU type 49 (vs FU-A 28 for H.264).
 final class H265Depacketizer {
+    /// See `H264Depacketizer.initialAUCapacity`.
+    static let initialAUCapacity = H264Depacketizer.initialAUCapacity
+    static let initialFUCapacity = H264Depacketizer.initialFUCapacity
+
     private var ssrc: UInt32?
     private var expectedSeq: UInt16?
     private var currentTimestamp: UInt32?
-    private var currentAU: Data = Data()
+    private var currentAU: Data
     private var currentHasIDR: Bool = false
     private var currentAUCorrupted: Bool = false
-    private var fuBuffer: Data = Data()
+    private var fuBuffer: Data
     private var inFU: Bool = false
     private var pendingLossSignal: Bool = false
+
+    init() {
+        var au = Data()
+        au.reserveCapacity(Self.initialAUCapacity)
+        self.currentAU = au
+
+        var fu = Data()
+        fu.reserveCapacity(Self.initialFUCapacity)
+        self.fuBuffer = fu
+    }
 
     func ingest(_ packet: Data) -> VideoAccessUnit? {
         guard let (header, payloadOffset) = RTPHeader.decode(from: packet) else { return nil }
@@ -728,7 +772,14 @@ final class H265Depacketizer {
         let avcc = currentAU
         let hasIDR = currentHasIDR
 
-        currentAU = Data()
+        // See `H264Depacketizer.flushAU` for the rationale: we hand the
+        // accumulated `currentAU` storage to the caller (via `avcc`) and
+        // pre-reserve a fresh buffer of the same capacity for the next
+        // AU. This keeps the per-NAL `append` path off Data's quadratic
+        // grow-and-copy escalator for large keyframes.
+        var fresh = Data()
+        fresh.reserveCapacity(Self.initialAUCapacity)
+        currentAU = fresh
         currentHasIDR = false
         currentAUCorrupted = false
         inFU = false
