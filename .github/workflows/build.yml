@@ -105,9 +105,12 @@ jobs:
         run: make lint
 
   format:
-    # Apple's swift-format ships with the Swift toolchain on Xcode 16+.
-    # macos-latest has it available out of the box, so this job is cheap
-    # — no Homebrew install, no submodule checkout (config-only check).
+    # Apple's swift-format is published as a Homebrew core formula and
+    # provides the `swift-format` binary that `make format-check` invokes.
+    # The macos-latest runner image doesn't ship it on PATH (the Xcode
+    # toolchain on the hosted runners doesn't expose `swift-format`
+    # directly — `swift-format --version` exits 127), so we install it
+    # explicitly via brew.
     #
     # Currently informational (continue-on-error: true) because the
     # config was tuned without a local swift-format run — we want the
@@ -118,6 +121,8 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
+      - name: Install swift-format
+        run: brew install swift-format
       - name: Verify swift-format is available
         run: swift-format --version
       - name: Run swift-format check
