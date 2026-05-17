@@ -15,7 +15,7 @@ enum AppMenu {
     /// removed first, then a fresh batch is stored, so this slot is
     /// bounded by the number of notification names we observe — never
     /// grows across calls.
-    private static var activationObservers: [NSObjectProtocol]?
+    private static var activationObservers: [NSObjectProtocol] = []
 
     static func installIfNeeded() {
         guard !installed else { return }
@@ -36,11 +36,9 @@ enum AppMenu {
         // Idempotent: tear down any prior registration so a repeat call
         // (today guarded by `installed`, but defensively bounded here)
         // can't accumulate stale observers leaking closures onto the
-        // notification center.
-        if let prior = activationObservers {
-            for token in prior { nc.removeObserver(token) }
-            activationObservers = nil
-        }
+        // notification center. Empty == "nothing to remove".
+        activationObservers.forEach { nc.removeObserver($0) }
+        activationObservers.removeAll()
         let updatePolicy: @Sendable @MainActor () -> Void = {
             let hasVisibleWindow = NSApp.windows.contains { w in
                 w.isVisible && w.canBecomeKey
