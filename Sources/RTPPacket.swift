@@ -170,7 +170,12 @@ struct VideoAccessUnit {
 /// argument (Data's COW + array-remove-before-mutate gives us in-place
 /// reuse when the consumer has dropped its reference, and a clean fresh
 /// allocation otherwise — never aliasing).
-final class H264Packetizer {
+///
+/// `@unchecked Sendable`: callers must serialize access. The
+/// screen-share server invokes `packetize` from a single broadcast site
+/// chained behind `broadcastTail`, so there is no concurrent use in
+/// practice.
+final class H264Packetizer: @unchecked Sendable {
     /// Max bytes of RTP *payload* per packet (excludes the 12-byte RTP header).
     /// Tailscale's WireGuard tunnel typically uses MTU 1280; subtract IPv6+UDP
     /// (40+8) and RTP header (12), leaving ~1220. We use 1100 for headroom.
@@ -204,13 +209,13 @@ final class H264Packetizer {
 
         var seq = startSequence
         for nal in nals {
-            guard let header = nal.first else { continue }
+            guard !nal.isEmpty else { continue }
             if nal.count <= Self.maxPayloadBytes {
                 // Single NAL: payload IS the NAL.
                 emitPacket(payload: nal, seq: seq, timestamp: timestamp, ssrc: ssrc, into: &packets)
                 seq &+= 1
             } else {
-                emitFUA(nal: nal, nalHeader: header, startSeq: &seq, timestamp: timestamp, ssrc: ssrc, into: &packets)
+                emitFUA(nal: nal, startSeq: &seq, timestamp: timestamp, ssrc: ssrc, into: &packets)
             }
         }
 
@@ -254,14 +259,16 @@ final class H264Packetizer {
     /// RFC 6184 §5.8 FU-A fragmentation. Emits one RTP packet per fragment,
     /// writing the RTP header + FU indicator + FU header + fragment bytes
     /// directly into a pooled buffer (no intermediate `chunks` allocation).
+    /// Caller guarantees `nal` is non-empty (it's the same value tested by
+    /// `packetize`'s loop header).
     private func emitFUA(
         nal: Data,
-        nalHeader: UInt8,
         startSeq: inout UInt16,
         timestamp: UInt32,
         ssrc: UInt32,
         into packets: inout [Data]
     ) {
+        let nalHeader = nal[nal.startIndex]
         let nri = nalHeader & 0x60
         let nalType = nalHeader & 0x1F
         let fuIndicator: UInt8 = nri | 28  // type 28 = FU-A
@@ -513,8 +520,11 @@ final class H264Depacketizer {
 /// (aggregation packets) and PACI are intentionally unused; the depacketizer
 /// is correspondingly simpler.
 ///
-/// Buffer-pool semantics mirror `H264Packetizer`.
-final class H265Packetizer {
+/// Buffer-pool semantics mirror `H264Packetizer`. Same `@unchecked
+/// Sendable` rationale: callers must serialize access; the screen-share
+/// server only invokes `packetize` from a single broadcast site chained
+/// behind `broadcastTail`.
+final class H265Packetizer: @unchecked Sendable {
     static let maxPayloadBytes = H264Packetizer.maxPayloadBytes
 
     private var pool = RTPPacketBufferPool()

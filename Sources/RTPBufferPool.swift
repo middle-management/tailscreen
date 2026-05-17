@@ -40,7 +40,12 @@ import Foundation
 /// allocations — which is exactly the no-pool behaviour we used to have.
 /// It is impossible for two `Data` values returned by `acquire` (across
 /// calls) to share a live buffer with anything else in a mutating way.
-final class RTPPacketBufferPool {
+///
+/// `@unchecked Sendable` because the pool's owning packetizer is itself
+/// `@unchecked Sendable` (the screen-share server serializes calls
+/// behind `broadcastTail`) and `Data`'s COW handles the cross-batch
+/// alias safety.
+final class RTPPacketBufferPool: @unchecked Sendable {
     /// Buffers handed over from the previous `packetize` call. Each entry
     /// is a `Data` whose underlying storage is either uniquely held by
     /// the pool (consumer released) or shared (consumer still holding).
