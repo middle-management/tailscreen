@@ -369,7 +369,7 @@ final class AACDecoder {
 // MARK: - Logger
 
 private struct TSLogger: LogSink {
-    var logFileHandle: Int32? = nil
+    var logFileHandle: Int32?
 
     func log(_ message: String) {
         print("[AACCodec] \(message)")

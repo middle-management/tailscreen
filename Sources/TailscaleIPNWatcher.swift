@@ -137,7 +137,7 @@ struct TailscalePeerStatus: Identifiable, Sendable {
 // MARK: - Logger Implementation
 
 private struct TSLogger: LogSink {
-    var logFileHandle: Int32? = nil
+    var logFileHandle: Int32?
 
     func log(_ message: String) {
         print("[IPNWatcher] \(message)")

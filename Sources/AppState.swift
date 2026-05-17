@@ -1033,7 +1033,7 @@ class AppState: ObservableObject {
 
 // Simple logger for LocalAPIClient
 private struct SimpleLogger: LogSink {
-    var logFileHandle: Int32? = nil
+    var logFileHandle: Int32?
 
     func log(_ message: String) {
         print("[LocalAPI] \(message)")
@@ -1044,7 +1044,7 @@ private struct SimpleLogger: LogSink {
 /// used by the screen-share + tsnet wrappers so every `[AppState]` line
 /// flows through a single sink we can later redirect or filter.
 private struct AppLogger: LogSink {
-    var logFileHandle: Int32? = nil
+    var logFileHandle: Int32?
 
     func log(_ message: String) {
         print("[AppState] \(message)")

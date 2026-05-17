@@ -1000,7 +1000,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
 }
 
 private struct TSLogger: LogSink {
-    var logFileHandle: Int32? = nil
+    var logFileHandle: Int32?
     func log(_ message: String) {
         if message.hasPrefix("Listening for ") { return }
         print("[Tailscale] \(message)")

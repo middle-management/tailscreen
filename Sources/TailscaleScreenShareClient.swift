@@ -179,8 +179,9 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
             logger: logger
         )
         self.packetListener = pl
-        self.serverAddr = formatAddr(host: hostname, port: port)
-        logger.log("Bound local UDP, dialing \(serverAddr ?? "?")")
+        let addr = formatAddr(host: hostname, port: port)
+        self.serverAddr = addr
+        logger.log("Bound local UDP, dialing \(addr)")
 
         let decoder = VideoDecoder()
         decoder.onDecodedFrame = { [weak self] pixelBuffer in
@@ -207,8 +208,8 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
 
         self.isConnected = true
 
-        try await pl.send(ScreenShareControlMessage.encode(.hello), to: serverAddr!)
-        logger.log("HELLO sent to \(serverAddr!)")
+        try await pl.send(ScreenShareControlMessage.encode(.hello), to: addr)
+        logger.log("HELLO sent to \(addr)")
 
         receiveTask = Task { [weak self] in
             await self?.receiveLoop()
@@ -290,8 +291,8 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
 
                 if let au = depacketizer.ingest(datagram) {
                     framesDelivered += 1
-                    if au.lostBeforeThisAU {
-                        try? await pl.send(ScreenShareControlMessage.encode(.pli), to: serverAddr!)
+                    if au.lostBeforeThisAU, let addr = serverAddr {
+                        try? await pl.send(ScreenShareControlMessage.encode(.pli), to: addr)
                     }
                     if framesDelivered == 1 || framesDelivered % 60 == 0 {
                         logger.log("Client: AU #\(framesDelivered) (kf=\(au.containsIDR), \(au.avcc.count)B, packets=\(packetsReceived))")
@@ -450,7 +451,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
 }
 
 private struct TSLogger: LogSink {
-    var logFileHandle: Int32? = nil
+    var logFileHandle: Int32?
     func log(_ message: String) { print("[Tailscale] \(message)") }
 }
 

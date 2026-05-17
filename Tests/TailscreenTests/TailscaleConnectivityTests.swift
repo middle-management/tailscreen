@@ -232,7 +232,7 @@ final class TailscaleConnectivityTests: XCTestCase {
 }
 
 private struct PrintLogger: LogSink {
-    var logFileHandle: Int32? = nil
+    var logFileHandle: Int32?
     func log(_ message: String) {
         print("[test] \(message)")
     }

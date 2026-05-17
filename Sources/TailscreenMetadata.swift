@@ -14,7 +14,7 @@ struct TailscreenMetadata: Codable, Sendable {
     /// H.264 (the only codec older Tailscreen builds spoke). The viewer
     /// also auto-detects from the RTP payload type, so this is mainly
     /// informational for the UI.
-    var videoCodec: VideoCodec? = nil
+    var videoCodec: VideoCodec?
 
     struct ScreenResolution: Codable, Sendable {
         let width: Int
