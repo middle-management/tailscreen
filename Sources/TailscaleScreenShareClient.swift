@@ -112,7 +112,11 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     func sendAudioRTP(_ packet: Data) {
         guard isConnected, let pl = packetListener, let addr = serverAddr else { return }
         let prev = audioSendTail.withLock { $0 }
-        let job = Task {
+        // Explicit capture list keeps the 50 Hz chain from accidentally
+        // retaining `self` if a future edit ever reads an instance
+        // property inside the Task body. Each link holds `pl`, `addr`,
+        // and the previous task — never `self`.
+        let job = Task { [pl, addr, packet] in
             await prev?.value
             try? await pl.send(packet, to: addr)
         }

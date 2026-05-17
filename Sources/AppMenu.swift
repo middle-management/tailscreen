@@ -10,7 +10,12 @@ import AppKit
 @MainActor
 enum AppMenu {
     private static var installed = false
-    private static var activationObservers: [NSObjectProtocol] = []
+    /// Tokens from the most recent `wireActivationPolicy` registration.
+    /// Reassigned (not appended to) on each call: the old tokens are
+    /// removed first, then a fresh batch is stored, so this slot is
+    /// bounded by the number of notification names we observe — never
+    /// grows across calls.
+    private static var activationObservers: [NSObjectProtocol]?
 
     static func installIfNeeded() {
         guard !installed else { return }
@@ -28,6 +33,14 @@ enum AppMenu {
     /// stays absent in the idle state.
     private static func wireActivationPolicy() {
         let nc = NotificationCenter.default
+        // Idempotent: tear down any prior registration so a repeat call
+        // (today guarded by `installed`, but defensively bounded here)
+        // can't accumulate stale observers leaking closures onto the
+        // notification center.
+        if let prior = activationObservers {
+            for token in prior { nc.removeObserver(token) }
+            activationObservers = nil
+        }
         let updatePolicy: @Sendable @MainActor () -> Void = {
             let hasVisibleWindow = NSApp.windows.contains { w in
                 w.isVisible && w.canBecomeKey
@@ -47,12 +60,15 @@ enum AppMenu {
             NSWindow.willCloseNotification,
             NSWindow.didChangeOcclusionStateNotification,
         ]
+        var fresh: [NSObjectProtocol] = []
+        fresh.reserveCapacity(names.count)
         for n in names {
             let obs = nc.addObserver(forName: n, object: nil, queue: .main) { _ in
                 Task { @MainActor in updatePolicy() }
             }
-            activationObservers.append(obs)
+            fresh.append(obs)
         }
+        activationObservers = fresh
     }
 
     static func install() {

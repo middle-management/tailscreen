@@ -134,6 +134,16 @@ class AppState: ObservableObject {
     // single channel we can later route to a file or os.Logger.
     private let logger = AppLogger()
 
+    // NotificationCenter observer tokens added in `init`. Kept so
+    // `deinit` can remove them — otherwise the closures (and the `self`
+    // they retain weakly) outlive the AppState and keep firing on a
+    // dead instance. AppState is process-lifetime today, but the leak
+    // would surface immediately if anything ever re-creates one.
+    // `nonisolated(unsafe)` because `deinit` of an `@MainActor` class
+    // is itself `nonisolated`; only `init` and `deinit` ever mutate
+    // this, both with exclusive access to the instance.
+    nonisolated(unsafe) private var notificationObservers: [NSObjectProtocol] = []
+
     init() {
         // Observe changes in tailscaleAuth and propagate them
         tailscaleAuth.objectWillChange.sink { [weak self] _ in
@@ -153,39 +163,45 @@ class AppState: ObservableObject {
         // Sharer dropped its end of the TCP connection — viewer needs to
         // run its disconnect() so the UI doesn't sit on a stale last
         // frame.
-        NotificationCenter.default.addObserver(
-            forName: .tailscreenViewerPeerClosed,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                guard let self = self, self.connectionState == .viewing else { return }
-                await self.disconnect()
+        notificationObservers.append(
+            NotificationCenter.default.addObserver(
+                forName: .tailscreenViewerPeerClosed,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self = self, self.connectionState == .viewing else { return }
+                    await self.disconnect()
+                }
             }
-        }
+        )
 
         // File → Disconnect (⌘W) posts this; bounce to disconnect().
-        NotificationCenter.default.addObserver(
-            forName: .tailscreenDisconnectRequested,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                guard let self = self, self.connectionState == .viewing else { return }
-                await self.disconnect()
+        notificationObservers.append(
+            NotificationCenter.default.addObserver(
+                forName: .tailscreenDisconnectRequested,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self = self, self.connectionState == .viewing else { return }
+                    await self.disconnect()
+                }
             }
-        }
+        )
 
         // File → Microphone / toolbar mic button posts this; bounce to toggleMic().
-        NotificationCenter.default.addObserver(
-            forName: .tailscreenToggleMicrophone,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                await self?.toggleMic()
+        notificationObservers.append(
+            NotificationCenter.default.addObserver(
+                forName: .tailscreenToggleMicrophone,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    await self?.toggleMic()
+                }
             }
-        }
+        )
 
         // ⌃⌥M from anywhere — toggle mic without finding the menubar
         // popover or clicking through. Useful during a screen share
@@ -200,6 +216,17 @@ class AppState: ObservableObject {
         }
 
         ViewerCommands.shared.appState = self
+    }
+
+    deinit {
+        // Remove every NotificationCenter observer we registered in
+        // `init`. `removeObserver` is thread-safe, so it's safe to call
+        // from deinit on any actor — no Task hop required (which would
+        // be unsafe here per CLAUDE.md's "no Task { self } in deinit").
+        let center = NotificationCenter.default
+        for token in notificationObservers {
+            center.removeObserver(token)
+        }
     }
 
     private var cancellables = Set<AnyCancellable>()
@@ -674,7 +701,18 @@ class AppState: ObservableObject {
         // letterboxed the video — a click 50% across a 16:9 window
         // streamed to a 16:10 sharer landed at ~46% of the captured
         // screen, off by a noticeable amount.
-        let host = AspectFitHostView(frame: win.contentView!.bounds)
+        // NSWindow autocreates a contentView at init; the guard is
+        // defence-in-depth in case AppKit ever returns nil on a future
+        // OS. Falling back to the window's frame keeps the host sized
+        // sensibly so the user still sees video instead of a crash.
+        let hostFrame: NSRect
+        if let cv = win.contentView {
+            hostFrame = cv.bounds
+        } else {
+            print("ensureViewer: NSWindow.contentView was nil; falling back to window frame")
+            hostFrame = NSRect(origin: .zero, size: win.frame.size)
+        }
+        let host = AspectFitHostView(frame: hostFrame)
         host.wantsLayer = true
         host.layer = CALayer()
         host.layer?.backgroundColor = NSColor.black.cgColor
@@ -824,9 +862,12 @@ class AppState: ObservableObject {
         // Skip when the state directory is empty — the very first launch
         // has nothing to restore, and bringing the node up would just
         // emit a BrowseToURL we're going to drop anyway.
-        let appSupport = FileManager.default.urls(
+        guard let appSupport = FileManager.default.urls(
             for: .applicationSupportDirectory, in: .userDomainMask
-        ).first!
+        ).first else {
+            print("📱 [AppState] No Application Support URL available; skipping silent restore")
+            return
+        }
         let statePath = appSupport
             .appendingPathComponent("Tailscreen/tailscale\(TailscreenInstance.stateSuffix)")
             .path
@@ -912,10 +953,22 @@ class AppState: ObservableObject {
         // (separate "-auth" node + per-feature ephemeral nodes) made every
         // share + every connect pop a second / third browser login,
         // because each tsnet node = a distinct machine in the tailnet.
+        // FileManager almost always returns Application Support under
+        // .userDomainMask, but fall back to the conventional home-relative
+        // path rather than force-unwrap so a missing-URL edge case
+        // (sandboxing quirk, unusual environment) lands in a recoverable
+        // directory creation below instead of trapping.
         let statePath = {
-            let appSupport = FileManager.default.urls(
+            let appSupport: URL
+            if let url = FileManager.default.urls(
                 for: .applicationSupportDirectory, in: .userDomainMask
-            ).first!
+            ).first {
+                appSupport = url
+            } else {
+                print("📱 [AppState] No Application Support URL; falling back to ~/Library/Application Support")
+                appSupport = URL(fileURLWithPath: NSHomeDirectory())
+                    .appendingPathComponent("Library/Application Support")
+            }
             return appSupport.appendingPathComponent("Tailscreen/tailscale\(TailscreenInstance.stateSuffix)").path
         }()
 
