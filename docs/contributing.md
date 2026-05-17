@@ -41,17 +41,27 @@ tailscreen/
 
 ## Build commands
 
-| Command            | What it does                                                       |
-| :----------------- | :----------------------------------------------------------------- |
-| `make build`       | Build `libtailscale.a`, then `swift build`. Always start here.    |
-| `make run`         | Build + run the debug binary.                                      |
-| `make release`     | `swift build -c release` → `.build/release/Tailscreen`.            |
-| `make install`     | Release build + copy to `~/bin/Tailscreen`.                        |
-| `make clean`       | Wipe `.build/`, run `swift package clean`, clean TailscaleKit.     |
-| `make test`        | `swift test` (after rebuilding `libtailscale`).                    |
-| `make e2e-up`      | Start a local headscale control plane in Docker.                   |
-| `make e2e-down`    | Tear down headscale + volume.                                      |
-| `make test-e2e`    | One-shot: `e2e-up` → connectivity tests → `e2e-down`.              |
+`make` with no arguments prints a one-line description of every
+target (`.DEFAULT_GOAL := help`). The highlights:
+
+| Command             | What it does                                                       |
+| :------------------ | :----------------------------------------------------------------- |
+| `make build`        | Build `libtailscale.a`, then `swift build`. Always start here.    |
+| `make run`          | Build + run the debug binary.                                      |
+| `make release`      | `swift build -c release` → `.build/release/Tailscreen`.            |
+| `make install`      | Release build + copy to `~/bin/Tailscreen`.                        |
+| `make clean`        | Wipe `.build/`, run `swift package clean`, clean TailscaleKit.     |
+| `make test`         | `swift test` (after rebuilding `libtailscale`).                    |
+| `make lint`         | Run SwiftLint (baseline-gated; only new violations fail).          |
+| `make format`       | Run `swift-format` in-place over `Sources/` and `Tests/`.          |
+| `make format-check` | Run `swift-format` in lint mode (no changes). CI uses this.        |
+| `make e2e-up`       | Start a local headscale control plane in Docker.                   |
+| `make e2e-down`     | Tear down headscale + volume.                                      |
+| `make test-e2e`     | One-shot: `e2e-up` → connectivity tests → `e2e-down`.              |
+
+`swift-format` ships with the Swift toolchain on Xcode 16+; if it isn't
+on your `PATH`, `brew install swift-format` works as a fallback. The
+config lives at `.swift-format` in the repo root.
 
 A reminder we're going to repeat in every section because it's the most
 common build failure: **bare `swift build` will fail to link** until
