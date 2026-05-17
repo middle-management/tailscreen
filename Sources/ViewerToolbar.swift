@@ -115,7 +115,7 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
         // NSToolbarItemGroup with selectionMode = .selectOne gives radio
         // behaviour — clicking one tool deselects the others. The selected
         // index drives ViewerCommands.setTool().
-        let labels  = ["Pen", "Line", "Arrow", "Rect", "Oval", "Click"]
+        let labels = ["Pen", "Line", "Arrow", "Rect", "Oval", "Click"]
         let symbols = ["pencil.tip",
                        "line.diagonal",
                        "arrow.up.right",
@@ -125,12 +125,12 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
         // Spelled-out VoiceOver descriptions — "Rect" reads as
         // "r-e-c-t" otherwise, and "Click" alone doesn't convey that
         // it's a pointer/laser tool.
-        let a11y    = ["Pen annotation tool",
-                       "Line annotation tool",
-                       "Arrow annotation tool",
-                       "Rectangle annotation tool",
-                       "Oval annotation tool",
-                       "Pointer click tool"]
+        let a11y = ["Pen annotation tool",
+                    "Line annotation tool",
+                    "Arrow annotation tool",
+                    "Rectangle annotation tool",
+                    "Oval annotation tool",
+                    "Pointer click tool"]
 
         let group = NSToolbarItemGroup(
             itemIdentifier: Self.toolGroup,
