@@ -198,7 +198,7 @@ final class TailscaleConnectivityTests: XCTestCase {
         client.onAudioSSRCAssigned = { _ in assigned.fulfill() }
         try await client.connect(
             to: serverIP,
-            port: 7447,
+            port: NetworkConfig.tailscreenPort,
             authKey: authKey,
             path: clientDir,
             controlURL: controlURL

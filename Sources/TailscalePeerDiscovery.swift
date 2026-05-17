@@ -19,7 +19,7 @@ class TailscalePeerDiscovery: ObservableObject {
     @Published var availablePeers: [TailscreenPeer] = []
     @Published var isDiscovering = false
 
-    private let tailscreenPort: UInt16 = 7447
+    private let tailscreenPort: UInt16 = NetworkConfig.tailscreenPort
     private let logger: TSLogger
     private var ipnWatcher: TailscaleIPNWatcher?
 

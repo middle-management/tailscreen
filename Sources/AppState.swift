@@ -590,7 +590,7 @@ class AppState: ObservableObject {
             // Reuse the AppState-owned tsnet node so connecting doesn't
             // spin up a third machine + browser sign-in flow.
             let sharedNode = try await getOrCreateNode()
-            try await c.connect(to: host, port: 7447, existingNode: sharedNode)
+            try await c.connect(to: host, port: NetworkConfig.tailscreenPort, existingNode: sharedNode)
 
             connectionState = .viewing
             connectedHostname = host
@@ -1008,7 +1008,7 @@ class AppState: ObservableObject {
         do {
             try await metadataService.sendRequestToShare(
                 to: peer.tailscaleIP,
-                port: 7447,
+                port: NetworkConfig.tailscreenPort,
                 from: hostname
             )
         } catch {

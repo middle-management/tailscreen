@@ -178,7 +178,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// user can't see.
     var nodeReadyBeforeUp: (@Sendable (TailscaleNode) async -> Void)?
 
-    init(port: UInt16 = 7447) {
+    init(port: UInt16 = NetworkConfig.tailscreenPort) {
         self.port = port
         self.logger = TSLogger()
         self.rtpTimestampOriginNs = DispatchTime.now().uptimeNanoseconds

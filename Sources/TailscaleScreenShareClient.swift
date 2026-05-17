@@ -121,7 +121,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
 
     func connect(
         to hostname: String,
-        port: UInt16 = 7447,
+        port: UInt16 = NetworkConfig.tailscreenPort,
         authKey: String? = nil,
         path: String? = nil,
         controlURL: String = kDefaultControlURL,
