@@ -198,7 +198,7 @@ final class TailscaleConnectivityTests: XCTestCase {
         client.onAudioSSRCAssigned = { _ in assigned.fulfill() }
         try await client.connect(
             to: serverIP,
-            port: 7447,
+            port: NetworkConfig.tailscreenPort,
             authKey: authKey,
             path: clientDir,
             controlURL: controlURL
@@ -232,7 +232,7 @@ final class TailscaleConnectivityTests: XCTestCase {
 }
 
 private struct PrintLogger: LogSink {
-    var logFileHandle: Int32? = nil
+    var logFileHandle: Int32?
     func log(_ message: String) {
         print("[test] \(message)")
     }

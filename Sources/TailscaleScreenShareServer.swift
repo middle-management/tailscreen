@@ -178,7 +178,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// user can't see.
     var nodeReadyBeforeUp: (@Sendable (TailscaleNode) async -> Void)?
 
-    init(port: UInt16 = 7447) {
+    init(port: UInt16 = NetworkConfig.tailscreenPort) {
         self.port = port
         self.logger = TSLogger()
         self.rtpTimestampOriginNs = DispatchTime.now().uptimeNanoseconds
@@ -202,7 +202,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             node = existing
             self.node = existing
             self.ownsNode = false
-            print("Screen-share server reusing existing Tailscale node")
+            logger.log("Screen-share server reusing existing Tailscale node")
         } else {
             let statePath = path ?? {
                 let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -210,7 +210,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             }()
             try? FileManager.default.createDirectory(atPath: statePath, withIntermediateDirectories: true)
 
-            print("Starting Tailscale server…")
+            logger.log("Starting Tailscale server…")
 
             let config = Configuration(
                 hostName: hostname,
@@ -231,7 +231,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         }
 
         let ips = try await node.addrs()
-        print("Tailscale connected — ip4=\(ips.ip4 ?? "-") ip6=\(ips.ip6 ?? "-")")
+        logger.log("Tailscale connected — ip4=\(ips.ip4 ?? "-") ip6=\(ips.ip6 ?? "-")")
 
         guard let tailscaleHandle = await node.tailscale else {
             throw TailscaleError.badInterfaceHandle
@@ -247,7 +247,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             logger: logger
         )
         self.probeListener = probeListener
-        print("TCP presence beacon listening on :\(port)")
+        logger.log("TCP presence beacon listening on :\(port)")
 
         // tsnet's ListenPacket requires an explicit tailnet IP — 0.0.0.0
         // binds, but tsnet won't actually route inbound datagrams to it.
@@ -260,7 +260,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             logger: logger
         )
         self.packetListener = packetListener
-        print("UDP video stream listening on \(bindAddr)")
+        logger.log("UDP video stream listening on \(bindAddr)")
 
         isRunning = true
 
@@ -297,13 +297,13 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             self.baselineBitrate.withLock { $0 = baseline }
             self.currentBitrate.withLock { $0 = baseline }
             self.lastBitrateChangeNs.withLock { $0 = DispatchTime.now().uptimeNanoseconds }
-            print("HelperScreenCapture: anchored baseline bitrate \(baseline / 1000) kbps for \(width)x\(height) \(codec)")
+            self.logger.log("HelperScreenCapture: anchored baseline bitrate \(baseline / 1000) kbps for \(width)x\(height) \(codec)")
         }
         helper.onPreviewImage = { [weak self] image in
             self?.onPreviewImage?(image)
         }
         helper.onUserStopped = { [weak self] in
-            print("HelperScreenCapture: user stopped via Control Center")
+            self?.logger.log("HelperScreenCapture: user stopped via Control Center")
             self?.helperCapture = nil
             // Surface a userStopped SCStreamError so AppState's
             // `isUserInitiatedCaptureStop` branch tears the share
@@ -317,7 +317,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         }
         helper.onUnexpectedExit = { [weak self] reason in
             guard let self else { return }
-            print("HelperScreenCapture: unexpected exit (\(reason))")
+            self.logger.log("HelperScreenCapture: unexpected exit (\(reason))")
             self.helperCapture = nil
             // Sliding-window restart: tolerate ≤3 crashes in 30 s,
             // give up after that. Each crash invalidates replayd's
@@ -333,7 +333,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
                 self.onCaptureStopped?(err)
                 return
             }
-            print("HelperScreenCapture: restarting (crash #\(self.helperCrashTimestampsNs.count) in window)")
+            self.logger.log("HelperScreenCapture: restarting (crash #\(self.helperCrashTimestampsNs.count) in window)")
             do {
                 try self.startHelperCapture(displayID: self.lastDisplayID)
             } catch {
@@ -344,7 +344,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         }
         try helper.start(displayID: displayID ?? CGMainDisplayID())
         helperCapture = helper
-        print("HelperScreenCapture started (displayID=\(displayID.map { String($0) } ?? "default"))")
+        logger.log("HelperScreenCapture started (displayID=\(displayID.map { String($0) } ?? "default"))")
     }
 
     private func handleHelperAccessUnit(_ avcc: Data, isKeyframe: Bool) {
@@ -471,7 +471,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
                 continue  // poll timeout, just keep polling
             } catch {
                 if isRunning {
-                    print("Server: receive error: \(error)")
+                    logger.log("Server: receive error: \(error)")
                 }
                 break
             }
@@ -614,7 +614,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         }
 
         if added || isNew {
-            print("Viewer \(added ? "joined" : "refreshed") \(addr) (total=\(viewerCount))")
+            logger.log("Viewer \(added ? "joined" : "refreshed") \(addr) (total=\(viewerCount))")
             // New viewer (or one that re-helloed): force a keyframe so
             // they get something decodable immediately. We also push the
             // last cached SPS/PPS in-band on the next IDR; that's handled
@@ -630,7 +630,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         if removed {
             viewerInfos.withLock { _ = $0.removeValue(forKey: addr) }
             notifyViewersChanged()
-            print("Viewer disconnected \(addr)")
+            logger.log("Viewer disconnected \(addr)")
         }
     }
 
@@ -708,7 +708,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             }
             for entry in dropped {
                 let idleMs = Int(entry.idleNs / 1_000_000)
-                print("Viewer timeout \(entry.addr) (idle \(idleMs) ms)")
+                logger.log("Viewer timeout \(entry.addr) (idle \(idleMs) ms)")
             }
         }
     }
@@ -783,7 +783,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         }
         let kbps = Double(bitrate) / 1000.0
         let prevKbps = Double(prev) / 1000.0
-        print("Adaptive bitrate: \(Int(prevKbps)) → \(Int(kbps)) kbps (\(reason))")
+        logger.log("Adaptive bitrate: \(Int(prevKbps)) → \(Int(kbps)) kbps (\(reason))")
     }
 
     /// Convert an encoded AVCC access unit into RTP packets and fan them out
@@ -915,7 +915,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     }
 
     func stop() async {
-        print("Server stopping…")
+        logger.log("Server stopping…")
         isRunning = false
 
         // Drain any in-flight `restartCapture` before we touch
@@ -949,14 +949,14 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
                     try? await pl.send(payload, to: addr)
                 }
             }
-            print("Server stop: SERVER_BYE sent to \(goodbyeAddrs.count) viewer(s)")
+            logger.log("Server stop: SERVER_BYE sent to \(goodbyeAddrs.count) viewer(s)")
             try? await Task.sleep(for: .milliseconds(200))
         }
 
         await helperCapture?.stop()
         helperCapture = nil
         helperCodec = nil
-        print("Server stop: capture done")
+        logger.log("Server stop: capture done")
 
         viewers.withLock { $0.removeAll() }
         viewerInfos.withLock { $0.removeAll() }
@@ -965,11 +965,11 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
 
         await packetListener?.close()
         packetListener = nil
-        print("Server stop: packet listener closed")
+        logger.log("Server stop: packet listener closed")
 
         await probeListener?.close()
         probeListener = nil
-        print("Server stop: probe listener closed")
+        logger.log("Server stop: probe listener closed")
 
         // Close any in-flight annotation back-channels in parallel; their
         // receive tasks will see the close and exit naturally.
@@ -991,7 +991,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         }
         self.node = nil
 
-        print("Server stopped")
+        logger.log("Server stopped")
     }
 
     deinit {
@@ -1000,7 +1000,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
 }
 
 private struct TSLogger: LogSink {
-    var logFileHandle: Int32? = nil
+    var logFileHandle: Int32?
     func log(_ message: String) {
         if message.hasPrefix("Listening for ") { return }
         print("[Tailscale] \(message)")

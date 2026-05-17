@@ -19,7 +19,7 @@ class TailscalePeerDiscovery: ObservableObject {
     @Published var availablePeers: [TailscreenPeer] = []
     @Published var isDiscovering = false
 
-    private let tailscreenPort: UInt16 = 7447
+    private let tailscreenPort: UInt16 = NetworkConfig.tailscreenPort
     private let logger: TSLogger
     private var ipnWatcher: TailscaleIPNWatcher?
 
@@ -292,7 +292,7 @@ private final class ConnectBox: @unchecked Sendable {
 // MARK: - Logger Implementation
 
 private struct TSLogger: LogSink {
-    var logFileHandle: Int32? = nil
+    var logFileHandle: Int32?
 
     func log(_ message: String) {
         print("[Discovery] \(message)")

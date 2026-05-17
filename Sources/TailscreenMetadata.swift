@@ -14,7 +14,7 @@ struct TailscreenMetadata: Codable, Sendable {
     /// H.264 (the only codec older Tailscreen builds spoke). The viewer
     /// also auto-detects from the RTP payload type, so this is mainly
     /// informational for the UI.
-    var videoCodec: VideoCodec? = nil
+    var videoCodec: VideoCodec?
 
     struct ScreenResolution: Codable, Sendable {
         let width: Int
@@ -132,7 +132,7 @@ class TailscreenMetadataService: ObservableObject {
     }
 
     /// Send a request to share to a peer
-    func sendRequestToShare(to host: String, port: UInt16 = 7447, from hostname: String) async throws {
+    func sendRequestToShare(to host: String, port: UInt16 = NetworkConfig.tailscreenPort, from hostname: String) async throws {
         let url = URL(string: "http://\(host):\(port)/api/request")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -150,7 +150,7 @@ class TailscreenMetadataService: ObservableObject {
     }
 
     /// Fetch metadata from a peer
-    static func fetchMetadata(from host: String, port: UInt16 = 7447) async throws -> TailscreenMetadata {
+    static func fetchMetadata(from host: String, port: UInt16 = NetworkConfig.tailscreenPort) async throws -> TailscreenMetadata {
         let url = URL(string: "http://\(host):\(port)/api/metadata")!
         let (data, response) = try await URLSession.shared.data(from: url)
 
