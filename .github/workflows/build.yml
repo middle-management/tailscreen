@@ -54,6 +54,27 @@ jobs:
       - name: Run SwiftLint (baseline-gated)
         run: make lint
 
+  format:
+    # Apple's swift-format ships with the Swift toolchain on Xcode 16+.
+    # macos-latest has it available out of the box, so this job is cheap
+    # — no Homebrew install, no submodule checkout (config-only check).
+    #
+    # Currently informational (continue-on-error: true) because the
+    # config was tuned without a local swift-format run — we want the
+    # first CI run on this branch to surface any drift between the
+    # config and the existing style, then we flip this to required.
+    # TODO: drop `continue-on-error` once the check is observed to pass.
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify swift-format is available
+        run: swift-format --version
+      - name: Run swift-format check
+        # `make format-check` runs `swift-format lint --strict` against
+        # Sources/ and Tests/ using the repo's `.swift-format` config.
+        run: make format-check
+
   test-tsan:
     # Thread Sanitizer build. Catches lock/continuation races that
     # strict-concurrency lets through. Allowed to fail (TSan can flag
