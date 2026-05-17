@@ -18,6 +18,7 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
     private static let microphone = NSToolbarItem.Identifier("action.microphone")
     private static let undo       = NSToolbarItem.Identifier("action.undo")
     private static let clearAll   = NSToolbarItem.Identifier("action.clearAll")
+    private static let stats      = NSToolbarItem.Identifier("action.stats")
 
     private static let toolGroup  = NSToolbarItem.Identifier("group.tools")
 
@@ -54,11 +55,11 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
     // MARK: - NSToolbarDelegate
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [Self.toolGroup, .flexibleSpace, Self.microphone, Self.undo, Self.clearAll]
+        [Self.toolGroup, .flexibleSpace, Self.stats, Self.microphone, Self.undo, Self.clearAll]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [Self.toolGroup, Self.microphone, Self.undo, Self.clearAll, .flexibleSpace, .space]
+        [Self.toolGroup, Self.stats, Self.microphone, Self.undo, Self.clearAll, .flexibleSpace, .space]
     }
 
     func toolbar(_ toolbar: NSToolbar,
@@ -72,24 +73,37 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
                 id: itemIdentifier,
                 label: "Undo",
                 symbol: "arrow.uturn.backward",
-                action: #selector(ViewerCommands.undoLastAnnotation(_:))
+                action: #selector(ViewerCommands.undoLastAnnotation(_:)),
+                accessibilityLabel: "Undo last annotation"
             )
         case Self.clearAll:
             return makeButton(
                 id: itemIdentifier,
                 label: "Clear",
                 symbol: "trash",
-                action: #selector(ViewerCommands.clearAllAnnotations(_:))
+                action: #selector(ViewerCommands.clearAllAnnotations(_:)),
+                accessibilityLabel: "Clear all annotations"
             )
         case Self.microphone:
             let item = makeButton(
                 id: itemIdentifier,
                 label: "Mic",
                 symbol: appState?.isMicOn == true ? "mic.fill" : "mic.slash",
-                action: #selector(ViewerCommands.toggleMicrophone(_:))
+                action: #selector(ViewerCommands.toggleMicrophone(_:)),
+                accessibilityLabel: appState?.isMicOn == true
+                    ? "Mute microphone"
+                    : "Unmute microphone"
             )
             micToolbarItem = item
             return item
+        case Self.stats:
+            return makeButton(
+                id: itemIdentifier,
+                label: "Stats",
+                symbol: "chart.bar.xaxis",
+                action: #selector(ViewerCommands.toggleStatsOverlay(_:)),
+                accessibilityLabel: "Toggle stream stats overlay"
+            )
         default:
             return nil
         }
@@ -108,6 +122,15 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
                        "rectangle",
                        "circle",
                        "scope"]
+        // Spelled-out VoiceOver descriptions — "Rect" reads as
+        // "r-e-c-t" otherwise, and "Click" alone doesn't convey that
+        // it's a pointer/laser tool.
+        let a11y    = ["Pen annotation tool",
+                       "Line annotation tool",
+                       "Arrow annotation tool",
+                       "Rectangle annotation tool",
+                       "Oval annotation tool",
+                       "Pointer click tool"]
 
         let group = NSToolbarItemGroup(
             itemIdentifier: Self.toolGroup,
@@ -123,9 +146,9 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
         // its initializer.
         for (i, sym) in symbols.enumerated() where i < group.subitems.count {
             let sub = group.subitems[i]
-            sub.image = NSImage(systemSymbolName: sym, accessibilityDescription: labels[i])
+            sub.image = NSImage(systemSymbolName: sym, accessibilityDescription: a11y[i])
             sub.label = labels[i]
-            sub.toolTip = labels[i]
+            sub.toolTip = a11y[i]
         }
         group.selectedIndex = 0
         return group
@@ -134,12 +157,20 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
     private func makeButton(id: NSToolbarItem.Identifier,
                             label: String,
                             symbol: String,
-                            action: Selector) -> NSToolbarItem {
+                            action: Selector,
+                            accessibilityLabel: String? = nil) -> NSToolbarItem {
         let item = NSToolbarItem(itemIdentifier: id)
         item.label = label
         item.paletteLabel = label
-        item.toolTip = label
-        item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
+        item.toolTip = accessibilityLabel ?? label
+        // The SF Symbol's accessibilityDescription drives VoiceOver
+        // unless the toolbar item carries an explicit override — supply
+        // a richer label for the actionable items where the short tool
+        // label ("Mic", "Stats") would read ambiguously.
+        item.image = NSImage(
+            systemSymbolName: symbol,
+            accessibilityDescription: accessibilityLabel ?? label
+        )
         item.target = ViewerCommands.shared
         item.action = action
         item.isBordered = true
