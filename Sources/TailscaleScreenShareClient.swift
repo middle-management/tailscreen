@@ -95,7 +95,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         do {
             try await annotationWriter.send(data, over: conn)
         } catch {
-            print("Client: sendAnnotationOp failed: \(error)")
+            logger.log("Client: sendAnnotationOp failed: \(error)")
         }
     }
 
@@ -134,7 +134,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
             node = existing
             self.node = existing
             self.ownsNode = false
-            print("Screen-share client reusing existing Tailscale node")
+            logger.log("Screen-share client reusing existing Tailscale node")
         } else {
             let statePath = path ?? {
                 let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -142,7 +142,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
             }()
             try? FileManager.default.createDirectory(atPath: statePath, withIntermediateDirectories: true)
 
-            print("Starting Tailscale client…")
+            logger.log("Starting Tailscale client…")
 
             let clientHostname = "tailscreen-client-\(UUID().uuidString.prefix(8))"
             let config = Configuration(
@@ -161,7 +161,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         }
 
         let ips = try await node.addrs()
-        print("Tailscale connected — ip4=\(ips.ip4 ?? "-") ip6=\(ips.ip6 ?? "-")")
+        logger.log("Tailscale connected — ip4=\(ips.ip4 ?? "-") ip6=\(ips.ip6 ?? "-")")
 
         guard let tailscaleHandle = await node.tailscale else {
             throw TailscaleError.badInterfaceHandle
@@ -180,7 +180,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         )
         self.packetListener = pl
         self.serverAddr = formatAddr(host: hostname, port: port)
-        print("Bound local UDP, dialing \(serverAddr ?? "?")")
+        logger.log("Bound local UDP, dialing \(serverAddr ?? "?")")
 
         let decoder = VideoDecoder()
         decoder.onDecodedFrame = { [weak self] pixelBuffer in
@@ -200,15 +200,15 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
             )
             try await conn.connect()
             self.annotationChannel = conn
-            print("Annotation back-channel open to \(hostname):\(port)")
+            logger.log("Annotation back-channel open to \(hostname):\(port)")
         } catch {
-            print("Annotation back-channel failed to open: \(error) (annotations disabled)")
+            logger.log("Annotation back-channel failed to open: \(error) (annotations disabled)")
         }
 
         self.isConnected = true
 
         try await pl.send(ScreenShareControlMessage.encode(.hello), to: serverAddr!)
-        print("HELLO sent to \(serverAddr!)")
+        logger.log("HELLO sent to \(serverAddr!)")
 
         receiveTask = Task { [weak self] in
             await self?.receiveLoop()
@@ -267,7 +267,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                 if ScreenShareControlMessage.looksLikeControl(datagram) {
                     switch ScreenShareControlMessage.decode(datagram) {
                     case .serverBye:
-                        print("Receive: SERVER_BYE — sharer stopped")
+                        logger.log("Receive: SERVER_BYE — sharer stopped")
                         NotificationCenter.default.post(name: .tailscreenViewerPeerClosed, object: nil)
                         return
                     case .helloAck:
@@ -294,7 +294,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                         try? await pl.send(ScreenShareControlMessage.encode(.pli), to: serverAddr!)
                     }
                     if framesDelivered == 1 || framesDelivered % 60 == 0 {
-                        print("Client: AU #\(framesDelivered) (kf=\(au.containsIDR), \(au.avcc.count)B, packets=\(packetsReceived))")
+                        logger.log("Client: AU #\(framesDelivered) (kf=\(au.containsIDR), \(au.avcc.count)B, packets=\(packetsReceived))")
                     }
                     self.lastReceiveUptimeNs = DispatchTime.now().uptimeNanoseconds
                     deliverAU(au)
@@ -304,13 +304,13 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                 let nowNs = DispatchTime.now().uptimeNanoseconds
                 if nowNs &- lastDataNs > idleDisconnectAfterNs {
                     let idleMs = (nowNs &- lastDataNs) / 1_000_000
-                    print("Receive: idle for \(idleMs) ms, assuming server gone")
+                    logger.log("Receive: idle for \(idleMs) ms, assuming server gone")
                     NotificationCenter.default.post(name: .tailscreenViewerPeerClosed, object: nil)
                     break
                 }
                 continue
             } catch {
-                if isConnected { print("Receive error: \(error)") }
+                if isConnected { logger.log("Receive error: \(error)") }
                 break
             }
         }
@@ -430,7 +430,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
             self.decoder = nil
         }
 
-        print("Client disconnected")
+        logger.log("Client disconnected")
     }
 
     deinit {

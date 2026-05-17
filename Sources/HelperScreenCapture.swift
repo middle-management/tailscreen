@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import CoreGraphics
+import TailscaleKit
 
 /// Main-side wrapper around the `Tailscreen --capture-helper` child
 /// process. Spawns a fresh helper per share session, parses framed
@@ -46,6 +47,7 @@ final class HelperScreenCapture: @unchecked Sendable {
     private var stoppedIntentionally = false
     private var debugAUCount = 0
     private var debugParamsLogged = false
+    private let logger = TSLogger()
 
     init() {
         queueLabel = "HelperScreenCapture-\(UUID().uuidString.prefix(8))"
@@ -154,7 +156,7 @@ final class HelperScreenCapture: @unchecked Sendable {
                 debugAUCount += 1
                 if debugAUCount <= 3 {
                     let first = avcc.prefix(8).map { String(format: "%02x", $0) }.joined(separator: " ")
-                    print("HelperScreenCapture: AU#\(debugAUCount) kf=\(isKeyframe) \(avcc.count)B first8=[\(first)]")
+                    logger.log("HelperScreenCapture: AU#\(debugAUCount) kf=\(isKeyframe) \(avcc.count)B first8=[\(first)]")
                 }
                 onAccessUnit?(avcc, isKeyframe)
             case .parameterSets:
@@ -170,9 +172,9 @@ final class HelperScreenCapture: @unchecked Sendable {
                         debugParamsLogged = true
                         switch params {
                         case .h264(let sps, let pps):
-                            print("HelperScreenCapture: paramSets H264 sps=\(sps.count)B pps=\(pps.count)B")
+                            logger.log("HelperScreenCapture: paramSets H264 sps=\(sps.count)B pps=\(pps.count)B")
                         case .hevc(let vps, let sps, let pps):
-                            print("HelperScreenCapture: paramSets HEVC vps=\(vps.count)B sps=\(sps.count)B pps=\(pps.count)B")
+                            logger.log("HelperScreenCapture: paramSets HEVC vps=\(vps.count)B sps=\(sps.count)B pps=\(pps.count)B")
                         }
                     }
                     onParameterSets?(params)
@@ -185,7 +187,7 @@ final class HelperScreenCapture: @unchecked Sendable {
                 }
             case .logLine:
                 if let s = String(data: payload, encoding: .utf8) {
-                    print("helper: \(s)")
+                    logger.log("helper: \(s)")
                 }
             case .fatal:
                 let msg = String(data: payload, encoding: .utf8) ?? "<no msg>"
@@ -240,4 +242,14 @@ final class HelperScreenCapture: @unchecked Sendable {
 
 enum HelperScreenCaptureError: Error {
     case executableNotFound
+}
+
+// MARK: - Logger
+
+private struct TSLogger: LogSink {
+    var logFileHandle: Int32? = nil
+
+    func log(_ message: String) {
+        print("[HelperCapture] \(message)")
+    }
 }

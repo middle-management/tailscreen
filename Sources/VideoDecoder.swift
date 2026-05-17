@@ -2,6 +2,7 @@ import VideoToolbox
 import CoreMedia
 import CoreVideo
 import AppKit
+import TailscaleKit
 
 final class VideoDecoder: @unchecked Sendable {
     var onDecodedFrame: ((CVPixelBuffer) -> Void)?
@@ -9,6 +10,7 @@ final class VideoDecoder: @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.tailscreen.decoder")
     private var session: VTDecompressionSession?
     private var formatDescription: CMFormatDescription?
+    private let logger = TSLogger()
 
     /// Install codec parameter sets. The server sends these before any
     /// frames, and re-sends them on every IDR so late joiners can recover
@@ -38,7 +40,7 @@ final class VideoDecoder: @unchecked Sendable {
         }
 
         guard let desc = newDesc else {
-            print("VideoDecoder: failed to build format description")
+            logger.log("VideoDecoder: failed to build format description")
             return
         }
 
@@ -78,7 +80,7 @@ final class VideoDecoder: @unchecked Sendable {
             }
         }
         guard status == noErr else {
-            print("VideoDecoder: H.264 format description failed (\(status))")
+            TSLogger().log("VideoDecoder: H.264 format description failed (\(status))")
             return nil
         }
         return newDesc
@@ -113,7 +115,7 @@ final class VideoDecoder: @unchecked Sendable {
             }
         }
         guard status == noErr else {
-            print("VideoDecoder: HEVC format description failed (\(status))")
+            TSLogger().log("VideoDecoder: HEVC format description failed (\(status))")
             return nil
         }
         return newDesc
@@ -178,7 +180,7 @@ final class VideoDecoder: @unchecked Sendable {
             infoFlagsOut: &flagsOut
         )
         if decodeStatus != noErr {
-            print("VideoDecoder: DecodeFrame failed status=\(decodeStatus) (isKeyframe=\(isKeyframe), \(data.count)B)")
+            logger.log("VideoDecoder: DecodeFrame failed status=\(decodeStatus) (isKeyframe=\(isKeyframe), \(data.count)B)")
         }
     }
 
@@ -195,11 +197,11 @@ final class VideoDecoder: @unchecked Sendable {
                 guard let refcon = refcon else { return }
                 let decoder = Unmanaged<VideoDecoder>.fromOpaque(refcon).takeUnretainedValue()
                 if status != noErr {
-                    print("VideoDecoder: output callback reported status=\(status)")
+                    decoder.logger.log("VideoDecoder: output callback reported status=\(status)")
                     return
                 }
                 guard let imageBuffer = imageBuffer else {
-                    print("VideoDecoder: output callback got nil imageBuffer")
+                    decoder.logger.log("VideoDecoder: output callback got nil imageBuffer")
                     return
                 }
                 decoder.onDecodedFrame?(imageBuffer)
@@ -219,7 +221,7 @@ final class VideoDecoder: @unchecked Sendable {
         if status == noErr {
             self.session = session
         } else {
-            print("VideoDecoder: failed to create decompression session (\(status))")
+            logger.log("VideoDecoder: failed to create decompression session (\(status))")
         }
     }
 
@@ -242,5 +244,15 @@ final class VideoDecoder: @unchecked Sendable {
             session = nil
             formatDescription = nil
         }
+    }
+}
+
+// MARK: - Logger
+
+private struct TSLogger: LogSink {
+    var logFileHandle: Int32? = nil
+
+    func log(_ message: String) {
+        print("[VideoDecoder] \(message)")
     }
 }

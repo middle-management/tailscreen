@@ -1,5 +1,6 @@
 import AudioToolbox
 import Foundation
+import TailscaleKit
 
 enum AACCodecError: Error {
     case converterCreate(OSStatus)
@@ -68,7 +69,7 @@ final class AACEncoder {
             &bitrate
         )
         if bitrateStatus != noErr {
-            print("AACEncoder: setting bitrate to \(bitrate) failed (OSStatus=\(bitrateStatus))")
+            TSLogger().log("AACEncoder: setting bitrate to \(bitrate) failed (OSStatus=\(bitrateStatus))")
         }
     }
 
@@ -362,5 +363,15 @@ final class AACDecoder {
         deinit {
             storage.deallocate()
         }
+    }
+}
+
+// MARK: - Logger
+
+private struct TSLogger: LogSink {
+    var logFileHandle: Int32? = nil
+
+    func log(_ message: String) {
+        print("[AACCodec] \(message)")
     }
 }

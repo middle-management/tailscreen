@@ -124,6 +124,11 @@ class AppState: ObservableObject {
     // true when the user explicitly initiates `login()`.
     private var interactiveLoginRequested = false
 
+    // `[AppState]`-prefixed log sink. Same per-file `TSLogger` pattern
+    // used by the screen-share + tsnet wrappers — keeps log lines in a
+    // single channel we can later route to a file or os.Logger.
+    private let logger = AppLogger()
+
     init() {
         // Observe changes in tailscaleAuth and propagate them
         tailscaleAuth.objectWillChange.sink { [weak self] _ in
@@ -267,9 +272,9 @@ class AppState: ObservableObject {
                         guard let server = self.server else { return }
                         do {
                             try await server.restartCapture()
-                            print("ScreenCapture: restarted after mid-stream stop.")
+                            self.logger.log("ScreenCapture: restarted after mid-stream stop.")
                         } catch {
-                            print("ScreenCapture: restart failed (\(error)); tearing sharing down.")
+                            self.logger.log("ScreenCapture: restart failed (\(error)); tearing sharing down.")
                             await self.stopSharing(reason: "SCStream restart failed: \(error)")
                         }
                     }
@@ -395,7 +400,7 @@ class AppState: ObservableObject {
     }
 
     func stopSharing(reason: String = "<unknown>", caller: String = #function) async {
-        print("stopSharing: called by \(caller) (reason=\(reason))")
+        logger.log("stopSharing: called by \(caller) (reason=\(reason))")
         // Unblock any startSharing still waiting on the first preview, so
         // a fast start→stop doesn't strand its continuation.
         if let cont = pendingFirstPreview {
@@ -811,7 +816,7 @@ class AppState: ObservableObject {
             .path
         let contents = (try? FileManager.default.contentsOfDirectory(atPath: statePath)) ?? []
         guard !contents.isEmpty else {
-            print("📱 [AppState] No saved Tailscale state at \(statePath); skipping silent restore")
+            logger.log("No saved Tailscale state at \(statePath); skipping silent restore")
             return
         }
 
@@ -826,19 +831,19 @@ class AppState: ObservableObject {
             if tailscaleAuth.isAuthenticated {
                 let ips = try await node.addrs()
                 self.tailscaleIPs = [ips.ip4, ips.ip6].compactMap { $0 }
-                print("📱 [AppState] Restored signed-in Tailscale session")
+                logger.log("Restored signed-in Tailscale session")
             } else {
-                print("📱 [AppState] No valid saved session; awaiting explicit sign-in")
+                logger.log("No valid saved session; awaiting explicit sign-in")
             }
         } catch {
-            print("📱 [AppState] Silent restore skipped: \(error)")
+            logger.log("Silent restore skipped: \(error)")
         }
     }
 
     func login(silent: Bool = false) async {
         // Prevent multiple concurrent login attempts
         guard !isLoggingIn else {
-            print("📱 [AppState] Login already in progress, skipping...")
+            logger.log("Login already in progress, skipping...")
             return
         }
         isLoggingIn = true
@@ -851,15 +856,15 @@ class AppState: ObservableObject {
         }
 
         do {
-            print("📱 [AppState] Starting login flow...")
+            logger.log("Starting login flow...")
             // Get or create the Tailscale node
             let node = try await getOrCreateNode()
 
-            print("📱 [AppState] Node created, calling tailscaleAuth.login...")
+            logger.log("Node created, calling tailscaleAuth.login...")
             // Run the login flow
             try await tailscaleAuth.login(node: node)
 
-            print("📱 [AppState] Login completed, checking auth status...")
+            logger.log("Login completed, checking auth status...")
             // Update auth status after login
             await tailscaleAuth.checkAuthStatus(node: node)
 
@@ -871,7 +876,7 @@ class AppState: ObservableObject {
             // a popup just interrupts the flow the user was already in.
             _ = silent
         } catch {
-            print("📱 [AppState] Login error: \(error)")
+            logger.log("Login error: \(error)")
             showAlertMessage(
                 title: "Login Failed",
                 message: "Failed to log in: \(error.localizedDescription)"
@@ -956,10 +961,10 @@ class AppState: ObservableObject {
                     // tab the user never asked for. The user clicking
                     // "Sign in with Tailscale" flips the flag and the
                     // next emitted URL gets opened.
-                    print("📱 [AppState] Suppressing BrowseToURL during silent restore")
+                    self.logger.log("Suppressing BrowseToURL during silent restore")
                     return
                 }
-                print("📱 [AppState] Opening login URL in browser: \(url)")
+                self.logger.log("Opening login URL in browser: \(url)")
                 NSWorkspace.shared.open(url)
             }
         }
@@ -967,7 +972,7 @@ class AppState: ObservableObject {
             try await watcher.startWatching(node: node)
             return watcher
         } catch {
-            print("📱 [AppState] Browse-URL watcher failed to start: \(error)")
+            logger.log("Browse-URL watcher failed to start: \(error)")
             return nil
         }
     }
@@ -1032,6 +1037,17 @@ private struct SimpleLogger: LogSink {
 
     func log(_ message: String) {
         print("[LocalAPI] \(message)")
+    }
+}
+
+/// AppState's own log channel. Mirrors the per-file TSLogger pattern
+/// used by the screen-share + tsnet wrappers so every `[AppState]` line
+/// flows through a single sink we can later redirect or filter.
+private struct AppLogger: LogSink {
+    var logFileHandle: Int32? = nil
+
+    func log(_ message: String) {
+        print("[AppState] \(message)")
     }
 }
 

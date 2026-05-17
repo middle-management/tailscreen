@@ -1,5 +1,6 @@
 import AppKit
 import Carbon.HIToolbox
+import TailscaleKit
 
 /// Process-wide hotkey via Carbon `RegisterEventHotKey`. SwiftUI's
 /// `.keyboardShortcut` only fires while the app's window is key, and
@@ -42,7 +43,7 @@ final class GlobalHotkey: @unchecked Sendable {
             &ref
         )
         guard regStatus == noErr, let ref else {
-            print("GlobalHotkey: RegisterEventHotKey failed (OSStatus=\(regStatus))")
+            TSLogger().log("GlobalHotkey: RegisterEventHotKey failed (OSStatus=\(regStatus))")
             return
         }
         self.hotKeyRef = ref
@@ -90,4 +91,14 @@ extension UInt32 {
     /// Avoids ⌘ collisions with system-wide bindings (Cmd+M minimizes
     /// the front window).
     static let controlOptionMask = UInt32(controlKey | optionKey)
+}
+
+// MARK: - Logger
+
+private struct TSLogger: LogSink {
+    var logFileHandle: Int32? = nil
+
+    func log(_ message: String) {
+        print("[Hotkey] \(message)")
+    }
 }

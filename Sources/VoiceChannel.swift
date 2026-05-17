@@ -1,4 +1,5 @@
 import Foundation
+import TailscaleKit
 
 /// Process-side voice pipeline: PCM in → AAC enc → RTP out, and RTP in →
 /// AAC dec (per SSRC) → mixed PCM out. Hardware capture/playback glue is
@@ -40,6 +41,7 @@ final class VoiceChannel: @unchecked Sendable {
     private let depacketizer = AudioRTPDepacketizer()
     private var decoders: [UInt32: AACDecoder] = [:]
     private var brokenSSRCs: Set<UInt32> = []
+    private let logger = TSLogger()
 
     init(localSSRC: UInt32, onSend: @escaping (Data) -> Void) throws {
         self.localSSRC = localSSRC
@@ -58,7 +60,7 @@ final class VoiceChannel: @unchecked Sendable {
                 let packet = self.packetizer.packetize(au: au)
                 self.onSend(packet)
             } catch {
-                print("VoiceChannel: encode failed: \(error)")
+                self.logger.log("VoiceChannel: encode failed: \(error)")
             }
         }
     }
@@ -88,11 +90,11 @@ final class VoiceChannel: @unchecked Sendable {
                     // Decoder init failed for this SSRC — blacklist so we
                     // don't spam stderr at 50 Hz.
                     self.brokenSSRCs.insert(parsed.ssrc)
-                    print("VoiceChannel: decoder init failed for ssrc=\(parsed.ssrc): \(error). Dropping further packets from this SSRC.")
+                    self.logger.log("VoiceChannel: decoder init failed for ssrc=\(parsed.ssrc): \(error). Dropping further packets from this SSRC.")
                 } else {
                     // Decode (not init) failed — log once per packet but
                     // keep the decoder; transient corruption is normal.
-                    print("VoiceChannel: decode failed for ssrc=\(parsed.ssrc): \(error)")
+                    self.logger.log("VoiceChannel: decode failed for ssrc=\(parsed.ssrc): \(error)")
                 }
             }
         }
@@ -145,6 +147,7 @@ private final class TapBuffer: @unchecked Sendable {
     private let targetFormat: AVAudioFormat
     private var sourceSampleRate: Double = 0
     private var lastSourceFormat: AVAudioFormat?
+    private let logger = TSLogger()
 
     var usesConverter: Bool { converter != nil }
 
@@ -186,7 +189,7 @@ private final class TapBuffer: @unchecked Sendable {
         if sourceFormat.sampleRate == 48_000
             && sourceFormat.commonFormat == .pcmFormatFloat32 {
             converter = nil
-            print("MicCapture: tap delivering \(sourceFormat) — using channel 0, no resample needed.")
+            logger.log("MicCapture: tap delivering \(sourceFormat) — using channel 0, no resample needed.")
             return true
         }
         guard let monoSource = AVAudioFormat(
@@ -197,12 +200,12 @@ private final class TapBuffer: @unchecked Sendable {
         ),
               let conv = AVAudioConverter(from: monoSource, to: targetFormat)
         else {
-            print("MicCapture: AVAudioConverter init failed for \(sourceFormat.sampleRate) → 48 kHz mono")
+            logger.log("MicCapture: AVAudioConverter init failed for \(sourceFormat.sampleRate) → 48 kHz mono")
             converter = nil
             return false
         }
         converter = conv
-        print("MicCapture: tap delivering \(sourceFormat) — picking channel 0, resampling \(sourceFormat.sampleRate) → 48 kHz.")
+        logger.log("MicCapture: tap delivering \(sourceFormat) — picking channel 0, resampling \(sourceFormat.sampleRate) → 48 kHz.")
         return true
     }
 
@@ -271,7 +274,7 @@ private final class TapBuffer: @unchecked Sendable {
         }
         let status = converter.convert(to: outBuf, error: &error, withInputFrom: inputBlock)
         if status == .error {
-            print("MicCapture: AVAudioConverter convert failed: \(error?.localizedDescription ?? "unknown")")
+            logger.log("MicCapture: AVAudioConverter convert failed: \(error?.localizedDescription ?? "unknown")")
             return
         }
         guard let cd = outBuf.floatChannelData?[0] else { return }
@@ -332,6 +335,8 @@ final class MicCapture {
     private var inputDeviceID: AudioDeviceID?
     private var outputDeviceID: AudioDeviceID?
 
+    private let logger = TSLogger()
+
     /// Apply a new input device. If capture is currently running, we
     /// tear it down and restart so the new device takes effect (the
     /// underlying I/O unit only honors the device override at start
@@ -355,7 +360,7 @@ final class MicCapture {
         do {
             try engine.start()
         } catch {
-            print("MicCapture: failed to restart engine after output device change: \(error)")
+            logger.log("MicCapture: failed to restart engine after output device change: \(error)")
         }
     }
 
@@ -369,7 +374,7 @@ final class MicCapture {
         if let unit = engine.inputNode.audioUnit {
             let status = AudioDevices.bind(deviceID: id, to: unit)
             if status != noErr {
-                print("MicCapture: failed to bind input device \(id): OSStatus=\(status)")
+                logger.log("MicCapture: failed to bind input device \(id): OSStatus=\(status)")
             }
         }
     }
@@ -379,7 +384,7 @@ final class MicCapture {
         if let unit = engine.outputNode.audioUnit {
             let status = AudioDevices.bind(deviceID: id, to: unit)
             if status != noErr {
-                print("MicCapture: failed to bind output device \(id): OSStatus=\(status)")
+                logger.log("MicCapture: failed to bind output device \(id): OSStatus=\(status)")
             }
         }
     }
@@ -434,7 +439,7 @@ final class MicCapture {
         // are queued, so the player has runway and doesn't underrun
         // on the first arrival hiccup.
         isPlaying = true
-        print("MicCapture: playback engine started (output-only, no mic, awaiting jitter buffer).")
+        logger.log("MicCapture: playback engine started (output-only, no mic, awaiting jitter buffer).")
     }
 
     /// Enable microphone capture. Requests permission, restarts the engine
@@ -452,7 +457,7 @@ final class MicCapture {
         if Self.isTestToneEnabled {
             startTestTone()
             isCapturing = true
-            print("MicCapture: capture started in TEST-TONE mode (440 Hz sine, no mic).")
+            logger.log("MicCapture: capture started in TEST-TONE mode (440 Hz sine, no mic).")
             return
         }
 
@@ -475,10 +480,10 @@ final class MicCapture {
             // hardware format AVAudioEngine picks (e.g. 5ch 44.1kHz from
             // an aggregate device), AEC is off, and the resulting tap
             // often fires once before the engine renegotiates.
-            print("MicCapture: VPIO not engaged: \(error). Continuing without AEC.")
+            logger.log("MicCapture: VPIO not engaged: \(error). Continuing without AEC.")
         }
 
-        print("MicCapture: default input device = \(Self.defaultInputDeviceName() ?? "<unknown>")")
+        logger.log("MicCapture: default input device = \(Self.defaultInputDeviceName() ?? "<unknown>")")
 
         guard let buffer = TapBuffer(channel: channel) else {
             throw NSError(
@@ -512,7 +517,7 @@ final class MicCapture {
         applyOutputDevice()
         try engine.start()
         for player in playerNodes { player.play() }
-        print("MicCapture: capture started (engineRunning=\(engine.isRunning)).")
+        logger.log("MicCapture: capture started (engineRunning=\(engine.isRunning)).")
 
         isCapturing = true
     }
@@ -525,13 +530,13 @@ final class MicCapture {
             t.cancel()
             testToneTimer = nil
             isCapturing = false
-            print("MicCapture: test-tone capture disabled.")
+            logger.log("MicCapture: test-tone capture disabled.")
             return
         }
         engine.inputNode.removeTap(onBus: 0)
         tapBuffer = nil
         isCapturing = false
-        print("MicCapture: capture disabled.")
+        logger.log("MicCapture: capture disabled.")
     }
 
     func stop() {
@@ -561,7 +566,7 @@ final class MicCapture {
         guard isCapturing else { return }
         engine.inputNode.removeTap(onBus: 0)
         guard let buffer = TapBuffer(channel: channel) else {
-            print("MicCapture: configuration change — TapBuffer alloc failed; capture stalled.")
+            logger.log("MicCapture: configuration change — TapBuffer alloc failed; capture stalled.")
             return
         }
         self.tapBuffer = buffer
@@ -571,11 +576,11 @@ final class MicCapture {
                 try engine.start()
                 for player in playerNodes { player.play() }
             } catch {
-                print("MicCapture: configuration change — engine restart failed: \(error)")
+                logger.log("MicCapture: configuration change — engine restart failed: \(error)")
                 return
             }
         }
-        print("MicCapture: tap reinstalled after configuration change.")
+        logger.log("MicCapture: tap reinstalled after configuration change.")
     }
 
     /// Mutable state for the test-tone timer. Lives outside
@@ -740,5 +745,15 @@ final class MicCapture {
                 cont.resume(returning: granted)
             }
         }
+    }
+}
+
+// MARK: - Logger
+
+private struct TSLogger: LogSink {
+    var logFileHandle: Int32? = nil
+
+    func log(_ message: String) {
+        print("[Voice] \(message)")
     }
 }
