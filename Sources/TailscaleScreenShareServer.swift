@@ -140,6 +140,14 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// to pick H.264 vs HEVC RTP payload type.
     private var helperCodec: VideoCodec?
 
+    /// Stateful per-codec packetizers. Held across `broadcast()` calls so
+    /// each call can recycle the previous batch's buffer storage instead
+    /// of allocating a fresh `Data` per packet. See `RTPPacketBufferPool`
+    /// for the COW-based safety argument. Cheap when unused (no codec yet
+    /// settled): each holds an empty pool array.
+    private let h264Packetizer = H264Packetizer()
+    private let h265Packetizer = H265Packetizer()
+
     /// Sliding-window restart counter for helper-process crashes.
     /// Each unexpected exit pushes its timestamp; we tolerate up to
     /// 3 exits within a 30 s window, after which we give up and
@@ -825,11 +833,11 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         let templates: [Data]
         switch codec {
         case .h264:
-            templates = H264Packetizer.packetize(
+            templates = h264Packetizer.packetize(
                 nals: nals, timestamp: rtpTs, ssrc: 0, startSequence: 0
             )
         case .hevc:
-            templates = H265Packetizer.packetize(
+            templates = h265Packetizer.packetize(
                 nals: nals, timestamp: rtpTs, ssrc: 0, startSequence: 0
             )
         }
