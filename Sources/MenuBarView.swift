@@ -7,16 +7,16 @@ struct MenuBarView: View {
     @State private var viewID = UUID()
 
     var body: some View {
+        // Errors surface via `AppState.presentError` driving an
+        // `NSAlert` directly — a SwiftUI `.alert` here lives inside the
+        // `MenuBarExtra(.window)` popover, which dismisses on any click
+        // outside its bounds, including the alert's own buttons, before
+        // the handler can run.
         mainView
-        .alert(appState.alertTitle, isPresented: $appState.showAlert) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(appState.alertMessage)
-        }
-        .id(viewID)
-        .onAppear {
-            viewID = UUID()
-        }
+            .id(viewID)
+            .onAppear {
+                viewID = UUID()
+            }
     }
 
     @ViewBuilder
@@ -547,13 +547,6 @@ private struct DisplayPickerSection: View {
                         Text("Grant Permission").frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    Button {
-                        ScreenCapture.openScreenRecordingSettings()
-                    } label: {
-                        Text("Open System Settings").frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
                     .controlSize(.small)
                 }
                 .padding(.horizontal, 14)
