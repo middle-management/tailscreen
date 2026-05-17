@@ -42,8 +42,58 @@ jobs:
       - name: Build
         run: make build
 
-      - name: Run tests
-        run: make test
+      - name: Run tests (with coverage)
+        # `--enable-code-coverage` writes an LLVM profdata bundle under
+        # .build/<config>/codecov/. The subsequent step turns that into a
+        # human-readable summary and uploads the raw profdata as an artifact.
+        run: |
+          PKG_CONFIG_PATH="$(pwd)/TailscaleKitPackage" \
+            swift test --enable-code-coverage
+
+      - name: Coverage summary
+        # Surface a percentage in the job log + the workflow run summary.
+        # Uses `xcrun llvm-cov` which ships with Xcode — no third-party
+        # service or secrets needed. Best-effort: if the profdata bundle
+        # or binary path can't be located the step warns but doesn't fail
+        # the build.
+        if: always()
+        run: |
+          set -u
+          BUILD_BIN_PATH="$(swift build --show-bin-path 2>/dev/null || echo)"
+          PROFDATA="${BUILD_BIN_PATH}/codecov/default.profdata"
+          XCTEST_BUNDLE="$(find "${BUILD_BIN_PATH}" -name '*.xctest' -maxdepth 2 | head -n1 || true)"
+          if [ -z "${XCTEST_BUNDLE}" ] || [ ! -f "${PROFDATA}" ]; then
+            echo "::warning::could not locate coverage data (profdata=${PROFDATA}, xctest=${XCTEST_BUNDLE})"
+            exit 0
+          fi
+          # On macOS the xctest bundle's binary lives at Contents/MacOS/<name>.
+          XCTEST_BIN="${XCTEST_BUNDLE}/Contents/MacOS/$(basename "${XCTEST_BUNDLE}" .xctest)"
+          if [ ! -x "${XCTEST_BIN}" ]; then
+            XCTEST_BIN="$(find "${XCTEST_BUNDLE}" -type f -perm -u+x | head -n1)"
+          fi
+          # Exclude .build (SwiftPM checkouts) and Tests/ from the totals.
+          REPORT="$(xcrun llvm-cov report \
+            -instr-profile="${PROFDATA}" \
+            -ignore-filename-regex='\.build/|Tests/' \
+            "${XCTEST_BIN}" 2>&1 || true)"
+          echo "${REPORT}"
+          {
+            echo "## Code coverage"
+            echo ""
+            echo '```'
+            echo "${REPORT}" | tail -n 20
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-profdata
+          path: |
+            .build/**/codecov/default.profdata
+          if-no-files-found: warn
+          retention-days: 14
 
   lint:
     runs-on: macos-latest
