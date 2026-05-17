@@ -200,6 +200,26 @@ class AppState: ObservableObject {
             }
         )
 
+        // Display hot-plug. NSApplication posts this whenever a
+        // display is attached, detached, rearranged, or its resolution
+        // changes. Re-enumerate `availableDisplays` so the picker
+        // stays accurate without the user having to re-open the
+        // menubar popover. Window-targeted capture is intentionally
+        // deferred — CLAUDE.md is explicit that the main process must
+        // never call `SCShareableContent`, and the window list lives
+        // behind that API.
+        notificationObservers.append(
+            NotificationCenter.default.addObserver(
+                forName: NSApplication.didChangeScreenParametersNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    await self?.refreshDisplays()
+                }
+            }
+        )
+
         // ⌃⌥M from anywhere — toggle mic without finding the menubar
         // popover or clicking through. Useful during a screen share
         // when the popover isn't visible.
