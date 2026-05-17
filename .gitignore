@@ -17,3 +17,6 @@ Tailscreen
 
 # Intermediate iconset from `make icon`; only the final .icns is committed.
 Resources/*.iconset/
+
+# Claude Code harness scratch (agent worktrees, etc.)
+.claude/
