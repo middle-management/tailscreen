@@ -533,16 +533,27 @@ private struct DisplayPickerSection: View {
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     Button {
+                        // Drive the TCC prompt via the CoreGraphics
+                        // surface (CGRequestScreenCaptureAccess) so the
+                        // main process never has to touch
+                        // SCShareableContent. If the user has previously
+                        // denied access, this no-ops and the AppState
+                        // shim surfaces the System Settings deep-link.
                         Task {
-                            await appState.startSharing(displayID: nil)
-                            // Re-probe once the user has interacted with the
-                            // OS prompt — populates the picker for next open.
+                            await appState.requestPermission()
                             await appState.refreshDisplays()
                         }
                     } label: {
-                        Text("Share my screen").frame(maxWidth: .infinity)
+                        Text("Grant Permission").frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    Button {
+                        ScreenCapture.openScreenRecordingSettings()
+                    } label: {
+                        Text("Open System Settings").frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
                     .controlSize(.small)
                 }
                 .padding(.horizontal, 14)

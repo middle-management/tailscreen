@@ -262,6 +262,22 @@ class AppState: ObservableObject {
     }
 
     func startSharing(displayID: CGDirectDisplayID? = nil) async {
+        // Proactive permission gate. Before we spawn the helper
+        // subprocess (which is where SCStream errors land on a
+        // permission denial), surface the issue here with actionable
+        // guidance. Without this, the first-run flow used to fail
+        // mid-bring-up and surface a generic SCStream error after the
+        // user had already waited through the cool-down + watchdog.
+        // `requestPermissionNonInvasive` triggers the TCC prompt on
+        // first call, then returns the current grant state.
+        if !ScreenCapture.hasPermission() {
+            let granted = ScreenCapture.requestPermissionNonInvasive()
+            if !granted {
+                presentScreenRecordingDenied()
+                return
+            }
+        }
+
         sharingState = .starting
         // Cleanup contract: any path out of this function (success,
         // failure, cancellation) leaves `sharingState` consistent.
@@ -836,15 +852,28 @@ class AppState: ObservableObject {
         isDiscovering = false
     }
 
+    /// Trigger the macOS Screen Recording TCC prompt (or surface a
+    /// "go to System Settings" guidance alert if the user has already
+    /// denied access). Uses `CGRequestScreenCaptureAccess` so the main
+    /// process never has to touch `SCShareableContent` — see the
+    /// CLAUDE.md warning. Safe to call on every "Share my screen"
+    /// click; after the first grant it's a no-op.
     func requestPermission() async {
-        do {
-            try await ScreenCapture.requestPermission()
-        } catch {
-            showAlertMessage(
-                title: "Permission Error",
-                message:
-                    "Failed to request screen recording permission: \(error.localizedDescription)")
+        let granted = ScreenCapture.requestPermissionNonInvasive()
+        if !granted {
+            presentScreenRecordingDenied()
         }
+    }
+
+    /// Surface a clear guidance alert when Screen Recording permission
+    /// is denied. The alert includes a button that deep-links into
+    /// System Settings → Privacy & Security → Screen Recording so the
+    /// user can flip the toggle without hunting through panes.
+    func presentScreenRecordingDenied() {
+        showAlertMessage(
+            title: "Screen Recording Permission Required",
+            message: "Tailscreen needs Screen Recording permission to share your display. Open System Settings → Privacy & Security → Screen Recording, enable Tailscreen, then try again."
+        )
     }
 
     /// Initialize Tailscale and trigger login flow
