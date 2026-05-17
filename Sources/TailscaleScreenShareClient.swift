@@ -129,6 +129,11 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     ) async throws {
         guard !isConnected else { return }
 
+        // Fresh session — drop counters from the previous connection so
+        // the stats overlay doesn't inherit a stale drop-rate or codec
+        // label across reconnects.
+        renderer.resetStats()
+
         let node: TailscaleNode
         if let existing = existingNode {
             node = existing
@@ -286,6 +291,24 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                    header.payloadType == RTPHeader.aacPayloadType {
                     onAudioReceived?(datagram)
                     continue
+                }
+
+                // Video RTP: bookkeeping for the stats overlay. Account for
+                // every video byte off the wire (header + payload) so the
+                // overlay's bitrate readout reflects actual link load, not
+                // just decoded payload, and report the codec the first time
+                // we see one of the video payload types.
+                if let (videoHeader, _) = RTPHeader.decode(from: datagram) {
+                    switch videoHeader.payloadType {
+                    case RTPHeader.h264PayloadType:
+                        renderer.noteReceivedBytes(datagram.count)
+                        renderer.noteCodec(.h264)
+                    case RTPHeader.hevcPayloadType:
+                        renderer.noteReceivedBytes(datagram.count)
+                        renderer.noteCodec(.hevc)
+                    default:
+                        break
+                    }
                 }
 
                 if let au = depacketizer.ingest(datagram) {
