@@ -8,7 +8,22 @@ import os
 class ScreenCapture: NSObject, @unchecked Sendable {
     private var stream: SCStream?
     private var streamOutput: StreamOutput?
+    /// Live SCStreamConfiguration so `updateConfiguration` can preserve
+    /// frame-interval / pixel-format / queueDepth across resize-driven
+    /// updates and only change width / height.
+    private var streamConfig: SCStreamConfiguration?
+    /// `pointPixelScale` from the original filter — kept so callers
+    /// observing point-sized contentRect changes can multiply through to
+    /// pixel dims without re-querying the filter.
+    private(set) var pointPixelScale: Float = 1
     var onFrameCaptured: ((CVPixelBuffer) -> Void)?
+    /// Fires whenever `SCStreamFrameInfo.contentRect` changes by ≥0.5 pt
+    /// between consecutive frames. Source rect is in points (within the
+    /// configured pixel buffer); multiply by `pointPixelScale` to get
+    /// the captured-content size in pixels. Use this to drive
+    /// `updateConfiguration` so the encoder buffer follows window
+    /// resizes instead of staying pinned at the start-time dims.
+    var onContentRectChanged: ((CGRect) -> Void)?
     /// Fires when the SCStream terminates on its own — e.g. user clicked the
     /// menubar "Stop Screen Recording" item, or the stream hit an error.
     var onStreamStopped: ((Error?) -> Void)?
@@ -163,6 +178,7 @@ class ScreenCapture: NSObject, @unchecked Sendable {
         // the encoder's expectations across display/window/app modes.
         let rect = filter.contentRect
         let scale = filter.pointPixelScale
+        self.pointPixelScale = scale
         let pxWidth = max(2, Int((rect.width * CGFloat(scale)).rounded()))
         let pxHeight = max(2, Int((rect.height * CGFloat(scale)).rounded()))
         try await startStream(
@@ -171,6 +187,42 @@ class ScreenCapture: NSObject, @unchecked Sendable {
             pixelHeight: pxHeight,
             sourceTag: "filter rect=\(Int(rect.width))x\(Int(rect.height))pt scale=\(scale)"
         )
+    }
+
+    /// Push new output buffer dimensions to the running SCStream so the
+    /// captured content fills the buffer instead of leaving black margins
+    /// when the shared window resizes. Preserves every other property of
+    /// the live configuration (frame interval, pixel format, queueDepth).
+    /// Sized in pixels — callers multiply contentRect's point dims by
+    /// `pointPixelScale` before passing in.
+    ///
+    /// Apple's `updateConfiguration` is documented since macOS 12.3 and
+    /// is the supported path for "follow the shared window as it grows
+    /// or shrinks"; tearing the SCStream down + restarting would force a
+    /// replayd cool-down + a fresh permission/bundle slot dance.
+    func updateConfiguration(pixelWidth: Int, pixelHeight: Int) async {
+        guard let stream, let baseConfig = streamConfig else {
+            logEvent(
+                "updateConfiguration.skip",
+                extra: "stream=nil-or-no-baseConfig px=\(pixelWidth)x\(pixelHeight)")
+            return
+        }
+        let w = max(2, pixelWidth)
+        let h = max(2, pixelHeight)
+        if baseConfig.width == w && baseConfig.height == h {
+            // Nothing to do — already at the requested size.
+            return
+        }
+        let prev = "\(baseConfig.width)x\(baseConfig.height)"
+        baseConfig.width = w
+        baseConfig.height = h
+        logEvent("updateConfiguration.apply", extra: "px=\(prev) -> \(w)x\(h)")
+        do {
+            try await stream.updateConfiguration(baseConfig)
+            logEvent("updateConfiguration.ok", extra: "px=\(w)x\(h)")
+        } catch {
+            logEvent("updateConfiguration.fail", extra: "err=\(error) px=\(w)x\(h)")
+        }
     }
 
     /// Shared SCStream bring-up. `filter` is passed in from
@@ -195,6 +247,7 @@ class ScreenCapture: NSObject, @unchecked Sendable {
         config.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
         config.showsCursor = true
         config.queueDepth = 5
+        self.streamConfig = config
         logEvent(
             "start.config",
             extra:
@@ -216,6 +269,9 @@ class ScreenCapture: NSObject, @unchecked Sendable {
         streamOutput?.onFrameCaptured = { [weak self] pixelBuffer in
             firstFrameSignal.withLock { $0 = true }
             self?.onFrameCaptured?(pixelBuffer)
+        }
+        streamOutput?.onContentRectChanged = { [weak self] rect in
+            self?.onContentRectChanged?(rect)
         }
 
         if let stream = stream, let output = streamOutput {
@@ -354,6 +410,7 @@ class ScreenCapture: NSObject, @unchecked Sendable {
         }
         stream = nil
         streamOutput = nil
+        streamConfig = nil
         Self.lastStopAtNs.withLock { $0 = DispatchTime.now().uptimeNanoseconds }
         logEvent("stop.end")
     }
@@ -439,9 +496,20 @@ extension ScreenCapture: SCStreamDelegate {
 
 private class StreamOutput: NSObject, SCStreamOutput {
     var onFrameCaptured: ((CVPixelBuffer) -> Void)?
+    /// Forward up to ScreenCapture so its owner can react to window
+    /// resizes (debounce + `updateConfiguration` to push new buffer
+    /// dims through the stream). Fires on the same edge as the
+    /// `contentRect` log line below.
+    var onContentRectChanged: ((CGRect) -> Void)?
     var sessionID: String = "????"
     private var deliveredCount: Int = 0
     private var droppedCount: Int = 0
+    /// Last logged SCStreamFrameInfo.contentRect for change detection.
+    /// SCStream's buffer dims are pinned at start but the source rect
+    /// inside the buffer updates as the shared window resizes — logging
+    /// changes here tells us whether SCStream is following the window
+    /// without needing `stream.updateConfiguration`.
+    private var lastContentRect: CGRect = .zero
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         // Decode SCStreamFrameInfo.status from the sample buffer's
@@ -468,7 +536,52 @@ private class StreamOutput: NSObject, SCStreamOutput {
         if deliveredCount == 1 || deliveredCount % 120 == 0 {
             print("StreamOutput[\(sessionID)] delivered #\(deliveredCount) status=\(status)")
         }
+
+        // Log the per-frame contentRect when it changes — this is the
+        // source rect within the configured buffer. If it changes while
+        // CVPixelBufferGetWidth/Height stay constant, SCStream is
+        // following the window but the buffer dims are pinned; we'd need
+        // `stream.updateConfiguration` to track the resize end-to-end.
+        let contentRect = Self.contentRect(from: sampleBuffer)
+        if let r = contentRect, !Self.cgRectsClose(r, lastContentRect) {
+            let bufW = CVPixelBufferGetWidth(pixelBuffer)
+            let bufH = CVPixelBufferGetHeight(pixelBuffer)
+            print(
+                String(
+                    format:
+                        "StreamOutput[%@] contentRect %.0fx%.0f@(%.0f,%.0f) buf=%dx%d frame#%d",
+                    sessionID, r.width, r.height, r.origin.x, r.origin.y, bufW, bufH, deliveredCount)
+            )
+            lastContentRect = r
+            onContentRectChanged?(r)
+        }
         onFrameCaptured?(pixelBuffer)
+    }
+
+    /// Returns true when two rects match within 0.5 pt on every edge —
+    /// floats from `CGRect(dictionaryRepresentation:)` jitter slightly
+    /// between identical frames.
+    private static func cgRectsClose(_ a: CGRect, _ b: CGRect) -> Bool {
+        let eps: CGFloat = 0.5
+        return abs(a.origin.x - b.origin.x) < eps
+            && abs(a.origin.y - b.origin.y) < eps
+            && abs(a.width - b.width) < eps
+            && abs(a.height - b.height) < eps
+    }
+
+    /// Pull `SCStreamFrameInfo.contentRect` out of the sample buffer's
+    /// attachments. SCStream encodes this as a CFDictionary describing
+    /// the source rect (within the configured output buffer) of the
+    /// actual captured content for this frame.
+    private static func contentRect(from sb: CMSampleBuffer) -> CGRect? {
+        guard
+            let attachments = CMSampleBufferGetSampleAttachmentsArray(sb, createIfNecessary: false)
+                as? [[CFString: Any]],
+            let attachment = attachments.first,
+            let dict = attachment[SCStreamFrameInfo.contentRect as CFString]
+                as? [String: Any]
+        else { return nil }
+        return CGRect(dictionaryRepresentation: dict as CFDictionary)
     }
 
     /// Pull `SCStreamFrameInfo.status` out of the sample buffer's

@@ -81,6 +81,13 @@ class AppState: ObservableObject {
     private var node: TailscaleNode?
     private var tailscaleIPs: [String] = []
     private var sharerOverlay: SharerOverlayWindow?
+    /// Decoded picker selection backing the current share. Captured in
+    /// `startSharing(filterData:)` and consumed by `ensureSharerOverlay`
+    /// so the overlay panel can scope itself to the shared window/app
+    /// (rather than always covering the full display, which scaled
+    /// viewer-drawn annotations into the wrong space when the user
+    /// picked one window / one app in the native picker).
+    private var currentSelection: PickerSelection?
 
     // Persistent viewer window + renderer. Owned for the process lifetime so
     // disconnect never closes/releases an NSWindow + CAMetalLayer chain (the
@@ -151,6 +158,18 @@ class AppState: ObservableObject {
     // this, both with exclusive access to the instance.
     nonisolated(unsafe) private var notificationObservers: [NSObjectProtocol] = []
 
+    /// True once the user has manually resized the viewer window
+    /// (windowDidResize fired while `suppressViewerResizeTracking` was
+    /// false). When set, auto-snap on incoming video-size changes is
+    /// skipped so the sharer's live resize drag doesn't tug the window
+    /// out from under the user. Reset on disconnect and on any
+    /// `setViewerZoom` call.
+    private var userResizedViewer: Bool = false
+    /// Set around programmatic `setContentSize` calls so the synchronous
+    /// `windowDidResize` callback they trigger doesn't get mistaken for
+    /// a user resize.
+    private var suppressViewerResizeTracking: Bool = false
+
     init() {
         // Observe changes in tailscaleAuth and propagate them
         tailscaleAuth.objectWillChange.sink { [weak self] _ in
@@ -206,6 +225,21 @@ class AppState: ObservableObject {
             ) { [weak self] _ in
                 Task { @MainActor [weak self] in
                     await self?.toggleMic()
+                }
+            }
+        )
+
+        // View → Actual Size / 50% / 200% — explicit reset for users who
+        // dragged the window to a custom size and want to snap back.
+        notificationObservers.append(
+            NotificationCenter.default.addObserver(
+                forName: .tailscreenViewerSetZoom,
+                object: nil,
+                queue: .main
+            ) { [weak self] note in
+                let factor = (note.userInfo?["factor"] as? Double) ?? 1.0
+                Task { @MainActor [weak self] in
+                    self?.setViewerZoom(CGFloat(factor))
                 }
             }
         )
@@ -360,6 +394,12 @@ class AppState: ObservableObject {
             )
             return
         }
+        // Decode the picker selection so the sharer overlay (built lazily
+        // when the first annotation arrives or "Draw on Screen" is toggled)
+        // can scope its panel to the shared window/app instead of the
+        // whole display. A decode failure isn't fatal — we just fall
+        // back to the legacy full-display overlay.
+        currentSelection = try? JSONDecoder().decode(PickerSelection.self, from: filterData)
         sharingState = .starting
         // Cleanup contract: any path out of this function (success,
         // failure, cancellation) leaves `sharingState` consistent.
@@ -430,11 +470,13 @@ class AppState: ObservableObject {
                 }
 
                 // Viewer-originated annotations land directly on the sharer's
-                // overlay panel. ScreenCaptureKit captures the panel (the
-                // helper's `SCContentFilter` excludes nothing — see
-                // `ScreenCapture.start`), so the drawings flow out to every
-                // viewer via the H.264 stream — no sharer→viewer broadcast
-                // needed.
+                // overlay panel. In display mode SCStream captures the panel
+                // along with the rest of the display, so the drawings flow
+                // out to every other viewer via the H.264 stream for free.
+                // In window / application modes the panel sits above (not
+                // inside) the captured surface, so for now those modes only
+                // mirror viewer strokes back to the sharer — a server-side
+                // annotation fan-out is needed to reach other viewers.
                 srv.onAnnotationReceived = { [weak self] op in
                     Task { @MainActor [weak self] in
                         self?.ensureSharerOverlay().apply(remoteOp: op)
@@ -550,6 +592,7 @@ class AppState: ObservableObject {
         sharerOverlay?.hide()
         sharerOverlay = nil
         isSharerOverlayVisible = false
+        currentSelection = nil
 
         sharingState = .idle
         shareLock.release()
@@ -572,19 +615,50 @@ class AppState: ObservableObject {
     }
 
     /// Create the sharer overlay lazily so it's always present when needed —
-    /// either the sharer toggles input on, or a viewer sends us an op. The
-    /// panel needs to be on-screen for ScreenCaptureKit to pick up its
-    /// annotations and carry them into the video for every viewer.
+    /// either the sharer toggles input on, or a viewer sends us an op.
+    /// In display mode the panel needs to be on-screen so ScreenCaptureKit
+    /// picks up its annotations and carries them into the video for every
+    /// viewer. In window / application modes the panel renders viewer ops
+    /// locally for the sharer; reaching other viewers will need a separate
+    /// server-side annotation fan-out.
     @discardableResult
     private func ensureSharerOverlay() -> SharerOverlayWindow {
         if let overlay = sharerOverlay { return overlay }
-        let overlay = SharerOverlayWindow()
-        // Sharer's own strokes don't need to be transmitted; they appear in
-        // the video stream automatically.
-        overlay.onOp = { _ in }
+        let overlay = SharerOverlayWindow(mode: Self.overlayMode(for: currentSelection))
+        // Broadcast sharer-painted strokes through the server so every
+        // connected viewer applies them on their own canvas. In display
+        // mode the strokes also still flow through SCStream's capture of
+        // the overlay panel (the panel sits inside the captured display
+        // region) — that's redundant, not wrong, and lets a viewer who
+        // joins mid-stroke render an in-progress one from video bytes
+        // alone if their annotation back-channel is down.
+        overlay.onOp = { [weak self] op in
+            Task { [weak self] in
+                await self?.server?.broadcastAnnotation(op)
+            }
+        }
         overlay.show()
         sharerOverlay = overlay
         return overlay
+    }
+
+    /// Project a `PickerSelection` onto the overlay mode that matches it.
+    /// Nil / empty selections (legacy entry points, decode failures) fall
+    /// back to the full-display overlay so the feature degrades gracefully
+    /// rather than refusing to render annotations.
+    private static func overlayMode(for selection: PickerSelection?) -> SharerOverlayWindow.Mode {
+        guard let selection else { return .display(nil) }
+        switch selection.kind {
+        case .display:
+            return .display(selection.displayID)
+        case .window:
+            if let id = selection.windowID {
+                return .window(id)
+            }
+            return .display(nil)
+        case .application:
+            return .application(displayID: selection.displayID)
+        }
     }
 
     /// True when the SCStream stopped because the user clicked the
@@ -672,6 +746,17 @@ class AppState: ObservableObject {
         do {
             let c = TailscaleScreenShareClient(renderer: renderer)
             client = c
+
+            // Server fans out sharer-painted strokes (and other viewers'
+            // strokes) over the annotation back-channel. Apply them to the
+            // local overlay's model so window / application share modes
+            // render annotations the same way display mode used to via
+            // SCStream picking up the overlay panel.
+            c.onAnnotationReceived = { [weak self] op in
+                Task { @MainActor [weak self] in
+                    self?.viewerOverlay?.model.apply(remoteOp: op)
+                }
+            }
 
             // Install the audio callback BEFORE connecting. HELLO_ACK can
             // arrive on the receive loop the moment connect() returns (or
@@ -764,12 +849,19 @@ class AppState: ObservableObject {
         win.toolbarStyle = .unified
         self.viewerToolbar = toolbar
 
-        let delegate = ViewerWindowDelegate { [weak self] in
-            Task { @MainActor [weak self] in
-                guard let self = self, self.connectionState == .viewing else { return }
-                await self.disconnect()
-            }
-        }
+        let delegate = ViewerWindowDelegate(
+            onClose: { [weak self] in
+                Task { @MainActor [weak self] in
+                    guard let self = self, self.connectionState == .viewing else { return }
+                    await self.disconnect()
+                }
+            },
+            onUserResize: { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self = self, !self.suppressViewerResizeTracking else { return }
+                    self.userResizedViewer = true
+                }
+            })
         win.delegate = delegate
         self.viewerWindowDelegate = delegate
 
@@ -797,12 +889,25 @@ class AppState: ObservableObject {
         host.metalLayer = r.metalLayer
         host.layer?.addSublayer(r.metalLayer)
         // Mirror any video-size changes onto the host so it relays out the
-        // overlay to the new aspect rect.
-        r.onVideoSizeChanged = { [weak host] size in
+        // overlay to the new aspect rect, and (unless the user has
+        // dragged the viewer to a custom size) snap the window to the
+        // captured content's pixel dims so video renders 1:1 — no
+        // upscale blur, no black letterbox bars. The auto-snap is
+        // skipped once the user has manually resized; the View menu's
+        // Actual Size / 50% / 200% items reset that opt-out.
+        r.onVideoSizeChanged = { [weak self, weak host, weak win] size in
             host?.videoSize = size
+            guard let self, let win else { return }
+            MainActor.assumeIsolated {
+                guard !self.userResizedViewer else { return }
+                self.programmaticSnap(win, toVideoPixelSize: size)
+            }
         }
         if r.videoSize != .zero {
             host.videoSize = r.videoSize
+            if !userResizedViewer {
+                programmaticSnap(win, toVideoPixelSize: r.videoSize)
+            }
         }
 
         // Annotation overlay above the Metal layer. onOp forwards to the
@@ -870,6 +975,77 @@ class AppState: ObservableObject {
         return r
     }
 
+    /// View → Actual Size / 50% / 200%. Resets the manual-resize opt-out
+    /// (the user is explicitly asking for a fresh snap) and resizes to
+    /// `videoSize × factor` clamped to the current screen.
+    @MainActor
+    func setViewerZoom(_ factor: CGFloat) {
+        guard let win = viewerWindow, let r = viewerRenderer,
+            r.videoSize.width > 0, r.videoSize.height > 0
+        else { return }
+        userResizedViewer = false
+        let target = CGSize(
+            width: r.videoSize.width * factor,
+            height: r.videoSize.height * factor)
+        programmaticSnap(win, toVideoPixelSize: target)
+    }
+
+    /// Wraps `snapViewerWindow` with the suppress-flag dance so the
+    /// synchronous `windowDidResize` it triggers doesn't get charged to
+    /// the user-resize counter.
+    @MainActor
+    private func programmaticSnap(_ win: NSWindow, toVideoPixelSize px: CGSize) {
+        suppressViewerResizeTracking = true
+        Self.snapViewerWindow(win, toVideoPixelSize: px)
+        suppressViewerResizeTracking = false
+    }
+
+    /// Resize the viewer window so the captured video lands 1:1 on the
+    /// user's screen — eliminates upscale fuzziness on small shared
+    /// windows and removes the letterbox bars without changing aspect.
+    /// Sizes the content view to (video-pixels ÷ backingScale) plus the
+    /// toolbar/titlebar inset reported by `contentLayoutRect`, then
+    /// clamps to the current screen's `visibleFrame` so the window
+    /// never grows off-screen on a tiny display.
+    @MainActor
+    private static func snapViewerWindow(_ win: NSWindow, toVideoPixelSize px: CGSize) {
+        guard px.width > 0, px.height > 0 else { return }
+        guard let cv = win.contentView else { return }
+        let scale = win.backingScaleFactor > 0 ? win.backingScaleFactor : 2.0
+
+        // Toolbar/titlebar inset = how much taller the contentView is
+        // than its usable layout rect. Zero with no toolbar; positive
+        // with `.unified` toolbar style.
+        let usable = win.contentLayoutRect
+        let toolbarInset = max(0, cv.bounds.height - usable.height)
+
+        let desiredVideoPt = NSSize(width: px.width / scale, height: px.height / scale)
+        let desiredContent = NSSize(
+            width: desiredVideoPt.width,
+            height: desiredVideoPt.height + toolbarInset)
+
+        // Clamp to `visibleFrame` so we don't grow under the menu bar or
+        // off the right edge. Preserve aspect by picking the smaller
+        // scale factor on each axis.
+        let screen = win.screen ?? NSScreen.main
+        let visible = screen?.visibleFrame.size ?? desiredContent
+        let widthScale = min(1.0, visible.width / desiredContent.width)
+        let heightScale = min(1.0, visible.height / desiredContent.height)
+        let fit = min(widthScale, heightScale)
+        let bounded = NSSize(
+            width: max(160, desiredContent.width * fit),
+            height: max(120, desiredContent.height * fit))
+
+        // No-op when the window is already at the target size — avoids
+        // fighting the user's manual resize and dodges thrash during a
+        // sharer-side live drag where contentRect updates per frame.
+        let current = cv.bounds.size
+        if abs(current.width - bounded.width) < 1, abs(current.height - bounded.height) < 1 {
+            return
+        }
+        win.setContentSize(bounded)
+    }
+
     func connectToPeer(_ peer: TailscreenPeer) async {
         await connect(to: peer.tailscaleIP)
         if connectionState == .viewing {
@@ -888,6 +1064,9 @@ class AppState: ObservableObject {
         connectedHostname = nil
         viewerRenderer?.clearPendingBuffer()
         viewerWindow?.orderOut(nil)
+        // Next connect should snap to the new sharer's dims even if the
+        // user dragged the previous session's window to a custom size.
+        userResizedViewer = false
         // Drop back to .accessory so the Dock icon goes away when there's
         // no viewer window up. connect() will promote back to .regular.
         NSApp.setActivationPolicy(.accessory)
@@ -1269,12 +1448,20 @@ private struct AppLogger: LogSink {
 /// orderOuts the window without releasing it.
 private final class ViewerWindowDelegate: NSObject, NSWindowDelegate {
     private let onClose: () -> Void
-    init(onClose: @escaping () -> Void) {
+    /// Fired on every `windowDidResize`. AppState distinguishes user vs
+    /// programmatic resizes via a suppress flag set around its own
+    /// `setContentSize` calls — the delegate itself is dumb on purpose.
+    private let onUserResize: () -> Void
+    init(onClose: @escaping () -> Void, onUserResize: @escaping () -> Void) {
         self.onClose = onClose
+        self.onUserResize = onUserResize
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         onClose()
         return false
+    }
+    func windowDidResize(_ notification: Notification) {
+        onUserResize()
     }
 }
 
@@ -1312,23 +1499,64 @@ private final class AspectFitHostView: NSView {
         needsLayout = true
     }
 
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        // Toolbar height changes (e.g. style toggle, full-screen enter /
+        // exit) move `contentLayoutRect` without resizing the view, so
+        // bounds-driven layout misses them. Reflect the change here.
+        if let window = self.window {
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(handleContentLayoutChanged),
+                name: NSWindow.didChangeBackingPropertiesNotification,
+                object: window)
+        }
+        needsLayout = true
+    }
+
+    @objc private func handleContentLayoutChanged(_ note: Notification) {
+        needsLayout = true
+    }
+
+    /// Effective drawing area — `bounds` minus the unified-toolbar inset.
+    /// With `.unified` toolbar style, contentView spans the full window
+    /// height (the toolbar floats above it), so a bounds-based aspect-fit
+    /// would place equal letterboxes top and bottom, the top one hiding
+    /// behind the opaque toolbar and the bottom one showing as a stray
+    /// black strip. `contentLayoutRect` is the toolbar-excluded subregion
+    /// — aspect-fitting within that keeps the video centered in the area
+    /// the user actually sees.
+    private func usableRect() -> CGRect {
+        guard let window = self.window else { return bounds }
+        let rect = window.contentLayoutRect
+        return rect.isEmpty ? bounds : rect.intersection(bounds)
+    }
+
     private func aspectFitRect() -> CGRect {
-        let bounds = self.bounds
+        let usable = usableRect()
         guard videoSize.width > 0, videoSize.height > 0,
-            bounds.width > 0, bounds.height > 0
+            usable.width > 0, usable.height > 0
         else {
-            return bounds
+            return usable
         }
         let videoAspect = videoSize.width / videoSize.height
-        let viewAspect = bounds.width / bounds.height
+        let viewAspect = usable.width / usable.height
         if viewAspect > videoAspect {
             // Wider than video — letterbox left/right.
-            let w = bounds.height * videoAspect
-            return CGRect(x: (bounds.width - w) / 2, y: 0, width: w, height: bounds.height)
+            let w = usable.height * videoAspect
+            return CGRect(
+                x: usable.minX + (usable.width - w) / 2,
+                y: usable.minY,
+                width: w,
+                height: usable.height)
         } else {
             // Taller than video — letterbox top/bottom.
-            let h = bounds.width / videoAspect
-            return CGRect(x: 0, y: (bounds.height - h) / 2, width: bounds.width, height: h)
+            let h = usable.width / videoAspect
+            return CGRect(
+                x: usable.minX,
+                y: usable.minY + (usable.height - h) / 2,
+                width: usable.width,
+                height: h)
         }
     }
 }

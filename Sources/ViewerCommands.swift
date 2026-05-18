@@ -75,6 +75,34 @@ final class ViewerCommands: NSObject {
         statsModel?.isVisible.toggle()
     }
 
+    // MARK: - View
+
+    /// View → Actual Size (⌘0). Snaps the viewer window so the captured
+    /// video renders at 1:1 pixel mapping.
+    @objc func viewerZoomActualSize(_ sender: Any?) {
+        postViewerZoom(1.0)
+    }
+
+    /// View → 50% (⌘-). Half-scale view; useful for very large shares
+    /// on small viewer displays.
+    @objc func viewerZoomHalf(_ sender: Any?) {
+        postViewerZoom(0.5)
+    }
+
+    /// View → 200% (⌘+). Double-scale view for legibility on tiny
+    /// captured windows. AppState clamps the resulting frame to the
+    /// screen's `visibleFrame` so it can't grow off-screen.
+    @objc func viewerZoomDouble(_ sender: Any?) {
+        postViewerZoom(2.0)
+    }
+
+    private func postViewerZoom(_ factor: Double) {
+        NotificationCenter.default.post(
+            name: .tailscreenViewerSetZoom,
+            object: nil,
+            userInfo: ["factor": factor])
+    }
+
     /// Weakly held reference to the viewer's stats model. AppState sets
     /// this on `ensureViewer()` so the toolbar action above can flip
     /// `isVisible` without depending on AppState directly.
@@ -132,6 +160,15 @@ extension ViewerCommands: NSMenuItemValidation {
             let isVisible = shortcutsModel?.isVisible ?? false
             menuItem.state = isVisible ? .on : .off
             return shortcutsModel != nil
+        case #selector(viewerZoomActualSize(_:)),
+            #selector(viewerZoomHalf(_:)),
+            #selector(viewerZoomDouble(_:)):
+            // `setViewerZoom` already no-ops when there's no viewer
+            // window or no decoded frame yet, so leaving these enabled
+            // always is harmless — and avoids the pill-style menus on
+            // macOS 15+ rendering disabled items so faintly that users
+            // miss them entirely.
+            return true
         default:
             return true
         }
@@ -141,4 +178,5 @@ extension ViewerCommands: NSMenuItemValidation {
 extension Notification.Name {
     static let tailscreenDisconnectRequested = Notification.Name("tailscreen.disconnect.requested")
     static let tailscreenToggleMicrophone = Notification.Name("tailscreen.toggleMicrophone")
+    static let tailscreenViewerSetZoom = Notification.Name("tailscreen.viewer.setZoom")
 }

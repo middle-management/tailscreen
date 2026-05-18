@@ -31,7 +31,40 @@ enum TailscreenEntry {
             PickerHelperMain.run()
         }
         installMainProcessSignalHandlers()
+        installMainMenuObservers()
         TailscreenApp.main()
+    }
+
+    /// SwiftUI's `MenuBarExtra` scene installs its own minimal mainMenu
+    /// (Tailscreen / View / Window / Help) and re-asserts it across
+    /// scene updates — installing ours from the popover's `.task` lost
+    /// the race. Hooking the `NSApplication.didFinishLaunching` and
+    /// `didBecomeActive` notifications runs `AppMenu.install` AFTER
+    /// SwiftUI's setup, so File / Edit / View / Tools stay in the bar.
+    /// `@NSApplicationDelegateAdaptor` would have been tidier, but it
+    /// needs `@main` to be on the `App` type itself — and ours is on
+    /// `TailscreenEntry` so we can route to the picker / capture
+    /// helpers first.
+    @MainActor
+    private static func installMainMenuObservers() {
+        let nc = NotificationCenter.default
+        nc.addObserver(
+            forName: NSApplication.didFinishLaunchingNotification,
+            object: nil, queue: .main
+        ) { _ in
+            MainActor.assumeIsolated {
+                AppMenu.installIfNeeded()
+                AppMenu.reinstall()
+            }
+        }
+        nc.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil, queue: .main
+        ) { _ in
+            MainActor.assumeIsolated {
+                AppMenu.reinstall()
+            }
+        }
     }
 
     /// Trap SIGTERM (and SIGINT for direct-from-terminal launches)

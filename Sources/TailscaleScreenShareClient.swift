@@ -80,6 +80,15 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     /// `sendAnnotationOp` calls (e.g. rapid stroke segments) don't
     /// interleave framed-message bytes on the wire.
     private let annotationWriter = ConnectionWriter()
+    /// Background task draining inbound annotation ops fanned out by the
+    /// server (sharer-painted strokes, other viewers' strokes). Cancelled
+    /// in `disconnect()`.
+    private var annotationReceiveTask: Task<Void, Never>?
+
+    /// Fires for each inbound annotation op received on the back-channel.
+    /// AppState wires this to the viewer's overlay so sharer + other-viewer
+    /// strokes render alongside locally drawn ones.
+    var onAnnotationReceived: ((AnnotationOp) -> Void)?
 
     init(renderer: MetalViewerRenderer) {
         self.renderer = renderer
@@ -96,6 +105,32 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
             try await annotationWriter.send(data, over: conn)
         } catch {
             logger.log("Client: sendAnnotationOp failed: \(error)")
+        }
+    }
+
+    /// Drains framed annotation ops from the server's back-channel
+    /// fan-out (sharer-painted strokes + other viewers' strokes that the
+    /// server relays). Runs until the connection closes or `disconnect()`
+    /// cancels the task. Failures here only kill the inbound channel;
+    /// outbound `sendAnnotationOp` still works until the conn errors too.
+    private func receiveAnnotationLoop(over connection: OutgoingConnection) async {
+        var parser = ScreenShareMessageParser()
+        while !Task.isCancelled {
+            do {
+                let chunk = try await connection.receive(maximumLength: 16 * 1024, timeout: 5_000)
+                if chunk.isEmpty { return }  // EOF
+                parser.append(chunk)
+                while let message = parser.next() {
+                    if case .annotation(let op) = message {
+                        onAnnotationReceived?(op)
+                    }
+                }
+            } catch TailscaleError.readFailed {
+                if Task.isCancelled { return }
+                continue  // poll timeout — keep reading
+            } catch {
+                return
+            }
         }
     }
 
@@ -216,6 +251,9 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
             try await conn.connect()
             self.annotationChannel = conn
             logger.log("Annotation back-channel open to \(hostname):\(port)")
+            annotationReceiveTask = Task { [weak self] in
+                await self?.receiveAnnotationLoop(over: conn)
+            }
         } catch {
             logger.log("Annotation back-channel failed to open: \(error) (annotations disabled)")
         }
@@ -444,6 +482,11 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
             await conn.close()
             self.annotationChannel = nil
         }
+        if let task = annotationReceiveTask {
+            task.cancel()
+            _ = await task.value
+        }
+        annotationReceiveTask = nil
 
         if let receiveTask = receiveTask {
             receiveTask.cancel()

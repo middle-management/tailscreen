@@ -367,9 +367,12 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
         if metalLayer.drawableSize.width != CGFloat(width)
             || metalLayer.drawableSize.height != CGFloat(height)
         {
+            let oldW = Int(metalLayer.drawableSize.width)
+            let oldH = Int(metalLayer.drawableSize.height)
             metalLayer.drawableSize = CGSize(width: width, height: height)
             let newSize = CGSize(width: width, height: height)
             videoSize = newSize
+            print("MetalRenderer: videoSize \(oldW)x\(oldH) -> \(width)x\(height)")
             let cb = onVideoSizeChanged
             DispatchQueue.main.async { cb?(newSize) }
         }

@@ -222,6 +222,20 @@ private final class CaptureHelperRunner {
     /// so `CaptureHelperMain` (same file, different type) can read it.
     fileprivate var hasStarted = false
 
+    /// Pending contentRect (points) from the most recent SCStream frame
+    /// where the source rect differed from the current buffer. Coalesced
+    /// by `resizeDebounceTimer` so a 60 Hz live drag becomes one
+    /// `updateConfiguration` per ~200 ms instead of per frame — SCStream
+    /// thrashes the pipeline if you reconfigure faster than the encoder
+    /// can spin up new sessions.
+    private var pendingResizeRect: CGRect?
+    private var resizeDebounceTimer: Timer?
+    /// Quiet window after the last contentRect change before applying
+    /// the resize. 200 ms is long enough to ride out a continuous drag
+    /// without flickering the encoder; short enough that the viewer
+    /// sees the new dims promptly when the user lets go.
+    private static let resizeDebounceSeconds: TimeInterval = 0.2
+
     init(writer: HelperFrameWriter) {
         self.writer = writer
     }
@@ -242,6 +256,9 @@ private final class CaptureHelperRunner {
         hasStarted = true
         captureWrapper.onFrameCaptured = { [weak self] pixelBuffer in
             Task { @MainActor [weak self] in self?.handleFrame(pixelBuffer) }
+        }
+        captureWrapper.onContentRectChanged = { [weak self] rect in
+            Task { @MainActor [weak self] in self?.scheduleResize(to: rect) }
         }
         captureWrapper.onStreamStopped = { [weak self] error in
             Task { @MainActor [weak self] in
@@ -267,9 +284,46 @@ private final class CaptureHelperRunner {
     }
 
     func shutdown() async {
+        resizeDebounceTimer?.invalidate()
+        resizeDebounceTimer = nil
+        pendingResizeRect = nil
         encoder?.shutdown()
         encoder = nil
         await captureWrapper.stop()
+    }
+
+    /// Coalesce per-frame contentRect updates from SCStream into one
+    /// pending resize; reset the debounce timer each tick so the apply
+    /// only fires once the user stops dragging. Sized in points; the
+    /// applier multiplies by the filter's `pointPixelScale` for pixel
+    /// dims.
+    private func scheduleResize(to rect: CGRect) {
+        pendingResizeRect = rect
+        resizeDebounceTimer?.invalidate()
+        let timer = Timer.scheduledTimer(
+            withTimeInterval: Self.resizeDebounceSeconds, repeats: false
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.applyPendingResize()
+            }
+        }
+        resizeDebounceTimer = timer
+    }
+
+    private func applyPendingResize() {
+        guard let rect = pendingResizeRect else { return }
+        pendingResizeRect = nil
+        resizeDebounceTimer = nil
+        let scale = CGFloat(captureWrapper.pointPixelScale)
+        let pxWidth = max(2, Int((rect.width * scale).rounded()))
+        let pxHeight = max(2, Int((rect.height * scale).rounded()))
+        writer.writeLog(
+            "capture-helper: applying resize -> \(pxWidth)x\(pxHeight)px (rect=\(Int(rect.width))x\(Int(rect.height))pt scale=\(scale))"
+        )
+        Task { @MainActor [weak self] in
+            await self?.captureWrapper.updateConfiguration(
+                pixelWidth: pxWidth, pixelHeight: pxHeight)
+        }
     }
 
     func requestKeyframe() async {
@@ -297,6 +351,22 @@ private final class CaptureHelperRunner {
         }
         let width = CVPixelBufferGetWidth(pixelBuffer)
         let height = CVPixelBufferGetHeight(pixelBuffer)
+
+        // Log each unique frame size we see. SCStream pins the buffer
+        // dims to the configured width/height at start; when the shared
+        // window resizes the SCContentFilter's contentRect changes but
+        // the buffer dims do not, so a steady stream of unchanged dims
+        // here while the user is resizing means we'd need
+        // `stream.updateConfiguration` (not currently wired up) to
+        // follow the window.
+        if width != lastWidth || height != lastHeight {
+            writer.writeLog(
+                "capture-helper: frame dims \(lastWidth)x\(lastHeight) -> \(width)x\(height) (frame #\(frameCounter))"
+            )
+        } else if frameCounter == 1 || frameCounter % 300 == 0 {
+            writer.writeLog(
+                "capture-helper: frame dims steady \(width)x\(height) (frame #\(frameCounter))")
+        }
 
         if encoder == nil || width != lastWidth || height != lastHeight {
             encoder?.shutdown()
