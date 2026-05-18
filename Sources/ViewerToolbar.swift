@@ -58,14 +58,14 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [
             Self.toolGroup, .flexibleSpace, Self.stats, Self.shortcuts,
-            Self.microphone, Self.undo, Self.clearAll,
+            Self.microphone, Self.undo, Self.clearAll
         ]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [
             Self.toolGroup, Self.stats, Self.shortcuts, Self.microphone,
-            Self.undo, Self.clearAll, .flexibleSpace, .space,
+            Self.undo, Self.clearAll, .flexibleSpace, .space
         ]
     }
 
@@ -165,7 +165,7 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
             "Arrow (3 or ⌘3)",
             "Rectangle (4 or ⌘4)",
             "Oval (5 or ⌘5)",
-            "Pointer / Click (6 or ⌘6)",
+            "Pointer / Click (6 or ⌘6)"
         ]
 
         let group = NSToolbarItemGroup(
