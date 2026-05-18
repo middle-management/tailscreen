@@ -179,8 +179,7 @@ final class SharerOverlayWindow {
             return NSScreen.main?.frame ?? NSRect(x: 0, y: 0, width: 1920, height: 1080)
         case .application(let bundleIDs, let displayID):
             if let cg = appWindowsUnionCGFrame(bundleIDs: bundleIDs),
-                let cocoa = cgToCocoaFrame(cg)
-            {
+                let cocoa = cgToCocoaFrame(cg) {
                 return cocoa
             }
             let screen = Self.screen(forDisplayID: displayID) ?? NSScreen.main
@@ -268,7 +267,7 @@ final class SharerOverlayWindow {
         guard let list = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
             return nil
         }
-        var union: CGRect? = nil
+        var union: CGRect?
         for info in list {
             guard let layer = info[kCGWindowLayer as String] as? Int, layer == 0,
                 let pidRaw = info[kCGWindowOwnerPID as String] as? Int32,
