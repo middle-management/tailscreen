@@ -16,6 +16,9 @@ enum AppMenu {
     /// bounded by the number of notification names we observe — never
     /// grows across calls.
     private static var activationObservers: [NSObjectProtocol] = []
+    /// Target for the About menu item. Needs to be an NSObject instance
+    /// so AppKit can dispatch the selector; AppMenu itself is an enum.
+    private static let aboutTarget = AboutPanelTarget()
 
     static func installIfNeeded() {
         guard !installed else { return }
@@ -77,9 +80,11 @@ enum AppMenu {
         let appMenu = NSMenu(title: "Tailscreen")
         appMenuItem.submenu = appMenu
 
-        appMenu.addItem(.init(title: "About Tailscreen",
-                              action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
-                              keyEquivalent: ""))
+        let aboutItem = NSMenuItem(title: "About Tailscreen",
+                                   action: #selector(AboutPanelTarget.showAboutPanel(_:)),
+                                   keyEquivalent: "")
+        aboutItem.target = aboutTarget
+        appMenu.addItem(aboutItem)
         appMenu.addItem(.separator())
 
         let hide = NSMenuItem(title: "Hide Tailscreen",
@@ -182,5 +187,73 @@ enum AppMenu {
         main.addItem(windowItem)
 
         NSApp.mainMenu = main
+    }
+}
+
+/// Backing object for the "About Tailscreen" menu item. The standard
+/// about panel without options is essentially blank in dev builds (no
+/// Info.plist) and sparse in release builds. Supplying an options dict
+/// gives users the version, a short description, project link, and
+/// license + copyright in one place.
+@MainActor
+private final class AboutPanelTarget: NSObject {
+    @objc func showAboutPanel(_ sender: Any?) {
+        NSApp.orderFrontStandardAboutPanel(options: Self.options())
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private static func options() -> [NSApplication.AboutPanelOptionKey: Any] {
+        let info = Bundle.main.infoDictionary ?? [:]
+        let shortVersion = (info["CFBundleShortVersionString"] as? String) ?? "dev"
+        let build = info["CFBundleVersion"] as? String
+
+        var opts: [NSApplication.AboutPanelOptionKey: Any] = [
+            .applicationName: "Tailscreen",
+            .applicationVersion: shortVersion,
+            .credits: creditsAttributedString(),
+            .copyright: "© 2026 Robert Sköld. MIT-licensed open source.",
+        ]
+        // Only surface the build number when it differs from the marketing
+        // version — release.yml currently sets both to the same string, and
+        // showing "1.2.0 (1.2.0)" is just noise.
+        if let build, build != shortVersion {
+            opts[.version] = build
+        }
+        return opts
+    }
+
+    private static func creditsAttributedString() -> NSAttributedString {
+        let body = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
+        let para = NSMutableParagraphStyle()
+        para.alignment = .center
+        para.paragraphSpacing = 6
+
+        let baseAttrs: [NSAttributedString.Key: Any] = [
+            .font: body,
+            .foregroundColor: NSColor.labelColor,
+            .paragraphStyle: para,
+        ]
+
+        let credits = NSMutableAttributedString()
+        credits.append(NSAttributedString(
+            string: "Low-latency, encrypted peer-to-peer screen sharing over Tailscale.\n",
+            attributes: baseAttrs))
+        credits.append(NSAttributedString(
+            string: "Captures with ScreenCaptureKit, encodes H.264/HEVC with VideoToolbox, renders with Metal, and tunnels via tsnet ephemeral nodes — no manual device registration.\n",
+            attributes: baseAttrs))
+
+        let projectURL = URL(string: "https://github.com/middle-management/tailscreen")!
+        let linkAttrs: [NSAttributedString.Key: Any] = [
+            .font: body,
+            .foregroundColor: NSColor.linkColor,
+            .link: projectURL,
+            .underlineStyle: NSUnderlineStyle.single.rawValue,
+            .paragraphStyle: para,
+        ]
+        credits.append(NSAttributedString(
+            string: "github.com/middle-management/tailscreen",
+            attributes: linkAttrs))
+
+        return credits
     }
 }
