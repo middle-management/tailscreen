@@ -55,6 +55,14 @@ enum CaptureHelperWire {
         case requestKeyframe = 0x01
         /// `[4 bytes bitrate BE]` — adaptive-bitrate sweep nudge.
         case setBitrate = 0x02
+        /// JSON-encoded `PickerSelection`. Sent once at startup; the
+        /// helper waits on stdin for this message before bringing
+        /// the SCStream up. Carries primitive IDs (display / window
+        /// / bundle) rather than an archived `SCContentFilter`
+        /// because `SCContentFilter` doesn't conform to NSCoding.
+        /// The helper resolves the IDs to live SC* objects via
+        /// `SCShareableContent` and rebuilds the filter on its side.
+        case contentFilter = 0x03
         /// Helper drains its current frame, calls SCStream.stopCapture,
         /// exits. Payload empty.
         case shutdown = 0xFF
@@ -198,6 +206,10 @@ final class HelperControlWriter {
         var payload = Data()
         payload.appendBE(UInt32(max(0, bitrate)))
         write(type: .setBitrate, payload: payload)
+    }
+
+    func sendContentFilter(_ data: Data) {
+        write(type: .contentFilter, payload: data)
     }
 
     func sendShutdown() { write(type: .shutdown, payload: Data()) }

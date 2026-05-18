@@ -24,7 +24,7 @@ You click your display, the other person clicks your machine in their device lis
 
 ## What you need
 
-- macOS 15 (Sequoia) or later. Earlier macOS versions, iOS, and Linux aren't supported.
+- macOS 15.2 (Sequoia) or later. Earlier macOS versions, iOS, and Linux aren't supported.
 - Swift 6 toolchain if you're building from source. Otherwise just grab a release.
 - A Tailscale account, or a self-hosted control plane like [headscale](https://github.com/juanfont/headscale). The free Tailscale personal tier is fine; see [Self-hosted control planes](https://tailscreen.dev/self-hosted/) if you'd rather not depend on Tailscale Inc.
 - Screen Recording permission. macOS will ask the first time.

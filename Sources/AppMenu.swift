@@ -40,7 +40,7 @@ enum AppMenu {
         // (today guarded by `installed`, but defensively bounded here)
         // can't accumulate stale observers leaking closures onto the
         // notification center. Empty == "nothing to remove".
-        activationObservers.forEach { nc.removeObserver($0) }
+        for obs in activationObservers { nc.removeObserver(obs) }
         activationObservers.removeAll()
         let updatePolicy: @Sendable @MainActor () -> Void = {
             let hasVisibleWindow = NSApp.windows.contains { w in
@@ -252,12 +252,15 @@ private final class AboutPanelTarget: NSObject {
         ]
 
         let credits = NSMutableAttributedString()
-        credits.append(NSAttributedString(
-            string: "Low-latency, encrypted peer-to-peer screen sharing over Tailscale.\n",
-            attributes: baseAttrs))
-        credits.append(NSAttributedString(
-            string: "Captures with ScreenCaptureKit, encodes H.264/HEVC with VideoToolbox, renders with Metal, and tunnels via tsnet ephemeral nodes — no manual device registration.\n",
-            attributes: baseAttrs))
+        credits.append(
+            NSAttributedString(
+                string: "Low-latency, encrypted peer-to-peer screen sharing over Tailscale.\n",
+                attributes: baseAttrs))
+        credits.append(
+            NSAttributedString(
+                string:
+                    "Captures with ScreenCaptureKit, encodes H.264/HEVC with VideoToolbox, renders with Metal, and tunnels via tsnet ephemeral nodes — no manual device registration.\n",
+                attributes: baseAttrs))
 
         let projectURL = URL(string: "https://github.com/middle-management/tailscreen")!
         let linkAttrs: [NSAttributedString.Key: Any] = [
@@ -267,9 +270,10 @@ private final class AboutPanelTarget: NSObject {
             .underlineStyle: NSUnderlineStyle.single.rawValue,
             .paragraphStyle: para,
         ]
-        credits.append(NSAttributedString(
-            string: "github.com/middle-management/tailscreen",
-            attributes: linkAttrs))
+        credits.append(
+            NSAttributedString(
+                string: "github.com/middle-management/tailscreen",
+                attributes: linkAttrs))
 
         return credits
     }

@@ -4,7 +4,12 @@ import PackageDescription
 let package = Package(
     name: "Tailscreen",
     platforms: [
-        .macOS(.v15)
+        // 15.2 (Dec 2024) is the floor: SCContentFilter's
+        // `includedDisplays` / `includedWindows` /
+        // `includedApplications` getters were introduced there, and
+        // the picker-helper subprocess relies on them to extract the
+        // primitives it ships across processes.
+        .macOS("15.2")
     ],
     products: [
         .executable(

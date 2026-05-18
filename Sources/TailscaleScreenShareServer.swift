@@ -1,5 +1,4 @@
 import AppKit
-import CoreGraphics
 import Foundation
 import ScreenCaptureKit
 import TailscaleKit
@@ -124,11 +123,13 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     var onCaptureStopped: ((Error?) -> Void)?
     var onPreviewImage: ((NSImage) -> Void)?
 
-    /// Display we last brought capture up against. Cached so
-    /// `restartCapture()` can rebuild the SCStream against the same
-    /// display the user originally picked, without forcing the caller
-    /// to track that state.
-    private var lastDisplayID: CGDirectDisplayID?
+    /// JSON-encoded `PickerSelection` describing what the user
+    /// picked. Cached so `restartCapture()` can rebuild the SCStream
+    /// against the same content (display / window / app / multi-app)
+    /// without forcing the caller to track that state. Carried as
+    /// raw `Data` so the main process never has to know the schema
+    /// — the helper decodes it.
+    private var lastFilterData: Data?
 
     /// Helper-process wrapper. Owns the child Tailscreen process
     /// running `--capture-helper`, which holds the SCStream and
@@ -192,12 +193,17 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         self.rtpTimestampOriginNs = DispatchTime.now().uptimeNanoseconds
     }
 
+    /// Bring the server up. `filterData` is the JSON-encoded
+    /// `PickerSelection` the picker subprocess produced. Pass `nil`
+    /// only from tests that exercise the network/audio path and
+    /// don't want the capture-helper subprocess to spawn — production
+    /// callers always pass a real selection.
     func start(
         hostname: String = "tailscreen-server",
         authKey: String? = nil,
         path: String? = nil,
         controlURL: String = kDefaultControlURL,
-        displayID: CGDirectDisplayID? = nil,
+        filterData: Data?,
         existingNode: TailscaleNode? = nil
     ) async throws {
         guard !isRunning else { return }
@@ -281,11 +287,15 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         Task { [weak self] in await self?.sweepIdleViewers() }
         Task { [weak self] in await self?.adaptiveBitrateSweep() }
 
-        lastDisplayID = displayID
-        try startHelperCapture(displayID: displayID)
+        lastFilterData = filterData
+        if let filterData {
+            try startHelperCapture(filterData: filterData)
+        } else {
+            logger.log("Screen-share server: no filterData — skipping helper-capture spawn (test mode)")
+        }
     }
 
-    private func startHelperCapture(displayID: CGDirectDisplayID?) throws {
+    private func startHelperCapture(filterData: Data) throws {
         let helper = HelperScreenCapture()
         helper.onAccessUnit = { [weak self] avcc, isKeyframe in
             self?.handleHelperAccessUnit(avcc, isKeyframe: isKeyframe)
@@ -333,6 +343,38 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             guard let self else { return }
             self.logger.log("HelperScreenCapture: unexpected exit (\(reason))")
             self.helperCapture = nil
+            // -3805 ("application connection being interrupted") on
+            // the helper's first SCStream startup is replayd
+            // refusing the slot — usually because another same-bundle
+            // process on this Mac already holds one. Respawning hits
+            // the exact same wall, so bail straight to teardown
+            // instead of burning the full crash budget.
+            if reason.contains("-3805") || reason.localizedCaseInsensitiveContains("being interrupted") {
+                let err = NSError(
+                    domain: "Tailscreen.HelperScreenCapture",
+                    code: 1,
+                    userInfo: [
+                        NSLocalizedDescriptionKey:
+                            "Another Tailscreen instance on this Mac is already capturing — replayd refused the slot. Stop sharing on the other instance and try again."
+                    ]
+                )
+                self.onCaptureStopped?(err)
+                return
+            }
+            // Helper tagged its own death as non-retryable (decode
+            // failure, startup-watchdog timeout, etc.). Respawning
+            // would hit the same wall, so bail straight to teardown.
+            // The helper writes `permanent: ...` via `writeFatal`,
+            // which surfaces here as `"fatal: permanent: ..."`.
+            if reason.contains("permanent:") {
+                let err = NSError(
+                    domain: "Tailscreen.HelperScreenCapture",
+                    code: 4,
+                    userInfo: [NSLocalizedDescriptionKey: reason]
+                )
+                self.onCaptureStopped?(err)
+                return
+            }
             // Sliding-window restart: tolerate ≤3 crashes in 30 s,
             // give up after that. Each crash invalidates replayd's
             // slot for that PID, so respawning gets a fresh process
@@ -350,7 +392,12 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             }
             self.logger.log("HelperScreenCapture: restarting (crash #\(self.helperCrashTimestampsNs.count) in window)")
             do {
-                try self.startHelperCapture(displayID: self.lastDisplayID)
+                guard let filterData = self.lastFilterData else {
+                    throw NSError(
+                        domain: "Tailscreen.HelperScreenCapture", code: 3,
+                        userInfo: [NSLocalizedDescriptionKey: "no cached filter to restart against"])
+                }
+                try self.startHelperCapture(filterData: filterData)
             } catch {
                 let err = NSError(
                     domain: "Tailscreen.HelperScreenCapture", code: 2,
@@ -358,9 +405,9 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
                 self.onCaptureStopped?(err)
             }
         }
-        try helper.start(displayID: displayID ?? CGMainDisplayID())
+        try helper.start(filterData: filterData)
         helperCapture = helper
-        logger.log("HelperScreenCapture started (displayID=\(displayID.map { String($0) } ?? "default"))")
+        logger.log("HelperScreenCapture started (filter=\(filterData.count)B)")
     }
 
     private func handleHelperAccessUnit(_ avcc: Data, isKeyframe: Bool) {
@@ -399,7 +446,12 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             self.helperCrashTimestampsNs.removeAll()
             do {
                 guard self.isRunning else { throw CancellationError() }
-                try self.startHelperCapture(displayID: self.lastDisplayID)
+                guard let filterData = self.lastFilterData else {
+                    throw NSError(
+                        domain: "Tailscreen.HelperScreenCapture", code: 3,
+                        userInfo: [NSLocalizedDescriptionKey: "no cached filter to restart against"])
+                }
+                try self.startHelperCapture(filterData: filterData)
             } catch {
                 if !self.isRunning {
                     await self.helperCapture?.stop()

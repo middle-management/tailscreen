@@ -4,7 +4,12 @@ import CoreMedia
 import CoreVideo
 import Foundation
 import ImageIO
-import ScreenCaptureKit
+// `@preconcurrency` because SCShareableContent isn't Sendable and we
+// need to hop the result of `excludingDesktopWindows(_:onScreenWindowsOnly:)`
+// back to the @MainActor reconstruction code below. The cross-actor
+// send is safe in practice — we use the value once on the same
+// actor — but the framework hasn't been audited for Sendable yet.
+@preconcurrency import ScreenCaptureKit
 import UniformTypeIdentifiers
 
 /// Entry point for `Tailscreen --capture-helper`. Owns the SCStream
@@ -17,15 +22,6 @@ import UniformTypeIdentifiers
 ///   - SIGTERM / SIGINT (main killed us)
 enum CaptureHelperMain {
     static func run() -> Never {
-        // Argument parsing. Required: --display <id>
-        let args = CommandLine.arguments
-        guard let displayIDString = argValue(args, "--display"),
-            let displayID = UInt32(displayIDString)
-        else {
-            fputs("capture-helper: --display <id> required\n", stderr)
-            exit(64)
-        }
-
         // Save the real stdout (FD 1) and redirect FD 1 → stderr so that
         // every `print()` and any stray write to FD 1 from inside our
         // existing capture stack lands in stderr instead of corrupting
@@ -37,13 +33,29 @@ enum CaptureHelperMain {
         }
         let frameFD: Int32 = savedStdout >= 0 ? savedStdout : 1
         let writer = HelperFrameWriter(handle: FileHandle(fileDescriptor: frameFD, closeOnDealloc: false))
-        writer.writeLog("capture-helper: starting for displayID=\(displayID) frameFD=\(frameFD)")
 
+        writer.writeLog("capture-helper: awaiting contentFilter on stdin (frameFD=\(frameFD))")
         Task { @MainActor in
-            let runner = CaptureHelperRunner(displayID: CGDirectDisplayID(displayID), writer: writer)
+            let runner = CaptureHelperRunner(writer: writer)
             installSignalHandlers(writer: writer, runner: runner)
             installStdinReader(writer: writer, runner: runner)
-            await runner.start()
+            // Capture starts in `installStdinReader` once the parent
+            // delivers the archived `SCContentFilter`.
+            //
+            // Startup watchdog: if the parent never sends a
+            // `contentFilter` frame (e.g. it died mid-spawn or its
+            // stdin write was somehow skipped), the helper would
+            // otherwise sit on the run loop forever with no SCStream
+            // and no exit signal. After 10 s of no `startWithFilter`
+            // call, bail with a `permanent:` fatal so the server's
+            // crash-budget loop doesn't keep respawning into the
+            // same wedge.
+            try? await Task.sleep(for: .seconds(10))
+            if !runner.hasStarted {
+                writer.writeFatal(
+                    "permanent: parent never delivered contentFilter within 10s")
+                exit(3)
+            }
         }
         RunLoop.main.run()
         // RunLoop.main.run() never returns.
@@ -88,6 +100,32 @@ enum CaptureHelperMain {
                 case .setBitrate:
                     let bps = payload.readBE32() ?? 0
                     Task { await runner.setBitrate(Int(bps)) }
+                case .contentFilter:
+                    // Decode the JSON `PickerSelection`, fetch the
+                    // shareable content (allowed in the helper —
+                    // CLAUDE.md only forbids `SCShareableContent`
+                    // calls in the main process), reconstruct the
+                    // filter, and start capture. Has to land on the
+                    // main actor so the SCStream + VideoToolbox
+                    // setup sequence runs on the same thread the
+                    // rest of the helper expects.
+                    let payloadCopy = payload
+                    Task { @MainActor in
+                        do {
+                            let selection = try JSONDecoder().decode(
+                                PickerSelection.self, from: payloadCopy)
+                            let filter = try await Self.buildFilter(from: selection)
+                            await runner.startWithFilter(filter)
+                        } catch {
+                            // `permanent:` prefix tells the server's
+                            // onUnexpectedExit handler not to burn the
+                            // crash-restart budget — re-spawning will
+                            // hit the same decode/reconstruct error.
+                            writer.writeFatal(
+                                "permanent: contentFilter decode/reconstruct failed: \(error)")
+                            exit(3)
+                        }
+                    }
                 case .shutdown:
                     Task {
                         await runner.shutdown()
@@ -105,10 +143,54 @@ enum CaptureHelperMain {
 
     nonisolated(unsafe) private static var signalSources: [DispatchSourceSignal] = []
 
-    private static func argValue(_ args: [String], _ flag: String) -> String? {
-        guard let idx = args.firstIndex(of: flag), idx + 1 < args.count else { return nil }
-        return args[idx + 1]
+    /// Reconstruct an `SCContentFilter` from the primitives the
+    /// picker-helper extracted on the other side of the wire. Calls
+    /// `SCShareableContent` to resolve the IDs into live SC* objects
+    /// — legal here because we're inside the capture-helper, not the
+    /// main process. If anything fails to resolve (e.g. the user
+    /// quit the window between picking and the helper spawning) the
+    /// caller falls back to its existing fatal-error path.
+    @MainActor
+    static func buildFilter(from selection: PickerSelection) async throws -> SCContentFilter {
+        let content = try await SCShareableContent.excludingDesktopWindows(
+            false, onScreenWindowsOnly: true)
+        switch selection.kind {
+        case .display:
+            guard let id = selection.displayID,
+                let display = content.displays.first(where: { $0.displayID == id })
+            else {
+                throw PickerReconstructionError.displayNotFound(selection.displayID)
+            }
+            return SCContentFilter(display: display, excludingWindows: [])
+        case .window:
+            guard let id = selection.windowID,
+                let window = content.windows.first(where: { $0.windowID == id })
+            else {
+                throw PickerReconstructionError.windowNotFound(selection.windowID)
+            }
+            return SCContentFilter(desktopIndependentWindow: window)
+        case .application:
+            // SCContentFilter's "share these apps" constructor is
+            // anchored to a display. The picker tells us which one
+            // via `displayID`; if it's missing (rare — the picker
+            // always picks a display context for app shares) fall
+            // back to the main display.
+            let displayID = selection.displayID ?? CGMainDisplayID()
+            guard let display = content.displays.first(where: { $0.displayID == displayID })
+            else {
+                throw PickerReconstructionError.displayNotFound(displayID)
+            }
+            let bundleSet = Set(selection.bundleIDs)
+            let apps = content.applications.filter { bundleSet.contains($0.bundleIdentifier) }
+            return SCContentFilter(
+                display: display, including: apps, exceptingWindows: [])
+        }
     }
+}
+
+enum PickerReconstructionError: Error {
+    case displayNotFound(UInt32?)
+    case windowNotFound(UInt32?)
 }
 
 extension Data {
@@ -130,19 +212,34 @@ extension Data {
 /// out as RTP.
 @MainActor
 private final class CaptureHelperRunner {
-    private let displayID: CGDirectDisplayID
     private let writer: HelperFrameWriter
     private let captureWrapper = ScreenCapture()
     private var encoder: VideoEncoder?
     private var lastWidth: Int = 0
     private var lastHeight: Int = 0
+    /// True once `startWithFilter(_:)` has been called. Read by the
+    /// startup watchdog in `CaptureHelperMain.run()`; `fileprivate`
+    /// so `CaptureHelperMain` (same file, different type) can read it.
+    fileprivate var hasStarted = false
 
-    init(displayID: CGDirectDisplayID, writer: HelperFrameWriter) {
-        self.displayID = displayID
+    init(writer: HelperFrameWriter) {
         self.writer = writer
     }
 
-    func start() async {
+    /// Bring the SCStream up against an `SCContentFilter` delivered
+    /// by the parent over stdin. The filter retains XPC handles to
+    /// system services it acquired in the picker subprocess; calling
+    /// any other `SCContentFilter`/`SCShareableContent` API in this
+    /// process before this point would invalidate them.
+    func startWithFilter(_ filter: SCContentFilter) async {
+        if hasStarted {
+            // A second start request is a parent-side bug. Refuse it
+            // rather than racing two SCStreams against the same
+            // helper's encoder state.
+            writer.writeLog("capture-helper: ignored duplicate start request")
+            return
+        }
+        hasStarted = true
         captureWrapper.onFrameCaptured = { [weak self] pixelBuffer in
             Task { @MainActor [weak self] in self?.handleFrame(pixelBuffer) }
         }
@@ -161,7 +258,7 @@ private final class CaptureHelperRunner {
             }
         }
         do {
-            try await captureWrapper.start(displayID: displayID)
+            try await captureWrapper.start(filter: filter)
             writer.writeLog("capture-helper: SCStream up")
         } catch {
             writer.writeFatal("SCStream start failed: \(error)")

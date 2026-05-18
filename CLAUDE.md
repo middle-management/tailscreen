@@ -9,7 +9,7 @@ Guidance for Claude (and other AI assistants) working in this repo. Keep it accu
 ## Tech stack
 
 - **Swift 6** with strict concurrency (`@MainActor`, `Sendable`).
-- **macOS 15.0 (Sequoia)** deployment target. Not iOS.
+- **macOS 15.2 (Sequoia)** deployment target. Not iOS. The 15.2 floor (vs. 15.0) is dictated by the `SCContentFilter.includedDisplays` / `includedWindows` / `includedApplications` getters the picker-helper uses to extract primitives.
 - **Go 1.21+** required at build time to compile `libtailscale.a` (the C archive that TailscaleKit wraps).
 - **SwiftUI** + `MenuBarExtra`, **ScreenCaptureKit**, **VideoToolbox**, **Metal** (`CAMetalLayer`).
 - **TailscaleKit** consumed as a local SwiftPM package (`./TailscaleKitPackage`).
@@ -117,9 +117,12 @@ Capture and encoding live in a separate **helper subprocess** (`Tailscreen --cap
 TailscreenApp (@main, AppEntry dispatch)
  ├─ Main process
  │   └─ AppState (@MainActor)
+ │        ├─ presentNativePicker() ── spawn ─▶ picker-helper subprocess
+ │        │       (returns archived SCContentFilter via stdout)
  │        ├─ TailscaleScreenShareServer
  │        │    ├─ HelperScreenCapture ──spawn──▶ capture-helper subprocess
- │        │    │     (encoded AUs come back over framed stdout)
+ │        │    │     (archived SCContentFilter sent over stdin;
+ │        │    │      encoded AUs come back over stdout)
  │        │    └─ RTPPacket → UDP/7447 (TailscaleNode.listenPacket)
  │        │       + TCP/7447 (annotations + metadata)
  │        ├─ TailscaleScreenShareClient
@@ -130,9 +133,14 @@ TailscreenApp (@main, AppEntry dispatch)
  │        ├─ TailscaleIPNWatcher      ── IPN bus subscription
  │        ├─ TailscaleAuth            ── browser-based login
  │        └─ TailscreenMetadataService ── share name, resolution, request-to-share
+ ├─ picker-helper subprocess (--picker-helper, short-lived)
+ │    └─ NSApplication + SCContentSharingPicker.present()
+ │       → archive selected SCContentFilter → stdout → exit
  └─ capture-helper subprocess (--capture-helper)
       └─ ScreenCapture(SCStream) → VideoEncoder → CaptureHelperWire (stdout)
 ```
+
+Both helper subprocesses are short-lived for the same reason: ScreenCaptureKit's APIs couple to `replayd` / WindowServer via XPC, and process death is the only reliable way to clear those couplings. The picker-helper exits the moment the user picks (or cancels); the capture-helper lives for the duration of one share.
 
 The viewer `NSWindow` (with its `CAMetalLayer`) is held for the process lifetime to avoid an autoreleasepool teardown race with VideoToolbox/Metal on disconnect.
 
@@ -149,8 +157,17 @@ The viewer `NSWindow` (with its `CAMetalLayer`) is held for the process lifetime
 Capture and encoding run in a child process spawned per share — `Tailscreen --capture-helper`. Process death is the only reliable way to clear `replayd`'s per-bundle slot, so isolating `SCStream` + VideoToolbox in a child means "Stop Sharing" always works.
 
 - **Spawn.** The parent `Process()`-execs the same binary with `--capture-helper`. Stdin and stdout are pipes; stderr streams through to the parent's terminal.
-- **Wire.** Framed binary — `[type:1][len:4 BE][payload:N]`. Message types: encoded access unit (AVCC), parameter sets (H.264 SPS/PPS or HEVC VPS/SPS/PPS), encoder-resolution change, preview thumbnail, log line, fatal, user-stopped, control commands (request-keyframe, set-bitrate).
-- **Lifecycle.** The helper writes encoded AUs directly from the encoder thread to preserve order. On Control Center "Stop", the helper exits 0 with a `userStopped` message and the parent tears the share down quietly. Any other helper exit triggers up to 3 auto-restarts within a 30 s window before giving up.
+- **Startup.** The helper waits on stdin for a framed `contentFilter` message — payload is a JSON-encoded `PickerSelection` (display / window / bundle IDs) from the picker-helper — before bringing the SCStream up. The helper resolves those IDs against `SCShareableContent` (legal inside the helper, never in the main process) and rebuilds the filter on its side. There's no other entry point: every share routes through the picker.
+- **Wire.** Framed binary — `[type:1][len:4 BE][payload:N]`. Message types: encoded access unit (AVCC), parameter sets (H.264 SPS/PPS or HEVC VPS/SPS/PPS), preview thumbnail, log line, fatal, user-stopped; control commands request-keyframe, set-bitrate, content-filter, shutdown.
+- **Lifecycle.** The helper writes encoded AUs directly from the encoder thread to preserve order. On Control Center "Stop", the helper exits 0 with a `userStopped` message and the parent tears the share down quietly. Any other helper exit triggers up to 3 auto-restarts within a 30 s window before giving up. Restart re-spawns against the same cached selection — the JSON bytes are reusable across helper PIDs because each helper re-resolves the IDs independently.
+
+## Picker-helper IPC
+
+The macOS native `SCContentSharingPicker` runs in its own short-lived child process — `Tailscreen --picker-helper` — for the same defensive reason as the capture helper.
+
+- **Spawn.** The parent `Process()`-execs the same binary with `--picker-helper`. Only stdout is a pipe; stdin isn't used and stderr streams through.
+- **Wire.** A single framed payload on stdout: `[length:4 BE][JSON bytes:N]` — JSON-encoded `PickerSelection` (kind + display ID / window ID / bundle IDs). `length == 0` means the user cancelled. Exit code: 0 on selection, 1 on cancel, ≥2 on error. We can't ship the live `SCContentFilter` itself because the class doesn't conform to NSCoding.
+- **Lifecycle.** The helper presents the picker with all four modes allowed (display / single-window / single-app / multi-app). On the first observer callback, it writes the framed payload, briefly sleeps to flush, and exits. The parent waits for the payload, then `waitUntilExit()` so consecutive picker spawns can't race the singleton's teardown.
 
 ## Swift 6 conventions used here
 
@@ -181,6 +198,8 @@ Never make this absolute — it breaks portability and CI. Both the `Tailscreen`
 - **Auth flow needs an active node** — interactive login only works after `Start Sharing` or `Connect to…` has initialized the tsnet node.
 - **CI uses submodules.** Workflows already pass `submodules: recursive`; if you add a new workflow that builds, do the same.
 - **Don't call `SCShareableContent` from the main process.** It registers the parent with `replayd`, and the helper child's subsequent `SCStream` then fails with "application connection being interrupted". The display picker uses `NSScreen` and permission probing uses `CGPreflightScreenCaptureAccess` — never `SCShareableContent` in the parent.
+- **Don't present `SCContentSharingPicker` from the main process either.** Same family of APIs, same defensive isolation — spawn `--picker-helper` instead. The picker subprocess exits the moment the user picks, so its XPC handles never live alongside the long-running main process.
+- **Don't deserialize an `SCContentFilter` in the main process.** The decoded filter retains XPC handles to system services; the unarchive happens only inside the capture-helper.
 - **Don't add SCStream lifecycle to the main process.** All capture lives in the helper subprocess. The main-process screen-share server only spawns the helper and broadcasts what comes back.
 - **Stop Sharing badge stuck on** — usually means a helper subprocess was orphaned by a stop/restart race. The screen-share server has a restart lock for this; if you touch capture restart, preserve the await-pending-restart-then-teardown ordering.
 

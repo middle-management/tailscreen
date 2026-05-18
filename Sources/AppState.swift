@@ -59,6 +59,17 @@ class AppState: ObservableObject {
     private var micCapture: MicCapture?
     private var micHotkey: GlobalHotkey?
 
+    /// Cross-instance advisory lock. Held while we're actively
+    /// sharing so other Tailscreen instances on this Mac can grey
+    /// out their Share button rather than try and fail.
+    private let shareLock = ShareLock()
+
+    /// Mirrors `ShareLock.isHeldByAnyone()` minus our own hold.
+    /// Polled on a 2 s timer; SwiftUI binds the Share button's
+    /// disabled state to it.
+    @Published var anotherInstanceSharing: Bool = false
+    private var shareLockProbeTimer: Timer?
+
     /// Snapshot of viewers currently connected to our screen-share server.
     /// Empty when not sharing or when nobody has joined yet. Populated from
     /// `TailscaleScreenShareServer.onViewersChanged`; the SharingCard reads
@@ -97,10 +108,6 @@ class AppState: ObservableObject {
     // unblock it on a fresh device is to listen on the IPN bus and open
     // the BrowseToURL it emits in the user's browser.
     private var authIPNWatcher: TailscaleIPNWatcher?
-
-    // Display selection
-    @Published var availableDisplays: [DisplayInfo] = []
-    @Published var selectedDisplayID: CGDirectDisplayID?
 
     // Live thumbnail of the shared screen for the menu preview
     @Published var previewImage: NSImage?
@@ -200,26 +207,6 @@ class AppState: ObservableObject {
             }
         )
 
-        // Display hot-plug. NSApplication posts this whenever a
-        // display is attached, detached, rearranged, or its resolution
-        // changes. Re-enumerate `availableDisplays` so the picker
-        // stays accurate without the user having to re-open the
-        // menubar popover. Window-targeted capture is intentionally
-        // deferred — CLAUDE.md is explicit that the main process must
-        // never call `SCShareableContent`, and the window list lives
-        // behind that API.
-        notificationObservers.append(
-            NotificationCenter.default.addObserver(
-                forName: NSApplication.didChangeScreenParametersNotification,
-                object: nil,
-                queue: .main
-            ) { [weak self] _ in
-                Task { @MainActor [weak self] in
-                    await self?.refreshDisplays()
-                }
-            }
-        )
-
         // ⌃⌥M from anywhere — toggle mic without finding the menubar
         // popover or clicking through. Useful during a screen share
         // when the popover isn't visible.
@@ -233,6 +220,57 @@ class AppState: ObservableObject {
         }
 
         ViewerCommands.shared.appState = self
+
+        // 2 s polling probe: any other Tailscreen instance on this
+        // Mac currently holding the share lock? Drives the Share
+        // button's disabled state in the popover.
+        let probe = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let othersSharing = !self.shareLock.isHeldBySelf && ShareLock.isHeldByAnyone()
+                if othersSharing != self.anotherInstanceSharing {
+                    self.anotherInstanceSharing = othersSharing
+                }
+            }
+        }
+        RunLoop.main.add(probe, forMode: .common)
+        shareLockProbeTimer = probe
+
+        // SIGTERM / SIGINT trap (installed by `TailscreenEntry`) posts
+        // this just before calling `NSApplication.terminate`. We can't
+        // rely on `applicationWillTerminate` alone because it fires
+        // asynchronously via the run loop; on a fast SIGTERM →
+        // SIGKILL chain the helper child can still be running when
+        // the main process vanishes, leaving replayd's per-PID
+        // SCStream session orphaned and the green recording badge
+        // stuck in Control Center. Sync-kill the helper here so it
+        // dies *before* main does.
+        NotificationCenter.default.addObserver(
+            forName: .tailscreenWillTerminateBySignal,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.synchronouslyTerminateHelpers()
+        }
+    }
+
+    /// Synchronous best-effort kill of any active capture-helper
+    /// child. Called from the signal trap path before
+    /// `NSApplication.terminate` so the helper gets `SIGTERM` from
+    /// us deterministically; replayd then sees the helper die and
+    /// releases the SCStream slot. Safe if no helper is active.
+    nonisolated func synchronouslyTerminateHelpers() {
+        // Run on a background queue with a short timeout — we're in
+        // the signal-handler tail, can't block forever.
+        let group = DispatchGroup()
+        group.enter()
+        DispatchQueue.global().async {
+            Task { @MainActor in
+                await self.server?.stop()
+                group.leave()
+            }
+        }
+        _ = group.wait(timeout: .now() + .seconds(2))
     }
 
     deinit {
@@ -248,45 +286,22 @@ class AppState: ObservableObject {
 
     private var cancellables = Set<AnyCancellable>()
 
-    /// Populate `availableDisplays` via ScreenCaptureKit. Safe to call any
-    /// time the menu is opened; silently clears the list if the API errors
-    /// (permission not granted yet).
-    ///
-    /// Skips the underlying `SCShareableContent` call entirely when Screen
-    /// Recording permission has not been granted, so opening the menubar
-    /// never triggers the TCC prompt — that prompt is deferred until the
-    /// user actually clicks "Share my screen".
-    func refreshDisplays() async {
-        guard ScreenCapture.hasPermission() else {
-            availableDisplays = []
-            return
-        }
-        do {
-            let displays = try await ScreenCapture.listDisplays()
-            availableDisplays = displays
-            if selectedDisplayID == nil || !displays.contains(where: { $0.id == selectedDisplayID }) {
-                selectedDisplayID = displays.first?.id
-            }
-        } catch {
-            availableDisplays = []
-        }
-    }
-
     /// True once macOS has granted Screen Recording. UI uses this to swap a
-    /// "Share my screen" CTA in for the display picker before first grant.
+    /// "Share my screen" CTA in for the picker button before first grant.
     var hasScreenRecordingPermission: Bool {
         ScreenCapture.hasPermission()
     }
 
-    func startSharing(displayID: CGDirectDisplayID? = nil) async {
-        // Proactive permission gate. Before we spawn the helper
-        // subprocess (which is where SCStream errors land on a
-        // permission denial), surface the issue here with actionable
-        // guidance. Without this, the first-run flow used to fail
-        // mid-bring-up and surface a generic SCStream error after the
-        // user had already waited through the cool-down + watchdog.
-        // `requestPermissionNonInvasive` triggers the TCC prompt on
-        // first call, then returns the current grant state.
+    /// Spawn the `--picker-helper` subprocess to present the native
+    /// `SCContentSharingPicker`. Once the user picks something, kicks
+    /// off `startSharing(filterData:)`. User cancellation is silent —
+    /// the menubar returns to idle without an alert.
+    func presentNativePicker() async {
+        // Proactive permission gate. `SCContentSharingPicker` won't
+        // show anything useful without baseline TCC. Trigger the
+        // (non-invasive) request first; if the user denies, surface
+        // actionable guidance instead of spawning a picker that will
+        // come back empty.
         if !ScreenCapture.hasPermission() {
             let granted = ScreenCapture.requestPermissionNonInvasive()
             if !granted {
@@ -294,7 +309,54 @@ class AppState: ObservableObject {
                 return
             }
         }
+        let result: Data?
+        do {
+            result = try await PickerHelperClient.run()
+        } catch {
+            showAlertMessage(
+                title: "Couldn't Open Picker",
+                message: "macOS's screen-sharing picker failed to start: \(error.localizedDescription)"
+            )
+            return
+        }
+        guard let filterData = result else {
+            // User cancelled — nothing to do.
+            return
+        }
+        await startSharing(filterData: filterData)
+    }
 
+    /// Start a share against the `PickerSelection` produced by the
+    /// picker subprocess. The JSON-encoded selection is cached on
+    /// the server so a mid-stream helper crash can rebuild the same
+    /// SCStream without re-presenting the picker.
+    func startSharing(filterData: Data) async {
+        // Proactive permission gate. Even though `presentNativePicker`
+        // gates here too, this is the common entry — every route into
+        // a share lands on it, so the gate belongs here. Without it,
+        // a permission denial would only surface mid-bring-up after
+        // the user had already waited through the cool-down + watchdog.
+        if !ScreenCapture.hasPermission() {
+            let granted = ScreenCapture.requestPermissionNonInvasive()
+            if !granted {
+                presentScreenRecordingDenied()
+                return
+            }
+        }
+        // Take the cross-instance share lock first. If another local
+        // Tailscreen instance is already capturing, replayd will
+        // refuse our SCStream with -3805 anyway — bail with a clear
+        // alert instead of letting the user watch the bring-up
+        // dance through and fail.
+        guard shareLock.tryAcquire() else {
+            anotherInstanceSharing = true
+            showAlertMessage(
+                title: "Another Tailscreen Is Sharing",
+                message:
+                    "Another Tailscreen instance on this Mac is already capturing the screen. Stop sharing on the other instance, then try again."
+            )
+            return
+        }
         sharingState = .starting
         // Cleanup contract: any path out of this function (success,
         // failure, cancellation) leaves `sharingState` consistent.
@@ -303,10 +365,12 @@ class AppState: ObservableObject {
         // `sharingState = .idle`. Defer here is the safety net for
         // any path we forgot.
         defer {
-            if sharingState == .starting { sharingState = .idle }
+            if sharingState == .starting {
+                sharingState = .idle
+                shareLock.release()
+            }
         }
         do {
-            let pickedID = displayID ?? selectedDisplayID
             // If Tailscale is already initialized, just start sharing
             // Otherwise, initialize it first
             if server == nil {
@@ -314,9 +378,6 @@ class AppState: ObservableObject {
                     "\(Host.current().localizedName ?? "tailscreen-share")\(TailscreenInstance.hostnameSuffix)"
                 let srv = TailscaleScreenShareServer()
                 server = srv
-                if let pickedID = pickedID {
-                    selectedDisplayID = pickedID
-                }
 
                 // SCStream can die from two distinct causes:
                 //   1. User clicks the macOS Control Center "Stop" button —
@@ -330,7 +391,15 @@ class AppState: ObservableObject {
                 //      teardown if recovery fails.
                 srv.onCaptureStopped = { [weak self] error in
                     Task { @MainActor [weak self] in
-                        guard let self, self.sharingState == .active else { return }
+                        // React in either `.starting` (helper crashed
+                        // during bring-up) or `.active` (helper died
+                        // mid-share). The earlier guard limited this
+                        // to `.active` only, which left the UI stuck
+                        // on "Starting share…" indefinitely when the
+                        // first SCStream attempt got `-3805` and our
+                        // crash budget was exhausted.
+                        guard let self else { return }
+                        guard self.sharingState == .active || self.sharingState == .starting else { return }
                         if Self.isUserInitiatedCaptureStop(error) {
                             await self.stopSharing(
                                 reason: "SCStream userStopped: \(error?.localizedDescription ?? "nil")")
@@ -402,7 +471,7 @@ class AppState: ObservableObject {
                     let sharedNode = try await getOrCreateNode()
                     try await srv.start(
                         hostname: hostname,
-                        displayID: pickedID,
+                        filterData: filterData,
                         existingNode: sharedNode
                     )
                 } catch {
@@ -480,6 +549,7 @@ class AppState: ObservableObject {
         isSharerOverlayVisible = false
 
         sharingState = .idle
+        shareLock.release()
     }
 
     /// Suspend until the first preview frame lands or `timeout` elapses,
@@ -505,10 +575,7 @@ class AppState: ObservableObject {
     @discardableResult
     private func ensureSharerOverlay() -> SharerOverlayWindow {
         if let overlay = sharerOverlay { return overlay }
-        // Anchor the overlay panel to the display we're actually capturing
-        // so remote drawings appear on the shared screen instead of the
-        // sharer's main monitor.
-        let overlay = SharerOverlayWindow(displayID: selectedDisplayID)
+        let overlay = SharerOverlayWindow()
         // Sharer's own strokes don't need to be transmitted; they appear in
         // the video stream automatically.
         overlay.onOp = { _ in }

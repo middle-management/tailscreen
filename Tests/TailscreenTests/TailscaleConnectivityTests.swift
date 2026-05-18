@@ -177,11 +177,15 @@ final class TailscaleConnectivityTests: XCTestCase {
             try? FileManager.default.removeItem(at: tmp)
         }
 
+        // This E2E test exercises only the audio-relay path; the
+        // capture-helper isn't needed. Pass `nil` for `filterData`
+        // so the server skips the helper-capture spawn entirely.
         try await server.start(
             hostname: serverHostname,
             authKey: authKey,
             path: serverDir,
-            controlURL: controlURL
+            controlURL: controlURL,
+            filterData: nil
         )
         addTeardownBlock { Task { await server.stop() } }
 
