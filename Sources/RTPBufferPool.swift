@@ -74,11 +74,19 @@ final class RTPPacketBufferPool: @unchecked Sendable {
     /// packetizer to hint `reserveCapacity`).
     var recycledCount: Int { recycled.count }
 
-    /// Acquire a buffer with `size == 0` and `capacity >= minCapacity`.
-    /// Reuses storage from the previous batch when available; otherwise
-    /// allocates fresh. See type-level docs for the correctness argument.
+    /// Acquire a buffer with `size == 0` and capacity sufficient for
+    /// `minCapacity`. Reuses storage from the previous batch when the ask
+    /// fits within `defaultCapacity` (the floor we pool-allocate at);
+    /// otherwise allocates fresh and bypasses the pool. `Data` exposes no
+    /// public `capacity` accessor, so we use `defaultCapacity` as the
+    /// known-good lower bound for pooled buffers.
     func acquire(minCapacity: Int) -> Data {
-        while !recycled.isEmpty {
+        // Oversized ask — pool buffers may not fit and `Data` won't tell
+        // us their true capacity. Allocate fresh instead.
+        if minCapacity > defaultCapacity {
+            return Data(capacity: minCapacity)
+        }
+        if !recycled.isEmpty {
             // popLast (not removeFirst) — O(1), and we don't care about
             // emission order matching recycle order: each emitted packet
             // is independent of every other.
@@ -89,14 +97,9 @@ final class RTPPacketBufferPool: @unchecked Sendable {
             // If not, COW kicks in and `buf` gets a fresh buffer — still
             // valid, just no reuse this round.
             buf.removeAll(keepingCapacity: true)
-            if buf.capacity >= minCapacity {
-                return buf
-            }
-            // Buffer was too small for this packet; drop it (its storage
-            // either gets reused for something else or freed) and try the
-            // next.
+            return buf
         }
-        return Data(capacity: max(minCapacity, defaultCapacity))
+        return Data(capacity: defaultCapacity)
     }
 
     /// Stash the freshly-built batch so the *next* `packetize` call can
