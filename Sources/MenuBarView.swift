@@ -517,15 +517,11 @@ private struct ViewingCard: View {
     }
 }
 
-/// Display picker shown when idle. One row per attached display; clicking
-/// a row starts sharing that display.
-///
-/// Pre-permission grant we render a "Share my screen" CTA that will
-/// trigger the TCC prompt; once the user has granted, the section
-/// shows a single button that hands off to the macOS native
-/// `SCContentSharingPicker` (display / window / single-app /
-/// multi-app). The picker UI is owned entirely by the OS, so we don't
-/// need a custom in-popover list anymore.
+/// Display picker shown when idle. A single button hands off to the macOS
+/// native `SCContentSharingPicker` (display / window / single-app /
+/// multi-app) running in the picker-helper subprocess. The OS owns the
+/// permission flow too — the TCC prompt fires inside the helper on first
+/// use, so the main process never preflights Screen Recording.
 private struct DisplayPickerSection: View {
     @EnvironmentObject var appState: AppState
 
@@ -534,29 +530,7 @@ private struct DisplayPickerSection: View {
             SectionHeader(title: "SHARE")
                 .padding(.top, 2)
 
-            if !appState.hasScreenRecordingPermission {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Tailscreen needs Screen Recording permission to share your screen.")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Button {
-                        // Drive the TCC prompt via the CoreGraphics
-                        // surface (CGRequestScreenCaptureAccess) so the
-                        // main process never has to touch
-                        // SCShareableContent. If the user has previously
-                        // denied access, this no-ops and the AppState
-                        // shim surfaces the System Settings deep-link.
-                        Task { await appState.requestPermission() }
-                    } label: {
-                        Text("Grant Permission").frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 4)
-            } else if appState.anotherInstanceSharing {
+            if appState.anotherInstanceSharing {
                 // Another Tailscreen instance on this Mac is currently
                 // capturing. macOS's `replayd` only allows one SCStream
                 // per bundle, so attempting another would fail with
