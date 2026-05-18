@@ -323,29 +323,13 @@ class AppState: ObservableObject {
 
     private var cancellables = Set<AnyCancellable>()
 
-    /// True once macOS has granted Screen Recording. UI uses this to swap a
-    /// "Share my screen" CTA in for the picker button before first grant.
-    var hasScreenRecordingPermission: Bool {
-        ScreenCapture.hasPermission()
-    }
-
     /// Spawn the `--picker-helper` subprocess to present the native
     /// `SCContentSharingPicker`. Once the user picks something, kicks
     /// off `startSharing(filterData:)`. User cancellation is silent —
-    /// the menubar returns to idle without an alert.
+    /// the menubar returns to idle without an alert. macOS drives the
+    /// Screen Recording TCC prompt inside the picker-helper on first
+    /// use; the parent process never preflights or requests permission.
     func presentNativePicker() async {
-        // Proactive permission gate. `SCContentSharingPicker` won't
-        // show anything useful without baseline TCC. Trigger the
-        // (non-invasive) request first; if the user denies, surface
-        // actionable guidance instead of spawning a picker that will
-        // come back empty.
-        if !ScreenCapture.hasPermission() {
-            let granted = ScreenCapture.requestPermissionNonInvasive()
-            if !granted {
-                presentScreenRecordingDenied()
-                return
-            }
-        }
         let result: Data?
         do {
             result = try await PickerHelperClient.run()
@@ -368,18 +352,6 @@ class AppState: ObservableObject {
     /// the server so a mid-stream helper crash can rebuild the same
     /// SCStream without re-presenting the picker.
     func startSharing(filterData: Data) async {
-        // Proactive permission gate. Even though `presentNativePicker`
-        // gates here too, this is the common entry — every route into
-        // a share lands on it, so the gate belongs here. Without it,
-        // a permission denial would only surface mid-bring-up after
-        // the user had already waited through the cool-down + watchdog.
-        if !ScreenCapture.hasPermission() {
-            let granted = ScreenCapture.requestPermissionNonInvasive()
-            if !granted {
-                presentScreenRecordingDenied()
-                return
-            }
-        }
         // Take the cross-instance share lock first. If another local
         // Tailscreen instance is already capturing, replayd will
         // refuse our SCStream with -3805 anyway — bail with a clear
@@ -1104,27 +1076,6 @@ class AppState: ObservableObject {
             presentError(.discoveryFailed(error))
         }
         isDiscovering = false
-    }
-
-    /// Trigger the macOS Screen Recording TCC prompt (or surface a
-    /// "go to System Settings" guidance alert if the user has already
-    /// denied access). Uses `CGRequestScreenCaptureAccess` so the main
-    /// process never has to touch `SCShareableContent` — see the
-    /// CLAUDE.md warning. Safe to call on every "Share my screen"
-    /// click; after the first grant it's a no-op.
-    func requestPermission() async {
-        let granted = ScreenCapture.requestPermissionNonInvasive()
-        if !granted {
-            presentError(.screenRecordingDenied())
-        }
-    }
-
-    /// Surface a clear guidance alert when Screen Recording permission
-    /// is denied. The alert includes a button that deep-links into
-    /// System Settings → Privacy & Security → Screen Recording so the
-    /// user can flip the toggle without hunting through panes.
-    func presentScreenRecordingDenied() {
-        presentError(.screenRecordingDenied())
     }
 
     /// Initialize Tailscale and trigger login flow

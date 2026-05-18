@@ -82,34 +82,11 @@ class ScreenCapture: NSObject, @unchecked Sendable {
     /// because replayd is awake but not pumping.
     private let firstFrameSeen = OSAllocatedUnfairLock<Bool>(initialState: false)
 
-    /// Non-prompting probe for Screen Recording authorization. Returns true
-    /// once the user has granted access in System Settings → Privacy &
-    /// Security. Used to gate eager `SCShareableContent` calls so the menu
-    /// doesn't trigger a TCC prompt at first launch.
-    static func hasPermission() -> Bool {
-        CGPreflightScreenCaptureAccess()
-    }
-
-    /// Trigger the macOS Screen Recording TCC prompt without bringing the
-    /// main process into `replayd`'s per-bundle slot. `CGRequestScreenCapture
-    /// Access` is the public API for this — it shows the system dialog (or
-    /// no-ops if access has already been granted/denied) and returns the
-    /// pre-prompt grant state. CLAUDE.md is explicit that the main process
-    /// must never call `SCShareableContent`, so we use the CoreGraphics
-    /// surface instead. Returns `CGPreflightScreenCaptureAccess()` after
-    /// the call so callers can decide whether to fall through to "open
-    /// System Settings" guidance.
-    @discardableResult
-    static func requestPermissionNonInvasive() -> Bool {
-        _ = CGRequestScreenCaptureAccess()
-        return CGPreflightScreenCaptureAccess()
-    }
-
     /// Deep-link into System Settings → Privacy & Security → Screen
     /// Recording. First-run users frequently miss the macOS TCC prompt
     /// (or click "Don't Allow"); once denied, the prompt never re-fires
     /// and the only recovery is the settings pane. Surfaced from the
-    /// permission alert so the user lands on the right toggle.
+    /// startCapture-timeout alert so the user lands on the right toggle.
     @MainActor
     static func openScreenRecordingSettings() {
         let urlString = "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"

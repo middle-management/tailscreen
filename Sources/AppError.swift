@@ -58,22 +58,6 @@ struct AppErrorAction: Sendable {
 // MARK: - Common error constructors
 
 extension AppError {
-    /// User denied Screen Recording or hasn't granted it yet. The
-    /// inline action opens System Settings → Privacy & Security →
-    /// Screen Recording.
-    static func screenRecordingDenied() -> AppError {
-        AppError(
-            code: "TS-SCREEN-001",
-            title: "Screen Recording Permission Required",
-            message:
-                "Tailscreen needs Screen Recording permission to share your display. Open System Settings → Privacy & Security → Screen Recording, enable Tailscreen, then try again.",
-            underlying: nil,
-            action: AppErrorAction(title: "Open System Settings") {
-                ScreenCapture.openScreenRecordingSettings()
-            }
-        )
-    }
-
     /// SCStream bring-up exceeded the 10s start watchdog. Usually a
     /// first-time permission grant on a busy machine.
     static func screenCaptureStartTimeout() -> AppError {
