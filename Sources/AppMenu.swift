@@ -211,7 +211,7 @@ private final class AboutPanelTarget: NSObject {
             .applicationName: "Tailscreen",
             .applicationVersion: shortVersion,
             .credits: creditsAttributedString(),
-            .copyright: "© 2026 Robert Sköld. MIT-licensed open source.",
+            NSApplication.AboutPanelOptionKey(rawValue: "Copyright"): "© 2026 Robert Sköld. MIT-licensed open source.",
         ]
         // Only surface the build number when it differs from the marketing
         // version — release.yml currently sets both to the same string, and
