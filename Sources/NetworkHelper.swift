@@ -1,7 +1,7 @@
 import Foundation
 
-private extension String {
-    init?(posixCString ptr: UnsafePointer<CChar>) {
+extension String {
+    fileprivate init?(posixCString ptr: UnsafePointer<CChar>) {
         let len = strlen(ptr)
         let bytes = UnsafeRawPointer(ptr).withMemoryRebound(to: UInt8.self, capacity: len) {
             UnsafeBufferPointer(start: $0, count: len)
@@ -33,13 +33,17 @@ struct NetworkHelper {
                 guard !name.starts(with: "lo") else { continue }
 
                 var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-                if getnameinfo(interface.ifa_addr, socklen_t(interface.ifa_addr.pointee.sa_len),
-                             &hostname, socklen_t(hostname.count),
-                             nil, socklen_t(0), NI_NUMERICHOST) == 0 {
-                    guard let address = hostname.withUnsafeBufferPointer({ buf -> String? in
-                        guard let base = buf.baseAddress else { return nil }
-                        return String(posixCString: base)
-                    }) else { continue }
+                if getnameinfo(
+                    interface.ifa_addr, socklen_t(interface.ifa_addr.pointee.sa_len),
+                    &hostname, socklen_t(hostname.count),
+                    nil, socklen_t(0), NI_NUMERICHOST) == 0
+                {
+                    guard
+                        let address = hostname.withUnsafeBufferPointer({ buf -> String? in
+                            guard let base = buf.baseAddress else { return nil }
+                            return String(posixCString: base)
+                        })
+                    else { continue }
 
                     // Only include IPv4 addresses
                     if addrFamily == UInt8(AF_INET) {

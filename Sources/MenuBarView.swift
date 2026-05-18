@@ -229,7 +229,8 @@ private struct SharingCard: View {
     /// the gap.
     private var screenAspect: CGFloat {
         if let res = appState.metadataService.currentMetadata?.screenResolution,
-           res.height > 0 {
+            res.height > 0
+        {
             return CGFloat(res.width) / CGFloat(res.height)
         }
         return 16.0 / 9.0
@@ -269,10 +270,10 @@ private struct SharingCard: View {
                                     Capsule().fill(Color.green)
                                 )
                                 .accessibilityLabel(
-                                    "\(appState.currentViewers.count) " +
-                                    (appState.currentViewers.count == 1
-                                        ? "viewer connected"
-                                        : "viewers connected")
+                                    "\(appState.currentViewers.count) "
+                                        + (appState.currentViewers.count == 1
+                                            ? "viewer connected"
+                                            : "viewers connected")
                                 )
                         }
                     }
@@ -328,9 +329,10 @@ private struct SharingCard: View {
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .help(appState.isSharerOverlayVisible ? "Stop Drawing" : "Draw")
-                .accessibilityLabel(appState.isSharerOverlayVisible
-                    ? "Stop drawing on screen"
-                    : "Draw on screen")
+                .accessibilityLabel(
+                    appState.isSharerOverlayVisible
+                        ? "Stop drawing on screen"
+                        : "Draw on screen")
 
                 Button {
                     Task { await appState.toggleMic() }
@@ -382,10 +384,13 @@ private struct AudioDevicePickers: View {
                     .foregroundStyle(.secondary)
                     .frame(width: 14)
                     .accessibilityHidden(true)
-                Picker("", selection: Binding(
-                    get: { appState.selectedInputDeviceID },
-                    set: { appState.selectInputDevice($0) }
-                )) {
+                Picker(
+                    "",
+                    selection: Binding(
+                        get: { appState.selectedInputDeviceID },
+                        set: { appState.selectInputDevice($0) }
+                    )
+                ) {
                     Text("System default").tag(AudioDeviceID?.none)
                     ForEach(appState.availableInputDevices) { device in
                         Text(device.name).tag(AudioDeviceID?.some(device.id))
@@ -400,10 +405,13 @@ private struct AudioDevicePickers: View {
                     .foregroundStyle(.secondary)
                     .frame(width: 14)
                     .accessibilityHidden(true)
-                Picker("", selection: Binding(
-                    get: { appState.selectedOutputDeviceID },
-                    set: { appState.selectOutputDevice($0) }
-                )) {
+                Picker(
+                    "",
+                    selection: Binding(
+                        get: { appState.selectedOutputDeviceID },
+                        set: { appState.selectOutputDevice($0) }
+                    )
+                ) {
                     Text("System default").tag(AudioDeviceID?.none)
                     ForEach(appState.availableOutputDevices) { device in
                         Text(device.name).tag(AudioDeviceID?.some(device.id))
@@ -759,9 +767,11 @@ private struct PeerMenuRow: View {
         .opacity(peer.isOnline ? 1.0 : 0.55)
         .background(
             RoundedRectangle(cornerRadius: 5)
-                .fill(isHovered && peer.isOnline
-                    ? Color.primary.opacity(0.08)
-                    : Color.clear)
+                .fill(
+                    isHovered && peer.isOnline
+                        ? Color.primary.opacity(0.08)
+                        : Color.clear
+                )
                 .padding(.horizontal, 4)
         )
         .onHover { isHovered = $0 }
@@ -785,24 +795,28 @@ private struct IdentityFooter: View {
                     Task { await appState.signOut() }
                 } label: {
                     HStack(spacing: 8) {
-                        Image(systemName: isHovered
-                            ? "rectangle.portrait.and.arrow.right"
-                            : "person.crop.circle.fill")
-                            .font(.system(size: 18))
-                            .frame(width: 22, height: 22)
-                            .foregroundStyle(isHovered ? .primary : .secondary)
+                        Image(
+                            systemName: isHovered
+                                ? "rectangle.portrait.and.arrow.right"
+                                : "person.crop.circle.fill"
+                        )
+                        .font(.system(size: 18))
+                        .frame(width: 22, height: 22)
+                        .foregroundStyle(isHovered ? .primary : .secondary)
 
                         VStack(alignment: .leading, spacing: 1) {
                             Text(isHovered ? "Sign out" : profile.displayName)
                                 .font(.system(size: 12, weight: .medium))
                                 .lineLimit(1)
-                            Text(isHovered
-                                ? "End your Tailscale session"
-                                : profile.loginName)
-                                .font(.system(size: 11))
-                                .foregroundStyle(.tertiary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
+                            Text(
+                                isHovered
+                                    ? "End your Tailscale session"
+                                    : profile.loginName
+                            )
+                            .font(.system(size: 11))
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
                         }
 
                         Spacer(minLength: 0)
@@ -898,4 +912,3 @@ struct MenuRow: View {
         .onHover { isHovered = $0 }
     }
 }
-

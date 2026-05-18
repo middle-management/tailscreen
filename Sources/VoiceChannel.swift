@@ -1,3 +1,5 @@
+import AVFoundation
+import CoreAudio
 import Foundation
 import TailscaleKit
 
@@ -90,7 +92,9 @@ final class VoiceChannel: @unchecked Sendable {
                     // Decoder init failed for this SSRC — blacklist so we
                     // don't spam stderr at 50 Hz.
                     self.brokenSSRCs.insert(parsed.ssrc)
-                    self.logger.log("VoiceChannel: decoder init failed for ssrc=\(parsed.ssrc): \(error). Dropping further packets from this SSRC.")
+                    self.logger.log(
+                        "VoiceChannel: decoder init failed for ssrc=\(parsed.ssrc): \(error). Dropping further packets from this SSRC."
+                    )
                 } else {
                     // Decode (not init) failed — log once per packet but
                     // keep the decoder; transient corruption is normal.
@@ -116,17 +120,14 @@ final class VoiceChannel: @unchecked Sendable {
         return new
     }
 
-#if DEBUG
+    #if DEBUG
     /// Drain the internal queue so test assertions can run synchronously
     /// after enqueuing outbound/inbound work.
     internal func flushForTesting() {
-        queue.sync { }
+        queue.sync {}
     }
-#endif
+    #endif
 }
-
-import AVFoundation
-import CoreAudio
 
 /// AVAudioEngine glue: input from VoiceProcessingIO mic (with built-in
 /// AEC), output through the same VPIO unit (so AEC has the right
@@ -153,12 +154,14 @@ private final class TapBuffer: @unchecked Sendable {
 
     init?(channel: VoiceChannel) {
         self.channel = channel
-        guard let target = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: 48_000,
-            channels: 1,
-            interleaved: false
-        ) else { return nil }
+        guard
+            let target = AVAudioFormat(
+                commonFormat: .pcmFormatFloat32,
+                sampleRate: 48_000,
+                channels: 1,
+                interleaved: false
+            )
+        else { return nil }
         self.targetFormat = target
     }
 
@@ -175,9 +178,10 @@ private final class TapBuffer: @unchecked Sendable {
     /// Picking channel 0 explicitly gives clean mic audio.
     private func ensureConverter(for sourceFormat: AVAudioFormat) -> Bool {
         if let last = lastSourceFormat,
-           last.sampleRate == sourceFormat.sampleRate,
-           last.channelCount == sourceFormat.channelCount,
-           last.commonFormat == sourceFormat.commonFormat {
+            last.sampleRate == sourceFormat.sampleRate,
+            last.channelCount == sourceFormat.channelCount,
+            last.commonFormat == sourceFormat.commonFormat
+        {
             return true
         }
         lastSourceFormat = sourceFormat
@@ -187,25 +191,29 @@ private final class TapBuffer: @unchecked Sendable {
         // at the source's sample rate. If that already matches the
         // target (48 kHz mono Float32), no AVAudioConverter is needed.
         if sourceFormat.sampleRate == 48_000
-            && sourceFormat.commonFormat == .pcmFormatFloat32 {
+            && sourceFormat.commonFormat == .pcmFormatFloat32
+        {
             converter = nil
             logger.log("MicCapture: tap delivering \(sourceFormat) — using channel 0, no resample needed.")
             return true
         }
-        guard let monoSource = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: sourceFormat.sampleRate,
-            channels: 1,
-            interleaved: false
-        ),
-              let conv = AVAudioConverter(from: monoSource, to: targetFormat)
+        guard
+            let monoSource = AVAudioFormat(
+                commonFormat: .pcmFormatFloat32,
+                sampleRate: sourceFormat.sampleRate,
+                channels: 1,
+                interleaved: false
+            ),
+            let conv = AVAudioConverter(from: monoSource, to: targetFormat)
         else {
             logger.log("MicCapture: AVAudioConverter init failed for \(sourceFormat.sampleRate) → 48 kHz mono")
             converter = nil
             return false
         }
         converter = conv
-        logger.log("MicCapture: tap delivering \(sourceFormat) — picking channel 0, resampling \(sourceFormat.sampleRate) → 48 kHz.")
+        logger.log(
+            "MicCapture: tap delivering \(sourceFormat) — picking channel 0, resampling \(sourceFormat.sampleRate) → 48 kHz."
+        )
         return true
     }
 
@@ -229,17 +237,17 @@ private final class TapBuffer: @unchecked Sendable {
         }
 
         guard let converter = converter,
-              let monoFmt = AVAudioFormat(
+            let monoFmt = AVAudioFormat(
                 commonFormat: .pcmFormatFloat32,
                 sampleRate: buffer.format.sampleRate,
                 channels: 1,
                 interleaved: false
-              ),
-              let monoBuf = AVAudioPCMBuffer(
+            ),
+            let monoBuf = AVAudioPCMBuffer(
                 pcmFormat: monoFmt,
                 frameCapacity: AVAudioFrameCount(frameLen)
-              ),
-              let monoCd = monoBuf.floatChannelData?[0]
+            ),
+            let monoCd = monoBuf.floatChannelData?[0]
         else { return }
         monoBuf.frameLength = AVAudioFrameCount(frameLen)
         memcpy(monoCd, srcCd, frameLen * MemoryLayout<Float>.size)
@@ -249,7 +257,7 @@ private final class TapBuffer: @unchecked Sendable {
         let ratio = 48_000.0 / sourceSampleRate
         let outCap = AVAudioFrameCount(Double(frameLen) * ratio + 64)
         guard outCap > 0,
-              let outBuf = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: outCap)
+            let outBuf = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: outCap)
         else { return }
 
         final class OneShot: @unchecked Sendable {
@@ -393,12 +401,14 @@ final class MicCapture {
         self.channel = channel
         self.mixer = engine.mainMixerNode
         // 48 kHz mono Float32 — matches the codec format.
-        guard let fmt = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: 48_000,
-            channels: 1,
-            interleaved: false
-        ) else {
+        guard
+            let fmt = AVAudioFormat(
+                commonFormat: .pcmFormatFloat32,
+                sampleRate: 48_000,
+                channels: 1,
+                interleaved: false
+            )
+        else {
             preconditionFailure("AVAudioFormat init failed for 48kHz mono Float32")
         }
         self.outputFormat = fmt
@@ -715,10 +725,12 @@ final class MicCapture {
     private func scheduleSamples(_ samples: [Float]) {
         guard isPlaying, let player = playerNodes.first else { return }
         if pendingBuffers >= maxPendingBuffers { return }
-        guard let buffer = AVAudioPCMBuffer(
-            pcmFormat: outputFormat,
-            frameCapacity: AVAudioFrameCount(samples.count)
-        ) else { return }
+        guard
+            let buffer = AVAudioPCMBuffer(
+                pcmFormat: outputFormat,
+                frameCapacity: AVAudioFrameCount(samples.count)
+            )
+        else { return }
         buffer.frameLength = AVAudioFrameCount(samples.count)
         guard let dst = buffer.floatChannelData?[0] else { return }
         for (i, sample) in samples.enumerated() {

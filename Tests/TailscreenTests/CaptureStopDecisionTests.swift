@@ -1,5 +1,6 @@
-import XCTest
 import ScreenCaptureKit
+import XCTest
+
 @testable import Tailscreen
 
 /// Unit coverage for `AppState.isUserInitiatedCaptureStop(_:)`. The

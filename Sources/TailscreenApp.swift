@@ -57,7 +57,8 @@ struct TailscreenApp: App {
     /// https://developer.apple.com/design/human-interface-guidelines/the-menu-bar#Menu-bar-extras
     private static func loadMenubarTemplate(_ name: String) -> NSImage? {
         guard let url = Bundle.module.url(forResource: name, withExtension: "pdf"),
-              let img = NSImage(contentsOf: url) else {
+            let img = NSImage(contentsOf: url)
+        else {
             return nil
         }
         img.isTemplate = true

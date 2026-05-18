@@ -1,4 +1,5 @@
 import XCTest
+
 @testable import Tailscreen
 
 final class ScreenShareProtocolTests: XCTestCase {
@@ -47,11 +48,12 @@ final class ScreenShareProtocolTests: XCTestCase {
     }
 
     func testPartialReceiveReturnsNilUntilComplete() {
-        let op = AnnotationOp.add(Annotation(
-            id: UUID(), tool: .pen,
-            points: [CGPoint(x: 0.5, y: 0.5)],
-            color: Annotation.defaultColor, width: 2
-        ))
+        let op = AnnotationOp.add(
+            Annotation(
+                id: UUID(), tool: .pen,
+                points: [CGPoint(x: 0.5, y: 0.5)],
+                color: Annotation.defaultColor, width: 2
+            ))
         let full = ScreenShareMessage.annotation(op).encode()
 
         var parser = ScreenShareMessageParser()
@@ -93,9 +95,9 @@ final class ScreenShareProtocolTests: XCTestCase {
     func testUnknownMessageTypeIsSkipped() throws {
         // Hand-build a bogus message with type=0xFF, then a valid annotation.
         var bogus = Data()
-        bogus.append(0xFF)                                  // unknown type
+        bogus.append(0xFF)  // unknown type
         bogus.append(contentsOf: [0x00, 0x00, 0x00, 0x02])  // payload len = 2 BE
-        bogus.append(contentsOf: [0xDE, 0xAD])              // payload
+        bogus.append(contentsOf: [0xDE, 0xAD])  // payload
 
         let good = ScreenShareMessage.annotation(.clearAll).encode()
 

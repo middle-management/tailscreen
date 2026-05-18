@@ -186,7 +186,8 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
             fatalError("MetalViewerRenderer: shader compile failed: \(error)")
         }
         guard let vertexFn = library.makeFunction(name: "viewer_vertex"),
-              let fragmentFn = library.makeFunction(name: "viewer_fragment") else {
+            let fragmentFn = library.makeFunction(name: "viewer_fragment")
+        else {
             fatalError("MetalViewerRenderer: shader functions missing")
         }
 
@@ -355,15 +356,17 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
             &cvTexture
         )
         guard textureStatus == kCVReturnSuccess,
-              let cvTexture = cvTexture,
-              let texture = CVMetalTextureGetTexture(cvTexture) else {
+            let cvTexture = cvTexture,
+            let texture = CVMetalTextureGetTexture(cvTexture)
+        else {
             return
         }
 
         // Size the drawable to match the pixel buffer; the layer's
         // contentsGravity (.resizeAspect) letterboxes during composition.
         if metalLayer.drawableSize.width != CGFloat(width)
-            || metalLayer.drawableSize.height != CGFloat(height) {
+            || metalLayer.drawableSize.height != CGFloat(height)
+        {
             metalLayer.drawableSize = CGSize(width: width, height: height)
             let newSize = CGSize(width: width, height: height)
             videoSize = newSize
@@ -380,7 +383,8 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
         passDesc.colorAttachments[0].storeAction = .store
 
         guard let commandBuffer = commandQueue.makeCommandBuffer(),
-              let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: passDesc) else {
+            let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: passDesc)
+        else {
             return
         }
 
@@ -401,8 +405,10 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
                 lastPresentLatencyMs = ms
                 latencyMsThisFrame = ms
                 if framesPresented == 1 || framesPresented % 60 == 0 {
-                    print(String(format: "MetalRenderer: presented frame #%d recv→present=%.1fms",
-                                 framesPresented, ms))
+                    print(
+                        String(
+                            format: "MetalRenderer: presented frame #%d recv→present=%.1fms",
+                            framesPresented, ms))
                 }
             }
         }
@@ -459,12 +465,14 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
         let seconds = max(Double(elapsedNs) / 1_000_000_000.0, 0.0001)
         let fps = Double(bucketPresentedSnap) / seconds
         let denom = bucketPresentedSnap + bucketDroppedSnap
-        let droppedPct: Double? = denom > 0
+        let droppedPct: Double? =
+            denom > 0
             ? (Double(bucketDroppedSnap) / Double(denom)) * 100.0
             : nil
         let bitrate = Double(bucketBytesSnap) * 8.0 / seconds
 
-        let latencyForSnapshot: Double? = latencyMsThisFrame
+        let latencyForSnapshot: Double? =
+            latencyMsThisFrame
             ?? (lastPresentLatencyMs >= 0 ? lastPresentLatencyMs : nil)
 
         let snapshot = ViewerStats(
@@ -495,37 +503,37 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
     // four corners; UVs are flipped vertically so CV's top-left-origin
     // pixel buffers land right-side up on Metal's lower-left-origin NDC.
     private static let shaderSource = """
-    #include <metal_stdlib>
-    using namespace metal;
+        #include <metal_stdlib>
+        using namespace metal;
 
-    struct VSOut {
-        float4 position [[position]];
-        float2 uv;
-    };
-
-    vertex VSOut viewer_vertex(uint vid [[vertex_id]]) {
-        float2 positions[4] = {
-            float2(-1.0, -1.0),
-            float2( 1.0, -1.0),
-            float2(-1.0,  1.0),
-            float2( 1.0,  1.0)
+        struct VSOut {
+            float4 position [[position]];
+            float2 uv;
         };
-        float2 uvs[4] = {
-            float2(0.0, 1.0),
-            float2(1.0, 1.0),
-            float2(0.0, 0.0),
-            float2(1.0, 0.0)
-        };
-        VSOut out;
-        out.position = float4(positions[vid], 0.0, 1.0);
-        out.uv = uvs[vid];
-        return out;
-    }
 
-    fragment float4 viewer_fragment(VSOut in [[stage_in]],
-                                    texture2d<float> tex [[texture(0)]]) {
-        constexpr sampler s(address::clamp_to_edge, filter::linear);
-        return tex.sample(s, in.uv);
-    }
-    """
+        vertex VSOut viewer_vertex(uint vid [[vertex_id]]) {
+            float2 positions[4] = {
+                float2(-1.0, -1.0),
+                float2( 1.0, -1.0),
+                float2(-1.0,  1.0),
+                float2( 1.0,  1.0)
+            };
+            float2 uvs[4] = {
+                float2(0.0, 1.0),
+                float2(1.0, 1.0),
+                float2(0.0, 0.0),
+                float2(1.0, 0.0)
+            };
+            VSOut out;
+            out.position = float4(positions[vid], 0.0, 1.0);
+            out.uv = uvs[vid];
+            return out;
+        }
+
+        fragment float4 viewer_fragment(VSOut in [[stage_in]],
+                                        texture2d<float> tex [[texture(0)]]) {
+            constexpr sampler s(address::clamp_to_edge, filter::linear);
+            return tex.sample(s, in.uv);
+        }
+        """
 }

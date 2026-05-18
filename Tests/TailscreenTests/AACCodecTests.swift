@@ -1,5 +1,6 @@
-import XCTest
 import AVFoundation
+import XCTest
+
 @testable import Tailscreen
 
 final class AACCodecTests: XCTestCase {
@@ -20,7 +21,7 @@ final class AACCodecTests: XCTestCase {
         // Feed in 1024-sample blocks; collect AAC AU bytes.
         var encoded: [Data] = []
         for blockIdx in 0..<5 {
-            let block = Array(samples[blockIdx * frameCount ..< (blockIdx + 1) * frameCount])
+            let block = Array(samples[blockIdx * frameCount..<(blockIdx + 1) * frameCount])
             if let au = try encoder.encode(pcm: block) {
                 encoded.append(au)
             }

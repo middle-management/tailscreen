@@ -10,17 +10,17 @@ import Combine
 final class ViewerToolbar: NSObject, NSToolbarDelegate {
     private static let identifier = NSToolbar.Identifier("dev.tailscreen.viewer-toolbar")
 
-    private static let pen        = NSToolbarItem.Identifier("tool.pen")
-    private static let line       = NSToolbarItem.Identifier("tool.line")
-    private static let arrow      = NSToolbarItem.Identifier("tool.arrow")
-    private static let rectangle  = NSToolbarItem.Identifier("tool.rectangle")
-    private static let oval       = NSToolbarItem.Identifier("tool.oval")
+    private static let pen = NSToolbarItem.Identifier("tool.pen")
+    private static let line = NSToolbarItem.Identifier("tool.line")
+    private static let arrow = NSToolbarItem.Identifier("tool.arrow")
+    private static let rectangle = NSToolbarItem.Identifier("tool.rectangle")
+    private static let oval = NSToolbarItem.Identifier("tool.oval")
     private static let microphone = NSToolbarItem.Identifier("action.microphone")
-    private static let undo       = NSToolbarItem.Identifier("action.undo")
-    private static let clearAll   = NSToolbarItem.Identifier("action.clearAll")
-    private static let stats      = NSToolbarItem.Identifier("action.stats")
+    private static let undo = NSToolbarItem.Identifier("action.undo")
+    private static let clearAll = NSToolbarItem.Identifier("action.clearAll")
+    private static let stats = NSToolbarItem.Identifier("action.stats")
 
-    private static let toolGroup  = NSToolbarItem.Identifier("group.tools")
+    private static let toolGroup = NSToolbarItem.Identifier("group.tools")
 
     let toolbar: NSToolbar
 
@@ -62,9 +62,11 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
         [Self.toolGroup, Self.stats, Self.microphone, Self.undo, Self.clearAll, .flexibleSpace, .space]
     }
 
-    func toolbar(_ toolbar: NSToolbar,
-                 itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
-                 willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+    func toolbar(
+        _ toolbar: NSToolbar,
+        itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
+        willBeInsertedIntoToolbar flag: Bool
+    ) -> NSToolbarItem? {
         switch itemIdentifier {
         case Self.toolGroup:
             return makeToolGroup()
@@ -116,21 +118,25 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
         // behaviour — clicking one tool deselects the others. The selected
         // index drives ViewerCommands.setTool().
         let labels = ["Pen", "Line", "Arrow", "Rect", "Oval", "Click"]
-        let symbols = ["pencil.tip",
-                       "line.diagonal",
-                       "arrow.up.right",
-                       "rectangle",
-                       "circle",
-                       "scope"]
+        let symbols = [
+            "pencil.tip",
+            "line.diagonal",
+            "arrow.up.right",
+            "rectangle",
+            "circle",
+            "scope",
+        ]
         // Spelled-out VoiceOver descriptions — "Rect" reads as
         // "r-e-c-t" otherwise, and "Click" alone doesn't convey that
         // it's a pointer/laser tool.
-        let a11y = ["Pen annotation tool",
-                    "Line annotation tool",
-                    "Arrow annotation tool",
-                    "Rectangle annotation tool",
-                    "Oval annotation tool",
-                    "Pointer click tool"]
+        let a11y = [
+            "Pen annotation tool",
+            "Line annotation tool",
+            "Arrow annotation tool",
+            "Rectangle annotation tool",
+            "Oval annotation tool",
+            "Pointer click tool",
+        ]
 
         let group = NSToolbarItemGroup(
             itemIdentifier: Self.toolGroup,
@@ -154,11 +160,13 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
         return group
     }
 
-    private func makeButton(id: NSToolbarItem.Identifier,
-                            label: String,
-                            symbol: String,
-                            action: Selector,
-                            accessibilityLabel: String? = nil) -> NSToolbarItem {
+    private func makeButton(
+        id: NSToolbarItem.Identifier,
+        label: String,
+        symbol: String,
+        action: Selector,
+        accessibilityLabel: String? = nil
+    ) -> NSToolbarItem {
         let item = NSToolbarItem(itemIdentifier: id)
         item.label = label
         item.paletteLabel = label

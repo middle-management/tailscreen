@@ -117,8 +117,9 @@ private struct AnnotationShape: Shape {
     func path(in rect: CGRect) -> Path {
         var path = Path()
         let pts = annotation.points.map {
-            CGPoint(x: rect.minX + $0.x * rect.width,
-                    y: rect.minY + $0.y * rect.height)
+            CGPoint(
+                x: rect.minX + $0.x * rect.width,
+                y: rect.minY + $0.y * rect.height)
         }
         guard let first = pts.first else { return path }
 
@@ -159,33 +160,37 @@ private struct AnnotationShape: Shape {
             let headLen = max(12.0, CGFloat(annotation.width) * 4)
             let headAng = CGFloat.pi * 5 / 6
             path.move(to: last)
-            path.addLine(to: CGPoint(
-                x: last.x + cos(ang + headAng) * headLen,
-                y: last.y + sin(ang + headAng) * headLen
-            ))
+            path.addLine(
+                to: CGPoint(
+                    x: last.x + cos(ang + headAng) * headLen,
+                    y: last.y + sin(ang + headAng) * headLen
+                ))
             path.move(to: last)
-            path.addLine(to: CGPoint(
-                x: last.x + cos(ang - headAng) * headLen,
-                y: last.y + sin(ang - headAng) * headLen
-            ))
+            path.addLine(
+                to: CGPoint(
+                    x: last.x + cos(ang - headAng) * headLen,
+                    y: last.y + sin(ang - headAng) * headLen
+                ))
 
         case .rectangle:
             guard let last = pts.last, pts.count >= 2 else { return path }
-            path.addRect(CGRect(
-                x: min(first.x, last.x),
-                y: min(first.y, last.y),
-                width: abs(last.x - first.x),
-                height: abs(last.y - first.y)
-            ))
+            path.addRect(
+                CGRect(
+                    x: min(first.x, last.x),
+                    y: min(first.y, last.y),
+                    width: abs(last.x - first.x),
+                    height: abs(last.y - first.y)
+                ))
 
         case .oval:
             guard let last = pts.last, pts.count >= 2 else { return path }
-            path.addEllipse(in: CGRect(
-                x: min(first.x, last.x),
-                y: min(first.y, last.y),
-                width: abs(last.x - first.x),
-                height: abs(last.y - first.y)
-            ))
+            path.addEllipse(
+                in: CGRect(
+                    x: min(first.x, last.x),
+                    y: min(first.y, last.y),
+                    width: abs(last.x - first.x),
+                    height: abs(last.y - first.y)
+                ))
 
         case .click:
             // Click is rendered by ClickMarker / EphemeralAnnotationView,
@@ -289,8 +294,10 @@ private struct ClickRippleView: View {
                 ring1 = 1
             }
             // Ring 2: starts at 25% of the lifetime, runs for the rest.
-            withAnimation(.easeOut(duration: Self.totalDuration * 0.75)
-                .delay(Self.totalDuration * 0.25)) {
+            withAnimation(
+                .easeOut(duration: Self.totalDuration * 0.75)
+                    .delay(Self.totalDuration * 0.25)
+            ) {
                 ring2 = 1
             }
             // Center dot: fades out over the first 60% of the lifetime.
@@ -302,8 +309,10 @@ private struct ClickRippleView: View {
 
     /// Single expanding ring driven by `progress` 0→1.
     @ViewBuilder
-    private func ring(progress: Double, lineWidth: CGFloat, color: Annotation.RGBA,
-                      startR: CGFloat, endR: CGFloat) -> some View {
+    private func ring(
+        progress: Double, lineWidth: CGFloat, color: Annotation.RGBA,
+        startR: CGFloat, endR: CGFloat
+    ) -> some View {
         let radius = startR + CGFloat(progress) * (endR - startR)
         let alpha = (1.0 - progress) * color.a
         Circle()

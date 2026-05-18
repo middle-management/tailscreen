@@ -153,7 +153,9 @@ class TailscaleAuth: ObservableObject {
     }
 
     /// Polls for authentication completion
-    private func pollForAuth(client: LocalAPIClient, node: TailscaleNode, maxAttempts: Int = 30)
+    private func pollForAuth(
+        client: LocalAPIClient, node: TailscaleNode, maxAttempts: Int = 30
+    )
         async throws
     {
         for attempt in 1...maxAttempts {

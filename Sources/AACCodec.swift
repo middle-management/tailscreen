@@ -15,7 +15,7 @@ enum AACCodecError: Error {
     /// now" without triggering end-of-stream semantics. Any non-zero
     /// status would do; we use four-char-code 'NOIN' so it's
     /// recognizable in logs.
-    static let kNoMoreInputThisCall = OSStatus(bitPattern: 0x4E4F494E) // 'NOIN'
+    static let kNoMoreInputThisCall = OSStatus(bitPattern: 0x4E4F494E)  // 'NOIN'
 }
 
 /// Encodes 48 kHz mono Float32 PCM into AAC-LC access units, one AU per

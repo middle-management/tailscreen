@@ -89,7 +89,7 @@ enum AudioDevices {
 
     private static func makeDevice(id: AudioDeviceID) -> AudioDevice? {
         guard let name = stringProperty(deviceID: id, selector: kAudioObjectPropertyName),
-              let uid = stringProperty(deviceID: id, selector: kAudioDevicePropertyDeviceUID)
+            let uid = stringProperty(deviceID: id, selector: kAudioDevicePropertyDeviceUID)
         else { return nil }
         return AudioDevice(
             id: id,

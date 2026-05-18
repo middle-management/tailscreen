@@ -42,8 +42,64 @@ jobs:
       - name: Build
         run: make build
 
-      - name: Run tests
-        run: make test
+      - name: Run tests (with coverage)
+        # `--enable-code-coverage` writes an LLVM profdata bundle under
+        # .build/<config>/codecov/. The subsequent step turns that into a
+        # human-readable summary and uploads the raw profdata as an artifact.
+        run: |
+          PKG_CONFIG_PATH="$(pwd)/TailscaleKitPackage" \
+            swift test --enable-code-coverage
+
+      - name: Coverage summary
+        # Surface a percentage in the job log + the workflow run summary.
+        # Uses `xcrun llvm-cov` which ships with Xcode — no third-party
+        # service or secrets needed. Best-effort: if the profdata bundle
+        # or binary path can't be located the step warns but doesn't fail
+        # the build.
+        if: always()
+        env:
+          # `swift build --show-bin-path` loads Package.swift, which has a
+          # systemLibrary target that resolves libtailscale via pkg-config.
+          # Without PKG_CONFIG_PATH set the manifest fails to load and
+          # BUILD_BIN_PATH ends up empty — silently dropping coverage.
+          PKG_CONFIG_PATH: ${{ github.workspace }}/TailscaleKitPackage
+        run: |
+          set -u
+          BUILD_BIN_PATH="$(swift build --show-bin-path 2>/dev/null || echo)"
+          PROFDATA="${BUILD_BIN_PATH}/codecov/default.profdata"
+          XCTEST_BUNDLE="$(find "${BUILD_BIN_PATH}" -maxdepth 2 -name '*.xctest' | head -n1 || true)"
+          if [ -z "${XCTEST_BUNDLE}" ] || [ ! -f "${PROFDATA}" ]; then
+            echo "::warning::could not locate coverage data (profdata=${PROFDATA}, xctest=${XCTEST_BUNDLE})"
+            exit 0
+          fi
+          # On macOS the xctest bundle's binary lives at Contents/MacOS/<name>.
+          XCTEST_BIN="${XCTEST_BUNDLE}/Contents/MacOS/$(basename "${XCTEST_BUNDLE}" .xctest)"
+          if [ ! -x "${XCTEST_BIN}" ]; then
+            XCTEST_BIN="$(find "${XCTEST_BUNDLE}" -type f -perm -u+x | head -n1)"
+          fi
+          # Exclude .build (SwiftPM checkouts) and Tests/ from the totals.
+          REPORT="$(xcrun llvm-cov report \
+            -instr-profile="${PROFDATA}" \
+            -ignore-filename-regex='\.build/|Tests/' \
+            "${XCTEST_BIN}" 2>&1 || true)"
+          echo "${REPORT}"
+          {
+            echo "## Code coverage"
+            echo ""
+            echo '```'
+            echo "${REPORT}" | tail -n 20
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-profdata
+          path: |
+            .build/**/codecov/default.profdata
+          if-no-files-found: warn
+          retention-days: 14
 
   lint:
     runs-on: macos-latest
@@ -54,10 +110,44 @@ jobs:
       - name: Run SwiftLint (baseline-gated)
         run: make lint
 
+  format:
+    # Apple's swift-format is published as a Homebrew core formula and
+    # provides the `swift-format` binary that `make format-check` invokes.
+    # The macos-latest runner image doesn't ship it on PATH (the Xcode
+    # toolchain on the hosted runners doesn't expose `swift-format`
+    # directly — `swift-format --version` exits 127), so we install it
+    # explicitly via brew.
+    #
+    # Currently informational (continue-on-error: true) because the
+    # config was tuned without a local swift-format run — we want the
+    # first CI run on this branch to surface any drift between the
+    # config and the existing style, then we flip this to required.
+    # TODO: drop `continue-on-error` once the check is observed to pass.
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install swift-format
+        run: brew install swift-format
+      - name: Verify swift-format is available
+        run: swift-format --version
+      - name: Run swift-format check
+        # `make format-check` runs `swift-format lint --strict` against
+        # Sources/ and Tests/ using the repo's `.swift-format` config.
+        run: make format-check
+
   test-tsan:
     # Thread Sanitizer build. Catches lock/continuation races that
-    # strict-concurrency lets through. Allowed to fail (TSan can flag
-    # known-OK patterns in third-party C code) — informational only.
+    # strict-concurrency lets through. TSan flags a handful of known-OK
+    # patterns in third-party C code (libtailscale, ScreenCaptureKit's
+    # XPC) that we can't fix from Swift, so this job is informational
+    # rather than required.
+    #
+    # TODO: Once the remaining noise is suppressed (via a TSan
+    # suppressions file under .build/) or fixed upstream, remove
+    # `continue-on-error` so this becomes a required check. Until then
+    # we deliberately tolerate failures here — making it required
+    # without first fixing the false positives would block every PR.
     runs-on: macos-latest
     continue-on-error: true
     steps:

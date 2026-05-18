@@ -1,7 +1,7 @@
-import VideoToolbox
 import CoreMedia
 import CoreVideo
 import Foundation
+import VideoToolbox
 
 /// Codec used on the wire. The sharer picks at startup (preferring HEVC
 /// when the host's VideoToolbox HW encoder accepts it); the viewer learns
@@ -58,7 +58,8 @@ final class VideoEncoder: @unchecked Sendable {
     /// Codec the encoder is currently configured for. `.h264` until the
     /// first successful `setup`.
     var codec: VideoCodec {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
+        defer { lock.unlock() }
         return activeCodec
     }
 
@@ -136,7 +137,8 @@ final class VideoEncoder: @unchecked Sendable {
         }
 
         VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue)
-        let profileLevel: CFString = (codec == .hevc)
+        let profileLevel: CFString =
+            (codec == .hevc)
             ? kVTProfileLevel_HEVC_Main_AutoLevel
             : kVTProfileLevel_H264_High_AutoLevel
         VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_ProfileLevel, value: profileLevel)
@@ -146,18 +148,22 @@ final class VideoEncoder: @unchecked Sendable {
         // Tag the bitstream with BT.709 color so decoders don't have to
         // guess. Without these, players have been observed picking BT.601
         // on captured content and shifting reds noticeably.
-        VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_ColorPrimaries,
-                             value: kCVImageBufferColorPrimaries_ITU_R_709_2)
-        VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_TransferFunction,
-                             value: kCVImageBufferTransferFunction_ITU_R_709_2)
-        VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_YCbCrMatrix,
-                             value: kCVImageBufferYCbCrMatrix_ITU_R_709_2)
+        VTSessionSetProperty(
+            newSession, key: kVTCompressionPropertyKey_ColorPrimaries,
+            value: kCVImageBufferColorPrimaries_ITU_R_709_2)
+        VTSessionSetProperty(
+            newSession, key: kVTCompressionPropertyKey_TransferFunction,
+            value: kCVImageBufferTransferFunction_ITU_R_709_2)
+        VTSessionSetProperty(
+            newSession, key: kVTCompressionPropertyKey_YCbCrMatrix,
+            value: kCVImageBufferYCbCrMatrix_ITU_R_709_2)
 
         // Force the high-quality real-time path. RealTime=true alone leaves
         // VT free to pick a cheaper trade-off; these flip the explicit
         // tiebreakers toward quality. Both are best-effort — older or
         // future VT versions may not honor them, hence we ignore status.
-        VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality, value: kCFBooleanFalse)
+        VTSessionSetProperty(
+            newSession, key: kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality, value: kCFBooleanFalse)
         VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_MaximizePowerEfficiency, value: kCFBooleanFalse)
 
         // HEVC: keep more reference frames around. Screen content has lots
@@ -185,7 +191,8 @@ final class VideoEncoder: @unchecked Sendable {
 
         // IDRs are triggered on demand (new viewer, explicit refresh). This
         // interval is a safety net, not a cadence.
-        VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: (fps * 10) as CFNumber)
+        VTSessionSetProperty(
+            newSession, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: (fps * 10) as CFNumber)
 
         VTCompressionSessionPrepareToEncodeFrames(newSession)
 
@@ -292,8 +299,9 @@ final class VideoEncoder: @unchecked Sendable {
         lock.unlock()
 
         guard status == noErr,
-              let sampleBuffer = sampleBuffer,
-              CMSampleBufferDataIsReady(sampleBuffer) else {
+            let sampleBuffer = sampleBuffer,
+            CMSampleBufferDataIsReady(sampleBuffer)
+        else {
             return
         }
 
@@ -302,7 +310,8 @@ final class VideoEncoder: @unchecked Sendable {
         let dataCallback = onEncodedData
 
         if isKeyframe, let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer),
-           let params = Self.extractParameterSets(from: formatDescription, codec: codec) {
+            let params = Self.extractParameterSets(from: formatDescription, codec: codec)
+        {
             lock.lock()
             lastParameterSets = params
             lock.unlock()
@@ -321,7 +330,9 @@ final class VideoEncoder: @unchecked Sendable {
         dataCallback?(data, isKeyframe)
     }
 
-    private static func extractParameterSets(from formatDescription: CMFormatDescription, codec: VideoCodec) -> CodecParameterSets? {
+    private static func extractParameterSets(
+        from formatDescription: CMFormatDescription, codec: VideoCodec
+    ) -> CodecParameterSets? {
         switch codec {
         case .h264:
             guard let (sps, pps) = extractH264(formatDescription: formatDescription) else { return nil }
@@ -415,8 +426,11 @@ final class VideoEncoder: @unchecked Sendable {
 
 extension CMSampleBuffer {
     fileprivate var isNotSync: Bool {
-        guard let attachments = CMSampleBufferGetSampleAttachmentsArray(self, createIfNecessary: false) as? [[CFString: Any]],
-              let attachment = attachments.first else {
+        guard
+            let attachments = CMSampleBufferGetSampleAttachmentsArray(self, createIfNecessary: false)
+                as? [[CFString: Any]],
+            let attachment = attachments.first
+        else {
             return true
         }
         return attachment[kCMSampleAttachmentKey_NotSync] as? Bool ?? false

@@ -1,8 +1,8 @@
-import VideoToolbox
+import AppKit
 import CoreMedia
 import CoreVideo
-import AppKit
 import TailscaleKit
+import VideoToolbox
 
 final class VideoDecoder: @unchecked Sendable {
     var onDecodedFrame: ((CVPixelBuffer) -> Void)?
@@ -33,9 +33,9 @@ final class VideoDecoder: @unchecked Sendable {
     private func applyParameterSets(_ params: CodecParameterSets) {
         let newDesc: CMFormatDescription?
         switch params {
-        case let .h264(sps, pps):
+        case .h264(let sps, let pps):
             newDesc = Self.makeH264FormatDescription(sps: sps, pps: pps)
-        case let .hevc(vps, sps, pps):
+        case .hevc(let vps, let sps, let pps):
             newDesc = Self.makeHEVCFormatDescription(vps: vps, sps: sps, pps: pps)
         }
 
@@ -60,7 +60,8 @@ final class VideoDecoder: @unchecked Sendable {
         let status = sps.withUnsafeBytes { (spsBuf: UnsafeRawBufferPointer) -> OSStatus in
             pps.withUnsafeBytes { (ppsBuf: UnsafeRawBufferPointer) -> OSStatus in
                 guard let spsBase = spsBuf.baseAddress?.assumingMemoryBound(to: UInt8.self),
-                      let ppsBase = ppsBuf.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
+                    let ppsBase = ppsBuf.baseAddress?.assumingMemoryBound(to: UInt8.self)
+                else {
                     return -1
                 }
                 let pointers: [UnsafePointer<UInt8>] = [spsBase, ppsBase]
@@ -92,8 +93,9 @@ final class VideoDecoder: @unchecked Sendable {
             sps.withUnsafeBytes { (spsBuf: UnsafeRawBufferPointer) -> OSStatus in
                 pps.withUnsafeBytes { (ppsBuf: UnsafeRawBufferPointer) -> OSStatus in
                     guard let vpsBase = vpsBuf.baseAddress?.assumingMemoryBound(to: UInt8.self),
-                          let spsBase = spsBuf.baseAddress?.assumingMemoryBound(to: UInt8.self),
-                          let ppsBase = ppsBuf.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
+                        let spsBase = spsBuf.baseAddress?.assumingMemoryBound(to: UInt8.self),
+                        let ppsBase = ppsBuf.baseAddress?.assumingMemoryBound(to: UInt8.self)
+                    else {
                         return -1
                     }
                     let pointers: [UnsafePointer<UInt8>] = [vpsBase, spsBase, ppsBase]
@@ -180,7 +182,8 @@ final class VideoDecoder: @unchecked Sendable {
             infoFlagsOut: &flagsOut
         )
         if decodeStatus != noErr {
-            logger.log("VideoDecoder: DecodeFrame failed status=\(decodeStatus) (isKeyframe=\(isKeyframe), \(data.count)B)")
+            logger.log(
+                "VideoDecoder: DecodeFrame failed status=\(decodeStatus) (isKeyframe=\(isKeyframe), \(data.count)B)")
         }
     }
 
@@ -189,7 +192,7 @@ final class VideoDecoder: @unchecked Sendable {
 
         let attributes: [CFString: Any] = [
             kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_32BGRA,
-            kCVPixelBufferMetalCompatibilityKey: true
+            kCVPixelBufferMetalCompatibilityKey: true,
         ]
 
         var outputCallback = VTDecompressionOutputCallbackRecord(

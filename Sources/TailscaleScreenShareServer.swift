@@ -1,9 +1,9 @@
 import AppKit
 import CoreGraphics
 import Foundation
-import os
 import ScreenCaptureKit
 import TailscaleKit
+import os
 
 /// Screen-share server. Runs two listeners on the same port:
 ///
@@ -28,7 +28,7 @@ import TailscaleKit
 /// until the lookup completes (or if the peer isn't in the netmap), in
 /// which case the UI should fall back to `tailscaleIP`.
 struct ViewerInfo: Sendable, Identifiable, Hashable {
-    let id: String           // matches the server's internal viewer key ("ip:port")
+    let id: String  // matches the server's internal viewer key ("ip:port")
     let tailscaleIP: String
     var hostname: String?
     let connectedAt: Date
@@ -212,10 +212,14 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             self.ownsNode = false
             logger.log("Screen-share server reusing existing Tailscale node")
         } else {
-            let statePath = path ?? {
-                let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-                return appSupport.appendingPathComponent("Tailscreen/tailscale\(TailscreenInstance.stateSuffix)").path
-            }()
+            let statePath =
+                path
+                ?? {
+                    let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
+                        .first!
+                    return appSupport.appendingPathComponent("Tailscreen/tailscale\(TailscreenInstance.stateSuffix)")
+                        .path
+                }()
             try? FileManager.default.createDirectory(atPath: statePath, withIntermediateDirectories: true)
 
             logger.log("Starting Tailscale server…")
@@ -305,7 +309,9 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             self.baselineBitrate.withLock { $0 = baseline }
             self.currentBitrate.withLock { $0 = baseline }
             self.lastBitrateChangeNs.withLock { $0 = DispatchTime.now().uptimeNanoseconds }
-            self.logger.log("HelperScreenCapture: anchored baseline bitrate \(baseline / 1000) kbps for \(width)x\(height) \(codec)")
+            self.logger.log(
+                "HelperScreenCapture: anchored baseline bitrate \(baseline / 1000) kbps for \(width)x\(height) \(codec)"
+            )
         }
         helper.onPreviewImage = { [weak self] image in
             self?.onPreviewImage?(image)
@@ -336,8 +342,9 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             self.helperCrashTimestampsNs.removeAll { now &- $0 > windowNs }
             self.helperCrashTimestampsNs.append(now)
             if self.helperCrashTimestampsNs.count > 3 || !self.isRunning {
-                let err = NSError(domain: "Tailscreen.HelperScreenCapture", code: 1,
-                                  userInfo: [NSLocalizedDescriptionKey: reason])
+                let err = NSError(
+                    domain: "Tailscreen.HelperScreenCapture", code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: reason])
                 self.onCaptureStopped?(err)
                 return
             }
@@ -345,8 +352,9 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             do {
                 try self.startHelperCapture(displayID: self.lastDisplayID)
             } catch {
-                let err = NSError(domain: "Tailscreen.HelperScreenCapture", code: 2,
-                                  userInfo: [NSLocalizedDescriptionKey: "respawn failed: \(error)"])
+                let err = NSError(
+                    domain: "Tailscreen.HelperScreenCapture", code: 2,
+                    userInfo: [NSLocalizedDescriptionKey: "respawn failed: \(error)"])
                 self.onCaptureStopped?(err)
             }
         }
@@ -492,7 +500,8 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             // RTP from a viewer is only allowed for audio (PT=98). Anything
             // else (video PTs) is dropped.
             if let (header, _) = RTPHeader.decode(from: data),
-               header.payloadType == RTPHeader.aacPayloadType {
+                header.payloadType == RTPHeader.aacPayloadType
+            {
                 handleInboundAudioRTP(data, header: header, from: addr)
             }
             return
@@ -809,9 +818,9 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         var nals = AVCCParser.nalUnits(from: avccData)
         if isKeyframe, let cached = parameterSets.withLock({ $0 }) {
             switch cached {
-            case let .h264(sps, pps):
+            case .h264(let sps, let pps):
                 nals = [sps, pps] + nals
-            case let .hevc(vps, sps, pps):
+            case .hevc(let vps, let sps, let pps):
                 // HEVC parameter-set order is significant: VPS, SPS, PPS.
                 nals = [vps, sps, pps] + nals
             }
@@ -893,8 +902,8 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     private static func rewriteRTPHeader(_ packet: inout Data, sequence: UInt16, ssrc: UInt32) {
         packet[2] = UInt8((sequence >> 8) & 0xFF)
         packet[3] = UInt8(sequence & 0xFF)
-        packet[8]  = UInt8((ssrc >> 24) & 0xFF)
-        packet[9]  = UInt8((ssrc >> 16) & 0xFF)
+        packet[8] = UInt8((ssrc >> 24) & 0xFF)
+        packet[9] = UInt8((ssrc >> 16) & 0xFF)
         packet[10] = UInt8((ssrc >> 8) & 0xFF)
         packet[11] = UInt8(ssrc & 0xFF)
     }

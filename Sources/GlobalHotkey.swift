@@ -32,7 +32,7 @@ final class GlobalHotkey: @unchecked Sendable {
     }
 
     private func register(keyCode: UInt32, modifiers: UInt32) {
-        var hotKeyID = EventHotKeyID(signature: OSType(0x54534E48), id: 1) // 'TSNH'
+        var hotKeyID = EventHotKeyID(signature: OSType(0x54534E48), id: 1)  // 'TSNH'
         var ref: EventHotKeyRef?
         let regStatus = RegisterEventHotKey(
             keyCode,

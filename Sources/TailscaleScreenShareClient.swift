@@ -1,8 +1,8 @@
 import AppKit
 import CoreVideo
 import Foundation
-import os
 import TailscaleKit
+import os
 
 /// Screen-share viewer.
 ///
@@ -145,10 +145,15 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
             self.ownsNode = false
             logger.log("Screen-share client reusing existing Tailscale node")
         } else {
-            let statePath = path ?? {
-                let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-                return appSupport.appendingPathComponent("Tailscreen/tailscale-client\(TailscreenInstance.stateSuffix)").path
-            }()
+            let statePath =
+                path
+                ?? {
+                    let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
+                        .first!
+                    return appSupport.appendingPathComponent(
+                        "Tailscreen/tailscale-client\(TailscreenInstance.stateSuffix)"
+                    ).path
+                }()
             try? FileManager.default.createDirectory(atPath: statePath, withIntermediateDirectories: true)
 
             logger.log("Starting Tailscale client…")
@@ -282,7 +287,8 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                         return
                     case .helloAck:
                         if let ssrc = ScreenShareControlMessage.decodeHelloAck(datagram),
-                           assignedAudioSSRC != ssrc {
+                            assignedAudioSSRC != ssrc
+                        {
                             assignedAudioSSRC = ssrc
                             onAudioSSRCAssigned?(ssrc)
                         }
@@ -293,7 +299,8 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                 }
                 // Audio RTP (PT=98): route to VoiceChannel, skip video path.
                 if let (header, _) = RTPHeader.decode(from: datagram),
-                   header.payloadType == RTPHeader.aacPayloadType {
+                    header.payloadType == RTPHeader.aacPayloadType
+                {
                     onAudioReceived?(datagram)
                     continue
                 }
@@ -322,7 +329,9 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                         try? await pl.send(ScreenShareControlMessage.encode(.pli), to: addr)
                     }
                     if framesDelivered == 1 || framesDelivered % 60 == 0 {
-                        logger.log("Client: AU #\(framesDelivered) (kf=\(au.containsIDR), \(au.avcc.count)B, packets=\(packetsReceived))")
+                        logger.log(
+                            "Client: AU #\(framesDelivered) (kf=\(au.containsIDR), \(au.avcc.count)B, packets=\(packetsReceived))"
+                        )
                     }
                     self.lastReceiveUptimeNs = DispatchTime.now().uptimeNanoseconds
                     deliverAU(au)

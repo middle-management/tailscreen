@@ -1,10 +1,10 @@
-import Foundation
-import ScreenCaptureKit
 import AppKit
 import CoreImage
 import CoreMedia
 import CoreVideo
+import Foundation
 import ImageIO
+import ScreenCaptureKit
 import UniformTypeIdentifiers
 
 /// Entry point for `Tailscreen --capture-helper`. Owns the SCStream
@@ -20,7 +20,8 @@ enum CaptureHelperMain {
         // Argument parsing. Required: --display <id>
         let args = CommandLine.arguments
         guard let displayIDString = argValue(args, "--display"),
-              let displayID = UInt32(displayIDString) else {
+            let displayID = UInt32(displayIDString)
+        else {
             fputs("capture-helper: --display <id> required\n", stderr)
             exit(64)
         }
@@ -54,14 +55,20 @@ enum CaptureHelperMain {
         let sigSrc = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
         sigSrc.setEventHandler {
             writer.writeLog("capture-helper: SIGTERM, shutting down")
-            Task { await runner.shutdown(); exit(0) }
+            Task {
+                await runner.shutdown()
+                exit(0)
+            }
         }
         signal(SIGTERM, SIG_IGN)
         sigSrc.resume()
         let sigInt = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
         sigInt.setEventHandler {
             writer.writeLog("capture-helper: SIGINT, shutting down")
-            Task { await runner.shutdown(); exit(0) }
+            Task {
+                await runner.shutdown()
+                exit(0)
+            }
         }
         signal(SIGINT, SIG_IGN)
         sigInt.resume()
@@ -82,11 +89,17 @@ enum CaptureHelperMain {
                     let bps = payload.readBE32() ?? 0
                     Task { await runner.setBitrate(Int(bps)) }
                 case .shutdown:
-                    Task { await runner.shutdown(); exit(0) }
+                    Task {
+                        await runner.shutdown()
+                        exit(0)
+                    }
                 }
             }
             writer.writeLog("capture-helper: stdin closed, exiting")
-            Task { await runner.shutdown(); exit(0) }
+            Task {
+                await runner.shutdown()
+                exit(0)
+            }
         }
     }
 
@@ -98,8 +111,8 @@ enum CaptureHelperMain {
     }
 }
 
-private extension Data {
-    func readBE32() -> UInt32? {
+extension Data {
+    fileprivate func readBE32() -> UInt32? {
         guard count >= 4 else { return nil }
         return self.withUnsafeBytes { raw in
             let b0 = UInt32(raw[0])
@@ -271,7 +284,9 @@ private final class CaptureHelperRunner {
             && nsErr.code == SCStreamError.Code.userStopped.rawValue
     }
 
-    nonisolated static func writeParameterSets(_ writer: HelperFrameWriter, params: CodecParameterSets, width: Int, height: Int) {
+    nonisolated static func writeParameterSets(
+        _ writer: HelperFrameWriter, params: CodecParameterSets, width: Int, height: Int
+    ) {
         let codecByte: UInt8
         var paramSets: [Data] = []
         switch params {
