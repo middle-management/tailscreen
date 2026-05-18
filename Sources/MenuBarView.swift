@@ -520,23 +520,23 @@ private struct ViewingCard: View {
 /// Display picker shown when idle. One row per attached display; clicking
 /// a row starts sharing that display.
 ///
-/// Before macOS Screen Recording permission has been granted, the underlying
-/// `SCShareableContent` call would pop a TCC prompt the moment the menu
-/// opens. To avoid that, the section renders a single "Share my screen" CTA
-/// instead of probing the displays — the prompt only fires when the user
-/// actually tries to share.
+/// Pre-permission grant we render a "Share my screen" CTA that will
+/// trigger the TCC prompt; once the user has granted, the section
+/// shows a single button that hands off to the macOS native
+/// `SCContentSharingPicker` (display / window / single-app /
+/// multi-app). The picker UI is owned entirely by the OS, so we don't
+/// need a custom in-popover list anymore.
 private struct DisplayPickerSection: View {
     @EnvironmentObject var appState: AppState
-    @State private var didKickOff = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            SectionHeader(title: "SHARE A DISPLAY")
+            SectionHeader(title: "SHARE")
                 .padding(.top, 2)
 
             if !appState.hasScreenRecordingPermission {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Tailscreen needs Screen Recording permission to share your display.")
+                    Text("Tailscreen needs Screen Recording permission to share your screen.")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -547,10 +547,7 @@ private struct DisplayPickerSection: View {
                         // SCShareableContent. If the user has previously
                         // denied access, this no-ops and the AppState
                         // shim surfaces the System Settings deep-link.
-                        Task {
-                            await appState.requestPermission()
-                            await appState.refreshDisplays()
-                        }
+                        Task { await appState.requestPermission() }
                     } label: {
                         Text("Grant Permission").frame(maxWidth: .infinity)
                     }
@@ -559,74 +556,52 @@ private struct DisplayPickerSection: View {
                 }
                 .padding(.horizontal, 14)
                 .padding(.vertical, 4)
-            } else if appState.availableDisplays.isEmpty {
-                Text("No displays available")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .frame(height: 28)
-                    .padding(.horizontal, 14)
-            } else {
-                ForEach(appState.availableDisplays) { display in
-                    DisplayRow(display: display) {
-                        Task { await appState.startSharing(displayID: display.id) }
+            } else if appState.anotherInstanceSharing {
+                // Another Tailscreen instance on this Mac is currently
+                // capturing. macOS's `replayd` only allows one SCStream
+                // per bundle, so attempting another would fail with
+                // -3805 — surface the constraint up-front instead of
+                // letting the user discover it through a failed bring-up.
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.system(size: 13))
+                        .frame(width: 16, alignment: .center)
+                        .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Another Tailscreen is sharing")
+                            .font(.system(size: 13))
+                        Text("Stop the other instance first")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.tertiary)
                     }
+                    Spacer(minLength: 0)
                 }
+                .padding(.horizontal, 10)
+                .frame(minHeight: 34)
+                .opacity(0.6)
+                .padding(.horizontal, 4)
+            } else {
+                Button {
+                    Task { await appState.presentNativePicker() }
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "macwindow.on.rectangle")
+                            .font(.system(size: 13))
+                            .frame(width: 16, alignment: .center)
+                            .foregroundStyle(.secondary)
+                        Text("Choose what to share…")
+                            .font(.system(size: 13))
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 10)
+                    .frame(height: 34)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 4)
             }
         }
         .padding(.bottom, 6)
-        .onAppear {
-            guard !didKickOff else { return }
-            didKickOff = true
-            Task { await appState.refreshDisplays() }
-        }
-    }
-}
-
-private struct DisplayRow: View {
-    let display: DisplayInfo
-    let onPick: () -> Void
-    @State private var isHovered = false
-
-    var body: some View {
-        Button(action: onPick) {
-            HStack(spacing: 8) {
-                Image(systemName: "display")
-                    .font(.system(size: 13))
-                    .frame(width: 16, alignment: .center)
-                    .foregroundStyle(.secondary)
-                    .accessibilityHidden(true)
-
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(display.name)
-                        .font(.system(size: 13))
-                        .lineLimit(1)
-                    Text("\(display.width) × \(display.height)")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer(minLength: 0)
-
-                if isHovered {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.tertiary)
-                        .accessibilityHidden(true)
-                }
-            }
-            .padding(.horizontal, 10)
-            .frame(height: 34)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .background(
-            RoundedRectangle(cornerRadius: 5)
-                .fill(isHovered ? Color.primary.opacity(0.08) : Color.clear)
-                .padding(.horizontal, 4)
-        )
-        .onHover { isHovered = $0 }
-        .accessibilityLabel("\(display.name), \(display.width) by \(display.height)")
-        .accessibilityHint("Starts sharing this display")
     }
 }
 

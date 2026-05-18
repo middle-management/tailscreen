@@ -5,19 +5,9 @@ import CoreVideo
 import ScreenCaptureKit
 import os
 
-/// Serializable summary of an SCDisplay so AppState can expose a display
-/// picker in the menu without exposing ScreenCaptureKit types to the UI.
-struct DisplayInfo: Identifiable, Sendable, Hashable {
-    let id: CGDirectDisplayID
-    let name: String
-    let width: Int
-    let height: Int
-}
-
 class ScreenCapture: NSObject, @unchecked Sendable {
     private var stream: SCStream?
     private var streamOutput: StreamOutput?
-    private var availableContent: SCShareableContent?
     var onFrameCaptured: ((CVPixelBuffer) -> Void)?
     /// Fires when the SCStream terminates on its own — e.g. user clicked the
     /// menubar "Stop Screen Recording" item, or the stream hit an error.
@@ -113,45 +103,12 @@ class ScreenCapture: NSObject, @unchecked Sendable {
         }
     }
 
-    /// Enumerate the displays the user can share. Uses `NSScreen` so
-    /// the main process never has to touch `SCShareableContent` —
-    /// fetching shareable content registers the *parent* with `replayd`,
-    /// which then refuses the helper child's `SCStream` with
-    /// "application connection being interrupted". `NSScreen` reads
-    /// from a separate, screen-recording-permission-free path.
-    static func listDisplays() async throws -> [DisplayInfo] {
-        return NSScreen.screens.compactMap { screen in
-            let key = NSDeviceDescriptionKey("NSScreenNumber")
-            guard let displayID = screen.deviceDescription[key] as? CGDirectDisplayID else {
-                return nil
-            }
-            let scale = screen.backingScaleFactor
-            let pxWidth = Int(screen.frame.width * scale)
-            let pxHeight = Int(screen.frame.height * scale)
-            return DisplayInfo(
-                id: displayID,
-                name: screen.localizedName,
-                width: pxWidth,
-                height: pxHeight
-            )
-        }
-    }
-
-    private static func humanName(for display: SCDisplay, index: Int) -> String {
-        // SCDisplay has no public name. Fall back to the matching NSScreen's
-        // localizedName (macOS 14+) if we can find it by CGDirectDisplayID.
-        if #available(macOS 14.0, *) {
-            for screen in NSScreen.screens {
-                let screenID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID
-                if screenID == display.displayID {
-                    return screen.localizedName
-                }
-            }
-        }
-        return "Display \(index + 1)"
-    }
-
-    func start(displayID: CGDirectDisplayID? = nil) async throws {
+    /// Pre-flight gate shared by every SCStream bring-up. Refuses
+    /// early if a prior session poisoned replayd's per-bundle slot,
+    /// and otherwise sleeps out the post-stop cool-down so the new
+    /// SCStream doesn't get hit by replayd's "application connection
+    /// being interrupted" race.
+    private func applyStartCooldowns() async throws {
         // Refuse early if a prior SCStream poisoned the bundle's
         // replayd slot inside the cool-down window. After the window
         // we let the user try again — replayd sometimes recovers on
@@ -187,35 +144,48 @@ class ScreenCapture: NSObject, @unchecked Sendable {
                 try await Task.sleep(for: .milliseconds(Int(waitMs)))
             }
         }
-        // Get available content. SCShareableContent's bridged async call
-        // can hang for a while on first launch while macOS resolves the
-        // Screen Recording permission and brings up the screencapture
-        // daemon. 5s was too aggressive — first-time permission grants
-        // routinely take longer than that. 30s is generous enough for
-        // a fresh machine while still bounded.
-        logEvent("start.fetchShareableContent.begin")
-        availableContent = try await Self.fetchShareableContent(timeout: .seconds(30))
-        let displayCount = availableContent?.displays.count ?? 0
-        logEvent("start.fetchShareableContent.done", extra: "displays=\(displayCount)")
+    }
 
-        let display: SCDisplay
-        if let wanted = displayID,
-            let match = availableContent?.displays.first(where: { $0.displayID == wanted })
-        {
-            display = match
-        } else if let first = availableContent?.displays.first {
-            display = first
-        } else {
-            throw ScreenCaptureError.noDisplayAvailable
-        }
+    /// Bring up an `SCStream` against an `SCContentFilter` chosen by
+    /// the user via `SCContentSharingPicker` (display, single window,
+    /// single application, or multi-app set). Width/height come from
+    /// the filter's reported `contentRect` × `pointPixelScale` so all
+    /// modes work uniformly without an external resolution hint. Must
+    /// only be called from inside the capture-helper subprocess —
+    /// deserializing an `SCContentFilter` in the main process would
+    /// register the parent with replayd and break the helper child's
+    /// stream (CLAUDE.md).
+    func start(filter: SCContentFilter) async throws {
+        try await applyStartCooldowns()
+        // Pull resolution from the filter directly. `contentRect` is in
+        // points (CG-coordinate space), so we multiply by the filter's
+        // own `pointPixelScale` to land on pixel dimensions that match
+        // the encoder's expectations across display/window/app modes.
+        let rect = filter.contentRect
+        let scale = filter.pointPixelScale
+        let pxWidth = max(2, Int((rect.width * CGFloat(scale)).rounded()))
+        let pxHeight = max(2, Int((rect.height * CGFloat(scale)).rounded()))
+        try await startStream(
+            filter: filter,
+            pixelWidth: pxWidth,
+            pixelHeight: pxHeight,
+            sourceTag: "filter rect=\(Int(rect.width))x\(Int(rect.height))pt scale=\(scale)"
+        )
+    }
 
-        // Capture at the display's native pixel resolution. SCDisplay reports
-        // width/height in points, so we multiply by the main screen's backing
-        // scale factor (1 on non-Retina, 2 or 3 on Retina).
-        let scale = Int(NSScreen.main?.backingScaleFactor ?? 1)
+    /// Shared SCStream bring-up. `filter` is passed in from
+    /// `start(filter:)` (the picker subprocess produces it). The rest
+    /// of the lifecycle — addStreamOutput, startCapture watchdog,
+    /// first-frame wait — runs uniformly here.
+    private func startStream(
+        filter: SCContentFilter,
+        pixelWidth: Int,
+        pixelHeight: Int,
+        sourceTag: String
+    ) async throws {
         let config = SCStreamConfiguration()
-        config.width = Int(display.width) * scale
-        config.height = Int(display.height) * scale
+        config.width = pixelWidth
+        config.height = pixelHeight
         config.minimumFrameInterval = CMTime(value: 1, timescale: 60)
         // Full-range NV12 — matches what VideoToolbox wants natively, so the
         // encoder skips an internal BGRA→YUV conversion (cheaper, and removes
@@ -228,11 +198,8 @@ class ScreenCapture: NSObject, @unchecked Sendable {
         logEvent(
             "start.config",
             extra:
-                "displayID=\(display.displayID) size=\(config.width)x\(config.height) fps=60 pixelFormat=420f queueDepth=5"
+                "\(sourceTag) size=\(config.width)x\(config.height) fps=60 pixelFormat=420f queueDepth=5"
         )
-
-        // Create content filter for the main display
-        let filter = SCContentFilter(display: display, excludingWindows: [])
 
         // Create stream
         stream = SCStream(filter: filter, configuration: config, delegate: self)
@@ -329,54 +296,6 @@ class ScreenCapture: NSObject, @unchecked Sendable {
         logEvent("waitForFirstFrame.timeout", extra: "after=\(elapsedMs)ms (no samples — replayd silent)")
         Self.bundlePoisonedAtNs.withLock { $0 = DispatchTime.now().uptimeNanoseconds }
         throw ScreenCaptureError.noFramesDelivered
-    }
-
-    /// Watchdogged `SCShareableContent.excludingDesktopWindows`. The
-    /// completion-handler variant exists since macOS 14, so we don't have
-    /// to fight Swift Concurrency over a leaked continuation here either.
-    private static func fetchShareableContent(timeout: Duration) async throws -> SCShareableContent {
-        // Smuggle SCShareableContent through @unchecked Sendable wrap;
-        // it isn't Sendable but it's effectively read-only after delivery
-        // and we hand it off on a controlled boundary.
-        let wrapped: ShareableContentWrap = try await withCheckedThrowingContinuation {
-            (cont: CheckedContinuation<ShareableContentWrap, Error>) in
-            let box = ShareableContentBox(cont)
-            SCShareableContent.getExcludingDesktopWindows(false, onScreenWindowsOnly: true) { content, error in
-                if let error = error {
-                    box.resume(throwing: error)
-                } else if let content = content {
-                    box.resume(returning: ShareableContentWrap(value: content))
-                } else {
-                    box.resume(throwing: ScreenCaptureError.noDisplayAvailable)
-                }
-            }
-            DispatchQueue.global().asyncAfter(deadline: .now() + Double(timeout.components.seconds)) {
-                box.resume(throwing: ScreenCaptureError.startTimeout)
-            }
-        }
-        return wrapped.value
-    }
-
-    private struct ShareableContentWrap: @unchecked Sendable {
-        let value: SCShareableContent
-    }
-
-    private final class ShareableContentBox: @unchecked Sendable {
-        private let lock = NSLock()
-        private var cont: CheckedContinuation<ShareableContentWrap, Error>?
-        init(_ cont: CheckedContinuation<ShareableContentWrap, Error>) { self.cont = cont }
-        func resume(returning value: ShareableContentWrap) {
-            lock.lock()
-            defer { lock.unlock() }
-            cont?.resume(returning: value)
-            cont = nil
-        }
-        func resume(throwing error: Error) {
-            lock.lock()
-            defer { lock.unlock() }
-            cont?.resume(throwing: error)
-            cont = nil
-        }
     }
 
     /// Dedupes CheckedContinuation resumptions so we can race Apple's
@@ -575,8 +494,6 @@ private class StreamOutput: NSObject, SCStreamOutput {
 }
 
 enum ScreenCaptureError: Error {
-    case noDisplayAvailable
-    case permissionDenied
     case startTimeout
     /// startCapture resolved successfully but no sample buffers arrived
     /// before the first-frame watchdog expired. Retriable — usually a

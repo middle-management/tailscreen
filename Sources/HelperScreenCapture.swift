@@ -1,5 +1,4 @@
 import AppKit
-import CoreGraphics
 import Foundation
 import TailscaleKit
 
@@ -53,13 +52,13 @@ final class HelperScreenCapture: @unchecked Sendable {
         queueLabel = "HelperScreenCapture-\(UUID().uuidString.prefix(8))"
     }
 
-    func start(displayID: CGDirectDisplayID) throws {
+    func start(filterData: Data) throws {
         guard let exe = Bundle.main.executableURL else {
             throw HelperScreenCaptureError.executableNotFound
         }
         let proc = Process()
         proc.executableURL = exe
-        proc.arguments = ["--capture-helper", "--display", "\(displayID)"]
+        proc.arguments = ["--capture-helper"]
 
         let stdinPipe = Pipe()
         let stdoutPipe = Pipe()
@@ -88,6 +87,13 @@ final class HelperScreenCapture: @unchecked Sendable {
         process = proc
         stdinHandle = stdinPipe.fileHandleForWriting
         stdoutHandle = stdoutPipe.fileHandleForReading
+
+        // Helper waits on stdin for the archived SCContentFilter
+        // before bringing the SCStream up. Send it now so the helper
+        // isn't blocked once the reader thread starts.
+        if let stdin = stdinHandle {
+            HelperControlWriter(handle: stdin).sendContentFilter(filterData)
+        }
 
         // Reader thread — synchronous reads on the pipe. Async
         // FileHandle reads on a Pipe-backed handle are buggy in some

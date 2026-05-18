@@ -138,7 +138,7 @@ jobs:
               <key>CFBundleVersion</key>
               <string>${{ steps.version.outputs.version }}</string>
               <key>LSMinimumSystemVersion</key>
-              <string>15.0</string>
+              <string>15.2</string>
               <key>LSUIElement</key>
               <true/>
               <key>NSHighResolutionCapable</key>

@@ -38,7 +38,12 @@ cleanup() {
     for pgid in "${pgids[@]}"; do
         kill -TERM -- "-$pgid" 2>/dev/null || true
     done
-    sleep 1
+    # Wait long enough for the capture-helper child to finish its
+    # SCStream.stopCapture watchdog (~3 s). SIGKILL'ing helpers
+    # mid-stopCapture leaves replayd's per-PID SCStream session
+    # half-cleaned, which surfaces as the green recording badge
+    # hanging around in Control Center after the script exits.
+    sleep 4
     for pgid in "${pgids[@]}"; do
         kill -KILL -- "-$pgid" 2>/dev/null || true
     done
