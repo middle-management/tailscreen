@@ -19,6 +19,7 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
     private static let undo = NSToolbarItem.Identifier("action.undo")
     private static let clearAll = NSToolbarItem.Identifier("action.clearAll")
     private static let stats = NSToolbarItem.Identifier("action.stats")
+    private static let shortcuts = NSToolbarItem.Identifier("action.shortcuts")
 
     private static let toolGroup = NSToolbarItem.Identifier("group.tools")
 
@@ -55,11 +56,17 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
     // MARK: - NSToolbarDelegate
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [Self.toolGroup, .flexibleSpace, Self.stats, Self.microphone, Self.undo, Self.clearAll]
+        [
+            Self.toolGroup, .flexibleSpace, Self.stats, Self.shortcuts,
+            Self.microphone, Self.undo, Self.clearAll,
+        ]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [Self.toolGroup, Self.stats, Self.microphone, Self.undo, Self.clearAll, .flexibleSpace, .space]
+        [
+            Self.toolGroup, Self.stats, Self.shortcuts, Self.microphone,
+            Self.undo, Self.clearAll, .flexibleSpace, .space,
+        ]
     }
 
     func toolbar(
@@ -76,7 +83,8 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
                 label: "Undo",
                 symbol: "arrow.uturn.backward",
                 action: #selector(ViewerCommands.undoLastAnnotation(_:)),
-                accessibilityLabel: "Undo last annotation"
+                accessibilityLabel: "Undo last annotation",
+                toolTip: "Undo last annotation (⌘Z)"
             )
         case Self.clearAll:
             return makeButton(
@@ -84,7 +92,8 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
                 label: "Clear",
                 symbol: "trash",
                 action: #selector(ViewerCommands.clearAllAnnotations(_:)),
-                accessibilityLabel: "Clear all annotations"
+                accessibilityLabel: "Clear all annotations",
+                toolTip: "Clear all annotations (⇧⌘⌫ or right-click)"
             )
         case Self.microphone:
             let item = makeButton(
@@ -94,7 +103,8 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
                 action: #selector(ViewerCommands.toggleMicrophone(_:)),
                 accessibilityLabel: appState?.isMicOn == true
                     ? "Mute microphone"
-                    : "Unmute microphone"
+                    : "Unmute microphone",
+                toolTip: "Toggle microphone (⌃⌥M)"
             )
             micToolbarItem = item
             return item
@@ -105,6 +115,15 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
                 symbol: "chart.bar.xaxis",
                 action: #selector(ViewerCommands.toggleStatsOverlay(_:)),
                 accessibilityLabel: "Toggle stream stats overlay"
+            )
+        case Self.shortcuts:
+            return makeButton(
+                id: itemIdentifier,
+                label: "Shortcuts",
+                symbol: "questionmark.circle",
+                action: #selector(ViewerCommands.toggleShortcutsOverlay(_:)),
+                accessibilityLabel: "Show keyboard shortcuts",
+                toolTip: "Keyboard shortcuts (⇧⌘/)"
             )
         default:
             return nil
@@ -137,6 +156,17 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
             "Oval annotation tool",
             "Pointer click tool",
         ]
+        // Tooltip text shown on hover. Mirrors a11y but appends the
+        // keyboard shortcut so the toolbar doubles as discovery for the
+        // 1–6 / ⌘1–⌘6 bindings.
+        let tips = [
+            "Pen (1 or ⌘1)",
+            "Line (2 or ⌘2)",
+            "Arrow (3 or ⌘3)",
+            "Rectangle (4 or ⌘4)",
+            "Oval (5 or ⌘5)",
+            "Pointer / Click (6 or ⌘6)",
+        ]
 
         let group = NSToolbarItemGroup(
             itemIdentifier: Self.toolGroup,
@@ -154,7 +184,7 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
             let sub = group.subitems[i]
             sub.image = NSImage(systemSymbolName: sym, accessibilityDescription: a11y[i])
             sub.label = labels[i]
-            sub.toolTip = a11y[i]
+            sub.toolTip = tips[i]
         }
         group.selectedIndex = 0
         return group
@@ -165,12 +195,17 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
         label: String,
         symbol: String,
         action: Selector,
-        accessibilityLabel: String? = nil
+        accessibilityLabel: String? = nil,
+        toolTip: String? = nil
     ) -> NSToolbarItem {
         let item = NSToolbarItem(itemIdentifier: id)
         item.label = label
         item.paletteLabel = label
-        item.toolTip = accessibilityLabel ?? label
+        // Tooltip includes the key equivalent so users can discover the
+        // shortcut by hovering; accessibilityLabel is the VoiceOver-only
+        // description and stays free of glyphs like "⌘" that screen
+        // readers spell out awkwardly.
+        item.toolTip = toolTip ?? accessibilityLabel ?? label
         // The SF Symbol's accessibilityDescription drives VoiceOver
         // unless the toolbar item carries an explicit override — supply
         // a richer label for the actionable items where the short tool

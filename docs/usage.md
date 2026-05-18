@@ -80,6 +80,25 @@ won't drop even if you lose a video frame or two.
 Annotations are not persisted on either end. Quit the viewer or hit "Stop
 Sharing" and they're gone.
 
+## Keyboard shortcuts
+
+Press **⇧⌘/** in the viewer window (or click the **?** button in its
+toolbar, or pick **Help → Keyboard Shortcuts**) to bring up a cheat sheet
+listing everything below. Hovering any toolbar button also surfaces its
+shortcut.
+
+| Shortcut | Action |
+|---|---|
+| `1`–`6` or `⌘1`–`⌘6` | Pick a drawing tool (Pen, Line, Arrow, Rect, Oval, Click) |
+| `⌘Z` | Undo the last annotation you drew |
+| `⇧⌘⌫` | Clear all annotations |
+| Right-click on the canvas | Clear all annotations |
+| `Esc` | Cancel the in-progress drag |
+| `⌃⌥M` | Toggle the microphone on/off (works system-wide, even when Tailscreen isn't focused) |
+| `⌘W` | Disconnect the viewer |
+| `⌘Q` | Quit Tailscreen |
+| `⇧⌘/` | Show/hide the keyboard-shortcut overlay |
+
 ## Stopping
 
 - Sharer side: **Stop Sharing** in the menu, or quit the app.

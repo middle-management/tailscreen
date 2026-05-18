@@ -196,12 +196,30 @@ enum AppMenu {
                 keyEquivalent: ""))
         NSApp.windowsMenu = windowMenu
 
+        // ── Help ──
+        // ⇧⌘/ is the standard macOS "show help" shortcut — `/` is
+        // shift-slash on a US layout, so we register "/" with command
+        // and let the system add shift in the display.
+        let helpItem = NSMenuItem()
+        let helpMenu = NSMenu(title: "Help")
+        helpItem.submenu = helpMenu
+
+        let shortcutsHelp = NSMenuItem(
+            title: "Keyboard Shortcuts",
+            action: #selector(ViewerCommands.toggleShortcutsOverlay(_:)),
+            keyEquivalent: "?")
+        shortcutsHelp.keyEquivalentModifierMask = [.command]
+        shortcutsHelp.target = ViewerCommands.shared
+        helpMenu.addItem(shortcutsHelp)
+        NSApp.helpMenu = helpMenu
+
         // Assemble.
         main.addItem(appMenuItem)
         main.addItem(fileItem)
         main.addItem(editItem)
         main.addItem(toolsItem)
         main.addItem(windowItem)
+        main.addItem(helpItem)
 
         NSApp.mainMenu = main
     }
