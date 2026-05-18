@@ -57,11 +57,17 @@ jobs:
         # or binary path can't be located the step warns but doesn't fail
         # the build.
         if: always()
+        env:
+          # `swift build --show-bin-path` loads Package.swift, which has a
+          # systemLibrary target that resolves libtailscale via pkg-config.
+          # Without PKG_CONFIG_PATH set the manifest fails to load and
+          # BUILD_BIN_PATH ends up empty — silently dropping coverage.
+          PKG_CONFIG_PATH: ${{ github.workspace }}/TailscaleKitPackage
         run: |
           set -u
           BUILD_BIN_PATH="$(swift build --show-bin-path 2>/dev/null || echo)"
           PROFDATA="${BUILD_BIN_PATH}/codecov/default.profdata"
-          XCTEST_BUNDLE="$(find "${BUILD_BIN_PATH}" -name '*.xctest' -maxdepth 2 | head -n1 || true)"
+          XCTEST_BUNDLE="$(find "${BUILD_BIN_PATH}" -maxdepth 2 -name '*.xctest' | head -n1 || true)"
           if [ -z "${XCTEST_BUNDLE}" ] || [ ! -f "${PROFDATA}" ]; then
             echo "::warning::could not locate coverage data (profdata=${PROFDATA}, xctest=${XCTEST_BUNDLE})"
             exit 0
