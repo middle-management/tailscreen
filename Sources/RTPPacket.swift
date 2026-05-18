@@ -163,65 +163,119 @@ struct VideoAccessUnit {
 /// RFC 6184 H.264 packetizer. Single NAL mode for small NALs, FU-A for
 /// anything that wouldn't fit in one MTU. STAP-A is intentionally not used
 /// — keeping the format flat makes the depacketizer trivial.
-enum H264Packetizer {
+///
+/// Stateful by design: maintains a small pool of `Data` buffers from the
+/// previous `packetize` call so each subsequent call can reuse that storage
+/// instead of allocating fresh. See `RTPPacketBufferPool` for the safety
+/// argument (Data's COW + array-remove-before-mutate gives us in-place
+/// reuse when the consumer has dropped its reference, and a clean fresh
+/// allocation otherwise — never aliasing).
+///
+/// `@unchecked Sendable`: callers must serialize access. The
+/// screen-share server invokes `packetize` from a single broadcast site
+/// chained behind `broadcastTail`, so there is no concurrent use in
+/// practice.
+final class H264Packetizer: @unchecked Sendable {
     /// Max bytes of RTP *payload* per packet (excludes the 12-byte RTP header).
     /// Tailscale's WireGuard tunnel typically uses MTU 1280; subtract IPv6+UDP
     /// (40+8) and RTP header (12), leaving ~1220. We use 1100 for headroom.
     static let maxPayloadBytes = 1100
 
+    private var pool = RTPPacketBufferPool()
+
+    init() {}
+
     /// Packetize one access unit's NAL units into RTP packets ready to send.
     /// Sequence numbers run from `startSequence` (incrementing by 1 per
     /// returned packet); the marker bit is set on the last packet only.
-    static func packetize(
+    ///
+    /// **Buffer lifetime:** returned `Data` values are owned by the caller
+    /// (Swift value semantics + COW), but the packetizer holds a pool of
+    /// the *previous* call's buffers. When you call `packetize` again, any
+    /// buffer from the prior call that is no longer in use (refcount=1 on
+    /// the pool side after array removal) has its storage reused in place.
+    /// If the consumer still holds a copy, the pool's `removeAll` triggers
+    /// COW and the consumer keeps its bytes intact. There is no aliasing
+    /// hazard either way.
+    func packetize(
         nals: [Data],
         timestamp: UInt32,
         ssrc: UInt32,
         startSequence: UInt16
     ) -> [Data] {
-        // Build the list of payload chunks first, then walk it once to write
-        // RTP headers. Two-pass keeps the marker-bit-on-last logic obvious.
-        var chunks: [Data] = []
+        var packets: [Data] = []
+        // Estimate: one packet per NAL is the lower bound, hint for that.
+        packets.reserveCapacity(max(nals.count, pool.recycledCount))
+
+        var seq = startSequence
         for nal in nals {
-            guard let header = nal.first else { continue }
-            if nal.count <= maxPayloadBytes {
-                chunks.append(nal)  // Single NAL: payload IS the NAL
+            guard !nal.isEmpty else { continue }
+            if nal.count <= Self.maxPayloadBytes {
+                // Single NAL: payload IS the NAL.
+                emitPacket(payload: nal, seq: seq, timestamp: timestamp, ssrc: ssrc, into: &packets)
+                seq &+= 1
             } else {
-                appendFUA(nal: nal, header: header, into: &chunks)
+                emitFUA(nal: nal, startSeq: &seq, timestamp: timestamp, ssrc: ssrc, into: &packets)
             }
         }
 
-        var packets: [Data] = []
-        packets.reserveCapacity(chunks.count)
-        var seq = startSequence
-        for (index, payload) in chunks.enumerated() {
-            let isLast = index == chunks.count - 1
-            var packet = Data(capacity: RTPHeader.size + payload.count)
-            let header = RTPHeader(
-                marker: isLast,
-                payloadType: RTPHeader.h264PayloadType,
-                sequenceNumber: seq,
-                timestamp: timestamp,
-                ssrc: ssrc
-            )
-            header.encode(into: &packet)
-            packet.append(payload)
-            packets.append(packet)
-            seq &+= 1
+        // Set the marker bit on the final packet (last packet of the AU).
+        // We initially emit every packet with marker=0; flipping the one
+        // bit at the end is cheaper than threading "isLast" through the
+        // emit path.
+        if !packets.isEmpty {
+            Self.setMarkerBit(on: &packets[packets.count - 1])
         }
+
+        // Hand the new batch back to the pool so the *next* packetize call
+        // can recycle these buffers if/when the consumer has released them.
+        pool.handOver(packets)
         return packets
     }
 
-    /// RFC 6184 §5.8 FU-A fragmentation. Splits the NAL body (excluding the
-    /// 1-byte NAL header) into fragments; each fragment carries a 2-byte
-    /// FU header (FU indicator + FU header) followed by the fragment bytes.
-    private static func appendFUA(nal: Data, header: UInt8, into chunks: inout [Data]) {
-        let nri = header & 0x60
-        let nalType = header & 0x1F
+    /// Reserve+write an RTP packet for a single-NAL payload using a pooled
+    /// buffer when available.
+    private func emitPacket(
+        payload: Data,
+        seq: UInt16,
+        timestamp: UInt32,
+        ssrc: UInt32,
+        into packets: inout [Data]
+    ) {
+        let capNeeded = RTPHeader.size + payload.count
+        var packet = pool.acquire(minCapacity: capNeeded)
+        let header = RTPHeader(
+            marker: false,
+            payloadType: RTPHeader.h264PayloadType,
+            sequenceNumber: seq,
+            timestamp: timestamp,
+            ssrc: ssrc
+        )
+        header.encode(into: &packet)
+        packet.append(payload)
+        packets.append(packet)
+    }
+
+    /// RFC 6184 §5.8 FU-A fragmentation. Emits one RTP packet per fragment,
+    /// writing the RTP header + FU indicator + FU header + fragment bytes
+    /// directly into a pooled buffer (no intermediate `chunks` allocation).
+    /// Caller guarantees `nal` is non-empty (it's the same value tested by
+    /// `packetize`'s loop header).
+    private func emitFUA(
+        nal: Data,
+        startSeq: inout UInt16,
+        timestamp: UInt32,
+        ssrc: UInt32,
+        into packets: inout [Data]
+    ) {
+        let nalHeader = nal[nal.startIndex]
+        let nri = nalHeader & 0x60
+        let nalType = nalHeader & 0x1F
         let fuIndicator: UInt8 = nri | 28  // type 28 = FU-A
         let body = nal.dropFirst()
 
         // Reserve 2 bytes per fragment for the FU header pair.
-        let fragSize = maxPayloadBytes - 2
+        let fragSize = Self.maxPayloadBytes - 2
         var offset = body.startIndex
         var first = true
         while offset < body.endIndex {
@@ -232,17 +286,35 @@ enum H264Packetizer {
 
             var fuHeader: UInt8 = nalType
             if first { fuHeader |= 0x80 }       // S bit
-            if isLast { fuHeader |= 0x40 }      // E bit
+            if isLast { fuHeader |= 0x40 }      // E bit (of the fragment, not the AU)
 
-            var chunk = Data(capacity: 2 + take)
-            chunk.append(fuIndicator)
-            chunk.append(fuHeader)
-            chunk.append(body[offset..<end])
-            chunks.append(chunk)
+            let capNeeded = RTPHeader.size + 2 + take
+            var packet = pool.acquire(minCapacity: capNeeded)
+            let header = RTPHeader(
+                marker: false,
+                payloadType: RTPHeader.h264PayloadType,
+                sequenceNumber: startSeq,
+                timestamp: timestamp,
+                ssrc: ssrc
+            )
+            header.encode(into: &packet)
+            packet.append(fuIndicator)
+            packet.append(fuHeader)
+            packet.append(body[offset..<end])
+            packets.append(packet)
 
+            startSeq &+= 1
             offset = end
             first = false
         }
+    }
+
+    /// Sets bit 0x80 of byte 1 of the RTP packet (the marker bit). Used to
+    /// flag the final packet of the access unit after we've emitted them
+    /// all with marker=0.
+    static func setMarkerBit(on packet: inout Data) {
+        guard packet.count > 1 else { return }
+        packet[packet.startIndex + 1] |= 0x80
     }
 }
 
@@ -252,16 +324,38 @@ enum H264Packetizer {
 /// the decoder never sees a torn frame; the caller is expected to send a PLI
 /// in response so the encoder issues a fresh IDR.
 final class H264Depacketizer {
+    /// Starting reserved capacity for `currentAU`. Sized to cover a typical
+    /// 1080p/4K HEVC or H.264 keyframe (~1–2 MB) so the per-NAL `append`
+    /// path doesn't cause Data to repeatedly reallocate-and-copy as the AU
+    /// grows. Anything larger is handled by Data's normal exponential
+    /// growth on overflow.
+    static let initialAUCapacity = 2 * 1024 * 1024  // 2 MB
+
+    /// Starting reserved capacity for `fuBuffer`. Sized to cover the
+    /// largest individual NAL we'd realistically see fragmented over FU-A
+    /// (one big slice NAL inside a keyframe).
+    static let initialFUCapacity = 256 * 1024  // 256 KB
+
     private var ssrc: UInt32?
     private var expectedSeq: UInt16?
     private var currentTimestamp: UInt32?
-    private var currentAU: Data = Data()
+    private var currentAU: Data
     private var currentHasIDR: Bool = false
     private var currentAUCorrupted: Bool = false
-    private var fuBuffer: Data = Data()
+    private var fuBuffer: Data
     private var fuNALHeader: UInt8 = 0
     private var inFU: Bool = false
     private var pendingLossSignal: Bool = false
+
+    init() {
+        var au = Data()
+        au.reserveCapacity(Self.initialAUCapacity)
+        self.currentAU = au
+
+        var fu = Data()
+        fu.reserveCapacity(Self.initialFUCapacity)
+        self.fuBuffer = fu
+    }
 
     /// Feed one received RTP packet. Returns a completed AU once the marker
     /// bit (or a timestamp change) signals end-of-frame; nil otherwise.
@@ -378,7 +472,15 @@ final class H264Depacketizer {
         let avcc = currentAU
         let hasIDR = currentHasIDR
 
-        currentAU = Data()
+        // Replace `currentAU` with a freshly-reserved buffer so the next AU
+        // doesn't pay quadratic-style reallocation cost as `append` fills
+        // it. We can't `removeAll(keepingCapacity:)` here because `avcc`
+        // shares this buffer via COW; mutating it would either trigger COW
+        // (defeating the reuse) or alias bytes the consumer is about to
+        // read. A fresh allocation is the safe, correct choice.
+        var fresh = Data()
+        fresh.reserveCapacity(Self.initialAUCapacity)
+        currentAU = fresh
         currentHasIDR = false
         currentAUCorrupted = false
         inFU = false
@@ -417,51 +519,78 @@ final class H264Depacketizer {
 /// small NALs, FU mode for anything that wouldn't fit in one MTU. AP
 /// (aggregation packets) and PACI are intentionally unused; the depacketizer
 /// is correspondingly simpler.
-enum H265Packetizer {
+///
+/// Buffer-pool semantics mirror `H264Packetizer`. Same `@unchecked
+/// Sendable` rationale: callers must serialize access; the screen-share
+/// server only invokes `packetize` from a single broadcast site chained
+/// behind `broadcastTail`.
+final class H265Packetizer: @unchecked Sendable {
     static let maxPayloadBytes = H264Packetizer.maxPayloadBytes
 
-    static func packetize(
+    private var pool = RTPPacketBufferPool()
+
+    init() {}
+
+    func packetize(
         nals: [Data],
         timestamp: UInt32,
         ssrc: UInt32,
         startSequence: UInt16
     ) -> [Data] {
-        var chunks: [Data] = []
+        var packets: [Data] = []
+        packets.reserveCapacity(max(nals.count, pool.recycledCount))
+
+        var seq = startSequence
         for nal in nals {
             guard nal.count >= 2 else { continue }
-            if nal.count <= maxPayloadBytes {
-                chunks.append(nal)  // Single NAL: payload IS the NAL (header + body)
+            if nal.count <= Self.maxPayloadBytes {
+                emitPacket(payload: nal, seq: seq, timestamp: timestamp, ssrc: ssrc, into: &packets)
+                seq &+= 1
             } else {
-                appendFU(nal: nal, into: &chunks)
+                emitFU(nal: nal, startSeq: &seq, timestamp: timestamp, ssrc: ssrc, into: &packets)
             }
         }
 
-        var packets: [Data] = []
-        packets.reserveCapacity(chunks.count)
-        var seq = startSequence
-        for (index, payload) in chunks.enumerated() {
-            let isLast = index == chunks.count - 1
-            var packet = Data(capacity: RTPHeader.size + payload.count)
-            let header = RTPHeader(
-                marker: isLast,
-                payloadType: RTPHeader.hevcPayloadType,
-                sequenceNumber: seq,
-                timestamp: timestamp,
-                ssrc: ssrc
-            )
-            header.encode(into: &packet)
-            packet.append(payload)
-            packets.append(packet)
-            seq &+= 1
+        if !packets.isEmpty {
+            H264Packetizer.setMarkerBit(on: &packets[packets.count - 1])
         }
+
+        pool.handOver(packets)
         return packets
+    }
+
+    private func emitPacket(
+        payload: Data,
+        seq: UInt16,
+        timestamp: UInt32,
+        ssrc: UInt32,
+        into packets: inout [Data]
+    ) {
+        let capNeeded = RTPHeader.size + payload.count
+        var packet = pool.acquire(minCapacity: capNeeded)
+        let header = RTPHeader(
+            marker: false,
+            payloadType: RTPHeader.hevcPayloadType,
+            sequenceNumber: seq,
+            timestamp: timestamp,
+            ssrc: ssrc
+        )
+        header.encode(into: &packet)
+        packet.append(payload)
+        packets.append(packet)
     }
 
     /// RFC 7798 §4.4.3 FU fragmentation. The two-byte payload header has
     /// the FU type (49); the original NAL type rides in the 1-byte FU
     /// header that follows. LayerId and TID are preserved from the input
     /// NAL header so reassembly reconstructs an identical original NAL.
-    private static func appendFU(nal: Data, into chunks: inout [Data]) {
+    private func emitFU(
+        nal: Data,
+        startSeq: inout UInt16,
+        timestamp: UInt32,
+        ssrc: UInt32,
+        into packets: inout [Data]
+    ) {
         let nh0 = nal[nal.startIndex]
         let nh1 = nal[nal.index(nal.startIndex, offsetBy: 1)]
         let originalType = (nh0 >> 1) & 0x3F
@@ -474,7 +603,7 @@ enum H265Packetizer {
 
         let body = nal.dropFirst(2)
         // Reserve 3 bytes per fragment for PayloadHdr (2) + FU header (1).
-        let fragSize = maxPayloadBytes - 3
+        let fragSize = Self.maxPayloadBytes - 3
         var offset = body.startIndex
         var first = true
         while offset < body.endIndex {
@@ -485,15 +614,25 @@ enum H265Packetizer {
 
             var fuHeader: UInt8 = originalType & 0x3F
             if first { fuHeader |= 0x80 }       // S bit
-            if isLast { fuHeader |= 0x40 }      // E bit
+            if isLast { fuHeader |= 0x40 }      // E bit (fragment, not AU)
 
-            var chunk = Data(capacity: 3 + take)
-            chunk.append(payloadHdr0)
-            chunk.append(payloadHdr1)
-            chunk.append(fuHeader)
-            chunk.append(body[offset..<end])
-            chunks.append(chunk)
+            let capNeeded = RTPHeader.size + 3 + take
+            var packet = pool.acquire(minCapacity: capNeeded)
+            let header = RTPHeader(
+                marker: false,
+                payloadType: RTPHeader.hevcPayloadType,
+                sequenceNumber: startSeq,
+                timestamp: timestamp,
+                ssrc: ssrc
+            )
+            header.encode(into: &packet)
+            packet.append(payloadHdr0)
+            packet.append(payloadHdr1)
+            packet.append(fuHeader)
+            packet.append(body[offset..<end])
+            packets.append(packet)
 
+            startSeq &+= 1
             offset = end
             first = false
         }
@@ -504,15 +643,29 @@ enum H265Packetizer {
 /// only structural differences are the 2-byte NAL header, the 6-bit type
 /// field, and FU type 49 (vs FU-A 28 for H.264).
 final class H265Depacketizer {
+    /// See `H264Depacketizer.initialAUCapacity`.
+    static let initialAUCapacity = H264Depacketizer.initialAUCapacity
+    static let initialFUCapacity = H264Depacketizer.initialFUCapacity
+
     private var ssrc: UInt32?
     private var expectedSeq: UInt16?
     private var currentTimestamp: UInt32?
-    private var currentAU: Data = Data()
+    private var currentAU: Data
     private var currentHasIDR: Bool = false
     private var currentAUCorrupted: Bool = false
-    private var fuBuffer: Data = Data()
+    private var fuBuffer: Data
     private var inFU: Bool = false
     private var pendingLossSignal: Bool = false
+
+    init() {
+        var au = Data()
+        au.reserveCapacity(Self.initialAUCapacity)
+        self.currentAU = au
+
+        var fu = Data()
+        fu.reserveCapacity(Self.initialFUCapacity)
+        self.fuBuffer = fu
+    }
 
     func ingest(_ packet: Data) -> VideoAccessUnit? {
         guard let (header, payloadOffset) = RTPHeader.decode(from: packet) else { return nil }
@@ -629,7 +782,14 @@ final class H265Depacketizer {
         let avcc = currentAU
         let hasIDR = currentHasIDR
 
-        currentAU = Data()
+        // See `H264Depacketizer.flushAU` for the rationale: we hand the
+        // accumulated `currentAU` storage to the caller (via `avcc`) and
+        // pre-reserve a fresh buffer of the same capacity for the next
+        // AU. This keeps the per-NAL `append` path off Data's quadratic
+        // grow-and-copy escalator for large keyframes.
+        var fresh = Data()
+        fresh.reserveCapacity(Self.initialAUCapacity)
+        currentAU = fresh
         currentHasIDR = false
         currentAUCorrupted = false
         inFU = false
