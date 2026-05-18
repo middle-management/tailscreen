@@ -81,6 +81,13 @@ class AppState: ObservableObject {
     private var node: TailscaleNode?
     private var tailscaleIPs: [String] = []
     private var sharerOverlay: SharerOverlayWindow?
+    /// Decoded picker selection backing the current share. Captured in
+    /// `startSharing(filterData:)` and consumed by `ensureSharerOverlay`
+    /// so the overlay panel can scope itself to the shared window/app
+    /// (rather than always covering the full display, which scaled
+    /// viewer-drawn annotations into the wrong space when the user
+    /// picked one window / one app in the native picker).
+    private var currentSelection: PickerSelection?
 
     // Persistent viewer window + renderer. Owned for the process lifetime so
     // disconnect never closes/releases an NSWindow + CAMetalLayer chain (the
@@ -360,6 +367,12 @@ class AppState: ObservableObject {
             )
             return
         }
+        // Decode the picker selection so the sharer overlay (built lazily
+        // when the first annotation arrives or "Draw on Screen" is toggled)
+        // can scope its panel to the shared window/app instead of the
+        // whole display. A decode failure isn't fatal — we just fall
+        // back to the legacy full-display overlay.
+        currentSelection = try? JSONDecoder().decode(PickerSelection.self, from: filterData)
         sharingState = .starting
         // Cleanup contract: any path out of this function (success,
         // failure, cancellation) leaves `sharingState` consistent.
@@ -550,6 +563,7 @@ class AppState: ObservableObject {
         sharerOverlay?.hide()
         sharerOverlay = nil
         isSharerOverlayVisible = false
+        currentSelection = nil
 
         sharingState = .idle
         shareLock.release()
@@ -578,13 +592,32 @@ class AppState: ObservableObject {
     @discardableResult
     private func ensureSharerOverlay() -> SharerOverlayWindow {
         if let overlay = sharerOverlay { return overlay }
-        let overlay = SharerOverlayWindow()
+        let overlay = SharerOverlayWindow(mode: Self.overlayMode(for: currentSelection))
         // Sharer's own strokes don't need to be transmitted; they appear in
         // the video stream automatically.
         overlay.onOp = { _ in }
         overlay.show()
         sharerOverlay = overlay
         return overlay
+    }
+
+    /// Project a `PickerSelection` onto the overlay mode that matches it.
+    /// Nil / empty selections (legacy entry points, decode failures) fall
+    /// back to the full-display overlay so the feature degrades gracefully
+    /// rather than refusing to render annotations.
+    private static func overlayMode(for selection: PickerSelection?) -> SharerOverlayWindow.Mode {
+        guard let selection else { return .display(nil) }
+        switch selection.kind {
+        case .display:
+            return .display(selection.displayID)
+        case .window:
+            if let id = selection.windowID {
+                return .window(id)
+            }
+            return .display(nil)
+        case .application:
+            return .application(bundleIDs: selection.bundleIDs, displayID: selection.displayID)
+        }
     }
 
     /// True when the SCStream stopped because the user clicked the
