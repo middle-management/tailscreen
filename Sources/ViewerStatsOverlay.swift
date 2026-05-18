@@ -188,7 +188,7 @@ struct Sparkline: View {
                     linePath(points: points)
                         .stroke(tint, style: StrokeStyle(lineWidth: 1.5, lineJoin: .round))
                 }
-                if let last = points.last(where: { $0 != nil }) ?? nil {
+                if let last = points.compactMap({ $0 }).last {
                     Circle()
                         .fill(tint)
                         .frame(width: 4, height: 4)
@@ -231,10 +231,13 @@ struct Sparkline: View {
         var path = Path()
         var run: [CGPoint] = []
         func flush() {
-            guard run.count >= 2 else { run.removeAll(); return }
-            path.move(to: CGPoint(x: run.first!.x, y: size.height))
+            guard let first = run.first, let last = run.last, run.count >= 2 else {
+                run.removeAll()
+                return
+            }
+            path.move(to: CGPoint(x: first.x, y: size.height))
             for p in run { path.addLine(to: p) }
-            path.addLine(to: CGPoint(x: run.last!.x, y: size.height))
+            path.addLine(to: CGPoint(x: last.x, y: size.height))
             path.closeSubpath()
             run.removeAll()
         }
