@@ -70,6 +70,19 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     private let viewers = OSAllocatedUnfairLock<[String: Viewer]>(initialState: [:])
     private let parameterSets = OSAllocatedUnfairLock<CodecParameterSets?>(initialState: nil)
     private let annotationConnections = OSAllocatedUnfairLock<[UUID: IncomingConnection]>(initialState: [:])
+    /// Per-connection set of annotation UUIDs the viewer has produced.
+    /// Keyed by the server-side connection UUID (same key as
+    /// ``annotationConnections``); the value is every annotation
+    /// `.id` that's still considered live on this viewer's behalf
+    /// (mid-drag entries the viewer never finished count too — they've
+    /// already been added to the sharer's overlay via in-progress
+    /// `.add` ops). Cleared incrementally as the viewer's own
+    /// `.undo` / `.clearAll` ops arrive, and en masse in
+    /// `receiveAnnotations`' defer when their connection drops — we
+    /// fire `.undo` for each remaining UUID so the sharer's overlay
+    /// (and every other viewer, via the captured video stream)
+    /// stops showing strokes nobody is around to clean up.
+    private let annotationsByConnection = OSAllocatedUnfairLock<[UUID: Set<UUID>]>(initialState: [:])
 
     /// Public projection of `viewers` that the UI can read without touching
     /// the internal RTP bookkeeping. Kept in lockstep with `viewers` from
@@ -488,6 +501,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
                 let conn = try await listener.accept(timeout: 1.0)
                 let id = UUID()
                 annotationConnections.withLock { $0[id] = conn }
+                annotationsByConnection.withLock { $0[id] = [] }
                 Task { [weak self] in
                     await self?.receiveAnnotations(from: conn, id: id)
                 }
@@ -501,9 +515,21 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// until the connection closes or the server stops. A peer-discovery
     /// probe just hangs up after a successful connect — the receive call
     /// errors quickly and we tear the entry down with no noise.
+    ///
+    /// On exit, fires `.undo` for every annotation UUID this viewer was
+    /// still on the hook for so their strokes don't outlive them on the
+    /// sharer's overlay (and, via the captured video, on every other
+    /// viewer). Peer-discovery probes leave the tracking set empty, so
+    /// the cleanup is a no-op for them.
     private func receiveAnnotations(from connection: IncomingConnection, id: UUID) async {
         defer {
             _ = annotationConnections.withLock { $0.removeValue(forKey: id) }
+            let outstanding = annotationsByConnection.withLock { $0.removeValue(forKey: id) ?? [] }
+            if !outstanding.isEmpty, let callback = onAnnotationReceived {
+                for uuid in outstanding {
+                    callback(.undo(uuid))
+                }
+            }
             Task { await connection.close() }
         }
         var parser = ScreenShareMessageParser()
@@ -514,6 +540,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
                 parser.append(chunk)
                 while let message = parser.next() {
                     if case .annotation(let op) = message {
+                        trackAnnotationOp(op, connectionID: id)
                         onAnnotationReceived?(op)
                     }
                 }
@@ -522,6 +549,25 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
                 continue  // poll timeout or transient — keep reading
             } catch {
                 return
+            }
+        }
+    }
+
+    /// Update the per-connection annotation-UUID set in response to an
+    /// inbound op. `.add` registers the UUID (idempotent for mid-drag
+    /// progressive updates that share an id), `.undo` retires it (already
+    /// removed on the canvas — no need to redo on disconnect), and
+    /// `.clearAll` wipes the set (the viewer asked everyone to clear, so
+    /// they have nothing left to undo on the way out).
+    private func trackAnnotationOp(_ op: AnnotationOp, connectionID: UUID) {
+        annotationsByConnection.withLock { state in
+            switch op {
+            case .add(let annotation):
+                state[connectionID, default: []].insert(annotation.id)
+            case .undo(let annotationID):
+                state[connectionID]?.remove(annotationID)
+            case .clearAll:
+                state[connectionID] = []
             }
         }
     }
@@ -1041,7 +1087,13 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         logger.log("Server stop: probe listener closed")
 
         // Close any in-flight annotation back-channels in parallel; their
-        // receive tasks will see the close and exit naturally.
+        // receive tasks will see the close and exit naturally. Wipe the
+        // per-connection annotation-UUID map first so each receive loop's
+        // defer sees an empty set — otherwise the cleanup path would fire
+        // `.undo` ops back through `onAnnotationReceived` *after* AppState
+        // has already torn the overlay down, which would re-create the
+        // overlay just to apply a no-op undo.
+        annotationsByConnection.withLock { $0.removeAll() }
         let conns = annotationConnections.withLock { state -> [IncomingConnection] in
             let values = Array(state.values)
             state.removeAll()
