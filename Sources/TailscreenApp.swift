@@ -14,12 +14,6 @@ struct TailscreenApp: App {
         MenuBarExtra {
             MenuBarView()
                 .environmentObject(appState)
-                .task {
-                    // Install the NSMenu the first time the menubar
-                    // popover renders. Doing this in TailscreenApp.init()
-                    // crashes — NSApp isn't set up yet at that point.
-                    AppMenu.installIfNeeded()
-                }
         } label: {
             menubarIcon
         }

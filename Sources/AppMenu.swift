@@ -27,6 +27,14 @@ enum AppMenu {
         wireActivationPolicy()
     }
 
+    /// Re-apply `NSApp.mainMenu` without rebuilding the activation-policy
+    /// observers. Called from the app delegate's
+    /// `applicationDidBecomeActive` to recover from SwiftUI's
+    /// `MenuBarExtra` resetting the menu after a scene update.
+    static func reinstall() {
+        install()
+    }
+
     /// Without this, Tailscreen stays at `.accessory` activation policy (the
     /// MenuBarExtra default). When the viewer/sharer window becomes key
     /// macOS keeps showing whatever `.regular` app's menu bar was last
@@ -76,7 +84,12 @@ enum AppMenu {
         let main = NSMenu(title: "MainMenu")
 
         // ── Application menu (titled by the active app, "Tailscreen") ──
-        let appMenuItem = NSMenuItem()
+        // Each top-level menu sets its parent NSMenuItem.title explicitly:
+        // macOS 15+ ("Liquid Glass") derives the menu-bar label from the
+        // item's title rather than falling back to the submenu's title,
+        // so items left at the empty default silently disappear from the
+        // bar (their submenus and shortcuts still exist, just unreachable).
+        let appMenuItem = NSMenuItem(title: "Tailscreen", action: nil, keyEquivalent: "")
         let appMenu = NSMenu(title: "Tailscreen")
         appMenuItem.submenu = appMenu
 
@@ -115,7 +128,7 @@ enum AppMenu {
                 keyEquivalent: "q"))
 
         // ── File ──
-        let fileItem = NSMenuItem()
+        let fileItem = NSMenuItem(title: "File", action: nil, keyEquivalent: "")
         let fileMenu = NSMenu(title: "File")
         fileItem.submenu = fileMenu
 
@@ -134,7 +147,7 @@ enum AppMenu {
         fileMenu.addItem(micItem)
 
         // ── Edit ──
-        let editItem = NSMenuItem()
+        let editItem = NSMenuItem(title: "Edit", action: nil, keyEquivalent: "")
         let editMenu = NSMenu(title: "Edit")
         editItem.submenu = editMenu
 
@@ -155,8 +168,34 @@ enum AppMenu {
         clearAll.target = ViewerCommands.shared
         editMenu.addItem(clearAll)
 
+        // ── View ──
+        let viewItem = NSMenuItem(title: "View", action: nil, keyEquivalent: "")
+        let viewMenu = NSMenu(title: "View")
+        viewItem.submenu = viewMenu
+
+        let actualSize = NSMenuItem(
+            title: "Actual Size",
+            action: #selector(ViewerCommands.viewerZoomActualSize(_:)),
+            keyEquivalent: "0")
+        actualSize.target = ViewerCommands.shared
+        viewMenu.addItem(actualSize)
+
+        let zoomHalf = NSMenuItem(
+            title: "Zoom to 50%",
+            action: #selector(ViewerCommands.viewerZoomHalf(_:)),
+            keyEquivalent: "-")
+        zoomHalf.target = ViewerCommands.shared
+        viewMenu.addItem(zoomHalf)
+
+        let zoomDouble = NSMenuItem(
+            title: "Zoom to 200%",
+            action: #selector(ViewerCommands.viewerZoomDouble(_:)),
+            keyEquivalent: "+")
+        zoomDouble.target = ViewerCommands.shared
+        viewMenu.addItem(zoomDouble)
+
         // ── Tools ──
-        let toolsItem = NSMenuItem()
+        let toolsItem = NSMenuItem(title: "Tools", action: nil, keyEquivalent: "")
         let toolsMenu = NSMenu(title: "Tools")
         toolsItem.submenu = toolsMenu
 
@@ -175,7 +214,7 @@ enum AppMenu {
         }
 
         // ── Window (standard) ──
-        let windowItem = NSMenuItem()
+        let windowItem = NSMenuItem(title: "Window", action: nil, keyEquivalent: "")
         let windowMenu = NSMenu(title: "Window")
         windowItem.submenu = windowMenu
         windowMenu.addItem(
@@ -217,6 +256,7 @@ enum AppMenu {
         main.addItem(appMenuItem)
         main.addItem(fileItem)
         main.addItem(editItem)
+        main.addItem(viewItem)
         main.addItem(toolsItem)
         main.addItem(windowItem)
         main.addItem(helpItem)
