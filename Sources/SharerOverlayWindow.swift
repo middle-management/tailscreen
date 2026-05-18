@@ -299,13 +299,20 @@ final class SharerOverlayWindow {
 
     /// Frame (Quartz coordinates, top-left origin on the primary display) of
     /// the window with the given ID, or nil if it isn't currently on-screen.
-    /// `optionIncludingWindow` already filters to just this ID, so no extra
-    /// match-by-number scan is needed.
+    /// `kCGWindowListOptionIncludingWindow` is only well-defined when paired
+    /// with `OnScreenAboveWindow` / `BelowWindow`; standalone it returns the
+    /// full on-screen list and `first` would grab whatever happens to be at
+    /// the top of the z-order (often a tiny chrome element). Fetching all
+    /// on-screen windows and filtering by `kCGWindowNumber` is the reliable
+    /// path.
     private static func cgWindowFrame(for windowID: CGWindowID) -> CGRect? {
-        let options: CGWindowListOption = [.optionIncludingWindow, .optionOnScreenOnly]
+        let options: CGWindowListOption = .optionOnScreenOnly
         guard
-            let infos = CGWindowListCopyWindowInfo(options, windowID) as? [[String: Any]],
-            let info = infos.first,
+            let infos = CGWindowListCopyWindowInfo(options, kCGNullWindowID)
+                as? [[String: Any]],
+            let info = infos.first(where: {
+                ($0[kCGWindowNumber as String] as? UInt32) == windowID
+            }),
             let dict = info[kCGWindowBounds as String] as? [String: Any],
             let bounds = CGRect(dictionaryRepresentation: dict as CFDictionary)
         else { return nil }

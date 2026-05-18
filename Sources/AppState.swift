@@ -625,11 +625,18 @@ class AppState: ObservableObject {
     private func ensureSharerOverlay() -> SharerOverlayWindow {
         if let overlay = sharerOverlay { return overlay }
         let overlay = SharerOverlayWindow(mode: Self.overlayMode(for: currentSelection))
-        // In display mode the sharer's strokes appear in the captured video
-        // automatically (the panel is in SCStream's capture region), so we
-        // don't broadcast them again. In window / application modes they
-        // are still sharer-local — see the comment above.
-        overlay.onOp = { _ in }
+        // Broadcast sharer-painted strokes through the server so every
+        // connected viewer applies them on their own canvas. In display
+        // mode the strokes also still flow through SCStream's capture of
+        // the overlay panel (the panel sits inside the captured display
+        // region) — that's redundant, not wrong, and lets a viewer who
+        // joins mid-stroke render an in-progress one from video bytes
+        // alone if their annotation back-channel is down.
+        overlay.onOp = { [weak self] op in
+            Task { [weak self] in
+                await self?.server?.broadcastAnnotation(op)
+            }
+        }
         overlay.show()
         sharerOverlay = overlay
         return overlay
@@ -739,6 +746,17 @@ class AppState: ObservableObject {
         do {
             let c = TailscaleScreenShareClient(renderer: renderer)
             client = c
+
+            // Server fans out sharer-painted strokes (and other viewers'
+            // strokes) over the annotation back-channel. Apply them to the
+            // local overlay's model so window / application share modes
+            // render annotations the same way display mode used to via
+            // SCStream picking up the overlay panel.
+            c.onAnnotationReceived = { [weak self] op in
+                Task { @MainActor [weak self] in
+                    self?.viewerOverlay?.model.apply(remoteOp: op)
+                }
+            }
 
             // Install the audio callback BEFORE connecting. HELLO_ACK can
             // arrive on the receive loop the moment connect() returns (or

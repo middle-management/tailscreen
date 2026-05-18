@@ -80,10 +80,8 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// `.undo` / `.clearAll` ops arrive, and en masse in
     /// `receiveAnnotations`' defer when their connection drops — we
     /// fire `.undo` for each remaining UUID so the sharer's overlay
-    /// stops showing strokes nobody is around to clean up. Other viewers
-    /// only see those undos in display-share mode, where the captured
-    /// video carries the overlay; in window / application modes the
-    /// undo is sharer-local until a server-side annotation fan-out lands.
+    /// (and every other viewer, via `broadcastAnnotation`) stops showing
+    /// strokes nobody is around to clean up.
     private let annotationsByConnection = OSAllocatedUnfairLock<[UUID: Set<UUID>]>(initialState: [:])
 
     /// Public projection of `viewers` that the UI can read without touching
@@ -519,19 +517,27 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// errors quickly and we tear the entry down with no noise.
     ///
     /// On exit, fires `.undo` for every annotation UUID this viewer was
-    /// still on the hook for so their strokes don't outlive them on the
-    /// sharer's overlay. In display-share mode those undos also reach
-    /// every other viewer through the captured video; in window /
-    /// application modes only the sharer sees them until a server-side
-    /// annotation fan-out is wired up. Peer-discovery probes leave the
-    /// tracking set empty, so the cleanup is a no-op for them.
+    /// still on the hook for so their strokes don't outlive them — both
+    /// on the sharer's local overlay (via `onAnnotationReceived`) and on
+    /// every other viewer's overlay (via `broadcastAnnotation`).
+    /// Peer-discovery probes leave the tracking set empty, so the
+    /// cleanup is a no-op for them.
     private func receiveAnnotations(from connection: IncomingConnection, id: UUID) async {
         defer {
             _ = annotationConnections.withLock { $0.removeValue(forKey: id) }
             let outstanding = annotationsByConnection.withLock { $0.removeValue(forKey: id) ?? [] }
-            if !outstanding.isEmpty, let callback = onAnnotationReceived {
+            if !outstanding.isEmpty {
+                // Fire `.undo` for every UUID this viewer was on the hook
+                // for so their strokes don't outlive them — both on the
+                // sharer's local overlay (via `onAnnotationReceived`) and
+                // on every other viewer's overlay (via `broadcastAnnotation`).
+                let cb = onAnnotationReceived
                 for uuid in outstanding {
-                    callback(.undo(uuid))
+                    let op: AnnotationOp = .undo(uuid)
+                    cb?(op)
+                    Task { [weak self] in
+                        await self?.broadcastAnnotation(op, excludingConnection: id)
+                    }
                 }
             }
             Task { await connection.close() }
@@ -546,6 +552,13 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
                     if case .annotation(let op) = message {
                         trackAnnotationOp(op, connectionID: id)
                         onAnnotationReceived?(op)
+                        // Fan out to every OTHER viewer so window /
+                        // application share modes can carry annotations
+                        // peer-to-peer instead of relying on SCStream
+                        // catching the sharer's overlay panel.
+                        Task { [weak self] in
+                            await self?.broadcastAnnotation(op, excludingConnection: id)
+                        }
                     }
                 }
             } catch TailscaleError.readFailed {
@@ -553,6 +566,40 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
                 continue  // poll timeout or transient — keep reading
             } catch {
                 return
+            }
+        }
+    }
+
+    /// Broadcast a framed `AnnotationOp` to every annotation back-channel
+    /// connection, optionally skipping the one that originated the op
+    /// (to avoid echoing a viewer's stroke back to them). Used both for
+    /// sharer-painted strokes (no exclusion — sharer has no annotation
+    /// connection) and viewer-to-viewer fan-out (exclude the source).
+    /// Send failures are logged and ignored; the receive loop on the
+    /// far side will tear the stale connection down on its own.
+    func broadcastAnnotation(_ op: AnnotationOp, excludingConnection: UUID? = nil) async {
+        let data = ScreenShareMessage.annotation(op).encode()
+        let conns = annotationConnections.withLock { state -> [IncomingConnection] in
+            state.compactMap { (id, conn) in
+                id == excludingConnection ? nil : conn
+            }
+        }
+        guard !conns.isEmpty else { return }
+        await withTaskGroup(of: Void.self) { group in
+            for conn in conns {
+                group.addTask {
+                    do {
+                        // `IncomingConnection` is itself an actor; its
+                        // `send` is auto-serialized, so concurrent
+                        // broadcasts can't interleave bytes on the same
+                        // socket even though they're fanned out via a
+                        // task group here.
+                        try await conn.send(data)
+                    } catch {
+                        // Connection's dead or buffer-full; the receive
+                        // task's defer will clean up the entry.
+                    }
+                }
             }
         }
     }
