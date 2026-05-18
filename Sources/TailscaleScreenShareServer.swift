@@ -80,8 +80,10 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// `.undo` / `.clearAll` ops arrive, and en masse in
     /// `receiveAnnotations`' defer when their connection drops — we
     /// fire `.undo` for each remaining UUID so the sharer's overlay
-    /// (and every other viewer, via the captured video stream)
-    /// stops showing strokes nobody is around to clean up.
+    /// stops showing strokes nobody is around to clean up. Other viewers
+    /// only see those undos in display-share mode, where the captured
+    /// video carries the overlay; in window / application modes the
+    /// undo is sharer-local until a server-side annotation fan-out lands.
     private let annotationsByConnection = OSAllocatedUnfairLock<[UUID: Set<UUID>]>(initialState: [:])
 
     /// Public projection of `viewers` that the UI can read without touching
@@ -518,9 +520,11 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     ///
     /// On exit, fires `.undo` for every annotation UUID this viewer was
     /// still on the hook for so their strokes don't outlive them on the
-    /// sharer's overlay (and, via the captured video, on every other
-    /// viewer). Peer-discovery probes leave the tracking set empty, so
-    /// the cleanup is a no-op for them.
+    /// sharer's overlay. In display-share mode those undos also reach
+    /// every other viewer through the captured video; in window /
+    /// application modes only the sharer sees them until a server-side
+    /// annotation fan-out is wired up. Peer-discovery probes leave the
+    /// tracking set empty, so the cleanup is a no-op for them.
     private func receiveAnnotations(from connection: IncomingConnection, id: UUID) async {
         defer {
             _ = annotationConnections.withLock { $0.removeValue(forKey: id) }

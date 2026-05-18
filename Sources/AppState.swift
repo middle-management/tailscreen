@@ -443,11 +443,13 @@ class AppState: ObservableObject {
                 }
 
                 // Viewer-originated annotations land directly on the sharer's
-                // overlay panel. ScreenCaptureKit captures the panel (the
-                // helper's `SCContentFilter` excludes nothing — see
-                // `ScreenCapture.start`), so the drawings flow out to every
-                // viewer via the H.264 stream — no sharer→viewer broadcast
-                // needed.
+                // overlay panel. In display mode SCStream captures the panel
+                // along with the rest of the display, so the drawings flow
+                // out to every other viewer via the H.264 stream for free.
+                // In window / application modes the panel sits above (not
+                // inside) the captured surface, so for now those modes only
+                // mirror viewer strokes back to the sharer — a server-side
+                // annotation fan-out is needed to reach other viewers.
                 srv.onAnnotationReceived = { [weak self] op in
                     Task { @MainActor [weak self] in
                         self?.ensureSharerOverlay().apply(remoteOp: op)
@@ -586,15 +588,20 @@ class AppState: ObservableObject {
     }
 
     /// Create the sharer overlay lazily so it's always present when needed —
-    /// either the sharer toggles input on, or a viewer sends us an op. The
-    /// panel needs to be on-screen for ScreenCaptureKit to pick up its
-    /// annotations and carry them into the video for every viewer.
+    /// either the sharer toggles input on, or a viewer sends us an op.
+    /// In display mode the panel needs to be on-screen so ScreenCaptureKit
+    /// picks up its annotations and carries them into the video for every
+    /// viewer. In window / application modes the panel renders viewer ops
+    /// locally for the sharer; reaching other viewers will need a separate
+    /// server-side annotation fan-out.
     @discardableResult
     private func ensureSharerOverlay() -> SharerOverlayWindow {
         if let overlay = sharerOverlay { return overlay }
         let overlay = SharerOverlayWindow(mode: Self.overlayMode(for: currentSelection))
-        // Sharer's own strokes don't need to be transmitted; they appear in
-        // the video stream automatically.
+        // In display mode the sharer's strokes appear in the captured video
+        // automatically (the panel is in SCStream's capture region), so we
+        // don't broadcast them again. In window / application modes they
+        // are still sharer-local — see the comment above.
         overlay.onOp = { _ in }
         overlay.show()
         sharerOverlay = overlay
@@ -616,7 +623,7 @@ class AppState: ObservableObject {
             }
             return .display(nil)
         case .application:
-            return .application(bundleIDs: selection.bundleIDs, displayID: selection.displayID)
+            return .application(displayID: selection.displayID)
         }
     }
 

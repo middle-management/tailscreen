@@ -2,17 +2,23 @@ import AppKit
 import CoreGraphics
 
 /// Borderless transparent NSPanel that floats above the sharer's desktop at
-/// `.statusBar` level, so ScreenCaptureKit can stream annotations into the
-/// video for every viewer (display mode) and so the sharer sees viewer-drawn
-/// strokes pinned to the shared content (window / application modes).
+/// `.statusBar` level. Used as a render surface for viewer-drawn strokes
+/// pinned to the shared region, and — in display mode only — as the canvas
+/// SCStream picks up so the sharer's own strokes flow into the video for
+/// every viewer. (In window / application modes the panel sits on top of
+/// the captured surface, not inside it, so sharer strokes are local-only
+/// until a server-side annotation fan-out is wired up. Viewer-originated
+/// strokes still render correctly for the sharer.)
 ///
 /// The panel's footprint depends on what was shared:
 ///   * ``Mode/display`` — full screen on the captured display, joins every
 ///     Space (matches the SCStream's "everything on this display" capture).
 ///   * ``Mode/window`` — tracks the chosen window, follows its position and
 ///     size, hides when the window isn't on the current Space.
-///   * ``Mode/application`` — tracks the union of on-screen windows that
-///     belong to the picked bundle IDs, hides when none are visible.
+///   * ``Mode/application`` — full screen on the captured display (SCStream
+///     in application mode captures the whole display filtered to those
+///     apps, so viewer-sent normalized coords map onto the display rect,
+///     not the union of app-window rects).
 ///
 /// Toggling "Draw on Screen" shows/hides it and flips `ignoresMouseEvents` so
 /// clicks fall through when drawing is off but the panel stays around
@@ -24,7 +30,7 @@ final class SharerOverlayWindow {
     enum Mode {
         case display(CGDirectDisplayID?)
         case window(CGWindowID)
-        case application(bundleIDs: [String], displayID: CGDirectDisplayID?)
+        case application(displayID: CGDirectDisplayID?)
     }
 
     /// Subclass of NSPanel that accepts key events even though it's borderless
@@ -38,14 +44,29 @@ final class SharerOverlayWindow {
     let model: AnnotationCanvasModel
     private let host: AnnotationOverlayHostView
     private let mode: Mode
-    /// Polling timer for window/app modes. Nil in display mode (no tracking
-    /// needed — the panel is statically full-screen).
+    /// Polling timer for window mode. Nil for display / application modes
+    /// (panel is statically sized to the captured display).
     private var trackingTimer: Timer?
+    /// Notification observer token for display hot-plug / resolution change.
+    /// Released in `hide()`.
+    private var screenChangeObserver: NSObjectProtocol?
+    /// Consecutive ticks the tracked window has been missing from
+    /// CGWindowList's on-screen set. Used to debounce brief occlusion
+    /// (Mission Control, app switching) so the panel doesn't flicker.
+    private var consecutiveMisses: Int = 0
+    /// Threshold of misses before we hide the panel. At 20 Hz this is
+    /// ~150 ms — long enough to ride out Mission Control transitions,
+    /// short enough that a real Space switch hides the panel before the
+    /// user notices it lingering.
+    private static let missThreshold: Int = 3
 
     /// Fired by the overlay whenever the sharer draws / clears / undoes.
-    /// AppState wires this to nothing (sharer's drawings appear in the video
-    /// stream naturally in display mode) — we keep it here for symmetry with
-    /// the viewer.
+    /// In display mode the sharer's strokes also flow into the captured
+    /// video naturally because the panel is in SCStream's capture region,
+    /// so AppState typically wires this to a no-op there. In window /
+    /// application modes the panel is on top of (not inside) the captured
+    /// surface, so reaching other viewers needs a server-side fan-out
+    /// hooked up to this callback.
     var onOp: ((AnnotationOp) -> Void)? {
         get { model.onOp }
         set { model.onOp = newValue }
@@ -70,12 +91,13 @@ final class SharerOverlayWindow {
         panel.hasShadow = false
         panel.level = .statusBar
         switch mode {
-        case .display:
+        case .display, .application:
             // Cover every Space on the captured display — SCStream picks up
-            // the panel wherever the user is, so annotations land in the
-            // video regardless of which Space is foregrounded.
+            // the panel wherever the user is (display mode), and in
+            // application mode the captured surface is still the whole
+            // display filtered to those apps, so the overlay matches.
             panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
-        case .window, .application:
+        case .window:
             // Single-Space — the tracking loop hides the panel when the
             // shared window isn't on the user's current Space and re-shows
             // it when they switch back.
@@ -105,20 +127,27 @@ final class SharerOverlayWindow {
         }
     }
 
-    /// Ensure the panel is on-screen. Idempotent. Starts the window/app
-    /// tracking loop on first call; subsequent calls are no-ops on the loop.
+    /// Ensure the panel is on-screen. Idempotent. Starts the window
+    /// tracking loop on first call (window mode only); subsequent calls
+    /// are no-ops on the loop. Also subscribes to display-configuration
+    /// changes so the panel resizes if the user re-scales / hot-plugs.
     func show() {
         updateTrackedFrame()
         panel.orderFrontRegardless()
         startTrackingIfNeeded()
+        subscribeToScreenChangesIfNeeded()
     }
 
     /// Tear the panel down (used on stop sharing). Stops the tracking loop
-    /// too — leaving it running after the panel is gone would leak a timer
-    /// holding `self`.
+    /// and releases the screen-change observer — leaving them around after
+    /// the panel is gone would leak a timer / observer holding `self`.
     func hide() {
         trackingTimer?.invalidate()
         trackingTimer = nil
+        if let token = screenChangeObserver {
+            NotificationCenter.default.removeObserver(token)
+            screenChangeObserver = nil
+        }
         panel.orderOut(nil)
     }
 
@@ -164,12 +193,12 @@ final class SharerOverlayWindow {
         }
     }
 
-    /// Best-guess frame for the overlay at construction time, before the
-    /// tracking loop has had a chance to refine it. Display mode is static;
-    /// window/app modes refine on the first `show()` tick.
+    /// Best-guess frame for the overlay at construction time. Display and
+    /// application modes are static (sized to the captured display); window
+    /// mode refines on each tracking tick.
     private static func initialFrame(for mode: Mode) -> NSRect {
         switch mode {
-        case .display(let displayID):
+        case .display(let displayID), .application(let displayID):
             let screen = Self.screen(forDisplayID: displayID) ?? NSScreen.main
             return screen?.frame ?? NSRect(x: 0, y: 0, width: 1920, height: 1080)
         case .window(let windowID):
@@ -177,29 +206,26 @@ final class SharerOverlayWindow {
                 return cocoa
             }
             return NSScreen.main?.frame ?? NSRect(x: 0, y: 0, width: 1920, height: 1080)
-        case .application(let bundleIDs, let displayID):
-            if let cg = appWindowsUnionCGFrame(bundleIDs: bundleIDs),
-                let cocoa = cgToCocoaFrame(cg) {
-                return cocoa
-            }
-            let screen = Self.screen(forDisplayID: displayID) ?? NSScreen.main
-            return screen?.frame ?? NSRect(x: 0, y: 0, width: 1920, height: 1080)
         }
     }
 
-    /// In display mode the panel is static; in window/app modes a 20 Hz
-    /// polling loop keeps the panel pinned to the shared content as the user
-    /// moves / resizes it. Polling is simple and bounded — alternatives
-    /// (Accessibility observers, NSWorkspace notifications) need extra
-    /// entitlements or miss live drag updates.
+    /// Window mode runs a 20 Hz polling loop so the panel follows the
+    /// shared window through moves / resizes / Space switches. Polling
+    /// is simple and bounded — Accessibility observers and NSWorkspace
+    /// notifications either need extra entitlements or miss live-drag
+    /// updates. Display and application modes are static.
     private func startTrackingIfNeeded() {
         guard trackingTimer == nil else { return }
         switch mode {
-        case .display:
+        case .display, .application:
             return
-        case .window, .application:
+        case .window:
             let t = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
-                Task { @MainActor [weak self] in
+                // Timer was added to `RunLoop.main`, so this fires on the
+                // main thread — `assumeIsolated` skips the Task hop that
+                // would otherwise allocate per tick and defer the update
+                // by one run-loop iteration.
+                MainActor.assumeIsolated {
                     self?.updateTrackedFrame()
                 }
             }
@@ -208,28 +234,61 @@ final class SharerOverlayWindow {
         }
     }
 
-    /// Refresh the panel frame to match the currently shared window/app.
-    /// Hides the panel if the tracked content isn't on the current Space —
-    /// CGWindowList's on-screen-only filter only returns windows the user
-    /// can actually see right now.
+    /// Subscribe to display-configuration changes so the static panel
+    /// modes (display / application) resize on resolution change or
+    /// display hot-plug. Window mode picks the change up on the next
+    /// polling tick.
+    private func subscribeToScreenChangesIfNeeded() {
+        guard screenChangeObserver == nil else { return }
+        screenChangeObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.handleScreenParametersChanged()
+            }
+        }
+    }
+
+    /// On display config change, re-derive the static frame for display /
+    /// application modes. Window mode re-fits naturally on the next tick.
+    private func handleScreenParametersChanged() {
+        switch mode {
+        case .display, .application:
+            let frame = Self.initialFrame(for: mode)
+            if panel.frame != frame {
+                panel.setFrame(frame, display: false, animate: false)
+            }
+        case .window:
+            updateTrackedFrame()
+        }
+    }
+
+    /// Refresh the panel frame to match the currently shared window. Hides
+    /// the panel after `missThreshold` consecutive ticks where the window
+    /// isn't on the current Space — CGWindowList's on-screen-only filter
+    /// only returns windows the user can actually see right now, and brief
+    /// transitions (Mission Control, app switching) can drop the window
+    /// for a frame or two without it actually being gone.
     private func updateTrackedFrame() {
         let target: CGRect?
         switch mode {
-        case .display:
+        case .display, .application:
             return
         case .window(let id):
             target = Self.cgWindowFrame(for: id)
-        case .application(let bundleIDs, _):
-            target = Self.appWindowsUnionCGFrame(bundleIDs: bundleIDs)
         }
         guard let cgRect = target, let cocoa = Self.cgToCocoaFrame(cgRect),
             cocoa.width > 0, cocoa.height > 0
         else {
-            if panel.isVisible {
+            consecutiveMisses += 1
+            if consecutiveMisses >= Self.missThreshold, panel.isVisible {
                 panel.orderOut(nil)
             }
             return
         }
+        consecutiveMisses = 0
         if panel.frame != cocoa {
             panel.setFrame(cocoa, display: false, animate: false)
         }
@@ -240,54 +299,30 @@ final class SharerOverlayWindow {
 
     /// Frame (Quartz coordinates, top-left origin on the primary display) of
     /// the window with the given ID, or nil if it isn't currently on-screen.
+    /// `optionIncludingWindow` already filters to just this ID, so no extra
+    /// match-by-number scan is needed.
     private static func cgWindowFrame(for windowID: CGWindowID) -> CGRect? {
         let options: CGWindowListOption = [.optionIncludingWindow, .optionOnScreenOnly]
         guard
             let infos = CGWindowListCopyWindowInfo(options, windowID) as? [[String: Any]],
-            let info = infos.first(where: { ($0[kCGWindowNumber as String] as? UInt32) == windowID }),
+            let info = infos.first,
             let dict = info[kCGWindowBounds as String] as? [String: Any],
             let bounds = CGRect(dictionaryRepresentation: dict as CFDictionary)
         else { return nil }
         return bounds
     }
 
-    /// Union of bounds for every on-screen window belonging to one of
-    /// `bundleIDs`. Layer-0 windows only — skips menubar / dock / status-item
-    /// surfaces so the overlay doesn't end up oversized when the user has a
-    /// taskbar app in the share set.
-    private static func appWindowsUnionCGFrame(bundleIDs: [String]) -> CGRect? {
-        guard !bundleIDs.isEmpty else { return nil }
-        let bundleSet = Set(bundleIDs)
-        let pidToBundle: [pid_t: String] = NSWorkspace.shared.runningApplications.reduce(into: [:]) { acc, app in
-            if let b = app.bundleIdentifier {
-                acc[app.processIdentifier] = b
-            }
-        }
-        let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
-        guard let list = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
-            return nil
-        }
-        var union: CGRect?
-        for info in list {
-            guard let layer = info[kCGWindowLayer as String] as? Int, layer == 0,
-                let pidRaw = info[kCGWindowOwnerPID as String] as? Int32,
-                let bundle = pidToBundle[pid_t(pidRaw)],
-                bundleSet.contains(bundle),
-                let dict = info[kCGWindowBounds as String] as? [String: Any],
-                let bounds = CGRect(dictionaryRepresentation: dict as CFDictionary),
-                bounds.width > 0, bounds.height > 0
-            else { continue }
-            union = union?.union(bounds) ?? bounds
-        }
-        return union
-    }
-
     /// Translate a CGWindowList rectangle (top-left origin on the primary
     /// display) into Cocoa global coordinates (bottom-left origin on the
     /// primary display) so the result is directly usable as an NSWindow
-    /// frame.
+    /// frame. The "primary" display per AppKit's coordinate system is the
+    /// one whose frame origin is (0, 0) — not necessarily `screens.first`,
+    /// which is just whatever the order returned by IOKit happens to be.
     private static func cgToCocoaFrame(_ cgRect: CGRect) -> NSRect? {
-        guard let primary = NSScreen.screens.first else { return nil }
+        let primary =
+            NSScreen.screens.first(where: { $0.frame.origin == .zero })
+            ?? NSScreen.screens.first
+        guard let primary else { return nil }
         let primaryHeight = primary.frame.height
         return NSRect(
             x: cgRect.origin.x,
