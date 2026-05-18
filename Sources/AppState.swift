@@ -709,7 +709,7 @@ class AppState: ObservableObject {
         if let cv = win.contentView {
             hostFrame = cv.bounds
         } else {
-            print("ensureViewer: NSWindow.contentView was nil; falling back to window frame")
+            logger.log("ensureViewer: NSWindow.contentView was nil; falling back to window frame")
             hostFrame = NSRect(origin: .zero, size: win.frame.size)
         }
         let host = AspectFitHostView(frame: hostFrame)
@@ -865,7 +865,7 @@ class AppState: ObservableObject {
         guard let appSupport = FileManager.default.urls(
             for: .applicationSupportDirectory, in: .userDomainMask
         ).first else {
-            print("📱 [AppState] No Application Support URL available; skipping silent restore")
+            logger.log("No Application Support URL available; skipping silent restore")
             return
         }
         let statePath = appSupport
@@ -965,7 +965,7 @@ class AppState: ObservableObject {
             ).first {
                 appSupport = url
             } else {
-                print("📱 [AppState] No Application Support URL; falling back to ~/Library/Application Support")
+                logger.log("No Application Support URL; falling back to ~/Library/Application Support")
                 appSupport = URL(fileURLWithPath: NSHomeDirectory())
                     .appendingPathComponent("Library/Application Support")
             }
