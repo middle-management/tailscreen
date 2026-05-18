@@ -7,16 +7,16 @@ struct MenuBarView: View {
     @State private var viewID = UUID()
 
     var body: some View {
+        // Errors surface via `AppState.presentError` driving an
+        // `NSAlert` directly — a SwiftUI `.alert` here lives inside the
+        // `MenuBarExtra(.window)` popover, which dismisses on any click
+        // outside its bounds, including the alert's own buttons, before
+        // the handler can run.
         mainView
-        .alert(appState.alertTitle, isPresented: $appState.showAlert) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(appState.alertMessage)
-        }
-        .id(viewID)
-        .onAppear {
-            viewID = UUID()
-        }
+            .id(viewID)
+            .onAppear {
+                viewID = UUID()
+            }
     }
 
     @ViewBuilder
@@ -533,14 +533,18 @@ private struct DisplayPickerSection: View {
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     Button {
+                        // Drive the TCC prompt via the CoreGraphics
+                        // surface (CGRequestScreenCaptureAccess) so the
+                        // main process never has to touch
+                        // SCShareableContent. If the user has previously
+                        // denied access, this no-ops and the AppState
+                        // shim surfaces the System Settings deep-link.
                         Task {
-                            await appState.startSharing(displayID: nil)
-                            // Re-probe once the user has interacted with the
-                            // OS prompt — populates the picker for next open.
+                            await appState.requestPermission()
                             await appState.refreshDisplays()
                         }
                     } label: {
-                        Text("Share my screen").frame(maxWidth: .infinity)
+                        Text("Grant Permission").frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)

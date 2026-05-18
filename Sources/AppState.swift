@@ -38,9 +38,6 @@ class AppState: ObservableObject {
     @Published var connectionState: ConnectionState = .idle
     @Published var connectedHostname: String?
     @Published var statusMessage = ""
-    @Published var showAlert = false
-    @Published var alertTitle = ""
-    @Published var alertMessage = ""
     /// Whether the sharer's drawing overlay panel is currently visible and
     /// accepting input. The panel itself is only created while sharing.
     @Published var isSharerOverlayVisible = false
@@ -203,6 +200,26 @@ class AppState: ObservableObject {
             }
         )
 
+        // Display hot-plug. NSApplication posts this whenever a
+        // display is attached, detached, rearranged, or its resolution
+        // changes. Re-enumerate `availableDisplays` so the picker
+        // stays accurate without the user having to re-open the
+        // menubar popover. Window-targeted capture is intentionally
+        // deferred — CLAUDE.md is explicit that the main process must
+        // never call `SCShareableContent`, and the window list lives
+        // behind that API.
+        notificationObservers.append(
+            NotificationCenter.default.addObserver(
+                forName: NSApplication.didChangeScreenParametersNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    await self?.refreshDisplays()
+                }
+            }
+        )
+
         // ⌃⌥M from anywhere — toggle mic without finding the menubar
         // popover or clicking through. Useful during a screen share
         // when the popover isn't visible.
@@ -262,6 +279,22 @@ class AppState: ObservableObject {
     }
 
     func startSharing(displayID: CGDirectDisplayID? = nil) async {
+        // Proactive permission gate. Before we spawn the helper
+        // subprocess (which is where SCStream errors land on a
+        // permission denial), surface the issue here with actionable
+        // guidance. Without this, the first-run flow used to fail
+        // mid-bring-up and surface a generic SCStream error after the
+        // user had already waited through the cool-down + watchdog.
+        // `requestPermissionNonInvasive` triggers the TCC prompt on
+        // first call, then returns the current grant state.
+        if !ScreenCapture.hasPermission() {
+            let granted = ScreenCapture.requestPermissionNonInvasive()
+            if !granted {
+                presentScreenRecordingDenied()
+                return
+            }
+        }
+
         sharingState = .starting
         // Cleanup contract: any path out of this function (success,
         // failure, cancellation) leaves `sharingState` consistent.
@@ -357,10 +390,7 @@ class AppState: ObservableObject {
                     try cap.startPlayback()
                     self.micCapture = cap
                 } catch {
-                    showAlertMessage(
-                        title: "Voice Init Failed",
-                        message: "Voice could not be initialized: \(error.localizedDescription). Voice will be unavailable for this share session."
-                    )
+                    presentError(.voiceInitFailed(error))
                 }
 
                 do {
@@ -386,25 +416,13 @@ class AppState: ObservableObject {
                         return
                     }
                     if case ScreenCaptureError.startTimeout = error {
-                        showAlertMessage(
-                            title: "Couldn't Start Sharing",
-                            message: "macOS didn't return shareable screens in time. If this is the first time you've shared, grant Tailscreen permission in System Settings → Privacy & Security → Screen Recording, then try again."
-                        )
+                        presentError(.screenCaptureStartTimeout())
                     } else if case ScreenCaptureError.bundleSlotPoisoned = error {
-                        showAlertMessage(
-                            title: "Restart Required",
-                            message: "macOS's screen-recording daemon is in a stuck state for Tailscreen and won't deliver any more frames until the app restarts. This usually follows a startCapture timeout or a stream interruption. Quit Tailscreen (⌘Q) and reopen — sharing will work again."
-                        )
+                        presentError(.screenCaptureBundlePoisoned())
                     } else if case ScreenCaptureError.noFramesDelivered = error {
-                        showAlertMessage(
-                            title: "Couldn't Start Sharing",
-                            message: "macOS accepted the screen-capture request but never delivered any frames. This usually means another Tailscreen process is already sharing — quit other instances and try again. If the problem persists, run `killall replayd` in Terminal (macOS will auto-restart it) or reboot."
-                        )
+                        presentError(.screenCaptureNoFrames())
                     } else {
-                        showAlertMessage(
-                            title: "Couldn't Start Sharing",
-                            message: error.localizedDescription
-                        )
+                        presentError(.screenCaptureGeneric(error))
                     }
                     return
                 }
@@ -426,8 +444,7 @@ class AppState: ObservableObject {
 
             sharingState = .active
         } catch {
-            showAlertMessage(
-                title: "Error", message: "Failed to start sharing: \(error.localizedDescription)")
+            presentError(.sharingGeneric(error))
         }
     }
 
@@ -553,10 +570,7 @@ class AppState: ObservableObject {
 
     func toggleMic() async {
         guard let voice = voiceChannel, let cap = micCapture else {
-            showAlertMessage(
-                title: "Voice Not Ready",
-                message: "Voice is only available during an active share."
-            )
+            presentError(.voiceNotReady())
             return
         }
         if isMicOn {
@@ -570,10 +584,7 @@ class AppState: ObservableObject {
             voice.isMuted = false
             isMicOn = true
         } catch {
-            showAlertMessage(
-                title: "Microphone Unavailable",
-                message: "Tailscreen could not start the microphone: \(error.localizedDescription). Check System Settings → Privacy & Security → Microphone."
-            )
+            presentError(.microphoneUnavailable(error))
             isMicOn = false
         }
     }
@@ -616,10 +627,7 @@ class AppState: ObservableObject {
                         try cap.startPlayback()
                         self.micCapture = cap
                     } catch {
-                        self.showAlertMessage(
-                            title: "Voice Init Failed",
-                            message: error.localizedDescription
-                        )
+                        self.presentError(.voiceViewerInitFailed(error))
                     }
                 }
             }
@@ -641,9 +649,7 @@ class AppState: ObservableObject {
             viewerWindow?.orderFrontRegardless()
             viewerWindow?.makeKeyAndOrderFront(nil)
         } catch {
-            showAlertMessage(
-                title: "Connection Failed",
-                message: "Could not connect to \(host): \(error.localizedDescription)")
+            presentError(.connectionFailed(host: host, underlying: error))
             client = nil
         }
     }
@@ -802,11 +808,7 @@ class AppState: ObservableObject {
         // Need an active Tailscale node to discover peers
         // Try to get it from either server or client
         guard let node = server?.node ?? client?.node ?? self.node else {
-            showAlertMessage(
-                title: "Discovery Failed",
-                message:
-                    "Sign in with Tailscale first to discover other Tailscreen instances on your tailnet."
-            )
+            presentError(.discoveryUnauthenticated())
             return
         }
 
@@ -831,20 +833,30 @@ class AppState: ObservableObject {
             // Empty list is already reflected inline in the Browse sheet —
             // no popup needed.
         } catch {
-            showAlertMessage(title: "Discovery Failed", message: error.localizedDescription)
+            presentError(.discoveryFailed(error))
         }
         isDiscovering = false
     }
 
+    /// Trigger the macOS Screen Recording TCC prompt (or surface a
+    /// "go to System Settings" guidance alert if the user has already
+    /// denied access). Uses `CGRequestScreenCaptureAccess` so the main
+    /// process never has to touch `SCShareableContent` — see the
+    /// CLAUDE.md warning. Safe to call on every "Share my screen"
+    /// click; after the first grant it's a no-op.
     func requestPermission() async {
-        do {
-            try await ScreenCapture.requestPermission()
-        } catch {
-            showAlertMessage(
-                title: "Permission Error",
-                message:
-                    "Failed to request screen recording permission: \(error.localizedDescription)")
+        let granted = ScreenCapture.requestPermissionNonInvasive()
+        if !granted {
+            presentError(.screenRecordingDenied())
         }
+    }
+
+    /// Surface a clear guidance alert when Screen Recording permission
+    /// is denied. The alert includes a button that deep-links into
+    /// System Settings → Privacy & Security → Screen Recording so the
+    /// user can flip the toggle without hunting through panes.
+    func presentScreenRecordingDenied() {
+        presentError(.screenRecordingDenied())
     }
 
     /// Initialize Tailscale and trigger login flow
@@ -934,10 +946,7 @@ class AppState: ObservableObject {
             _ = silent
         } catch {
             logger.log("Login error: \(error)")
-            showAlertMessage(
-                title: "Login Failed",
-                message: "Failed to log in: \(error.localizedDescription)"
-            )
+            presentError(.loginFailed(error))
         }
     }
 
@@ -1070,10 +1079,7 @@ class AppState: ObservableObject {
             tailscaleIPs = []
 
         } catch {
-            showAlertMessage(
-                title: "Sign Out Failed",
-                message: error.localizedDescription
-            )
+            presentError(.signOutFailed(error))
         }
     }
 
@@ -1086,17 +1092,61 @@ class AppState: ObservableObject {
                 from: hostname
             )
         } catch {
-            showAlertMessage(
-                title: "Request Failed",
-                message: "Could not send request to \(peer.hostname): \(error.localizedDescription)"
-            )
+            presentError(.requestToShareFailed(peer: peer.hostname, underlying: error))
         }
     }
 
+    /// Surface an error to the user as an `NSAlert`. Using AppKit
+    /// directly (rather than a SwiftUI `.alert` modifier on the
+    /// menubar view) is required because `MenuBarExtra(.window)`
+    /// dismisses its popover on any click outside the popover bounds
+    /// — including the alert's own buttons — so SwiftUI button
+    /// handlers never run before the popover tears down. An
+    /// `NSAlert` runs in its own modal panel, independent of the
+    /// popover lifecycle. "Copy Details" re-presents the alert so
+    /// the user can read it again after copying.
+    func presentError(_ error: AppError) {
+        logger.log("AppError[\(error.code)] \(error.title) — \(error.message)")
+
+        NSApp.activate(ignoringOtherApps: true)
+
+        while true {
+            let alert = NSAlert()
+            alert.messageText = error.title
+            alert.informativeText = "\(error.message)\n\nError code: \(error.code)"
+            alert.alertStyle = .warning
+
+            if let action = error.action {
+                alert.addButton(withTitle: action.title)
+            }
+            alert.addButton(withTitle: "Copy Details")
+            alert.addButton(withTitle: "OK")
+
+            let response = alert.runModal()
+            let chosen = response.rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
+            let hasAction = error.action != nil
+
+            if hasAction && chosen == 0 {
+                error.action?.handler()
+                return
+            }
+            let copyIndex = hasAction ? 1 : 0
+            if chosen == copyIndex {
+                let pb = NSPasteboard.general
+                pb.clearContents()
+                pb.setString(error.copyableDetails(), forType: .string)
+                continue
+            }
+            return
+        }
+    }
+
+    /// Legacy free-form alert. Existing call sites use this — wraps
+    /// strings in `AppError.legacy(...)` so the richer surface still
+    /// gets a code + Copy Details, even when the call site doesn't
+    /// supply one.
     private func showAlertMessage(title: String, message: String) {
-        alertTitle = title
-        alertMessage = message
-        showAlert = true
+        presentError(.legacy(title: title, message: message))
     }
 }
 
