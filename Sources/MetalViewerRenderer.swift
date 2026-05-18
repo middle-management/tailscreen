@@ -63,14 +63,42 @@ final class ViewerStatsModel: ObservableObject, @unchecked Sendable {
     /// the overlay's hosting view's `isHidden`.
     @Published var isVisible: Bool = false
 
+    /// Rolling history of the last `historyCapacity` per-second snapshots:
+    /// latency in ms, bitrate in bps, drop percentage. Drives the sparkline
+    /// chart in `ViewerStatsOverlay`. Appended to on every 1 s flush from
+    /// `publishStatsTick`; oldest sample evicted on overflow.
+    @Published var history: [HistorySample] = []
+
+    /// Number of 1 s buckets retained for the sparkline. 60 ≈ one minute,
+    /// matches the width budget of the overlay (~180 px / 3 px-per-sample).
+    static let historyCapacity = 60
+
     func update(_ next: ViewerStats) {
         // Avoid spurious SwiftUI re-renders on identical snapshots.
         if next != stats { stats = next }
     }
 
+    func appendHistory(_ sample: HistorySample) {
+        var next = history
+        next.append(sample)
+        if next.count > Self.historyCapacity {
+            next.removeFirst(next.count - Self.historyCapacity)
+        }
+        history = next
+    }
+
     func reset() {
         stats = .empty
+        history = []
     }
+}
+
+/// One per-second snapshot fed into the sparkline buffer. `nil` fields mark
+/// gaps so the chart can break the line instead of drawing a fake zero.
+struct HistorySample: Sendable, Equatable {
+    var latencyMs: Double?
+    var bitrateBps: Double?
+    var droppedPct: Double?
 }
 
 /// Displays decoded `CVPixelBuffer` frames on a `CAMetalLayer`, driven by a
@@ -294,9 +322,16 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
     @objc private func displayLinkTick(_ sender: CADisplayLink) {
         if isInvalidated { return }
 
+        // Consume the pending buffer: take it out under the lock so the next
+        // `setPixelBuffer` call observes an empty slot and does NOT count its
+        // frame as dropped. Leaving the buffer in place after presenting was
+        // the prior behavior and made every subsequent decoder frame look
+        // like a drop, inflating `droppedPct` toward 50% on a steady stream.
         lock.lock()
         let buffer = pendingBuffer
         let receiveNs = pendingReceiveUptimeNs
+        pendingBuffer = nil
+        pendingReceiveUptimeNs = 0
         lock.unlock()
 
         guard let buffer = buffer else { return }
@@ -441,9 +476,16 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
             framesPresented: totalPresented,
             framesDropped: totalDropped
         )
+        let historySample = HistorySample(
+            latencyMs: latencyForSnapshot,
+            bitrateBps: bitrate,
+            droppedPct: droppedPct
+        )
 
         Task { @MainActor [weak self] in
-            self?.statsModel.update(snapshot)
+            guard let self else { return }
+            self.statsModel.update(snapshot)
+            self.statsModel.appendHistory(historySample)
         }
     }
 
