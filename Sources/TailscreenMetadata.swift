@@ -1,5 +1,5 @@
-import Foundation
 import AppKit
+import Foundation
 
 /// Metadata about a Tailscreen screen share
 struct TailscreenMetadata: Codable, Sendable {
@@ -126,13 +126,16 @@ class TailscreenMetadataService: ObservableObject {
     /// Create metadata JSON for API response
     func getMetadataJSON() throws -> Data {
         guard let metadata = currentMetadata else {
-            throw NSError(domain: "TailscreenMetadata", code: 1, userInfo: [NSLocalizedDescriptionKey: "No metadata available"])
+            throw NSError(
+                domain: "TailscreenMetadata", code: 1, userInfo: [NSLocalizedDescriptionKey: "No metadata available"])
         }
         return try JSONEncoder().encode(metadata)
     }
 
     /// Send a request to share to a peer
-    func sendRequestToShare(to host: String, port: UInt16 = NetworkConfig.tailscreenPort, from hostname: String) async throws {
+    func sendRequestToShare(
+        to host: String, port: UInt16 = NetworkConfig.tailscreenPort, from hostname: String
+    ) async throws {
         let url = URL(string: "http://\(host):\(port)/api/request")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -144,19 +147,26 @@ class TailscreenMetadataService: ObservableObject {
         let (_, response) = try await URLSession.shared.data(for: request)
 
         guard let httpResponse = response as? HTTPURLResponse,
-              (200...299).contains(httpResponse.statusCode) else {
-            throw NSError(domain: "TailscreenMetadata", code: 2, userInfo: [NSLocalizedDescriptionKey: "Failed to send request"])
+            (200...299).contains(httpResponse.statusCode)
+        else {
+            throw NSError(
+                domain: "TailscreenMetadata", code: 2, userInfo: [NSLocalizedDescriptionKey: "Failed to send request"])
         }
     }
 
     /// Fetch metadata from a peer
-    static func fetchMetadata(from host: String, port: UInt16 = NetworkConfig.tailscreenPort) async throws -> TailscreenMetadata {
+    static func fetchMetadata(
+        from host: String, port: UInt16 = NetworkConfig.tailscreenPort
+    ) async throws -> TailscreenMetadata {
         let url = URL(string: "http://\(host):\(port)/api/metadata")!
         let (data, response) = try await URLSession.shared.data(from: url)
 
         guard let httpResponse = response as? HTTPURLResponse,
-              (200...299).contains(httpResponse.statusCode) else {
-            throw NSError(domain: "TailscreenMetadata", code: 3, userInfo: [NSLocalizedDescriptionKey: "Failed to fetch metadata"])
+            (200...299).contains(httpResponse.statusCode)
+        else {
+            throw NSError(
+                domain: "TailscreenMetadata", code: 3, userInfo: [NSLocalizedDescriptionKey: "Failed to fetch metadata"]
+            )
         }
 
         return try JSONDecoder().decode(TailscreenMetadata.self, from: data)

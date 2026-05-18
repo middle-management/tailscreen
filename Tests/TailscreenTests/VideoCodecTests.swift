@@ -1,6 +1,7 @@
-import XCTest
-import CoreVideo
 import CoreMedia
+import CoreVideo
+import XCTest
+
 @testable import Tailscreen
 
 /// End-to-end: encode a synthetic frame with VideoEncoder, feed the captured
@@ -62,9 +63,12 @@ final class VideoCodecTests: XCTestCase {
         // back, e.g. on a host without HW HEVC).
         switch (encoder.codec, params) {
         case (.h264, .h264(let sps, let pps)):
-            XCTAssertFalse(sps.isEmpty); XCTAssertFalse(pps.isEmpty)
+            XCTAssertFalse(sps.isEmpty)
+            XCTAssertFalse(pps.isEmpty)
         case (.hevc, .hevc(let vps, let sps, let pps)):
-            XCTAssertFalse(vps.isEmpty); XCTAssertFalse(sps.isEmpty); XCTAssertFalse(pps.isEmpty)
+            XCTAssertFalse(vps.isEmpty)
+            XCTAssertFalse(sps.isEmpty)
+            XCTAssertFalse(pps.isEmpty)
         default:
             XCTFail("encoder.codec=\(encoder.codec) but params shape doesn't match")
         }
@@ -106,9 +110,12 @@ final class VideoCodecTests: XCTestCase {
         XCTAssertNotNil(encoder.cachedParameterSets, "cachedParameterSets should be populated after a keyframe")
     }
 
-    private static func skipIfNotProduced(_ result: XCTWaiter.Result, producer: String = "VideoToolbox encoder") throws {
+    private static func skipIfNotProduced(_ result: XCTWaiter.Result, producer: String = "VideoToolbox encoder") throws
+    {
         if result != .completed {
-            throw XCTSkip("\(producer) produced no output — likely a virtualized environment without hardware video acceleration.")
+            throw XCTSkip(
+                "\(producer) produced no output — likely a virtualized environment without hardware video acceleration."
+            )
         }
     }
 
@@ -122,14 +129,16 @@ final class VideoCodecTests: XCTestCase {
         private var isKey = false
 
         func setParams(_ p: CodecParameterSets) {
-            lock.lock(); defer { lock.unlock() }
+            lock.lock()
+            defer { lock.unlock() }
             self.params = p
         }
 
         /// Returns true exactly once, on the first keyframe we see (and only if
         /// the parameter sets are already cached).
         func recordFirstKeyframe(data: Data, isKeyframe: Bool) -> Bool {
-            lock.lock(); defer { lock.unlock() }
+            lock.lock()
+            defer { lock.unlock() }
             guard frame == nil, isKeyframe, params != nil else { return false }
             frame = data
             isKey = isKeyframe
@@ -137,7 +146,8 @@ final class VideoCodecTests: XCTestCase {
         }
 
         func snapshot() -> (params: CodecParameterSets?, frame: Data?, isKey: Bool) {
-            lock.lock(); defer { lock.unlock() }
+            lock.lock()
+            defer { lock.unlock() }
             return (params, frame, isKey)
         }
     }
@@ -155,8 +165,9 @@ final class VideoCodecTests: XCTestCase {
             &pb
         )
         guard status == kCVReturnSuccess, let buf = pb else {
-            throw NSError(domain: "VideoCodecTests", code: Int(status),
-                          userInfo: [NSLocalizedDescriptionKey: "CVPixelBufferCreate failed"])
+            throw NSError(
+                domain: "VideoCodecTests", code: Int(status),
+                userInfo: [NSLocalizedDescriptionKey: "CVPixelBufferCreate failed"])
         }
 
         CVPixelBufferLockBaseAddress(buf, [])
@@ -168,9 +179,9 @@ final class VideoCodecTests: XCTestCase {
             for x in 0..<width {
                 let px = row.advanced(by: x * 4)
                 px[0] = UInt8((x * 255 / max(1, width - 1)) & 0xFF)  // B
-                px[1] = UInt8((y * 255 / max(1, height - 1)) & 0xFF) // G
-                px[2] = 0x80                                          // R
-                px[3] = 0xFF                                          // A
+                px[1] = UInt8((y * 255 / max(1, height - 1)) & 0xFF)  // G
+                px[2] = 0x80  // R
+                px[3] = 0xFF  // A
             }
         }
         return buf

@@ -80,47 +80,56 @@ enum AppMenu {
         let appMenu = NSMenu(title: "Tailscreen")
         appMenuItem.submenu = appMenu
 
-        let aboutItem = NSMenuItem(title: "About Tailscreen",
-                                   action: #selector(AboutPanelTarget.showAboutPanel(_:)),
-                                   keyEquivalent: "")
+        let aboutItem = NSMenuItem(
+            title: "About Tailscreen",
+            action: #selector(AboutPanelTarget.showAboutPanel(_:)),
+            keyEquivalent: "")
         aboutItem.target = aboutTarget
         appMenu.addItem(aboutItem)
         appMenu.addItem(.separator())
 
-        let hide = NSMenuItem(title: "Hide Tailscreen",
-                              action: #selector(NSApplication.hide(_:)),
-                              keyEquivalent: "h")
+        let hide = NSMenuItem(
+            title: "Hide Tailscreen",
+            action: #selector(NSApplication.hide(_:)),
+            keyEquivalent: "h")
         appMenu.addItem(hide)
 
-        let hideOthers = NSMenuItem(title: "Hide Others",
-                                    action: #selector(NSApplication.hideOtherApplications(_:)),
-                                    keyEquivalent: "h")
+        let hideOthers = NSMenuItem(
+            title: "Hide Others",
+            action: #selector(NSApplication.hideOtherApplications(_:)),
+            keyEquivalent: "h")
         hideOthers.keyEquivalentModifierMask = [.option, .command]
         appMenu.addItem(hideOthers)
 
-        appMenu.addItem(.init(title: "Show All",
-                              action: #selector(NSApplication.unhideAllApplications(_:)),
-                              keyEquivalent: ""))
+        appMenu.addItem(
+            .init(
+                title: "Show All",
+                action: #selector(NSApplication.unhideAllApplications(_:)),
+                keyEquivalent: ""))
         appMenu.addItem(.separator())
 
-        appMenu.addItem(.init(title: "Quit Tailscreen",
-                              action: #selector(NSApplication.terminate(_:)),
-                              keyEquivalent: "q"))
+        appMenu.addItem(
+            .init(
+                title: "Quit Tailscreen",
+                action: #selector(NSApplication.terminate(_:)),
+                keyEquivalent: "q"))
 
         // ── File ──
         let fileItem = NSMenuItem()
         let fileMenu = NSMenu(title: "File")
         fileItem.submenu = fileMenu
 
-        let disconnect = NSMenuItem(title: "Disconnect",
-                                    action: #selector(ViewerCommands.disconnectViewer(_:)),
-                                    keyEquivalent: "w")
+        let disconnect = NSMenuItem(
+            title: "Disconnect",
+            action: #selector(ViewerCommands.disconnectViewer(_:)),
+            keyEquivalent: "w")
         disconnect.target = ViewerCommands.shared
         fileMenu.addItem(disconnect)
 
-        let micItem = NSMenuItem(title: "Microphone",
-                                 action: #selector(ViewerCommands.toggleMicrophone(_:)),
-                                 keyEquivalent: "")
+        let micItem = NSMenuItem(
+            title: "Microphone",
+            action: #selector(ViewerCommands.toggleMicrophone(_:)),
+            keyEquivalent: "")
         micItem.target = ViewerCommands.shared
         fileMenu.addItem(micItem)
 
@@ -129,17 +138,19 @@ enum AppMenu {
         let editMenu = NSMenu(title: "Edit")
         editItem.submenu = editMenu
 
-        let undo = NSMenuItem(title: "Undo Annotation",
-                              action: #selector(ViewerCommands.undoLastAnnotation(_:)),
-                              keyEquivalent: "z")
+        let undo = NSMenuItem(
+            title: "Undo Annotation",
+            action: #selector(ViewerCommands.undoLastAnnotation(_:)),
+            keyEquivalent: "z")
         undo.target = ViewerCommands.shared
         editMenu.addItem(undo)
 
         editMenu.addItem(.separator())
 
-        let clearAll = NSMenuItem(title: "Clear All Annotations",
-                                  action: #selector(ViewerCommands.clearAllAnnotations(_:)),
-                                  keyEquivalent: "\u{8}")  // delete
+        let clearAll = NSMenuItem(
+            title: "Clear All Annotations",
+            action: #selector(ViewerCommands.clearAllAnnotations(_:)),
+            keyEquivalent: "\u{8}")  // delete
         clearAll.keyEquivalentModifierMask = [.command, .shift]
         clearAll.target = ViewerCommands.shared
         editMenu.addItem(clearAll)
@@ -150,12 +161,12 @@ enum AppMenu {
         toolsItem.submenu = toolsMenu
 
         let toolDefs: [(String, String, Selector)] = [
-            ("Pen",       "1", #selector(ViewerCommands.selectPenTool(_:))),
-            ("Line",      "2", #selector(ViewerCommands.selectLineTool(_:))),
-            ("Arrow",     "3", #selector(ViewerCommands.selectArrowTool(_:))),
+            ("Pen", "1", #selector(ViewerCommands.selectPenTool(_:))),
+            ("Line", "2", #selector(ViewerCommands.selectLineTool(_:))),
+            ("Arrow", "3", #selector(ViewerCommands.selectArrowTool(_:))),
             ("Rectangle", "4", #selector(ViewerCommands.selectRectangleTool(_:))),
-            ("Oval",      "5", #selector(ViewerCommands.selectOvalTool(_:))),
-            ("Click", "6", #selector(ViewerCommands.selectClickTool(_:)))
+            ("Oval", "5", #selector(ViewerCommands.selectOvalTool(_:))),
+            ("Click", "6", #selector(ViewerCommands.selectClickTool(_:))),
         ]
         for (title, key, action) in toolDefs {
             let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
@@ -167,16 +178,22 @@ enum AppMenu {
         let windowItem = NSMenuItem()
         let windowMenu = NSMenu(title: "Window")
         windowItem.submenu = windowMenu
-        windowMenu.addItem(.init(title: "Minimize",
-                                 action: #selector(NSWindow.performMiniaturize(_:)),
-                                 keyEquivalent: "m"))
-        windowMenu.addItem(.init(title: "Zoom",
-                                 action: #selector(NSWindow.performZoom(_:)),
-                                 keyEquivalent: ""))
+        windowMenu.addItem(
+            .init(
+                title: "Minimize",
+                action: #selector(NSWindow.performMiniaturize(_:)),
+                keyEquivalent: "m"))
+        windowMenu.addItem(
+            .init(
+                title: "Zoom",
+                action: #selector(NSWindow.performZoom(_:)),
+                keyEquivalent: ""))
         windowMenu.addItem(.separator())
-        windowMenu.addItem(.init(title: "Bring All to Front",
-                                 action: #selector(NSApplication.arrangeInFront(_:)),
-                                 keyEquivalent: ""))
+        windowMenu.addItem(
+            .init(
+                title: "Bring All to Front",
+                action: #selector(NSApplication.arrangeInFront(_:)),
+                keyEquivalent: ""))
         NSApp.windowsMenu = windowMenu
 
         // Assemble.

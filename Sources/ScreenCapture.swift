@@ -1,8 +1,8 @@
-import ScreenCaptureKit
 import AppKit
 import CoreGraphics
 import CoreMedia
 import CoreVideo
+import ScreenCaptureKit
 import os
 
 /// Serializable summary of an SCDisplay so AppState can expose a display
@@ -200,7 +200,8 @@ class ScreenCapture: NSObject, @unchecked Sendable {
 
         let display: SCDisplay
         if let wanted = displayID,
-           let match = availableContent?.displays.first(where: { $0.displayID == wanted }) {
+            let match = availableContent?.displays.first(where: { $0.displayID == wanted })
+        {
             display = match
         } else if let first = availableContent?.displays.first {
             display = first
@@ -224,7 +225,11 @@ class ScreenCapture: NSObject, @unchecked Sendable {
         config.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
         config.showsCursor = true
         config.queueDepth = 5
-        logEvent("start.config", extra: "displayID=\(display.displayID) size=\(config.width)x\(config.height) fps=60 pixelFormat=420f queueDepth=5")
+        logEvent(
+            "start.config",
+            extra:
+                "displayID=\(display.displayID) size=\(config.width)x\(config.height) fps=60 pixelFormat=420f queueDepth=5"
+        )
 
         // Create content filter for the main display
         let filter = SCContentFilter(display: display, excludingWindows: [])
@@ -333,7 +338,8 @@ class ScreenCapture: NSObject, @unchecked Sendable {
         // Smuggle SCShareableContent through @unchecked Sendable wrap;
         // it isn't Sendable but it's effectively read-only after delivery
         // and we hand it off on a controlled boundary.
-        let wrapped: ShareableContentWrap = try await withCheckedThrowingContinuation { (cont: CheckedContinuation<ShareableContentWrap, Error>) in
+        let wrapped: ShareableContentWrap = try await withCheckedThrowingContinuation {
+            (cont: CheckedContinuation<ShareableContentWrap, Error>) in
             let box = ShareableContentBox(cont)
             SCShareableContent.getExcludingDesktopWindows(false, onScreenWindowsOnly: true) { content, error in
                 if let error = error {
@@ -360,12 +366,16 @@ class ScreenCapture: NSObject, @unchecked Sendable {
         private var cont: CheckedContinuation<ShareableContentWrap, Error>?
         init(_ cont: CheckedContinuation<ShareableContentWrap, Error>) { self.cont = cont }
         func resume(returning value: ShareableContentWrap) {
-            lock.lock(); defer { lock.unlock() }
-            cont?.resume(returning: value); cont = nil
+            lock.lock()
+            defer { lock.unlock() }
+            cont?.resume(returning: value)
+            cont = nil
         }
         func resume(throwing error: Error) {
-            lock.lock(); defer { lock.unlock() }
-            cont?.resume(throwing: error); cont = nil
+            lock.lock()
+            defer { lock.unlock() }
+            cont?.resume(throwing: error)
+            cont = nil
         }
     }
 
@@ -376,12 +386,16 @@ class ScreenCapture: NSObject, @unchecked Sendable {
         private var cont: CheckedContinuation<Void, Error>?
         init(_ cont: CheckedContinuation<Void, Error>) { self.cont = cont }
         func resume() {
-            lock.lock(); defer { lock.unlock() }
-            cont?.resume(); cont = nil
+            lock.lock()
+            defer { lock.unlock() }
+            cont?.resume()
+            cont = nil
         }
         func resume(throwing error: Error) {
-            lock.lock(); defer { lock.unlock() }
-            cont?.resume(throwing: error); cont = nil
+            lock.lock()
+            defer { lock.unlock() }
+            cont?.resume(throwing: error)
+            cont = nil
         }
     }
 
@@ -455,7 +469,9 @@ class ScreenCapture: NSObject, @unchecked Sendable {
         }
         let elapsedMs = (DispatchTime.now().uptimeNanoseconds &- startedNs) / 1_000_000
         if watchdogFired {
-            print("ScreenCapture[\(sessionID)] stopCapture.watchdog.fired after \(elapsedMs)ms (completion handler never invoked — replayd state orphaned)")
+            print(
+                "ScreenCapture[\(sessionID)] stopCapture.watchdog.fired after \(elapsedMs)ms (completion handler never invoked — replayd state orphaned)"
+            )
         }
     }
 
@@ -464,8 +480,10 @@ class ScreenCapture: NSObject, @unchecked Sendable {
         private var cont: CheckedContinuation<Bool, Never>?
         init(_ cont: CheckedContinuation<Bool, Never>) { self.cont = cont }
         func resume(returning value: Bool) {
-            lock.lock(); defer { lock.unlock() }
-            cont?.resume(returning: value); cont = nil
+            lock.lock()
+            defer { lock.unlock() }
+            cont?.resume(returning: value)
+            cont = nil
         }
     }
 
@@ -488,7 +506,9 @@ extension ScreenCapture: SCStreamDelegate {
         // the start immediately rather than letting the 10s watchdog burn —
         // replayd is telling us the bring-up isn't going to complete.
         let pending = pendingStart.withLock { box -> ContinuationBox? in
-            let b = box; box = nil; return b
+            let b = box
+            box = nil
+            return b
         }
         if let pending {
             pending.resume(throwing: error)
@@ -518,7 +538,9 @@ private class StreamOutput: NSObject, SCStreamOutput {
         guard type == .screen, let pixelBuffer = sampleBuffer.imageBuffer else {
             droppedCount += 1
             if droppedCount <= 5 || droppedCount % 60 == 0 {
-                print("StreamOutput[\(sessionID)] dropped #\(droppedCount) type=\(type) status=\(status) hasImage=\(hasImage)")
+                print(
+                    "StreamOutput[\(sessionID)] dropped #\(droppedCount) type=\(type) status=\(status) hasImage=\(hasImage)"
+                )
             }
             return
         }
@@ -533,10 +555,12 @@ private class StreamOutput: NSObject, SCStreamOutput {
     /// Pull `SCStreamFrameInfo.status` out of the sample buffer's
     /// attachments. Returns a human-readable string.
     private static func frameStatus(from sb: CMSampleBuffer) -> String {
-        guard let attachments = CMSampleBufferGetSampleAttachmentsArray(sb, createIfNecessary: false) as? [[CFString: Any]],
-              let attachment = attachments.first,
-              let raw = attachment[SCStreamFrameInfo.status as CFString] as? Int,
-              let status = SCFrameStatus(rawValue: raw)
+        guard
+            let attachments = CMSampleBufferGetSampleAttachmentsArray(sb, createIfNecessary: false)
+                as? [[CFString: Any]],
+            let attachment = attachments.first,
+            let raw = attachment[SCStreamFrameInfo.status as CFString] as? Int,
+            let status = SCFrameStatus(rawValue: raw)
         else { return "unknown" }
         switch status {
         case .complete: return "complete"

@@ -310,7 +310,8 @@ class AppState: ObservableObject {
             // If Tailscale is already initialized, just start sharing
             // Otherwise, initialize it first
             if server == nil {
-                let hostname = "\(Host.current().localizedName ?? "tailscreen-share")\(TailscreenInstance.hostnameSuffix)"
+                let hostname =
+                    "\(Host.current().localizedName ?? "tailscreen-share")\(TailscreenInstance.hostnameSuffix)"
                 let srv = TailscaleScreenShareServer()
                 server = srv
                 if let pickedID = pickedID {
@@ -331,7 +332,8 @@ class AppState: ObservableObject {
                     Task { @MainActor [weak self] in
                         guard let self, self.sharingState == .active else { return }
                         if Self.isUserInitiatedCaptureStop(error) {
-                            await self.stopSharing(reason: "SCStream userStopped: \(error?.localizedDescription ?? "nil")")
+                            await self.stopSharing(
+                                reason: "SCStream userStopped: \(error?.localizedDescription ?? "nil")")
                             return
                         }
                         guard let server = self.server else { return }
@@ -738,7 +740,8 @@ class AppState: ObservableObject {
         // each time, so the wiring survives reconnects without rebuilding
         // the overlay.
         let overlayModel = AnnotationCanvasModel()
-        overlayModel.currentColor = Annotation.RGBA.paletteColor(forIdentity: TailscaleScreenShareClient.localIdentity())
+        overlayModel.currentColor = Annotation.RGBA.paletteColor(
+            forIdentity: TailscaleScreenShareClient.localIdentity())
         overlayModel.onOp = { [weak self] op in
             Task { [weak self] in await self?.client?.sendAnnotationOp(op) }
         }
@@ -768,10 +771,11 @@ class AppState: ObservableObject {
         // Center on the main screen so the first connect doesn't dump the
         // window in the bottom-left corner.
         if let screenFrame = NSScreen.main?.visibleFrame {
-            win.setFrameOrigin(NSPoint(
-                x: screenFrame.midX - win.frame.width / 2,
-                y: screenFrame.midY - win.frame.height / 2
-            ))
+            win.setFrameOrigin(
+                NSPoint(
+                    x: screenFrame.midX - win.frame.width / 2,
+                    y: screenFrame.midY - win.frame.height / 2
+                ))
         }
 
         r.start(in: host)
@@ -874,13 +878,16 @@ class AppState: ObservableObject {
         // Skip when the state directory is empty — the very first launch
         // has nothing to restore, and bringing the node up would just
         // emit a BrowseToURL we're going to drop anyway.
-        guard let appSupport = FileManager.default.urls(
-            for: .applicationSupportDirectory, in: .userDomainMask
-        ).first else {
+        guard
+            let appSupport = FileManager.default.urls(
+                for: .applicationSupportDirectory, in: .userDomainMask
+            ).first
+        else {
             logger.log("No Application Support URL available; skipping silent restore")
             return
         }
-        let statePath = appSupport
+        let statePath =
+            appSupport
             .appendingPathComponent("Tailscreen/tailscale\(TailscreenInstance.stateSuffix)")
             .path
         let contents = (try? FileManager.default.contentsOfDirectory(atPath: statePath)) ?? []
@@ -1223,7 +1230,8 @@ private final class AspectFitHostView: NSView {
     private func aspectFitRect() -> CGRect {
         let bounds = self.bounds
         guard videoSize.width > 0, videoSize.height > 0,
-              bounds.width > 0, bounds.height > 0 else {
+            bounds.width > 0, bounds.height > 0
+        else {
             return bounds
         }
         let videoAspect = videoSize.width / videoSize.height

@@ -17,7 +17,8 @@ struct ViewerStatsOverlay: View {
         VStack(alignment: .leading, spacing: 4) {
             row("Latency", formatLatency(stats.latencyMs), color: latencyColor(stats.latencyMs))
             row("FPS", String(format: "%.1f", stats.fps), color: fpsColor(stats.fps))
-            row("Dropped", formatDropped(stats.droppedPct, total: stats.framesDropped),
+            row(
+                "Dropped", formatDropped(stats.droppedPct, total: stats.framesDropped),
                 color: dropColor(stats.droppedPct))
             row("Bitrate", formatBitrate(stats.bitrateBps))
             row("Codec", stats.codec.map(formatCodec) ?? "—")
@@ -201,7 +202,8 @@ struct Sparkline: View {
     private func mappedPoints(in size: CGSize) -> [CGPoint?] {
         guard !samples.isEmpty else { return [] }
         let denom = max(maxValue - minValue, 0.0001)
-        let stepX: CGFloat = samples.count == 1
+        let stepX: CGFloat =
+            samples.count == 1
             ? size.width
             : size.width / CGFloat(samples.count - 1)
         return samples.enumerated().map { idx, value in
@@ -216,7 +218,10 @@ struct Sparkline: View {
         var path = Path()
         var pendingMove = true
         for p in points {
-            guard let p else { pendingMove = true; continue }
+            guard let p else {
+                pendingMove = true
+                continue
+            }
             if pendingMove {
                 path.move(to: p)
                 pendingMove = false

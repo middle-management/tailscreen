@@ -65,7 +65,8 @@ extension AppError {
         AppError(
             code: "TS-SCREEN-001",
             title: "Screen Recording Permission Required",
-            message: "Tailscreen needs Screen Recording permission to share your display. Open System Settings → Privacy & Security → Screen Recording, enable Tailscreen, then try again.",
+            message:
+                "Tailscreen needs Screen Recording permission to share your display. Open System Settings → Privacy & Security → Screen Recording, enable Tailscreen, then try again.",
             underlying: nil,
             action: AppErrorAction(title: "Open System Settings") {
                 ScreenCapture.openScreenRecordingSettings()
@@ -79,7 +80,8 @@ extension AppError {
         AppError(
             code: "TS-SCREEN-002",
             title: "Couldn't Start Sharing",
-            message: "macOS didn't return shareable screens in time. If this is the first time you've shared, grant Tailscreen permission in System Settings → Privacy & Security → Screen Recording, then try again.",
+            message:
+                "macOS didn't return shareable screens in time. If this is the first time you've shared, grant Tailscreen permission in System Settings → Privacy & Security → Screen Recording, then try again.",
             underlying: nil,
             action: AppErrorAction(title: "Open System Settings") {
                 ScreenCapture.openScreenRecordingSettings()
@@ -93,7 +95,8 @@ extension AppError {
         AppError(
             code: "TS-SCREEN-003",
             title: "Restart Required",
-            message: "macOS's screen-recording daemon is in a stuck state for Tailscreen and won't deliver any more frames until the app restarts. This usually follows a startCapture timeout or a stream interruption. Quit Tailscreen (⌘Q) and reopen — sharing will work again.",
+            message:
+                "macOS's screen-recording daemon is in a stuck state for Tailscreen and won't deliver any more frames until the app restarts. This usually follows a startCapture timeout or a stream interruption. Quit Tailscreen (⌘Q) and reopen — sharing will work again.",
             underlying: nil,
             action: nil
         )
@@ -106,7 +109,8 @@ extension AppError {
         AppError(
             code: "TS-SCREEN-004",
             title: "Couldn't Start Sharing",
-            message: "macOS accepted the screen-capture request but never delivered any frames. This usually means another Tailscreen process is already sharing — quit other instances and try again. If the problem persists, run `killall replayd` in Terminal (macOS will auto-restart it) or reboot.",
+            message:
+                "macOS accepted the screen-capture request but never delivered any frames. This usually means another Tailscreen process is already sharing — quit other instances and try again. If the problem persists, run `killall replayd` in Terminal (macOS will auto-restart it) or reboot.",
             underlying: nil,
             action: nil
         )
@@ -173,7 +177,8 @@ extension AppError {
         AppError(
             code: "TS-VOICE-001",
             title: "Voice Init Failed",
-            message: "Voice could not be initialized: \(underlying.localizedDescription). Voice will be unavailable for this share session.",
+            message:
+                "Voice could not be initialized: \(underlying.localizedDescription). Voice will be unavailable for this share session.",
             underlying: String(describing: underlying),
             action: nil
         )
@@ -206,7 +211,8 @@ extension AppError {
         AppError(
             code: "TS-VOICE-004",
             title: "Microphone Unavailable",
-            message: "Tailscreen could not start the microphone: \(underlying.localizedDescription). Check System Settings → Privacy & Security → Microphone.",
+            message:
+                "Tailscreen could not start the microphone: \(underlying.localizedDescription). Check System Settings → Privacy & Security → Microphone.",
             underlying: String(describing: underlying),
             action: AppErrorAction(title: "Open System Settings") {
                 let urlString = "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"

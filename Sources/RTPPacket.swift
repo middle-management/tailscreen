@@ -285,8 +285,8 @@ final class H264Packetizer: @unchecked Sendable {
             let isLast = end == body.endIndex
 
             var fuHeader: UInt8 = nalType
-            if first { fuHeader |= 0x80 }       // S bit
-            if isLast { fuHeader |= 0x40 }      // E bit (of the fragment, not the AU)
+            if first { fuHeader |= 0x80 }  // S bit
+            if isLast { fuHeader |= 0x40 }  // E bit (of the fragment, not the AU)
 
             let capNeeded = RTPHeader.size + 2 + take
             var packet = pool.acquire(minCapacity: capNeeded)
@@ -599,7 +599,7 @@ final class H265Packetizer: @unchecked Sendable {
 
         // Build the PayloadHdr: F (preserved) | Type=49 | LayerId top bit
         let payloadHdr0: UInt8 = fBit | (49 << 1) | layerIdHi
-        let payloadHdr1: UInt8 = nh1            // remaining LayerId + TID
+        let payloadHdr1: UInt8 = nh1  // remaining LayerId + TID
 
         let body = nal.dropFirst(2)
         // Reserve 3 bytes per fragment for PayloadHdr (2) + FU header (1).
@@ -613,8 +613,8 @@ final class H265Packetizer: @unchecked Sendable {
             let isLast = end == body.endIndex
 
             var fuHeader: UInt8 = originalType & 0x3F
-            if first { fuHeader |= 0x80 }       // S bit
-            if isLast { fuHeader |= 0x40 }      // E bit (fragment, not AU)
+            if first { fuHeader |= 0x80 }  // S bit
+            if isLast { fuHeader |= 0x40 }  // E bit (fragment, not AU)
 
             let capNeeded = RTPHeader.size + 3 + take
             var packet = pool.acquire(minCapacity: capNeeded)
@@ -842,26 +842,26 @@ final class MultiCodecDepacketizer {
     }
 }
 
-private extension Data {
-    mutating func appendBE(_ value: UInt16) {
+extension Data {
+    fileprivate mutating func appendBE(_ value: UInt16) {
         append(UInt8((value >> 8) & 0xFF))
         append(UInt8(value & 0xFF))
     }
 
-    mutating func appendBE(_ value: UInt32) {
+    fileprivate mutating func appendBE(_ value: UInt32) {
         append(UInt8((value >> 24) & 0xFF))
         append(UInt8((value >> 16) & 0xFF))
         append(UInt8((value >> 8) & 0xFF))
         append(UInt8(value & 0xFF))
     }
 
-    func readBE(_: UInt16.Type, at index: Data.Index) -> UInt16 {
+    fileprivate func readBE(_: UInt16.Type, at index: Data.Index) -> UInt16 {
         let b0 = UInt16(self[index])
         let b1 = UInt16(self[self.index(index, offsetBy: 1)])
         return (b0 << 8) | b1
     }
 
-    func readBE(_: UInt32.Type, at index: Data.Index) -> UInt32 {
+    fileprivate func readBE(_: UInt32.Type, at index: Data.Index) -> UInt32 {
         let b0 = UInt32(self[index])
         let b1 = UInt32(self[self.index(index, offsetBy: 1)])
         let b2 = UInt32(self[self.index(index, offsetBy: 2)])

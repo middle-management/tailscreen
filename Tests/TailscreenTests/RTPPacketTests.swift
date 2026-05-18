@@ -1,4 +1,5 @@
 import XCTest
+
 @testable import Tailscreen
 
 final class RTPPacketTests: XCTestCase {
@@ -46,8 +47,8 @@ final class RTPPacketTests: XCTestCase {
     }
 
     func testAVCCParserSplitsLengthPrefixedNALs() {
-        let nal1 = Data([0x67, 0xAA, 0xBB])           // SPS
-        let nal2 = Data([0x68, 0xCC])                  // PPS
+        let nal1 = Data([0x67, 0xAA, 0xBB])  // SPS
+        let nal2 = Data([0x68, 0xCC])  // PPS
         let nal3 = Data([0x65] + Array(repeating: UInt8(0x99), count: 100))  // IDR slice
 
         var avcc = Data()
@@ -101,10 +102,10 @@ final class RTPPacketTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(payload.count, 3)
             let fuIndicator = payload[payload.startIndex]
             let fuHeader = payload[payload.startIndex + 1]
-            XCTAssertEqual(fuIndicator & 0x1F, 28)               // type 28 = FU-A
-            XCTAssertEqual(fuIndicator & 0xE0, 0x60)             // NRI preserved (0x65 → NRI=11)
-            XCTAssertEqual(fuHeader & 0x1F, 5)                   // original NAL type
-            XCTAssertEqual((fuHeader & 0x80) != 0, i == 0)       // S bit on first
+            XCTAssertEqual(fuIndicator & 0x1F, 28)  // type 28 = FU-A
+            XCTAssertEqual(fuIndicator & 0xE0, 0x60)  // NRI preserved (0x65 → NRI=11)
+            XCTAssertEqual(fuHeader & 0x1F, 5)  // original NAL type
+            XCTAssertEqual((fuHeader & 0x80) != 0, i == 0)  // S bit on first
             XCTAssertEqual((fuHeader & 0x40) != 0, i == packets.count - 1)  // E bit on last
         }
     }
@@ -295,16 +296,16 @@ final class RTPPacketTests: XCTestCase {
         let firstPayload = first.suffix(from: first.startIndex + RTPHeader.size)
         let firstHdr0 = firstPayload[firstPayload.startIndex]
         let firstFU = firstPayload[firstPayload.startIndex + 2]
-        XCTAssertEqual((firstHdr0 >> 1) & 0x3F, 49)            // FU type
-        XCTAssertEqual(firstFU & 0x3F, 19)                      // original type carried in FU header
-        XCTAssertNotEqual(firstFU & 0x80, 0)                    // S bit on first
-        XCTAssertEqual(firstFU & 0x40, 0)                       // E bit clear
+        XCTAssertEqual((firstHdr0 >> 1) & 0x3F, 49)  // FU type
+        XCTAssertEqual(firstFU & 0x3F, 19)  // original type carried in FU header
+        XCTAssertNotEqual(firstFU & 0x80, 0)  // S bit on first
+        XCTAssertEqual(firstFU & 0x40, 0)  // E bit clear
 
         let last = packets.last!
         let lastPayload = last.suffix(from: last.startIndex + RTPHeader.size)
         let lastFU = lastPayload[lastPayload.startIndex + 2]
-        XCTAssertEqual(lastFU & 0x80, 0)                        // S bit clear
-        XCTAssertNotEqual(lastFU & 0x40, 0)                     // E bit on last
+        XCTAssertEqual(lastFU & 0x80, 0)  // S bit clear
+        XCTAssertNotEqual(lastFU & 0x40, 0)  // E bit on last
 
         let depacketizer = H265Depacketizer()
         var au: VideoAccessUnit?
@@ -570,8 +571,8 @@ final class RTPPacketTests: XCTestCase {
     }
 }
 
-private extension Data {
-    mutating func appendBE(_ value: UInt32) {
+extension Data {
+    fileprivate mutating func appendBE(_ value: UInt32) {
         append(UInt8((value >> 24) & 0xFF))
         append(UInt8((value >> 16) & 0xFF))
         append(UInt8((value >> 8) & 0xFF))

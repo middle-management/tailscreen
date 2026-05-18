@@ -1,4 +1,5 @@
 import XCTest
+
 @testable import Tailscreen
 
 final class RTPAudioTests: XCTestCase {
@@ -23,7 +24,7 @@ final class RTPAudioTests: XCTestCase {
         let p2 = pack.packetize(au: au)
 
         guard let ts1 = RTPHeader.decode(from: p1)?.header.timestamp,
-              let ts2 = RTPHeader.decode(from: p2)?.header.timestamp
+            let ts2 = RTPHeader.decode(from: p2)?.header.timestamp
         else {
             XCTFail("RTPHeader.decode returned nil")
             return

@@ -213,8 +213,8 @@ final class HelperControlWriter {
     }
 }
 
-private extension Data {
-    mutating func appendBE(_ value: UInt32) {
+extension Data {
+    fileprivate mutating func appendBE(_ value: UInt32) {
         append(UInt8((value >> 24) & 0xFF))
         append(UInt8((value >> 16) & 0xFF))
         append(UInt8((value >> 8) & 0xFF))

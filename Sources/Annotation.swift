@@ -1,5 +1,5 @@
-import Foundation
 import CoreGraphics
+import Foundation
 
 /// Drawing tool the user has selected.
 enum AnnotationTool: String, Codable, Sendable, CaseIterable {
@@ -58,7 +58,7 @@ extension Annotation.RGBA {
     /// UTF-8 bytes ourselves so the same identity → the same color across
     /// process launches and across machines.
     static func paletteColor(forIdentity identity: String) -> Annotation.RGBA {
-        var h: UInt64 = 1469598103934665603 // FNV-1a offset basis
+        var h: UInt64 = 1469598103934665603  // FNV-1a offset basis
         for byte in identity.utf8 {
             h ^= UInt64(byte)
             h &*= 1099511628211

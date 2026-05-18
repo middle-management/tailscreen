@@ -1,6 +1,6 @@
-import Foundation
 import AppKit
 import CoreGraphics
+import Foundation
 import TailscaleKit
 
 /// Main-side wrapper around the `Tailscreen --capture-helper` child
@@ -156,7 +156,8 @@ final class HelperScreenCapture: @unchecked Sendable {
                 debugAUCount += 1
                 if debugAUCount <= 3 {
                     let first = avcc.prefix(8).map { String(format: "%02x", $0) }.joined(separator: " ")
-                    logger.log("HelperScreenCapture: AU#\(debugAUCount) kf=\(isKeyframe) \(avcc.count)B first8=[\(first)]")
+                    logger.log(
+                        "HelperScreenCapture: AU#\(debugAUCount) kf=\(isKeyframe) \(avcc.count)B first8=[\(first)]")
                 }
                 onAccessUnit?(avcc, isKeyframe)
             case .parameterSets:
@@ -174,7 +175,9 @@ final class HelperScreenCapture: @unchecked Sendable {
                         case .h264(let sps, let pps):
                             logger.log("HelperScreenCapture: paramSets H264 sps=\(sps.count)B pps=\(pps.count)B")
                         case .hevc(let vps, let sps, let pps):
-                            logger.log("HelperScreenCapture: paramSets HEVC vps=\(vps.count)B sps=\(sps.count)B pps=\(pps.count)B")
+                            logger.log(
+                                "HelperScreenCapture: paramSets HEVC vps=\(vps.count)B sps=\(sps.count)B pps=\(pps.count)B"
+                            )
                         }
                     }
                     onParameterSets?(params)

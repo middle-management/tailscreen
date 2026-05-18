@@ -30,7 +30,7 @@ final class AnnotationOverlayHostView: NSView {
             hostingView.leadingAnchor.constraint(equalTo: leadingAnchor),
             hostingView.trailingAnchor.constraint(equalTo: trailingAnchor),
             hostingView.topAnchor.constraint(equalTo: topAnchor),
-            hostingView.bottomAnchor.constraint(equalTo: bottomAnchor)
+            hostingView.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
     }
 
@@ -56,7 +56,8 @@ final class AnnotationOverlayHostView: NSView {
         }
         // Cmd-Z — undo the most recent shape this canvas created.
         if event.modifierFlags.contains(.command),
-           event.charactersIgnoringModifiers?.lowercased() == "z" {
+            event.charactersIgnoringModifiers?.lowercased() == "z"
+        {
             model.performLocalUndo()
             return
         }

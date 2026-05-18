@@ -86,15 +86,15 @@ struct ScreenShareMessageParser {
     }
 }
 
-private extension Data {
-    mutating func appendBigEndian(_ value: UInt32) {
+extension Data {
+    fileprivate mutating func appendBigEndian(_ value: UInt32) {
         append(UInt8((value >> 24) & 0xFF))
         append(UInt8((value >> 16) & 0xFF))
         append(UInt8((value >> 8) & 0xFF))
         append(UInt8(value & 0xFF))
     }
 
-    func readBigEndian(_: UInt32.Type, at index: Data.Index) -> UInt32 {
+    fileprivate func readBigEndian(_: UInt32.Type, at index: Data.Index) -> UInt32 {
         let b0 = UInt32(self[index])
         let b1 = UInt32(self[self.index(index, offsetBy: 1)])
         let b2 = UInt32(self[self.index(index, offsetBy: 2)])
