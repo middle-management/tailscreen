@@ -28,6 +28,13 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
     private weak var appState: AppState?
     private weak var micToolbarItem: NSToolbarItem?
     private var micCancellable: AnyCancellable?
+    private weak var toolGroupItem: NSToolbarItemGroup?
+    private var toolCancellable: AnyCancellable?
+    private weak var canvasModel: AnnotationCanvasModel?
+
+    /// Tool order — must match `ViewerCommands.toolbarSelectedTool` and
+    /// the `makeToolGroup` subitem order.
+    private static let toolOrder: [AnnotationTool] = [.pen, .line, .arrow, .rectangle, .oval, .click]
 
     init(appState: AppState? = nil) {
         let tb = NSToolbar(identifier: Self.identifier)
@@ -51,6 +58,25 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
     private func updateMicIcon(isOn: Bool) {
         let symbol = isOn ? "mic.fill" : "mic.slash"
         micToolbarItem?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+    }
+
+    /// Subscribe to the canvas model so keyboard shortcuts (`1`–`6`,
+    /// `⌘1`–`⌘6`) that change `currentTool` directly keep the toolbar's
+    /// selected segment in sync. Without this the toolbar only updates
+    /// when the user clicks it.
+    func bind(canvasModel: AnnotationCanvasModel) {
+        self.canvasModel = canvasModel
+        toolCancellable = canvasModel.$currentTool
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] tool in
+                self?.updateToolSelection(tool)
+            }
+        updateToolSelection(canvasModel.currentTool)
+    }
+
+    private func updateToolSelection(_ tool: AnnotationTool) {
+        guard let idx = Self.toolOrder.firstIndex(of: tool) else { return }
+        toolGroupItem?.selectedIndex = idx
     }
 
     // MARK: - NSToolbarDelegate
@@ -186,7 +212,11 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
             sub.label = labels[i]
             sub.toolTip = tips[i]
         }
-        group.selectedIndex = 0
+        toolGroupItem = group
+        // Reflect the canvas model's current tool if `bind(canvasModel:)`
+        // was called before AppKit asked the delegate for items.
+        let initialTool = canvasModel?.currentTool ?? .pen
+        group.selectedIndex = Self.toolOrder.firstIndex(of: initialTool) ?? 0
         return group
     }
 

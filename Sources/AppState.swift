@@ -824,6 +824,11 @@ class AppState: ObservableObject {
         ViewerCommands.shared.activeOverlay = overlayModel
         self.viewerOverlay = overlay
 
+        // Keep the toolbar's tool segment in sync with the canvas model
+        // so keyboard shortcuts (`1`–`6`, `⌘1`–`⌘6`) reflect on the
+        // toolbar instead of only updating it on click.
+        toolbar.bind(canvasModel: overlayModel)
+
         // Diagnostics overlay (toggled by the toolbar's chart button).
         // Sits above the annotation layer so its readout doesn't get
         // obscured by mid-stream strokes. Hidden by default; the toolbar
