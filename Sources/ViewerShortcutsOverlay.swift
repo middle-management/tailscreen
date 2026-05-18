@@ -32,28 +32,36 @@ struct ViewerShortcutsOverlay: View {
     }
 
     private static let sections: [Section] = [
-        Section(title: "Tools", items: [
-            Shortcut(keys: "1  or  ⌘1", description: "Pen"),
-            Shortcut(keys: "2  or  ⌘2", description: "Line"),
-            Shortcut(keys: "3  or  ⌘3", description: "Arrow"),
-            Shortcut(keys: "4  or  ⌘4", description: "Rectangle"),
-            Shortcut(keys: "5  or  ⌘5", description: "Oval"),
-            Shortcut(keys: "6  or  ⌘6", description: "Pointer / Click")
-        ]),
-        Section(title: "Annotation", items: [
-            Shortcut(keys: "⌘Z", description: "Undo last annotation"),
-            Shortcut(keys: "⇧⌘⌫", description: "Clear all annotations"),
-            Shortcut(keys: "Esc", description: "Cancel current drag"),
-            Shortcut(keys: "Right-click", description: "Clear all annotations")
-        ]),
-        Section(title: "Audio", items: [
-            Shortcut(keys: "⌃⌥M", description: "Toggle microphone (system-wide)")
-        ]),
-        Section(title: "Window", items: [
-            Shortcut(keys: "⌘W", description: "Disconnect viewer"),
-            Shortcut(keys: "⌘Q", description: "Quit Tailscreen"),
-            Shortcut(keys: "⇧⌘/", description: "Show / hide this help")
-        ])
+        Section(
+            title: "Tools",
+            items: [
+                Shortcut(keys: "1  or  ⌘1", description: "Pen"),
+                Shortcut(keys: "2  or  ⌘2", description: "Line"),
+                Shortcut(keys: "3  or  ⌘3", description: "Arrow"),
+                Shortcut(keys: "4  or  ⌘4", description: "Rectangle"),
+                Shortcut(keys: "5  or  ⌘5", description: "Oval"),
+                Shortcut(keys: "6  or  ⌘6", description: "Pointer / Click")
+            ]),
+        Section(
+            title: "Annotation",
+            items: [
+                Shortcut(keys: "⌘Z", description: "Undo last annotation"),
+                Shortcut(keys: "⇧⌘⌫", description: "Clear all annotations"),
+                Shortcut(keys: "Esc", description: "Cancel current drag"),
+                Shortcut(keys: "Right-click", description: "Clear all annotations")
+            ]),
+        Section(
+            title: "Audio",
+            items: [
+                Shortcut(keys: "⌃⌥M", description: "Toggle microphone (system-wide)")
+            ]),
+        Section(
+            title: "Window",
+            items: [
+                Shortcut(keys: "⌘W", description: "Disconnect viewer"),
+                Shortcut(keys: "⌘Q", description: "Quit Tailscreen"),
+                Shortcut(keys: "⇧⌘/", description: "Show / hide this help")
+            ])
     ]
 
     var body: some View {

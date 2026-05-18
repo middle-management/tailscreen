@@ -192,7 +192,7 @@ final class VideoDecoder: @unchecked Sendable {
 
         let attributes: [CFString: Any] = [
             kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_32BGRA,
-            kCVPixelBufferMetalCompatibilityKey: true,
+            kCVPixelBufferMetalCompatibilityKey: true
         ]
 
         var outputCallback = VTDecompressionOutputCallbackRecord(

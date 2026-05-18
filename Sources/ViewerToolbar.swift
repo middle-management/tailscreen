@@ -169,7 +169,7 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
             "arrow.up.right",
             "rectangle",
             "circle",
-            "scope",
+            "scope"
         ]
         // Spelled-out VoiceOver descriptions — "Rect" reads as
         // "r-e-c-t" otherwise, and "Click" alone doesn't convey that
@@ -180,7 +180,7 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
             "Arrow annotation tool",
             "Rectangle annotation tool",
             "Oval annotation tool",
-            "Pointer click tool",
+            "Pointer click tool"
         ]
         // Tooltip text shown on hover. Mirrors a11y but appends the
         // keyboard shortcut so the toolbar doubles as discovery for the

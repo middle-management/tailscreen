@@ -49,7 +49,7 @@ extension Annotation.RGBA {
         .init(r: 0.70, g: 0.30, b: 0.95, a: 1.0),  // purple
         .init(r: 0.10, g: 0.78, b: 0.85, a: 1.0),  // teal
         .init(r: 0.95, g: 0.40, b: 0.70, a: 1.0),  // pink
-        .init(r: 0.85, g: 0.75, b: 0.10, a: 1.0),  // yellow
+        .init(r: 0.85, g: 0.75, b: 0.10, a: 1.0)  // yellow
     ]
 
     /// Pick a palette color deterministically from any string identity.

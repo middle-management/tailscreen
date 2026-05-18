@@ -19,7 +19,7 @@
     "accessLevel": "private"
   },
   "spacesAroundRangeFormationOperators": false,
-  "multiElementCollectionTrailingCommas": true,
+  "multiElementCollectionTrailingCommas": false,
   "noAssignmentInExpressions": {
     "allowedFunctions": [
       "XCTAssertNoThrow"
