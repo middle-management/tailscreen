@@ -59,7 +59,7 @@ enum AppMenu {
             NSWindow.didResignKeyNotification,
             NSWindow.didBecomeMainNotification,
             NSWindow.willCloseNotification,
-            NSWindow.didChangeOcclusionStateNotification,
+            NSWindow.didChangeOcclusionStateNotification
         ]
         var fresh: [NSObjectProtocol] = []
         fresh.reserveCapacity(names.count)
@@ -166,7 +166,7 @@ enum AppMenu {
             ("Arrow", "3", #selector(ViewerCommands.selectArrowTool(_:))),
             ("Rectangle", "4", #selector(ViewerCommands.selectRectangleTool(_:))),
             ("Oval", "5", #selector(ViewerCommands.selectOvalTool(_:))),
-            ("Click", "6", #selector(ViewerCommands.selectClickTool(_:))),
+            ("Click", "6", #selector(ViewerCommands.selectClickTool(_:)))
         ]
         for (title, key, action) in toolDefs {
             let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
@@ -196,12 +196,30 @@ enum AppMenu {
                 keyEquivalent: ""))
         NSApp.windowsMenu = windowMenu
 
+        // ── Help ──
+        // ⇧⌘/ is the standard macOS "show help" shortcut — `/` is
+        // shift-slash on a US layout, so we register "/" with command
+        // and let the system add shift in the display.
+        let helpItem = NSMenuItem()
+        let helpMenu = NSMenu(title: "Help")
+        helpItem.submenu = helpMenu
+
+        let shortcutsHelp = NSMenuItem(
+            title: "Keyboard Shortcuts",
+            action: #selector(ViewerCommands.toggleShortcutsOverlay(_:)),
+            keyEquivalent: "?")
+        shortcutsHelp.keyEquivalentModifierMask = [.command]
+        shortcutsHelp.target = ViewerCommands.shared
+        helpMenu.addItem(shortcutsHelp)
+        NSApp.helpMenu = helpMenu
+
         // Assemble.
         main.addItem(appMenuItem)
         main.addItem(fileItem)
         main.addItem(editItem)
         main.addItem(toolsItem)
         main.addItem(windowItem)
+        main.addItem(helpItem)
 
         NSApp.mainMenu = main
     }
@@ -228,7 +246,7 @@ private final class AboutPanelTarget: NSObject {
             .applicationName: "Tailscreen",
             .applicationVersion: shortVersion,
             .credits: creditsAttributedString(),
-            NSApplication.AboutPanelOptionKey(rawValue: "Copyright"): "© 2026 Robert Sköld. MIT-licensed open source.",
+            NSApplication.AboutPanelOptionKey(rawValue: "Copyright"): "© 2026 Robert Sköld. MIT-licensed open source."
         ]
         // Only surface the build number when it differs from the marketing
         // version — release.yml currently sets both to the same string, and
@@ -248,7 +266,7 @@ private final class AboutPanelTarget: NSObject {
         let baseAttrs: [NSAttributedString.Key: Any] = [
             .font: body,
             .foregroundColor: NSColor.labelColor,
-            .paragraphStyle: para,
+            .paragraphStyle: para
         ]
 
         let credits = NSMutableAttributedString()
@@ -268,7 +286,7 @@ private final class AboutPanelTarget: NSObject {
             .foregroundColor: NSColor.linkColor,
             .link: projectURL,
             .underlineStyle: NSUnderlineStyle.single.rawValue,
-            .paragraphStyle: para,
+            .paragraphStyle: para
         ]
         credits.append(
             NSAttributedString(

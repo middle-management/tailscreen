@@ -97,6 +97,9 @@ class AppState: ObservableObject {
     /// Combine subscription it owns lives for the lifetime of the
     /// viewer window.
     private var viewerStatsHost: ViewerStatsOverlayHost?
+    /// Hosts the keyboard-shortcut cheat-sheet overlay. Toggled by the
+    /// toolbar's "?" button and Help → Keyboard Shortcuts (⇧⌘/).
+    private var viewerShortcutsHost: ViewerShortcutsOverlayHost?
 
     // Peer discovery
     @Published var availablePeers: [TailscreenPeer] = []
@@ -821,6 +824,11 @@ class AppState: ObservableObject {
         ViewerCommands.shared.activeOverlay = overlayModel
         self.viewerOverlay = overlay
 
+        // Keep the toolbar's tool segment in sync with the canvas model
+        // so keyboard shortcuts (`1`–`6`, `⌘1`–`⌘6`) reflect on the
+        // toolbar instead of only updating it on click.
+        toolbar.bind(canvasModel: overlayModel)
+
         // Diagnostics overlay (toggled by the toolbar's chart button).
         // Sits above the annotation layer so its readout doesn't get
         // obscured by mid-stream strokes. Hidden by default; the toolbar
@@ -831,6 +839,16 @@ class AppState: ObservableObject {
         statsHost.layout(in: host)
         self.viewerStatsHost = statsHost
         ViewerCommands.shared.statsModel = r.statsModel
+
+        // Shortcut cheat-sheet overlay (toggled by toolbar "?" /
+        // Help → Keyboard Shortcuts / ⇧⌘/). Added last so it draws
+        // above both the stats overlay and the annotation canvas,
+        // and so its tap-to-dismiss backdrop wins on hit-test.
+        let shortcutsHost = ViewerShortcutsOverlayHost()
+        host.addSubview(shortcutsHost.view)
+        shortcutsHost.layout(in: host)
+        self.viewerShortcutsHost = shortcutsHost
+        ViewerCommands.shared.shortcutsModel = shortcutsHost.model
 
         win.contentView = host
         win.makeFirstResponder(overlay)

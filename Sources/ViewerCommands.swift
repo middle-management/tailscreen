@@ -79,6 +79,16 @@ final class ViewerCommands: NSObject {
     /// this on `ensureViewer()` so the toolbar action above can flip
     /// `isVisible` without depending on AppState directly.
     weak var statsModel: ViewerStatsModel?
+
+    /// Help → Keyboard Shortcuts (⇧⌘/). Flips the visibility of the
+    /// shortcut cheat-sheet overlay above the viewer window.
+    @objc func toggleShortcutsOverlay(_ sender: Any?) {
+        shortcutsModel?.isVisible.toggle()
+    }
+
+    /// Weakly held reference to the shortcut overlay's model. Set by
+    /// `AppState.ensureViewer()` alongside `statsModel`.
+    weak var shortcutsModel: ViewerShortcutsModel?
 }
 
 extension ViewerCommands: NSMenuItemValidation {
@@ -118,6 +128,10 @@ extension ViewerCommands: NSMenuItemValidation {
             let isVisible = statsModel?.isVisible ?? false
             menuItem.state = isVisible ? .on : .off
             return statsModel != nil
+        case #selector(toggleShortcutsOverlay(_:)):
+            let isVisible = shortcutsModel?.isVisible ?? false
+            menuItem.state = isVisible ? .on : .off
+            return shortcutsModel != nil
         default:
             return true
         }
