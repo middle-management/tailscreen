@@ -109,6 +109,7 @@ private struct WelcomeView: View {
                         }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.large)
+                        .accessibilityHint("Opens Tailscale sign-in in your browser")
                     }
                 }
                 .padding(.horizontal, 16)
@@ -252,8 +253,29 @@ private struct SharingCard: View {
                     .padding(.top, 5)
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Sharing your screen")
-                        .font(.system(size: 13, weight: .semibold))
+                    HStack(spacing: 6) {
+                        Text("Sharing your screen")
+                            .font(.system(size: 13, weight: .semibold))
+                        if !appState.currentViewers.isEmpty {
+                            // Pill-shaped viewer count. Small and
+                            // unobtrusive — full per-viewer hostname
+                            // list still renders below via `ViewersList`.
+                            Text("\(appState.currentViewers.count)")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 1)
+                                .background(
+                                    Capsule().fill(Color.green)
+                                )
+                                .accessibilityLabel(
+                                    "\(appState.currentViewers.count) " +
+                                    (appState.currentViewers.count == 1
+                                        ? "viewer connected"
+                                        : "viewers connected")
+                                )
+                        }
+                    }
                     if let resolutionText {
                         Text(resolutionText)
                             .font(.system(size: 11))
@@ -306,6 +328,9 @@ private struct SharingCard: View {
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .help(appState.isSharerOverlayVisible ? "Stop Drawing" : "Draw")
+                .accessibilityLabel(appState.isSharerOverlayVisible
+                    ? "Stop drawing on screen"
+                    : "Draw on screen")
 
                 Button {
                     Task { await appState.toggleMic() }
@@ -316,6 +341,8 @@ private struct SharingCard: View {
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .help(appState.isMicOn ? "Mute Mic (⌃⌥M)" : "Unmute Mic (⌃⌥M)")
+                .accessibilityLabel(appState.isMicOn ? "Mute microphone" : "Unmute microphone")
+                .accessibilityHint("Toggles voice chat with viewers")
 
                 Button {
                     Task { await appState.stopSharing(reason: "StopSharingButton") }
@@ -325,6 +352,7 @@ private struct SharingCard: View {
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .layoutPriority(1)
+                .accessibilityHint("Disconnects all viewers and ends the screen share")
             }
 
             AudioDevicePickers()
@@ -353,6 +381,7 @@ private struct AudioDevicePickers: View {
                 Image(systemName: "mic")
                     .foregroundStyle(.secondary)
                     .frame(width: 14)
+                    .accessibilityHidden(true)
                 Picker("", selection: Binding(
                     get: { appState.selectedInputDeviceID },
                     set: { appState.selectInputDevice($0) }
@@ -364,11 +393,13 @@ private struct AudioDevicePickers: View {
                 }
                 .labelsHidden()
                 .controlSize(.small)
+                .accessibilityLabel("Microphone input device")
             }
             HStack(spacing: 6) {
                 Image(systemName: "speaker.wave.2")
                     .foregroundStyle(.secondary)
                     .frame(width: 14)
+                    .accessibilityHidden(true)
                 Picker("", selection: Binding(
                     get: { appState.selectedOutputDeviceID },
                     set: { appState.selectOutputDevice($0) }
@@ -380,6 +411,7 @@ private struct AudioDevicePickers: View {
                 }
                 .labelsHidden()
                 .controlSize(.small)
+                .accessibilityLabel("Speaker output device")
             }
         }
         .font(.system(size: 11))
@@ -453,6 +485,8 @@ private struct ViewingCard: View {
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .help("Toggle mic (⌃⌥M)")
+                .accessibilityLabel(appState.isMicOn ? "Mute microphone" : "Unmute microphone")
+                .accessibilityHint("Toggles voice chat with the sharer")
 
                 Button {
                     Task { await appState.disconnect() }
@@ -461,6 +495,7 @@ private struct ViewingCard: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+                .accessibilityHint("Closes the viewer window and ends this session")
             }
 
             AudioDevicePickers()
@@ -547,6 +582,7 @@ private struct DisplayRow: View {
                     .font(.system(size: 13))
                     .frame(width: 16, alignment: .center)
                     .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
 
                 VStack(alignment: .leading, spacing: 1) {
                     Text(display.name)
@@ -563,6 +599,7 @@ private struct DisplayRow: View {
                     Image(systemName: "chevron.right")
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(.tertiary)
+                        .accessibilityHidden(true)
                 }
             }
             .padding(.horizontal, 10)
@@ -576,6 +613,8 @@ private struct DisplayRow: View {
                 .padding(.horizontal, 4)
         )
         .onHover { isHovered = $0 }
+        .accessibilityLabel("\(display.name), \(display.width) by \(display.height)")
+        .accessibilityHint("Starts sharing this display")
     }
 }
 
@@ -613,6 +652,7 @@ private struct DevicesSection: View {
                 .buttonStyle(.plain)
                 .disabled(appState.isDiscovering)
                 .help("Refresh screens")
+                .accessibilityLabel("Refresh available screens")
             }
             .padding(.horizontal, 14)
             .padding(.top, 6)
@@ -685,6 +725,7 @@ private struct PeerMenuRow: View {
                     .font(.system(size: 13))
                     .frame(width: 16, alignment: .center)
                     .foregroundStyle(peer.isOnline ? .secondary : .tertiary)
+                    .accessibilityHidden(true)
 
                 Text(peer.hostname)
                     .font(.system(size: 13))
@@ -694,6 +735,7 @@ private struct PeerMenuRow: View {
                 Circle()
                     .fill(peer.isOnline ? Color.green : Color(nsColor: .tertiaryLabelColor))
                     .frame(width: 6, height: 6)
+                    .accessibilityHidden(true)
 
                 Spacer(minLength: 0)
 
@@ -701,6 +743,7 @@ private struct PeerMenuRow: View {
                     Image(systemName: "chevron.right")
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(.tertiary)
+                        .accessibilityHidden(true)
                 }
             }
             .padding(.horizontal, 10)
@@ -718,6 +761,8 @@ private struct PeerMenuRow: View {
                 .padding(.horizontal, 4)
         )
         .onHover { isHovered = $0 }
+        .accessibilityLabel("\(peer.hostname), \(peer.isOnline ? "online" : "offline")")
+        .accessibilityHint(peer.isOnline ? "Connects to view this device's screen" : "")
     }
 }
 
@@ -770,6 +815,7 @@ private struct IdentityFooter: View {
                 )
                 .onHover { isHovered = $0 }
                 .help("Sign out of Tailscale")
+                .accessibilityLabel("Sign out of Tailscale, signed in as \(profile.displayName)")
             }
         }
     }

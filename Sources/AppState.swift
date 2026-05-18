@@ -84,6 +84,11 @@ class AppState: ObservableObject {
     @Published var viewerWindow: NSWindow?
     private var viewerRenderer: MetalViewerRenderer?
     private var viewerOverlay: AnnotationOverlayHostView?
+    /// Hosts the stats overlay subview pinned to the top-left of the
+    /// viewer's content view. Held strongly so the visibility-toggle
+    /// Combine subscription it owns lives for the lifetime of the
+    /// viewer window.
+    private var viewerStatsHost: ViewerStatsOverlayHost?
 
     // Peer discovery
     @Published var availablePeers: [TailscreenPeer] = []
@@ -701,6 +706,17 @@ class AppState: ObservableObject {
         // items act on it. ViewerCommands holds the model weakly.
         ViewerCommands.shared.activeOverlay = overlayModel
         self.viewerOverlay = overlay
+
+        // Diagnostics overlay (toggled by the toolbar's chart button).
+        // Sits above the annotation layer so its readout doesn't get
+        // obscured by mid-stream strokes. Hidden by default; the toolbar
+        // / menu flips `model.isVisible` and posts the visibility
+        // notification the host view listens for.
+        let statsHost = ViewerStatsOverlayHost(model: r.statsModel)
+        host.addSubview(statsHost.view)
+        statsHost.layout(in: host)
+        self.viewerStatsHost = statsHost
+        ViewerCommands.shared.statsModel = r.statsModel
 
         win.contentView = host
         win.makeFirstResponder(overlay)

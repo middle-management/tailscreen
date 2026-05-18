@@ -67,6 +67,18 @@ final class ViewerCommands: NSObject {
     @objc func toggleMicrophone(_ sender: Any?) {
         NotificationCenter.default.post(name: .tailscreenToggleMicrophone, object: nil)
     }
+
+    /// Toolbar/menu → Show Stats. Flips the renderer's stats-overlay
+    /// visibility. The hosting view subscribes to `model.$isVisible`
+    /// with Combine, so the change propagates without an extra signal.
+    @objc func toggleStatsOverlay(_ sender: Any?) {
+        statsModel?.isVisible.toggle()
+    }
+
+    /// Weakly held reference to the viewer's stats model. AppState sets
+    /// this on `ensureViewer()` so the toolbar action above can flip
+    /// `isVisible` without depending on AppState directly.
+    weak var statsModel: ViewerStatsModel?
 }
 
 extension ViewerCommands: NSMenuItemValidation {
@@ -102,6 +114,10 @@ extension ViewerCommands: NSMenuItemValidation {
             menuItem.state = isOn ? .on : .off
             menuItem.title = isOn ? "Mute Microphone" : "Unmute Microphone"
             return appState != nil
+        case #selector(toggleStatsOverlay(_:)):
+            let isVisible = statsModel?.isVisible ?? false
+            menuItem.state = isVisible ? .on : .off
+            return statsModel != nil
         default:
             return true
         }

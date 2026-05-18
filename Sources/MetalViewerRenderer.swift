@@ -4,6 +4,103 @@ import Foundation
 import Metal
 import QuartzCore
 
+/// Snapshot of viewer-side health metrics shown by the optional stats
+/// overlay. Plain value type so it can be diffed for `@Published` updates
+/// without touching the renderer's internal bookkeeping. All counters are
+/// "since this session began rendering" — they reset on `resetStats()`.
+///
+/// `codec` and `bitrateBps` are best-effort: the codec is detected from
+/// the first RTP packet's payload type and the bitrate is a 1-second
+/// sliding window over received-from-network bytes (so it captures the
+/// actual wire load, not the encoder's internal target).
+struct ViewerStats: Sendable, Equatable {
+    /// Most recent receive-to-present latency in milliseconds, or `nil`
+    /// if no frame has been presented yet.
+    var latencyMs: Double?
+    /// Frames presented per second, averaged over a 1 s window. Updates
+    /// on the display link tick.
+    var fps: Double
+    /// Percentage of dropped frames in the last reporting window.
+    /// `replacePendingBuffer` overwrites a not-yet-rendered buffer; that
+    /// counts as a drop. `nil` if not yet sampled.
+    var droppedPct: Double?
+    /// Rolling 1 s bitrate in bits/sec measured from the receive socket,
+    /// or `nil` if not yet sampled. Server-side encoder target lives on
+    /// the sharer, not the viewer, so this is the wire-level approximation.
+    var bitrateBps: Double?
+    /// Codec carried on the wire, learned from the RTP payload type.
+    /// `nil` until the first video packet lands.
+    var codec: VideoCodec?
+    /// Total frames presented since the stats were last reset.
+    var framesPresented: Int
+    /// Total frames dropped (overwritten before render) since reset.
+    var framesDropped: Int
+
+    static let empty = ViewerStats(
+        latencyMs: nil,
+        fps: 0,
+        droppedPct: nil,
+        bitrateBps: nil,
+        codec: nil,
+        framesPresented: 0,
+        framesDropped: 0
+    )
+}
+
+/// Observable wrapper around `ViewerStats` so SwiftUI views can subscribe
+/// with `@ObservedObject`. The renderer pushes new snapshots in from the
+/// display-link tick (already on the main thread); the client pushes codec
+/// + byte-counter updates from the receive task via a `DispatchQueue.main`
+/// hop so all `@Published` writes happen on main.
+///
+/// Not annotated `@MainActor` so it can be stored as a `let` on the
+/// non-isolated `MetalViewerRenderer`; `@unchecked Sendable` carries the
+/// invariant that all mutating calls hop to main first.
+final class ViewerStatsModel: ObservableObject, @unchecked Sendable {
+    @Published var stats: ViewerStats = .empty
+
+    /// Toggled by the toolbar's "Show Stats" button. Bound directly into
+    /// the overlay's hosting view's `isHidden`.
+    @Published var isVisible: Bool = false
+
+    /// Rolling history of the last `historyCapacity` per-second snapshots:
+    /// latency in ms, bitrate in bps, drop percentage. Drives the sparkline
+    /// chart in `ViewerStatsOverlay`. Appended to on every 1 s flush from
+    /// `publishStatsTick`; oldest sample evicted on overflow.
+    @Published var history: [HistorySample] = []
+
+    /// Number of 1 s buckets retained for the sparkline. 60 ≈ one minute,
+    /// matches the width budget of the overlay (~180 px / 3 px-per-sample).
+    static let historyCapacity = 60
+
+    func update(_ next: ViewerStats) {
+        // Avoid spurious SwiftUI re-renders on identical snapshots.
+        if next != stats { stats = next }
+    }
+
+    func appendHistory(_ sample: HistorySample) {
+        var next = history
+        next.append(sample)
+        if next.count > Self.historyCapacity {
+            next.removeFirst(next.count - Self.historyCapacity)
+        }
+        history = next
+    }
+
+    func reset() {
+        stats = .empty
+        history = []
+    }
+}
+
+/// One per-second snapshot fed into the sparkline buffer. `nil` fields mark
+/// gaps so the chart can break the line instead of drawing a fake zero.
+struct HistorySample: Sendable, Equatable {
+    var latencyMs: Double?
+    var bitrateBps: Double?
+    var droppedPct: Double?
+}
+
 /// Displays decoded `CVPixelBuffer` frames on a `CAMetalLayer`, driven by a
 /// `CADisplayLink`. Replaces `AVSampleBufferDisplayLayer`, whose background
 /// renderer autoreleased work into the main-queue autorelease pool and
@@ -43,6 +140,31 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
     private var displayLink: CADisplayLink?
     private var isInvalidated = false
     private var framesPresented: Int = 0
+
+    /// Observable model the stats overlay binds to. Updated on the main
+    /// thread from the display-link tick and from client-side packet
+    /// hand-offs (see `noteReceivedBytes` / `noteCodec`).
+    let statsModel = ViewerStatsModel()
+
+    // MARK: stats counters (display-link/lock protected)
+
+    /// Frames overwritten before they could be rendered. A drop happens
+    /// when `setPixelBuffer` is called while `pendingBuffer` is still
+    /// non-nil. Reset on `resetStats`.
+    private var framesDroppedTotal: Int = 0
+    /// Frames presented in the current 1 s bucket.
+    private var bucketFramesPresented: Int = 0
+    /// Frames dropped in the current 1 s bucket.
+    private var bucketFramesDropped: Int = 0
+    /// Bytes received in the current 1 s bucket (set by the client via
+    /// `noteReceivedBytes`).
+    private var bucketBytesReceived: Int = 0
+    /// Start of the current 1 s sampling window, in mach uptime ns.
+    private var bucketStartNs: UInt64 = 0
+
+    /// Codec observed on the wire. Set by the client when it detects the
+    /// RTP payload type. Pure metadata — the renderer doesn't act on it.
+    private var observedCodec: VideoCodec?
 
     /// Traps if the machine has no Metal device (very old Macs) or the
     /// shader library fails to compile — both indicate a misconfigured
@@ -119,12 +241,60 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
 
     /// Hand in the latest decoded frame. Called from the decoder's output
     /// callback thread. The renderer only keeps the most recent buffer;
-    /// older ones are dropped on the floor.
+    /// older ones are dropped on the floor — those drops are counted into
+    /// `ViewerStats.framesDropped` so the overlay can surface them.
     func setPixelBuffer(_ buffer: CVPixelBuffer, receiveUptimeNs: UInt64) {
         lock.lock()
+        if pendingBuffer != nil {
+            framesDroppedTotal += 1
+            bucketFramesDropped += 1
+        }
         pendingBuffer = buffer
         pendingReceiveUptimeNs = receiveUptimeNs
         lock.unlock()
+    }
+
+    /// Client hook: account for `byteCount` bytes that just landed on the
+    /// receive socket. Used to compute the live bitrate shown in the stats
+    /// overlay. Safe to call from any thread.
+    func noteReceivedBytes(_ byteCount: Int) {
+        lock.lock()
+        bucketBytesReceived &+= byteCount
+        lock.unlock()
+    }
+
+    /// Client hook: record the codec carried on the wire, as detected from
+    /// the RTP payload type. Cheap to call repeatedly — only forwards an
+    /// update when the codec actually changes.
+    func noteCodec(_ codec: VideoCodec) {
+        lock.lock()
+        let changed = observedCodec != codec
+        observedCodec = codec
+        lock.unlock()
+        if changed {
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                var snap = self.statsModel.stats
+                snap.codec = codec
+                self.statsModel.update(snap)
+            }
+        }
+    }
+
+    /// Reset the stats counters. Call on connect so the new session
+    /// doesn't inherit a 30 % drop rate from a previous flaky connection.
+    func resetStats() {
+        lock.lock()
+        framesDroppedTotal = 0
+        bucketFramesPresented = 0
+        bucketFramesDropped = 0
+        bucketBytesReceived = 0
+        bucketStartNs = 0
+        observedCodec = nil
+        lock.unlock()
+        DispatchQueue.main.async { [weak self] in
+            self?.statsModel.reset()
+        }
     }
 
     /// Drop the latest frame so the next display-link tick presents a black
@@ -152,9 +322,16 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
     @objc private func displayLinkTick(_ sender: CADisplayLink) {
         if isInvalidated { return }
 
+        // Consume the pending buffer: take it out under the lock so the next
+        // `setPixelBuffer` call observes an empty slot and does NOT count its
+        // frame as dropped. Leaving the buffer in place after presenting was
+        // the prior behavior and made every subsequent decoder frame look
+        // like a drop, inflating `droppedPct` toward 50% on a steady stream.
         lock.lock()
         let buffer = pendingBuffer
         let receiveNs = pendingReceiveUptimeNs
+        pendingBuffer = nil
+        pendingReceiveUptimeNs = 0
         lock.unlock()
 
         guard let buffer = buffer else { return }
@@ -216,16 +393,99 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
         commandBuffer.commit()
 
         framesPresented += 1
+        var latencyMsThisFrame: Double?
         if receiveUptimeNs > 0 {
             let nowNs = DispatchTime.now().uptimeNanoseconds
             if nowNs >= receiveUptimeNs {
                 let ms = Double(nowNs - receiveUptimeNs) / 1_000_000.0
                 lastPresentLatencyMs = ms
+                latencyMsThisFrame = ms
                 if framesPresented == 1 || framesPresented % 60 == 0 {
                     print(String(format: "MetalRenderer: presented frame #%d recv→present=%.1fms",
                                  framesPresented, ms))
                 }
             }
+        }
+
+        publishStatsTick(latencyMsThisFrame: latencyMsThisFrame)
+    }
+
+    /// Update the 1 s rolling bucket and, when it fills, hand a fresh
+    /// `ViewerStats` snapshot to the observable model. Called once per
+    /// rendered frame from the display-link tick (main thread).
+    private func publishStatsTick(latencyMsThisFrame: Double?) {
+        let nowNs = DispatchTime.now().uptimeNanoseconds
+
+        lock.lock()
+        if bucketStartNs == 0 { bucketStartNs = nowNs }
+        bucketFramesPresented += 1
+        let elapsedNs = nowNs &- bucketStartNs
+        let totalPresented = framesPresented
+        let totalDropped = framesDroppedTotal
+        let codecSnap = observedCodec
+        let bucketPresentedSnap = bucketFramesPresented
+        let bucketDroppedSnap = bucketFramesDropped
+        let bucketBytesSnap = bucketBytesReceived
+        let shouldFlush = elapsedNs >= 1_000_000_000
+        if shouldFlush {
+            bucketFramesPresented = 0
+            bucketFramesDropped = 0
+            bucketBytesReceived = 0
+            bucketStartNs = nowNs
+        }
+        lock.unlock()
+
+        guard shouldFlush else {
+            // Between flushes still publish the latency on every frame so
+            // the overlay's ms readout doesn't sit at a stale value for
+            // up to a full second.
+            if let latency = latencyMsThisFrame {
+                let totalForUpdate = totalPresented
+                let droppedForUpdate = totalDropped
+                let codecForUpdate = codecSnap
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    var snap = self.statsModel.stats
+                    snap.latencyMs = latency
+                    snap.framesPresented = totalForUpdate
+                    snap.framesDropped = droppedForUpdate
+                    if let c = codecForUpdate { snap.codec = c }
+                    self.statsModel.update(snap)
+                }
+            }
+            return
+        }
+
+        let seconds = max(Double(elapsedNs) / 1_000_000_000.0, 0.0001)
+        let fps = Double(bucketPresentedSnap) / seconds
+        let denom = bucketPresentedSnap + bucketDroppedSnap
+        let droppedPct: Double? = denom > 0
+            ? (Double(bucketDroppedSnap) / Double(denom)) * 100.0
+            : nil
+        let bitrate = Double(bucketBytesSnap) * 8.0 / seconds
+
+        let latencyForSnapshot: Double? = latencyMsThisFrame
+            ?? (lastPresentLatencyMs >= 0 ? lastPresentLatencyMs : nil)
+
+        let snapshot = ViewerStats(
+            latencyMs: latencyForSnapshot,
+            fps: fps,
+            droppedPct: droppedPct,
+            bitrateBps: bitrate,
+            codec: codecSnap,
+            framesPresented: totalPresented,
+            framesDropped: totalDropped
+        )
+        let historySample = HistorySample(
+            latencyMs: latencyForSnapshot,
+            bitrateBps: bitrate,
+            droppedPct: droppedPct
+        )
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.statsModel.update(snapshot)
+            self.statsModel.appendHistory(historySample)
         }
     }
 
