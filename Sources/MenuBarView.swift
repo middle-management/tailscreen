@@ -141,7 +141,12 @@ private struct PendingRequestsBanner: View {
 
     var body: some View {
         let requests = appState.metadataService.pendingRequests
-        if requests.isEmpty {
+        // Suppress while the user is already sharing or viewing — the
+        // Share button would be disabled and the banner would read as
+        // "X wants you to share" while a share is on-screen, which is
+        // confusing. Requests stay queued for when state returns to idle.
+        let busy = appState.sharingState != .idle || appState.connectionState != .idle
+        if requests.isEmpty || busy {
             EmptyView()
         } else {
             VStack(spacing: 6) {

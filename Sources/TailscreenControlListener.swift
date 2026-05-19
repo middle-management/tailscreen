@@ -118,9 +118,18 @@ final class TailscreenControlListener: @unchecked Sendable {
                 let id = UUID()
                 connections.withLock { $0[id] = conn }
                 Task { [weak self] in await self?.receiveLoop(connection: conn, id: id) }
-            } catch {
-                // accept-timeout or transient — loop and retry
+            } catch TailscaleError.readFailed {
+                // Plain poll timeout (see Listener.swift) — listener is
+                // still healthy, loop and retry.
                 continue
+            } catch {
+                // Non-timeout errors mean the listener closed itself
+                // (Listener.swift closes the fd on any non-timeout poll
+                // failure), so we can't recover by retrying — log loudly
+                // and break instead of tight-looping on EBADF.
+                logger.log("acceptLoop fatal: \(error). Listener stopped.")
+                isRunning = false
+                return
             }
         }
     }

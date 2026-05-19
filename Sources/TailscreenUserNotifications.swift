@@ -14,17 +14,32 @@ final class TailscreenUserNotifications {
     static let shared = TailscreenUserNotifications()
 
     private enum AuthState {
-        case unknown, requesting, authorized, denied
+        case unknown, requesting, authorized, denied, unavailable
     }
 
-    private var authState: AuthState = .unknown
+    private var authState: AuthState
     private var pendingPostsAfterAuth: [() -> Void] = []
 
-    private init() {}
+    private init() {
+        // `UNUserNotificationCenter.current()` traps with "Bundle
+        // identifier nil" when called from an unbundled binary —
+        // happens with `make run` / `swift build` output, since those
+        // produce a plain Mach-O without an Info.plist. Detect that
+        // shape and mark notifications permanently unavailable so the
+        // in-popover banner remains the only surface; the bundled
+        // `Tailscreen.app` (release / install path) has a bundle id
+        // and works normally.
+        if Bundle.main.bundleIdentifier == nil {
+            self.authState = .unavailable
+        } else {
+            self.authState = .unknown
+        }
+    }
 
     /// Post a "$hostname wants you to share" banner. If notification
     /// authorization hasn't been requested yet, the request fires on this
-    /// call and the post is enqueued until the user responds.
+    /// call and the post is enqueued until the user responds. No-op on
+    /// unbundled binaries (see `init`).
     func postRequestToShareNotification(fromHostname: String) {
         let post = { [weak self] in
             guard let self else { return }
@@ -45,7 +60,7 @@ final class TailscreenUserNotifications {
         switch authState {
         case .authorized:
             post()
-        case .denied:
+        case .denied, .unavailable:
             return
         case .requesting:
             pendingPostsAfterAuth.append(post)

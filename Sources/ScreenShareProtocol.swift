@@ -101,7 +101,10 @@ struct ScreenShareMessageParser {
             let request = try? JSONDecoder().decode(
                 RequestToSharePayload.self, from: Data(payload))
         else { return nil }
-        return .requestToShare(fromHostname: request.fromHostname)
+        // Wire field is peer-controlled; clamp before propagating so a
+        // hostile peer can't bloat the popover banner with a 10 KB string.
+        let clamped = String(request.fromHostname.prefix(RequestToSharePayload.maxHostnameLength))
+        return .requestToShare(fromHostname: clamped)
     }
 }
 
@@ -109,6 +112,11 @@ struct ScreenShareMessageParser {
 /// set can grow (e.g. requested-display ID, message text) without bumping
 /// the message-type byte.
 struct RequestToSharePayload: Codable, Sendable {
+    /// Generous upper bound on a sensible hostname. RFC 1035 caps DNS
+    /// labels at 63 chars and FQDNs at 253; we render the hostname in a
+    /// 12 pt menubar row where anything past ~64 is already truncated.
+    static let maxHostnameLength = 64
+
     let fromHostname: String
 }
 

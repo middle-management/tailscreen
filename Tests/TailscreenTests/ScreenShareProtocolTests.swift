@@ -104,6 +104,29 @@ final class ScreenShareProtocolTests: XCTestCase {
         XCTAssertNil(parser.next())
     }
 
+    func testRequestToShareHostnameClampedOnReceive() throws {
+        // Hostile peer sends a payload with a huge hostname — receiver
+        // must clamp before propagating so the UI banner can't be bloated.
+        let huge = String(repeating: "x", count: 4096)
+        let payload = try JSONEncoder().encode(RequestToSharePayload(fromHostname: huge))
+        var data = Data()
+        data.append(ScreenShareMessage.MessageType.requestToShare.rawValue)
+        let len = UInt32(payload.count)
+        data.append(UInt8((len >> 24) & 0xFF))
+        data.append(UInt8((len >> 16) & 0xFF))
+        data.append(UInt8((len >> 8) & 0xFF))
+        data.append(UInt8(len & 0xFF))
+        data.append(payload)
+
+        var parser = ScreenShareMessageParser()
+        parser.append(data)
+        let decoded = try XCTUnwrap(parser.next())
+        guard case .requestToShare(let fromHostname) = decoded else {
+            return XCTFail("expected .requestToShare, got \(decoded)")
+        }
+        XCTAssertEqual(fromHostname.count, RequestToSharePayload.maxHostnameLength)
+    }
+
     func testUnknownMessageTypeIsSkipped() throws {
         // Hand-build a bogus message with type=0xFF, then a valid annotation.
         var bogus = Data()

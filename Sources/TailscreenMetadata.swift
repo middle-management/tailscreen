@@ -76,9 +76,15 @@ class TailscreenMetadataService: ObservableObject {
     @Published var pendingRequests: [PendingRequest] = []
 
     struct PendingRequest: Identifiable {
-        let id = UUID()
+        let id: UUID
         let fromHostname: String
         let timestamp: Date
+
+        init(id: UUID = UUID(), fromHostname: String, timestamp: Date) {
+            self.id = id
+            self.fromHostname = fromHostname
+            self.timestamp = timestamp
+        }
     }
 
     /// Get current screen resolution
@@ -108,10 +114,19 @@ class TailscreenMetadataService: ObservableObject {
         )
     }
 
-    /// Handle incoming request to share
+    /// Handle incoming request to share. Coalesces repeated requests
+    /// from the same peer — a flaky network or a peer that retries
+    /// shouldn't stack N identical banner rows. The existing entry's
+    /// timestamp is refreshed so the row stays sorted as "newest".
     func handleRequestToShare(from hostname: String) {
-        let request = PendingRequest(fromHostname: hostname, timestamp: Date())
-        pendingRequests.append(request)
+        if let idx = pendingRequests.firstIndex(where: { $0.fromHostname == hostname }) {
+            let existing = pendingRequests.remove(at: idx)
+            pendingRequests.append(
+                PendingRequest(id: existing.id, fromHostname: hostname, timestamp: Date())
+            )
+            return
+        }
+        pendingRequests.append(PendingRequest(fromHostname: hostname, timestamp: Date()))
     }
 
     /// Clear a pending request
@@ -138,6 +153,12 @@ class TailscreenMetadataService: ObservableObject {
     /// connection, writes a single `ScreenShareMessage.requestToShare`
     /// frame, and closes — the receive side picks the payload up through
     /// `TailscreenControlListener.onRequestToShare`.
+    ///
+    /// Both the `OutgoingConnection` init and `connect()` are wrapped in
+    /// `TailscalePeerDiscovery.withWatchdog` because `tailscale_dial` (and
+    /// the init's actor handshake) can block indefinitely on ACL-dropped
+    /// SYNs or a cold netmap — without the watchdog the UI Task hangs
+    /// forever and the error never surfaces.
     func sendRequestToShare(
         toIP host: String,
         port: UInt16 = NetworkConfig.tailscreenPort,
@@ -147,14 +168,18 @@ class TailscreenMetadataService: ObservableObject {
         guard let tailscaleHandle = await node.tailscale else {
             throw TailscaleError.badInterfaceHandle
         }
-        let logger = TSLogger()
-        let conn = try await OutgoingConnection(
-            tailscale: tailscaleHandle,
-            to: "\(host):\(port)",
-            proto: .tcp,
-            logger: logger
-        )
-        try await conn.connect()
+        let target = "\(host):\(port)"
+        let conn = try await TailscalePeerDiscovery.withWatchdog(seconds: 5) {
+            try await OutgoingConnection(
+                tailscale: tailscaleHandle,
+                to: target,
+                proto: .tcp,
+                logger: TSLogger()
+            )
+        }
+        try await TailscalePeerDiscovery.withWatchdog(seconds: 8) {
+            try await conn.connect()
+        }
         let frame = ScreenShareMessage.requestToShare(fromHostname: hostname).encode()
         try await conn.send(frame)
         await conn.close()
