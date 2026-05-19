@@ -134,6 +134,20 @@ class AppState: ObservableObject {
     /// Hosts the keyboard-shortcut cheat-sheet overlay. Toggled by the
     /// toolbar's "?" button and Help → Keyboard Shortcuts (⇧⌘/).
     private var viewerShortcutsHost: ViewerShortcutsOverlayHost?
+    /// "Waiting for sharer to accept your connection" placard shown in the
+    /// viewer window between HELLO_PENDING and the first decoded frame.
+    /// Hidden by default; toggled by `viewerAwaitingApproval`.
+    private var viewerWaitingPlacard: NSView?
+
+    /// True between the sharer reporting HELLO_PENDING and the viewer
+    /// receiving its first decoded frame. Drives the placard overlaid on
+    /// the viewer window. Reset on connect/disconnect.
+    @Published var viewerAwaitingApproval: Bool = false {
+        didSet {
+            guard viewerAwaitingApproval != oldValue else { return }
+            viewerWaitingPlacard?.isHidden = !viewerAwaitingApproval
+        }
+    }
 
     // Peer discovery
     @Published var availablePeers: [TailscreenPeer] = []
@@ -753,10 +767,21 @@ class AppState: ObservableObject {
         defer {
             if connectionState == .connecting { connectionState = .idle }
         }
+        viewerAwaitingApproval = false
         let renderer = ensureViewer()
         do {
             let c = TailscaleScreenShareClient(renderer: renderer)
             client = c
+
+            // HELLO_PENDING means the sharer parked us behind the approval
+            // gate. Surface the placard so the viewer doesn't sit on a
+            // black window with no explanation; first decoded frame clears
+            // it via `onVideoSizeChanged`.
+            c.onAwaitingApproval = { [weak self] in
+                Task { @MainActor [weak self] in
+                    self?.viewerAwaitingApproval = true
+                }
+            }
 
             // Server fans out sharer-painted strokes (and other viewers'
             // strokes) over the annotation back-channel. Apply them to the
@@ -910,6 +935,9 @@ class AppState: ObservableObject {
             host?.videoSize = size
             guard let self, let win else { return }
             MainActor.assumeIsolated {
+                // First decoded frame implies the sharer accepted us — clear
+                // the "waiting for approval" placard regardless of resize.
+                self.viewerAwaitingApproval = false
                 guard !self.userResizedViewer else { return }
                 self.programmaticSnap(win, toVideoPixelSize: size)
             }
@@ -964,6 +992,25 @@ class AppState: ObservableObject {
         host.addSubview(shortcutsHost.view)
         shortcutsHost.layout(in: host)
         self.viewerShortcutsHost = shortcutsHost
+
+        // "Waiting for sharer to accept" placard. Centered, fixed size,
+        // hidden by default; visibility flipped from
+        // `viewerAwaitingApproval`. Added last so HELLO_PENDING during a
+        // shortcuts-overlay-up moment still draws above strokes/stats and
+        // sits beneath the shortcuts cheat-sheet (acceptable — the
+        // cheat-sheet is user-initiated and dismissible).
+        let placard = makeWaitingPlacard()
+        let placardSize = NSSize(width: 360, height: 80)
+        placard.frame = NSRect(
+            x: (host.bounds.width - placardSize.width) / 2,
+            y: (host.bounds.height - placardSize.height) / 2,
+            width: placardSize.width,
+            height: placardSize.height
+        )
+        placard.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin, .maxYMargin]
+        placard.isHidden = !viewerAwaitingApproval
+        host.addSubview(placard)
+        self.viewerWaitingPlacard = placard
         ViewerCommands.shared.shortcutsModel = shortcutsHost.model
 
         win.contentView = host
@@ -1073,6 +1120,7 @@ class AppState: ObservableObject {
         isMicOn = false
         connectionState = .idle
         connectedHostname = nil
+        viewerAwaitingApproval = false
         viewerRenderer?.clearPendingBuffer()
         viewerWindow?.orderOut(nil)
         // Next connect should snap to the new sharer's dims even if the
@@ -1459,6 +1507,35 @@ class AppState: ObservableObject {
     /// tears their session down immediately.
     func denyPendingViewer(_ id: String) {
         server?.denyViewer(addr: id)
+    }
+
+    /// Vibrancy-backed centered placard reading "Waiting for sharer to
+    /// accept your connection…". Sized in caller; held by AppState and
+    /// toggled via `viewerWaitingPlacard?.isHidden` from
+    /// `viewerAwaitingApproval.didSet`.
+    @MainActor
+    private func makeWaitingPlacard() -> NSView {
+        let effect = NSVisualEffectView()
+        effect.material = .hudWindow
+        effect.blendingMode = .withinWindow
+        effect.state = .active
+        effect.wantsLayer = true
+        effect.layer?.cornerRadius = 12
+        effect.layer?.masksToBounds = true
+
+        let label = NSTextField(labelWithString: "Waiting for sharer to accept your connection…")
+        label.alignment = .center
+        label.font = .systemFont(ofSize: 14, weight: .medium)
+        label.textColor = .labelColor
+        label.translatesAutoresizingMaskIntoConstraints = false
+        effect.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.centerXAnchor.constraint(equalTo: effect.centerXAnchor),
+            label.centerYAnchor.constraint(equalTo: effect.centerYAnchor),
+            label.leadingAnchor.constraint(greaterThanOrEqualTo: effect.leadingAnchor, constant: 16),
+            label.trailingAnchor.constraint(lessThanOrEqualTo: effect.trailingAnchor, constant: -16),
+        ])
+        return effect
     }
 }
 

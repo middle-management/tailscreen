@@ -57,6 +57,12 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     /// to lazily build the local VoiceChannel.
     var onAudioSSRCAssigned: ((UInt32) -> Void)?
 
+    /// Fires when the sharer reports our HELLO is parked behind their
+    /// approval gate (HELLO_PENDING). AppState toggles a "Waiting for
+    /// sharer to accept" overlay; cleared on first decoded frame or
+    /// disconnect.
+    var onAwaitingApproval: (() -> Void)?
+
     /// Fires on every inbound audio RTP packet (PT=98). AppState pipes
     /// this into VoiceChannel.receive(_:).
     var onAudioReceived: ((Data) -> Void)?
@@ -330,6 +336,8 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                             assignedAudioSSRC = ssrc
                             onAudioSSRCAssigned?(ssrc)
                         }
+                    case .helloPending:
+                        onAwaitingApproval?()
                     default:
                         break
                     }

@@ -26,18 +26,21 @@ enum ViewerApprovalDefaults {
 ///   * `postPending(label:)` — fired when a viewer arrives while the
 ///     approval gate is on and is now waiting on the sharer's decision.
 ///
-/// Authorization is requested on first use. macOS rejects unbundled
-/// development builds (no `CFBundleIdentifier`) silently, in which case
-/// the notification just doesn't appear; the in-popover SharingCard UI
-/// still shows the pending viewer rows, so the feature degrades.
+/// Authorization is requested on first use. Unbundled dev builds (no
+/// `CFBundleIdentifier`) can't use `UNUserNotificationCenter` at all —
+/// `current()` raises `NSInternalInconsistencyException` rather than
+/// returning a degraded instance — so we short-circuit when there's no
+/// bundle id. The in-popover SharingCard UI still shows pending rows.
 @MainActor
 final class ViewerJoinNotifier {
     static let shared = ViewerJoinNotifier()
     private var didRequestAuthorization = false
+    private let isBundled = Bundle.main.bundleIdentifier != nil
 
     private init() {}
 
     func postJoined(label: String) {
+        guard isBundled else { return }
         ensureAuthorization()
         let content = UNMutableNotificationContent()
         content.title = "Viewer Connected"
@@ -52,6 +55,7 @@ final class ViewerJoinNotifier {
     }
 
     func postPending(label: String) {
+        guard isBundled else { return }
         ensureAuthorization()
         let content = UNMutableNotificationContent()
         content.title = "Viewer Wants to Connect"
@@ -68,9 +72,6 @@ final class ViewerJoinNotifier {
     private func ensureAuthorization() {
         guard !didRequestAuthorization else { return }
         didRequestAuthorization = true
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in
-            // Best-effort: in dev builds without a bundle identifier the
-            // call returns `notAuthorized`; we just don't show banners.
-        }
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
     }
 }

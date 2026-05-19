@@ -722,6 +722,16 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
                     let ack = ScreenShareControlMessage.encodeHelloAck(ssrc: assignedSSRC)
                     try? await pl.send(ack, to: addr)
                 }
+            } else if (pendingViewers.withLock { $0[addr] != nil }) {
+                // Parked behind the approval gate. Echo HELLO_PENDING so
+                // the viewer can flip its UI from "Connecting…" to
+                // "Waiting for approval"; resend on every HELLO retry in
+                // case an earlier one was lost on the UDP path.
+                Task { [weak self] in
+                    guard let pl = self?.packetListener else { return }
+                    let pending = ScreenShareControlMessage.encode(.helloPending)
+                    try? await pl.send(pending, to: addr)
+                }
             }
         case .keepalive:
             registerOrRefresh(addr: addr, isNew: false)
@@ -738,6 +748,9 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         case .serverBye:
             // SERVER_BYE is server→viewer only. A viewer sending it is
             // either confused or malicious; drop the packet on the floor.
+            return
+        case .helloPending:
+            // HELLO_PENDING is server→viewer only. Ignore from viewers.
             return
         }
     }
