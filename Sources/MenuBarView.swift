@@ -25,6 +25,7 @@ struct MenuBarView: View {
             WelcomeView()
         } else {
             VStack(alignment: .leading, spacing: 0) {
+                PendingRequestsBanner()
                 StatusSection()
                 DevicesSection()
                 IdentityFooter()
@@ -126,6 +127,67 @@ private struct WelcomeView: View {
         }
         .padding(.vertical, 6)
         .frame(width: 280)
+    }
+}
+
+// MARK: - Pending requests (peer asked us to share)
+
+/// Renders one orange card per incoming request-to-share at the top of
+/// the menubar popover. Share routes through `presentNativePicker` —
+/// the same path the menubar's own "Start sharing" button uses — so
+/// the picker-helper subprocess + TCC handshake always runs.
+private struct PendingRequestsBanner: View {
+    @EnvironmentObject var appState: AppState
+
+    var body: some View {
+        let requests = appState.metadataService.pendingRequests
+        // Suppress while the user is already sharing or viewing — the
+        // Share button would be disabled and the banner would read as
+        // "X wants you to share" while a share is on-screen, which is
+        // confusing. Requests stay queued for when state returns to idle.
+        let busy = appState.sharingState != .idle || appState.connectionState != .idle
+        if requests.isEmpty || busy {
+            EmptyView()
+        } else {
+            VStack(spacing: 6) {
+                ForEach(requests) { req in
+                    HStack(spacing: 10) {
+                        Image(systemName: "hand.wave.fill")
+                            .font(.system(size: 16))
+                            .foregroundStyle(.orange)
+                            .accessibilityHidden(true)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("\(req.fromHostname) wants you to share")
+                                .font(.system(size: 12, weight: .semibold))
+                                .lineLimit(2)
+                            Text("Tap Share to choose what to show")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 4)
+                        Button("Decline") {
+                            appState.metadataService.clearRequest(req)
+                        }
+                        .controlSize(.small)
+                        .buttonStyle(.bordered)
+                        Button("Share") {
+                            appState.metadataService.clearRequest(req)
+                            Task { await appState.presentNativePicker() }
+                        }
+                        .controlSize(.small)
+                        .buttonStyle(.borderedProminent)
+                        .disabled(appState.sharingState == .active)
+                    }
+                    .padding(10)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color.orange.opacity(0.14))
+                    )
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.bottom, 6)
+        }
     }
 }
 
@@ -721,14 +783,14 @@ private struct DevicesSection: View {
             .frame(height: 28)
             .padding(.horizontal, 14)
         } else if appState.availablePeers.isEmpty {
-            Text("No screens available on your tailnet")
+            Text("No Tailscreen devices on your tailnet")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
                 .frame(height: 28)
                 .padding(.horizontal, 14)
         } else {
             let maxRows = 6
-            let rowHeight: CGFloat = 28
+            let rowHeight: CGFloat = 36
             // `.frame(height:)` (not `maxHeight:`) commits to the
             // row count's height so SwiftUI's intrinsic sizing can't
             // collapse the ScrollView when its content negotiates a
@@ -756,30 +818,80 @@ private struct PeerMenuRow: View {
     let onConnect: () -> Void
     @State private var isHovered = false
 
+    private var canRequestShare: Bool {
+        // The peer list is only rendered when sharing/connection state is
+        // idle (the SharingCard / ViewingCard / ConnectingCard own the
+        // popover otherwise), so a finer check here is redundant — but
+        // belt-and-suspenders keeps the hand-wave hidden if the row ever
+        // gets shown from a different surface.
+        peer.isOnline
+            && appState.sharingState == .idle
+            && appState.connectionState == .idle
+    }
+
     // Whole-row button. MenuBarExtra(.window) dismisses its popover on any
     // click that doesn't hit an interactive control; making the row itself
     // the button avoids gaps falling through to the popover.
     var body: some View {
-        Button(action: onConnect) {
-            HStack(spacing: 8) {
-                Image(systemName: "desktopcomputer")
-                    .font(.system(size: 13))
-                    .frame(width: 16, alignment: .center)
-                    .foregroundStyle(peer.isOnline ? .secondary : .tertiary)
-                    .accessibilityHidden(true)
+        ZStack {
+            Button(action: onConnect) {
+                HStack(spacing: 8) {
+                    Image(systemName: "desktopcomputer")
+                        .font(.system(size: 13))
+                        .frame(width: 16, alignment: .center)
+                        .foregroundStyle(peer.isOnline ? .secondary : .tertiary)
+                        .accessibilityHidden(true)
 
-                Text(peer.hostname)
-                    .font(.system(size: 13))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(peer.hostname)
+                            .font(.system(size: 13))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        if !peer.isOnline {
+                            Text("Offline")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
 
-                Circle()
-                    .fill(peer.isOnline ? Color.green : Color(nsColor: .tertiaryLabelColor))
-                    .frame(width: 6, height: 6)
-                    .accessibilityHidden(true)
+                    Circle()
+                        .fill(peer.isOnline ? Color.green : Color(nsColor: .tertiaryLabelColor))
+                        .frame(width: 6, height: 6)
+                        .accessibilityHidden(true)
 
+                    Spacer(minLength: 0)
+
+                    // Reserve space the trailing buttons will occupy so
+                    // hover-driven appearance doesn't shift the row.
+                    Color.clear.frame(width: trailingReservedWidth, height: 1)
+                }
+                .padding(.horizontal, 10)
+                .frame(height: 36)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!peer.isOnline)
+            .opacity(peer.isOnline ? 1.0 : 0.55)
+            .background(MenuRowHoverBackground(isHovered: isHovered && peer.isOnline))
+            .accessibilityLabel("\(peer.hostname), \(peer.isOnline ? "online" : "offline")")
+            .accessibilityHint(peer.isOnline ? "Connects to view this device's screen" : "")
+
+            HStack(spacing: 6) {
                 Spacer(minLength: 0)
-
+                if isHovered && canRequestShare {
+                    Button {
+                        Task { await appState.requestToShare(from: peer) }
+                    } label: {
+                        Image(systemName: "hand.wave")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 22, height: 22)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Ask \(peer.hostname) to share their screen")
+                    .accessibilityLabel("Request \(peer.hostname) to share")
+                }
                 if isHovered && peer.isOnline {
                     Image(systemName: "chevron.right")
                         .font(.system(size: 10, weight: .semibold))
@@ -787,17 +899,21 @@ private struct PeerMenuRow: View {
                         .accessibilityHidden(true)
                 }
             }
-            .padding(.horizontal, 10)
-            .frame(height: 28)
-            .contentShape(Rectangle())
+            .padding(.trailing, 10)
+            .allowsHitTesting(isHovered && canRequestShare)
         }
-        .buttonStyle(.plain)
-        .disabled(!peer.isOnline)
-        .opacity(peer.isOnline ? 1.0 : 0.55)
-        .background(MenuRowHoverBackground(isHovered: isHovered && peer.isOnline))
         .onHover { isHovered = $0 }
-        .accessibilityLabel("\(peer.hostname), \(peer.isOnline ? "online" : "offline")")
-        .accessibilityHint(peer.isOnline ? "Connects to view this device's screen" : "")
+    }
+
+    /// Width carved out at the right of the row so the (visually-overlaid)
+    /// hand-wave button + chevron don't make the hostname appear to shift
+    /// when hover begins/ends.
+    private var trailingReservedWidth: CGFloat {
+        switch (canRequestShare, peer.isOnline) {
+        case (true, _): return 36   // hand-wave + chevron
+        case (_, true): return 14   // chevron only
+        default: return 0
+        }
     }
 }
 

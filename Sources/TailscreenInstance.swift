@@ -42,4 +42,23 @@ enum TailscreenInstance {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }
+
+    /// Hostname prefix every Tailscreen *instance* node registers under in
+    /// the tailnet (see `AppState.getOrCreateNode`). The peer-discovery
+    /// path filters the IPN peer list by this prefix to decide which
+    /// tailnet machines are Tailscreen installations.
+    static let serverHostnamePrefix = "tailscreen-"
+
+    /// Hostname prefix that ephemeral *viewer* nodes use (see
+    /// `TailscaleScreenShareClient`). Excluded from the discovery list so
+    /// short-lived client identities don't show up as connectable
+    /// instances.
+    static let clientHostnamePrefix = "tailscreen-client-"
+
+    /// True when `hostname` looks like a long-lived Tailscreen instance —
+    /// i.e. an installation that can host or accept shares, not a
+    /// transient viewer node.
+    static func isTailscreenServerHostname(_ hostname: String) -> Bool {
+        hostname.hasPrefix(serverHostnamePrefix) && !hostname.hasPrefix(clientHostnamePrefix)
+    }
 }

@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import TailscaleKit
 
 /// Metadata about a Tailscreen screen share
 struct TailscreenMetadata: Codable, Sendable {
@@ -75,9 +76,15 @@ class TailscreenMetadataService: ObservableObject {
     @Published var pendingRequests: [PendingRequest] = []
 
     struct PendingRequest: Identifiable {
-        let id = UUID()
+        let id: UUID
         let fromHostname: String
         let timestamp: Date
+
+        init(id: UUID = UUID(), fromHostname: String, timestamp: Date) {
+            self.id = id
+            self.fromHostname = fromHostname
+            self.timestamp = timestamp
+        }
     }
 
     /// Get current screen resolution
@@ -107,10 +114,19 @@ class TailscreenMetadataService: ObservableObject {
         )
     }
 
-    /// Handle incoming request to share
+    /// Handle incoming request to share. Coalesces repeated requests
+    /// from the same peer — a flaky network or a peer that retries
+    /// shouldn't stack N identical banner rows. The existing entry's
+    /// timestamp is refreshed so the row stays sorted as "newest".
     func handleRequestToShare(from hostname: String) {
-        let request = PendingRequest(fromHostname: hostname, timestamp: Date())
-        pendingRequests.append(request)
+        if let idx = pendingRequests.firstIndex(where: { $0.fromHostname == hostname }) {
+            let existing = pendingRequests.remove(at: idx)
+            pendingRequests.append(
+                PendingRequest(id: existing.id, fromHostname: hostname, timestamp: Date())
+            )
+            return
+        }
+        pendingRequests.append(PendingRequest(fromHostname: hostname, timestamp: Date()))
     }
 
     /// Clear a pending request
@@ -132,43 +148,45 @@ class TailscreenMetadataService: ObservableObject {
         return try JSONEncoder().encode(metadata)
     }
 
-    /// Send a request to share to a peer
+    /// Send a request-to-share prompt to `toIP` over the framed control
+    /// protocol on the peer's tsnet listener. Dials a one-shot TCP
+    /// connection, writes a single `ScreenShareMessage.requestToShare`
+    /// frame, and closes — the receive side picks the payload up through
+    /// `TailscreenControlListener.onRequestToShare`.
+    ///
+    /// Both the `OutgoingConnection` init and `connect()` are wrapped in
+    /// `TailscalePeerDiscovery.withWatchdog` because `tailscale_dial` (and
+    /// the init's actor handshake) can block indefinitely on ACL-dropped
+    /// SYNs or a cold netmap — without the watchdog the UI Task hangs
+    /// forever and the error never surfaces.
     func sendRequestToShare(
-        to host: String, port: UInt16 = NetworkConfig.tailscreenPort, from hostname: String
+        toIP host: String,
+        port: UInt16 = NetworkConfig.tailscreenPort,
+        from hostname: String,
+        via node: TailscaleNode
     ) async throws {
-        let url = URL(string: "http://\(host):\(port)/api/request")!
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-
-        let tailscreenRequest = TailscreenRequest.requestToShare(from: hostname)
-        request.httpBody = try JSONEncoder().encode(tailscreenRequest)
-
-        let (_, response) = try await URLSession.shared.data(for: request)
-
-        guard let httpResponse = response as? HTTPURLResponse,
-            (200...299).contains(httpResponse.statusCode)
-        else {
-            throw NSError(
-                domain: "TailscreenMetadata", code: 2, userInfo: [NSLocalizedDescriptionKey: "Failed to send request"])
+        guard let tailscaleHandle = await node.tailscale else {
+            throw TailscaleError.badInterfaceHandle
         }
-    }
-
-    /// Fetch metadata from a peer
-    static func fetchMetadata(
-        from host: String, port: UInt16 = NetworkConfig.tailscreenPort
-    ) async throws -> TailscreenMetadata {
-        let url = URL(string: "http://\(host):\(port)/api/metadata")!
-        let (data, response) = try await URLSession.shared.data(from: url)
-
-        guard let httpResponse = response as? HTTPURLResponse,
-            (200...299).contains(httpResponse.statusCode)
-        else {
-            throw NSError(
-                domain: "TailscreenMetadata", code: 3, userInfo: [NSLocalizedDescriptionKey: "Failed to fetch metadata"]
+        let target = "\(host):\(port)"
+        let conn = try await TailscalePeerDiscovery.withWatchdog(seconds: 5) {
+            try await OutgoingConnection(
+                tailscale: tailscaleHandle,
+                to: target,
+                proto: .tcp,
+                logger: TSLogger()
             )
         }
-
-        return try JSONDecoder().decode(TailscreenMetadata.self, from: data)
+        try await TailscalePeerDiscovery.withWatchdog(seconds: 8) {
+            try await conn.connect()
+        }
+        let frame = ScreenShareMessage.requestToShare(fromHostname: hostname).encode()
+        try await conn.send(frame)
+        await conn.close()
     }
+}
+
+private struct TSLogger: LogSink {
+    var logFileHandle: Int32?
+    func log(_ message: String) { print("[Metadata] \(message)") }
 }

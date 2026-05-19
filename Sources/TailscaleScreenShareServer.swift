@@ -4,15 +4,17 @@ import ScreenCaptureKit
 import TailscaleKit
 import os
 
-/// Screen-share server. Runs two listeners on the same port:
+/// Screen-share server. Owns the UDP video path and registers handlers on
+/// the long-lived `TailscreenControlListener` for the duration of a share:
 ///
-///   - **TCP 7447**: presence beacon for peer discovery only. Accepts and
-///     immediately closes — `TailscalePeerDiscovery` probes this to detect
-///     "is Tailscreen running on that node?" without speaking any protocol.
 ///   - **UDP 7447**: actual video stream. Carries RTP packets out to viewers
 ///     and small control bytes (HELLO/KEEPALIVE/BYE/PLI) back from them. The
 ///     same socket multiplexes both directions; we tell them apart by the
 ///     first byte (RTP V=2 → 0x80–0xBF, control → 0x00–0x7F).
+///   - **TCP 7447** is shared with the request-to-share path via
+///     `TailscreenControlListener` (owned by `AppState`). The server attaches
+///     its annotation handlers in `start()` and clears them in `stop()`; the
+///     listener and its bound socket survive across share start/stop cycles.
 ///
 /// Viewers are tracked by their UDP source address. A viewer has to send a
 /// HELLO datagram to be added to the fan-out set; if no HELLO/KEEPALIVE
@@ -53,7 +55,14 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// borrowed a node owned by AppState. Controls whether `stop()` tears
     /// the node down or just releases its reference.
     private var ownsNode: Bool = true
-    private var probeListener: Listener?
+    /// External TCP listener (owned by AppState) on which the server
+    /// registers annotation handlers for the duration of a share. nil when
+    /// running standalone (e.g. legacy callers / tests that create their
+    /// own node) — in that case `start()` falls back to its own listener.
+    private var controlListener: TailscreenControlListener?
+    /// Backing listener when the server owns its own. Mutually exclusive
+    /// with `controlListener` (the external case).
+    private var ownedControlListener: TailscreenControlListener?
     private var packetListener: PacketListener?
     private var isRunning = false
     private let logger: TSLogger
@@ -82,19 +91,17 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
 
     private let viewers = OSAllocatedUnfairLock<[String: Viewer]>(initialState: [:])
     private let parameterSets = OSAllocatedUnfairLock<CodecParameterSets?>(initialState: nil)
-    private let annotationConnections = OSAllocatedUnfairLock<[UUID: IncomingConnection]>(initialState: [:])
     /// Per-connection set of annotation UUIDs the viewer has produced.
-    /// Keyed by the server-side connection UUID (same key as
-    /// ``annotationConnections``); the value is every annotation
-    /// `.id` that's still considered live on this viewer's behalf
-    /// (mid-drag entries the viewer never finished count too — they've
-    /// already been added to the sharer's overlay via in-progress
-    /// `.add` ops). Cleared incrementally as the viewer's own
-    /// `.undo` / `.clearAll` ops arrive, and en masse in
-    /// `receiveAnnotations`' defer when their connection drops — we
-    /// fire `.undo` for each remaining UUID so the sharer's overlay
-    /// (and every other viewer, via `broadcastAnnotation`) stops showing
-    /// strokes nobody is around to clean up.
+    /// Keyed by the control-listener's connection UUID; the value is every
+    /// annotation `.id` that's still considered live on this viewer's
+    /// behalf (mid-drag entries the viewer never finished count too —
+    /// they've already been added to the sharer's overlay via in-progress
+    /// `.add` ops). Cleared incrementally as the viewer's own `.undo` /
+    /// `.clearAll` ops arrive, and en masse when the control listener
+    /// reports the connection closed — we fire `.undo` for each remaining
+    /// UUID so the sharer's overlay (and every other viewer, via
+    /// `broadcastAnnotation`) stops showing strokes nobody is around to
+    /// clean up.
     private let annotationsByConnection = OSAllocatedUnfairLock<[UUID: Set<UUID>]>(initialState: [:])
 
     /// Public projection of `viewers` that the UI can read without touching
@@ -264,7 +271,8 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         path: String? = nil,
         controlURL: String = kDefaultControlURL,
         filterData: Data?,
-        existingNode: TailscaleNode? = nil
+        existingNode: TailscaleNode? = nil,
+        controlListener: TailscreenControlListener? = nil
     ) async throws {
         guard !isRunning else { return }
 
@@ -315,17 +323,21 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             throw TailscaleError.badInterfaceHandle
         }
 
-        // TCP "presence beacon" so existing peer discovery (which probes
-        // by opening a TCP connection on this port) keeps working. We
-        // never speak any protocol on these sockets — accept and close.
-        let probeListener = try await Listener(
-            tailscale: tailscaleHandle,
-            proto: .tcp,
-            address: ":\(port)",
-            logger: logger
-        )
-        self.probeListener = probeListener
-        logger.log("TCP presence beacon listening on :\(port)")
+        // TCP control listener. AppState owns the long-lived one (so
+        // request-to-share works whether or not we're sharing); standalone
+        // callers (tests) pass nil and we create one bound to the lifetime
+        // of this share.
+        if let provided = controlListener {
+            self.controlListener = provided
+            logger.log("Screen-share server attaching to shared control listener")
+        } else {
+            let owned = TailscreenControlListener(port: port)
+            try await owned.start(node: node)
+            self.ownedControlListener = owned
+            self.controlListener = owned
+            logger.log("Screen-share server started owned control listener on :\(port)")
+        }
+        installControlHandlers()
 
         // tsnet's ListenPacket requires an explicit tailnet IP — 0.0.0.0
         // binds, but tsnet won't actually route inbound datagrams to it.
@@ -342,7 +354,6 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
 
         isRunning = true
 
-        Task { [weak self] in await self?.acceptControlConnections() }
         Task { [weak self] in await self?.receiveControlLoop() }
         Task { [weak self] in await self?.sweepIdleViewers() }
         Task { [weak self] in await self?.adaptiveBitrateSweep() }
@@ -531,124 +542,67 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         if let result { throw result }
     }
 
-    /// Accept TCP connections on port 7447. The same listener serves two
-    /// roles, both of which look identical at the socket level:
-    ///
-    ///   * **Peer-discovery probe** (`TailscalePeerDiscovery.probeTailscreenPort`)
-    ///     opens a connection, sends nothing, then closes. The receive loop
-    ///     errors out on EOF and we move on — the probe got "connection
-    ///     succeeded" which is all it needed.
-    ///   * **Annotation back-channel** from a viewer streams framed
-    ///     ``ScreenShareMessage.annotation(...)`` payloads. We parse and
-    ///     surface each op via ``onAnnotationReceived``.
-    private func acceptControlConnections() async {
-        guard let listener = probeListener else { return }
-        while isRunning {
-            do {
-                let conn = try await listener.accept(timeout: 1.0)
-                let id = UUID()
-                annotationConnections.withLock { $0[id] = conn }
-                annotationsByConnection.withLock { $0[id] = [] }
+    /// Wire annotation + connection-close callbacks onto the
+    /// `TailscreenControlListener`. The listener handles the framed-TCP
+    /// accept loop and dispatch; we only see decoded
+    /// `ScreenShareMessage.annotation` ops and per-connection close
+    /// notifications here.
+    private func installControlHandlers() {
+        guard let listener = controlListener else { return }
+        listener.onAnnotation = { [weak self] op, connectionID in
+            guard let self else { return }
+            // Lazily seed the per-connection tracking set on the first
+            // annotation from a viewer so we have somewhere to retire
+            // stroke UUIDs on disconnect.
+            self.annotationsByConnection.withLock { state in
+                if state[connectionID] == nil { state[connectionID] = [] }
+            }
+            self.trackAnnotationOp(op, connectionID: connectionID)
+            self.onAnnotationReceived?(op)
+            // Fan out to every OTHER viewer so window / application share
+            // modes can carry annotations peer-to-peer instead of relying
+            // on SCStream catching the sharer's overlay panel.
+            Task { [weak self] in
+                await self?.broadcastAnnotation(op, excludingConnection: connectionID)
+            }
+        }
+        listener.onConnectionClosed = { [weak self] connectionID in
+            guard let self else { return }
+            let outstanding = self.annotationsByConnection.withLock {
+                $0.removeValue(forKey: connectionID) ?? []
+            }
+            guard !outstanding.isEmpty else { return }
+            // Fire `.undo` for every UUID this viewer was on the hook for
+            // so their strokes don't outlive them — both on the sharer's
+            // local overlay (via `onAnnotationReceived`) and on every
+            // other viewer's overlay (via `broadcastAnnotation`).
+            let cb = self.onAnnotationReceived
+            for uuid in outstanding {
+                let op: AnnotationOp = .undo(uuid)
+                cb?(op)
                 Task { [weak self] in
-                    await self?.receiveAnnotations(from: conn, id: id)
+                    await self?.broadcastAnnotation(op, excludingConnection: connectionID)
                 }
-            } catch {
-                continue
             }
         }
     }
 
-    /// Reads framed annotation messages from one viewer's TCP back-channel
-    /// until the connection closes or the server stops. A peer-discovery
-    /// probe just hangs up after a successful connect — the receive call
-    /// errors quickly and we tear the entry down with no noise.
-    ///
-    /// On exit, fires `.undo` for every annotation UUID this viewer was
-    /// still on the hook for so their strokes don't outlive them — both
-    /// on the sharer's local overlay (via `onAnnotationReceived`) and on
-    /// every other viewer's overlay (via `broadcastAnnotation`).
-    /// Peer-discovery probes leave the tracking set empty, so the
-    /// cleanup is a no-op for them.
-    private func receiveAnnotations(from connection: IncomingConnection, id: UUID) async {
-        defer {
-            _ = annotationConnections.withLock { $0.removeValue(forKey: id) }
-            let outstanding = annotationsByConnection.withLock { $0.removeValue(forKey: id) ?? [] }
-            if !outstanding.isEmpty {
-                // Fire `.undo` for every UUID this viewer was on the hook
-                // for so their strokes don't outlive them — both on the
-                // sharer's local overlay (via `onAnnotationReceived`) and
-                // on every other viewer's overlay (via `broadcastAnnotation`).
-                let cb = onAnnotationReceived
-                for uuid in outstanding {
-                    let op: AnnotationOp = .undo(uuid)
-                    cb?(op)
-                    Task { [weak self] in
-                        await self?.broadcastAnnotation(op, excludingConnection: id)
-                    }
-                }
-            }
-            Task { await connection.close() }
-        }
-        var parser = ScreenShareMessageParser()
-        while isRunning {
-            do {
-                let chunk = try await connection.receive(maximumLength: 16 * 1024, timeout: 5_000)
-                if chunk.isEmpty { return }  // EOF — peer closed
-                parser.append(chunk)
-                while let message = parser.next() {
-                    if case .annotation(let op) = message {
-                        trackAnnotationOp(op, connectionID: id)
-                        onAnnotationReceived?(op)
-                        // Fan out to every OTHER viewer so window /
-                        // application share modes can carry annotations
-                        // peer-to-peer instead of relying on SCStream
-                        // catching the sharer's overlay panel.
-                        Task { [weak self] in
-                            await self?.broadcastAnnotation(op, excludingConnection: id)
-                        }
-                    }
-                }
-            } catch TailscaleError.readFailed {
-                if !isRunning { return }
-                continue  // poll timeout or transient — keep reading
-            } catch {
-                return
-            }
-        }
+    /// Detach this share's annotation handlers from the shared control
+    /// listener so a subsequent share (or just request-to-share traffic)
+    /// can attach its own without observing this share's stale closures.
+    /// `onRequestToShare` is owned by AppState and intentionally untouched.
+    private func uninstallControlHandlers() {
+        controlListener?.onAnnotation = nil
+        controlListener?.onConnectionClosed = nil
     }
 
-    /// Broadcast a framed `AnnotationOp` to every annotation back-channel
-    /// connection, optionally skipping the one that originated the op
+    /// Broadcast a framed `AnnotationOp` to every connection on the shared
+    /// control listener, optionally skipping the one that originated the op
     /// (to avoid echoing a viewer's stroke back to them). Used both for
     /// sharer-painted strokes (no exclusion — sharer has no annotation
     /// connection) and viewer-to-viewer fan-out (exclude the source).
-    /// Send failures are logged and ignored; the receive loop on the
-    /// far side will tear the stale connection down on its own.
     func broadcastAnnotation(_ op: AnnotationOp, excludingConnection: UUID? = nil) async {
-        let data = ScreenShareMessage.annotation(op).encode()
-        let conns = annotationConnections.withLock { state -> [IncomingConnection] in
-            state.compactMap { (id, conn) in
-                id == excludingConnection ? nil : conn
-            }
-        }
-        guard !conns.isEmpty else { return }
-        await withTaskGroup(of: Void.self) { group in
-            for conn in conns {
-                group.addTask {
-                    do {
-                        // `IncomingConnection` is itself an actor; its
-                        // `send` is auto-serialized, so concurrent
-                        // broadcasts can't interleave bytes on the same
-                        // socket even though they're fanned out via a
-                        // task group here.
-                        try await conn.send(data)
-                    } catch {
-                        // Connection's dead or buffer-full; the receive
-                        // task's defer will clean up the entry.
-                    }
-                }
-            }
-        }
+        await controlListener?.broadcast(.annotation(op), excluding: excludingConnection)
     }
 
     /// Update the per-connection annotation-UUID set in response to an
@@ -1422,26 +1376,22 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         packetListener = nil
         logger.log("Server stop: packet listener closed")
 
-        await probeListener?.close()
-        probeListener = nil
-        logger.log("Server stop: probe listener closed")
-
-        // Close any in-flight annotation back-channels in parallel; their
-        // receive tasks will see the close and exit naturally. Wipe the
-        // per-connection annotation-UUID map first so each receive loop's
-        // defer sees an empty set — otherwise the cleanup path would fire
-        // `.undo` ops back through `onAnnotationReceived` *after* AppState
-        // has already torn the overlay down, which would re-create the
-        // overlay just to apply a no-op undo.
+        // Wipe per-connection annotation-UUID state before clearing the
+        // handlers so the cleanup path in `installControlHandlers` doesn't
+        // fire stale `.undo` ops back through `onAnnotationReceived` after
+        // AppState has already torn the overlay down.
         annotationsByConnection.withLock { $0.removeAll() }
-        let conns = annotationConnections.withLock { state -> [IncomingConnection] in
-            let values = Array(state.values)
-            state.removeAll()
-            return values
+        uninstallControlHandlers()
+
+        // Only tear down the listener if we created it ourselves. When
+        // AppState owns it (the production path), leave it running so
+        // request-to-share traffic keeps flowing after the share ends.
+        if let owned = ownedControlListener {
+            await owned.stop()
+            logger.log("Server stop: owned control listener closed")
         }
-        await withTaskGroup(of: Void.self) { group in
-            for conn in conns { group.addTask { await conn.close() } }
-        }
+        ownedControlListener = nil
+        controlListener = nil
 
         // Only close the node if this server actually owns it. When AppState
         // hands us its own node, AppState retains ownership and closes it on

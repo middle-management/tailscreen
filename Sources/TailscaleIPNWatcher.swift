@@ -66,8 +66,17 @@ class TailscaleIPNWatcher: ObservableObject {
 
                 for peer in peerMap {
                     let nodeID = String(peer.ID)
-                    // Convert IP.Prefix addresses to string array
-                    let ipStrings = (peer.Addresses ?? []).map { String($0) }
+                    // `peer.Addresses` is `[IP.Prefix]` (e.g. "100.64.0.1/32").
+                    // Strip the CIDR suffix so callers that pass the value
+                    // to `tailscale_dial` as `"\(host):\(port)"` end up with
+                    // a parseable host — the suffix bleeds through as
+                    // "100.64.0.1/32:7447" otherwise, which tsnet rejects.
+                    let ipStrings = (peer.Addresses ?? []).map { prefix -> String in
+                        if let slash = prefix.firstIndex(of: "/") {
+                            return String(prefix[..<slash])
+                        }
+                        return prefix
+                    }
                     let status = TailscalePeerStatus(
                         nodeID: nodeID,
                         hostname: peer.ComputedName,
