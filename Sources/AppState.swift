@@ -76,6 +76,33 @@ class AppState: ObservableObject {
     /// this to render "N watching: …" with friendly hostnames.
     @Published var currentViewers: [ViewerInfo] = []
 
+    /// Snapshot of viewers waiting for the sharer's Accept / Deny decision.
+    /// Only populated when `requireViewerApproval` is on; the SharingCard
+    /// renders Accept / Deny rows directly from this. Mirrors the server's
+    /// `onPendingViewersChanged` callback. Cleared on `stopSharing`.
+    @Published var pendingViewers: [PendingViewerInfo] = []
+
+    /// User preference: park new viewers in a pending state and require
+    /// explicit Accept/Deny before they see video. Persisted to
+    /// UserDefaults under `requireViewerApproval`. Defaults off so the
+    /// out-of-box experience matches the existing open-door behavior.
+    /// SwiftUI views bind to this via `appState.requireViewerApproval`;
+    /// the setter syncs the live server too so the toggle takes effect
+    /// mid-share.
+    @Published var requireViewerApproval: Bool = ViewerApprovalDefaults.load() {
+        didSet {
+            ViewerApprovalDefaults.save(requireViewerApproval)
+            server?.setRequireApproval(requireViewerApproval)
+        }
+    }
+
+    /// Viewer IDs we've already fired a "joined" notification for this
+    /// session. Keyed by the server's internal `"ip:port"` ID so a viewer
+    /// who briefly drops and rejoins (different ephemeral port) gets a
+    /// fresh ping, but hostname-resolution updates to the same viewer
+    /// don't double-fire. Cleared on `stopSharing`.
+    private var notifiedViewerIDs: Set<String> = []
+
     private var server: TailscaleScreenShareServer?
     private var client: TailscaleScreenShareClient?
     private var node: TailscaleNode?
@@ -107,6 +134,20 @@ class AppState: ObservableObject {
     /// Hosts the keyboard-shortcut cheat-sheet overlay. Toggled by the
     /// toolbar's "?" button and Help → Keyboard Shortcuts (⇧⌘/).
     private var viewerShortcutsHost: ViewerShortcutsOverlayHost?
+    /// "Waiting for sharer to accept your connection" placard shown in the
+    /// viewer window between HELLO_PENDING and the first decoded frame.
+    /// Hidden by default; toggled by `viewerAwaitingApproval`.
+    private var viewerWaitingPlacard: NSView?
+
+    /// True between the sharer reporting HELLO_PENDING and the viewer
+    /// receiving its first decoded frame. Drives the placard overlaid on
+    /// the viewer window. Reset on connect/disconnect.
+    @Published var viewerAwaitingApproval: Bool = false {
+        didSet {
+            guard viewerAwaitingApproval != oldValue else { return }
+            viewerWaitingPlacard?.isHidden = !viewerAwaitingApproval
+        }
+    }
 
     // Peer discovery
     @Published var availablePeers: [TailscreenPeer] = []
@@ -457,9 +498,19 @@ class AppState: ObservableObject {
 
                 srv.onViewersChanged = { [weak self] viewers in
                     Task { @MainActor [weak self] in
-                        self?.currentViewers = viewers
+                        self?.handleViewersChanged(viewers)
                     }
                 }
+
+                srv.onPendingViewersChanged = { [weak self] pending in
+                    Task { @MainActor [weak self] in
+                        self?.handlePendingViewersChanged(pending)
+                    }
+                }
+
+                // Sync the toggle state to the server before `start()` so a
+                // viewer racing to HELLO during bring-up is caught.
+                srv.setRequireApproval(requireViewerApproval)
 
                 // Sharer's audio SSRC is fixed at 0. Build the channel up
                 // front so HELLO_ACK assignment for viewers can route
@@ -553,6 +604,8 @@ class AppState: ObservableObject {
         isMicOn = false
         previewImage = nil
         currentViewers = []
+        pendingViewers = []
+        notifiedViewerIDs.removeAll()
         tailscaleIPs = []
 
         // Update metadata
@@ -714,10 +767,21 @@ class AppState: ObservableObject {
         defer {
             if connectionState == .connecting { connectionState = .idle }
         }
+        viewerAwaitingApproval = false
         let renderer = ensureViewer()
         do {
             let c = TailscaleScreenShareClient(renderer: renderer)
             client = c
+
+            // HELLO_PENDING means the sharer parked us behind the approval
+            // gate. Surface the placard so the viewer doesn't sit on a
+            // black window with no explanation; first decoded frame clears
+            // it via `onVideoSizeChanged`.
+            c.onAwaitingApproval = { [weak self] in
+                Task { @MainActor [weak self] in
+                    self?.viewerAwaitingApproval = true
+                }
+            }
 
             // Server fans out sharer-painted strokes (and other viewers'
             // strokes) over the annotation back-channel. Apply them to the
@@ -871,6 +935,9 @@ class AppState: ObservableObject {
             host?.videoSize = size
             guard let self, let win else { return }
             MainActor.assumeIsolated {
+                // First decoded frame implies the sharer accepted us — clear
+                // the "waiting for approval" placard regardless of resize.
+                self.viewerAwaitingApproval = false
                 guard !self.userResizedViewer else { return }
                 self.programmaticSnap(win, toVideoPixelSize: size)
             }
@@ -925,6 +992,25 @@ class AppState: ObservableObject {
         host.addSubview(shortcutsHost.view)
         shortcutsHost.layout(in: host)
         self.viewerShortcutsHost = shortcutsHost
+
+        // "Waiting for sharer to accept" placard. Centered, fixed size,
+        // hidden by default; visibility flipped from
+        // `viewerAwaitingApproval`. Added last so HELLO_PENDING during a
+        // shortcuts-overlay-up moment still draws above strokes/stats and
+        // sits beneath the shortcuts cheat-sheet (acceptable — the
+        // cheat-sheet is user-initiated and dismissible).
+        let placard = makeWaitingPlacard()
+        let placardSize = NSSize(width: 360, height: 80)
+        placard.frame = NSRect(
+            x: (host.bounds.width - placardSize.width) / 2,
+            y: (host.bounds.height - placardSize.height) / 2,
+            width: placardSize.width,
+            height: placardSize.height
+        )
+        placard.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin, .maxYMargin]
+        placard.isHidden = !viewerAwaitingApproval
+        host.addSubview(placard)
+        self.viewerWaitingPlacard = placard
         ViewerCommands.shared.shortcutsModel = shortcutsHost.model
 
         win.contentView = host
@@ -1034,6 +1120,7 @@ class AppState: ObservableObject {
         isMicOn = false
         connectionState = .idle
         connectedHostname = nil
+        viewerAwaitingApproval = false
         viewerRenderer?.clearPendingBuffer()
         viewerWindow?.orderOut(nil)
         // Next connect should snap to the new sharer's dims even if the
@@ -1369,6 +1456,86 @@ class AppState: ObservableObject {
     /// supply one.
     private func showAlertMessage(title: String, message: String) {
         presentError(.legacy(title: title, message: message))
+    }
+
+    /// Diff the new viewer roster against the previous one to fire a
+    /// per-join user notification exactly once per `id`. Reuses
+    /// `notifiedViewerIDs` so a hostname-resolution update that
+    /// re-emits the same `id` doesn't ping twice. Notifications are
+    /// best-effort: dev builds without a bundle ID won't be authorized
+    /// by macOS to display banners, but the in-popover pending list
+    /// still works.
+    private func handleViewersChanged(_ viewers: [ViewerInfo]) {
+        let previousIDs = Set(currentViewers.map { $0.id })
+        let newIDs = Set(viewers.map { $0.id })
+        let joinedIDs = newIDs.subtracting(previousIDs)
+        currentViewers = viewers
+        // Forget IDs that have left so a reconnect from the same
+        // address fires a new notification.
+        notifiedViewerIDs.formIntersection(newIDs)
+        for id in joinedIDs where !notifiedViewerIDs.contains(id) {
+            notifiedViewerIDs.insert(id)
+            guard let viewer = viewers.first(where: { $0.id == id }) else { continue }
+            let label = viewer.hostname ?? viewer.tailscaleIP
+            ViewerJoinNotifier.shared.postJoined(label: label)
+        }
+    }
+
+    /// Sync the published pending list and fire a "wants to view"
+    /// notification for newly-arrived pending viewers. Fires regardless
+    /// of whether the menu popover is open — that's the whole point of
+    /// the approval gate.
+    private func handlePendingViewersChanged(_ pending: [PendingViewerInfo]) {
+        let previousIDs = Set(pendingViewers.map { $0.id })
+        let newIDs = Set(pending.map { $0.id })
+        let arrivedIDs = newIDs.subtracting(previousIDs)
+        pendingViewers = pending
+        for id in arrivedIDs {
+            guard let viewer = pending.first(where: { $0.id == id }) else { continue }
+            let label = viewer.hostname ?? viewer.tailscaleIP
+            ViewerJoinNotifier.shared.postPending(label: label)
+        }
+    }
+
+    /// Admit a pending viewer — hands off to the live server which
+    /// emits the deferred HELLO_ACK and forces a keyframe.
+    func approvePendingViewer(_ id: String) {
+        server?.approveViewer(addr: id)
+    }
+
+    /// Reject a pending viewer — server sends SERVER_BYE so the viewer
+    /// tears their session down immediately.
+    func denyPendingViewer(_ id: String) {
+        server?.denyViewer(addr: id)
+    }
+
+    /// Vibrancy-backed centered placard reading "Waiting for sharer to
+    /// accept your connection…". Sized in caller; held by AppState and
+    /// toggled via `viewerWaitingPlacard?.isHidden` from
+    /// `viewerAwaitingApproval.didSet`.
+    @MainActor
+    private func makeWaitingPlacard() -> NSView {
+        let effect = NSVisualEffectView()
+        effect.material = .hudWindow
+        effect.blendingMode = .withinWindow
+        effect.state = .active
+        effect.wantsLayer = true
+        effect.layer?.cornerRadius = 12
+        effect.layer?.masksToBounds = true
+
+        let label = NSTextField(labelWithString: "Waiting for sharer to accept your connection…")
+        label.alignment = .center
+        label.font = .systemFont(ofSize: 14, weight: .medium)
+        label.textColor = .labelColor
+        label.translatesAutoresizingMaskIntoConstraints = false
+        effect.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.centerXAnchor.constraint(equalTo: effect.centerXAnchor),
+            label.centerYAnchor.constraint(equalTo: effect.centerYAnchor),
+            label.leadingAnchor.constraint(greaterThanOrEqualTo: effect.leadingAnchor, constant: 16),
+            label.trailingAnchor.constraint(lessThanOrEqualTo: effect.trailingAnchor, constant: -16),
+        ])
+        return effect
     }
 }
 

@@ -17,6 +17,9 @@ import Foundation
 ///     0x04 (HELLO_ACK)  server → viewer: 4-byte SSRC payload — assigns the
 ///                       viewer's audio SSRC. Sent in response to HELLO.
 ///     0x05 (SERVER_BYE) server → viewer: I'm stopping, drop the session
+///     0x06 (HELLO_PEND) server → viewer: your HELLO is parked behind the
+///                       sharer's approval gate; sit tight. Resent on every
+///                       HELLO retry while still pending.
 ///     0x80..0xBF        RTP packet (V=2)
 enum ScreenShareControlMessage: UInt8 {
     case hello = 0x00
@@ -27,6 +30,10 @@ enum ScreenShareControlMessage: UInt8 {
     /// Sharer→viewer "I'm gone." Lets the viewer tear down immediately on
     /// `Stop Sharing` instead of waiting out the 15 s no-video idle timer.
     case serverBye = 0x05
+    /// Sharer→viewer "you're in the approval queue." Sent when the viewer's
+    /// HELLO lands while `requireApproval` is on, so the viewer can show a
+    /// "waiting for approval" overlay instead of sitting on a black window.
+    case helloPending = 0x06
 
     static func encode(_ kind: ScreenShareControlMessage) -> Data {
         Data([kind.rawValue])

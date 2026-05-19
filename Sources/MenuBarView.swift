@@ -288,6 +288,12 @@ private struct SharingCard: View {
 
             ViewersList(viewers: appState.currentViewers)
 
+            if !appState.pendingViewers.isEmpty {
+                PendingViewersList(viewers: appState.pendingViewers)
+            }
+
+            ApprovalToggle()
+
             // GeometryReader measures the popover's actual width, which
             // we feed into a derived height via the shared display's
             // aspect ratio. This is more robust than chaining
@@ -456,6 +462,74 @@ private struct ViewersList: View {
     }
 }
 
+/// One row per pending viewer with inline Accept / Deny buttons. Shown
+/// in the SharingCard whenever `requireViewerApproval` is on and at
+/// least one viewer is waiting for a decision. Hostnames may take a
+/// moment to resolve via the netmap lookup; the row falls back to the
+/// raw Tailscale IP in the gap.
+private struct PendingViewersList: View {
+    @EnvironmentObject var appState: AppState
+    let viewers: [PendingViewerInfo]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(viewers) { viewer in
+                HStack(spacing: 6) {
+                    Image(systemName: "person.crop.circle.badge.questionmark")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.orange)
+                    Text(viewer.hostname ?? viewer.tailscaleIP)
+                        .font(.system(size: 11, weight: .medium))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 4)
+                    Button {
+                        appState.denyPendingViewer(viewer.id)
+                    } label: {
+                        Text("Deny").font(.system(size: 10))
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+                    .accessibilityLabel("Deny \(viewer.hostname ?? viewer.tailscaleIP)")
+                    Button {
+                        appState.approvePendingViewer(viewer.id)
+                    } label: {
+                        Text("Accept").font(.system(size: 10))
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.mini)
+                    .accessibilityLabel("Accept \(viewer.hostname ?? viewer.tailscaleIP)")
+                }
+            }
+        }
+        .padding(.vertical, 4)
+        .padding(.horizontal, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 6).fill(Color.orange.opacity(0.12))
+        )
+    }
+}
+
+/// Compact toggle for the "Require approval for new viewers" preference.
+/// Backed by `AppState.requireViewerApproval` (persisted in UserDefaults
+/// and propagated to the live server). Rendered inside both the
+/// SharingCard and the idle DisplayPickerSection so the user can flip it
+/// from either context.
+private struct ApprovalToggle: View {
+    @EnvironmentObject var appState: AppState
+
+    var body: some View {
+        Toggle(isOn: $appState.requireViewerApproval) {
+            Text("Require approval for new viewers")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+        }
+        .toggleStyle(.switch)
+        .controlSize(.mini)
+        .accessibilityHint("New viewers will see a Connecting prompt until you Accept or Deny")
+    }
+}
+
 /// Card shown while viewing a remote peer.
 private struct ViewingCard: View {
     @EnvironmentObject var appState: AppState
@@ -575,6 +649,10 @@ private struct DisplayPickerSection: View {
                 .buttonStyle(.plain)
                 .background(MenuRowHoverBackground(isHovered: isHovered))
                 .onHover { isHovered = $0 }
+
+                ApprovalToggle()
+                    .padding(.horizontal, 14)
+                    .padding(.top, 4)
             }
         }
         .padding(.bottom, 6)
