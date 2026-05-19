@@ -40,9 +40,23 @@ final class SharerOverlayWindow {
         override var canBecomeMain: Bool { false }
     }
 
+    /// Mouse-transparent border drawn around the panel's bounds so the
+    /// sharer can see, at a glance, exactly what region is being captured.
+    /// In window mode this floats over the tracked window — the panel sits
+    /// on top of the captured surface, so SCStream doesn't pick up the
+    /// stroke. In display / application modes the panel is inside the
+    /// captured region, so viewers also see a thin edge stroke; that
+    /// doubles as a "you are looking at the full captured frame" cue and is
+    /// acceptable. Implemented via `CALayer.borderWidth` so it tracks
+    /// resizes automatically — no custom `draw(_:)` needed.
+    private final class ShareBorderView: NSView {
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    }
+
     let panel: NSPanel
     let model: AnnotationCanvasModel
     private let host: AnnotationOverlayHostView
+    private let borderView: ShareBorderView
     private let mode: Mode
     /// Polling timer for window mode. Nil for display / application modes
     /// (panel is statically sized to the captured display).
@@ -118,9 +132,20 @@ final class SharerOverlayWindow {
         host.autoresizingMask = [.width, .height]
         panel.contentView = host
 
+        // Added last so it sits above the SwiftUI hosting view; `hitTest`
+        // returns nil so annotation input still reaches the host. Border
+        // is drawn by CALayer (resizes with the view, no draw(_:) needed).
+        let borderView = ShareBorderView(frame: NSRect(origin: .zero, size: initialFrame.size))
+        borderView.autoresizingMask = [.width, .height]
+        borderView.wantsLayer = true
+        borderView.layer?.borderWidth = 4
+        borderView.layer?.borderColor = NSColor.systemRed.cgColor
+        host.addSubview(borderView)
+
         self.panel = panel
         self.model = model
         self.host = host
+        self.borderView = borderView
 
         model.onEscape = { [weak self] in
             self?.setInputEnabled(false)
