@@ -304,18 +304,20 @@ private final class ResumeBox<T>: @unchecked Sendable {
         lock.withLock { self.cont = cont }
     }
 
-    func resume(returning value: T) {
-        lock.withLock {
-            cont?.resume(returning: value)
-            cont = nil
-        }
+    func resume(returning value: sending T) {
+        lock.lock()
+        let c = cont
+        cont = nil
+        lock.unlock()
+        c?.resume(returning: value)
     }
 
     func resume(throwing error: Error) {
-        lock.withLock {
-            cont?.resume(throwing: error)
-            cont = nil
-        }
+        lock.lock()
+        let c = cont
+        cont = nil
+        lock.unlock()
+        c?.resume(throwing: error)
     }
 }
 
