@@ -1143,12 +1143,23 @@ class AppState: ObservableObject {
         self.peerDiscovery = discovery
 
         isDiscovering = true
+        logger.log("Discovery: starting…")
         do {
             try await discovery.startDiscovery(node: node)
             self.availablePeers = discovery.availablePeers
+            logger.log("Discovery: returned with \(self.availablePeers.count) peer(s)")
 
-            // Start real-time monitoring for peer status updates
-            try? await discovery.startRealTimeMonitoring(node: node)
+            // Real-time IPN monitoring runs fire-and-forget: its initial
+            // `client.watchIPNBus(...)` await can park indefinitely when
+            // tsnet's LocalAPI isn't ready, and `try?` only swallows
+            // thrown errors — it doesn't time out. If we await it here,
+            // the spinner stays up on "Looking for screens…" even though
+            // discovery itself already returned. Detaching keeps the
+            // monitor opportunistic: we set it up when we can, but
+            // never block the user-visible "done" signal on it.
+            Task { @MainActor in
+                try? await discovery.startRealTimeMonitoring(node: node)
+            }
 
             // Observe peer changes
             Task { @MainActor in
@@ -1160,6 +1171,7 @@ class AppState: ObservableObject {
             // Empty list is already reflected inline in the Browse sheet —
             // no popup needed.
         } catch {
+            logger.log("Discovery: failed with \(error)")
             presentError(.discoveryFailed(error))
         }
         isDiscovering = false
@@ -1533,7 +1545,7 @@ class AppState: ObservableObject {
             label.centerXAnchor.constraint(equalTo: effect.centerXAnchor),
             label.centerYAnchor.constraint(equalTo: effect.centerYAnchor),
             label.leadingAnchor.constraint(greaterThanOrEqualTo: effect.leadingAnchor, constant: 16),
-            label.trailingAnchor.constraint(lessThanOrEqualTo: effect.trailingAnchor, constant: -16),
+            label.trailingAnchor.constraint(lessThanOrEqualTo: effect.trailingAnchor, constant: -16)
         ])
         return effect
     }
