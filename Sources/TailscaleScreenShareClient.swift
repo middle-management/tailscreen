@@ -199,7 +199,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
 
             logger.log("Starting Tailscale client…")
 
-            let clientHostname = "tailscreen-client-\(UUID().uuidString.prefix(8))"
+            let clientHostname = "\(TailscreenInstance.clientHostnamePrefix)\(UUID().uuidString.prefix(8))"
             let config = Configuration(
                 hostName: clientHostname,
                 path: statePath,

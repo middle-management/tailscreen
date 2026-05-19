@@ -1,25 +1,34 @@
 import Foundation
 import TailscaleKit
 
-/// Represents a discovered peer on the Tailscale network
+/// One Tailscreen installation on the tailnet.
+///
+/// Identified by hostname prefix (see `TailscreenInstance.isTailscreenServerHostname`)
+/// rather than by an active TCP probe — the IPN netmap already tells us
+/// which nodes are Tailscreen installations and whether each is currently
+/// online, so probing 7447 across every peer is unnecessary latency.
+/// `isOnline` reflects tsnet's view of whether the remote node is currently
+/// reachable; the rest of the fields are netmap-derived metadata.
 struct TailscreenPeer: Identifiable, Sendable {
     let id: String
     let hostname: String
     let dnsName: String
     let tailscaleIP: String
     let isOnline: Bool
-    var isRunningTailscreen: Bool
     var metadata: TailscreenMetadata?
-    var lastSeen: Date?
+    var lastSeen: String?
 }
 
-/// Discovers Tailscreen instances running on the Tailscale network
+/// Lists Tailscreen installations on the local tailnet by filtering the
+/// IPN peer set by hostname prefix. No TCP/UDP probes — `peer.isOnline`
+/// is sufficient for the menu's active/inactive state because every
+/// Tailscreen process registers its tsnet node when it launches and
+/// (via `ephemeral: false`) goes offline when it quits.
 @MainActor
 class TailscalePeerDiscovery: ObservableObject {
     @Published var availablePeers: [TailscreenPeer] = []
     @Published var isDiscovering = false
 
-    private let tailscreenPort: UInt16 = NetworkConfig.tailscreenPort
     private let logger: TSLogger
     private var ipnWatcher: TailscaleIPNWatcher?
 
@@ -27,146 +36,114 @@ class TailscalePeerDiscovery: ObservableObject {
         self.logger = TSLogger()
     }
 
-    /// Discovers all peers on the tailnet and checks which ones are running Tailscreen
+    /// Seed the peer list from a one-shot `backendStatus()` so the UI has
+    /// rows to render before the IPN bus emits its first netmap. Real-time
+    /// updates take over once `startRealTimeMonitoring` is called.
     func startDiscovery(node: TailscaleNode) async throws {
         isDiscovering = true
         defer { isDiscovering = false }
 
-        logger.log("🔍 Starting peer discovery...")
+        logger.log("Seeding peer list from backendStatus…")
 
-        // Create LocalAPI client
         let client = LocalAPIClient(localNode: node, logger: logger)
 
-        // Get tailnet status. Wrapped in a watchdog because tsnet's
-        // LocalAPI can hang silently when the node exists but its
-        // backend hasn't reached Running (e.g. silent session restore
-        // still in progress). Without a timeout the discovery spinner
-        // never resolves and the menu stays on "Looking for screens…".
-        logger.log("📡 Querying backendStatus()…")
+        // Wrap in a watchdog because tsnet's LocalAPI can hang silently
+        // when the node exists but its backend hasn't reached Running
+        // (e.g. silent session restore still in progress). Without a
+        // timeout the discovery spinner never resolves and the menu
+        // stays on "Looking for screens…".
         let status = try await Self.withWatchdog(seconds: 5) {
             try await client.backendStatus()
         }
-        logger.log("📡 backendStatus() returned")
-
-        logger.log("📡 Found \(status.Peer?.count ?? 0) peers on tailnet")
+        let allPeers = status.Peer ?? [:]
 
         var peers: [TailscreenPeer] = []
-
-        // Process each peer
-        for (peerKey, peerStatus) in status.Peer ?? [:] {
-            guard peerStatus.Online else { continue }
-
-            let peer = TailscreenPeer(
-                id: peerKey,
+        for (_, peerStatus) in allPeers {
+            guard TailscreenInstance.isTailscreenServerHostname(peerStatus.HostName) else { continue }
+            // Key on `String(peerStatus.ID)` (stable node ID) so seed rows
+            // share an Identifiable id with the IPN-watcher rebuild path;
+            // the LocalAPI map key is the public node key and would shift
+            // the id when the watcher takes over.
+            peers.append(TailscreenPeer(
+                id: String(peerStatus.ID),
                 hostname: peerStatus.HostName,
                 dnsName: peerStatus.DNSName,
-                tailscaleIP: peerStatus.TailscaleIPs?.first ?? "",
+                tailscaleIP: Self.preferIPv4(peerStatus.TailscaleIPs ?? []),
                 isOnline: peerStatus.Online,
-                isRunningTailscreen: false,
                 metadata: nil,
                 lastSeen: nil
-            )
-
-            peers.append(peer)
+            ))
         }
 
-        logger.log("✓ Found \(peers.count) online peers")
-
-        // Check which peers are running Tailscreen (in parallel).
-        // Uses the existing node to dial; must NOT spin up a new TailscaleNode
-        // per probe — that takes several seconds per peer and blows the 2s timeout.
-        logger.log("→ awaiting node.tailscale handle…")
-        guard let tailscaleHandle = await node.tailscale else {
-            logger.log("⚠️ node has no tailscale handle; skipping Tailscreen probe")
-            availablePeers = []
-            return
-        }
-        logger.log("→ got tailscale handle; probing \(peers.count) peer(s)")
-
-        var updatedPeers: [TailscreenPeer] = []
-
-        for peer in peers {
-            logger.log("→ probing \(peer.hostname) @ \(peer.tailscaleIP):\(tailscreenPort)")
-        }
-        await withTaskGroup(of: (String, Bool).self) { group in
-            for peer in peers {
-                let ip = peer.tailscaleIP
-                let id = peer.id
-                group.addTask {
-                    let isRunning = await Self.probeTailscreenPort(
-                        tailscale: tailscaleHandle,
-                        host: ip,
-                        port: self.tailscreenPort,
-                        logger: self.logger
-                    )
-                    return (id, isRunning)
-                }
-            }
-
-            var tailscreenStatus: [String: Bool] = [:]
-            for await (peerId, isRunning) in group {
-                tailscreenStatus[peerId] = isRunning
-            }
-
-            // Update peers with Tailscreen status
-            for var peer in peers {
-                peer.isRunningTailscreen = tailscreenStatus[peer.id] ?? false
-                updatedPeers.append(peer)
-            }
-        }
-
-        // Only show peers that are running Tailscreen
-        let tailscreenPeers = updatedPeers.filter { $0.isRunningTailscreen }
-
-        logger.log("🎯 Found \(tailscreenPeers.count) peers running Tailscreen")
-
-        availablePeers = tailscreenPeers
+        availablePeers = Self.sortPeers(peers)
+        logger.log("Seeded \(availablePeers.count) Tailscreen peer(s) from netmap")
     }
 
-    /// Opens a raw TCP connection to `host:port` over the provided tsnet handle.
-    /// Uses the caller's live node — never spins up a new one per probe.
-    ///
-    /// The timeout is intentionally generous: on a cold netmap, the very first
-    /// dial to a peer can block a few seconds while tsnet sorts out the path,
-    /// and a 2s window produced false negatives where the dial eventually
-    /// succeeded server-side but after discovery had already given up.
-    private static func probeTailscreenPort(
-        tailscale: TailscaleHandle,
-        host: String,
-        port: UInt16,
-        logger: LogSink
-    ) async -> Bool {
-        do {
-            // `OutgoingConnection.init` is also wrapped in a watchdog —
-            // not just `.connect()` — because the init itself can park
-            // in tsnet code on a degraded netmap, and the connect-level
-            // 8 s watchdog only fires after we get past init. Without
-            // this, a single bad peer would hang the whole probe group
-            // and keep the discovery spinner up indefinitely.
-            //
-            // The closure runs in `Task.detached`, so capture only
-            // Sendable values — `logger` is a `LogSink` existential
-            // that may not be Sendable, so construct a fresh
-            // `TSLogger` (a Sendable struct) inside the closure.
-            let target = "\(host):\(port)"
-            let conn = try await withWatchdog(seconds: 5) {
-                try await OutgoingConnection(
-                    tailscale: tailscale,
-                    to: target,
-                    proto: .tcp,
-                    logger: TSLogger()
+    /// Start real-time monitoring of peer status using IPN bus
+    func startRealTimeMonitoring(node: TailscaleNode) async throws {
+        let watcher = TailscaleIPNWatcher()
+        ipnWatcher = watcher
+
+        try await watcher.startWatching(node: node)
+
+        // Observe peer status changes
+        Task { @MainActor in
+            for await _ in watcher.$peers.values {
+                await updatePeerListFromIPNWatcher()
+            }
+        }
+
+        logger.log("Real-time monitoring started")
+    }
+
+    /// Rebuild `availablePeers` from the watcher's current peer map. This
+    /// is the source of truth once monitoring is live — it discovers new
+    /// rows (offline → online transitions) and prunes peers that have left
+    /// the netmap entirely, not just refreshes existing rows.
+    private func updatePeerListFromIPNWatcher() async {
+        guard let watcher = ipnWatcher else { return }
+        let snapshot = watcher.peers
+        let next: [TailscreenPeer] = snapshot.values
+            .filter { TailscreenInstance.isTailscreenServerHostname($0.hostname) }
+            .map { ps in
+                TailscreenPeer(
+                    id: ps.nodeID,
+                    hostname: ps.hostname,
+                    dnsName: ps.dnsName,
+                    tailscaleIP: Self.preferIPv4(ps.tailscaleIPs),
+                    isOnline: ps.online,
+                    metadata: nil,
+                    lastSeen: ps.lastSeen
                 )
             }
-            try await connectOrTimeout(conn: conn, seconds: 8)
-            await conn.close()
-            logger.log("✓ \(host):\(port) is running Tailscreen")
-            return true
-        } catch {
-            // Log the reason so silent-negatives (wrong netmap, DERP fail,
-            // ACL deny, peer not listening, timeout) are distinguishable.
-            logger.log("✗ \(host):\(port) probe failed: \(error)")
-            return false
+        availablePeers = Self.sortPeers(next)
+    }
+
+    /// Stop real-time monitoring
+    func stopRealTimeMonitoring() {
+        ipnWatcher?.stopWatching()
+        ipnWatcher = nil
+        logger.log("Real-time monitoring stopped")
+    }
+
+    /// Online peers first, then alphabetical within each group. Stable
+    /// ordering keeps the menu rows from jumping around when one peer's
+    /// state ticks between updates.
+    private static func sortPeers(_ peers: [TailscreenPeer]) -> [TailscreenPeer] {
+        peers.sorted { a, b in
+            if a.isOnline != b.isOnline { return a.isOnline && !b.isOnline }
+            return a.hostname.localizedCaseInsensitiveCompare(b.hostname) == .orderedAscending
         }
+    }
+
+    /// Pick a dial-safe address from a peer's address list. tsnet's
+    /// `tailscale_dial("host:port", …)` does Go-style `net.SplitHostPort`
+    /// which requires IPv6 hosts to be bracketed; we pass raw `"host:port"`
+    /// everywhere, so any IPv6 entry like `"fd7a:…"` ends up unparseable.
+    /// Prefer the first IPv4 (no `:`); fall back to whatever's first only
+    /// if the list is IPv6-only.
+    nonisolated static func preferIPv4(_ ips: [String]) -> String {
+        ips.first(where: { !$0.contains(":") }) ?? ips.first ?? ""
     }
 
     /// Runs `operation` in an unstructured `Task.detached` so a blocking C
@@ -183,7 +160,7 @@ class TailscalePeerDiscovery: ObservableObject {
     ///
     /// `ResumeBox` is a resume-once guard that silently drops whichever of the
     /// three arrives second and third.
-    private static func withWatchdog<T: Sendable>(
+    static func withWatchdog<T: Sendable>(
         seconds: Double,
         operation: @escaping @Sendable () async throws -> T
     ) async throws -> T {
@@ -212,78 +189,6 @@ class TailscalePeerDiscovery: ObservableObject {
             onCancel: { box.resume(throwing: CancellationError()) }
         )
     }
-
-    /// Thin shim that wraps `conn.connect()` in `withWatchdog`. Kept as a
-    /// named entry point so the probe site reads obviously.
-    private static func connectOrTimeout(conn: OutgoingConnection, seconds: Double) async throws {
-        try await withWatchdog(seconds: seconds) {
-            try await conn.connect()
-        }
-    }
-
-    /// Start real-time monitoring of peer status using IPN bus
-    func startRealTimeMonitoring(node: TailscaleNode) async throws {
-        // Create and start IPN watcher
-        let watcher = TailscaleIPNWatcher()
-        ipnWatcher = watcher
-
-        try await watcher.startWatching(node: node)
-
-        // Observe peer status changes
-        Task { @MainActor in
-            for await _ in watcher.$peers.values {
-                // When peers change, update our peer list
-                await updatePeerListFromIPNWatcher()
-            }
-        }
-
-        logger.log("✓ Real-time monitoring started")
-    }
-
-    /// Update peer list based on IPN watcher data
-    private func updatePeerListFromIPNWatcher() async {
-        guard let watcher = ipnWatcher else { return }
-
-        // Update online status for existing peers
-        for i in availablePeers.indices {
-            if let peerStatus = watcher.peers[availablePeers[i].id] {
-                let updatedPeer = availablePeers[i]
-                // Create new peer with updated status
-                availablePeers[i] = TailscreenPeer(
-                    id: updatedPeer.id,
-                    hostname: peerStatus.hostname,
-                    dnsName: peerStatus.dnsName,
-                    tailscaleIP: peerStatus.tailscaleIPs.first ?? updatedPeer.tailscaleIP,
-                    isOnline: peerStatus.online,
-                    isRunningTailscreen: updatedPeer.isRunningTailscreen,
-                    metadata: updatedPeer.metadata,
-                    lastSeen: peerStatus.online ? Date() : updatedPeer.lastSeen
-                )
-            }
-        }
-    }
-
-    /// Stop real-time monitoring
-    func stopRealTimeMonitoring() {
-        ipnWatcher?.stopWatching()
-        ipnWatcher = nil
-        logger.log("✓ Real-time monitoring stopped")
-    }
-
-    /// Fetch metadata for a specific peer
-    func fetchMetadata(for peer: TailscreenPeer) async -> TailscreenMetadata? {
-        do {
-            let metadata = try await TailscreenMetadataService.fetchMetadata(
-                from: peer.tailscaleIP,
-                port: tailscreenPort
-            )
-            return metadata
-        } catch {
-            logger.log(
-                "Failed to fetch metadata from \(peer.hostname): \(error.localizedDescription)")
-            return nil
-        }
-    }
 }
 
 struct TimeoutError: Error {}
@@ -295,7 +200,7 @@ struct TimeoutError: Error {}
 /// Guards against double-resume when `withWatchdog`'s three racing
 /// resumers (operation task, watchdog, cancellation handler) all try to
 /// settle the same continuation.
-private final class ResumeBox<T>: @unchecked Sendable {
+final class ResumeBox<T>: @unchecked Sendable {
     private let lock = NSLock()
     private var cont: CheckedContinuation<T, Error>?
 

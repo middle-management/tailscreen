@@ -107,6 +107,11 @@ class AppState: ObservableObject {
     private var client: TailscaleScreenShareClient?
     private var node: TailscaleNode?
     private var tailscaleIPs: [String] = []
+    /// Long-lived TCP/7447 listener that demultiplexes the framed control
+    /// protocol. Bound once after `node.up()` and kept alive across share
+    /// start/stop cycles so peer-initiated request-to-share messages
+    /// arrive whether or not we're sharing. Torn down on sign-out.
+    private var controlListener: TailscreenControlListener?
     private var sharerOverlay: SharerOverlayWindow?
     /// Decoded picker selection backing the current share. Captured in
     /// `startSharing(filterData:)` and consumed by `ensureSharerOverlay`
@@ -214,6 +219,15 @@ class AppState: ObservableObject {
     init() {
         // Observe changes in tailscaleAuth and propagate them
         tailscaleAuth.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }.store(in: &cancellables)
+
+        // `@Published var metadataService` only fires when the *reference*
+        // changes, not when its inner `@Published` properties (notably
+        // `pendingRequests`) mutate. Mirror its `objectWillChange` through
+        // ours so the request-to-share banner repaints when a new request
+        // lands.
+        metadataService.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }.store(in: &cancellables)
 
@@ -540,7 +554,8 @@ class AppState: ObservableObject {
                     try await srv.start(
                         hostname: hostname,
                         filterData: filterData,
-                        existingNode: sharedNode
+                        existingNode: sharedNode,
+                        controlListener: controlListener
                     )
                 } catch {
                     // Tear down anything `start` brought up before throwing —
@@ -1313,7 +1328,7 @@ class AppState: ObservableObject {
         // use.
         let baseHostname = Host.current().localizedName ?? "mac"
         let config = Configuration(
-            hostName: "tailscreen-\(baseHostname)\(TailscreenInstance.hostnameSuffix)",
+            hostName: "\(TailscreenInstance.serverHostnamePrefix)\(baseHostname)\(TailscreenInstance.hostnameSuffix)",
             path: statePath,
             authKey: TailscreenInstance.authKey,
             controlURL: TailscreenInstance.controlURLOverride ?? kDefaultControlURL,
@@ -1340,7 +1355,37 @@ class AppState: ObservableObject {
         // and "Browse Shares" always lists zero.
         try await node.up()
 
+        // Bind the shared TCP/7447 control listener once the node is up.
+        // Idempotent (`start` no-ops on repeat); it has to live across
+        // share start/stop so request-to-share messages reach us even
+        // when we're not currently sharing.
+        try await ensureControlListener(node: node)
+
         return node
+    }
+
+    /// Start (and keep) the long-lived TCP/7447 control listener bound to
+    /// the local tsnet node. The `onRequestToShare` handler routes
+    /// incoming prompts into `TailscreenMetadataService.pendingRequests`
+    /// and fires a `UNUserNotificationCenter` toast so the user notices
+    /// while the menubar popover is closed.
+    private func ensureControlListener(node: TailscaleNode) async throws {
+        if controlListener != nil { return }
+        let l = TailscreenControlListener()
+        l.onRequestToShare = { [weak self] fromHostname in
+            Task { @MainActor [weak self] in
+                self?.handleIncomingRequestToShare(from: fromHostname)
+            }
+        }
+        try await l.start(node: node)
+        controlListener = l
+        logger.log("Control listener bound on TCP/\(NetworkConfig.tailscreenPort)")
+    }
+
+    private func handleIncomingRequestToShare(from hostname: String) {
+        logger.log("Incoming request-to-share from \(hostname)")
+        metadataService.handleRequestToShare(from: hostname)
+        TailscreenUserNotifications.shared.postRequestToShareNotification(fromHostname: hostname)
     }
 
     /// Spin up an IPN-bus watcher whose only job is to open the
@@ -1393,6 +1438,8 @@ class AppState: ObservableObject {
             // Reset Tailscale state
             await server?.stop()
             server = nil
+            await controlListener?.stop()
+            controlListener = nil
             try? await node?.close()
             node = nil
             authIPNWatcher?.stopWatching()
@@ -1407,10 +1454,12 @@ class AppState: ObservableObject {
     func requestToShare(from peer: TailscreenPeer) async {
         let hostname = Host.current().localizedName ?? "Unknown"
         do {
+            let node = try await getOrCreateNode()
             try await metadataService.sendRequestToShare(
-                to: peer.tailscaleIP,
+                toIP: peer.tailscaleIP,
                 port: NetworkConfig.tailscreenPort,
-                from: hostname
+                from: hostname,
+                via: node
             )
         } catch {
             presentError(.requestToShareFailed(peer: peer.hostname, underlying: error))

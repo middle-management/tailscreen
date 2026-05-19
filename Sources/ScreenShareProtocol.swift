@@ -1,29 +1,33 @@
 import Foundation
 
-/// Wire format for the **annotation back-channel** between viewer and sharer.
+/// Wire format for the **control channel** between Tailscreen peers.
 ///
-/// Video runs over UDP/RTP (see ``RTPPacket.swift``); annotations run over a
-/// separate TCP connection because strokes need reliable, ordered delivery —
-/// a dropped UDP datagram would leave a visual gap in the middle of a stroke.
-/// The TCP socket on port 7447 doubles as the peer-discovery presence beacon:
-/// `TailscalePeerDiscovery` connects, sends nothing, then closes; an
-/// annotation client connects and starts streaming framed messages.
+/// Video runs over UDP/RTP (see ``RTPPacket.swift``); the control channel
+/// runs over a separate TCP connection because its messages need reliable,
+/// ordered delivery — a dropped datagram would leave a visual gap in the
+/// middle of an annotation stroke, or silently swallow a request-to-share
+/// prompt. `TailscreenControlListener` accepts these connections on
+/// port 7447 and demultiplexes by message type.
 ///
 /// Every message starts with a 5-byte header:
 ///
 ///     [1 byte: type][4 bytes big-endian: payload length][payload...]
 ///
-/// The only message type today:
+/// Message types:
 ///
-///     .annotation (0x03)      — viewer→sharer
+///     .annotation     (0x03)  — viewer→sharer
 ///         payload = JSON-encoded ``AnnotationOp``
+///     .requestToShare (0x04)  — peer→peer
+///         payload = JSON-encoded ``RequestToSharePayload``
 enum ScreenShareMessage {
     case annotation(AnnotationOp)
+    case requestToShare(fromHostname: String)
 
     static let headerSize = 5
 
     enum MessageType: UInt8 {
         case annotation = 0x03
+        case requestToShare = 0x04
     }
 
     /// Serialize this message as a wire-format packet (header + payload).
@@ -32,6 +36,11 @@ enum ScreenShareMessage {
         case .annotation(let op):
             let payload = (try? JSONEncoder().encode(op)) ?? Data()
             return Self.frame(type: .annotation, payload: payload)
+        case .requestToShare(let fromHostname):
+            let payload =
+                (try? JSONEncoder().encode(RequestToSharePayload(fromHostname: fromHostname)))
+                ?? Data()
+            return Self.frame(type: .requestToShare, payload: payload)
         }
     }
 
@@ -75,6 +84,8 @@ struct ScreenShareMessageParser {
         switch type {
         case .annotation:
             return decodeAnnotation(payload)
+        case .requestToShare:
+            return decodeRequestToShare(payload)
         }
     }
 
@@ -84,6 +95,21 @@ struct ScreenShareMessageParser {
         }
         return .annotation(op)
     }
+
+    private func decodeRequestToShare(_ payload: Data) -> ScreenShareMessage? {
+        guard
+            let request = try? JSONDecoder().decode(
+                RequestToSharePayload.self, from: Data(payload))
+        else { return nil }
+        return .requestToShare(fromHostname: request.fromHostname)
+    }
+}
+
+/// Wire payload for `.requestToShare`. Kept as its own type so the field
+/// set can grow (e.g. requested-display ID, message text) without bumping
+/// the message-type byte.
+struct RequestToSharePayload: Codable, Sendable {
+    let fromHostname: String
 }
 
 extension Data {

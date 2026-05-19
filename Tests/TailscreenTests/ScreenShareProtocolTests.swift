@@ -92,6 +92,18 @@ final class ScreenShareProtocolTests: XCTestCase {
         XCTAssertEqual(got3, id2)
     }
 
+    func testRequestToShareRoundTrip() throws {
+        let message: ScreenShareMessage = .requestToShare(fromHostname: "wisp-1")
+        var parser = ScreenShareMessageParser()
+        parser.append(message.encode())
+        let decoded = try XCTUnwrap(parser.next())
+        guard case .requestToShare(let fromHostname) = decoded else {
+            return XCTFail("expected .requestToShare, got \(decoded)")
+        }
+        XCTAssertEqual(fromHostname, "wisp-1")
+        XCTAssertNil(parser.next())
+    }
+
     func testUnknownMessageTypeIsSkipped() throws {
         // Hand-build a bogus message with type=0xFF, then a valid annotation.
         var bogus = Data()
