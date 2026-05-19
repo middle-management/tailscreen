@@ -524,6 +524,7 @@ private struct ViewingCard: View {
 /// use, so the main process never preflights Screen Recording.
 private struct DisplayPickerSection: View {
     @EnvironmentObject var appState: AppState
+    @State private var isHovered = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -572,7 +573,8 @@ private struct DisplayPickerSection: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .padding(.horizontal, 4)
+                .background(MenuRowHoverBackground(isHovered: isHovered))
+                .onHover { isHovered = $0 }
             }
         }
         .padding(.bottom, 6)
@@ -714,15 +716,7 @@ private struct PeerMenuRow: View {
         .buttonStyle(.plain)
         .disabled(!peer.isOnline)
         .opacity(peer.isOnline ? 1.0 : 0.55)
-        .background(
-            RoundedRectangle(cornerRadius: 5)
-                .fill(
-                    isHovered && peer.isOnline
-                        ? Color.primary.opacity(0.08)
-                        : Color.clear
-                )
-                .padding(.horizontal, 4)
-        )
+        .background(MenuRowHoverBackground(isHovered: isHovered && peer.isOnline))
         .onHover { isHovered = $0 }
         .accessibilityLabel("\(peer.hostname), \(peer.isOnline ? "online" : "offline")")
         .accessibilityHint(peer.isOnline ? "Connects to view this device's screen" : "")
@@ -775,11 +769,7 @@ private struct IdentityFooter: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .background(
-                    RoundedRectangle(cornerRadius: 5)
-                        .fill(isHovered ? Color.primary.opacity(0.08) : Color.clear)
-                        .padding(.horizontal, 4)
-                )
+                .background(MenuRowHoverBackground(isHovered: isHovered))
                 .onHover { isHovered = $0 }
                 .help("Sign out of Tailscale")
                 .accessibilityLabel("Sign out of Tailscale, signed in as \(profile.displayName)")
@@ -853,11 +843,24 @@ struct MenuRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .background(
-            RoundedRectangle(cornerRadius: 5)
-                .fill(isHovered ? Color.primary.opacity(0.08) : Color.clear)
-                .padding(.horizontal, 4)
-        )
+        .background(MenuRowHoverBackground(isHovered: isHovered))
         .onHover { isHovered = $0 }
+    }
+}
+
+/// Hover highlight shared by every clickable row in the menubar popover —
+/// peer rows, the "Choose what to share…" picker entry, the identity
+/// footer, and the trailing `MenuRow` entries. The visual matches macOS
+/// Control Center / system menus: a soft rounded fill that's clearly
+/// visible without competing with selected/active states elsewhere in
+/// the popover. `quaternaryLabelColor` adapts to light/dark mode and to
+/// the user's "Reduce transparency" setting automatically.
+private struct MenuRowHoverBackground: View {
+    let isHovered: Bool
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 5)
+            .fill(isHovered ? Color(nsColor: .quaternaryLabelColor) : Color.clear)
+            .padding(.horizontal, 4)
     }
 }
