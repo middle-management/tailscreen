@@ -1545,7 +1545,7 @@ class AppState: ObservableObject {
             label.centerXAnchor.constraint(equalTo: effect.centerXAnchor),
             label.centerYAnchor.constraint(equalTo: effect.centerYAnchor),
             label.leadingAnchor.constraint(greaterThanOrEqualTo: effect.leadingAnchor, constant: 16),
-            label.trailingAnchor.constraint(lessThanOrEqualTo: effect.trailingAnchor, constant: -16),
+            label.trailingAnchor.constraint(lessThanOrEqualTo: effect.trailingAnchor, constant: -16)
         ])
         return effect
     }
