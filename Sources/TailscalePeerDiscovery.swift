@@ -64,15 +64,16 @@ class TailscalePeerDiscovery: ObservableObject {
             // share an Identifiable id with the IPN-watcher rebuild path;
             // the LocalAPI map key is the public node key and would shift
             // the id when the watcher takes over.
-            peers.append(TailscreenPeer(
-                id: String(peerStatus.ID),
-                hostname: peerStatus.HostName,
-                dnsName: peerStatus.DNSName,
-                tailscaleIP: Self.preferIPv4(peerStatus.TailscaleIPs ?? []),
-                isOnline: peerStatus.Online,
-                metadata: nil,
-                lastSeen: nil
-            ))
+            peers.append(
+                TailscreenPeer(
+                    id: String(peerStatus.ID),
+                    hostname: peerStatus.HostName,
+                    dnsName: peerStatus.DNSName,
+                    tailscaleIP: Self.preferIPv4(peerStatus.TailscaleIPs ?? []),
+                    isOnline: peerStatus.Online,
+                    metadata: nil,
+                    lastSeen: nil
+                ))
         }
 
         availablePeers = Self.sortPeers(peers)
