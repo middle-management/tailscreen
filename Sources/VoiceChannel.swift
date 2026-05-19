@@ -751,7 +751,13 @@ final class MicCapture {
         }
     }
 
-    private static func requestMicPermission() async -> Bool {
+    // `nonisolated` is load-bearing: `MicCapture` is `@MainActor`, so without
+    // it the `requestAccess` completion closure inherits MainActor isolation.
+    // TCC fires the callback on `com.apple.root.default-qos` and Swift 6's
+    // executor assertion (`swift_task_isCurrentExecutorWithFlagsImpl`) trips
+    // a `brk 1`. The body touches no MainActor state, so isolation is
+    // unnecessary anyway.
+    nonisolated private static func requestMicPermission() async -> Bool {
         await withCheckedContinuation { cont in
             AVCaptureDevice.requestAccess(for: .audio) { granted in
                 cont.resume(returning: granted)
