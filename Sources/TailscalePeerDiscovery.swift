@@ -37,8 +37,16 @@ class TailscalePeerDiscovery: ObservableObject {
         // Create LocalAPI client
         let client = LocalAPIClient(localNode: node, logger: logger)
 
-        // Get tailnet status
-        let status = try await client.backendStatus()
+        // Get tailnet status. Wrapped in a watchdog because tsnet's
+        // LocalAPI can hang silently when the node exists but its
+        // backend hasn't reached Running (e.g. silent session restore
+        // still in progress). Without a timeout the discovery spinner
+        // never resolves and the menu stays on "Looking for screens…".
+        logger.log("📡 Querying backendStatus()…")
+        let status = try await Self.withWatchdog(seconds: 5) {
+            try await client.backendStatus()
+        }
+        logger.log("📡 backendStatus() returned")
 
         logger.log("📡 Found \(status.Peer?.count ?? 0) peers on tailnet")
 
@@ -67,11 +75,13 @@ class TailscalePeerDiscovery: ObservableObject {
         // Check which peers are running Tailscreen (in parallel).
         // Uses the existing node to dial; must NOT spin up a new TailscaleNode
         // per probe — that takes several seconds per peer and blows the 2s timeout.
+        logger.log("→ awaiting node.tailscale handle…")
         guard let tailscaleHandle = await node.tailscale else {
             logger.log("⚠️ node has no tailscale handle; skipping Tailscreen probe")
             availablePeers = []
             return
         }
+        logger.log("→ got tailscale handle; probing \(peers.count) peer(s)")
 
         var updatedPeers: [TailscreenPeer] = []
 
@@ -127,12 +137,26 @@ class TailscalePeerDiscovery: ObservableObject {
         logger: LogSink
     ) async -> Bool {
         do {
-            let conn = try await OutgoingConnection(
-                tailscale: tailscale,
-                to: "\(host):\(port)",
-                proto: .tcp,
-                logger: logger
-            )
+            // `OutgoingConnection.init` is also wrapped in a watchdog —
+            // not just `.connect()` — because the init itself can park
+            // in tsnet code on a degraded netmap, and the connect-level
+            // 8 s watchdog only fires after we get past init. Without
+            // this, a single bad peer would hang the whole probe group
+            // and keep the discovery spinner up indefinitely.
+            //
+            // The closure runs in `Task.detached`, so capture only
+            // Sendable values — `logger` is a `LogSink` existential
+            // that may not be Sendable, so construct a fresh
+            // `TSLogger` (a Sendable struct) inside the closure.
+            let target = "\(host):\(port)"
+            let conn = try await withWatchdog(seconds: 5) {
+                try await OutgoingConnection(
+                    tailscale: tailscale,
+                    to: target,
+                    proto: .tcp,
+                    logger: TSLogger()
+                )
+            }
             try await connectOrTimeout(conn: conn, seconds: 8)
             await conn.close()
             logger.log("✓ \(host):\(port) is running Tailscreen")
@@ -145,43 +169,41 @@ class TailscalePeerDiscovery: ObservableObject {
         }
     }
 
-    /// Calls `conn.connect()` in an unstructured task so that the blocking
-    /// `tailscale_dial` C call does not hold a Swift actor-hop continuation
-    /// open when the calling task is cancelled or times out.
+    /// Runs `operation` in an unstructured `Task.detached` so a blocking C
+    /// call (e.g. `tailscale_dial`, the LocalAPI HTTP-over-Unix-socket
+    /// roundtrip, the `OutgoingConnection` init's actor handshake) does not
+    /// hold a Swift actor-hop continuation open when the calling task is
+    /// cancelled or times out.
     ///
     /// Three independent paths race to resume the continuation exactly once:
-    ///   1. The unstructured task delivers the `connect()` result (success or error).
+    ///   1. The unstructured task delivers the operation's result (success or error).
     ///   2. A DispatchQueue watchdog fires after `seconds`, resuming with `TimeoutError`.
     ///   3. `withTaskCancellationHandler`'s `onCancel` fires immediately when the
     ///      calling task is cancelled, resuming with `CancellationError`.
     ///
-    /// `ConnectBox` is a resume-once guard that silently drops whichever of the
+    /// `ResumeBox` is a resume-once guard that silently drops whichever of the
     /// three arrives second and third.
-    private static func connectOrTimeout(conn: OutgoingConnection, seconds: Double) async throws {
-        let box = ConnectBox()
-        try await withTaskCancellationHandler(
+    private static func withWatchdog<T: Sendable>(
+        seconds: Double,
+        operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        let box = ResumeBox<T>()
+        return try await withTaskCancellationHandler(
             operation: {
-                try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+                try await withCheckedThrowingContinuation { (cont: CheckedContinuation<T, Error>) in
                     box.setCont(cont)
-                    // If onCancel fired before the continuation was stored, the
-                    // handler was a no-op; catch that here via isCancelled.
                     if Task.isCancelled {
                         box.resume(throwing: CancellationError())
                         return
                     }
-                    // Unstructured task: not a structured child, so the group/task
-                    // that owns this probe does NOT need to await tailscale_dial to
-                    // finish before propagating a timeout or cancellation.
                     Task.detached {
                         do {
-                            try await conn.connect()
-                            box.resume()
+                            let value = try await operation()
+                            box.resume(returning: value)
                         } catch {
                             box.resume(throwing: error)
                         }
                     }
-                    // Watchdog ensures the continuation is always resumed even if
-                    // tailscale_dial blocks indefinitely (e.g., ACL-dropped SYN).
                     DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + seconds) {
                         box.resume(throwing: TimeoutError())
                     }
@@ -189,6 +211,14 @@ class TailscalePeerDiscovery: ObservableObject {
             },
             onCancel: { box.resume(throwing: CancellationError()) }
         )
+    }
+
+    /// Thin shim that wraps `conn.connect()` in `withWatchdog`. Kept as a
+    /// named entry point so the probe site reads obviously.
+    private static func connectOrTimeout(conn: OutgoingConnection, seconds: Double) async throws {
+        try await withWatchdog(seconds: seconds) {
+            try await conn.connect()
+        }
     }
 
     /// Start real-time monitoring of peer status using IPN bus
@@ -260,23 +290,23 @@ struct TimeoutError: Error {}
 
 // MARK: - Continuation helpers
 
-/// Thread-safe, resume-once wrapper for a `CheckedContinuation<Void, Error>`.
+/// Thread-safe, resume-once wrapper for a `CheckedContinuation<T, Error>`.
 ///
-/// Guards against double-resume when `connectOrTimeout`'s three racing
-/// resumers (connect task, watchdog, cancellation handler) all try to
+/// Guards against double-resume when `withWatchdog`'s three racing
+/// resumers (operation task, watchdog, cancellation handler) all try to
 /// settle the same continuation.
-private final class ConnectBox: @unchecked Sendable {
+private final class ResumeBox<T>: @unchecked Sendable {
     private let lock = NSLock()
-    private var cont: CheckedContinuation<Void, Error>?
+    private var cont: CheckedContinuation<T, Error>?
 
     /// Called once, synchronously inside `withCheckedThrowingContinuation`.
-    func setCont(_ cont: CheckedContinuation<Void, Error>) {
+    func setCont(_ cont: CheckedContinuation<T, Error>) {
         lock.withLock { self.cont = cont }
     }
 
-    func resume() {
+    func resume(returning value: T) {
         lock.withLock {
-            cont?.resume()
+            cont?.resume(returning: value)
             cont = nil
         }
     }
