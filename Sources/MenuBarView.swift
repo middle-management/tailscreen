@@ -910,8 +910,8 @@ private struct PeerMenuRow: View {
     /// when hover begins/ends.
     private var trailingReservedWidth: CGFloat {
         switch (canRequestShare, peer.isOnline) {
-        case (true, _): return 36   // hand-wave + chevron
-        case (_, true): return 14   // chevron only
+        case (true, _): return 36  // hand-wave + chevron
+        case (_, true): return 14  // chevron only
         default: return 0
         }
     }

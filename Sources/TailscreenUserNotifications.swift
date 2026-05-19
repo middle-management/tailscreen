@@ -72,8 +72,7 @@ final class TailscreenUserNotifications {
 
     private func requestAuthorization() {
         authState = .requesting
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) {
-            [weak self] granted, _ in
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { [weak self] granted, _ in
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.authState = granted ? .authorized : .denied
