@@ -33,6 +33,19 @@ struct ViewerInfo: Sendable, Identifiable, Hashable {
     let connectedAt: Date
 }
 
+/// A viewer that sent HELLO while `requireApproval` was on and is waiting
+/// for the sharer's Accept / Deny decision. Kept distinct from
+/// `ViewerInfo` so the UI can show "wants to view" prompts without
+/// polluting the connected-viewer roster. `id` matches the same
+/// `"ip:port"` key the server uses internally, so the AppState pass-through
+/// to `approveViewer`/`denyViewer` is trivial.
+struct PendingViewerInfo: Sendable, Identifiable, Hashable {
+    let id: String  // "ip:port"
+    let tailscaleIP: String
+    var hostname: String?
+    let arrivedAt: Date
+}
+
 final class TailscaleScreenShareServer: @unchecked Sendable {
     private let port: UInt16
     var node: TailscaleNode?
@@ -90,6 +103,35 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// `sweepIdleViewers`, `stop`). `Viewer` is intentionally not Sendable —
     /// `ViewerInfo` is the safe, value-type snapshot.
     private let viewerInfos = OSAllocatedUnfairLock<[String: ViewerInfo]>(initialState: [:])
+
+    /// Per-pending-viewer state for the approval gate (see
+    /// `requireApproval`). Kept separate from `viewers` so a pending viewer
+    /// can't accidentally be included in video / audio fan-out. Stores
+    /// `lastSeenNs` so the idle sweep can prune pending viewers that walk
+    /// away before the sharer answers; cached audio SSRC so an `approveViewer`
+    /// can finally emit the HELLO_ACK the viewer's been waiting on.
+    private struct PendingViewer {
+        let addr: String
+        let audioSSRC: UInt32
+        var lastSeenNs: UInt64
+    }
+    private let pendingViewers = OSAllocatedUnfairLock<[String: PendingViewer]>(initialState: [:])
+    /// Public projection of `pendingViewers` — built alongside it in the
+    /// same critical sections, surfaced via `onPendingViewersChanged`.
+    private let pendingViewerInfos = OSAllocatedUnfairLock<[String: PendingViewerInfo]>(initialState: [:])
+
+    /// When true, a HELLO from a previously-unseen viewer parks them in
+    /// `pendingViewers` and fires `onPendingViewersChanged` instead of
+    /// joining them immediately. The sharer must call `approveViewer` /
+    /// `denyViewer` to resolve the request. Set via `setRequireApproval`
+    /// while a share is live; defaults off so test fixtures and existing
+    /// callers see unchanged behavior.
+    private let requireApproval = OSAllocatedUnfairLock<Bool>(initialState: false)
+    /// Pending viewers go stale eventually too — pruned by the same idle
+    /// sweep as connected viewers, using a longer timeout so the sharer
+    /// has plausibly enough time to react. Matches the typical macOS
+    /// notification banner dwell + a few seconds of user attention.
+    private let pendingApprovalTimeoutNs: UInt64 = 60_000_000_000
 
     /// IP → hostname cache. Filled lazily by `resolveHostname` from the
     /// LocalAPI backend status. Avoids re-querying tsnet on every
@@ -186,6 +228,11 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// of the current roster; replace the UI's list wholesale rather than
     /// diffing. Callback may run on any thread; bounce to `@MainActor`.
     var onViewersChanged: (@Sendable ([ViewerInfo]) -> Void)?
+
+    /// Fires whenever the pending-approval set changes — new HELLO under
+    /// `requireApproval`, `approveViewer` / `denyViewer`, idle sweep, or
+    /// `stop()`. Same shape and bounce rules as `onViewersChanged`.
+    var onPendingViewersChanged: (@Sendable ([PendingViewerInfo]) -> Void)?
 
     /// Fires on every inbound audio RTP packet from any viewer. AppState
     /// pipes these into the local VoiceChannel so the sharer can hear
@@ -664,6 +711,10 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             // changes our `addr` for it) must receive the ack again to send
             // audio. registerOrRefresh always populates `audioSSRC`, so the
             // lookup never fails for a known viewer.
+            //
+            // Pending viewers never get an ack — the sharer hasn't said
+            // yes yet, and silence keeps the viewer parked at "Connecting…"
+            // until `approveViewer` or `denyViewer` resolves them.
             registerOrRefresh(addr: addr, isNew: true)
             if let assignedSSRC = (viewers.withLock { $0[addr]?.audioSSRC }) {
                 Task { [weak self] in
@@ -676,6 +727,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             registerOrRefresh(addr: addr, isNew: false)
         case .bye:
             removeViewer(addr: addr)
+            removePendingViewer(addr: addr)
         case .pli:
             registerOrRefresh(addr: addr, isNew: false)
             recordPLI(from: addr)
@@ -740,6 +792,58 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
 
     private func registerOrRefresh(addr: String, isNew: Bool) {
         let now = DispatchTime.now().uptimeNanoseconds
+
+        // If this addr is already pending, just refresh its lastSeen and
+        // bail — don't promote it, don't add to `viewers`. Only
+        // `approveViewer` does the promotion.
+        let wasPending = pendingViewers.withLock { state -> Bool in
+            guard var existing = state[addr] else { return false }
+            existing.lastSeenNs = now
+            state[addr] = existing
+            return true
+        }
+        if wasPending { return }
+
+        let approvalRequired = requireApproval.withLock { $0 }
+        let alreadyKnown = viewers.withLock { $0[addr] != nil }
+
+        // Brand new addr while approval is required: park in pending and
+        // surface to the UI. We allocate the audio SSRC up front so the
+        // eventual HELLO_ACK (after Accept) can reuse it without an extra
+        // hop. The collision check only spans other pending viewers —
+        // the connected set's SSRC space is 2^32, so a cross-set clash
+        // is astronomically unlikely, and the audio-validation check is
+        // keyed by source address anyway.
+        if approvalRequired && !alreadyKnown {
+            pendingViewers.withLock { state in
+                var ssrc: UInt32
+                repeat {
+                    ssrc = UInt32.random(in: 1...UInt32.max)
+                } while state.values.contains(where: { $0.audioSSRC == ssrc })
+                state[addr] = PendingViewer(addr: addr, audioSSRC: ssrc, lastSeenNs: now)
+            }
+            let ip = ipFromAddr(addr)
+            let cached = peerNameCache.withLock { $0[ip] }
+            let info = PendingViewerInfo(id: addr, tailscaleIP: ip, hostname: cached, arrivedAt: Date())
+            pendingViewerInfos.withLock { $0[addr] = info }
+            logger.log("Viewer pending approval \(addr)")
+            notifyPendingViewersChanged()
+            if cached == nil {
+                Task { [weak self] in
+                    await self?.resolvePendingHostnameAndUpdate(for: addr, ip: ip)
+                }
+            }
+            // Close the toggle-off race: if `setRequireApproval(false)`
+            // ran and drained the pending queue between our gate read and
+            // this insert, the toggle's drain didn't see us. Re-read and
+            // self-promote so the new viewer isn't stranded waiting on
+            // a sharer who already opted into open-door mode.
+            if !requireApproval.withLock({ $0 }) {
+                approveViewer(addr: addr)
+            }
+            return
+        }
+
         let (added, viewerCount) = viewers.withLock { state -> (Bool, Int) in
             if var existing = state[addr] {
                 existing.lastSeenNs = now
@@ -789,6 +893,114 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         }
     }
 
+    /// Toggle the per-session approval gate. Called by AppState when the
+    /// user flips the "Require approval for new viewers" toggle; safe to
+    /// call before, during, or after `start()`. Turning the toggle off
+    /// auto-approves anyone currently waiting.
+    func setRequireApproval(_ enabled: Bool) {
+        let prev = requireApproval.withLock { existing -> Bool in
+            let p = existing
+            existing = enabled
+            return p
+        }
+        guard prev != enabled else { return }
+        logger.log("requireApproval \(prev ? "on" : "off") → \(enabled ? "on" : "off")")
+        if !enabled {
+            // Drain whatever's been parked — the sharer just opted into
+            // open-door mode, so admit everyone in the pending queue.
+            let pending = pendingViewers.withLock { Array($0.keys) }
+            for addr in pending {
+                approveViewer(addr: addr)
+            }
+        }
+    }
+
+    /// Move a pending viewer into the active set: emit the HELLO_ACK
+    /// we suppressed at HELLO time, force a keyframe, and surface them
+    /// in the connected-viewer roster. Safe to call for a viewer who's
+    /// already approved (no-op).
+    func approveViewer(addr: String) {
+        let now = DispatchTime.now().uptimeNanoseconds
+        let pending = pendingViewers.withLock { state -> PendingViewer? in
+            state.removeValue(forKey: addr)
+        }
+        pendingViewerInfos.withLock { _ = $0.removeValue(forKey: addr) }
+        notifyPendingViewersChanged()
+        guard let pending else { return }
+
+        let (added, viewerCount) = viewers.withLock { state -> (Bool, Int) in
+            if state[addr] != nil { return (false, state.count) }
+            let v = Viewer(
+                addr: pending.addr,
+                ssrc: UInt32.random(in: 1...UInt32.max),
+                audioSSRC: pending.audioSSRC,
+                nextSequence: UInt16.random(in: 0...UInt16.max),
+                lastSeenNs: now
+            )
+            state[addr] = v
+            return (true, state.count)
+        }
+        if added {
+            let ip = ipFromAddr(addr)
+            let cached = peerNameCache.withLock { $0[ip] }
+            let info = ViewerInfo(
+                id: addr,
+                tailscaleIP: ip,
+                hostname: cached,
+                connectedAt: Date()
+            )
+            viewerInfos.withLock { $0[addr] = info }
+            notifyViewersChanged()
+            if cached == nil {
+                Task { [weak self] in
+                    await self?.resolveHostnameAndUpdate(for: addr, ip: ip)
+                }
+            }
+        }
+        logger.log("Viewer approved \(addr) (total=\(viewerCount))")
+        // Send the deferred HELLO_ACK and request a keyframe so video
+        // starts flowing on the next encoded AU.
+        let ack = ScreenShareControlMessage.encodeHelloAck(ssrc: pending.audioSSRC)
+        Task { [weak self] in
+            guard let pl = self?.packetListener else { return }
+            try? await pl.send(ack, to: addr)
+        }
+        helperCapture?.requestKeyframe()
+    }
+
+    /// Reject a pending viewer: send SERVER_BYE so they tear down
+    /// immediately and drop them from the pending set. Safe to call for
+    /// an unknown addr (no-op).
+    func denyViewer(addr: String) {
+        let existed = pendingViewers.withLock { state -> Bool in
+            state.removeValue(forKey: addr) != nil
+        }
+        guard existed else { return }
+        pendingViewerInfos.withLock { _ = $0.removeValue(forKey: addr) }
+        notifyPendingViewersChanged()
+        logger.log("Viewer denied \(addr)")
+        // Three redundant SERVER_BYE datagrams mitigate single-packet UDP
+        // loss — same template as `stop()`'s teardown path.
+        let payload = ScreenShareControlMessage.encode(.serverBye)
+        Task { [weak self] in
+            guard let pl = self?.packetListener else { return }
+            for _ in 0..<3 {
+                try? await pl.send(payload, to: addr)
+            }
+        }
+    }
+
+    private func removePendingViewer(addr: String) {
+        let removed = pendingViewers.withLock { state -> Bool in
+            state.removeValue(forKey: addr) != nil
+        }
+        if removed {
+            pendingViewerInfos.withLock { _ = $0.removeValue(forKey: addr) }
+            notifyPendingViewersChanged()
+            logger.log("Pending viewer disconnected \(addr)")
+        }
+    }
+
     private func removeViewer(addr: String) {
         let removed = viewers.withLock { state -> Bool in
             state.removeValue(forKey: addr) != nil
@@ -812,6 +1024,15 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         cb(snapshot)
     }
 
+    /// Mirror of `notifyViewersChanged` for the pending-approval set.
+    private func notifyPendingViewersChanged() {
+        guard let cb = onPendingViewersChanged else { return }
+        let snapshot = pendingViewerInfos.withLock { state -> [PendingViewerInfo] in
+            state.values.sorted { $0.arrivedAt < $1.arrivedAt }
+        }
+        cb(snapshot)
+    }
+
     /// Strip the trailing `:port` from a UDP source address. Splits on the
     /// last `:` so IPv6 literals like `[fd7a::1]:54321` stay intact (the
     /// brackets get included in the IP part — fine, the netmap match
@@ -823,6 +1044,34 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             ip = String(ip.dropFirst().dropLast())
         }
         return ip
+    }
+
+    /// Same as `resolveHostnameAndUpdate` but for an entry in
+    /// `pendingViewerInfos`. Kept separate because the two dictionaries
+    /// have different value types and we don't want one update to mutate
+    /// both — once a viewer transitions pending → approved, the pending
+    /// entry is already gone.
+    private func resolvePendingHostnameAndUpdate(for addr: String, ip: String) async {
+        guard let node = self.node else { return }
+        let client = LocalAPIClient(localNode: node, logger: logger)
+        guard let status = try? await client.backendStatus() else { return }
+        var resolved: String?
+        for (_, peer) in status.Peer ?? [:] {
+            if let ips = peer.TailscaleIPs, ips.contains(ip) {
+                resolved = peer.HostName
+                break
+            }
+        }
+        guard let hostname = resolved, !hostname.isEmpty else { return }
+        peerNameCache.withLock { $0[ip] = hostname }
+        let changed = pendingViewerInfos.withLock { state -> Bool in
+            guard var info = state[addr] else { return false }
+            guard info.hostname != hostname else { return false }
+            info.hostname = hostname
+            state[addr] = info
+            return true
+        }
+        if changed { notifyPendingViewersChanged() }
     }
 
     /// Look the viewer's IP up in the tsnet netmap and patch its hostname
@@ -875,6 +1124,28 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             for entry in dropped {
                 let idleMs = Int(entry.idleNs / 1_000_000)
                 logger.log("Viewer timeout \(entry.addr) (idle \(idleMs) ms)")
+            }
+
+            // Same sweep for pending viewers, with a longer grace period:
+            // a sharer who's away from their desk shouldn't come back to
+            // a wall of stale Accept/Deny prompts. We don't send
+            // SERVER_BYE here — the pending viewer is still sending
+            // KEEPALIVEs, and if they truly drop the next pending sweep
+            // will catch them; the noisy ones we trust the sharer to
+            // Deny explicitly.
+            let droppedPending = pendingViewers.withLock { state -> [String] in
+                let stale = state.filter { now &- $0.value.lastSeenNs > self.pendingApprovalTimeoutNs }
+                for (addr, _) in stale { state.removeValue(forKey: addr) }
+                return stale.map { $0.key }
+            }
+            if !droppedPending.isEmpty {
+                pendingViewerInfos.withLock { state in
+                    for addr in droppedPending { state.removeValue(forKey: addr) }
+                }
+                notifyPendingViewersChanged()
+                for addr in droppedPending {
+                    logger.log("Pending viewer timeout \(addr)")
+                }
             }
         }
     }
@@ -1107,7 +1378,9 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         // viewer mitigate single-packet UDP loss; the brief sleep that
         // follows gives tsnet's bridge goroutines time to actually emit
         // the datagrams onto the wire before we close the listener.
-        let goodbyeAddrs = viewers.withLock { Array($0.keys) }
+        let goodbyeAddrs =
+            viewers.withLock { Array($0.keys) }
+            + pendingViewers.withLock { Array($0.keys) }
         if let pl = packetListener, !goodbyeAddrs.isEmpty {
             let payload = ScreenShareControlMessage.encode(.serverBye)
             for _ in 0..<3 {
@@ -1126,8 +1399,11 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
 
         viewers.withLock { $0.removeAll() }
         viewerInfos.withLock { $0.removeAll() }
+        pendingViewers.withLock { $0.removeAll() }
+        pendingViewerInfos.withLock { $0.removeAll() }
         peerNameCache.withLock { $0.removeAll() }
         notifyViewersChanged()
+        notifyPendingViewersChanged()
 
         await packetListener?.close()
         packetListener = nil

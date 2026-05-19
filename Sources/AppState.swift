@@ -76,6 +76,33 @@ class AppState: ObservableObject {
     /// this to render "N watching: …" with friendly hostnames.
     @Published var currentViewers: [ViewerInfo] = []
 
+    /// Snapshot of viewers waiting for the sharer's Accept / Deny decision.
+    /// Only populated when `requireViewerApproval` is on; the SharingCard
+    /// renders Accept / Deny rows directly from this. Mirrors the server's
+    /// `onPendingViewersChanged` callback. Cleared on `stopSharing`.
+    @Published var pendingViewers: [PendingViewerInfo] = []
+
+    /// User preference: park new viewers in a pending state and require
+    /// explicit Accept/Deny before they see video. Persisted to
+    /// UserDefaults under `requireViewerApproval`. Defaults off so the
+    /// out-of-box experience matches the existing open-door behavior.
+    /// SwiftUI views bind to this via `appState.requireViewerApproval`;
+    /// the setter syncs the live server too so the toggle takes effect
+    /// mid-share.
+    @Published var requireViewerApproval: Bool = ViewerApprovalDefaults.load() {
+        didSet {
+            ViewerApprovalDefaults.save(requireViewerApproval)
+            server?.setRequireApproval(requireViewerApproval)
+        }
+    }
+
+    /// Viewer IDs we've already fired a "joined" notification for this
+    /// session. Keyed by the server's internal `"ip:port"` ID so a viewer
+    /// who briefly drops and rejoins (different ephemeral port) gets a
+    /// fresh ping, but hostname-resolution updates to the same viewer
+    /// don't double-fire. Cleared on `stopSharing`.
+    private var notifiedViewerIDs: Set<String> = []
+
     private var server: TailscaleScreenShareServer?
     private var client: TailscaleScreenShareClient?
     private var node: TailscaleNode?
@@ -457,9 +484,19 @@ class AppState: ObservableObject {
 
                 srv.onViewersChanged = { [weak self] viewers in
                     Task { @MainActor [weak self] in
-                        self?.currentViewers = viewers
+                        self?.handleViewersChanged(viewers)
                     }
                 }
+
+                srv.onPendingViewersChanged = { [weak self] pending in
+                    Task { @MainActor [weak self] in
+                        self?.handlePendingViewersChanged(pending)
+                    }
+                }
+
+                // Sync the toggle state to the server before `start()` so a
+                // viewer racing to HELLO during bring-up is caught.
+                srv.setRequireApproval(requireViewerApproval)
 
                 // Sharer's audio SSRC is fixed at 0. Build the channel up
                 // front so HELLO_ACK assignment for viewers can route
@@ -553,6 +590,8 @@ class AppState: ObservableObject {
         isMicOn = false
         previewImage = nil
         currentViewers = []
+        pendingViewers = []
+        notifiedViewerIDs.removeAll()
         tailscaleIPs = []
 
         // Update metadata
@@ -1369,6 +1408,57 @@ class AppState: ObservableObject {
     /// supply one.
     private func showAlertMessage(title: String, message: String) {
         presentError(.legacy(title: title, message: message))
+    }
+
+    /// Diff the new viewer roster against the previous one to fire a
+    /// per-join user notification exactly once per `id`. Reuses
+    /// `notifiedViewerIDs` so a hostname-resolution update that
+    /// re-emits the same `id` doesn't ping twice. Notifications are
+    /// best-effort: dev builds without a bundle ID won't be authorized
+    /// by macOS to display banners, but the in-popover pending list
+    /// still works.
+    private func handleViewersChanged(_ viewers: [ViewerInfo]) {
+        let previousIDs = Set(currentViewers.map { $0.id })
+        let newIDs = Set(viewers.map { $0.id })
+        let joinedIDs = newIDs.subtracting(previousIDs)
+        currentViewers = viewers
+        // Forget IDs that have left so a reconnect from the same
+        // address fires a new notification.
+        notifiedViewerIDs.formIntersection(newIDs)
+        for id in joinedIDs where !notifiedViewerIDs.contains(id) {
+            notifiedViewerIDs.insert(id)
+            guard let viewer = viewers.first(where: { $0.id == id }) else { continue }
+            let label = viewer.hostname ?? viewer.tailscaleIP
+            ViewerJoinNotifier.shared.postJoined(label: label)
+        }
+    }
+
+    /// Sync the published pending list and fire a "wants to view"
+    /// notification for newly-arrived pending viewers. Fires regardless
+    /// of whether the menu popover is open — that's the whole point of
+    /// the approval gate.
+    private func handlePendingViewersChanged(_ pending: [PendingViewerInfo]) {
+        let previousIDs = Set(pendingViewers.map { $0.id })
+        let newIDs = Set(pending.map { $0.id })
+        let arrivedIDs = newIDs.subtracting(previousIDs)
+        pendingViewers = pending
+        for id in arrivedIDs {
+            guard let viewer = pending.first(where: { $0.id == id }) else { continue }
+            let label = viewer.hostname ?? viewer.tailscaleIP
+            ViewerJoinNotifier.shared.postPending(label: label)
+        }
+    }
+
+    /// Admit a pending viewer — hands off to the live server which
+    /// emits the deferred HELLO_ACK and forces a keyframe.
+    func approvePendingViewer(_ id: String) {
+        server?.approveViewer(addr: id)
+    }
+
+    /// Reject a pending viewer — server sends SERVER_BYE so the viewer
+    /// tears their session down immediately.
+    func denyPendingViewer(_ id: String) {
+        server?.denyViewer(addr: id)
     }
 }
 
