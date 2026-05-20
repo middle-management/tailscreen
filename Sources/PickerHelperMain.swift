@@ -1,4 +1,5 @@
 import AppKit
+import CoreGraphics
 import Foundation
 import ScreenCaptureKit
 
@@ -48,6 +49,35 @@ enum PickerHelperMain {
         // app window.
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
+
+        // Test affordance: end-to-end tests / scripted harnesses set
+        // TAILSCREEN_AUTOSHARE_DISPLAY=1 on the parent process before
+        // launching it. We inherit the env, short-circuit the interactive
+        // picker, and emit a synthetic PickerSelection for the main display
+        // before NSApp.run() ever touches WindowServer. Safe in this
+        // subprocess: CGMainDisplayID() is a CoreGraphics call that doesn't
+        // register us with replayd, so the downstream capture-helper's
+        // SCStream can still come up cleanly.
+        if ProcessInfo.processInfo.environment["TAILSCREEN_AUTOSHARE_DISPLAY"] == "1" {
+            let selection = PickerSelection(
+                kind: .display,
+                displayID: UInt32(CGMainDisplayID()),
+                windowID: nil,
+                bundleIDs: []
+            )
+            do {
+                let payload = try JSONEncoder().encode(selection)
+                writeFramedPayload(payload, to: outFD)
+                usleep(30_000)  // flush window; mirrors PickerObserver.didUpdateWith
+                exit(0)
+            } catch {
+                FileHandle.standardError.write(
+                    Data("picker-helper: auto-share encode failed: \(error)\n".utf8))
+                writeFramedPayload(Data(), to: outFD)
+                usleep(30_000)
+                exit(2)
+            }
+        }
 
         // Hold the observer alive for the process lifetime; the picker
         // singleton retains it weakly.
@@ -198,28 +228,37 @@ private final class PickerObserver: NSObject, SCContentSharingPickerObserver {
     }
 
     private func writeFrame(_ payload: Data) {
-        var header = Data(count: 4)
-        let len = UInt32(payload.count)
-        header[0] = UInt8((len >> 24) & 0xFF)
-        header[1] = UInt8((len >> 16) & 0xFF)
-        header[2] = UInt8((len >> 8) & 0xFF)
-        header[3] = UInt8(len & 0xFF)
-        writeAll(header)
-        if !payload.isEmpty {
-            writeAll(payload)
-        }
+        writeFramedPayload(payload, to: outFD)
     }
+}
 
-    private func writeAll(_ data: Data) {
-        data.withUnsafeBytes { raw in
-            guard var ptr = raw.baseAddress else { return }
-            var remaining = raw.count
-            while remaining > 0 {
-                let n = Darwin.write(outFD, ptr, remaining)
-                if n <= 0 { return }
-                ptr = ptr.advanced(by: n)
-                remaining -= n
-            }
+/// Wire-format writer shared between `PickerObserver.writeFrame` (the
+/// production picker → parent path) and `PickerHelperMain.run` (the
+/// `TAILSCREEN_AUTOSHARE_DISPLAY=1` test short-circuit). One canonical
+/// implementation guarantees the two paths emit identical bytes; the
+/// parent reads either with the same logic.
+private func writeFramedPayload(_ payload: Data, to fd: Int32) {
+    var header = Data(count: 4)
+    let len = UInt32(payload.count)
+    header[0] = UInt8((len >> 24) & 0xFF)
+    header[1] = UInt8((len >> 16) & 0xFF)
+    header[2] = UInt8((len >> 8) & 0xFF)
+    header[3] = UInt8(len & 0xFF)
+    writeAllToFD(header, fd: fd)
+    if !payload.isEmpty {
+        writeAllToFD(payload, fd: fd)
+    }
+}
+
+private func writeAllToFD(_ data: Data, fd: Int32) {
+    data.withUnsafeBytes { raw in
+        guard var ptr = raw.baseAddress else { return }
+        var remaining = raw.count
+        while remaining > 0 {
+            let n = Darwin.write(fd, ptr, remaining)
+            if n <= 0 { return }
+            ptr = ptr.advanced(by: n)
+            remaining -= n
         }
     }
 }

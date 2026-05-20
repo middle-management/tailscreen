@@ -1,4 +1,4 @@
-.PHONY: help build run clean release install tailscale test test-tsan lint lint-baseline format format-check e2e-up e2e-down test-e2e icon
+.PHONY: help build run clean release install tailscale test test-tsan lint lint-baseline format format-check e2e-up e2e-down test-e2e test-e2e-local test-e2e-harness icon
 
 # Default target: print a one-line summary of every target. Targets are
 # self-documented via the `## description` suffix on each rule.
@@ -81,6 +81,17 @@ e2e-down: ## Tear down the local headscale + Docker volume
 # One-shot: spin headscale, run the connectivity test, tear down.
 test-e2e: tailscale ## End-to-end: e2e-up → connectivity tests → e2e-down
 	@./scripts/e2e-test.sh
+
+# Local-only screen-share E2E XCTest (synthetic frames + real capture-helper +
+# picker-helper smoke). The capture-helper test self-skips on CI; the
+# synthetic-frames test is CI-eligible but headscale-dependent.
+test-e2e-local: tailscale build ## End-to-end (LOCAL): screen-share XCTest under headscale
+	@./scripts/test-e2e-xctest.sh
+
+# Two real Tailscreen processes, full UI pipeline, asserted by log marker.
+# Needs Screen Recording permission granted to .build/debug/Tailscreen.
+test-e2e-harness: tailscale build ## End-to-end (LOCAL): two-instance scripted harness
+	@./scripts/test-e2e-local.sh
 
 # Regenerate the macOS .icns app icon from the source SVG. Requires
 # librsvg (`brew install librsvg`) and the system iconutil.

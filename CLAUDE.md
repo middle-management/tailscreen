@@ -90,6 +90,30 @@ Two paths:
 
 Connectivity tests skip or fail without an auth key — that's expected.
 
+### Local screen-share E2E (LOCAL ONLY)
+
+Three new test surfaces exercise the screen-share pipeline beyond what GitHub Actions can run — its macOS runners can't grant Screen Recording TCC, can't host a real display, and `replayd`/`SCStream` won't come up.
+
+1. **`ScreenShareSyntheticFramesTests`** — server (no helper) + real client over local-headscale tsnet, pre-encoded AVCC injected into the broadcast path. CI-eligible (skips if VideoToolbox produces no output, e.g. virtualized runners).
+2. **`ScreenShareCaptureHelperTests`** — full pipeline including the real `--capture-helper` subprocess against the main display. Local-only — self-skips on `CI` / `GITHUB_ACTIONS`. First run pops macOS's Screen Recording permission prompt on `.build/debug/Tailscreen`; subsequent runs are unattended.
+3. **`PickerHelperSmokeTests`** — spawns `--picker-helper`, verifies the lifecycle and the `TAILSCREEN_AUTOSHARE_DISPLAY=1` short-circuit. Local-only.
+
+```bash
+make test-e2e-local     # XCTest suites above, under local headscale
+make test-e2e-harness   # two real Tailscreen processes, asserted by log marker
+```
+
+Four new env-var test affordances:
+
+| Env var | Read by | Effect |
+|---------|---------|--------|
+| `TAILSCREEN_AUTOSHARE_DISPLAY=1` | `--picker-helper` subprocess | Skip the interactive picker; emit a synthetic main-display `PickerSelection` and exit. |
+| `TAILSCREEN_AUTOSTART_SHARE=1` | Main process (`AppState.init`) | Once signed in, automatically invoke `presentNativePicker()`. Pair with `TAILSCREEN_AUTOSHARE_DISPLAY=1`. |
+| `TAILSCREEN_AUTOCONNECT_TO=<prefix>` | Main process (`AppState.init`) | Once signed in, discover peers and connect to the first one whose hostname starts with `<prefix>`. |
+| `TAILSCREEN_HELPER_EXE=<path>` | `HelperScreenCapture` / `PickerHelperClient` | Override `Bundle.main.executableURL` for helper spawns. Only used by XCTests (under xctest, `Bundle.main` points at the test harness, not Tailscreen). |
+
+The harness greps the merged log for `E2E_MARKER firstFrame width=… height=…`, emitted from `AppState`'s viewer-side `onVideoSizeChanged` callback on the first decoded frame.
+
 ### Local manual testing — multiple instances on one Mac
 
 ```bash

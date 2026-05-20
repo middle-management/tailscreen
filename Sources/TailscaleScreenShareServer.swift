@@ -1408,6 +1408,32 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     deinit {
         isRunning = false
     }
+
+    // MARK: - Test-only entrypoints
+    //
+    // Synthetic-frames XCTest (`ScreenShareSyntheticFramesTests`) brings the
+    // server up with `filterData: nil` so no capture-helper spawns, then
+    // injects pre-encoded AVCC bytes through the broadcast path. These shims
+    // are reachable only via `@testable import Tailscreen`; production code
+    // reaches `broadcast` via `handleHelperAccessUnit` + the helper's
+    // `onParameterSets` callback.
+
+    /// Seed the server's cached codec + parameter sets as if the
+    /// capture-helper had just emitted them.
+    func injectSyntheticParameters(_ params: CodecParameterSets) {
+        parameterSets.withLock { $0 = params }
+        switch params {
+        case .h264: helperCodec = .h264
+        case .hevc: helperCodec = .hevc
+        }
+    }
+
+    /// Fan out a pre-encoded AVCC access unit through the server's RTP path.
+    /// Bypasses the helper-process plumbing but uses the exact same broadcast
+    /// route production frames take.
+    func broadcastForTesting(avccData: Data, isKeyframe: Bool) {
+        broadcast(avccData: avccData, isKeyframe: isKeyframe)
+    }
 }
 
 private struct TSLogger: LogSink {

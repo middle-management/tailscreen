@@ -16,8 +16,20 @@ enum PickerHelperClient {
     /// Returns the JSON-encoded `PickerSelection` bytes for the
     /// chosen content, or `nil` if the user cancelled.
     static func run() async throws -> Data? {
-        guard let exe = Bundle.main.executableURL else {
-            throw PickerHelperClientError.executableNotFound
+        // Same reason as HelperScreenCapture: end-to-end tests run under
+        // xctest, where Bundle.main is the test harness, not the Tailscreen
+        // binary. TAILSCREEN_HELPER_EXE lets the test point spawns at the
+        // real .build/<config>/Tailscreen; production never sets it.
+        let exe: URL
+        if let override = ProcessInfo.processInfo.environment["TAILSCREEN_HELPER_EXE"],
+            !override.isEmpty
+        {
+            exe = URL(fileURLWithPath: override)
+        } else {
+            guard let bundleExe = Bundle.main.executableURL else {
+                throw PickerHelperClientError.executableNotFound
+            }
+            exe = bundleExe
         }
         let proc = Process()
         proc.executableURL = exe
