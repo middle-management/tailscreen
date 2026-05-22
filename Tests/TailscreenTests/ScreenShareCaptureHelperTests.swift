@@ -78,15 +78,13 @@ final class ScreenShareCaptureHelperTests: XCTestCase {
         let renderer = await MainActor.run { MetalViewerRenderer() }
         let client = TailscaleScreenShareClient(renderer: renderer)
 
+        // Assert on decode, not render: the renderer only presents frames once
+        // its CADisplayLink is driving, and that link needs an on-screen NSView
+        // (MetalViewerRenderer.start(in:)) which doesn't exist under xctest.
+        // onDecodedFrameForTesting fires on the decoder output thread.
         let firstFrame = expectation(description: "viewer decoded a frame")
         firstFrame.assertForOverFulfill = false
-        await MainActor.run {
-            renderer.onVideoSizeChanged = { size in
-                if size.width > 0, size.height > 0 {
-                    firstFrame.fulfill()
-                }
-            }
-        }
+        client.onDecodedFrameForTesting = { _ in firstFrame.fulfill() }
 
         try await client.connect(
             to: serverIP,
@@ -97,10 +95,31 @@ final class ScreenShareCaptureHelperTests: XCTestCase {
         )
         addTeardownBlock { Task { await client.disconnect() } }
 
+        // ScreenCaptureKit only delivers a frame when the captured content
+        // changes; on a perfectly static display the helper emits its startup
+        // keyframe and then nothing, so a viewer that joins after that initial
+        // burst can starve (the server's force-keyframe-on-join has no encoder
+        // input to act on). Jiggle the cursor a couple of pixels on a timer to
+        // keep generating frame deltas until the viewer decodes one. Restores
+        // the original position when cancelled.
+        let jiggle = Task {
+            let origin = CGEvent(source: nil)?.location ?? .zero
+            var toggled = false
+            while !Task.isCancelled {
+                let p = CGPoint(x: origin.x + (toggled ? 6 : 0), y: origin.y)
+                CGWarpMouseCursorPosition(p)
+                toggled.toggle()
+                try? await Task.sleep(for: .milliseconds(200))
+            }
+            CGWarpMouseCursorPosition(origin)
+        }
+        addTeardownBlock { jiggle.cancel() }
+
         // 30 s ceiling: SCStream startup, first keyframe, tsnet propagation,
         // RTP delivery, decode. Loose enough to absorb a cold machine without
         // letting a real regression hide.
         await fulfillment(of: [firstFrame], timeout: 30)
+        jiggle.cancel()
 
         await client.disconnect()
         await server.stop()

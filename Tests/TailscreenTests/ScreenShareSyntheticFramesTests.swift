@@ -35,7 +35,7 @@ final class ScreenShareSyntheticFramesTests: XCTestCase {
             encoder.encode(pixelBuffer: pixelBuffer)
         }
         // Let VideoToolbox flush its async output queue.
-        try await Task.sleep(nanoseconds: 1_500_000_000)
+        try await Task.sleep(for: .milliseconds(1500))
         let snapshot = collector.snapshot()
         guard let params = snapshot.params, !snapshot.aus.isEmpty else {
             throw XCTSkip(
@@ -81,25 +81,20 @@ final class ScreenShareSyntheticFramesTests: XCTestCase {
         addTeardownBlock { Task { await client.disconnect() } }
         await fulfillment(of: [assignedAck], timeout: 30)
 
-        // Observe decoded frames via the renderer's video-size callback. The
-        // callback fires on first non-zero drawableSize, which corresponds
-        // to the first decoded frame (see MetalViewerRenderer:367-378).
+        // Assert on decode, not render: the renderer only presents frames once
+        // its CADisplayLink is driving, and that link needs an on-screen NSView
+        // (MetalViewerRenderer.start(in:)) which doesn't exist under xctest.
+        // onDecodedFrameForTesting fires on the decoder output thread.
         let frameReceived = expectation(description: "client decoded a frame")
         frameReceived.assertForOverFulfill = false
-        await MainActor.run {
-            renderer.onVideoSizeChanged = { size in
-                if size.width > 0, size.height > 0 {
-                    frameReceived.fulfill()
-                }
-            }
-        }
+        client.onDecodedFrameForTesting = { _ in frameReceived.fulfill() }
 
         // Drive the server's broadcast path. Force the first AU to be flagged
         // as a keyframe so the parameter sets are prepended on the wire and
         // the client decoder can configure itself.
         for (i, au) in snapshot.aus.enumerated() {
             server.broadcastForTesting(avccData: au.data, isKeyframe: i == 0 || au.isKey)
-            try await Task.sleep(nanoseconds: 33_000_000)  // ~30 fps
+            try await Task.sleep(for: .milliseconds(33))  // ~30 fps
         }
 
         await fulfillment(of: [frameReceived], timeout: 10)

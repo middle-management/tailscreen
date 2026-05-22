@@ -9,8 +9,10 @@ import XCTest
 /// terminate plumbing works — enough to catch regressions where the helper
 /// crashes on launch or fails to receive SIGTERM cleanly.
 ///
-/// Local-only: needs a WindowServer + accessory NSApp to come up. Skipped on
-/// GitHub Actions runners.
+/// Local-only and **opt-in**: the lifecycle test pops the real picker UI on
+/// screen for ~2 seconds before SIGTERM, which is jarring inside an XCTest
+/// run. Set `TAILSCREEN_RUN_PICKER_LIFECYCLE_TEST=1` to enable. The
+/// auto-share short-circuit test below has no UI and always runs.
 final class PickerHelperSmokeTests: XCTestCase {
     func testPickerHelperSpawnsAndTerminates() async throws {
         let env = ProcessInfo.processInfo.environment
@@ -18,12 +20,19 @@ final class PickerHelperSmokeTests: XCTestCase {
             env["CI"] == "true" || env["GITHUB_ACTIONS"] == "true",
             "Picker helper needs WindowServer + accessory NSApp; not viable on CI."
         )
+        try XCTSkipIf(
+            env["TAILSCREEN_RUN_PICKER_LIFECYCLE_TEST"] != "1",
+            "Pops real picker UI; opt in via TAILSCREEN_RUN_PICKER_LIFECYCLE_TEST=1."
+        )
 
         let binary = try TailscreenE2E.resolveTailscreenBinary()
         let proc = Process()
         proc.executableURL = binary
         proc.arguments = ["--picker-helper"]
-        proc.standardOutput = Pipe()
+        // Discard stdout: we don't read it here, and an undrained Pipe()
+        // would deadlock the helper if it ever wrote > one pipe buffer
+        // (~16 KB on macOS) before SIGTERM.
+        proc.standardOutput = FileHandle.nullDevice
         proc.standardError = FileHandle.nullDevice
 
         try proc.run()

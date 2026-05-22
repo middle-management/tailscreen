@@ -53,20 +53,8 @@ final class HelperScreenCapture: @unchecked Sendable {
     }
 
     func start(filterData: Data) throws {
-        // `Bundle.main` inside xctest points at the xctest harness, not the
-        // Tailscreen binary, so end-to-end tests that need to spawn a real
-        // `--capture-helper` set TAILSCREEN_HELPER_EXE to .build/<config>/Tailscreen.
-        // Production launches always fall through to Bundle.main.executableURL.
-        let exe: URL
-        if let override = ProcessInfo.processInfo.environment["TAILSCREEN_HELPER_EXE"],
-            !override.isEmpty
-        {
-            exe = URL(fileURLWithPath: override)
-        } else {
-            guard let bundleExe = Bundle.main.executableURL else {
-                throw HelperScreenCaptureError.executableNotFound
-            }
-            exe = bundleExe
+        guard let exe = resolveHelperExecutable() else {
+            throw HelperScreenCaptureError.executableNotFound
         }
         let proc = Process()
         proc.executableURL = exe
