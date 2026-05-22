@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 import Foundation
 import TailscaleKit
@@ -78,13 +79,33 @@ final class ScreenShareCaptureHelperTests: XCTestCase {
         let renderer = await MainActor.run { MetalViewerRenderer() }
         let client = TailscaleScreenShareClient(renderer: renderer)
 
-        // Assert on decode, not render: the renderer only presents frames once
-        // its CADisplayLink is driving, and that link needs an on-screen NSView
-        // (MetalViewerRenderer.start(in:)) which doesn't exist under xctest.
-        // onDecodedFrameForTesting fires on the decoder output thread.
-        let firstFrame = expectation(description: "viewer decoded a frame")
+        // Exercise the REAL render path: host the renderer's CAMetalLayer in an
+        // on-screen NSWindow and call start(in:) so its CADisplayLink ticks.
+        // onVideoSizeChanged fires from the display-link-driven render() — the
+        // same present path production uses. (This is why the test is local-
+        // only: a headless CI runner has no screen for the link to attach to.)
+        let firstFrame = expectation(description: "viewer rendered a frame")
         firstFrame.assertForOverFulfill = false
-        client.onDecodedFrameForTesting = { _ in firstFrame.fulfill() }
+        let window = await MainActor.run { () -> NSWindow in
+            let win = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 320, height: 240),
+                styleMask: [.titled],
+                backing: .buffered,
+                defer: false
+            )
+            let host = NSView(frame: win.contentView!.bounds)
+            host.wantsLayer = true
+            host.layer = CALayer()
+            host.layer?.addSublayer(renderer.metalLayer)
+            win.contentView?.addSubview(host)
+            win.orderFrontRegardless()
+            renderer.onVideoSizeChanged = { size in
+                if size.width > 0, size.height > 0 { firstFrame.fulfill() }
+            }
+            renderer.start(in: host)
+            return win
+        }
+        addTeardownBlock { Task { @MainActor in window.orderOut(nil) } }
 
         try await client.connect(
             to: serverIP,
@@ -116,8 +137,8 @@ final class ScreenShareCaptureHelperTests: XCTestCase {
         addTeardownBlock { jiggle.cancel() }
 
         // 30 s ceiling: SCStream startup, first keyframe, tsnet propagation,
-        // RTP delivery, decode. Loose enough to absorb a cold machine without
-        // letting a real regression hide.
+        // RTP delivery, decode, display-link render. Loose enough to absorb a
+        // cold machine without letting a real regression hide.
         await fulfillment(of: [firstFrame], timeout: 30)
         jiggle.cancel()
 

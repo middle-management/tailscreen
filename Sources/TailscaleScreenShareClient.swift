@@ -173,6 +173,15 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         audioSendTail.withLock { $0 = job }
     }
 
+    /// Test-only: send one PLI control packet to the server immediately. The
+    /// production PLI path fires from the depacketizer on detected packet loss,
+    /// which is hard to provoke deterministically; this drives the viewer→server
+    /// PLI path directly so a test can assert the server records it.
+    func sendPLIForTesting() async {
+        guard isConnected, let pl = packetListener, let addr = serverAddr else { return }
+        try? await pl.send(ScreenShareControlMessage.encode(.pli), to: addr)
+    }
+
     func connect(
         to hostname: String,
         port: UInt16 = NetworkConfig.tailscreenPort,

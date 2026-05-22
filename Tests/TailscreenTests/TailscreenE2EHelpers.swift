@@ -82,8 +82,89 @@ enum TailscreenE2E {
         return candidate
     }
 
+    /// Like `makeStateDirs` but for an arbitrary set of named tsnet state
+    /// dirs under one temp tree (e.g. server + two viewers). Registers
+    /// teardown to remove the whole tree.
+    static func makeStateDirs(
+        testCase: XCTestCase,
+        label: String,
+        names: [String]
+    ) throws -> [String: String] {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tailscreen-\(label)-\(UUID().uuidString)")
+        var paths: [String: String] = [:]
+        for name in names {
+            let dir = tmp.appendingPathComponent(name).path
+            try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            paths[name] = dir
+        }
+        testCase.addTeardownBlock {
+            try? FileManager.default.removeItem(at: tmp)
+        }
+        return paths
+    }
+
     /// Short, unique, role-prefixed hostname for tailnet nodes spun up in tests.
     static func makeHostname(_ role: String) -> String {
         "ts-\(role)-\(UUID().uuidString.prefix(6))"
+    }
+
+    /// Encode a handful of frames of a synthetic pixel buffer to produce
+    /// realistic AVCC NAL units + parameter sets for tests that inject into
+    /// the server's broadcast path (no capture-helper). Skips the calling
+    /// test if VideoToolbox produces no output (virtualized runners without
+    /// hardware video acceleration).
+    static func encodeSyntheticAUs(
+        width: Int = 640,
+        height: Int = 480,
+        frames: Int = 30
+    ) async throws -> (params: CodecParameterSets, aus: [(data: Data, isKey: Bool)]) {
+        let pixelBuffer = try VideoCodecTests.makePixelBuffer(width: width, height: height)
+        let encoder = VideoEncoder()
+        try encoder.setup(width: width, height: height, fps: 30, bitsPerPixel: 0.2)
+        defer { encoder.shutdown() }
+
+        let collector = AUCollector()
+        encoder.onParameterSets = { collector.recordParams($0) }
+        encoder.onEncodedData = { data, isKey in collector.recordAU(data: data, isKey: isKey) }
+        for _ in 0..<frames {
+            encoder.encode(pixelBuffer: pixelBuffer)
+        }
+        // Let VideoToolbox flush its async output queue.
+        try await Task.sleep(for: .milliseconds(1500))
+        let snapshot = collector.snapshot()
+        guard let params = snapshot.params, !snapshot.aus.isEmpty else {
+            throw XCTSkip(
+                "VideoToolbox produced no output — likely a virtualized environment without "
+                    + "hardware video acceleration.")
+        }
+        return (params, snapshot.aus)
+    }
+}
+
+/// Thread-safe collector for VideoEncoder's async output. Keeps every
+/// access unit (not just the first keyframe) so injection tests can replay
+/// a short GOP through the server's broadcast path.
+final class AUCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var params: CodecParameterSets?
+    private var aus: [(data: Data, isKey: Bool)] = []
+
+    func recordParams(_ p: CodecParameterSets) {
+        lock.lock()
+        defer { lock.unlock() }
+        params = p
+    }
+
+    func recordAU(data: Data, isKey: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        aus.append((data, isKey))
+    }
+
+    func snapshot() -> (params: CodecParameterSets?, aus: [(data: Data, isKey: Bool)]) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (params, aus)
     }
 }

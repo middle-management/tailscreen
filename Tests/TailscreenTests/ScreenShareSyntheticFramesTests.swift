@@ -19,29 +19,9 @@ final class ScreenShareSyntheticFramesTests: XCTestCase {
         let dirs = try TailscreenE2E.makeStateDirs(testCase: self, label: "synth-frames")
 
         // Encode ~30 frames of a synthetic CVPixelBuffer to get realistic
-        // AVCC NAL units + parameter sets to inject. Reuse the makePixelBuffer
-        // helper exposed by VideoCodecTests (same package, internal access).
-        let width = 640
-        let height = 480
-        let pixelBuffer = try VideoCodecTests.makePixelBuffer(width: width, height: height)
-        let encoder = VideoEncoder()
-        try encoder.setup(width: width, height: height, fps: 30, bitsPerPixel: 0.2)
-        defer { encoder.shutdown() }
-
-        let collector = Collector()
-        encoder.onParameterSets = { params in collector.recordParams(params) }
-        encoder.onEncodedData = { data, isKey in collector.recordAU(data: data, isKey: isKey) }
-        for _ in 0..<30 {
-            encoder.encode(pixelBuffer: pixelBuffer)
-        }
-        // Let VideoToolbox flush its async output queue.
-        try await Task.sleep(for: .milliseconds(1500))
-        let snapshot = collector.snapshot()
-        guard let params = snapshot.params, !snapshot.aus.isEmpty else {
-            throw XCTSkip(
-                "VideoToolbox produced no output — likely a virtualized environment without "
-                    + "hardware video acceleration.")
-        }
+        // AVCC NAL units + parameter sets to inject.
+        let synth = try await TailscreenE2E.encodeSyntheticAUs()
+        let params = synth.params
 
         // Bring up a server with filterData: nil (no SCStream spawn).
         let server = TailscaleScreenShareServer()
@@ -92,7 +72,7 @@ final class ScreenShareSyntheticFramesTests: XCTestCase {
         // Drive the server's broadcast path. Force the first AU to be flagged
         // as a keyframe so the parameter sets are prepended on the wire and
         // the client decoder can configure itself.
-        for (i, au) in snapshot.aus.enumerated() {
+        for (i, au) in synth.aus.enumerated() {
             server.broadcastForTesting(avccData: au.data, isKeyframe: i == 0 || au.isKey)
             try await Task.sleep(for: .milliseconds(33))  // ~30 fps
         }
@@ -101,32 +81,5 @@ final class ScreenShareSyntheticFramesTests: XCTestCase {
 
         await client.disconnect()
         await server.stop()
-    }
-
-    /// Thread-safe collector for the encoder's async output. Mirrors the
-    /// VideoCodecTests collector but keeps every access unit, not just the
-    /// first keyframe.
-    private final class Collector: @unchecked Sendable {
-        private let lock = NSLock()
-        private var params: CodecParameterSets?
-        private var aus: [(data: Data, isKey: Bool)] = []
-
-        func recordParams(_ p: CodecParameterSets) {
-            lock.lock()
-            defer { lock.unlock() }
-            params = p
-        }
-
-        func recordAU(data: Data, isKey: Bool) {
-            lock.lock()
-            defer { lock.unlock() }
-            aus.append((data, isKey))
-        }
-
-        func snapshot() -> (params: CodecParameterSets?, aus: [(data: Data, isKey: Bool)]) {
-            lock.lock()
-            defer { lock.unlock() }
-            return (params, aus)
-        }
     }
 }
