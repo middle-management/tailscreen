@@ -162,3 +162,39 @@ jobs:
         run: make tailscale
       - name: Run tests under TSan
         run: make test-tsan
+
+  e2e-headscale:
+    # End-to-end tsnet suites against a Docker-free local headscale control
+    # plane (scripts/e2e-up-native.sh downloads the pinned headscale release
+    # binary and runs it natively — GitHub's macOS runners can't run Docker
+    # Linux containers). No secrets, fully hermetic, so this also runs on
+    # forks. Covers the viewer↔sharer control paths (annotations, PLI),
+    # request-to-share, and multi-viewer fan-out + audio relay — none of which
+    # need a display or Screen Recording TCC, unlike the capture-helper test.
+    #
+    # Informational for now (continue-on-error) until a few runs confirm the
+    # native control plane is stable on the hosted runners.
+    # TODO: drop `continue-on-error` once observed green.
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+          cache-dependency-path: TailscaleKitPackage/upstream/libtailscale/go.sum
+      - name: Build libtailscale
+        run: make tailscale
+      - name: Run tsnet E2E suites under native headscale
+        run: |
+          eval "$(./scripts/e2e-up-native.sh)"
+          PKG_CONFIG_PATH="$(pwd)/TailscaleKitPackage" \
+            swift test \
+              --filter ScreenShareControlChannelTests \
+              --filter ScreenShareRequestToShareTests \
+              --filter ScreenShareFanoutTests
+      - name: Tear down native headscale
+        if: always()
+        run: ./scripts/e2e-down-native.sh

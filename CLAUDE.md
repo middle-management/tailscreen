@@ -88,6 +88,8 @@ Two paths:
 
 2. **Real tailnet:** export your own `TAILSCREEN_TS_AUTHKEY` from the Tailscale admin console and run `swift test`.
 
+3. **Docker-free headscale (CI):** `scripts/e2e-up-native.sh` downloads the pinned headscale release binary (keep `HEADSCALE_VERSION` in lockstep with `e2e/docker-compose.yml`), runs it natively, and emits the same env exports; tear down with `scripts/e2e-down-native.sh`. GitHub's macOS runners can't run Docker Linux containers, so the `e2e-headscale` CI job uses this to run the headless tsnet suites (`ScreenShareControlChannelTests`, `ScreenShareRequestToShareTests`, `ScreenShareFanoutTests`). No secrets — works on forks.
+
 Connectivity tests skip or fail without an auth key — that's expected.
 
 ### Local screen-share E2E (LOCAL ONLY)
