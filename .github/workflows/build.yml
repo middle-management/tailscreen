@@ -177,6 +177,11 @@ jobs:
     # TODO: drop `continue-on-error` once observed green.
     runs-on: macos-latest
     continue-on-error: true
+    # Hard cap: a tsnet node.up() that never completes its control-plane
+    # handshake (e.g. DERP/STUN blocked in the runner sandbox) has no internal
+    # timeout, so without this the job would run to GitHub's 360-minute default
+    # and burn 10×-cost macOS minutes. The full suite is ~3-4 min when healthy.
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
         with:
@@ -188,6 +193,10 @@ jobs:
       - name: Build libtailscale
         run: make tailscale
       - name: Run tsnet E2E suites under native headscale
+        # Step-level cap (below the job cap) so a hang fails this step and the
+        # always() teardown below still runs — a job-level timeout would skip
+        # cleanup. ~3-4 min when healthy.
+        timeout-minutes: 9
         run: |
           eval "$(./scripts/e2e-up-native.sh)"
           PKG_CONFIG_PATH="$(pwd)/TailscaleKitPackage" \
