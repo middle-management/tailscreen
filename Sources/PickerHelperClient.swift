@@ -5,9 +5,8 @@ import Foundation
 /// — set by XCTest, where `Bundle.main` points at the xctest harness, not
 /// Tailscreen. Production launches fall through to `Bundle.main.executableURL`.
 func resolveHelperExecutable() -> URL? {
-    if let override = ProcessInfo.processInfo.environment["TAILSCREEN_HELPER_EXE"],
-        !override.isEmpty
-    {
+    let override = ProcessInfo.processInfo.environment["TAILSCREEN_HELPER_EXE"]
+    if let override, !override.isEmpty {
         return URL(fileURLWithPath: override)
     }
     return Bundle.main.executableURL

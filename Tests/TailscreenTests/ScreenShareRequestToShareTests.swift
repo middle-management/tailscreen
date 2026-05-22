@@ -19,13 +19,15 @@ final class ScreenShareRequestToShareTests: XCTestCase {
         let env = try TailscreenE2E.loadEnvOrSkip()
         let dirs = try TailscreenE2E.makeStateDirs(
             testCase: self, label: "req-to-share", names: ["sharer", "requester"])
+        let sharerDir = try XCTUnwrap(dirs["sharer"])
+        let requesterDir = try XCTUnwrap(dirs["requester"])
         let logger = ReqLogger()
 
         // ── Sharer side: bring up a node + control listener. ──
         let sharerNode = try TailscaleNode(
             config: Configuration(
                 hostName: TailscreenE2E.makeHostname("rts-sharer"),
-                path: dirs["sharer"]!,
+                path: sharerDir,
                 authKey: env.authKey,
                 controlURL: env.controlURL,
                 ephemeral: true
@@ -55,7 +57,7 @@ final class ScreenShareRequestToShareTests: XCTestCase {
         let requesterNode = try TailscaleNode(
             config: Configuration(
                 hostName: TailscreenE2E.makeHostname("rts-requester"),
-                path: dirs["requester"]!,
+                path: requesterDir,
                 authKey: env.authKey,
                 controlURL: env.controlURL,
                 ephemeral: true

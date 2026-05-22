@@ -256,9 +256,8 @@ class AppState: ObservableObject {
                 await self?.runAutoStartShare()
             }
         }
-        if let target = ProcessInfo.processInfo.environment["TAILSCREEN_AUTOCONNECT_TO"],
-            !target.isEmpty
-        {
+        let autoConnectTarget = ProcessInfo.processInfo.environment["TAILSCREEN_AUTOCONNECT_TO"]
+        if let target = autoConnectTarget, !target.isEmpty {
             Task { @MainActor [weak self] in
                 await self?.runAutoConnect(prefix: target)
             }

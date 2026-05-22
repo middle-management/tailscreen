@@ -25,6 +25,9 @@ final class ScreenShareFanoutTests: XCTestCase {
         let env = try TailscreenE2E.loadEnvOrSkip()
         let dirs = try TailscreenE2E.makeStateDirs(
             testCase: self, label: "fanout", names: ["server", "viewer1", "viewer2"])
+        let serverDir = try XCTUnwrap(dirs["server"])
+        let viewer1Dir = try XCTUnwrap(dirs["viewer1"])
+        let viewer2Dir = try XCTUnwrap(dirs["viewer2"])
         let synth = try await TailscreenE2E.encodeSyntheticAUs()
 
         // Server with no SCStream; seed codec + parameter sets the broadcast
@@ -42,7 +45,7 @@ final class ScreenShareFanoutTests: XCTestCase {
         try await server.start(
             hostname: TailscreenE2E.makeHostname("fanout-server"),
             authKey: env.authKey,
-            path: dirs["server"]!,
+            path: serverDir,
             controlURL: env.controlURL,
             filterData: nil
         )
@@ -78,11 +81,11 @@ final class ScreenShareFanoutTests: XCTestCase {
 
         try await viewer1.connect(
             to: serverIP, port: NetworkConfig.tailscreenPort,
-            authKey: env.authKey, path: dirs["viewer1"]!, controlURL: env.controlURL)
+            authKey: env.authKey, path: viewer1Dir, controlURL: env.controlURL)
         addTeardownBlock { Task { await viewer1.disconnect() } }
         try await viewer2.connect(
             to: serverIP, port: NetworkConfig.tailscreenPort,
-            authKey: env.authKey, path: dirs["viewer2"]!, controlURL: env.controlURL)
+            authKey: env.authKey, path: viewer2Dir, controlURL: env.controlURL)
         addTeardownBlock { Task { await viewer2.disconnect() } }
 
         await fulfillment(of: [ssrc1, ssrc2, twoViewers], timeout: 30)

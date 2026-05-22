@@ -93,7 +93,7 @@ final class ScreenShareCaptureHelperTests: XCTestCase {
                 backing: .buffered,
                 defer: false
             )
-            let host = NSView(frame: win.contentView!.bounds)
+            let host = NSView(frame: win.contentView?.bounds ?? .zero)
             host.wantsLayer = true
             host.layer = CALayer()
             host.layer?.addSublayer(renderer.metalLayer)
