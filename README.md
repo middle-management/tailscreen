@@ -122,6 +122,17 @@ Each child gets `TAILSCREEN_INSTANCE=<i>`, which suffixes the Tailscale state di
 
 This setup tests Tailscale integration and peer discovery. It does **not** test NAT traversal — both processes share the same network stack. For that, use two actual machines.
 
+### Local screen-share E2E
+
+Beyond the interactive `test-local.sh`, there's an asserted end-to-end suite for things CI can't cover (GitHub Actions macOS runners can't grant Screen Recording TCC):
+
+```bash
+make test-e2e-local     # XCTest: synthetic frames + real capture-helper + picker smoke
+make test-e2e-harness   # Two real Tailscreen instances, asserted by log marker
+```
+
+First run of either pops a Screen Recording permission prompt on `.build/debug/Tailscreen`; grant it and re-run. See [CLAUDE.md](CLAUDE.md#local-screen-share-e2e-local-only) for the env-var hooks the harness uses.
+
 ### Voice (manual)
 
 Two-way voice rides on the same UDP socket as video, gated to active share sessions. Both ends are muted by default — unmute via the toolbar mic button (viewer) or **File → Microphone** (sharer). The first unmute prompts for microphone access; macOS uses VoiceProcessingIO for built-in echo cancellation.

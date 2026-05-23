@@ -216,6 +216,12 @@ class AppState: ObservableObject {
     /// a user resize.
     private var suppressViewerResizeTracking: Bool = false
 
+    /// One-shot guard so the `E2E_MARKER firstFrame ...` log line emitted
+    /// from `onVideoSizeChanged` only fires once per viewer session. The
+    /// scripted harness greps for this marker; firing on every size change
+    /// would still work, but the single-shot keeps the log clean.
+    private var didLogFirstViewerFrame: Bool = false
+
     init() {
         // Observe changes in tailscaleAuth and propagate them
         tailscaleAuth.objectWillChange.sink { [weak self] _ in
@@ -239,6 +245,22 @@ class AppState: ObservableObject {
         // the user still sees the "Sign in with Tailscale" CTA.
         Task { @MainActor [weak self] in
             await self?.attemptSessionRestore()
+        }
+
+        // Scripted local E2E harness affordances. Both env vars are read
+        // here (and only here) — production launches with neither set go
+        // through the normal UI-driven flow unchanged. See CLAUDE.md
+        // ("Local screen-share E2E") for the harness that uses these.
+        if ProcessInfo.processInfo.environment["TAILSCREEN_AUTOSTART_SHARE"] == "1" {
+            Task { @MainActor [weak self] in
+                await self?.runAutoStartShare()
+            }
+        }
+        let autoConnectTarget = ProcessInfo.processInfo.environment["TAILSCREEN_AUTOCONNECT_TO"]
+        if let target = autoConnectTarget, !target.isEmpty {
+            Task { @MainActor [weak self] in
+                await self?.runAutoConnect(prefix: target)
+            }
         }
 
         // Sharer dropped its end of the TCP connection — viewer needs to
@@ -953,6 +975,14 @@ class AppState: ObservableObject {
                 // First decoded frame implies the sharer accepted us — clear
                 // the "waiting for approval" placard regardless of resize.
                 self.viewerAwaitingApproval = false
+                // Scripted local E2E harness greps for this marker to know
+                // the viewer end-to-end pipeline is working. Cheap; only
+                // fires once per session.
+                if !self.didLogFirstViewerFrame, size.width > 0, size.height > 0 {
+                    self.didLogFirstViewerFrame = true
+                    self.logger.log(
+                        "E2E_MARKER firstFrame width=\(Int(size.width)) height=\(Int(size.height))")
+                }
                 guard !self.userResizedViewer else { return }
                 self.programmaticSnap(win, toVideoPixelSize: size)
             }
@@ -1141,6 +1171,8 @@ class AppState: ObservableObject {
         // Next connect should snap to the new sharer's dims even if the
         // user dragged the previous session's window to a custom size.
         userResizedViewer = false
+        // Allow the next session to re-emit the E2E_MARKER on its first frame.
+        didLogFirstViewerFrame = false
         // Drop back to .accessory so the Dock icon goes away when there's
         // no viewer window up. connect() will promote back to .regular.
         NSApp.setActivationPolicy(.accessory)
@@ -1449,6 +1481,53 @@ class AppState: ObservableObject {
         } catch {
             presentError(.signOutFailed(error))
         }
+    }
+
+    /// `TAILSCREEN_AUTOSTART_SHARE=1` handler. Waits for `attemptSessionRestore`
+    /// to settle the auth state (up to ~30 s), then drops into the normal
+    /// share entry point. Relies on `TAILSCREEN_AUTOSHARE_DISPLAY=1` being
+    /// set so the picker-helper short-circuits to a synthetic main-display
+    /// selection instead of presenting UI.
+    private func runAutoStartShare() async {
+        for _ in 0..<60 {
+            try? await Task.sleep(for: .milliseconds(500))
+            if tailscaleAuth.isAuthenticated { break }
+        }
+        guard tailscaleAuth.isAuthenticated else {
+            logger.log("TAILSCREEN_AUTOSTART_SHARE: auth never settled; giving up")
+            return
+        }
+        logger.log("TAILSCREEN_AUTOSTART_SHARE=1 → presentNativePicker()")
+        await presentNativePicker()
+    }
+
+    /// `TAILSCREEN_AUTOCONNECT_TO=<prefix>` handler. Waits for auth, kicks
+    /// off discovery once (which also installs the real-time IPN-bus monitor),
+    /// then polls `availablePeers` for a hostname-prefix match. Netmap
+    /// propagation can take a moment after the sharer registers; we give it
+    /// up to 30 seconds.
+    private func runAutoConnect(prefix: String) async {
+        for _ in 0..<60 {
+            try? await Task.sleep(for: .milliseconds(500))
+            if tailscaleAuth.isAuthenticated { break }
+        }
+        guard tailscaleAuth.isAuthenticated else {
+            logger.log("TAILSCREEN_AUTOCONNECT_TO: auth never settled; giving up")
+            return
+        }
+        await discoverPeers()
+        for attempt in 0..<30 {
+            if let peer = availablePeers.first(where: { $0.hostname.hasPrefix(prefix) }) {
+                logger.log(
+                    "TAILSCREEN_AUTOCONNECT_TO=\(prefix) → connecting to \(peer.hostname) @ \(peer.tailscaleIP)"
+                )
+                await connectToPeer(peer)
+                return
+            }
+            logger.log("TAILSCREEN_AUTOCONNECT_TO=\(prefix): peer not found (attempt \(attempt + 1))")
+            try? await Task.sleep(for: .seconds(1))
+        }
+        logger.log("TAILSCREEN_AUTOCONNECT_TO=\(prefix): gave up; peer never appeared")
     }
 
     func requestToShare(from peer: TailscreenPeer) async {

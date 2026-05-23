@@ -53,7 +53,7 @@ final class HelperScreenCapture: @unchecked Sendable {
     }
 
     func start(filterData: Data) throws {
-        guard let exe = Bundle.main.executableURL else {
+        guard let exe = resolveHelperExecutable() else {
             throw HelperScreenCaptureError.executableNotFound
         }
         let proc = Process()

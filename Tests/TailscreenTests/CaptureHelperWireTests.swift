@@ -56,10 +56,13 @@ final class CaptureHelperWireTests: XCTestCase {
 
         var rng = SystemRandomNumberGenerator()
         let size = 64 * 1024
-        var payload = Data(count: size)
-        for i in 0..<size {
-            payload[i] = UInt8(rng.next() & 0xFF)
-        }
+        let payload: Data = {
+            var buf = Data(count: size)
+            for i in 0..<size {
+                buf[i] = UInt8(rng.next() & 0xFF)
+            }
+            return buf
+        }()
         let writeHandle = pipe.fileHandleForWriting
         DispatchQueue.global(qos: .userInitiated).async {
             HelperControlWriter(handle: writeHandle).sendContentFilter(payload)

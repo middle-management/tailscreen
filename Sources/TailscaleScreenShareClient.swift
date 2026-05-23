@@ -66,6 +66,15 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     /// Fires on every inbound audio RTP packet (PT=98). AppState pipes
     /// this into VoiceChannel.receive(_:).
     var onAudioReceived: ((Data) -> Void)?
+
+    /// Test-only: fires on the decoder's output thread each time a frame is
+    /// decoded. Production presents frames via `MetalViewerRenderer`, whose
+    /// `onVideoSizeChanged` only fires once the renderer's `CADisplayLink` is
+    /// driving — and that link requires an on-screen `NSView` (`start(in:)`),
+    /// which doesn't exist under xctest. E2E tests assert on this instead so
+    /// they verify the capture→encode→RTP→tsnet→decode pipeline without a
+    /// windowed render surface.
+    var onDecodedFrameForTesting: ((CVPixelBuffer) -> Void)?
     private let logger: TSLogger
     private var receiveTask: Task<Void, Never>?
     private var keepaliveTask: Task<Void, Never>?
@@ -164,6 +173,15 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         audioSendTail.withLock { $0 = job }
     }
 
+    /// Test-only: send one PLI control packet to the server immediately. The
+    /// production PLI path fires from the depacketizer on detected packet loss,
+    /// which is hard to provoke deterministically; this drives the viewer→server
+    /// PLI path directly so a test can assert the server records it.
+    func sendPLIForTesting() async {
+        guard isConnected, let pl = packetListener, let addr = serverAddr else { return }
+        try? await pl.send(ScreenShareControlMessage.encode(.pli), to: addr)
+    }
+
     func connect(
         to hostname: String,
         port: UInt16 = NetworkConfig.tailscreenPort,
@@ -240,6 +258,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
 
         let decoder = VideoDecoder()
         decoder.onDecodedFrame = { [weak self] pixelBuffer in
+            self?.onDecodedFrameForTesting?(pixelBuffer)
             self?.handleDecodedFrame(pixelBuffer)
         }
         self.decoder = decoder

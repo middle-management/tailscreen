@@ -1,5 +1,17 @@
 import Foundation
 
+/// Resolve the Tailscreen executable that should be spawned as a helper
+/// (`--capture-helper` / `--picker-helper`). Honours `TAILSCREEN_HELPER_EXE`
+/// — set by XCTest, where `Bundle.main` points at the xctest harness, not
+/// Tailscreen. Production launches fall through to `Bundle.main.executableURL`.
+func resolveHelperExecutable() -> URL? {
+    let override = ProcessInfo.processInfo.environment["TAILSCREEN_HELPER_EXE"]
+    if let override, !override.isEmpty {
+        return URL(fileURLWithPath: override)
+    }
+    return Bundle.main.executableURL
+}
+
 /// Main-process wrapper around the `Tailscreen --picker-helper` child.
 /// Spawns it, reads exactly one framed payload (`[len:4 BE][bytes]`)
 /// off stdout, returns the archived `SCContentFilter` bytes (or `nil`
@@ -16,7 +28,7 @@ enum PickerHelperClient {
     /// Returns the JSON-encoded `PickerSelection` bytes for the
     /// chosen content, or `nil` if the user cancelled.
     static func run() async throws -> Data? {
-        guard let exe = Bundle.main.executableURL else {
+        guard let exe = resolveHelperExecutable() else {
             throw PickerHelperClientError.executableNotFound
         }
         let proc = Process()

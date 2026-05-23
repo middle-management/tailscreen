@@ -246,6 +246,13 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// viewers.
     var onAudioReceived: ((Data) -> Void)?
 
+    /// Test-only: fires with the viewer's address each time a PLI is recorded.
+    /// In production, a PLI also triggers `helperCapture?.requestKeyframe()`,
+    /// but with no capture-helper (synthetic test mode) that's a no-op and the
+    /// only observable effect is the recorded timestamp. Lets a test confirm
+    /// the viewer→server PLI path without an encoder attached.
+    var onPLIRecordedForTesting: ((String) -> Void)?
+
     /// Invoked once the underlying `TailscaleNode` has been instantiated but
     /// **before** `node.up()` is called. AppState uses this hook to subscribe
     /// an IPN-bus watcher that opens the interactive-login URL in the user's
@@ -747,14 +754,16 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// window can ever observe.
     private func recordPLI(from addr: String) {
         let now = DispatchTime.now().uptimeNanoseconds
-        viewers.withLock { state in
-            guard var viewer = state[addr] else { return }
+        let recorded = viewers.withLock { state -> Bool in
+            guard var viewer = state[addr] else { return false }
             viewer.pliTimestampsNs.append(now)
             if viewer.pliTimestampsNs.count > 32 {
                 viewer.pliTimestampsNs.removeFirst(viewer.pliTimestampsNs.count - 32)
             }
             state[addr] = viewer
+            return true
         }
+        if recorded { onPLIRecordedForTesting?(addr) }
     }
 
     private func registerOrRefresh(addr: String, isNew: Bool) {
@@ -1160,14 +1169,48 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             }
 
             let elapsedSinceChange = now &- lastChange
-            if worstPLIs > lossThreshold && elapsedSinceChange >= downHysteresisNs && current > floor {
-                let next = max(floor, current * 3 / 4)  // -25 %
-                applyAdaptiveBitrate(next, reason: "loss (\(worstPLIs) PLIs/5s)")
-            } else if worstPLIs == 0 && elapsedSinceChange >= upHysteresisNs && current < baseline {
-                let next = min(baseline, current + max(current / 10, 100_000))  // +10 %, min step 100 kbps
-                applyAdaptiveBitrate(next, reason: "clean window")
+            if let next = Self.nextAdaptiveBitrate(
+                worstPLIs: worstPLIs,
+                current: current,
+                baseline: baseline,
+                elapsedSinceChangeNs: elapsedSinceChange,
+                lossThreshold: lossThreshold,
+                downHysteresisNs: downHysteresisNs,
+                upHysteresisNs: upHysteresisNs
+            ) {
+                let reason = next < current ? "loss (\(worstPLIs) PLIs/5s)" : "clean window"
+                applyAdaptiveBitrate(next, reason: reason)
             }
         }
+    }
+
+    /// Pure adaptive-bitrate decision: given the worst per-viewer PLI count in
+    /// the last window, the current and baseline bitrates, and how long since
+    /// the last change, return the next bitrate — or `nil` to hold steady.
+    ///
+    /// Cut 25 % (never below the floor of 30 % of baseline or 500 kbps) when
+    /// loss exceeds `lossThreshold` and the down-hysteresis has elapsed; recover
+    /// +10 % (min 100 kbps step, capped at baseline) after a clean window once
+    /// the longer up-hysteresis has elapsed. Asymmetric hysteresis makes cuts
+    /// fast and recovery slow. Extracted from the sweep so the math is unit
+    /// testable without a live encoder.
+    static func nextAdaptiveBitrate(
+        worstPLIs: Int,
+        current: Int,
+        baseline: Int,
+        elapsedSinceChangeNs: UInt64,
+        lossThreshold: Int = 2,
+        downHysteresisNs: UInt64 = 5_000_000_000,
+        upHysteresisNs: UInt64 = 10_000_000_000
+    ) -> Int? {
+        guard baseline > 0 else { return nil }
+        let floor = max(baseline * 3 / 10, 500_000)  // 30 % of baseline, never below 500 kbps
+        if worstPLIs > lossThreshold && elapsedSinceChangeNs >= downHysteresisNs && current > floor {
+            return max(floor, current * 3 / 4)  // -25 %
+        } else if worstPLIs == 0 && elapsedSinceChangeNs >= upHysteresisNs && current < baseline {
+            return min(baseline, current + max(current / 10, 100_000))  // +10 %, min step 100 kbps
+        }
+        return nil
     }
 
     /// Push a new bitrate to the live encoder and update the bookkeeping
@@ -1407,6 +1450,32 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
 
     deinit {
         isRunning = false
+    }
+
+    // MARK: - Test-only entrypoints
+    //
+    // Synthetic-frames XCTest (`ScreenShareSyntheticFramesTests`) brings the
+    // server up with `filterData: nil` so no capture-helper spawns, then
+    // injects pre-encoded AVCC bytes through the broadcast path. These shims
+    // are reachable only via `@testable import Tailscreen`; production code
+    // reaches `broadcast` via `handleHelperAccessUnit` + the helper's
+    // `onParameterSets` callback.
+
+    /// Seed the server's cached codec + parameter sets as if the
+    /// capture-helper had just emitted them.
+    func injectSyntheticParameters(_ params: CodecParameterSets) {
+        parameterSets.withLock { $0 = params }
+        switch params {
+        case .h264: helperCodec = .h264
+        case .hevc: helperCodec = .hevc
+        }
+    }
+
+    /// Fan out a pre-encoded AVCC access unit through the server's RTP path.
+    /// Bypasses the helper-process plumbing but uses the exact same broadcast
+    /// route production frames take.
+    func broadcastForTesting(avccData: Data, isKeyframe: Bool) {
+        broadcast(avccData: avccData, isKeyframe: isKeyframe)
     }
 }
 

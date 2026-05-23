@@ -162,3 +162,13 @@ jobs:
         run: make tailscale
       - name: Run tests under TSan
         run: make test-tsan
+
+  # NOTE: there is deliberately no CI job for the tsnet E2E suites
+  # (ScreenShareControlChannelTests / ScreenShareRequestToShareTests /
+  # ScreenShareFanoutTests). They were tried on macos-latest via a Docker-free
+  # native headscale (scripts/e2e-up-native.sh): headscale itself came up
+  # healthy and minted a key, but the first tsnet `node.up()` hung indefinitely
+  # — GitHub's hosted macOS runner sandbox doesn't let the userspace-WireGuard
+  # handshake / DERP-STUN (:3478/udp) complete. `node.up()` has no internal
+  # timeout, so the job just stalled. These suites are local-only; run them with
+  # `make test-e2e-local` (Docker) or `scripts/e2e-up-native.sh` (Docker-free).
