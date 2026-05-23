@@ -163,47 +163,12 @@ jobs:
       - name: Run tests under TSan
         run: make test-tsan
 
-  e2e-headscale:
-    # End-to-end tsnet suites against a Docker-free local headscale control
-    # plane (scripts/e2e-up-native.sh downloads the pinned headscale release
-    # binary and runs it natively — GitHub's macOS runners can't run Docker
-    # Linux containers). No secrets, fully hermetic, so this also runs on
-    # forks. Covers the viewer↔sharer control paths (annotations, PLI),
-    # request-to-share, and multi-viewer fan-out + audio relay — none of which
-    # need a display or Screen Recording TCC, unlike the capture-helper test.
-    #
-    # Informational for now (continue-on-error) until a few runs confirm the
-    # native control plane is stable on the hosted runners.
-    # TODO: drop `continue-on-error` once observed green.
-    runs-on: macos-latest
-    continue-on-error: true
-    # Hard cap: a tsnet node.up() that never completes its control-plane
-    # handshake (e.g. DERP/STUN blocked in the runner sandbox) has no internal
-    # timeout, so without this the job would run to GitHub's 360-minute default
-    # and burn 10×-cost macOS minutes. The full suite is ~3-4 min when healthy.
-    timeout-minutes: 12
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.21'
-          cache-dependency-path: TailscaleKitPackage/upstream/libtailscale/go.sum
-      - name: Build libtailscale
-        run: make tailscale
-      - name: Run tsnet E2E suites under native headscale
-        # Step-level cap (below the job cap) so a hang fails this step and the
-        # always() teardown below still runs — a job-level timeout would skip
-        # cleanup. ~3-4 min when healthy.
-        timeout-minutes: 9
-        run: |
-          eval "$(./scripts/e2e-up-native.sh)"
-          PKG_CONFIG_PATH="$(pwd)/TailscaleKitPackage" \
-            swift test \
-              --filter ScreenShareControlChannelTests \
-              --filter ScreenShareRequestToShareTests \
-              --filter ScreenShareFanoutTests
-      - name: Tear down native headscale
-        if: always()
-        run: ./scripts/e2e-down-native.sh
+  # NOTE: there is deliberately no CI job for the tsnet E2E suites
+  # (ScreenShareControlChannelTests / ScreenShareRequestToShareTests /
+  # ScreenShareFanoutTests). They were tried on macos-latest via a Docker-free
+  # native headscale (scripts/e2e-up-native.sh): headscale itself came up
+  # healthy and minted a key, but the first tsnet `node.up()` hung indefinitely
+  # — GitHub's hosted macOS runner sandbox doesn't let the userspace-WireGuard
+  # handshake / DERP-STUN (:3478/udp) complete. `node.up()` has no internal
+  # timeout, so the job just stalled. These suites are local-only; run them with
+  # `make test-e2e-local` (Docker) or `scripts/e2e-up-native.sh` (Docker-free).
