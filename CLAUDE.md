@@ -145,6 +145,37 @@ Memory-debug modes (set before invoking the script):
 | `TAILSCREEN_DEBUG_ASAN=1` | Sets `ASAN_OPTIONS`; **also rebuild with** `swift build -Xswiftc -sanitize=address` |
 | `TAILSCREEN_DEBUG_GMALLOC=1` | libgmalloc — known to break ScreenCaptureKit's XPC; prefer Instruments' Zombies template |
 
+### Simulating a bad network on one Mac — `scripts/net-impair.sh`
+
+Loopback and local-headscale deliver packets with ~0% loss, in order, at a
+16 KB MTU. That hides every WAN-only failure mode: loss-driven PLI/keyframe
+storms, the adaptive-bitrate sweep, viewer stall + recovery, and one-slow-
+viewer head-of-line blocking. `scripts/net-impair.sh` uses pf + dummynet (the
+machinery behind Network Link Conditioner) to beat up the node-to-node UDP
+transport so those paths actually run.
+
+```bash
+sudo ./scripts/net-impair.sh up --loss 3 --delay 80   # 3% loss, 80 ms each way
+./test-local.sh 2                                      # share + view, watch it cope
+sudo ./scripts/net-impair.sh down                      # always tear down when done
+sudo ./scripts/net-impair.sh status                    # inspect active pipes/anchor
+```
+
+Knobs: `--loss PCT`, `--delay MS`, `--bw RATE` (e.g. `5Mbit/s`), `--reorder PCT`
+(+`--reorder-delay MS`), `--iface IFACE` (default `lo0` — two co-located tsnet
+nodes prefer their loopback endpoints). It impairs UDP on the interface while
+leaving headscale control (8080/tcp) and STUN (3478/udp) alone so setup still
+works.
+
+Caveats: it's **best-effort** — if the two nodes fall back to a DERP-relayed
+path the flow may not be on `lo0` (confirm impairment is biting via the
+viewer's rising PLI count / dropping bitrate in the stats overlay; otherwise
+try `--iface en0`). dummynet has no native packet-reorder knob, so `--reorder`
+uses the two-pipe + `probability` workaround and may be rejected on some macOS
+pf versions. For **deterministic, root-free, CI-able** reorder/loss/duplicate
+coverage of the depacketizer, use the unit tests in `RTPPacketTests` instead —
+the harness is the end-to-end complement, not a replacement.
+
 ## Architecture & data flow
 
 Capture and encoding live in a separate **helper subprocess** (`Tailscreen --capture-helper`), spawned per share. Process death is the only reliable signal that clears `replayd`'s per-bundle slot, so isolating SCStream + VideoToolbox in a child means Stop Sharing always works — no stuck menubar recording badge.
