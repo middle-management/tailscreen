@@ -215,27 +215,3 @@ private struct TSLogger: LogSink {
         print("[Auth] \(message)")
     }
 }
-
-// MARK: - Helper Functions
-
-private func withTimeout<T: Sendable>(
-    seconds: TimeInterval, operation: @escaping @Sendable () async throws -> T
-) async throws -> T {
-    try await withThrowingTaskGroup(of: T.self) { group in
-        group.addTask {
-            try await operation()
-        }
-
-        group.addTask {
-            try await Task.sleep(for: .seconds(seconds))
-            throw TailscaleAuthError.authTimeout
-        }
-
-        guard let result = try await group.next() else {
-            throw TailscaleAuthError.authTimeout
-        }
-
-        group.cancelAll()
-        return result
-    }
-}

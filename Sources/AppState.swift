@@ -1407,7 +1407,19 @@ class AppState: ObservableObject {
         // this the node's LocalAPI works (so login + status queries succeed),
         // but tailscale_dial fails silently — every peer probe returns false
         // and "Browse Shares" always lists zero.
-        try await node.up()
+        //
+        // tsnet's up() has no internal timeout. With an auth key there's no
+        // human in the loop, so it should reach Running in seconds — a hang
+        // there means a bad key or an unreachable control plane, and we bound
+        // it so the caller surfaces an error instead of parking forever. The
+        // interactive path (no key) is intentionally left unbounded: up()
+        // legitimately blocks until the user finishes the browser login, which
+        // can take minutes.
+        if TailscreenInstance.authKey != nil {
+            try await withTimeout(seconds: 60) { try await node.up() }
+        } else {
+            try await node.up()
+        }
 
         // Bind the shared TCP/7447 control listener once the node is up.
         // Idempotent (`start` no-ops on repeat); it has to live across

@@ -332,7 +332,15 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             if let ready = nodeReadyBeforeUp {
                 await ready(newNode)
             }
-            try await newNode.up()
+            // Bound up() when an auth key is present (no human in the loop, so
+            // it should reach Running quickly); leave it unbounded otherwise so
+            // an interactive browser login isn't cut off. See the matching note
+            // in AppState.getOrCreateNode.
+            if authKey != nil {
+                try await withTimeout(seconds: 60) { try await newNode.up() }
+            } else {
+                try await newNode.up()
+            }
             node = newNode
         }
 
