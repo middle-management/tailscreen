@@ -372,7 +372,13 @@ private final class CaptureHelperRunner {
             encoder?.shutdown()
             let newEncoder = VideoEncoder()
             do {
-                try newEncoder.setup(width: width, height: height, fps: 60)
+                // The parent sets TAILSCREEN_FORCE_H264=1 when a viewer
+                // reported it can't decode HEVC; honor it so the whole share
+                // falls back to the universally-decodable codec.
+                let preferred: VideoCodec =
+                    ProcessInfo.processInfo.environment["TAILSCREEN_FORCE_H264"] == "1"
+                    ? .h264 : .hevc
+                try newEncoder.setup(width: width, height: height, fps: 60, preferredCodec: preferred)
                 let codec = newEncoder.codec
                 writer.writeLog("capture-helper: encoder \(codec) \(width)x\(height) @60fps")
                 lastWidth = width

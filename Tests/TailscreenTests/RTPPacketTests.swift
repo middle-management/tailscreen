@@ -40,6 +40,12 @@ final class RTPPacketTests: XCTestCase {
         XCTAssertEqual(ScreenShareControlMessage.decode(hello), .hello)
         XCTAssertEqual(ScreenShareControlMessage.decode(pli), .pli)
 
+        // CODEC_NO (the viewer's "I can't decode this, fall back to H.264"
+        // signal) must round-trip and read as control, not RTP.
+        let codecNo = ScreenShareControlMessage.encode(.codecUnsupported)
+        XCTAssertTrue(ScreenShareControlMessage.looksLikeControl(codecNo))
+        XCTAssertEqual(ScreenShareControlMessage.decode(codecNo), .codecUnsupported)
+
         // A real RTP packet's first byte is 0x80; must not look like control.
         var rtp = Data()
         RTPHeader(marker: false, payloadType: 96, sequenceNumber: 0, timestamp: 0, ssrc: 1).encode(into: &rtp)

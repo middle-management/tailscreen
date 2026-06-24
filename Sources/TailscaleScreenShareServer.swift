@@ -203,6 +203,16 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// to pick H.264 vs HEVC RTP payload type.
     private var helperCodec: VideoCodec?
 
+    /// Latched on when a viewer reports (via CODEC_NO) that it can't decode
+    /// the current stream. Forces the helper's encoder to H.264 — the
+    /// lowest-common-denominator codec every Mac can decode — on the next
+    /// (re)spawn. We default to HEVC for its efficiency, but a single viewer
+    /// that can't decode HEVC (e.g. an older Intel Mac) would otherwise sit
+    /// on a black screen forever; falling the *whole* share back to H.264 is
+    /// the safe recovery. Locked: read in `startHelperCapture` on the
+    /// cooperative pool, written from the control-receive loop.
+    private let forceH264 = OSAllocatedUnfairLock<Bool>(initialState: false)
+
     /// Stateful per-codec packetizers. Held across `broadcast()` calls so
     /// each call can recycle the previous batch's buffer storage instead
     /// of allocating a fresh `Data` per packet. See `RTPPacketBufferPool`
@@ -491,7 +501,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
                         userInfo: [NSLocalizedDescriptionKey: "respawn failed: \(err)"]))
             }
         }
-        try helper.start(filterData: filterData)
+        try helper.start(filterData: filterData, forceH264: forceH264.withLock { $0 })
         helperCapture = helper
         logger.log("HelperScreenCapture started (filter=\(filterData.count)B)")
     }
@@ -746,6 +756,30 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         case .helloPending:
             // HELLO_PENDING is server→viewer only. Ignore from viewers.
             return
+        case .codecUnsupported:
+            registerOrRefresh(addr: addr, isNew: false)
+            handleCodecUnsupported(from: addr)
+        }
+    }
+
+    /// A viewer reported it can't decode the current codec. Latch the share
+    /// to H.264 and respawn the helper so the encoder switches over. Idempotent
+    /// via the `forceH264` latch: once we've fallen back, a storm of CODEC_NO
+    /// from a still-black-screened viewer triggers at most one restart, and
+    /// further reports (including from other viewers) are no-ops. If we're
+    /// already encoding H.264 the respawn is harmless but pointless, so the
+    /// latch also short-circuits the already-fell-back case.
+    private func handleCodecUnsupported(from addr: String) {
+        guard isRunning else { return }
+        let shouldFallback = forceH264.withLock { flag -> Bool in
+            if flag { return false }
+            flag = true
+            return true
+        }
+        guard shouldFallback else { return }
+        logger.log("Viewer \(addr) can't decode the current stream — falling back to H.264")
+        Task { [weak self] in
+            try? await self?.restartCapture()
         }
     }
 

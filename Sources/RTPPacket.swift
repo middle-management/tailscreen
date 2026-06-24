@@ -20,6 +20,10 @@ import Foundation
 ///     0x06 (HELLO_PEND) server → viewer: your HELLO is parked behind the
 ///                       sharer's approval gate; sit tight. Resent on every
 ///                       HELLO retry while still pending.
+///     0x07 (CODEC_NO)   viewer → server: I can't decode this codec; please
+///                       fall back to H.264. Sent when VideoToolbox can't
+///                       build a decompression session (e.g. an HEVC stream
+///                       on a Mac without HEVC decode).
 ///     0x80..0xBF        RTP packet (V=2)
 enum ScreenShareControlMessage: UInt8 {
     case hello = 0x00
@@ -34,6 +38,12 @@ enum ScreenShareControlMessage: UInt8 {
     /// HELLO lands while `requireApproval` is on, so the viewer can show a
     /// "waiting for approval" overlay instead of sitting on a black window.
     case helloPending = 0x06
+    /// Viewer→sharer "I can't decode this codec." Sent when the viewer's
+    /// VideoToolbox can't build a decompression session for the stream —
+    /// typically an HEVC stream reaching a Mac without HEVC hardware decode.
+    /// The sharer responds by latching the share to H.264, which every Mac
+    /// can decode.
+    case codecUnsupported = 0x07
 
     static func encode(_ kind: ScreenShareControlMessage) -> Data {
         Data([kind.rawValue])

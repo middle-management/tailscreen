@@ -261,6 +261,9 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
             self?.onDecodedFrameForTesting?(pixelBuffer)
             self?.handleDecodedFrame(pixelBuffer)
         }
+        decoder.onDecodeFailure = { [weak self] codec in
+            self?.handleDecodeFailure(codec)
+        }
         self.decoder = decoder
 
         // Open the TCP annotation back-channel to the same host:port.
@@ -304,6 +307,28 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
             return "[\(host)]:\(port)"
         }
         return "\(host):\(port)"
+    }
+
+    /// The decoder couldn't build a session for `codec` (typically HEVC on a
+    /// Mac without HEVC decode). Ask the sharer to fall back to H.264 — sent a
+    /// few times since CODEC_NO rides best-effort UDP and a single drop would
+    /// strand us on a black screen — and surface the failure to the user. The
+    /// decoder fires this at most once per codec, so this isn't a hot path.
+    private func handleDecodeFailure(_ codec: VideoCodec) {
+        logger.log("Decode failure for \(codec) — requesting H.264 fallback from sharer")
+        if let addr = serverAddr, let pl = packetListener {
+            Task {
+                for _ in 0..<3 {
+                    try? await pl.send(ScreenShareControlMessage.encode(.codecUnsupported), to: addr)
+                    try? await Task.sleep(for: .milliseconds(200))
+                }
+            }
+        }
+        NotificationCenter.default.post(
+            name: .tailscreenViewerDecodeFailed,
+            object: nil,
+            userInfo: ["codec": String(describing: codec)]
+        )
     }
 
     private func receiveLoop() async {
@@ -566,6 +591,12 @@ extension Notification.Name {
     /// have gone silent for longer than the idle threshold. AppState
     /// observes this and runs disconnect() so the UI tears down.
     static let tailscreenViewerPeerClosed = Notification.Name("tailscreen.viewer.peerClosed")
+
+    /// Posted from the viewer's decoder when VideoToolbox can't build a
+    /// decompression session for the stream's codec. AppState surfaces an
+    /// alert; the client has already asked the sharer to fall back to H.264.
+    /// `userInfo["codec"]` carries the codec name as a String.
+    static let tailscreenViewerDecodeFailed = Notification.Name("tailscreen.viewer.decodeFailed")
 }
 
 /// Serializes `send(_:)` calls on an `OutgoingConnection`. Two concurrent

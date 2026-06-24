@@ -279,6 +279,28 @@ class AppState: ObservableObject {
             }
         )
 
+        // Viewer's decoder couldn't build a session for the stream's codec.
+        // The client has already asked the sharer to fall back to H.264; tell
+        // the user so a momentary black screen isn't a silent mystery.
+        notificationObservers.append(
+            NotificationCenter.default.addObserver(
+                forName: .tailscreenViewerDecodeFailed,
+                object: nil,
+                queue: .main
+            ) { [weak self] note in
+                let codec = (note.userInfo?["codec"] as? String) ?? "this"
+                Task { @MainActor [weak self] in
+                    guard let self = self, self.connectionState == .viewing else { return }
+                    self.showAlertMessage(
+                        title: "Can't decode the video",
+                        message:
+                            "This Mac can't decode the \(codec) video stream from the sharer "
+                            + "(it likely lacks \(codec) hardware decode). Asking the sharer to "
+                            + "switch to H.264 — the screen should appear in a moment.")
+                }
+            }
+        )
+
         // File → Disconnect (⌘W) posts this; bounce to disconnect().
         notificationObservers.append(
             NotificationCenter.default.addObserver(
