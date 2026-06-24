@@ -43,8 +43,8 @@ final class ViewerJoinNotifier {
         guard isBundled else { return }
         ensureAuthorization()
         let content = UNMutableNotificationContent()
-        content.title = "Viewer Connected"
-        content.body = "\(label) is now viewing your screen."
+        content.title = L("Viewer Connected")
+        content.body = L("\(label) is now viewing your screen.")
         content.sound = .default
         let req = UNNotificationRequest(
             identifier: "tailscreen.viewer.joined.\(UUID().uuidString)",
@@ -58,8 +58,8 @@ final class ViewerJoinNotifier {
         guard isBundled else { return }
         ensureAuthorization()
         let content = UNMutableNotificationContent()
-        content.title = "Viewer Wants to Connect"
-        content.body = "\(label) is asking to view your screen. Open Tailscreen to Accept or Deny."
+        content.title = L("Viewer Wants to Connect")
+        content.body = L("\(label) is asking to view your screen. Open Tailscreen to Accept or Deny.")
         content.sound = .default
         let req = UNNotificationRequest(
             identifier: "tailscreen.viewer.pending.\(UUID().uuidString)",

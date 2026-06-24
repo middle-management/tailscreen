@@ -872,7 +872,7 @@ class AppState: ObservableObject {
 
             connectionState = .viewing
             connectedHostname = host
-            viewerWindow?.title = "Viewing \(host)"
+            viewerWindow?.title = L("Viewing \(host)")
             // Order matters: with the app at .accessory activation policy
             // (MenuBarExtra-only), makeKeyAndOrderFront silently no-ops
             // because non-regular apps can't make a window key. Promote
@@ -916,7 +916,7 @@ class AppState: ObservableObject {
         )
         // Reflect the peer in the title bar (native apps put the context
         // there); falls back to the app name before the first connect.
-        win.title = connectedHostname.map { "Viewing \($0)" } ?? "Tailscreen"
+        win.title = connectedHostname.map { L("Viewing \($0)") } ?? "Tailscreen"
         win.backgroundColor = .black
         win.isReleasedWhenClosed = false
 
@@ -1561,7 +1561,7 @@ class AppState: ObservableObject {
         if settingsWindow == nil {
             let hosting = NSHostingController(rootView: SettingsView(appState: self))
             let win = NSWindow(contentViewController: hosting)
-            win.title = "Tailscreen Settings"
+            win.title = L("Tailscreen Settings")
             win.styleMask = [.titled, .closable, .miniaturizable]
             win.isReleasedWhenClosed = false
             win.center()
@@ -1589,14 +1589,14 @@ class AppState: ObservableObject {
         while true {
             let alert = NSAlert()
             alert.messageText = error.title
-            alert.informativeText = "\(error.message)\n\nError code: \(error.code)"
+            alert.informativeText = L("\(error.message)\n\nError code: \(error.code)")
             alert.alertStyle = .warning
 
             if let action = error.action {
                 alert.addButton(withTitle: action.title)
             }
-            alert.addButton(withTitle: "Copy Details")
-            alert.addButton(withTitle: "OK")
+            alert.addButton(withTitle: L("Copy Details"))
+            alert.addButton(withTitle: L("OK"))
 
             let response = alert.runModal()
             let chosen = response.rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue

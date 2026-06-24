@@ -94,7 +94,7 @@ enum AppMenu {
         appMenuItem.submenu = appMenu
 
         let aboutItem = NSMenuItem(
-            title: "About Tailscreen",
+            title: L("About Tailscreen"),
             action: #selector(AboutPanelTarget.showAboutPanel(_:)),
             keyEquivalent: "")
         aboutItem.target = aboutTarget
@@ -106,7 +106,7 @@ enum AppMenu {
         // outright, so we add it by hand and route it through ViewerCommands
         // (the shared NSMenu target) into `AppState.presentSettings()`.
         let settings = NSMenuItem(
-            title: "Settings…",
+            title: L("Settings…"),
             action: #selector(ViewerCommands.openSettings(_:)),
             keyEquivalent: ",")
         settings.target = ViewerCommands.shared
@@ -114,13 +114,13 @@ enum AppMenu {
         appMenu.addItem(.separator())
 
         let hide = NSMenuItem(
-            title: "Hide Tailscreen",
+            title: L("Hide Tailscreen"),
             action: #selector(NSApplication.hide(_:)),
             keyEquivalent: "h")
         appMenu.addItem(hide)
 
         let hideOthers = NSMenuItem(
-            title: "Hide Others",
+            title: L("Hide Others"),
             action: #selector(NSApplication.hideOtherApplications(_:)),
             keyEquivalent: "h")
         hideOthers.keyEquivalentModifierMask = [.option, .command]
@@ -128,14 +128,14 @@ enum AppMenu {
 
         appMenu.addItem(
             .init(
-                title: "Show All",
+                title: L("Show All"),
                 action: #selector(NSApplication.unhideAllApplications(_:)),
                 keyEquivalent: ""))
         appMenu.addItem(.separator())
 
         appMenu.addItem(
             .init(
-                title: "Quit Tailscreen",
+                title: L("Quit Tailscreen"),
                 action: #selector(NSApplication.terminate(_:)),
                 keyEquivalent: "q"))
 
@@ -145,14 +145,14 @@ enum AppMenu {
         fileItem.submenu = fileMenu
 
         let disconnect = NSMenuItem(
-            title: "Disconnect",
+            title: L("Disconnect"),
             action: #selector(ViewerCommands.disconnectViewer(_:)),
             keyEquivalent: "w")
         disconnect.target = ViewerCommands.shared
         fileMenu.addItem(disconnect)
 
         let micItem = NSMenuItem(
-            title: "Microphone",
+            title: L("Microphone"),
             action: #selector(ViewerCommands.toggleMicrophone(_:)),
             keyEquivalent: "")
         micItem.target = ViewerCommands.shared
@@ -164,7 +164,7 @@ enum AppMenu {
         editItem.submenu = editMenu
 
         let undo = NSMenuItem(
-            title: "Undo Annotation",
+            title: L("Undo Annotation"),
             action: #selector(ViewerCommands.undoLastAnnotation(_:)),
             keyEquivalent: "z")
         undo.target = ViewerCommands.shared
@@ -173,7 +173,7 @@ enum AppMenu {
         editMenu.addItem(.separator())
 
         let clearAll = NSMenuItem(
-            title: "Clear All Annotations",
+            title: L("Clear All Annotations"),
             action: #selector(ViewerCommands.clearAllAnnotations(_:)),
             keyEquivalent: "\u{8}")  // delete
         clearAll.keyEquivalentModifierMask = [.command, .shift]
@@ -186,21 +186,21 @@ enum AppMenu {
         viewItem.submenu = viewMenu
 
         let actualSize = NSMenuItem(
-            title: "Actual Size",
+            title: L("Actual Size"),
             action: #selector(ViewerCommands.viewerZoomActualSize(_:)),
             keyEquivalent: "0")
         actualSize.target = ViewerCommands.shared
         viewMenu.addItem(actualSize)
 
         let zoomHalf = NSMenuItem(
-            title: "Zoom to 50%",
+            title: L("Zoom to 50%"),
             action: #selector(ViewerCommands.viewerZoomHalf(_:)),
             keyEquivalent: "-")
         zoomHalf.target = ViewerCommands.shared
         viewMenu.addItem(zoomHalf)
 
         let zoomDouble = NSMenuItem(
-            title: "Zoom to 200%",
+            title: L("Zoom to 200%"),
             action: #selector(ViewerCommands.viewerZoomDouble(_:)),
             keyEquivalent: "+")
         zoomDouble.target = ViewerCommands.shared
@@ -212,12 +212,12 @@ enum AppMenu {
         toolsItem.submenu = toolsMenu
 
         let toolDefs: [(String, String, Selector)] = [
-            ("Pen", "1", #selector(ViewerCommands.selectPenTool(_:))),
-            ("Line", "2", #selector(ViewerCommands.selectLineTool(_:))),
-            ("Arrow", "3", #selector(ViewerCommands.selectArrowTool(_:))),
-            ("Rectangle", "4", #selector(ViewerCommands.selectRectangleTool(_:))),
-            ("Oval", "5", #selector(ViewerCommands.selectOvalTool(_:))),
-            ("Click", "6", #selector(ViewerCommands.selectClickTool(_:)))
+            (L("Pen"), "1", #selector(ViewerCommands.selectPenTool(_:))),
+            (L("Line"), "2", #selector(ViewerCommands.selectLineTool(_:))),
+            (L("Arrow"), "3", #selector(ViewerCommands.selectArrowTool(_:))),
+            (L("Rectangle"), "4", #selector(ViewerCommands.selectRectangleTool(_:))),
+            (L("Oval"), "5", #selector(ViewerCommands.selectOvalTool(_:))),
+            (L("Click"), "6", #selector(ViewerCommands.selectClickTool(_:)))
         ]
         for (title, key, action) in toolDefs {
             let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
@@ -231,18 +231,18 @@ enum AppMenu {
         windowItem.submenu = windowMenu
         windowMenu.addItem(
             .init(
-                title: "Minimize",
+                title: L("Minimize"),
                 action: #selector(NSWindow.performMiniaturize(_:)),
                 keyEquivalent: "m"))
         windowMenu.addItem(
             .init(
-                title: "Zoom",
+                title: L("Zoom"),
                 action: #selector(NSWindow.performZoom(_:)),
                 keyEquivalent: ""))
         windowMenu.addItem(.separator())
         windowMenu.addItem(
             .init(
-                title: "Bring All to Front",
+                title: L("Bring All to Front"),
                 action: #selector(NSApplication.arrangeInFront(_:)),
                 keyEquivalent: ""))
         NSApp.windowsMenu = windowMenu
@@ -256,7 +256,7 @@ enum AppMenu {
         helpItem.submenu = helpMenu
 
         let shortcutsHelp = NSMenuItem(
-            title: "Keyboard Shortcuts",
+            title: L("Keyboard Shortcuts"),
             action: #selector(ViewerCommands.toggleShortcutsOverlay(_:)),
             keyEquivalent: "?")
         shortcutsHelp.keyEquivalentModifierMask = [.command]
@@ -298,7 +298,7 @@ private final class AboutPanelTarget: NSObject {
             .applicationName: "Tailscreen",
             .applicationVersion: shortVersion,
             .credits: creditsAttributedString(),
-            NSApplication.AboutPanelOptionKey(rawValue: "Copyright"): "© 2026 Robert Sköld. MIT-licensed open source."
+            NSApplication.AboutPanelOptionKey(rawValue: "Copyright"): L("© 2026 Robert Sköld. MIT-licensed open source.")
         ]
         // Only surface the build number when it differs from the marketing
         // version — release.yml currently sets both to the same string, and
@@ -324,12 +324,12 @@ private final class AboutPanelTarget: NSObject {
         let credits = NSMutableAttributedString()
         credits.append(
             NSAttributedString(
-                string: "Low-latency, encrypted peer-to-peer screen sharing over Tailscale.\n",
+                string: L("Low-latency, encrypted peer-to-peer screen sharing over Tailscale.\n"),
                 attributes: baseAttrs))
         credits.append(
             NSAttributedString(
                 string:
-                    "Captures with ScreenCaptureKit, encodes H.264/HEVC with VideoToolbox, renders with Metal, and tunnels via tsnet ephemeral nodes — no manual device registration.\n",
+                    L("Captures with ScreenCaptureKit, encodes H.264/HEVC with VideoToolbox, renders with Metal, and tunnels via tsnet ephemeral nodes — no manual device registration.\n"),
                 attributes: baseAttrs))
 
         let projectURL = URL(string: "https://github.com/middle-management/tailscreen")!

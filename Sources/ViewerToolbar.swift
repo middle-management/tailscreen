@@ -106,50 +106,50 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
         case Self.undo:
             return makeButton(
                 id: itemIdentifier,
-                label: "Undo",
+                label: L("Undo"),
                 symbol: "arrow.uturn.backward",
                 action: #selector(ViewerCommands.undoLastAnnotation(_:)),
-                accessibilityLabel: "Undo last annotation",
-                toolTip: "Undo last annotation (⌘Z)"
+                accessibilityLabel: L("Undo last annotation"),
+                toolTip: L("Undo last annotation (⌘Z)")
             )
         case Self.clearAll:
             return makeButton(
                 id: itemIdentifier,
-                label: "Clear",
+                label: L("Clear"),
                 symbol: "trash",
                 action: #selector(ViewerCommands.clearAllAnnotations(_:)),
-                accessibilityLabel: "Clear all annotations",
-                toolTip: "Clear all annotations (⇧⌘⌫ or right-click)"
+                accessibilityLabel: L("Clear all annotations"),
+                toolTip: L("Clear all annotations (⇧⌘⌫ or right-click)")
             )
         case Self.microphone:
             let item = makeButton(
                 id: itemIdentifier,
-                label: "Mic",
+                label: L("Mic"),
                 symbol: appState?.isMicOn == true ? "mic.fill" : "mic.slash",
                 action: #selector(ViewerCommands.toggleMicrophone(_:)),
                 accessibilityLabel: appState?.isMicOn == true
-                    ? "Mute microphone"
-                    : "Unmute microphone",
-                toolTip: "Toggle microphone (⌃⌥M)"
+                    ? L("Mute microphone")
+                    : L("Unmute microphone"),
+                toolTip: L("Toggle microphone (⌃⌥M)")
             )
             micToolbarItem = item
             return item
         case Self.stats:
             return makeButton(
                 id: itemIdentifier,
-                label: "Stats",
+                label: L("Stats"),
                 symbol: "chart.bar.xaxis",
                 action: #selector(ViewerCommands.toggleStatsOverlay(_:)),
-                accessibilityLabel: "Toggle stream stats overlay"
+                accessibilityLabel: L("Toggle stream stats overlay")
             )
         case Self.shortcuts:
             return makeButton(
                 id: itemIdentifier,
-                label: "Shortcuts",
+                label: L("Shortcuts"),
                 symbol: "questionmark.circle",
                 action: #selector(ViewerCommands.toggleShortcutsOverlay(_:)),
-                accessibilityLabel: "Show keyboard shortcuts",
-                toolTip: "Keyboard shortcuts (⇧⌘/)"
+                accessibilityLabel: L("Show keyboard shortcuts"),
+                toolTip: L("Keyboard shortcuts (⇧⌘/)")
             )
         default:
             return nil
@@ -162,7 +162,7 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
         // NSToolbarItemGroup with selectionMode = .selectOne gives radio
         // behaviour — clicking one tool deselects the others. The selected
         // index drives ViewerCommands.setTool().
-        let labels = ["Pen", "Line", "Arrow", "Rect", "Oval", "Click"]
+        let labels = [L("Pen"), L("Line"), L("Arrow"), L("Rect"), L("Oval"), L("Click")]
         let symbols = [
             "pencil.tip",
             "line.diagonal",
@@ -175,23 +175,23 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
         // "r-e-c-t" otherwise, and "Click" alone doesn't convey that
         // it's a pointer/laser tool.
         let a11y = [
-            "Pen annotation tool",
-            "Line annotation tool",
-            "Arrow annotation tool",
-            "Rectangle annotation tool",
-            "Oval annotation tool",
-            "Pointer click tool"
+            L("Pen annotation tool"),
+            L("Line annotation tool"),
+            L("Arrow annotation tool"),
+            L("Rectangle annotation tool"),
+            L("Oval annotation tool"),
+            L("Pointer click tool")
         ]
         // Tooltip text shown on hover. Mirrors a11y but appends the
         // keyboard shortcut so the toolbar doubles as discovery for the
         // 1–6 / ⌘1–⌘6 bindings.
         let tips = [
-            "Pen (1 or ⌘1)",
-            "Line (2 or ⌘2)",
-            "Arrow (3 or ⌘3)",
-            "Rectangle (4 or ⌘4)",
-            "Oval (5 or ⌘5)",
-            "Pointer / Click (6 or ⌘6)"
+            L("Pen (1 or ⌘1)"),
+            L("Line (2 or ⌘2)"),
+            L("Arrow (3 or ⌘3)"),
+            L("Rectangle (4 or ⌘4)"),
+            L("Oval (5 or ⌘5)"),
+            L("Pointer / Click (6 or ⌘6)")
         ]
 
         let group = NSToolbarItemGroup(

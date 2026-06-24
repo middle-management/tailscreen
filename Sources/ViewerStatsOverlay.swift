@@ -15,14 +15,14 @@ struct ViewerStatsOverlay: View {
     var body: some View {
         let stats = model.stats
         VStack(alignment: .leading, spacing: 4) {
-            row("Latency", formatLatency(stats.latencyMs), color: latencyColor(stats.latencyMs))
-            row("FPS", String(format: "%.1f", stats.fps), color: fpsColor(stats.fps))
+            row(L("Latency"), formatLatency(stats.latencyMs), color: latencyColor(stats.latencyMs))
+            row(L("FPS"), String(format: "%.1f", stats.fps), color: fpsColor(stats.fps))
             row(
-                "Dropped", formatDropped(stats.droppedPct, total: stats.framesDropped),
+                L("Dropped"), formatDropped(stats.droppedPct, total: stats.framesDropped),
                 color: dropColor(stats.droppedPct))
-            row("Bitrate", formatBitrate(stats.bitrateBps))
-            row("Codec", stats.codec.map(formatCodec) ?? "—")
-            row("Connection", "Tailscale")
+            row(L("Bitrate"), formatBitrate(stats.bitrateBps))
+            row(L("Codec"), stats.codec.map(formatCodec) ?? "—")
+            row(L("Connection"), "Tailscale")
             chartSection
         }
         .font(.system(size: 13, weight: .semibold, design: .monospaced))
@@ -52,13 +52,13 @@ struct ViewerStatsOverlay: View {
                 .background(Color.white.opacity(0.18))
                 .padding(.vertical, 2)
             chartRow(
-                label: "Latency",
+                label: L("Latency"),
                 samples: history.map(\.latencyMs),
                 tint: Color(red: 0.55, green: 0.78, blue: 1.0),
                 formatter: { String(format: "%.0f ms", $0) }
             )
             chartRow(
-                label: "Bitrate",
+                label: L("Bitrate"),
                 samples: history.map(\.bitrateBps),
                 tint: Color(red: 0.65, green: 0.95, blue: 0.65),
                 formatter: { bps in

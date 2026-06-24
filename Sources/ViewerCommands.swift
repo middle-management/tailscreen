@@ -159,7 +159,7 @@ extension ViewerCommands: NSMenuItemValidation {
         case #selector(toggleMicrophone(_:)):
             let isOn = appState?.isMicOn ?? false
             menuItem.state = isOn ? .on : .off
-            menuItem.title = isOn ? "Mute Microphone" : "Unmute Microphone"
+            menuItem.title = isOn ? L("Mute Microphone") : L("Unmute Microphone")
             return appState != nil
         case #selector(toggleStatsOverlay(_:)):
             let isVisible = statsModel?.isVisible ?? false
