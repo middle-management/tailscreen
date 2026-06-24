@@ -2,6 +2,19 @@ import AppKit
 import CoreAudio
 import SwiftUI
 
+/// Corner-radius scale for the menubar popover. Two tiers keep the nested
+/// surfaces visually coherent instead of each site picking its own value:
+/// `card` for the top-level module cards (sharing / viewing / connecting /
+/// request prompts), `inner` for everything nested inside a card or a
+/// hoverable row (the preview thumbnail, the pending-viewer sublist, the
+/// row hover highlight). Every popover rect uses `.continuous` corners to
+/// match macOS system surfaces (Control Center, sheets) rather than the
+/// circular default.
+private enum PopoverRadius {
+    static let card: CGFloat = 10
+    static let inner: CGFloat = 6
+}
+
 struct MenuBarView: View {
     @EnvironmentObject var appState: AppState
     @State private var viewID = UUID()
@@ -188,7 +201,7 @@ private struct PendingRequestsBanner: View {
                     }
                     .padding(10)
                     .background(
-                        RoundedRectangle(cornerRadius: 8)
+                        RoundedRectangle(cornerRadius: PopoverRadius.card, style: .continuous)
                             .fill(Color.orange.opacity(0.14))
                     )
                 }
@@ -243,7 +256,8 @@ private struct ConnectingCard: View {
         }
         .padding(12)
         .background(
-            RoundedRectangle(cornerRadius: 10).fill(Color.secondary.opacity(0.08))
+            RoundedRectangle(cornerRadius: PopoverRadius.card, style: .continuous)
+                .fill(Color.secondary.opacity(0.08))
         )
         .padding(.horizontal, 8)
         .padding(.bottom, 6)
@@ -277,7 +291,8 @@ private struct StartingShareCard: View {
         }
         .padding(12)
         .background(
-            RoundedRectangle(cornerRadius: 10).fill(Color.secondary.opacity(0.08))
+            RoundedRectangle(cornerRadius: PopoverRadius.card, style: .continuous)
+                .fill(Color.secondary.opacity(0.08))
         )
         .padding(.horizontal, 8)
         .padding(.bottom, 6)
@@ -388,7 +403,7 @@ private struct SharingCard: View {
                     }
                 }
                 .frame(width: geo.size.width, height: height)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .clipShape(RoundedRectangle(cornerRadius: PopoverRadius.inner, style: .continuous))
             }
             .frame(height: previewHeight)
 
@@ -437,7 +452,8 @@ private struct SharingCard: View {
         }
         .padding(12)
         .background(
-            RoundedRectangle(cornerRadius: 10).fill(Color.green.opacity(0.12))
+            RoundedRectangle(cornerRadius: PopoverRadius.card, style: .continuous)
+                .fill(Color.green.opacity(0.12))
         )
         .padding(.horizontal, 8)
         .padding(.bottom, 6)
@@ -575,7 +591,8 @@ private struct PendingViewersList: View {
         .padding(.vertical, 4)
         .padding(.horizontal, 8)
         .background(
-            RoundedRectangle(cornerRadius: 6).fill(Color.orange.opacity(0.12))
+            RoundedRectangle(cornerRadius: PopoverRadius.inner, style: .continuous)
+                .fill(Color.orange.opacity(0.12))
         )
     }
 }
@@ -654,7 +671,8 @@ private struct ViewingCard: View {
         }
         .padding(12)
         .background(
-            RoundedRectangle(cornerRadius: 10).fill(Color.accentColor.opacity(0.12))
+            RoundedRectangle(cornerRadius: PopoverRadius.card, style: .continuous)
+                .fill(Color.accentColor.opacity(0.12))
         )
         .padding(.horizontal, 8)
         .padding(.bottom, 6)
@@ -1061,7 +1079,7 @@ private struct MenuRowHoverBackground: View {
     let isHovered: Bool
 
     var body: some View {
-        RoundedRectangle(cornerRadius: 5)
+        RoundedRectangle(cornerRadius: PopoverRadius.inner, style: .continuous)
             .fill(isHovered ? Color(nsColor: .quaternaryLabelColor) : Color.clear)
             .padding(.horizontal, 4)
     }
