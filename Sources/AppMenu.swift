@@ -101,6 +101,18 @@ enum AppMenu {
         appMenu.addItem(aboutItem)
         appMenu.addItem(.separator())
 
+        // ⌘, — the standard macOS Settings shortcut. SwiftUI's `Settings`
+        // scene would normally supply this item, but we own `NSApp.mainMenu`
+        // outright, so we add it by hand and route it through ViewerCommands
+        // (the shared NSMenu target) into `AppState.presentSettings()`.
+        let settings = NSMenuItem(
+            title: "Settings…",
+            action: #selector(ViewerCommands.openSettings(_:)),
+            keyEquivalent: ",")
+        settings.target = ViewerCommands.shared
+        appMenu.addItem(settings)
+        appMenu.addItem(.separator())
+
         let hide = NSMenuItem(
             title: "Hide Tailscreen",
             action: #selector(NSApplication.hide(_:)),
