@@ -156,19 +156,32 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// don't oscillate.
     private let lastBitrateChangeNs = OSAllocatedUnfairLock<UInt64>(initialState: 0)
 
-    /// Tail of the broadcast chain. Each new frame's send job awaits this
-    /// before issuing its own sends, so frame N's packets fully drain
-    /// through the PacketListener actor before frame N+1 starts. Without
-    /// this, two concurrent send tasks could interleave at the actor and
-    /// receivers would see seq numbers go backwards within an AU.
-    private let broadcastTail = OSAllocatedUnfairLock<Task<Void, Never>?>(initialState: nil)
+    /// Per-viewer video send chain: the tail send `Task` plus a count of
+    /// frames queued behind it. Each viewer's frame N+1 awaits only its own
+    /// frame N — so packet order is preserved per viewer (each has its own seq
+    /// space), but a slow/distant viewer whose socketpair write blocks throttles
+    /// only its own stream instead of stalling the global frame rate for
+    /// everyone (the head-of-line blocking a single shared chain caused). See
+    /// `broadcast`.
+    private struct ViewerSendChain {
+        var task: Task<Void, Never>?
+        var queuedFrames: Int = 0
+    }
+    /// Keyed by viewer addr; pruned to the live viewer set on each broadcast.
+    private let videoSendTails = OSAllocatedUnfairLock<[String: ViewerSendChain]>(initialState: [:])
+    /// Drop a viewer's frame once this many are already queued behind a stalled
+    /// send, so a viewer that can't keep up sheds frames (UDP video tolerates
+    /// loss; a PLI recovers) rather than accumulating unbounded latency/memory.
+    private static let maxQueuedVideoFramesPerViewer = 4
 
-    /// Same idea as `broadcastTail`, but for audio: every audio fan-out
-    /// (sharer mic out, viewer-to-viewer relay) chains through here so
-    /// we don't spawn a fresh detached `Task` per ~21 ms AU × N viewers.
-    /// Under congestion the chain provides natural backpressure — the
-    /// next packet's job parks on the previous one's `await prev?.value`
-    /// rather than piling up unbounded.
+    /// A single shared tail for audio fan-out (sharer mic out plus
+    /// viewer-to-viewer relay): every audio send chains through here so we
+    /// don't spawn a fresh detached `Task` per ~21 ms AU × N viewers. Audio
+    /// packets are tiny (one AAC AU each), so head-of-line blocking across
+    /// viewers isn't the concern it is for video — a single chain is fine.
+    /// Under congestion the chain provides natural backpressure — the next
+    /// packet's job parks on the previous one's `await prev?.value` rather
+    /// than piling up unbounded.
     private let audioBroadcastTail = OSAllocatedUnfairLock<Task<Void, Never>?>(initialState: nil)
 
     /// Drop viewers that have gone silent for this long. Has to absorb a
@@ -1386,25 +1399,45 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             return out
         }
 
-        // Chain after the previous frame's send job. The encoder is bursty
-        // (one frame's worth of packets emitted in a single callback) but
-        // VT serializes its callbacks, so the chain stays short — at most
-        // one frame's worth of work in flight at a time.
-        let prev = broadcastTail.withLock { $0 }
-        let job = Task {
-            await prev?.value
+        // Fan out to each viewer on its OWN send chain. A viewer's frame N+1
+        // awaits only its own frame N (preserving that viewer's packet order),
+        // so a slow viewer whose `pl.send` blocks throttles only its own stream
+        // — not the global frame rate. Per viewer we cap frames queued behind a
+        // stalled send and drop past the cap (a PLI recovers the gap), so a
+        // viewer that can't keep up doesn't accumulate unbounded latency.
+        videoSendTails.withLock { tails in
+            var next: [String: ViewerSendChain] = [:]
+            next.reserveCapacity(plans.count)
             for plan in plans {
-                for (i, template) in templates.enumerated() {
-                    var pkt = template
-                    let seq = plan.startSeq &+ UInt16(i)
-                    Self.rewriteRTPHeader(&pkt, sequence: seq, ssrc: plan.ssrc)
-                    // UDP is allowed to fail; PLI from the viewer will
-                    // recover any frame we couldn't push.
-                    try? await pl.send(pkt, to: plan.addr)
+                var chain = tails[plan.addr] ?? ViewerSendChain()
+                if chain.queuedFrames >= Self.maxQueuedVideoFramesPerViewer {
+                    // Viewer is behind — drop this frame for it. Its seq numbers
+                    // were already reserved, so the gap reads as loss and the
+                    // viewer's PLI fetches a fresh keyframe.
+                    next[plan.addr] = chain
+                    continue
                 }
+                let prev = chain.task
+                let addr = plan.addr
+                let ssrc = plan.ssrc
+                let startSeq = plan.startSeq
+                chain.queuedFrames += 1
+                let job = Task { [weak self] in
+                    await prev?.value
+                    for (i, template) in templates.enumerated() {
+                        var pkt = template
+                        Self.rewriteRTPHeader(&pkt, sequence: startSeq &+ UInt16(i), ssrc: ssrc)
+                        // UDP is allowed to fail; a viewer PLI recovers it.
+                        try? await pl.send(pkt, to: addr)
+                    }
+                    self?.videoSendTails.withLock { $0[addr]?.queuedFrames -= 1 }
+                }
+                chain.task = job
+                next[plan.addr] = chain
             }
+            // Replacing the dict prunes chains for viewers no longer present.
+            tails = next
         }
-        broadcastTail.withLock { $0 = job }
     }
 
     /// 90 kHz RTP timestamp, anchored at server start. Wraps every ~13 hours
@@ -1501,6 +1534,9 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         pendingViewers.withLock { $0.removeAll() }
         pendingViewerInfos.withLock { $0.removeAll() }
         peerNameCache.withLock { $0.removeAll() }
+        // Drop per-viewer send chains. Any in-flight send job completes on its
+        // own (its pl.send just fails once the listener closes below).
+        videoSendTails.withLock { $0.removeAll() }
         notifyViewersChanged()
         notifyPendingViewersChanged()
 
