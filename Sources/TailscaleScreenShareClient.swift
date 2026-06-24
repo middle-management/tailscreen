@@ -416,7 +416,17 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                 if let au = depacketizer.ingest(datagram) {
                     framesDelivered += 1
                     if au.lostBeforeThisAU, let addr = serverAddr {
-                        try? await pl.send(ScreenShareControlMessage.encode(.pli), to: addr)
+                        // Rate-limit PLIs. Each one forces the encoder to emit
+                        // a (large) keyframe, which fragments into more packets
+                        // and, on a lossy link, can lose *more* — so a PLI per
+                        // dropped frame is a loss-amplification loop. One per
+                        // pliMinIntervalNs is plenty: the keyframe it triggers
+                        // covers all loss up to its arrival.
+                        let nowNs = DispatchTime.now().uptimeNanoseconds
+                        if nowNs &- lastPLISentNs >= pliMinIntervalNs {
+                            lastPLISentNs = nowNs
+                            try? await pl.send(ScreenShareControlMessage.encode(.pli), to: addr)
+                        }
                     }
                     if framesDelivered == 1 || framesDelivered % 60 == 0 {
                         logger.log(
@@ -505,6 +515,12 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     }
 
     private var lastReceiveUptimeNs: UInt64 = 0
+
+    /// Throttle for loss-driven PLIs (see the send site in `receiveLoop`).
+    private var lastPLISentNs: UInt64 = 0
+    /// Minimum spacing between PLIs. ~100 ms caps keyframe requests at ~10/s
+    /// instead of up to one per dropped frame (60/s), while staying responsive.
+    private let pliMinIntervalNs: UInt64 = 100_000_000
 
     private func handleDecodedFrame(_ buffer: CVPixelBuffer) {
         guard isConnected, !isDisconnecting else { return }

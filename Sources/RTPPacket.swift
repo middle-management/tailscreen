@@ -335,11 +335,110 @@ final class H264Packetizer: @unchecked Sendable {
     }
 }
 
+/// Small fixed-depth RTP reorder buffer that sits in front of the codec
+/// depacketizers.
+///
+/// Loopback and local-headscale deliver packets in order and lossless, so the
+/// depacketizers historically treated *any* sequence-number deviation as loss.
+/// That's fine locally, but over a real DERP-relayed WAN — where reordering and
+/// duplication are routine — it dropped a whole frame (and fired a PLI) on
+/// every reorder event, amplifying loss into a keyframe storm.
+///
+/// This buffer absorbs reordering up to `maxDepth` packets and silently
+/// discards duplicates / late stragglers, only declaring loss when a gap truly
+/// can't be filled within the window. It is **latency-free on the happy path**:
+/// a packet arriving with the expected sequence number is released immediately;
+/// only packets that arrive *ahead* of a gap are briefly held, and only until
+/// the gap fills (the reordered packet shows up) or the window overflows. All
+/// sequence arithmetic is `&-`/`&+` wrap-safe.
+struct RTPReorderBuffer {
+    /// One packet released to the assembler, in ascending sequence order.
+    struct Release {
+        let packet: Data
+        /// True when a gap was skipped immediately before this packet — the
+        /// assembler latches it into the AU's `lostBeforeThisAU` so the viewer
+        /// still sends a PLI for genuine loss.
+        let lostBefore: Bool
+    }
+
+    /// How many out-of-order packets to hold while waiting for a gap to fill
+    /// before giving up and declaring the missing sequence(s) lost. ~16 is a
+    /// few frames' worth at typical packetization — enough to absorb realistic
+    /// WAN reordering without adding meaningful latency to the loss path.
+    let maxDepth: Int
+
+    /// Next sequence number we want to release. nil until the first packet.
+    private var nextSeq: UInt16?
+    /// Future packets held while waiting for a gap to fill, keyed by seq.
+    private var buffered: [UInt16: Data] = [:]
+
+    init(maxDepth: Int = 16) {
+        self.maxDepth = maxDepth
+    }
+
+    mutating func reset() {
+        nextSeq = nil
+        buffered.removeAll(keepingCapacity: true)
+    }
+
+    /// Insert one received packet; return the packets now releasable, in order.
+    mutating func push(seq: UInt16, packet: Data) -> [Release] {
+        guard let want = nextSeq else {
+            // First packet of the (re)synced session: release immediately.
+            nextSeq = seq &+ 1
+            return [Release(packet: packet, lostBefore: false)]
+        }
+
+        let ahead = seq &- want  // unsigned distance forward, mod 2^16
+        if ahead == 0 {
+            // The packet we were waiting for. Release it, then drain any
+            // packets that were buffered contiguously ahead of it.
+            nextSeq = seq &+ 1
+            var out = [Release(packet: packet, lostBefore: false)]
+            drainContiguous(into: &out)
+            return out
+        }
+        if ahead > UInt16(1 << 15) {
+            // "Behind" us in sequence space (distance wraps past the half-way
+            // point): a duplicate, or a straggler we already moved past. Drop
+            // it — never treat it as corruption.
+            return []
+        }
+        // A future packet: hold it until the gap fills.
+        buffered[seq] = packet
+        if buffered.count > maxDepth {
+            // The gap isn't filling. Give up on the missing packet(s): jump to
+            // the lowest buffered sequence, flag the skip as loss, and drain.
+            return skipGap()
+        }
+        return []
+    }
+
+    private mutating func drainContiguous(into out: inout [Release]) {
+        while let want = nextSeq, let pkt = buffered.removeValue(forKey: want) {
+            out.append(Release(packet: pkt, lostBefore: false))
+            nextSeq = want &+ 1
+        }
+    }
+
+    private mutating func skipGap() -> [Release] {
+        guard let want = nextSeq,
+            let lowest = buffered.keys.min(by: { ($0 &- want) < ($1 &- want) }),
+            let pkt = buffered.removeValue(forKey: lowest)
+        else { return [] }
+        nextSeq = lowest &+ 1
+        var out = [Release(packet: pkt, lostBefore: true)]
+        drainContiguous(into: &out)
+        return out
+    }
+}
+
 /// Stateful receiver that reassembles RTP packets back into AVCC-formatted
 /// access units (length-prefixed NAL units, exactly the shape `VideoDecoder`
-/// expects). Detects packet loss inside a frame and drops the partial AU so
-/// the decoder never sees a torn frame; the caller is expected to send a PLI
-/// in response so the encoder issues a fresh IDR.
+/// expects). A `RTPReorderBuffer` in front absorbs WAN reordering/duplication;
+/// genuine loss (a gap the reorder window can't fill) still drops the partial
+/// AU so the decoder never sees a torn frame, and the caller is expected to
+/// send a PLI in response so the encoder issues a fresh IDR.
 final class H264Depacketizer {
     /// Starting reserved capacity for `currentAU`. Sized to cover a typical
     /// 1080p/4K HEVC or H.264 keyframe (~1–2 MB) so the per-NAL `append`
@@ -354,7 +453,6 @@ final class H264Depacketizer {
     static let initialFUCapacity = 256 * 1024  // 256 KB
 
     private var ssrc: UInt32?
-    private var expectedSeq: UInt16?
     private var currentTimestamp: UInt32?
     private var currentAU: Data
     private var currentHasIDR: Bool = false
@@ -363,8 +461,16 @@ final class H264Depacketizer {
     private var fuNALHeader: UInt8 = 0
     private var inFU: Bool = false
     private var pendingLossSignal: Bool = false
+    /// Absorbs WAN packet reordering/duplication before assembly (see
+    /// `RTPReorderBuffer`). Owns all sequence-number tracking now.
+    private var reorder: RTPReorderBuffer
+    /// Completed AUs awaiting return. A single `ingest` can complete more than
+    /// one AU when a late packet unblocks a run of buffered packets spanning a
+    /// frame boundary; we return them one per `ingest` call, in order, to keep
+    /// the `ingest(_:) -> VideoAccessUnit?` contract the caller relies on.
+    private var readyQueue: [VideoAccessUnit] = []
 
-    init() {
+    init(reorderDepth: Int = 16) {
         var au = Data()
         au.reserveCapacity(Self.initialAUCapacity)
         self.currentAU = au
@@ -372,12 +478,14 @@ final class H264Depacketizer {
         var fu = Data()
         fu.reserveCapacity(Self.initialFUCapacity)
         self.fuBuffer = fu
+
+        self.reorder = RTPReorderBuffer(maxDepth: reorderDepth)
     }
 
     /// Feed one received RTP packet. Returns a completed AU once the marker
     /// bit (or a timestamp change) signals end-of-frame; nil otherwise.
     func ingest(_ packet: Data) -> VideoAccessUnit? {
-        guard let (header, payloadOffset) = RTPHeader.decode(from: packet) else { return nil }
+        guard let (header, _) = RTPHeader.decode(from: packet) else { return nil }
         guard header.payloadType == RTPHeader.h264PayloadType else { return nil }
 
         // Lock onto the first SSRC we see; ignore packets from a different
@@ -389,16 +497,26 @@ final class H264Depacketizer {
             ssrc = header.ssrc
         }
 
-        // Sequence number gap detection. We don't reorder — a single missing
-        // packet pollutes the current AU and we drop it.
-        if let expected = expectedSeq, header.sequenceNumber != expected {
-            // Treat any deviation (loss or reorder) as loss for this AU.
+        // Route through the reorder buffer; assemble whatever it releases, in
+        // order. In-order packets release immediately (no added latency).
+        for release in reorder.push(seq: header.sequenceNumber, packet: packet) {
+            assemble(release.packet, lostBefore: release.lostBefore)
+        }
+        return readyQueue.isEmpty ? nil : readyQueue.removeFirst()
+    }
+
+    /// Assemble one in-sequence packet into the current AU, appending any
+    /// completed AU to `readyQueue`. `lostBefore` is set by the reorder buffer
+    /// when it skipped an unfillable gap immediately before this packet.
+    private func assemble(_ packet: Data, lostBefore: Bool) {
+        guard let (header, payloadOffset) = RTPHeader.decode(from: packet) else { return }
+
+        if lostBefore {
             currentAUCorrupted = true
             pendingLossSignal = true
             inFU = false
             fuBuffer.removeAll(keepingCapacity: true)
         }
-        expectedSeq = header.sequenceNumber &+ 1
 
         // Timestamp change without a marker means the previous AU's marker
         // packet was lost. Discard whatever we accumulated and start fresh.
@@ -419,10 +537,9 @@ final class H264Depacketizer {
             handlePayload(Data(payload))
         }
 
-        if header.marker {
-            return flushAU(timestamp: header.timestamp)
+        if header.marker, let au = flushAU(timestamp: header.timestamp) {
+            readyQueue.append(au)
         }
-        return nil
     }
 
     private func handlePayload(_ payload: Data) {
@@ -521,7 +638,8 @@ final class H264Depacketizer {
 
     /// Discard all in-flight state. Called on SSRC change.
     private func reset() {
-        expectedSeq = nil
+        reorder.reset()
+        readyQueue.removeAll(keepingCapacity: true)
         currentTimestamp = nil
         currentAU.removeAll(keepingCapacity: true)
         currentHasIDR = false
@@ -665,7 +783,6 @@ final class H265Depacketizer {
     static let initialFUCapacity = H264Depacketizer.initialFUCapacity
 
     private var ssrc: UInt32?
-    private var expectedSeq: UInt16?
     private var currentTimestamp: UInt32?
     private var currentAU: Data
     private var currentHasIDR: Bool = false
@@ -673,8 +790,11 @@ final class H265Depacketizer {
     private var fuBuffer: Data
     private var inFU: Bool = false
     private var pendingLossSignal: Bool = false
+    /// See `H264Depacketizer.reorder` / `.readyQueue`.
+    private var reorder: RTPReorderBuffer
+    private var readyQueue: [VideoAccessUnit] = []
 
-    init() {
+    init(reorderDepth: Int = 16) {
         var au = Data()
         au.reserveCapacity(Self.initialAUCapacity)
         self.currentAU = au
@@ -682,10 +802,12 @@ final class H265Depacketizer {
         var fu = Data()
         fu.reserveCapacity(Self.initialFUCapacity)
         self.fuBuffer = fu
+
+        self.reorder = RTPReorderBuffer(maxDepth: reorderDepth)
     }
 
     func ingest(_ packet: Data) -> VideoAccessUnit? {
-        guard let (header, payloadOffset) = RTPHeader.decode(from: packet) else { return nil }
+        guard let (header, _) = RTPHeader.decode(from: packet) else { return nil }
         guard header.payloadType == RTPHeader.hevcPayloadType else { return nil }
 
         if let known = ssrc, known != header.ssrc {
@@ -695,13 +817,21 @@ final class H265Depacketizer {
             ssrc = header.ssrc
         }
 
-        if let expected = expectedSeq, header.sequenceNumber != expected {
+        for release in reorder.push(seq: header.sequenceNumber, packet: packet) {
+            assemble(release.packet, lostBefore: release.lostBefore)
+        }
+        return readyQueue.isEmpty ? nil : readyQueue.removeFirst()
+    }
+
+    private func assemble(_ packet: Data, lostBefore: Bool) {
+        guard let (header, payloadOffset) = RTPHeader.decode(from: packet) else { return }
+
+        if lostBefore {
             currentAUCorrupted = true
             pendingLossSignal = true
             inFU = false
             fuBuffer.removeAll(keepingCapacity: true)
         }
-        expectedSeq = header.sequenceNumber &+ 1
 
         if let prevTs = currentTimestamp, prevTs != header.timestamp {
             currentAUCorrupted = true
@@ -720,10 +850,9 @@ final class H265Depacketizer {
             handlePayload(Data(payload))
         }
 
-        if header.marker {
-            return flushAU(timestamp: header.timestamp)
+        if header.marker, let au = flushAU(timestamp: header.timestamp) {
+            readyQueue.append(au)
         }
-        return nil
     }
 
     private func handlePayload(_ payload: Data) {
@@ -827,7 +956,8 @@ final class H265Depacketizer {
     }
 
     private func reset() {
-        expectedSeq = nil
+        reorder.reset()
+        readyQueue.removeAll(keepingCapacity: true)
         currentTimestamp = nil
         currentAU.removeAll(keepingCapacity: true)
         currentHasIDR = false
