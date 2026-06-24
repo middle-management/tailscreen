@@ -895,11 +895,11 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             return
         }
 
-        let (added, viewerCount) = viewers.withLock { state -> (Bool, Int) in
+        let (added, viewerCount, audioSSRC) = viewers.withLock { state -> (Bool, Int, UInt32) in
             if var existing = state[addr] {
                 existing.lastSeenNs = now
                 state[addr] = existing
-                return (false, state.count)
+                return (false, state.count, existing.audioSSRC)
             }
             var newAudioSSRC: UInt32
             repeat {
@@ -913,10 +913,24 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
                 lastSeenNs: now
             )
             state[addr] = v
-            return (true, state.count)
+            return (true, state.count, newAudioSSRC)
         }
 
         if added {
+            // Proactively ACK any newly-added viewer with its audio SSRC —
+            // including one whose source address changed under a NAT/DERP path
+            // migration and re-registered via KEEPALIVE rather than a fresh
+            // HELLO. Without this the rebound viewer never learns the new SSRC
+            // the server just assigned, so the SSRC-validation check silently
+            // drops its mic audio until a full reconnect. A normal HELLO join
+            // also gets the .hello case's ACK; the duplicate is idempotent
+            // (the viewer ignores an ACK that matches its current SSRC).
+            let ssrc = audioSSRC
+            Task { [weak self] in
+                guard let pl = self?.packetListener else { return }
+                try? await pl.send(ScreenShareControlMessage.encodeHelloAck(ssrc: ssrc), to: addr)
+            }
+
             let ip = ipFromAddr(addr)
             let cached = peerNameCache.withLock { $0[ip] }
             let info = ViewerInfo(
