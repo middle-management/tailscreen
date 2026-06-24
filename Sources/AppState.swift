@@ -129,6 +129,9 @@ class AppState: ObservableObject {
     // orderOut the window and clear the renderer's pending frame; on connect
     // we reuse the existing instances.
     @Published var viewerWindow: NSWindow?
+    /// Preferences window, lazily created on first ⌘, and kept for the
+    /// process lifetime so reopening is instant and edits stay put.
+    private var settingsWindow: NSWindow?
     private var viewerRenderer: MetalViewerRenderer?
     private var viewerOverlay: AnnotationOverlayHostView?
     /// Hosts the stats overlay subview pinned to the top-left of the
@@ -869,6 +872,7 @@ class AppState: ObservableObject {
 
             connectionState = .viewing
             connectedHostname = host
+            viewerWindow?.title = "Viewing \(host)"
             // Order matters: with the app at .accessory activation policy
             // (MenuBarExtra-only), makeKeyAndOrderFront silently no-ops
             // because non-regular apps can't make a window key. Promote
@@ -910,7 +914,9 @@ class AppState: ObservableObject {
             backing: .buffered,
             defer: false
         )
-        win.title = "Tailscale Screen Share"
+        // Reflect the peer in the title bar (native apps put the context
+        // there); falls back to the app name before the first connect.
+        win.title = connectedHostname.map { "Viewing \($0)" } ?? "Tailscreen"
         win.backgroundColor = .black
         win.isReleasedWhenClosed = false
 
@@ -1543,6 +1549,27 @@ class AppState: ObservableObject {
         } catch {
             presentError(.requestToShareFailed(peer: peer.hostname, underlying: error))
         }
+    }
+
+    /// Open (or re-focus) the preferences window. A real titled `NSWindow`
+    /// hosting `SettingsView`, kept around for the process lifetime. Promote
+    /// to `.regular` first for the same reason the viewer window does — an
+    /// `.accessory` app (the `MenuBarExtra` default) can't make a window key,
+    /// so `makeKeyAndOrderFront` would silently no-op. `AppMenu`'s window
+    /// observers drop the policy back to `.accessory` once it closes.
+    func presentSettings() {
+        if settingsWindow == nil {
+            let hosting = NSHostingController(rootView: SettingsView(appState: self))
+            let win = NSWindow(contentViewController: hosting)
+            win.title = "Tailscreen Settings"
+            win.styleMask = [.titled, .closable, .miniaturizable]
+            win.isReleasedWhenClosed = false
+            win.center()
+            settingsWindow = win
+        }
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        settingsWindow?.makeKeyAndOrderFront(nil)
     }
 
     /// Surface an error to the user as an `NSAlert`. Using AppKit

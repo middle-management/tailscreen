@@ -113,8 +113,8 @@ struct ViewerShortcutsOverlay: View {
         .padding(.vertical, 18)
         .padding(.horizontal, 22)
         .background(
-            RoundedRectangle(cornerRadius: 12)
-                .fill(Color.black.opacity(0.88))
+            VisualEffectBackground()
+                .clipShape(RoundedRectangle(cornerRadius: 12))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 12)

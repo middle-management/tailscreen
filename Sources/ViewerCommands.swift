@@ -54,6 +54,15 @@ final class ViewerCommands: NSObject {
         activeOverlay?.clearAll()
     }
 
+    // MARK: - Application
+
+    /// App menu → Settings… (⌘,). Opens the preferences window; `AppState`
+    /// owns the `NSWindow` + hosting controller and the activation-policy
+    /// promotion an `.accessory` app needs to key it.
+    @objc func openSettings(_ sender: Any?) {
+        appState?.presentSettings()
+    }
+
     // MARK: - Window
 
     /// File → Disconnect. Posts a notification AppState observes — that

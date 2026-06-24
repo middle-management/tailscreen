@@ -30,8 +30,8 @@ struct ViewerStatsOverlay: View {
         .padding(.vertical, 8)
         .padding(.horizontal, 12)
         .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Color.black.opacity(0.78))
+            VisualEffectBackground()
+                .clipShape(RoundedRectangle(cornerRadius: 8))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 8)

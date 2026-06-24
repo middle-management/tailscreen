@@ -31,6 +31,14 @@ struct MenuBarView: View {
                 IdentityFooter()
                 Divider().padding(.vertical, 4)
                 MenuRow(
+                    "Settings…",
+                    systemImage: nil,
+                    shortcut: "⌘,"
+                ) {
+                    appState.presentSettings()
+                }
+                .keyboardShortcut(",", modifiers: .command)
+                MenuRow(
                     "Quit Tailscreen",
                     systemImage: nil,
                     shortcut: "⌘Q"
@@ -83,10 +91,10 @@ private struct WelcomeView: View {
                 .padding(.top, 8)
 
                 Text("Welcome to Tailscreen")
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.title3.weight(.semibold))
 
                 Text("Sign in with Tailscale to share and view screens with your peers.")
-                    .font(.system(size: 12))
+                    .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
@@ -97,7 +105,7 @@ private struct WelcomeView: View {
                         HStack(spacing: 8) {
                             ProgressView().controlSize(.small)
                             Text("Signing in…")
-                                .font(.system(size: 12))
+                                .font(.callout)
                                 .foregroundStyle(.secondary)
                         }
                         .frame(height: 28)
@@ -158,10 +166,10 @@ private struct PendingRequestsBanner: View {
                             .accessibilityHidden(true)
                         VStack(alignment: .leading, spacing: 2) {
                             Text("\(req.fromHostname) wants you to share")
-                                .font(.system(size: 12, weight: .semibold))
+                                .font(.callout.weight(.semibold))
                                 .lineLimit(2)
                             Text("Tap Share to choose what to show")
-                                .font(.system(size: 10))
+                                .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
                         Spacer(minLength: 4)
@@ -222,11 +230,11 @@ private struct ConnectingCard: View {
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Connecting\(appState.connectedHostname.map { " to \($0)…" } ?? "…")")
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.headline)
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Text("Negotiating the WireGuard tunnel and waiting for the first frame.")
-                        .font(.system(size: 11))
+                        .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -258,9 +266,9 @@ private struct StartingShareCard: View {
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Starting share…")
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.headline)
                     Text("Bringing up screen capture. macOS may take a few seconds.")
-                        .font(.system(size: 11))
+                        .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -318,13 +326,13 @@ private struct SharingCard: View {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
                         Text("Sharing your screen")
-                            .font(.system(size: 13, weight: .semibold))
+                            .font(.headline)
                         if !appState.currentViewers.isEmpty {
                             // Pill-shaped viewer count. Small and
                             // unobtrusive — full per-viewer hostname
                             // list still renders below via `ViewersList`.
                             Text("\(appState.currentViewers.count)")
-                                .font(.system(size: 10, weight: .semibold))
+                                .font(.caption2.weight(.semibold))
                                 .foregroundStyle(.white)
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 1)
@@ -341,7 +349,7 @@ private struct SharingCard: View {
                     }
                     if let resolutionText {
                         Text(resolutionText)
-                            .font(.system(size: 11))
+                            .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -374,7 +382,7 @@ private struct SharingCard: View {
                         HStack(spacing: 6) {
                             ProgressView().controlSize(.small).scaleEffect(0.7)
                             Text("Capturing…")
-                                .font(.system(size: 11))
+                                .font(.subheadline)
                                 .foregroundStyle(.secondary)
                         }
                     }
@@ -490,7 +498,7 @@ private struct AudioDevicePickers: View {
                 .accessibilityLabel("Speaker output device")
             }
         }
-        .font(.system(size: 11))
+        .font(.subheadline)
         .onAppear { appState.refreshAudioDevices() }
     }
 }
@@ -506,10 +514,10 @@ private struct ViewersList: View {
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: viewers.isEmpty ? "person" : "person.2.fill")
-                .font(.system(size: 11))
+                .font(.subheadline)
                 .foregroundStyle(.secondary)
             Text(label)
-                .font(.system(size: 11))
+                .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .truncationMode(.tail)
@@ -538,17 +546,17 @@ private struct PendingViewersList: View {
             ForEach(viewers) { viewer in
                 HStack(spacing: 6) {
                     Image(systemName: "person.crop.circle.badge.questionmark")
-                        .font(.system(size: 11))
+                        .font(.subheadline)
                         .foregroundStyle(.orange)
                     Text(viewer.hostname ?? viewer.tailscaleIP)
-                        .font(.system(size: 11, weight: .medium))
+                        .font(.subheadline.weight(.medium))
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Spacer(minLength: 4)
                     Button {
                         appState.denyPendingViewer(viewer.id)
                     } label: {
-                        Text("Deny").font(.system(size: 10))
+                        Text("Deny").font(.caption)
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.mini)
@@ -556,7 +564,7 @@ private struct PendingViewersList: View {
                     Button {
                         appState.approvePendingViewer(viewer.id)
                     } label: {
-                        Text("Accept").font(.system(size: 10))
+                        Text("Accept").font(.caption)
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.mini)
@@ -583,7 +591,7 @@ private struct ApprovalToggle: View {
     var body: some View {
         Toggle(isOn: $appState.requireViewerApproval) {
             Text("Require approval for new viewers")
-                .font(.system(size: 11))
+                .font(.subheadline)
                 .foregroundStyle(.secondary)
         }
         .toggleStyle(.switch)
@@ -606,11 +614,11 @@ private struct ViewingCard: View {
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Viewing \(appState.connectedHostname ?? "peer")")
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.headline)
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Text("Connected over Tailscale")
-                        .font(.system(size: 11))
+                        .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)
@@ -675,14 +683,14 @@ private struct DisplayPickerSection: View {
                 // letting the user discover it through a failed bring-up.
                 HStack(spacing: 8) {
                     Image(systemName: "exclamationmark.triangle")
-                        .font(.system(size: 13))
+                        .font(.body)
                         .frame(width: 16, alignment: .center)
                         .foregroundStyle(.secondary)
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Another Tailscreen is sharing")
-                            .font(.system(size: 13))
+                            .font(.body)
                         Text("Stop the other instance first")
-                            .font(.system(size: 11))
+                            .font(.subheadline)
                             .foregroundStyle(.tertiary)
                     }
                     Spacer(minLength: 0)
@@ -697,11 +705,11 @@ private struct DisplayPickerSection: View {
                 } label: {
                     HStack(spacing: 8) {
                         Image(systemName: "macwindow.on.rectangle")
-                            .font(.system(size: 13))
+                            .font(.body)
                             .frame(width: 16, alignment: .center)
                             .foregroundStyle(.secondary)
                         Text("Choose what to share…")
-                            .font(.system(size: 13))
+                            .font(.body)
                         Spacer(minLength: 0)
                     }
                     .padding(.horizontal, 10)
@@ -731,7 +739,7 @@ private struct DevicesSection: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
                 Text("AVAILABLE SCREENS")
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(.caption2.weight(.semibold))
                     .tracking(0.6)
                     .foregroundStyle(.tertiary)
 
@@ -747,7 +755,7 @@ private struct DevicesSection: View {
                             .frame(width: 14, height: 14)
                     } else {
                         Image(systemName: "arrow.clockwise")
-                            .font(.system(size: 10, weight: .medium))
+                            .font(.caption.weight(.medium))
                             .foregroundStyle(.tertiary)
                             .frame(width: 14, height: 14)
                     }
@@ -777,14 +785,14 @@ private struct DevicesSection: View {
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small).scaleEffect(0.7)
                 Text("Looking for screens…")
-                    .font(.system(size: 12))
+                    .font(.callout)
                     .foregroundStyle(.secondary)
             }
             .frame(height: 28)
             .padding(.horizontal, 14)
         } else if appState.availablePeers.isEmpty {
             Text("No Tailscreen devices on your tailnet")
-                .font(.system(size: 12))
+                .font(.callout)
                 .foregroundStyle(.secondary)
                 .frame(height: 28)
                 .padding(.horizontal, 14)
@@ -837,19 +845,19 @@ private struct PeerMenuRow: View {
             Button(action: onConnect) {
                 HStack(spacing: 8) {
                     Image(systemName: "desktopcomputer")
-                        .font(.system(size: 13))
+                        .font(.body)
                         .frame(width: 16, alignment: .center)
                         .foregroundStyle(peer.isOnline ? .secondary : .tertiary)
                         .accessibilityHidden(true)
 
                     VStack(alignment: .leading, spacing: 1) {
                         Text(peer.hostname)
-                            .font(.system(size: 13))
+                            .font(.body)
                             .lineLimit(1)
                             .truncationMode(.middle)
                         if !peer.isOnline {
                             Text("Offline")
-                                .font(.system(size: 10))
+                                .font(.caption)
                                 .foregroundStyle(.tertiary)
                         }
                     }
@@ -883,7 +891,7 @@ private struct PeerMenuRow: View {
                         Task { await appState.requestToShare(from: peer) }
                     } label: {
                         Image(systemName: "hand.wave")
-                            .font(.system(size: 11, weight: .semibold))
+                            .font(.subheadline.weight(.semibold))
                             .foregroundStyle(.secondary)
                             .frame(width: 22, height: 22)
                             .contentShape(Rectangle())
@@ -894,7 +902,7 @@ private struct PeerMenuRow: View {
                 }
                 if isHovered && peer.isOnline {
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 10, weight: .semibold))
+                        .font(.caption2.weight(.semibold))
                         .foregroundStyle(.tertiary)
                         .accessibilityHidden(true)
                 }
@@ -943,14 +951,14 @@ private struct IdentityFooter: View {
 
                         VStack(alignment: .leading, spacing: 1) {
                             Text(isHovered ? "Sign out" : profile.displayName)
-                                .font(.system(size: 12, weight: .medium))
+                                .font(.callout.weight(.medium))
                                 .lineLimit(1)
                             Text(
                                 isHovered
                                     ? "End your Tailscale session"
                                     : profile.loginName
                             )
-                            .font(.system(size: 11))
+                            .font(.subheadline)
                             .foregroundStyle(.tertiary)
                             .lineLimit(1)
                             .truncationMode(.middle)
@@ -979,7 +987,7 @@ private struct SectionHeader: View {
 
     var body: some View {
         Text(title)
-            .font(.system(size: 10, weight: .semibold))
+            .font(.caption2.weight(.semibold))
             .tracking(0.6)
             .foregroundStyle(.tertiary)
             .padding(.horizontal, 14)
@@ -1014,7 +1022,7 @@ struct MenuRow: View {
             HStack(spacing: 8) {
                 if let systemImage {
                     Image(systemName: systemImage)
-                        .font(.system(size: 12))
+                        .font(.callout)
                         .frame(width: 16, alignment: .center)
                         .foregroundStyle(.secondary)
                 } else {
@@ -1022,13 +1030,13 @@ struct MenuRow: View {
                 }
 
                 Text(title)
-                    .font(.system(size: 13))
+                    .font(.body)
 
                 Spacer()
 
                 if let shortcut {
                     Text(shortcut)
-                        .font(.system(size: 12))
+                        .font(.callout)
                         .foregroundStyle(.tertiary)
                 }
             }
