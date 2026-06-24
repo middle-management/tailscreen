@@ -214,8 +214,11 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// Sliding-window restart counter for helper-process crashes.
     /// Each unexpected exit pushes its timestamp; we tolerate up to
     /// 3 exits within a 30 s window, after which we give up and
-    /// surface the failure as a normal capture stop.
-    private var helperCrashTimestampsNs: [UInt64] = []
+    /// surface the failure as a normal capture stop. Locked because
+    /// it's mutated from the helper's `terminationHandler` queue *and*
+    /// the restart `Task` on the cooperative pool — concurrent
+    /// `append`/`removeAll` on a bare `Array` is heap corruption.
+    private let helperCrashTimestampsNs = OSAllocatedUnfairLock<[UInt64]>(initialState: [])
 
     /// In-flight `restartCapture()` work. `stop()` awaits this before
     /// tearing down `helperCapture`, otherwise a concurrent restart
@@ -459,28 +462,33 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             // with no inherited bad state.
             let now = DispatchTime.now().uptimeNanoseconds
             let windowNs: UInt64 = 30_000_000_000
-            self.helperCrashTimestampsNs.removeAll { now &- $0 > windowNs }
-            self.helperCrashTimestampsNs.append(now)
-            if self.helperCrashTimestampsNs.count > 3 || !self.isRunning {
+            let crashCount = self.helperCrashTimestampsNs.withLock { stamps -> Int in
+                stamps.removeAll { now &- $0 > windowNs }
+                stamps.append(now)
+                return stamps.count
+            }
+            if crashCount > 3 || !self.isRunning {
                 let err = NSError(
                     domain: "Tailscreen.HelperScreenCapture", code: 1,
                     userInfo: [NSLocalizedDescriptionKey: reason])
                 self.onCaptureStopped?(err)
                 return
             }
-            self.logger.log("HelperScreenCapture: restarting (crash #\(self.helperCrashTimestampsNs.count) in window)")
-            do {
-                guard let filterData = self.lastFilterData else {
-                    throw NSError(
-                        domain: "Tailscreen.HelperScreenCapture", code: 3,
-                        userInfo: [NSLocalizedDescriptionKey: "no cached filter to restart against"])
-                }
-                try self.startHelperCapture(filterData: filterData)
-            } catch {
-                let err = NSError(
-                    domain: "Tailscreen.HelperScreenCapture", code: 2,
-                    userInfo: [NSLocalizedDescriptionKey: "respawn failed: \(error)"])
-                self.onCaptureStopped?(err)
+            self.logger.log("HelperScreenCapture: restarting (crash #\(crashCount) in window)")
+            // Route the respawn through the same tracked Task that `stop()`
+            // awaits and that re-checks `isRunning` *after* the spawn.
+            // Calling `startHelperCapture` synchronously here would assign
+            // `helperCapture` outside that guard, so a Stop-Sharing racing
+            // this callback could leave the freshly-spawned child orphaned —
+            // the stuck recording-badge bug this whole design exists to
+            // prevent.
+            let work = self.scheduleHelperRestart(resetCrashBudget: false)
+            Task { [weak self] in
+                guard let err = await work.value, let self, self.isRunning else { return }
+                self.onCaptureStopped?(
+                    NSError(
+                        domain: "Tailscreen.HelperScreenCapture", code: 2,
+                        userInfo: [NSLocalizedDescriptionKey: "respawn failed: \(err)"]))
             }
         }
         try helper.start(filterData: filterData)
@@ -509,19 +517,46 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// run of auto-restarts.
     func restartCapture() async throws {
         guard isRunning else { return }
-        // Run the restart inside a tracked Task so `stop()` can
-        // await it. Without this synchronization, stop() can race
-        // with `helperCapture = helper` inside `startHelperCapture`
-        // and leave a child process alive after teardown — visible
-        // as the macOS screen-recording badge stuck on after Stop
-        // Sharing.
+        if let result = await scheduleHelperRestart(resetCrashBudget: true).value {
+            throw result
+        }
+    }
+
+    /// Spawn a fresh helper against the cached filter, wrapped in a tracked
+    /// `Task` stored in `restartTask` so `stop()` can await it. Shared by the
+    /// AppState-driven `restartCapture()` and the helper's own
+    /// `onUnexpectedExit` auto-restart, so *both* respawn paths go through the
+    /// same guard. Two properties make it orphan-safe:
+    ///
+    ///   1. `stop()` drains `restartTask` and awaits the in-flight work before
+    ///      nulling `helperCapture`, so a respawn can't finish *after* teardown
+    ///      unnoticed.
+    ///   2. The Task re-checks `isRunning` *after* `startHelperCapture` assigns
+    ///      `helperCapture` and tears the new helper back down if the share was
+    ///      stopped meanwhile. This post-spawn check — not just the await — is
+    ///      what prevents a Stop-Sharing that races the respawn from orphaning
+    ///      a child process holding replayd's recording slot (the stuck-badge
+    ///      bug).
+    ///
+    /// `resetCrashBudget` clears the sliding crash-window so the AppState-driven
+    /// recovery path gets a fresh run of auto-restarts; the auto-restart path
+    /// passes `false` to keep counting toward the 3-in-30s cap.
+    ///
+    /// The slot is deliberately not cleared on completion: a finished `Task`
+    /// left in `restartTask` is harmless (`stop()` awaits it and returns at
+    /// once), and *not* clearing avoids a clobber race where one restart nils
+    /// out a slot another restart just populated.
+    @discardableResult
+    private func scheduleHelperRestart(resetCrashBudget: Bool) -> Task<Error?, Never> {
         let work = Task { [weak self] () -> Error? in
             guard let self else { return nil }
             if let existing = self.helperCapture {
                 self.helperCapture = nil
                 await existing.stop()
             }
-            self.helperCrashTimestampsNs.removeAll()
+            if resetCrashBudget {
+                self.helperCrashTimestampsNs.withLock { $0.removeAll() }
+            }
             do {
                 guard self.isRunning else { throw CancellationError() }
                 guard let filterData = self.lastFilterData else {
@@ -544,9 +579,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             return nil
         }
         restartTask.withLock { $0 = work }
-        let result = await work.value
-        restartTask.withLock { $0 = nil }
-        if let result { throw result }
+        return work
     }
 
     /// Wire annotation + connection-close callbacks onto the

@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import TailscaleKit
+import os
 
 /// Main-side wrapper around the `Tailscreen --capture-helper` child
 /// process. Spawns a fresh helper per share session, parses framed
@@ -43,7 +44,14 @@ final class HelperScreenCapture: @unchecked Sendable {
     private var stdinHandle: FileHandle?
     private var stdoutHandle: FileHandle?
     private var readerThread: Thread?
-    private var stoppedIntentionally = false
+    /// Set when *we* initiate teardown (`stop()`) or the helper reports a
+    /// deliberate exit (`fatal`/`userStopped`), so `terminationHandler`
+    /// doesn't misread an intentional exit as a crash and fire
+    /// `onUnexpectedExit`. Locked because it's written from `stop()` and the
+    /// reader thread but read from the process `terminationHandler`'s
+    /// arbitrary queue — a torn read there would spuriously restart a share
+    /// the user just stopped.
+    private let stoppedIntentionally = OSAllocatedUnfairLock<Bool>(initialState: false)
     private var debugAUCount = 0
     private var debugParamsLogged = false
     private let logger = TSLogger()
@@ -69,7 +77,7 @@ final class HelperScreenCapture: @unchecked Sendable {
 
         proc.terminationHandler = { [weak self] proc in
             guard let self else { return }
-            if !self.stoppedIntentionally {
+            if !self.stoppedIntentionally.withLock({ $0 }) {
                 let reason: String
                 switch proc.terminationReason {
                 case .exit:
@@ -109,7 +117,7 @@ final class HelperScreenCapture: @unchecked Sendable {
     /// drain, then SIGTERM, then SIGKILL. Returns once we've torn the
     /// process down — process death = replayd cleanup.
     func stop() async {
-        stoppedIntentionally = true
+        stoppedIntentionally.withLock { $0 = true }
         guard let proc = process else { return }
         // Best-effort graceful shutdown.
         if let stdin = stdinHandle {
@@ -200,11 +208,11 @@ final class HelperScreenCapture: @unchecked Sendable {
                 }
             case .fatal:
                 let msg = String(data: payload, encoding: .utf8) ?? "<no msg>"
-                stoppedIntentionally = true  // helper is exiting on purpose
+                stoppedIntentionally.withLock { $0 = true }  // helper is exiting on purpose
                 onUnexpectedExit?("fatal: \(msg)")
                 return
             case .userStopped:
-                stoppedIntentionally = true
+                stoppedIntentionally.withLock { $0 = true }
                 onUserStopped?()
                 return
             }
