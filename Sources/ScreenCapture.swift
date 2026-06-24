@@ -147,6 +147,16 @@ class ScreenCapture: NSObject, @unchecked Sendable {
     /// deserializing an `SCContentFilter` in the main process would
     /// register the parent with replayd and break the helper child's
     /// stream (CLAUDE.md).
+    /// Round a pixel dimension down to an even number ≥ 2. H.264 and HEVC
+    /// 4:2:0 require even width and height; an odd dimension (single-window or
+    /// single-app shares, fractional-scale Retina modes) can encode fine on the
+    /// sharer's VideoToolbox yet show a garbage edge column or a 1px chroma
+    /// shift on a *different* decoder — a classic works-on-my-Mac cross-device
+    /// bug. Rounding *down* guarantees we never encode past the captured region.
+    private static func evenFloor(_ value: Int) -> Int {
+        max(2, value & ~1)
+    }
+
     func start(filter: SCContentFilter) async throws {
         try await applyStartCooldowns()
         // Pull resolution from the filter directly. `contentRect` is in
@@ -184,8 +194,8 @@ class ScreenCapture: NSObject, @unchecked Sendable {
                 extra: "stream=nil-or-no-baseConfig px=\(pixelWidth)x\(pixelHeight)")
             return
         }
-        let w = max(2, pixelWidth)
-        let h = max(2, pixelHeight)
+        let w = Self.evenFloor(pixelWidth)
+        let h = Self.evenFloor(pixelHeight)
         if baseConfig.width == w && baseConfig.height == h {
             // Nothing to do — already at the requested size.
             return
@@ -213,8 +223,8 @@ class ScreenCapture: NSObject, @unchecked Sendable {
         sourceTag: String
     ) async throws {
         let config = SCStreamConfiguration()
-        config.width = pixelWidth
-        config.height = pixelHeight
+        config.width = Self.evenFloor(pixelWidth)
+        config.height = Self.evenFloor(pixelHeight)
         config.minimumFrameInterval = CMTime(value: 1, timescale: 60)
         // Full-range NV12 — matches what VideoToolbox wants natively, so the
         // encoder skips an internal BGRA→YUV conversion (cheaper, and removes
