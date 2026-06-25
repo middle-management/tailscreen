@@ -260,6 +260,12 @@ private final class CaptureHelperRunner {
         captureWrapper.onContentRectChanged = { [weak self] rect in
             Task { @MainActor [weak self] in self?.scheduleResize(to: rect) }
         }
+        // Forward capture liveness as a heartbeat. Runs on the SCStream
+        // delegate queue; write directly (the writer is thread-safe) with no
+        // MainActor hop, so a busy main thread can't mask capture liveness.
+        captureWrapper.onStreamSample = { [writer = self.writer] in
+            writer.writeHeartbeat()
+        }
         captureWrapper.onStreamStopped = { [weak self] error in
             Task { @MainActor [weak self] in
                 guard let self else { return }

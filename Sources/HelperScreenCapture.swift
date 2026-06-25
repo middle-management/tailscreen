@@ -38,6 +38,12 @@ final class HelperScreenCapture: @unchecked Sendable {
     /// Control Center "Stop" button. Distinct from `onUnexpectedExit`
     /// so the server tears the share down instead of respawning.
     var onUserStopped: (() -> Void)?
+    /// Fires on *every* message received from the helper (AUs, params,
+    /// previews, logs, and the ~1 Hz heartbeat). The server uses it as a
+    /// liveness tick for its hung-helper watchdog: a helper that's alive but no
+    /// longer producing — SCStream wedged without exiting — stops emitting
+    /// these, which process-death detection can't catch.
+    var onActivity: (() -> Void)?
 
     private let queueLabel: String
     private var process: Process?
@@ -170,6 +176,10 @@ final class HelperScreenCapture: @unchecked Sendable {
         guard let handle = stdoutHandle else { return }
         let reader = HelperFrameReader(handle: handle)
         while let (rawType, payload) = reader.readNext() {
+            // Any byte from the helper is proof of life — feed the watchdog
+            // before dispatching (covers logs/params during startup too, not
+            // just the heartbeat).
+            onActivity?()
             guard let type = CaptureHelperWire.OutType(rawValue: rawType) else {
                 // Unknown type — log and resync (next 5-byte header).
                 continue
@@ -214,6 +224,9 @@ final class HelperScreenCapture: @unchecked Sendable {
                 if let img = NSImage(data: payload) {
                     onPreviewImage?(img)
                 }
+            case .heartbeat:
+                // Liveness only — `onActivity` above already recorded it.
+                break
             case .logLine:
                 if let s = String(data: payload, encoding: .utf8) {
                     logger.log("helper: \(s)")

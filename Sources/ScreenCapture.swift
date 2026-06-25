@@ -24,6 +24,13 @@ class ScreenCapture: NSObject, @unchecked Sendable {
     /// `updateConfiguration` so the encoder buffer follows window
     /// resizes instead of staying pinned at the start-time dims.
     var onContentRectChanged: ((CGRect) -> Void)?
+    /// Liveness signal: fires (throttled to ~1 Hz) whenever the SCStream
+    /// delivers *any* sample to the delegate, including `.idle` frames on a
+    /// static screen. Distinct from `onFrameCaptured`, which fires only for
+    /// `.complete` frames carrying a pixel buffer (and so goes silent on a
+    /// static screen). The capture helper forwards this as a heartbeat so the
+    /// parent can tell a wedged SCStream from a screen that isn't changing.
+    var onStreamSample: (() -> Void)?
     /// Fires when the SCStream terminates on its own — e.g. user clicked the
     /// menubar "Stop Screen Recording" item, or the stream hit an error.
     var onStreamStopped: ((Error?) -> Void)?
@@ -260,6 +267,9 @@ class ScreenCapture: NSObject, @unchecked Sendable {
         streamOutput?.onContentRectChanged = { [weak self] rect in
             self?.onContentRectChanged?(rect)
         }
+        streamOutput?.onStreamSample = { [weak self] in
+            self?.onStreamSample?()
+        }
 
         if let stream = stream, let output = streamOutput {
             do {
@@ -488,6 +498,11 @@ private class StreamOutput: NSObject, SCStreamOutput {
     /// dims through the stream). Fires on the same edge as the
     /// `contentRect` log line below.
     var onContentRectChanged: ((CGRect) -> Void)?
+    /// Forwarded ~1 Hz on any delivered sample (see `ScreenCapture.onStreamSample`).
+    var onStreamSample: (() -> Void)?
+    /// Last time `onStreamSample` was forwarded, for the 1 Hz throttle. Touched
+    /// only on the serial sample-handler queue, so it needs no lock.
+    private var lastSampleNotifyNs: UInt64 = 0
     var sessionID: String = "????"
     private var deliveredCount: Int = 0
     private var droppedCount: Int = 0
@@ -508,6 +523,19 @@ private class StreamOutput: NSObject, SCStreamOutput {
         // sending status pings without pixel data.
         let status = Self.frameStatus(from: sampleBuffer)
         let hasImage = sampleBuffer.imageBuffer != nil
+
+        // Liveness: the delegate fires for every delivered sample, including
+        // `.idle` frames on a static screen, so this is a content-independent
+        // proof the capture pipeline is alive — exactly what the parent's
+        // hung-helper watchdog needs (a starved encoder produces no AUs even
+        // when capture is healthy). Throttle to ~1 Hz before forwarding it as a
+        // heartbeat; this runs on the serial sample-handler queue so
+        // `lastSampleNotifyNs` needs no lock.
+        let nowNs = DispatchTime.now().uptimeNanoseconds
+        if nowNs &- lastSampleNotifyNs >= 1_000_000_000 {
+            lastSampleNotifyNs = nowNs
+            onStreamSample?()
+        }
 
         guard type == .screen, let pixelBuffer = sampleBuffer.imageBuffer else {
             droppedCount += 1
