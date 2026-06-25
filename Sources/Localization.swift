@@ -21,6 +21,10 @@ import Foundation
 /// `.accessibilityLabel`, notification text) and wrap SwiftUI `Text` as
 /// `Text(L("…"))`. Log lines (`TSLogger` / `print`) are intentionally left
 /// untranslated.
+// `L` is a deliberate, widely-used shorthand for the localization lookup
+// (mirrors the conventional `NSLocalizedString` wrapper name); the
+// lowerCamelCase rule is waived for this one declaration.
+// swift-format-ignore: AlwaysUseLowerCamelCase
 func L(_ key: String.LocalizationValue) -> String {
     String(localized: key, bundle: .module)
 }

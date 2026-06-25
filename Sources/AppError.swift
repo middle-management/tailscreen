@@ -65,7 +65,9 @@ extension AppError {
             code: "TS-SCREEN-002",
             title: L("Couldn't Start Sharing"),
             message:
-                L("macOS didn't return shareable screens in time. If this is the first time you've shared, grant Tailscreen permission in System Settings → Privacy & Security → Screen Recording, then try again."),
+                L(
+                    "macOS didn't return shareable screens in time. If this is the first time you've shared, grant Tailscreen permission in System Settings → Privacy & Security → Screen Recording, then try again."
+                ),
             underlying: nil,
             action: AppErrorAction(title: L("Open System Settings")) {
                 ScreenCapture.openScreenRecordingSettings()
@@ -80,7 +82,9 @@ extension AppError {
             code: "TS-SCREEN-003",
             title: L("Restart Required"),
             message:
-                L("macOS's screen-recording daemon is in a stuck state for Tailscreen and won't deliver any more frames until the app restarts. This usually follows a startCapture timeout or a stream interruption. Quit Tailscreen (⌘Q) and reopen — sharing will work again."),
+                L(
+                    "macOS's screen-recording daemon is in a stuck state for Tailscreen and won't deliver any more frames until the app restarts. This usually follows a startCapture timeout or a stream interruption. Quit Tailscreen (⌘Q) and reopen — sharing will work again."
+                ),
             underlying: nil,
             action: nil
         )
@@ -94,7 +98,9 @@ extension AppError {
             code: "TS-SCREEN-004",
             title: L("Couldn't Start Sharing"),
             message:
-                L("macOS accepted the screen-capture request but never delivered any frames. This usually means another Tailscreen process is already sharing — quit other instances and try again. If the problem persists, run `killall replayd` in Terminal (macOS will auto-restart it) or reboot."),
+                L(
+                    "macOS accepted the screen-capture request but never delivered any frames. This usually means another Tailscreen process is already sharing — quit other instances and try again. If the problem persists, run `killall replayd` in Terminal (macOS will auto-restart it) or reboot."
+                ),
             underlying: nil,
             action: nil
         )
@@ -162,7 +168,9 @@ extension AppError {
             code: "TS-VOICE-001",
             title: L("Voice Init Failed"),
             message:
-                L("Voice could not be initialized: \(underlying.localizedDescription). Voice will be unavailable for this share session."),
+                L(
+                    "Voice could not be initialized: \(underlying.localizedDescription). Voice will be unavailable for this share session."
+                ),
             underlying: String(describing: underlying),
             action: nil
         )
@@ -196,7 +204,9 @@ extension AppError {
             code: "TS-VOICE-004",
             title: L("Microphone Unavailable"),
             message:
-                L("Tailscreen could not start the microphone: \(underlying.localizedDescription). Check System Settings → Privacy & Security → Microphone."),
+                L(
+                    "Tailscreen could not start the microphone: \(underlying.localizedDescription). Check System Settings → Privacy & Security → Microphone."
+                ),
             underlying: String(describing: underlying),
             action: AppErrorAction(title: L("Open System Settings")) {
                 let urlString = "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"

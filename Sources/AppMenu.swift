@@ -294,11 +294,12 @@ private final class AboutPanelTarget: NSObject {
         let shortVersion = (info["CFBundleShortVersionString"] as? String) ?? "dev"
         let build = info["CFBundleVersion"] as? String
 
+        let copyright = L("© 2026 Robert Sköld. MIT-licensed open source.")
         var opts: [NSApplication.AboutPanelOptionKey: Any] = [
             .applicationName: "Tailscreen",
             .applicationVersion: shortVersion,
             .credits: creditsAttributedString(),
-            NSApplication.AboutPanelOptionKey(rawValue: "Copyright"): L("© 2026 Robert Sköld. MIT-licensed open source.")
+            NSApplication.AboutPanelOptionKey(rawValue: "Copyright"): copyright
         ]
         // Only surface the build number when it differs from the marketing
         // version — release.yml currently sets both to the same string, and
@@ -329,7 +330,9 @@ private final class AboutPanelTarget: NSObject {
         credits.append(
             NSAttributedString(
                 string:
-                    L("Captures with ScreenCaptureKit, encodes H.264/HEVC with VideoToolbox, renders with Metal, and tunnels via tsnet ephemeral nodes — no manual device registration.\n"),
+                    L(
+                        "Captures with ScreenCaptureKit, encodes H.264/HEVC with VideoToolbox, renders with Metal, and tunnels via tsnet ephemeral nodes — no manual device registration.\n"
+                    ),
                 attributes: baseAttrs))
 
         let projectURL = URL(string: "https://github.com/middle-management/tailscreen")!
