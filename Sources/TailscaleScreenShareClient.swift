@@ -261,6 +261,9 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
             self?.onDecodedFrameForTesting?(pixelBuffer)
             self?.handleDecodedFrame(pixelBuffer)
         }
+        decoder.onDecodeFailure = { [weak self] codec in
+            self?.handleDecodeFailure(codec)
+        }
         self.decoder = decoder
 
         // Open the TCP annotation back-channel to the same host:port.
@@ -304,6 +307,28 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
             return "[\(host)]:\(port)"
         }
         return "\(host):\(port)"
+    }
+
+    /// The decoder couldn't build a session for `codec` (typically HEVC on a
+    /// Mac without HEVC decode). Ask the sharer to fall back to H.264 — sent a
+    /// few times since CODEC_NO rides best-effort UDP and a single drop would
+    /// strand us on a black screen — and surface the failure to the user. The
+    /// decoder fires this at most once per codec, so this isn't a hot path.
+    private func handleDecodeFailure(_ codec: VideoCodec) {
+        logger.log("Decode failure for \(codec) — requesting H.264 fallback from sharer")
+        if let addr = serverAddr, let pl = packetListener {
+            Task {
+                for _ in 0..<3 {
+                    try? await pl.send(ScreenShareControlMessage.encode(.codecUnsupported), to: addr)
+                    try? await Task.sleep(for: .milliseconds(200))
+                }
+            }
+        }
+        NotificationCenter.default.post(
+            name: .tailscreenViewerDecodeFailed,
+            object: nil,
+            userInfo: ["codec": String(describing: codec)]
+        )
     }
 
     private func receiveLoop() async {
@@ -391,7 +416,17 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                 if let au = depacketizer.ingest(datagram) {
                     framesDelivered += 1
                     if au.lostBeforeThisAU, let addr = serverAddr {
-                        try? await pl.send(ScreenShareControlMessage.encode(.pli), to: addr)
+                        // Rate-limit PLIs. Each one forces the encoder to emit
+                        // a (large) keyframe, which fragments into more packets
+                        // and, on a lossy link, can lose *more* — so a PLI per
+                        // dropped frame is a loss-amplification loop. One per
+                        // pliMinIntervalNs is plenty: the keyframe it triggers
+                        // covers all loss up to its arrival.
+                        let nowNs = DispatchTime.now().uptimeNanoseconds
+                        if nowNs &- lastPLISentNs >= pliMinIntervalNs {
+                            lastPLISentNs = nowNs
+                            try? await pl.send(ScreenShareControlMessage.encode(.pli), to: addr)
+                        }
                     }
                     if framesDelivered == 1 || framesDelivered % 60 == 0 {
                         logger.log(
@@ -481,6 +516,12 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
 
     private var lastReceiveUptimeNs: UInt64 = 0
 
+    /// Throttle for loss-driven PLIs (see the send site in `receiveLoop`).
+    private var lastPLISentNs: UInt64 = 0
+    /// Minimum spacing between PLIs. ~100 ms caps keyframe requests at ~10/s
+    /// instead of up to one per dropped frame (60/s), while staying responsive.
+    private let pliMinIntervalNs: UInt64 = 100_000_000
+
     private func handleDecodedFrame(_ buffer: CVPixelBuffer) {
         guard isConnected, !isDisconnecting else { return }
         renderer.setPixelBuffer(buffer, receiveUptimeNs: lastReceiveUptimeNs)
@@ -566,6 +607,12 @@ extension Notification.Name {
     /// have gone silent for longer than the idle threshold. AppState
     /// observes this and runs disconnect() so the UI tears down.
     static let tailscreenViewerPeerClosed = Notification.Name("tailscreen.viewer.peerClosed")
+
+    /// Posted from the viewer's decoder when VideoToolbox can't build a
+    /// decompression session for the stream's codec. AppState surfaces an
+    /// alert; the client has already asked the sharer to fall back to H.264.
+    /// `userInfo["codec"]` carries the codec name as a String.
+    static let tailscreenViewerDecodeFailed = Notification.Name("tailscreen.viewer.decodeFailed")
 }
 
 /// Serializes `send(_:)` calls on an `OutgoingConnection`. Two concurrent

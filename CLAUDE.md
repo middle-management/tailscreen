@@ -90,7 +90,9 @@ Two paths:
 
 3. **Docker-free headscale (local, no Docker):** `scripts/e2e-up-native.sh` downloads the pinned headscale release binary (keep `HEADSCALE_VERSION` in lockstep with `e2e/docker-compose.yml`), runs it natively, and emits the same env exports; tear down with `scripts/e2e-down-native.sh`. Useful on machines without Docker.
 
-**These tsnet suites can't run on CI.** Tried on `macos-latest` via the native script: headscale came up healthy, but the first tsnet `node.up()` hung — GitHub's hosted macOS runner sandbox doesn't let the userspace-WireGuard handshake / DERP-STUN (`:3478/udp`) complete, and `node.up()` has no internal timeout. So anything that brings up a tsnet node (`TailscaleConnectivityTests` and all the screen-share E2E suites) is local-only. Only the pure-logic suites (`AdaptiveBitrateTests`, `VideoCodecTests`, `VoiceChannelTests`, etc.) run on CI.
+**These tsnet suites can't run on CI.** Tried on `macos-latest` via the native script: headscale came up healthy, but the first tsnet `node.up()` hung — GitHub's hosted macOS runner sandbox doesn't let the userspace-WireGuard handshake / DERP-STUN (`:3478/udp`) complete, and `node.up()` has no internal timeout. So anything that brings up a tsnet node (`TailscaleConnectivityTests` and all the screen-share E2E suites) is local-only. Only the pure-logic suites (`AdaptiveBitrateTests`, `VideoCodecTests`, `VoiceChannelTests`, `RTPPacketTests`, `RTPLossyChannelTests`, etc.) run on CI.
+
+`RTPLossyChannelTests` is the CI-able stand-in for the impairment harness: it runs the real packetize → `LossyChannel` (deterministic, seeded loss/reorder/duplication) → depacketize pipeline and asserts recovery (reordering/duplication never drop or tear frames; genuine loss is signaled and the pipeline never wedges). `LossyChannel` (in `Tests/`) is reusable by any in-process packet test. It can't impair the live tsnet path — for that, see `scripts/net-impair.sh` (local-only).
 
 Connectivity tests skip or fail without an auth key — that's expected.
 
@@ -144,6 +146,39 @@ Memory-debug modes (set before invoking the script):
 | `TAILSCREEN_DEBUG_ZOMBIES=1` | `NSZombieEnabled` + malloc stack logging — over-releases log instead of crashing |
 | `TAILSCREEN_DEBUG_ASAN=1` | Sets `ASAN_OPTIONS`; **also rebuild with** `swift build -Xswiftc -sanitize=address` |
 | `TAILSCREEN_DEBUG_GMALLOC=1` | libgmalloc — known to break ScreenCaptureKit's XPC; prefer Instruments' Zombies template |
+
+### Simulating a bad network on one Mac — `scripts/net-impair.sh`
+
+Loopback and local-headscale deliver packets with ~0% loss, in order, at a
+16 KB MTU. That hides every WAN-only failure mode: loss-driven PLI/keyframe
+storms, the adaptive-bitrate sweep, viewer stall + recovery, and one-slow-
+viewer head-of-line blocking. `scripts/net-impair.sh` uses pf + dummynet (the
+machinery behind Network Link Conditioner) to beat up the node-to-node UDP
+transport so those paths actually run.
+
+```bash
+sudo ./scripts/net-impair.sh up --loss 3 --delay 80   # 3% loss, 80 ms each way
+./test-local.sh 2                                      # share + view, watch it cope
+sudo ./scripts/net-impair.sh down                      # always tear down when done
+sudo ./scripts/net-impair.sh status                    # inspect active pipes/anchor
+```
+
+Knobs: `--loss PCT`, `--delay MS`, `--bw RATE` (e.g. `5Mbit/s`), `--reorder PCT`
+(+`--reorder-delay MS`), `--iface IFACE` (default `lo0` — two co-located tsnet
+nodes prefer their loopback endpoints). It impairs UDP on the interface while
+leaving headscale control (8080/tcp) and STUN (3478/udp) alone so setup still
+works.
+
+Caveats: it's **best-effort** — if the two nodes fall back to a DERP-relayed
+path the flow may not be on `lo0` (confirm impairment is biting via the
+viewer's rising PLI count / dropping bitrate in the stats overlay; otherwise
+try `--iface en0`). dummynet has no native packet-reorder knob, so `--reorder`
+uses the two-pipe + `probability` workaround and may be rejected on some macOS
+pf versions. For **deterministic, root-free, CI-able** reorder/loss/duplicate
+coverage of the depacketizer, use the unit tests in `RTPPacketTests` and the
+end-to-end pipeline tests in `RTPLossyChannelTests` (via `LossyChannel`)
+instead —
+the harness is the end-to-end complement, not a replacement.
 
 ## Architecture & data flow
 

@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Resolve the Tailscreen executable that should be spawned as a helper
 /// (`--capture-helper` / `--picker-helper`). Honours `TAILSCREEN_HELPER_EXE`
@@ -27,7 +28,7 @@ enum PickerHelperClient {
     /// Spawn the picker helper and await the user's selection.
     /// Returns the JSON-encoded `PickerSelection` bytes for the
     /// chosen content, or `nil` if the user cancelled.
-    static func run() async throws -> Data? {
+    static func run(timeoutSeconds: TimeInterval = 120) async throws -> Data? {
         guard let exe = resolveHelperExecutable() else {
             throw PickerHelperClientError.executableNotFound
         }
@@ -44,22 +45,47 @@ enum PickerHelperClient {
 
         let handle = stdoutPipe.fileHandleForReading
 
-        // Hop the blocking pipe reads off the main actor. The helper
-        // only writes one frame, but the read happens after macOS's
-        // picker UI has interacted with the user, so this can take
-        // arbitrarily long.
-        let payload: Data? = await withCheckedContinuation { (cont: CheckedContinuation<Data?, Never>) in
-            DispatchQueue.global(qos: .userInitiated).async {
-                let result = readFramed(handle)
-                cont.resume(returning: result)
+        // Hop the blocking pipe read off the main actor. The helper only
+        // writes one frame, but the read happens after macOS's picker UI has
+        // interacted with the user, so it can take arbitrarily long.
+        let readTask = Task<Data?, Never> {
+            await withCheckedContinuation { (cont: CheckedContinuation<Data?, Never>) in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    cont.resume(returning: readFramed(handle))
+                }
             }
         }
 
-        // Ensure the helper has fully exited before we return so the
-        // parent's next picker spawn doesn't race against teardown of
-        // the previous one. macOS keeps the SCContentSharingPicker
-        // singleton process-wide; serializing across separate child
-        // PIDs avoids any cross-talk between sessions.
+        // Watchdog. SCContentSharingPicker has been observed to never fire its
+        // selection callback on some macOS builds, and the helper has no
+        // internal timeout — without this `readFramed` blocks forever and the
+        // whole share flow hangs with no UI and no way to cancel. On deadline,
+        // SIGTERM the helper; closing its stdout unblocks the read (→ nil). We
+        // capture the pid rather than the non-Sendable `Process` so the Task
+        // closure stays Sendable. The timeout is generous: the user may take a
+        // while to pick, so this only bites a genuinely wedged picker.
+        let timedOut = OSAllocatedUnfairLock(initialState: false)
+        let pid = proc.processIdentifier
+        let watchdog = Task {
+            try? await Task.sleep(for: .seconds(timeoutSeconds))
+            if Task.isCancelled { return }
+            timedOut.withLock { $0 = true }
+            kill(pid, SIGTERM)
+        }
+
+        let payload = await readTask.value
+        watchdog.cancel()
+
+        // A real selection wins even if the watchdog fired at the same instant.
+        if payload == nil, timedOut.withLock({ $0 }) {
+            proc.waitUntilExit()
+            throw PickerHelperClientError.timedOut
+        }
+
+        // Ensure the helper has fully exited before we return so the parent's
+        // next picker spawn doesn't race teardown of the previous one. macOS
+        // keeps the SCContentSharingPicker singleton process-wide; serializing
+        // across separate child PIDs avoids cross-talk between sessions.
         proc.waitUntilExit()
 
         if proc.terminationStatus >= 2 {
@@ -109,4 +135,5 @@ enum PickerHelperClient {
 enum PickerHelperClientError: Error {
     case executableNotFound
     case helperFailed(exitCode: Int)
+    case timedOut
 }

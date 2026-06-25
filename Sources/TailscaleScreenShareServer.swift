@@ -156,19 +156,32 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// don't oscillate.
     private let lastBitrateChangeNs = OSAllocatedUnfairLock<UInt64>(initialState: 0)
 
-    /// Tail of the broadcast chain. Each new frame's send job awaits this
-    /// before issuing its own sends, so frame N's packets fully drain
-    /// through the PacketListener actor before frame N+1 starts. Without
-    /// this, two concurrent send tasks could interleave at the actor and
-    /// receivers would see seq numbers go backwards within an AU.
-    private let broadcastTail = OSAllocatedUnfairLock<Task<Void, Never>?>(initialState: nil)
+    /// Per-viewer video send chain: the tail send `Task` plus a count of
+    /// frames queued behind it. Each viewer's frame N+1 awaits only its own
+    /// frame N — so packet order is preserved per viewer (each has its own seq
+    /// space), but a slow/distant viewer whose socketpair write blocks throttles
+    /// only its own stream instead of stalling the global frame rate for
+    /// everyone (the head-of-line blocking a single shared chain caused). See
+    /// `broadcast`.
+    private struct ViewerSendChain {
+        var task: Task<Void, Never>?
+        var queuedFrames: Int = 0
+    }
+    /// Keyed by viewer addr; pruned to the live viewer set on each broadcast.
+    private let videoSendTails = OSAllocatedUnfairLock<[String: ViewerSendChain]>(initialState: [:])
+    /// Drop a viewer's frame once this many are already queued behind a stalled
+    /// send, so a viewer that can't keep up sheds frames (UDP video tolerates
+    /// loss; a PLI recovers) rather than accumulating unbounded latency/memory.
+    private static let maxQueuedVideoFramesPerViewer = 4
 
-    /// Same idea as `broadcastTail`, but for audio: every audio fan-out
-    /// (sharer mic out, viewer-to-viewer relay) chains through here so
-    /// we don't spawn a fresh detached `Task` per ~21 ms AU × N viewers.
-    /// Under congestion the chain provides natural backpressure — the
-    /// next packet's job parks on the previous one's `await prev?.value`
-    /// rather than piling up unbounded.
+    /// A single shared tail for audio fan-out (sharer mic out plus
+    /// viewer-to-viewer relay): every audio send chains through here so we
+    /// don't spawn a fresh detached `Task` per ~21 ms AU × N viewers. Audio
+    /// packets are tiny (one AAC AU each), so head-of-line blocking across
+    /// viewers isn't the concern it is for video — a single chain is fine.
+    /// Under congestion the chain provides natural backpressure — the next
+    /// packet's job parks on the previous one's `await prev?.value` rather
+    /// than piling up unbounded.
     private let audioBroadcastTail = OSAllocatedUnfairLock<Task<Void, Never>?>(initialState: nil)
 
     /// Drop viewers that have gone silent for this long. Has to absorb a
@@ -203,6 +216,16 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// to pick H.264 vs HEVC RTP payload type.
     private var helperCodec: VideoCodec?
 
+    /// Latched on when a viewer reports (via CODEC_NO) that it can't decode
+    /// the current stream. Forces the helper's encoder to H.264 — the
+    /// lowest-common-denominator codec every Mac can decode — on the next
+    /// (re)spawn. We default to HEVC for its efficiency, but a single viewer
+    /// that can't decode HEVC (e.g. an older Intel Mac) would otherwise sit
+    /// on a black screen forever; falling the *whole* share back to H.264 is
+    /// the safe recovery. Locked: read in `startHelperCapture` on the
+    /// cooperative pool, written from the control-receive loop.
+    private let forceH264 = OSAllocatedUnfairLock<Bool>(initialState: false)
+
     /// Stateful per-codec packetizers. Held across `broadcast()` calls so
     /// each call can recycle the previous batch's buffer storage instead
     /// of allocating a fresh `Data` per packet. See `RTPPacketBufferPool`
@@ -214,8 +237,11 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// Sliding-window restart counter for helper-process crashes.
     /// Each unexpected exit pushes its timestamp; we tolerate up to
     /// 3 exits within a 30 s window, after which we give up and
-    /// surface the failure as a normal capture stop.
-    private var helperCrashTimestampsNs: [UInt64] = []
+    /// surface the failure as a normal capture stop. Locked because
+    /// it's mutated from the helper's `terminationHandler` queue *and*
+    /// the restart `Task` on the cooperative pool — concurrent
+    /// `append`/`removeAll` on a bare `Array` is heap corruption.
+    private let helperCrashTimestampsNs = OSAllocatedUnfairLock<[UInt64]>(initialState: [])
 
     /// In-flight `restartCapture()` work. `stop()` awaits this before
     /// tearing down `helperCapture`, otherwise a concurrent restart
@@ -319,7 +345,15 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             if let ready = nodeReadyBeforeUp {
                 await ready(newNode)
             }
-            try await newNode.up()
+            // Bound up() when an auth key is present (no human in the loop, so
+            // it should reach Running quickly); leave it unbounded otherwise so
+            // an interactive browser login isn't cut off. See the matching note
+            // in AppState.getOrCreateNode.
+            if authKey != nil {
+                try await withTimeout(seconds: 60) { try await newNode.up() }
+            } else {
+                try await newNode.up()
+            }
             node = newNode
         }
 
@@ -459,31 +493,36 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             // with no inherited bad state.
             let now = DispatchTime.now().uptimeNanoseconds
             let windowNs: UInt64 = 30_000_000_000
-            self.helperCrashTimestampsNs.removeAll { now &- $0 > windowNs }
-            self.helperCrashTimestampsNs.append(now)
-            if self.helperCrashTimestampsNs.count > 3 || !self.isRunning {
+            let crashCount = self.helperCrashTimestampsNs.withLock { stamps -> Int in
+                stamps.removeAll { now &- $0 > windowNs }
+                stamps.append(now)
+                return stamps.count
+            }
+            if crashCount > 3 || !self.isRunning {
                 let err = NSError(
                     domain: "Tailscreen.HelperScreenCapture", code: 1,
                     userInfo: [NSLocalizedDescriptionKey: reason])
                 self.onCaptureStopped?(err)
                 return
             }
-            self.logger.log("HelperScreenCapture: restarting (crash #\(self.helperCrashTimestampsNs.count) in window)")
-            do {
-                guard let filterData = self.lastFilterData else {
-                    throw NSError(
-                        domain: "Tailscreen.HelperScreenCapture", code: 3,
-                        userInfo: [NSLocalizedDescriptionKey: "no cached filter to restart against"])
-                }
-                try self.startHelperCapture(filterData: filterData)
-            } catch {
-                let err = NSError(
-                    domain: "Tailscreen.HelperScreenCapture", code: 2,
-                    userInfo: [NSLocalizedDescriptionKey: "respawn failed: \(error)"])
-                self.onCaptureStopped?(err)
+            self.logger.log("HelperScreenCapture: restarting (crash #\(crashCount) in window)")
+            // Route the respawn through the same tracked Task that `stop()`
+            // awaits and that re-checks `isRunning` *after* the spawn.
+            // Calling `startHelperCapture` synchronously here would assign
+            // `helperCapture` outside that guard, so a Stop-Sharing racing
+            // this callback could leave the freshly-spawned child orphaned —
+            // the stuck recording-badge bug this whole design exists to
+            // prevent.
+            let work = self.scheduleHelperRestart(resetCrashBudget: false)
+            Task { [weak self] in
+                guard let err = await work.value, let self, self.isRunning else { return }
+                self.onCaptureStopped?(
+                    NSError(
+                        domain: "Tailscreen.HelperScreenCapture", code: 2,
+                        userInfo: [NSLocalizedDescriptionKey: "respawn failed: \(err)"]))
             }
         }
-        try helper.start(filterData: filterData)
+        try helper.start(filterData: filterData, forceH264: forceH264.withLock { $0 })
         helperCapture = helper
         logger.log("HelperScreenCapture started (filter=\(filterData.count)B)")
     }
@@ -509,19 +548,46 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// run of auto-restarts.
     func restartCapture() async throws {
         guard isRunning else { return }
-        // Run the restart inside a tracked Task so `stop()` can
-        // await it. Without this synchronization, stop() can race
-        // with `helperCapture = helper` inside `startHelperCapture`
-        // and leave a child process alive after teardown — visible
-        // as the macOS screen-recording badge stuck on after Stop
-        // Sharing.
+        if let result = await scheduleHelperRestart(resetCrashBudget: true).value {
+            throw result
+        }
+    }
+
+    /// Spawn a fresh helper against the cached filter, wrapped in a tracked
+    /// `Task` stored in `restartTask` so `stop()` can await it. Shared by the
+    /// AppState-driven `restartCapture()` and the helper's own
+    /// `onUnexpectedExit` auto-restart, so *both* respawn paths go through the
+    /// same guard. Two properties make it orphan-safe:
+    ///
+    ///   1. `stop()` drains `restartTask` and awaits the in-flight work before
+    ///      nulling `helperCapture`, so a respawn can't finish *after* teardown
+    ///      unnoticed.
+    ///   2. The Task re-checks `isRunning` *after* `startHelperCapture` assigns
+    ///      `helperCapture` and tears the new helper back down if the share was
+    ///      stopped meanwhile. This post-spawn check — not just the await — is
+    ///      what prevents a Stop-Sharing that races the respawn from orphaning
+    ///      a child process holding replayd's recording slot (the stuck-badge
+    ///      bug).
+    ///
+    /// `resetCrashBudget` clears the sliding crash-window so the AppState-driven
+    /// recovery path gets a fresh run of auto-restarts; the auto-restart path
+    /// passes `false` to keep counting toward the 3-in-30s cap.
+    ///
+    /// The slot is deliberately not cleared on completion: a finished `Task`
+    /// left in `restartTask` is harmless (`stop()` awaits it and returns at
+    /// once), and *not* clearing avoids a clobber race where one restart nils
+    /// out a slot another restart just populated.
+    @discardableResult
+    private func scheduleHelperRestart(resetCrashBudget: Bool) -> Task<Error?, Never> {
         let work = Task { [weak self] () -> Error? in
             guard let self else { return nil }
             if let existing = self.helperCapture {
                 self.helperCapture = nil
                 await existing.stop()
             }
-            self.helperCrashTimestampsNs.removeAll()
+            if resetCrashBudget {
+                self.helperCrashTimestampsNs.withLock { $0.removeAll() }
+            }
             do {
                 guard self.isRunning else { throw CancellationError() }
                 guard let filterData = self.lastFilterData else {
@@ -544,9 +610,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             return nil
         }
         restartTask.withLock { $0 = work }
-        let result = await work.value
-        restartTask.withLock { $0 = nil }
-        if let result { throw result }
+        return work
     }
 
     /// Wire annotation + connection-close callbacks onto the
@@ -713,6 +777,30 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         case .helloPending:
             // HELLO_PENDING is server→viewer only. Ignore from viewers.
             return
+        case .codecUnsupported:
+            registerOrRefresh(addr: addr, isNew: false)
+            handleCodecUnsupported(from: addr)
+        }
+    }
+
+    /// A viewer reported it can't decode the current codec. Latch the share
+    /// to H.264 and respawn the helper so the encoder switches over. Idempotent
+    /// via the `forceH264` latch: once we've fallen back, a storm of CODEC_NO
+    /// from a still-black-screened viewer triggers at most one restart, and
+    /// further reports (including from other viewers) are no-ops. If we're
+    /// already encoding H.264 the respawn is harmless but pointless, so the
+    /// latch also short-circuits the already-fell-back case.
+    private func handleCodecUnsupported(from addr: String) {
+        guard isRunning else { return }
+        let shouldFallback = forceH264.withLock { flag -> Bool in
+            if flag { return false }
+            flag = true
+            return true
+        }
+        guard shouldFallback else { return }
+        logger.log("Viewer \(addr) can't decode the current stream — falling back to H.264")
+        Task { [weak self] in
+            try? await self?.restartCapture()
         }
     }
 
@@ -820,11 +908,11 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             return
         }
 
-        let (added, viewerCount) = viewers.withLock { state -> (Bool, Int) in
+        let (added, viewerCount, audioSSRC) = viewers.withLock { state -> (Bool, Int, UInt32) in
             if var existing = state[addr] {
                 existing.lastSeenNs = now
                 state[addr] = existing
-                return (false, state.count)
+                return (false, state.count, existing.audioSSRC)
             }
             var newAudioSSRC: UInt32
             repeat {
@@ -838,10 +926,24 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
                 lastSeenNs: now
             )
             state[addr] = v
-            return (true, state.count)
+            return (true, state.count, newAudioSSRC)
         }
 
         if added {
+            // Proactively ACK any newly-added viewer with its audio SSRC —
+            // including one whose source address changed under a NAT/DERP path
+            // migration and re-registered via KEEPALIVE rather than a fresh
+            // HELLO. Without this the rebound viewer never learns the new SSRC
+            // the server just assigned, so the SSRC-validation check silently
+            // drops its mic audio until a full reconnect. A normal HELLO join
+            // also gets the .hello case's ACK; the duplicate is idempotent
+            // (the viewer ignores an ACK that matches its current SSRC).
+            let ssrc = audioSSRC
+            Task { [weak self] in
+                guard let pl = self?.packetListener else { return }
+                try? await pl.send(ScreenShareControlMessage.encodeHelloAck(ssrc: ssrc), to: addr)
+            }
+
             let ip = ipFromAddr(addr)
             let cached = peerNameCache.withLock { $0[ip] }
             let info = ViewerInfo(
@@ -1297,25 +1399,45 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             return out
         }
 
-        // Chain after the previous frame's send job. The encoder is bursty
-        // (one frame's worth of packets emitted in a single callback) but
-        // VT serializes its callbacks, so the chain stays short — at most
-        // one frame's worth of work in flight at a time.
-        let prev = broadcastTail.withLock { $0 }
-        let job = Task {
-            await prev?.value
+        // Fan out to each viewer on its OWN send chain. A viewer's frame N+1
+        // awaits only its own frame N (preserving that viewer's packet order),
+        // so a slow viewer whose `pl.send` blocks throttles only its own stream
+        // — not the global frame rate. Per viewer we cap frames queued behind a
+        // stalled send and drop past the cap (a PLI recovers the gap), so a
+        // viewer that can't keep up doesn't accumulate unbounded latency.
+        videoSendTails.withLock { tails in
+            var next: [String: ViewerSendChain] = [:]
+            next.reserveCapacity(plans.count)
             for plan in plans {
-                for (i, template) in templates.enumerated() {
-                    var pkt = template
-                    let seq = plan.startSeq &+ UInt16(i)
-                    Self.rewriteRTPHeader(&pkt, sequence: seq, ssrc: plan.ssrc)
-                    // UDP is allowed to fail; PLI from the viewer will
-                    // recover any frame we couldn't push.
-                    try? await pl.send(pkt, to: plan.addr)
+                var chain = tails[plan.addr] ?? ViewerSendChain()
+                if chain.queuedFrames >= Self.maxQueuedVideoFramesPerViewer {
+                    // Viewer is behind — drop this frame for it. Its seq numbers
+                    // were already reserved, so the gap reads as loss and the
+                    // viewer's PLI fetches a fresh keyframe.
+                    next[plan.addr] = chain
+                    continue
                 }
+                let prev = chain.task
+                let addr = plan.addr
+                let ssrc = plan.ssrc
+                let startSeq = plan.startSeq
+                chain.queuedFrames += 1
+                let job = Task { [weak self] in
+                    await prev?.value
+                    for (i, template) in templates.enumerated() {
+                        var pkt = template
+                        Self.rewriteRTPHeader(&pkt, sequence: startSeq &+ UInt16(i), ssrc: ssrc)
+                        // UDP is allowed to fail; a viewer PLI recovers it.
+                        try? await pl.send(pkt, to: addr)
+                    }
+                    self?.videoSendTails.withLock { $0[addr]?.queuedFrames -= 1 }
+                }
+                chain.task = job
+                next[plan.addr] = chain
             }
+            // Replacing the dict prunes chains for viewers no longer present.
+            tails = next
         }
-        broadcastTail.withLock { $0 = job }
     }
 
     /// 90 kHz RTP timestamp, anchored at server start. Wraps every ~13 hours
@@ -1412,6 +1534,9 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         pendingViewers.withLock { $0.removeAll() }
         pendingViewerInfos.withLock { $0.removeAll() }
         peerNameCache.withLock { $0.removeAll() }
+        // Drop per-viewer send chains. Any in-flight send job completes on its
+        // own (its pl.send just fails once the listener closes below).
+        videoSendTails.withLock { $0.removeAll() }
         notifyViewersChanged()
         notifyPendingViewersChanged()
 

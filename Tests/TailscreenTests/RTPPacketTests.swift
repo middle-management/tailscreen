@@ -40,6 +40,12 @@ final class RTPPacketTests: XCTestCase {
         XCTAssertEqual(ScreenShareControlMessage.decode(hello), .hello)
         XCTAssertEqual(ScreenShareControlMessage.decode(pli), .pli)
 
+        // CODEC_NO (the viewer's "I can't decode this, fall back to H.264"
+        // signal) must round-trip and read as control, not RTP.
+        let codecNo = ScreenShareControlMessage.encode(.codecUnsupported)
+        XCTAssertTrue(ScreenShareControlMessage.looksLikeControl(codecNo))
+        XCTAssertEqual(ScreenShareControlMessage.decode(codecNo), .codecUnsupported)
+
         // A real RTP packet's first byte is 0x80; must not look like control.
         var rtp = Data()
         RTPHeader(marker: false, payloadType: 96, sequenceNumber: 0, timestamp: 0, ssrc: 1).encode(into: &rtp)
@@ -195,15 +201,21 @@ final class RTPPacketTests: XCTestCase {
         )
         XCTAssertEqual(packets.count, 3)
 
-        // Drop the middle packet.
-        let depacketizer = H264Depacketizer()
+        // reorderDepth: 1 so the reorder window gives up on the missing packet
+        // as soon as one *newer* packet piles up behind the gap — i.e. this
+        // exercises genuine loss, not the reorder-tolerance path. With the
+        // default depth the depacketizer would (correctly) hold the gap open
+        // waiting for the "missing" packet to arrive late.
+        let depacketizer = H264Depacketizer(reorderDepth: 1)
         _ = depacketizer.ingest(packets[0])
+        // Drop the middle packet (seq 11). packets[2] (seq 12) gets buffered
+        // pending the gap, so no AU is emitted yet.
         let result = depacketizer.ingest(packets[2])
-
-        // AU is dropped (returns nil) because we know it's torn.
         XCTAssertNil(result)
 
-        // Next AU should still arrive cleanly, but flagged as lost-before.
+        // The next frame's packet is the second to pile up behind the gap,
+        // exceeding the depth-1 window: the depacketizer gives up on seq 11,
+        // drops the torn AU, and flags the next clean AU as lost-before.
         let nal4 = Data([0x41, 0xDD])
         let next = packetizer.packetize(
             nals: [nal4], timestamp: 60, ssrc: 1, startSequence: 13
@@ -211,6 +223,47 @@ final class RTPPacketTests: XCTestCase {
         let au = depacketizer.ingest(next[0])
         XCTAssertNotNil(au)
         XCTAssertTrue(au?.lostBeforeThisAU ?? false)
+    }
+
+    func testReorderedPacketsRecoverWithoutLoss() throws {
+        // A 3-NAL AU split across 3 packets, delivered out of order
+        // (seq 10, 12, 11). The reorder buffer must hold seq 12, slot seq 11
+        // in when it arrives, and emit a complete, in-order AU — no loss flag,
+        // no dropped frame. This is the WAN reordering case loopback never hits.
+        let nal1 = Data([0x41, 0xAA])
+        let nal2 = Data([0x41, 0xBB])
+        let nal3 = Data([0x41, 0xCC])
+        let packets = H264Packetizer().packetize(
+            nals: [nal1, nal2, nal3], timestamp: 50, ssrc: 1, startSequence: 10
+        )
+        XCTAssertEqual(packets.count, 3)
+
+        let depacketizer = H264Depacketizer()
+        XCTAssertNil(depacketizer.ingest(packets[0]))  // seq 10
+        XCTAssertNil(depacketizer.ingest(packets[2]))  // seq 12 — held
+        let au = try XCTUnwrap(depacketizer.ingest(packets[1]))  // seq 11 fills the gap
+
+        XCTAssertFalse(au.lostBeforeThisAU)
+        XCTAssertEqual(AVCCParser.nalUnits(from: au.avcc), [nal1, nal2, nal3])
+    }
+
+    func testDuplicatePacketIsIgnored() throws {
+        // DERP can duplicate packets. A duplicate of an already-released
+        // sequence number must be dropped silently, not treated as loss.
+        let nal1 = Data([0x41, 0xAA])
+        let nal2 = Data([0x41, 0xBB])
+        let packets = H264Packetizer().packetize(
+            nals: [nal1, nal2], timestamp: 50, ssrc: 1, startSequence: 10
+        )
+        XCTAssertEqual(packets.count, 2)
+
+        let depacketizer = H264Depacketizer()
+        XCTAssertNil(depacketizer.ingest(packets[0]))  // seq 10
+        XCTAssertNil(depacketizer.ingest(packets[0]))  // seq 10 again (dup) — dropped
+        let au = try XCTUnwrap(depacketizer.ingest(packets[1]))  // seq 11, marker
+
+        XCTAssertFalse(au.lostBeforeThisAU)
+        XCTAssertEqual(AVCCParser.nalUnits(from: au.avcc), [nal1, nal2])
     }
 
     func testSSRCChangeResetsState() throws {
@@ -330,18 +383,38 @@ final class RTPPacketTests: XCTestCase {
         )
         XCTAssertEqual(packets.count, 3)
 
-        let depacketizer = H265Depacketizer()
+        // reorderDepth: 1 — see the H.264 sibling test; forces the window to
+        // give up on the missing packet rather than hold the gap open.
+        let depacketizer = H265Depacketizer(reorderDepth: 1)
         _ = depacketizer.ingest(packets[0])
         let result = depacketizer.ingest(packets[2])
-        XCTAssertNil(result)  // torn AU dropped
+        XCTAssertNil(result)  // seq 12 buffered behind the gap; nothing emitted
 
         let n4 = Data(Self.hevcHeader(type: 1) + [0xDD])
         let next = packetizer.packetize(
             nals: [n4], timestamp: 60, ssrc: 1, startSequence: 13
         )
-        let au = depacketizer.ingest(next[0])
+        let au = depacketizer.ingest(next[0])  // second pile-up: gap given up
         XCTAssertNotNil(au)
         XCTAssertTrue(au?.lostBeforeThisAU ?? false)
+    }
+
+    func testHEVCReorderedPacketsRecoverWithoutLoss() throws {
+        let n1 = Data(Self.hevcHeader(type: 1) + [0xAA])
+        let n2 = Data(Self.hevcHeader(type: 1) + [0xBB])
+        let n3 = Data(Self.hevcHeader(type: 1) + [0xCC])
+        let packets = H265Packetizer().packetize(
+            nals: [n1, n2, n3], timestamp: 50, ssrc: 1, startSequence: 10
+        )
+        XCTAssertEqual(packets.count, 3)
+
+        let depacketizer = H265Depacketizer()
+        XCTAssertNil(depacketizer.ingest(packets[0]))  // seq 10
+        XCTAssertNil(depacketizer.ingest(packets[2]))  // seq 12 — held
+        let au = try XCTUnwrap(depacketizer.ingest(packets[1]))  // seq 11 fills the gap
+
+        XCTAssertFalse(au.lostBeforeThisAU)
+        XCTAssertEqual(AVCCParser.nalUnits(from: au.avcc), [n1, n2, n3])
     }
 
     func testMultiCodecDepacketizerRoutesByPayloadType() throws {

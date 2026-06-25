@@ -7,9 +7,23 @@ import VideoToolbox
 final class VideoDecoder: @unchecked Sendable {
     var onDecodedFrame: ((CVPixelBuffer) -> Void)?
 
+    /// Fires (once per codec) when VideoToolbox can't build a decompression
+    /// session — almost always an HEVC stream arriving on a Mac without HEVC
+    /// decode support. Without this the viewer sits on a silent black screen;
+    /// the client uses it to surface an error and ask the sharer to fall back
+    /// to H.264. Called on the decoder's serial `queue`.
+    var onDecodeFailure: ((VideoCodec) -> Void)?
+
     private let queue = DispatchQueue(label: "com.tailscreen.decoder")
     private var session: VTDecompressionSession?
     private var formatDescription: CMFormatDescription?
+    /// Codec of the currently-installed parameter sets, so a session-create
+    /// failure can report *which* codec the viewer couldn't decode.
+    private var currentCodec: VideoCodec?
+    /// Latched after we've reported a decode failure for `currentCodec`, so a
+    /// black-screened viewer doesn't fire `onDecodeFailure` once per frame.
+    /// Reset when the installed codec changes (e.g. the sharer falls back).
+    private var didReportDecodeFailure = false
     private let logger = TSLogger()
 
     /// Install codec parameter sets. The server sends these before any
@@ -32,16 +46,26 @@ final class VideoDecoder: @unchecked Sendable {
 
     private func applyParameterSets(_ params: CodecParameterSets) {
         let newDesc: CMFormatDescription?
+        let codec: VideoCodec
         switch params {
         case .h264(let sps, let pps):
             newDesc = Self.makeH264FormatDescription(sps: sps, pps: pps)
+            codec = .h264
         case .hevc(let vps, let sps, let pps):
             newDesc = Self.makeHEVCFormatDescription(vps: vps, sps: sps, pps: pps)
+            codec = .hevc
         }
 
         guard let desc = newDesc else {
             logger.log("VideoDecoder: failed to build format description")
             return
+        }
+
+        // New codec installed (e.g. sharer fell back HEVC→H.264): clear the
+        // failure latch so a fresh codec gets a fresh chance to be reported.
+        if codec != currentCodec {
+            currentCodec = codec
+            didReportDecodeFailure = false
         }
 
         if let existing = formatDescription, CMFormatDescriptionEqual(existing, otherFormatDescription: desc) {
@@ -225,6 +249,10 @@ final class VideoDecoder: @unchecked Sendable {
             self.session = session
         } else {
             logger.log("VideoDecoder: failed to create decompression session (\(status))")
+            if let codec = currentCodec, !didReportDecodeFailure {
+                didReportDecodeFailure = true
+                onDecodeFailure?(codec)
+            }
         }
     }
 

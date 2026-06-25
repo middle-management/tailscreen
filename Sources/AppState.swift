@@ -282,6 +282,28 @@ class AppState: ObservableObject {
             }
         )
 
+        // Viewer's decoder couldn't build a session for the stream's codec.
+        // The client has already asked the sharer to fall back to H.264; tell
+        // the user so a momentary black screen isn't a silent mystery.
+        notificationObservers.append(
+            NotificationCenter.default.addObserver(
+                forName: .tailscreenViewerDecodeFailed,
+                object: nil,
+                queue: .main
+            ) { [weak self] note in
+                let codec = (note.userInfo?["codec"] as? String) ?? "this"
+                Task { @MainActor [weak self] in
+                    guard let self = self, self.connectionState == .viewing else { return }
+                    self.showAlertMessage(
+                        title: "Can't decode the video",
+                        message:
+                            "This Mac can't decode the \(codec) video stream from the sharer "
+                            + "(it likely lacks \(codec) hardware decode). Asking the sharer to "
+                            + "switch to H.264 — the screen should appear in a moment.")
+                }
+            }
+        )
+
         // File → Disconnect (⌘W) posts this; bounce to disconnect().
         notificationObservers.append(
             NotificationCenter.default.addObserver(
@@ -1391,7 +1413,19 @@ class AppState: ObservableObject {
         // this the node's LocalAPI works (so login + status queries succeed),
         // but tailscale_dial fails silently — every peer probe returns false
         // and "Browse Shares" always lists zero.
-        try await node.up()
+        //
+        // tsnet's up() has no internal timeout. With an auth key there's no
+        // human in the loop, so it should reach Running in seconds — a hang
+        // there means a bad key or an unreachable control plane, and we bound
+        // it so the caller surfaces an error instead of parking forever. The
+        // interactive path (no key) is intentionally left unbounded: up()
+        // legitimately blocks until the user finishes the browser login, which
+        // can take minutes.
+        if TailscreenInstance.authKey != nil {
+            try await withTimeout(seconds: 60) { try await node.up() }
+        } else {
+            try await node.up()
+        }
 
         // Bind the shared TCP/7447 control listener once the node is up.
         // Idempotent (`start` no-ops on repeat); it has to live across
