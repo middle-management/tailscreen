@@ -67,14 +67,20 @@ final class RTPLossyChannelTests: XCTestCase {
     }
 
     /// Feed every packet through the depacketizer and collect all delivered
-    /// AUs in order. `ingest` returns at most one AU per call; `drainReady`
-    /// flushes any the final packets completed in a burst.
-    private static func collectAUs(_ packets: [Data], through dp: Depacketizing) -> [VideoAccessUnit] {
+    /// AUs in order. `ingest` returns at most one AU per call; `drain` flushes
+    /// any the final packets completed in a burst. Taking the two methods as
+    /// closures lets this serve either codec depacketizer without a shared
+    /// protocol.
+    private static func collectAUs(
+        _ packets: [Data],
+        ingest: (Data) -> VideoAccessUnit?,
+        drain: () -> [VideoAccessUnit]
+    ) -> [VideoAccessUnit] {
         var out: [VideoAccessUnit] = []
         for p in packets {
-            if let au = dp.ingest(p) { out.append(au) }
+            if let au = ingest(p) { out.append(au) }
         }
-        out.append(contentsOf: dp.drainReady())
+        out.append(contentsOf: drain())
         return out
     }
 
@@ -111,7 +117,8 @@ final class RTPLossyChannelTests: XCTestCase {
         let received = channel.transmit(packets)
         XCTAssertEqual(received.count, packets.count, "reorder-only must not change packet count")
 
-        let delivered = Self.collectAUs(received, through: H264Depacketizer())
+        let dp = H264Depacketizer()
+        let delivered = Self.collectAUs(received, ingest: dp.ingest, drain: dp.drainReady)
 
         XCTAssertEqual(
             delivered.count, expected.count, "reordering within the window must not drop frames")
@@ -126,7 +133,8 @@ final class RTPLossyChannelTests: XCTestCase {
         var channel = LossyChannel(seed: 1234, reorderWindow: 6)
         let received = channel.transmit(packets)
 
-        let delivered = Self.collectAUs(received, through: H265Depacketizer())
+        let dp = H265Depacketizer()
+        let delivered = Self.collectAUs(received, ingest: dp.ingest, drain: dp.drainReady)
 
         XCTAssertEqual(delivered.count, expected.count)
         XCTAssertFalse(delivered.contains { $0.lostBeforeThisAU })
@@ -145,7 +153,8 @@ final class RTPLossyChannelTests: XCTestCase {
         let received = channel.transmit(packets)
         XCTAssertGreaterThan(received.count, packets.count, "duplication should add packets")
 
-        let delivered = Self.collectAUs(received, through: H264Depacketizer())
+        let dp = H264Depacketizer()
+        let delivered = Self.collectAUs(received, ingest: dp.ingest, drain: dp.drainReady)
 
         XCTAssertEqual(delivered.count, expected.count, "duplicates must not drop frames")
         XCTAssertFalse(
@@ -165,7 +174,8 @@ final class RTPLossyChannelTests: XCTestCase {
         let received = channel.transmit(packets)
         XCTAssertLessThan(received.count, packets.count, "loss should drop packets")
 
-        let delivered = Self.collectAUs(received, through: H264Depacketizer())
+        let dp = H264Depacketizer()
+        let delivered = Self.collectAUs(received, ingest: dp.ingest, drain: dp.drainReady)
 
         XCTAssertGreaterThan(
             delivered.count, expected.count / 2,
@@ -187,7 +197,8 @@ final class RTPLossyChannelTests: XCTestCase {
         var channel = LossyChannel(seed: 2024, lossRate: 0.02, dupRate: 0.05, reorderWindow: 6)
         let received = channel.transmit(packets)
 
-        let delivered = Self.collectAUs(received, through: H264Depacketizer())
+        let dp = H264Depacketizer()
+        let delivered = Self.collectAUs(received, ingest: dp.ingest, drain: dp.drainReady)
 
         XCTAssertGreaterThan(
             delivered.count, expected.count / 2,
@@ -195,12 +206,3 @@ final class RTPLossyChannelTests: XCTestCase {
         assertIntactAndOrdered(delivered, expected: expected)
     }
 }
-
-/// Lets `collectAUs` work against either codec depacketizer. Both already
-/// expose these methods; the protocol just unifies them for the test.
-private protocol Depacketizing {
-    func ingest(_ packet: Data) -> VideoAccessUnit?
-    func drainReady() -> [VideoAccessUnit]
-}
-extension H264Depacketizer: Depacketizing {}
-extension H265Depacketizer: Depacketizing {}

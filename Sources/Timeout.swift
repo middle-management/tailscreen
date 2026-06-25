@@ -1,14 +1,8 @@
 import Foundation
 
-/// Thrown by `withTimeout(seconds:operation:)` when `operation` doesn't finish
-/// within the deadline.
-struct TimeoutError: Error, CustomStringConvertible {
-    let seconds: TimeInterval
-    var description: String { "operation timed out after \(seconds)s" }
-}
-
-/// Run `operation` and return its result, but throw `TimeoutError` if it hasn't
-/// completed within `seconds`.
+/// Run `operation` and return its result, but throw `TimeoutError` (the
+/// module's shared timeout marker, defined in `TailscalePeerDiscovery.swift`)
+/// if it hasn't completed within `seconds`.
 ///
 /// Caveat: the losing task is cancelled, but cancellation does not necessarily
 /// interrupt a blocking call that never checks `Task.isCancelled` — notably
@@ -24,10 +18,10 @@ func withTimeout<T: Sendable>(
         group.addTask { try await operation() }
         group.addTask {
             try await Task.sleep(for: .seconds(seconds))
-            throw TimeoutError(seconds: seconds)
+            throw TimeoutError()
         }
         guard let result = try await group.next() else {
-            throw TimeoutError(seconds: seconds)
+            throw TimeoutError()
         }
         group.cancelAll()
         return result
