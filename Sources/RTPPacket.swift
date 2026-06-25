@@ -508,6 +508,17 @@ final class H264Depacketizer {
     /// Assemble one in-sequence packet into the current AU, appending any
     /// completed AU to `readyQueue`. `lostBefore` is set by the reorder buffer
     /// when it skipped an unfillable gap immediately before this packet.
+    /// Drain access units completed but not yet returned by `ingest`. A single
+    /// `ingest` returns at most one AU, but a late packet that unblocks a run
+    /// of buffered packets can complete several at once; production reads the
+    /// extras one per subsequent `ingest`, while a test that's finished feeding
+    /// a stream uses this to flush the tail.
+    func drainReady() -> [VideoAccessUnit] {
+        let out = readyQueue
+        readyQueue.removeAll(keepingCapacity: true)
+        return out
+    }
+
     private func assemble(_ packet: Data, lostBefore: Bool) {
         guard let (header, payloadOffset) = RTPHeader.decode(from: packet) else { return }
 
@@ -821,6 +832,17 @@ final class H265Depacketizer {
             assemble(release.packet, lostBefore: release.lostBefore)
         }
         return readyQueue.isEmpty ? nil : readyQueue.removeFirst()
+    }
+
+    /// Drain access units completed but not yet returned by `ingest`. A single
+    /// `ingest` returns at most one AU, but a late packet that unblocks a run
+    /// of buffered packets can complete several at once; production reads the
+    /// extras one per subsequent `ingest`, while a test that's finished feeding
+    /// a stream uses this to flush the tail.
+    func drainReady() -> [VideoAccessUnit] {
+        let out = readyQueue
+        readyQueue.removeAll(keepingCapacity: true)
+        return out
     }
 
     private func assemble(_ packet: Data, lostBefore: Bool) {

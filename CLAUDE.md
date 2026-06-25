@@ -90,7 +90,9 @@ Two paths:
 
 3. **Docker-free headscale (local, no Docker):** `scripts/e2e-up-native.sh` downloads the pinned headscale release binary (keep `HEADSCALE_VERSION` in lockstep with `e2e/docker-compose.yml`), runs it natively, and emits the same env exports; tear down with `scripts/e2e-down-native.sh`. Useful on machines without Docker.
 
-**These tsnet suites can't run on CI.** Tried on `macos-latest` via the native script: headscale came up healthy, but the first tsnet `node.up()` hung — GitHub's hosted macOS runner sandbox doesn't let the userspace-WireGuard handshake / DERP-STUN (`:3478/udp`) complete, and `node.up()` has no internal timeout. So anything that brings up a tsnet node (`TailscaleConnectivityTests` and all the screen-share E2E suites) is local-only. Only the pure-logic suites (`AdaptiveBitrateTests`, `VideoCodecTests`, `VoiceChannelTests`, etc.) run on CI.
+**These tsnet suites can't run on CI.** Tried on `macos-latest` via the native script: headscale came up healthy, but the first tsnet `node.up()` hung — GitHub's hosted macOS runner sandbox doesn't let the userspace-WireGuard handshake / DERP-STUN (`:3478/udp`) complete, and `node.up()` has no internal timeout. So anything that brings up a tsnet node (`TailscaleConnectivityTests` and all the screen-share E2E suites) is local-only. Only the pure-logic suites (`AdaptiveBitrateTests`, `VideoCodecTests`, `VoiceChannelTests`, `RTPPacketTests`, `RTPLossyChannelTests`, etc.) run on CI.
+
+`RTPLossyChannelTests` is the CI-able stand-in for the impairment harness: it runs the real packetize → `LossyChannel` (deterministic, seeded loss/reorder/duplication) → depacketize pipeline and asserts recovery (reordering/duplication never drop or tear frames; genuine loss is signaled and the pipeline never wedges). `LossyChannel` (in `Tests/`) is reusable by any in-process packet test. It can't impair the live tsnet path — for that, see `scripts/net-impair.sh` (local-only).
 
 Connectivity tests skip or fail without an auth key — that's expected.
 
@@ -173,7 +175,9 @@ viewer's rising PLI count / dropping bitrate in the stats overlay; otherwise
 try `--iface en0`). dummynet has no native packet-reorder knob, so `--reorder`
 uses the two-pipe + `probability` workaround and may be rejected on some macOS
 pf versions. For **deterministic, root-free, CI-able** reorder/loss/duplicate
-coverage of the depacketizer, use the unit tests in `RTPPacketTests` instead —
+coverage of the depacketizer, use the unit tests in `RTPPacketTests` and the
+end-to-end pipeline tests in `RTPLossyChannelTests` (via `LossyChannel`)
+instead —
 the harness is the end-to-end complement, not a replacement.
 
 ## Architecture & data flow
