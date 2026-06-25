@@ -1,0 +1,226 @@
+/* Tailscreen — Swedish (sv) localization.
+ *
+ * Keys are identical to en.lproj/Localizable.strings (the English source
+ * text). Only the values are translated. Format specifiers (%@, %lld),
+ * key-equivalent glyphs (⌘Q), and brand names ("Tailscreen", "Tailscale")
+ * are preserved.
+ */
+
+/* MARK: - Menu bar (AppMenu.swift) */
+"About Tailscreen" = "Om Tailscreen";
+"Settings…" = "Inställningar…";
+"Hide Tailscreen" = "Göm Tailscreen";
+"Hide Others" = "Göm andra";
+"Show All" = "Visa alla";
+"Quit Tailscreen" = "Avsluta Tailscreen";
+"Disconnect" = "Koppla från";
+"Microphone" = "Mikrofon";
+"Undo Annotation" = "Ångra anteckning";
+"Clear All Annotations" = "Rensa alla anteckningar";
+"Actual Size" = "Verklig storlek";
+"Zoom to 50%" = "Zooma till 50 %";
+"Zoom to 200%" = "Zooma till 200 %";
+"Minimize" = "Minimera";
+"Zoom" = "Zooma";
+"Bring All to Front" = "Lägg alla överst";
+"Keyboard Shortcuts" = "Tangentbordsgenvägar";
+
+/* MARK: - About panel (AppMenu.swift) */
+"© 2026 Robert Sköld. MIT-licensed open source." = "© 2026 Robert Sköld. MIT-licensierad öppen källkod.";
+"Low-latency, encrypted peer-to-peer screen sharing over Tailscale.\n" = "Krypterad peer-to-peer-skärmdelning med låg latens över Tailscale.\n";
+"Captures with ScreenCaptureKit, encodes H.264/HEVC with VideoToolbox, renders with Metal, and tunnels via tsnet ephemeral nodes — no manual device registration.\n" = "Fångar med ScreenCaptureKit, kodar H.264/HEVC med VideoToolbox, renderar med Metal och tunnlar via tillfälliga tsnet-noder – ingen manuell enhetsregistrering.\n";
+
+/* MARK: - Welcome / sign-in (MenuBarView.swift) */
+"Welcome to Tailscreen" = "Välkommen till Tailscreen";
+"Sign in with Tailscale to share and view screens with your peers." = "Logga in med Tailscale för att dela och visa skärmar med andra.";
+"Signing in…" = "Loggar in…";
+"Sign in with Tailscale" = "Logga in med Tailscale";
+"Opens Tailscale sign-in in your browser" = "Öppnar Tailscale-inloggning i din webbläsare";
+
+/* MARK: - Pending request-to-share banner (MenuBarView.swift) */
+"%@ wants you to share" = "%@ vill att du delar";
+"Tap Share to choose what to show" = "Tryck på Dela för att välja vad som ska visas";
+"Decline" = "Avböj";
+"Share" = "Dela";
+
+/* MARK: - Connecting / starting cards (MenuBarView.swift) */
+"Connecting to %@…" = "Ansluter till %@…";
+"Connecting…" = "Ansluter…";
+"Negotiating the WireGuard tunnel and waiting for the first frame." = "Förhandlar WireGuard-tunneln och väntar på första bildrutan.";
+"Starting share…" = "Startar delning…";
+"Bringing up screen capture. macOS may take a few seconds." = "Startar skärminspelning. macOS kan ta några sekunder.";
+
+/* MARK: - Sharing card (MenuBarView.swift) */
+"Sharing your screen" = "Delar din skärm";
+"1 viewer connected" = "1 tittare ansluten";
+"%lld viewers connected" = "%lld tittare anslutna";
+"Capturing…" = "Fångar…";
+"Stop Drawing" = "Sluta rita";
+"Draw" = "Rita";
+"Stop drawing on screen" = "Sluta rita på skärmen";
+"Draw on screen" = "Rita på skärmen";
+"Mute Mic (⌃⌥M)" = "Stäng av mik (⌃⌥M)";
+"Unmute Mic (⌃⌥M)" = "Slå på mik (⌃⌥M)";
+"Toggles voice chat with viewers" = "Växlar röstchatt med tittare";
+"Stop Sharing" = "Sluta dela";
+"Disconnects all viewers and ends the screen share" = "Kopplar från alla tittare och avslutar skärmdelningen";
+"No viewers yet" = "Inga tittare än";
+"%lld watching: %@" = "%lld tittar: %@";
+
+/* MARK: - Viewer approval rows (MenuBarView.swift) */
+"Deny" = "Neka";
+"Deny %@" = "Neka %@";
+"Accept" = "Acceptera";
+"Accept %@" = "Acceptera %@";
+"New viewers will see a Connecting prompt until you Accept or Deny" = "Nya tittare ser en Ansluter-prompt tills du accepterar eller nekar";
+
+/* MARK: - Viewing card (MenuBarView.swift) */
+"Viewing %@" = "Visar %@";
+"peer" = "enhet";
+"Connected over Tailscale" = "Ansluten via Tailscale";
+"Mute Mic" = "Stäng av mik";
+"Unmute Mic" = "Slå på mik";
+"Toggle mic (⌃⌥M)" = "Växla mik (⌃⌥M)";
+"Toggles voice chat with the sharer" = "Växlar röstchatt med den som delar";
+"Closes the viewer window and ends this session" = "Stänger tittarfönstret och avslutar sessionen";
+
+/* MARK: - Audio device pickers (MenuBarView.swift / SettingsView.swift) */
+"System default" = "Systemstandard";
+"Microphone input device" = "Mikrofoningång";
+"Speaker output device" = "Högtalarutgång";
+
+/* MARK: - Display picker / share section (MenuBarView.swift) */
+"SHARE" = "DELA";
+"Another Tailscreen is sharing" = "En annan Tailscreen delar";
+"Stop the other instance first" = "Stoppa den andra instansen först";
+"Choose what to share…" = "Välj vad du vill dela…";
+
+/* MARK: - Devices section (MenuBarView.swift) */
+"AVAILABLE SCREENS" = "TILLGÄNGLIGA SKÄRMAR";
+"Refresh screens" = "Uppdatera skärmar";
+"Refresh available screens" = "Uppdatera tillgängliga skärmar";
+"Looking for screens…" = "Söker efter skärmar…";
+"No Tailscreen devices on your tailnet" = "Inga Tailscreen-enheter på ditt tailnet";
+"Offline" = "Frånkopplad";
+"%@, %@" = "%@, %@";
+"online" = "ansluten";
+"offline" = "frånkopplad";
+"Connects to view this device's screen" = "Anslut för att visa den här enhetens skärm";
+"Ask %@ to share their screen" = "Be %@ att dela sin skärm";
+"Request %@ to share" = "Begär att %@ delar";
+
+/* MARK: - Identity footer (MenuBarView.swift) */
+"Sign out" = "Logga ut";
+"End your Tailscale session" = "Avsluta din Tailscale-session";
+"Sign out of Tailscale" = "Logga ut från Tailscale";
+"Sign out of Tailscale, signed in as %@" = "Logga ut från Tailscale, inloggad som %@";
+
+/* MARK: - Settings window (SettingsView.swift) */
+"Viewers" = "Tittare";
+"Require approval for new viewers" = "Kräv godkännande för nya tittare";
+"New viewers wait on a Connecting prompt until you Accept or Deny them." = "Nya tittare väntar på en Ansluter-prompt tills du accepterar eller nekar dem.";
+"Audio" = "Ljud";
+"Speaker" = "Högtalare";
+"About" = "Om";
+"Version" = "Version";
+"Project on GitHub" = "Projekt på GitHub";
+
+/* MARK: - Window titles (AppState.swift) */
+"Tailscreen Settings" = "Tailscreen-inställningar";
+
+/* MARK: - Error alerts (AppError.swift / AppState.swift) */
+"%@\n\nError code: %@" = "%@\n\nFelkod: %@";
+"Copy Details" = "Kopiera detaljer";
+"OK" = "OK";
+"Open System Settings" = "Öppna Systeminställningar";
+"Couldn't Start Sharing" = "Kunde inte starta delning";
+"macOS didn't return shareable screens in time. If this is the first time you've shared, grant Tailscreen permission in System Settings → Privacy & Security → Screen Recording, then try again." = "macOS returnerade inte delbara skärmar i tid. Om det här är första gången du delar, ge Tailscreen behörighet i Systeminställningar → Integritet och säkerhet → Skärminspelning och försök igen.";
+"Restart Required" = "Omstart krävs";
+"macOS's screen-recording daemon is in a stuck state for Tailscreen and won't deliver any more frames until the app restarts. This usually follows a startCapture timeout or a stream interruption. Quit Tailscreen (⌘Q) and reopen — sharing will work again." = "macOS skärminspelningsdaemon har fastnat för Tailscreen och levererar inga fler bildrutor förrän appen startas om. Detta följer vanligtvis efter en startCapture-timeout eller ett avbrott i strömmen. Avsluta Tailscreen (⌘Q) och öppna igen – delning fungerar då igen.";
+"macOS accepted the screen-capture request but never delivered any frames. This usually means another Tailscreen process is already sharing — quit other instances and try again. If the problem persists, run `killall replayd` in Terminal (macOS will auto-restart it) or reboot." = "macOS accepterade skärminspelningsbegäran men levererade aldrig några bildrutor. Det betyder oftast att en annan Tailscreen-process redan delar – avsluta andra instanser och försök igen. Om problemet kvarstår, kör `killall replayd` i Terminal (macOS startar om det automatiskt) eller starta om datorn.";
+"Connection Failed" = "Anslutning misslyckades";
+"Could not connect to %@: %@" = "Kunde inte ansluta till %@: %@";
+"Discovery Failed" = "Upptäckt misslyckades";
+"Sign in with Tailscale first to discover other Tailscreen instances on your tailnet." = "Logga in med Tailscale först för att upptäcka andra Tailscreen-instanser på ditt tailnet.";
+"Request Failed" = "Begäran misslyckades";
+"Could not send request to %@: %@" = "Kunde inte skicka begäran till %@: %@";
+"Voice Init Failed" = "Röstinitiering misslyckades";
+"Voice could not be initialized: %@. Voice will be unavailable for this share session." = "Rösten kunde inte initieras: %@. Röst kommer inte att vara tillgänglig under den här delningssessionen.";
+"Voice Not Ready" = "Rösten är inte redo";
+"Voice is only available during an active share." = "Röst är endast tillgänglig under en aktiv delning.";
+"Microphone Unavailable" = "Mikrofon ej tillgänglig";
+"Tailscreen could not start the microphone: %@. Check System Settings → Privacy & Security → Microphone." = "Tailscreen kunde inte starta mikrofonen: %@. Kontrollera Systeminställningar → Integritet och säkerhet → Mikrofon.";
+"Login Failed" = "Inloggning misslyckades";
+"Failed to log in: %@" = "Misslyckades att logga in: %@";
+"Sign Out Failed" = "Utloggning misslyckades";
+"Error" = "Fel";
+"Failed to start sharing: %@" = "Misslyckades att starta delning: %@";
+
+/* MARK: - Notifications (TailscreenUserNotifications.swift / ViewerApproval.swift) */
+"Tailscreen request" = "Tailscreen-begäran";
+"%@ wants you to share your screen" = "%@ vill att du delar din skärm";
+"Viewer Connected" = "Tittare ansluten";
+"%@ is now viewing your screen." = "%@ visar nu din skärm.";
+"Viewer Wants to Connect" = "Tittare vill ansluta";
+"%@ is asking to view your screen. Open Tailscreen to Accept or Deny." = "%@ vill visa din skärm. Öppna Tailscreen för att acceptera eller neka.";
+
+/* MARK: - Viewer menu commands (ViewerCommands.swift) */
+"Mute Microphone" = "Stäng av mikrofon";
+"Unmute Microphone" = "Slå på mikrofon";
+
+/* MARK: - Stats overlay (ViewerStatsOverlay.swift) */
+"Latency" = "Latens";
+"FPS" = "FPS";
+"Dropped" = "Tappade";
+"Bitrate" = "Bithastighet";
+"Codec" = "Codec";
+"Connection" = "Anslutning";
+
+/* MARK: - Shortcuts overlay (ViewerShortcutsOverlay.swift) */
+"Tools" = "Verktyg";
+"Annotation" = "Anteckning";
+"Window" = "Fönster";
+"Pointer / Click" = "Pekare / Klick";
+"Cancel current drag" = "Avbryt aktuell dragning";
+"Toggle microphone (system-wide)" = "Växla mikrofon (systemomfattande)";
+"Disconnect viewer" = "Koppla från tittare";
+"Show / hide this help" = "Visa / dölj den här hjälpen";
+"Keyboard shortcuts" = "Tangentbordsgenvägar";
+"Close keyboard shortcuts" = "Stäng tangentbordsgenvägar";
+"Click anywhere or press ⇧⌘/ to dismiss." = "Klicka var som helst eller tryck på ⇧⌘/ för att stänga.";
+
+/* MARK: - Viewer toolbar (ViewerToolbar.swift) */
+"Undo" = "Ångra";
+"Undo last annotation" = "Ångra senaste anteckningen";
+"Undo last annotation (⌘Z)" = "Ångra senaste anteckningen (⌘Z)";
+"Clear" = "Rensa";
+"Clear all annotations" = "Rensa alla anteckningar";
+"Clear all annotations (⇧⌘⌫ or right-click)" = "Rensa alla anteckningar (⇧⌘⌫ eller högerklick)";
+"Mic" = "Mik";
+"Mute microphone" = "Stäng av mikrofon";
+"Unmute microphone" = "Slå på mikrofon";
+"Toggle microphone (⌃⌥M)" = "Växla mikrofon (⌃⌥M)";
+"Stats" = "Statistik";
+"Toggle stream stats overlay" = "Växla statistiköverlägg";
+"Shortcuts" = "Genvägar";
+"Show keyboard shortcuts" = "Visa tangentbordsgenvägar";
+"Keyboard shortcuts (⇧⌘/)" = "Tangentbordsgenvägar (⇧⌘/)";
+"Pen" = "Penna";
+"Line" = "Linje";
+"Arrow" = "Pil";
+"Rectangle" = "Rektangel";
+"Oval" = "Oval";
+"Click" = "Klick";
+"Rect" = "Rekt";
+"Pen annotation tool" = "Pennverktyg";
+"Line annotation tool" = "Linjeverktyg";
+"Arrow annotation tool" = "Pilverktyg";
+"Rectangle annotation tool" = "Rektangelverktyg";
+"Oval annotation tool" = "Ovalverktyg";
+"Pointer click tool" = "Pekarklickverktyg";
+"Pen (1 or ⌘1)" = "Penna (1 eller ⌘1)";
+"Line (2 or ⌘2)" = "Linje (2 eller ⌘2)";
+"Arrow (3 or ⌘3)" = "Pil (3 eller ⌘3)";
+"Rectangle (4 or ⌘4)" = "Rektangel (4 eller ⌘4)";
+"Oval (5 or ⌘5)" = "Oval (5 eller ⌘5)";
+"Pointer / Click (6 or ⌘6)" = "Pekare / Klick (6 eller ⌘6)";
