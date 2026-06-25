@@ -149,6 +149,59 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         }
     }
 
+    /// Owns the TCP annotation back-channel for the whole session: drain
+    /// inbound ops and reconnect with capped backoff if the connection drops
+    /// mid-session. Before this, a dropped back-channel stayed dead for the
+    /// rest of the call — annotations silently stopped even though video kept
+    /// flowing. `initial` is the connection `connect()` already dialed (nil if
+    /// that first dial failed). Best-effort; runs until `disconnect()` cancels
+    /// `annotationReceiveTask`.
+    private func runAnnotationChannel(initial: OutgoingConnection?, host: String, port: UInt16) async {
+        let target = "\(host):\(port)"
+        var conn = initial
+        var backoffMs: UInt64 = 250
+        while !Task.isCancelled && isConnected {
+            if conn == nil {
+                conn = await dialAnnotation(to: target)
+                guard conn != nil else {
+                    if Task.isCancelled || !isConnected { break }
+                    try? await Task.sleep(for: .milliseconds(backoffMs))
+                    backoffMs = min(backoffMs * 2, 5_000)
+                    continue
+                }
+                backoffMs = 250  // reset after a clean (re)connect
+            }
+            guard let live = conn else { break }
+            // Drains until the connection drops or the task is cancelled.
+            await receiveAnnotationLoop(over: live)
+            self.annotationChannel = nil
+            conn = nil
+            // On shutdown, disconnect() owns closing the connection it still
+            // referenced; on a mid-session drop we close it and reconnect.
+            if Task.isCancelled || !isConnected { break }
+            await live.close()
+            logger.log("Annotation back-channel dropped — reconnecting")
+        }
+        self.annotationChannel = nil
+    }
+
+    /// Dial the annotation back-channel once, publishing it to
+    /// `annotationChannel` on success. Returns nil (logged) on failure.
+    private func dialAnnotation(to target: String) async -> OutgoingConnection? {
+        guard let node = self.node, let tailscale = await node.tailscale else { return nil }
+        do {
+            let conn = try await OutgoingConnection(
+                tailscale: tailscale, to: target, proto: .tcp, logger: logger)
+            try await conn.connect()
+            self.annotationChannel = conn
+            logger.log("Annotation back-channel reconnected to \(target)")
+            return conn
+        } catch {
+            logger.log("Annotation back-channel reconnect failed: \(error) — retrying")
+            return nil
+        }
+    }
+
     /// Tail of the audio send chain. Each call to `sendAudioRTP` parks
     /// on the previous one's job before issuing its own send. Stops
     /// detached `Task`s from piling up when `pl.send` stalls (poor link,
@@ -266,26 +319,6 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         }
         self.decoder = decoder
 
-        // Open the TCP annotation back-channel to the same host:port.
-        // Best-effort: a connect failure here doesn't break video, it just
-        // disables annotation streaming for this session.
-        do {
-            let conn = try await OutgoingConnection(
-                tailscale: tailscaleHandle,
-                to: "\(hostname):\(port)",
-                proto: .tcp,
-                logger: logger
-            )
-            try await conn.connect()
-            self.annotationChannel = conn
-            logger.log("Annotation back-channel open to \(hostname):\(port)")
-            annotationReceiveTask = Task { [weak self] in
-                await self?.receiveAnnotationLoop(over: conn)
-            }
-        } catch {
-            logger.log("Annotation back-channel failed to open: \(error) (annotations disabled)")
-        }
-
         self.isConnected = true
 
         try await pl.send(ScreenShareControlMessage.encode(.hello), to: addr)
@@ -296,6 +329,26 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         }
         keepaliveTask = Task { [weak self] in
             await self?.keepaliveLoop()
+        }
+
+        // Annotation back-channel: dial inline (so it's ready by the time
+        // connect() returns), then hand the connection to a task that drains it
+        // and reconnects with backoff if it drops mid-session. Best-effort — a
+        // failure here never breaks video. Spawned after isConnected=true so
+        // the reconnect loop's `isConnected` guard doesn't trip immediately.
+        var initialAnnotationConn: OutgoingConnection?
+        do {
+            let conn = try await OutgoingConnection(
+                tailscale: tailscaleHandle, to: "\(hostname):\(port)", proto: .tcp, logger: logger)
+            try await conn.connect()
+            self.annotationChannel = conn
+            initialAnnotationConn = conn
+            logger.log("Annotation back-channel open to \(hostname):\(port)")
+        } catch {
+            logger.log("Annotation back-channel initial dial failed: \(error) — retrying in background")
+        }
+        annotationReceiveTask = Task { [weak self] in
+            await self?.runAnnotationChannel(initial: initialAnnotationConn, host: hostname, port: port)
         }
     }
 
