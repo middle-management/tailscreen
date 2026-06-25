@@ -84,6 +84,37 @@ final class RTPLossyChannelTests: XCTestCase {
         return out
     }
 
+    /// Assert pure-reordering recovery: the reorder buffer anchors its
+    /// sequence baseline to the *first packet it receives*, so when the stream
+    /// starts out of order any genuinely-earlier packets arrive "behind" the
+    /// baseline and are correctly dropped as stragglers — losing at most a
+    /// short cold-start prefix (exactly what a viewer joining mid-stream sees,
+    /// before a keyframe re-syncs it). After that lock, reordering within the
+    /// window must drop nothing. Assert that: delivered frames are a contiguous
+    /// run ending at the final frame, missing at most `maxColdStartDrop` frames
+    /// at the front, none flagged as loss.
+    private func assertReorderRecovered(
+        _ delivered: [VideoAccessUnit], frameCount: Int, maxColdStartDrop: Int,
+        file: StaticString = #filePath, line: UInt = #line
+    ) {
+        let ts = delivered.map(\.timestamp)
+        XCTAssertEqual(
+            ts.last, UInt32(frameCount) &* 90, "stream must run to the last frame", file: file,
+            line: line)
+        for i in ts.indices.dropFirst() {
+            XCTAssertEqual(
+                ts[i], ts[i - 1] &+ 90,
+                "frame dropped mid-stream — reordering within the window must not lose frames once synced",
+                file: file, line: line)
+        }
+        XCTAssertGreaterThanOrEqual(
+            delivered.count, frameCount - maxColdStartDrop, "too many frames dropped at cold start",
+            file: file, line: line)
+        XCTAssertFalse(
+            delivered.contains { $0.lostBeforeThisAU }, "pure reordering must not be reported as loss",
+            file: file, line: line)
+    }
+
     /// Assert every delivered AU is intact (matches its frame) and strictly
     /// ordered by timestamp.
     private func assertIntactAndOrdered(
@@ -120,10 +151,9 @@ final class RTPLossyChannelTests: XCTestCase {
         let dp = H264Depacketizer()
         let delivered = Self.collectAUs(received, ingest: dp.ingest, drain: dp.drainReady)
 
-        XCTAssertEqual(
-            delivered.count, expected.count, "reordering within the window must not drop frames")
-        XCTAssertFalse(
-            delivered.contains { $0.lostBeforeThisAU }, "pure reordering must not be read as loss")
+        // reorderWindow (8) bounds the cold-start prefix the buffer drops
+        // before it locks onto the sequence baseline.
+        assertReorderRecovered(delivered, frameCount: expected.count, maxColdStartDrop: 8)
         assertIntactAndOrdered(delivered, expected: expected)
     }
 
@@ -136,8 +166,7 @@ final class RTPLossyChannelTests: XCTestCase {
         let dp = H265Depacketizer()
         let delivered = Self.collectAUs(received, ingest: dp.ingest, drain: dp.drainReady)
 
-        XCTAssertEqual(delivered.count, expected.count)
-        XCTAssertFalse(delivered.contains { $0.lostBeforeThisAU })
+        assertReorderRecovered(delivered, frameCount: expected.count, maxColdStartDrop: 6)
         assertIntactAndOrdered(delivered, expected: expected)
     }
 
