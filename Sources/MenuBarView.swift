@@ -44,7 +44,7 @@ struct MenuBarView: View {
                 IdentityFooter()
                 Divider().padding(.vertical, 4)
                 MenuRow(
-                    "Settings…",
+                    L("Settings…"),
                     systemImage: nil,
                     shortcut: "⌘,"
                 ) {
@@ -52,7 +52,7 @@ struct MenuBarView: View {
                 }
                 .keyboardShortcut(",", modifiers: .command)
                 MenuRow(
-                    "Quit Tailscreen",
+                    L("Quit Tailscreen"),
                     systemImage: nil,
                     shortcut: "⌘Q"
                 ) {
@@ -103,10 +103,10 @@ private struct WelcomeView: View {
                 .frame(width: 64, height: 64)
                 .padding(.top, 8)
 
-                Text("Welcome to Tailscreen")
+                Text(L("Welcome to Tailscreen"))
                     .font(.title3.weight(.semibold))
 
-                Text("Sign in with Tailscale to share and view screens with your peers.")
+                Text(L("Sign in with Tailscale to share and view screens with your peers."))
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -117,7 +117,7 @@ private struct WelcomeView: View {
                     if appState.tailscaleAuth.isLoading {
                         HStack(spacing: 8) {
                             ProgressView().controlSize(.small)
-                            Text("Signing in…")
+                            Text(L("Signing in…"))
                                 .font(.callout)
                                 .foregroundStyle(.secondary)
                         }
@@ -126,12 +126,12 @@ private struct WelcomeView: View {
                         Button {
                             Task { await appState.initializeTailscaleAndLogin() }
                         } label: {
-                            Text("Sign in with Tailscale")
+                            Text(L("Sign in with Tailscale"))
                                 .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.large)
-                        .accessibilityHint("Opens Tailscale sign-in in your browser")
+                        .accessibilityHint(L("Opens Tailscale sign-in in your browser"))
                     }
                 }
                 .padding(.horizontal, 16)
@@ -141,7 +141,7 @@ private struct WelcomeView: View {
 
             Divider().padding(.vertical, 4)
 
-            MenuRow("Quit Tailscreen", systemImage: nil, shortcut: "⌘Q") {
+            MenuRow(L("Quit Tailscreen"), systemImage: nil, shortcut: "⌘Q") {
                 NSApplication.shared.terminate(nil)
             }
             .keyboardShortcut("q", modifiers: .command)
@@ -178,20 +178,20 @@ private struct PendingRequestsBanner: View {
                             .foregroundStyle(.orange)
                             .accessibilityHidden(true)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("\(req.fromHostname) wants you to share")
+                            Text(L("\(req.fromHostname) wants you to share"))
                                 .font(.callout.weight(.semibold))
                                 .lineLimit(2)
-                            Text("Tap Share to choose what to show")
+                            Text(L("Tap Share to choose what to show"))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
                         Spacer(minLength: 4)
-                        Button("Decline") {
+                        Button(L("Decline")) {
                             appState.metadataService.clearRequest(req)
                         }
                         .controlSize(.small)
                         .buttonStyle(.bordered)
-                        Button("Share") {
+                        Button(L("Share")) {
                             appState.metadataService.clearRequest(req)
                             Task { await appState.presentNativePicker() }
                         }
@@ -242,11 +242,11 @@ private struct ConnectingCard: View {
                     .padding(.top, 2)
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Connecting\(appState.connectedHostname.map { " to \($0)…" } ?? "…")")
+                    Text(appState.connectedHostname.map { L("Connecting to \($0)…") } ?? L("Connecting…"))
                         .font(.headline)
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    Text("Negotiating the WireGuard tunnel and waiting for the first frame.")
+                    Text(L("Negotiating the WireGuard tunnel and waiting for the first frame."))
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -279,9 +279,9 @@ private struct StartingShareCard: View {
                     .padding(.top, 2)
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Starting share…")
+                    Text(L("Starting share…"))
                         .font(.headline)
-                    Text("Bringing up screen capture. macOS may take a few seconds.")
+                    Text(L("Bringing up screen capture. macOS may take a few seconds."))
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -340,13 +340,13 @@ private struct SharingCard: View {
 
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
-                        Text("Sharing your screen")
+                        Text(L("Sharing your screen"))
                             .font(.headline)
                         if !appState.currentViewers.isEmpty {
                             // Pill-shaped viewer count. Small and
                             // unobtrusive — full per-viewer hostname
                             // list still renders below via `ViewersList`.
-                            Text("\(appState.currentViewers.count)")
+                            Text(verbatim: "\(appState.currentViewers.count)")
                                 .font(.caption2.weight(.semibold))
                                 .foregroundStyle(.white)
                                 .padding(.horizontal, 6)
@@ -355,10 +355,9 @@ private struct SharingCard: View {
                                     Capsule().fill(Color.green)
                                 )
                                 .accessibilityLabel(
-                                    "\(appState.currentViewers.count) "
-                                        + (appState.currentViewers.count == 1
-                                            ? "viewer connected"
-                                            : "viewers connected")
+                                    appState.currentViewers.count == 1
+                                        ? L("1 viewer connected")
+                                        : L("\(appState.currentViewers.count) viewers connected")
                                 )
                         }
                     }
@@ -396,7 +395,7 @@ private struct SharingCard: View {
                     } else {
                         HStack(spacing: 6) {
                             ProgressView().controlSize(.small).scaleEffect(0.7)
-                            Text("Capturing…")
+                            Text(L("Capturing…"))
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
                         }
@@ -419,11 +418,11 @@ private struct SharingCard: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .help(appState.isSharerOverlayVisible ? "Stop Drawing" : "Draw")
+                .help(appState.isSharerOverlayVisible ? L("Stop Drawing") : L("Draw"))
                 .accessibilityLabel(
                     appState.isSharerOverlayVisible
-                        ? "Stop drawing on screen"
-                        : "Draw on screen")
+                        ? L("Stop drawing on screen")
+                        : L("Draw on screen"))
 
                 Button {
                     Task { await appState.toggleMic() }
@@ -433,19 +432,19 @@ private struct SharingCard: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .help(appState.isMicOn ? "Mute Mic (⌃⌥M)" : "Unmute Mic (⌃⌥M)")
-                .accessibilityLabel(appState.isMicOn ? "Mute microphone" : "Unmute microphone")
-                .accessibilityHint("Toggles voice chat with viewers")
+                .help(appState.isMicOn ? L("Mute Mic (⌃⌥M)") : L("Unmute Mic (⌃⌥M)"))
+                .accessibilityLabel(appState.isMicOn ? L("Mute microphone") : L("Unmute microphone"))
+                .accessibilityHint(L("Toggles voice chat with viewers"))
 
                 Button {
                     Task { await appState.stopSharing(reason: "StopSharingButton") }
                 } label: {
-                    Text("Stop Sharing").frame(maxWidth: .infinity)
+                    Text(L("Stop Sharing")).frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .layoutPriority(1)
-                .accessibilityHint("Disconnects all viewers and ends the screen share")
+                .accessibilityHint(L("Disconnects all viewers and ends the screen share"))
             }
 
             AudioDevicePickers()
@@ -483,14 +482,14 @@ private struct AudioDevicePickers: View {
                         set: { appState.selectInputDevice($0) }
                     )
                 ) {
-                    Text("System default").tag(AudioDeviceID?.none)
+                    Text(L("System default")).tag(AudioDeviceID?.none)
                     ForEach(appState.availableInputDevices) { device in
                         Text(device.name).tag(AudioDeviceID?.some(device.id))
                     }
                 }
                 .labelsHidden()
                 .controlSize(.small)
-                .accessibilityLabel("Microphone input device")
+                .accessibilityLabel(L("Microphone input device"))
             }
             HStack(spacing: 6) {
                 Image(systemName: "speaker.wave.2")
@@ -504,14 +503,14 @@ private struct AudioDevicePickers: View {
                         set: { appState.selectOutputDevice($0) }
                     )
                 ) {
-                    Text("System default").tag(AudioDeviceID?.none)
+                    Text(L("System default")).tag(AudioDeviceID?.none)
                     ForEach(appState.availableOutputDevices) { device in
                         Text(device.name).tag(AudioDeviceID?.some(device.id))
                     }
                 }
                 .labelsHidden()
                 .controlSize(.small)
-                .accessibilityLabel("Speaker output device")
+                .accessibilityLabel(L("Speaker output device"))
             }
         }
         .font(.subheadline)
@@ -542,9 +541,9 @@ private struct ViewersList: View {
     }
 
     private var label: String {
-        if viewers.isEmpty { return "No viewers yet" }
+        if viewers.isEmpty { return L("No viewers yet") }
         let names = viewers.map { $0.hostname ?? $0.tailscaleIP }
-        return "\(viewers.count) watching: " + names.joined(separator: ", ")
+        return L("\(viewers.count) watching: \(names.joined(separator: ", "))")
     }
 }
 
@@ -572,19 +571,19 @@ private struct PendingViewersList: View {
                     Button {
                         appState.denyPendingViewer(viewer.id)
                     } label: {
-                        Text("Deny").font(.caption)
+                        Text(L("Deny")).font(.caption)
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.mini)
-                    .accessibilityLabel("Deny \(viewer.hostname ?? viewer.tailscaleIP)")
+                    .accessibilityLabel(L("Deny \(viewer.hostname ?? viewer.tailscaleIP)"))
                     Button {
                         appState.approvePendingViewer(viewer.id)
                     } label: {
-                        Text("Accept").font(.caption)
+                        Text(L("Accept")).font(.caption)
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.mini)
-                    .accessibilityLabel("Accept \(viewer.hostname ?? viewer.tailscaleIP)")
+                    .accessibilityLabel(L("Accept \(viewer.hostname ?? viewer.tailscaleIP)"))
                 }
             }
         }
@@ -607,13 +606,13 @@ private struct ApprovalToggle: View {
 
     var body: some View {
         Toggle(isOn: $appState.requireViewerApproval) {
-            Text("Require approval for new viewers")
+            Text(L("Require approval for new viewers"))
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
         }
         .toggleStyle(.switch)
         .controlSize(.mini)
-        .accessibilityHint("New viewers will see a Connecting prompt until you Accept or Deny")
+        .accessibilityHint(L("New viewers will see a Connecting prompt until you Accept or Deny"))
     }
 }
 
@@ -630,11 +629,11 @@ private struct ViewingCard: View {
                     .padding(.top, 5)
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Viewing \(appState.connectedHostname ?? "peer")")
+                    Text(L("Viewing \(appState.connectedHostname ?? L("peer"))"))
                         .font(.headline)
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    Text("Connected over Tailscale")
+                    Text(L("Connected over Tailscale"))
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
@@ -646,25 +645,25 @@ private struct ViewingCard: View {
                     Task { await appState.toggleMic() }
                 } label: {
                     Label(
-                        appState.isMicOn ? "Mute Mic" : "Unmute Mic",
+                        appState.isMicOn ? L("Mute Mic") : L("Unmute Mic"),
                         systemImage: appState.isMicOn ? "mic.fill" : "mic.slash"
                     )
                     .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .help("Toggle mic (⌃⌥M)")
-                .accessibilityLabel(appState.isMicOn ? "Mute microphone" : "Unmute microphone")
-                .accessibilityHint("Toggles voice chat with the sharer")
+                .help(L("Toggle mic (⌃⌥M)"))
+                .accessibilityLabel(appState.isMicOn ? L("Mute microphone") : L("Unmute microphone"))
+                .accessibilityHint(L("Toggles voice chat with the sharer"))
 
                 Button {
                     Task { await appState.disconnect() }
                 } label: {
-                    Text("Disconnect").frame(maxWidth: .infinity)
+                    Text(L("Disconnect")).frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .accessibilityHint("Closes the viewer window and ends this session")
+                .accessibilityHint(L("Closes the viewer window and ends this session"))
             }
 
             AudioDevicePickers()
@@ -690,7 +689,7 @@ private struct DisplayPickerSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            SectionHeader(title: "SHARE")
+            SectionHeader(title: L("SHARE"))
                 .padding(.top, 2)
 
             if appState.anotherInstanceSharing {
@@ -705,9 +704,9 @@ private struct DisplayPickerSection: View {
                         .frame(width: 16, alignment: .center)
                         .foregroundStyle(.secondary)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Another Tailscreen is sharing")
+                        Text(L("Another Tailscreen is sharing"))
                             .font(.body)
-                        Text("Stop the other instance first")
+                        Text(L("Stop the other instance first"))
                             .font(.subheadline)
                             .foregroundStyle(.tertiary)
                     }
@@ -726,7 +725,7 @@ private struct DisplayPickerSection: View {
                             .font(.body)
                             .frame(width: 16, alignment: .center)
                             .foregroundStyle(.secondary)
-                        Text("Choose what to share…")
+                        Text(L("Choose what to share…"))
                             .font(.body)
                         Spacer(minLength: 0)
                     }
@@ -756,7 +755,7 @@ private struct DevicesSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
-                Text("AVAILABLE SCREENS")
+                Text(L("AVAILABLE SCREENS"))
                     .font(.caption2.weight(.semibold))
                     .tracking(0.6)
                     .foregroundStyle(.tertiary)
@@ -780,8 +779,8 @@ private struct DevicesSection: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(appState.isDiscovering)
-                .help("Refresh screens")
-                .accessibilityLabel("Refresh available screens")
+                .help(L("Refresh screens"))
+                .accessibilityLabel(L("Refresh available screens"))
             }
             .padding(.horizontal, 14)
             .padding(.top, 6)
@@ -802,14 +801,14 @@ private struct DevicesSection: View {
         if appState.isDiscovering && appState.availablePeers.isEmpty {
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small).scaleEffect(0.7)
-                Text("Looking for screens…")
+                Text(L("Looking for screens…"))
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
             .frame(height: 28)
             .padding(.horizontal, 14)
         } else if appState.availablePeers.isEmpty {
-            Text("No Tailscreen devices on your tailnet")
+            Text(L("No Tailscreen devices on your tailnet"))
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .frame(height: 28)
@@ -874,7 +873,7 @@ private struct PeerMenuRow: View {
                             .lineLimit(1)
                             .truncationMode(.middle)
                         if !peer.isOnline {
-                            Text("Offline")
+                            Text(L("Offline"))
                                 .font(.caption)
                                 .foregroundStyle(.tertiary)
                         }
@@ -899,8 +898,8 @@ private struct PeerMenuRow: View {
             .disabled(!peer.isOnline)
             .opacity(peer.isOnline ? 1.0 : 0.55)
             .background(MenuRowHoverBackground(isHovered: isHovered && peer.isOnline))
-            .accessibilityLabel("\(peer.hostname), \(peer.isOnline ? "online" : "offline")")
-            .accessibilityHint(peer.isOnline ? "Connects to view this device's screen" : "")
+            .accessibilityLabel(L("\(peer.hostname), \(peer.isOnline ? L("online") : L("offline"))"))
+            .accessibilityHint(peer.isOnline ? L("Connects to view this device's screen") : "")
 
             HStack(spacing: 6) {
                 Spacer(minLength: 0)
@@ -915,8 +914,8 @@ private struct PeerMenuRow: View {
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .help("Ask \(peer.hostname) to share their screen")
-                    .accessibilityLabel("Request \(peer.hostname) to share")
+                    .help(L("Ask \(peer.hostname) to share their screen"))
+                    .accessibilityLabel(L("Request \(peer.hostname) to share"))
                 }
                 if isHovered && peer.isOnline {
                     Image(systemName: "chevron.right")
@@ -968,12 +967,12 @@ private struct IdentityFooter: View {
                         .foregroundStyle(isHovered ? .primary : .secondary)
 
                         VStack(alignment: .leading, spacing: 1) {
-                            Text(isHovered ? "Sign out" : profile.displayName)
+                            Text(isHovered ? L("Sign out") : profile.displayName)
                                 .font(.callout.weight(.medium))
                                 .lineLimit(1)
                             Text(
                                 isHovered
-                                    ? "End your Tailscale session"
+                                    ? L("End your Tailscale session")
                                     : profile.loginName
                             )
                             .font(.subheadline)
@@ -991,8 +990,8 @@ private struct IdentityFooter: View {
                 .buttonStyle(.plain)
                 .background(MenuRowHoverBackground(isHovered: isHovered))
                 .onHover { isHovered = $0 }
-                .help("Sign out of Tailscale")
-                .accessibilityLabel("Sign out of Tailscale, signed in as \(profile.displayName)")
+                .help(L("Sign out of Tailscale"))
+                .accessibilityLabel(L("Sign out of Tailscale, signed in as \(profile.displayName)"))
             }
         }
     }

@@ -3,6 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "Tailscreen",
+    defaultLocalization: "en",
     platforms: [
         // 15.2 (Dec 2024) is the floor: SCContentFilter's
         // `includedDisplays` / `includedWindows` /

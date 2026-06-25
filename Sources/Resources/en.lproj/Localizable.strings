@@ -1,0 +1,231 @@
+/* Tailscreen — base (English) localization.
+ *
+ * Keys are the English source text exactly as passed to `L(...)` (see
+ * Sources/Localization.swift). Interpolations appear as printf-style
+ * specifiers: %@ for a String/CustomStringConvertible value, %lld for an
+ * Int. To add a language, copy this file to `<lang>.lproj/Localizable.strings`
+ * (e.g. `sv.lproj`) under Sources/Resources/ and translate the values only —
+ * keep the keys byte-for-byte identical. No code changes are needed.
+ *
+ * Brand names ("Tailscreen", "Tailscale"), key-equivalent glyphs ("⌘Q"),
+ * and log lines are intentionally not in this catalog.
+ */
+
+/* MARK: - Menu bar (AppMenu.swift) */
+"About Tailscreen" = "About Tailscreen";
+"Settings…" = "Settings…";
+"Hide Tailscreen" = "Hide Tailscreen";
+"Hide Others" = "Hide Others";
+"Show All" = "Show All";
+"Quit Tailscreen" = "Quit Tailscreen";
+"Disconnect" = "Disconnect";
+"Microphone" = "Microphone";
+"Undo Annotation" = "Undo Annotation";
+"Clear All Annotations" = "Clear All Annotations";
+"Actual Size" = "Actual Size";
+"Zoom to 50%" = "Zoom to 50%";
+"Zoom to 200%" = "Zoom to 200%";
+"Minimize" = "Minimize";
+"Zoom" = "Zoom";
+"Bring All to Front" = "Bring All to Front";
+"Keyboard Shortcuts" = "Keyboard Shortcuts";
+
+/* MARK: - About panel (AppMenu.swift) */
+"© 2026 Robert Sköld. MIT-licensed open source." = "© 2026 Robert Sköld. MIT-licensed open source.";
+"Low-latency, encrypted peer-to-peer screen sharing over Tailscale.\n" = "Low-latency, encrypted peer-to-peer screen sharing over Tailscale.\n";
+"Captures with ScreenCaptureKit, encodes H.264/HEVC with VideoToolbox, renders with Metal, and tunnels via tsnet ephemeral nodes — no manual device registration.\n" = "Captures with ScreenCaptureKit, encodes H.264/HEVC with VideoToolbox, renders with Metal, and tunnels via tsnet ephemeral nodes — no manual device registration.\n";
+
+/* MARK: - Welcome / sign-in (MenuBarView.swift) */
+"Welcome to Tailscreen" = "Welcome to Tailscreen";
+"Sign in with Tailscale to share and view screens with your peers." = "Sign in with Tailscale to share and view screens with your peers.";
+"Signing in…" = "Signing in…";
+"Sign in with Tailscale" = "Sign in with Tailscale";
+"Opens Tailscale sign-in in your browser" = "Opens Tailscale sign-in in your browser";
+
+/* MARK: - Pending request-to-share banner (MenuBarView.swift) */
+"%@ wants you to share" = "%@ wants you to share";
+"Tap Share to choose what to show" = "Tap Share to choose what to show";
+"Decline" = "Decline";
+"Share" = "Share";
+
+/* MARK: - Connecting / starting cards (MenuBarView.swift) */
+"Connecting to %@…" = "Connecting to %@…";
+"Connecting…" = "Connecting…";
+"Negotiating the WireGuard tunnel and waiting for the first frame." = "Negotiating the WireGuard tunnel and waiting for the first frame.";
+"Starting share…" = "Starting share…";
+"Bringing up screen capture. macOS may take a few seconds." = "Bringing up screen capture. macOS may take a few seconds.";
+
+/* MARK: - Sharing card (MenuBarView.swift) */
+"Sharing your screen" = "Sharing your screen";
+"1 viewer connected" = "1 viewer connected";
+"%lld viewers connected" = "%lld viewers connected";
+"Capturing…" = "Capturing…";
+"Stop Drawing" = "Stop Drawing";
+"Draw" = "Draw";
+"Stop drawing on screen" = "Stop drawing on screen";
+"Draw on screen" = "Draw on screen";
+"Mute Mic (⌃⌥M)" = "Mute Mic (⌃⌥M)";
+"Unmute Mic (⌃⌥M)" = "Unmute Mic (⌃⌥M)";
+"Toggles voice chat with viewers" = "Toggles voice chat with viewers";
+"Stop Sharing" = "Stop Sharing";
+"Disconnects all viewers and ends the screen share" = "Disconnects all viewers and ends the screen share";
+"No viewers yet" = "No viewers yet";
+"%lld watching: %@" = "%lld watching: %@";
+
+/* MARK: - Viewer approval rows (MenuBarView.swift) */
+"Deny" = "Deny";
+"Deny %@" = "Deny %@";
+"Accept" = "Accept";
+"Accept %@" = "Accept %@";
+"New viewers will see a Connecting prompt until you Accept or Deny" = "New viewers will see a Connecting prompt until you Accept or Deny";
+
+/* MARK: - Viewing card (MenuBarView.swift) */
+"Viewing %@" = "Viewing %@";
+"peer" = "peer";
+"Connected over Tailscale" = "Connected over Tailscale";
+"Mute Mic" = "Mute Mic";
+"Unmute Mic" = "Unmute Mic";
+"Toggle mic (⌃⌥M)" = "Toggle mic (⌃⌥M)";
+"Toggles voice chat with the sharer" = "Toggles voice chat with the sharer";
+"Closes the viewer window and ends this session" = "Closes the viewer window and ends this session";
+
+/* MARK: - Audio device pickers (MenuBarView.swift / SettingsView.swift) */
+"System default" = "System default";
+"Microphone input device" = "Microphone input device";
+"Speaker output device" = "Speaker output device";
+
+/* MARK: - Display picker / share section (MenuBarView.swift) */
+"SHARE" = "SHARE";
+"Another Tailscreen is sharing" = "Another Tailscreen is sharing";
+"Stop the other instance first" = "Stop the other instance first";
+"Choose what to share…" = "Choose what to share…";
+
+/* MARK: - Devices section (MenuBarView.swift) */
+"AVAILABLE SCREENS" = "AVAILABLE SCREENS";
+"Refresh screens" = "Refresh screens";
+"Refresh available screens" = "Refresh available screens";
+"Looking for screens…" = "Looking for screens…";
+"No Tailscreen devices on your tailnet" = "No Tailscreen devices on your tailnet";
+"Offline" = "Offline";
+"%@, %@" = "%@, %@";
+"online" = "online";
+"offline" = "offline";
+"Connects to view this device's screen" = "Connects to view this device's screen";
+"Ask %@ to share their screen" = "Ask %@ to share their screen";
+"Request %@ to share" = "Request %@ to share";
+
+/* MARK: - Identity footer (MenuBarView.swift) */
+"Sign out" = "Sign out";
+"End your Tailscale session" = "End your Tailscale session";
+"Sign out of Tailscale" = "Sign out of Tailscale";
+"Sign out of Tailscale, signed in as %@" = "Sign out of Tailscale, signed in as %@";
+
+/* MARK: - Settings window (SettingsView.swift) */
+"Viewers" = "Viewers";
+"Require approval for new viewers" = "Require approval for new viewers";
+"New viewers wait on a Connecting prompt until you Accept or Deny them." = "New viewers wait on a Connecting prompt until you Accept or Deny them.";
+"Audio" = "Audio";
+"Speaker" = "Speaker";
+"About" = "About";
+"Version" = "Version";
+"Project on GitHub" = "Project on GitHub";
+
+/* MARK: - Window titles (AppState.swift) */
+"Tailscreen Settings" = "Tailscreen Settings";
+
+/* MARK: - Error alerts (AppError.swift / AppState.swift) */
+"%@\n\nError code: %@" = "%@\n\nError code: %@";
+"Copy Details" = "Copy Details";
+"OK" = "OK";
+"Open System Settings" = "Open System Settings";
+"Couldn't Start Sharing" = "Couldn't Start Sharing";
+"macOS didn't return shareable screens in time. If this is the first time you've shared, grant Tailscreen permission in System Settings → Privacy & Security → Screen Recording, then try again." = "macOS didn't return shareable screens in time. If this is the first time you've shared, grant Tailscreen permission in System Settings → Privacy & Security → Screen Recording, then try again.";
+"Restart Required" = "Restart Required";
+"macOS's screen-recording daemon is in a stuck state for Tailscreen and won't deliver any more frames until the app restarts. This usually follows a startCapture timeout or a stream interruption. Quit Tailscreen (⌘Q) and reopen — sharing will work again." = "macOS's screen-recording daemon is in a stuck state for Tailscreen and won't deliver any more frames until the app restarts. This usually follows a startCapture timeout or a stream interruption. Quit Tailscreen (⌘Q) and reopen — sharing will work again.";
+"macOS accepted the screen-capture request but never delivered any frames. This usually means another Tailscreen process is already sharing — quit other instances and try again. If the problem persists, run `killall replayd` in Terminal (macOS will auto-restart it) or reboot." = "macOS accepted the screen-capture request but never delivered any frames. This usually means another Tailscreen process is already sharing — quit other instances and try again. If the problem persists, run `killall replayd` in Terminal (macOS will auto-restart it) or reboot.";
+"Connection Failed" = "Connection Failed";
+"Could not connect to %@: %@" = "Could not connect to %@: %@";
+"Discovery Failed" = "Discovery Failed";
+"Sign in with Tailscale first to discover other Tailscreen instances on your tailnet." = "Sign in with Tailscale first to discover other Tailscreen instances on your tailnet.";
+"Request Failed" = "Request Failed";
+"Could not send request to %@: %@" = "Could not send request to %@: %@";
+"Voice Init Failed" = "Voice Init Failed";
+"Voice could not be initialized: %@. Voice will be unavailable for this share session." = "Voice could not be initialized: %@. Voice will be unavailable for this share session.";
+"Voice Not Ready" = "Voice Not Ready";
+"Voice is only available during an active share." = "Voice is only available during an active share.";
+"Microphone Unavailable" = "Microphone Unavailable";
+"Tailscreen could not start the microphone: %@. Check System Settings → Privacy & Security → Microphone." = "Tailscreen could not start the microphone: %@. Check System Settings → Privacy & Security → Microphone.";
+"Login Failed" = "Login Failed";
+"Failed to log in: %@" = "Failed to log in: %@";
+"Sign Out Failed" = "Sign Out Failed";
+"Error" = "Error";
+"Failed to start sharing: %@" = "Failed to start sharing: %@";
+
+/* MARK: - Notifications (TailscreenUserNotifications.swift / ViewerApproval.swift) */
+"Tailscreen request" = "Tailscreen request";
+"%@ wants you to share your screen" = "%@ wants you to share your screen";
+"Viewer Connected" = "Viewer Connected";
+"%@ is now viewing your screen." = "%@ is now viewing your screen.";
+"Viewer Wants to Connect" = "Viewer Wants to Connect";
+"%@ is asking to view your screen. Open Tailscreen to Accept or Deny." = "%@ is asking to view your screen. Open Tailscreen to Accept or Deny.";
+
+/* MARK: - Viewer menu commands (ViewerCommands.swift) */
+"Mute Microphone" = "Mute Microphone";
+"Unmute Microphone" = "Unmute Microphone";
+
+/* MARK: - Stats overlay (ViewerStatsOverlay.swift) */
+"Latency" = "Latency";
+"FPS" = "FPS";
+"Dropped" = "Dropped";
+"Bitrate" = "Bitrate";
+"Codec" = "Codec";
+"Connection" = "Connection";
+
+/* MARK: - Shortcuts overlay (ViewerShortcutsOverlay.swift) */
+"Tools" = "Tools";
+"Annotation" = "Annotation";
+"Window" = "Window";
+"Pointer / Click" = "Pointer / Click";
+"Cancel current drag" = "Cancel current drag";
+"Toggle microphone (system-wide)" = "Toggle microphone (system-wide)";
+"Disconnect viewer" = "Disconnect viewer";
+"Show / hide this help" = "Show / hide this help";
+"Keyboard shortcuts" = "Keyboard shortcuts";
+"Close keyboard shortcuts" = "Close keyboard shortcuts";
+"Click anywhere or press ⇧⌘/ to dismiss." = "Click anywhere or press ⇧⌘/ to dismiss.";
+
+/* MARK: - Viewer toolbar (ViewerToolbar.swift) */
+"Undo" = "Undo";
+"Undo last annotation" = "Undo last annotation";
+"Undo last annotation (⌘Z)" = "Undo last annotation (⌘Z)";
+"Clear" = "Clear";
+"Clear all annotations" = "Clear all annotations";
+"Clear all annotations (⇧⌘⌫ or right-click)" = "Clear all annotations (⇧⌘⌫ or right-click)";
+"Mic" = "Mic";
+"Mute microphone" = "Mute microphone";
+"Unmute microphone" = "Unmute microphone";
+"Toggle microphone (⌃⌥M)" = "Toggle microphone (⌃⌥M)";
+"Stats" = "Stats";
+"Toggle stream stats overlay" = "Toggle stream stats overlay";
+"Shortcuts" = "Shortcuts";
+"Show keyboard shortcuts" = "Show keyboard shortcuts";
+"Keyboard shortcuts (⇧⌘/)" = "Keyboard shortcuts (⇧⌘/)";
+"Pen" = "Pen";
+"Line" = "Line";
+"Arrow" = "Arrow";
+"Rectangle" = "Rectangle";
+"Oval" = "Oval";
+"Click" = "Click";
+"Rect" = "Rect";
+"Pen annotation tool" = "Pen annotation tool";
+"Line annotation tool" = "Line annotation tool";
+"Arrow annotation tool" = "Arrow annotation tool";
+"Rectangle annotation tool" = "Rectangle annotation tool";
+"Oval annotation tool" = "Oval annotation tool";
+"Pointer click tool" = "Pointer click tool";
+"Pen (1 or ⌘1)" = "Pen (1 or ⌘1)";
+"Line (2 or ⌘2)" = "Line (2 or ⌘2)";
+"Arrow (3 or ⌘3)" = "Arrow (3 or ⌘3)";
+"Rectangle (4 or ⌘4)" = "Rectangle (4 or ⌘4)";
+"Oval (5 or ⌘5)" = "Oval (5 or ⌘5)";
+"Pointer / Click (6 or ⌘6)" = "Pointer / Click (6 or ⌘6)";

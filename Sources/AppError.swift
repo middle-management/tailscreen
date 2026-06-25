@@ -63,11 +63,13 @@ extension AppError {
     static func screenCaptureStartTimeout() -> AppError {
         AppError(
             code: "TS-SCREEN-002",
-            title: "Couldn't Start Sharing",
+            title: L("Couldn't Start Sharing"),
             message:
-                "macOS didn't return shareable screens in time. If this is the first time you've shared, grant Tailscreen permission in System Settings → Privacy & Security → Screen Recording, then try again.",
+                L(
+                    "macOS didn't return shareable screens in time. If this is the first time you've shared, grant Tailscreen permission in System Settings → Privacy & Security → Screen Recording, then try again."
+                ),
             underlying: nil,
-            action: AppErrorAction(title: "Open System Settings") {
+            action: AppErrorAction(title: L("Open System Settings")) {
                 ScreenCapture.openScreenRecordingSettings()
             }
         )
@@ -78,9 +80,11 @@ extension AppError {
     static func screenCaptureBundlePoisoned() -> AppError {
         AppError(
             code: "TS-SCREEN-003",
-            title: "Restart Required",
+            title: L("Restart Required"),
             message:
-                "macOS's screen-recording daemon is in a stuck state for Tailscreen and won't deliver any more frames until the app restarts. This usually follows a startCapture timeout or a stream interruption. Quit Tailscreen (⌘Q) and reopen — sharing will work again.",
+                L(
+                    "macOS's screen-recording daemon is in a stuck state for Tailscreen and won't deliver any more frames until the app restarts. This usually follows a startCapture timeout or a stream interruption. Quit Tailscreen (⌘Q) and reopen — sharing will work again."
+                ),
             underlying: nil,
             action: nil
         )
@@ -92,9 +96,11 @@ extension AppError {
     static func screenCaptureNoFrames() -> AppError {
         AppError(
             code: "TS-SCREEN-004",
-            title: "Couldn't Start Sharing",
+            title: L("Couldn't Start Sharing"),
             message:
-                "macOS accepted the screen-capture request but never delivered any frames. This usually means another Tailscreen process is already sharing — quit other instances and try again. If the problem persists, run `killall replayd` in Terminal (macOS will auto-restart it) or reboot.",
+                L(
+                    "macOS accepted the screen-capture request but never delivered any frames. This usually means another Tailscreen process is already sharing — quit other instances and try again. If the problem persists, run `killall replayd` in Terminal (macOS will auto-restart it) or reboot."
+                ),
             underlying: nil,
             action: nil
         )
@@ -105,7 +111,7 @@ extension AppError {
     static func screenCaptureGeneric(_ underlying: Error) -> AppError {
         AppError(
             code: "TS-SCREEN-099",
-            title: "Couldn't Start Sharing",
+            title: L("Couldn't Start Sharing"),
             message: underlying.localizedDescription,
             underlying: String(describing: underlying),
             action: nil
@@ -116,8 +122,8 @@ extension AppError {
     static func connectionFailed(host: String, underlying: Error) -> AppError {
         AppError(
             code: "TS-NET-001",
-            title: "Connection Failed",
-            message: "Could not connect to \(host): \(underlying.localizedDescription)",
+            title: L("Connection Failed"),
+            message: L("Could not connect to \(host): \(underlying.localizedDescription)"),
             underlying: String(describing: underlying),
             action: nil
         )
@@ -127,7 +133,7 @@ extension AppError {
     static func discoveryFailed(_ underlying: Error) -> AppError {
         AppError(
             code: "TS-NET-002",
-            title: "Discovery Failed",
+            title: L("Discovery Failed"),
             message: underlying.localizedDescription,
             underlying: String(describing: underlying),
             action: nil
@@ -138,8 +144,8 @@ extension AppError {
     static func discoveryUnauthenticated() -> AppError {
         AppError(
             code: "TS-NET-003",
-            title: "Discovery Failed",
-            message: "Sign in with Tailscale first to discover other Tailscreen instances on your tailnet.",
+            title: L("Discovery Failed"),
+            message: L("Sign in with Tailscale first to discover other Tailscreen instances on your tailnet."),
             underlying: nil,
             action: nil
         )
@@ -149,8 +155,8 @@ extension AppError {
     static func requestToShareFailed(peer: String, underlying: Error) -> AppError {
         AppError(
             code: "TS-NET-004",
-            title: "Request Failed",
-            message: "Could not send request to \(peer): \(underlying.localizedDescription)",
+            title: L("Request Failed"),
+            message: L("Could not send request to \(peer): \(underlying.localizedDescription)"),
             underlying: String(describing: underlying),
             action: nil
         )
@@ -160,9 +166,11 @@ extension AppError {
     static func voiceInitFailed(_ underlying: Error) -> AppError {
         AppError(
             code: "TS-VOICE-001",
-            title: "Voice Init Failed",
+            title: L("Voice Init Failed"),
             message:
-                "Voice could not be initialized: \(underlying.localizedDescription). Voice will be unavailable for this share session.",
+                L(
+                    "Voice could not be initialized: \(underlying.localizedDescription). Voice will be unavailable for this share session."
+                ),
             underlying: String(describing: underlying),
             action: nil
         )
@@ -172,7 +180,7 @@ extension AppError {
     static func voiceViewerInitFailed(_ underlying: Error) -> AppError {
         AppError(
             code: "TS-VOICE-002",
-            title: "Voice Init Failed",
+            title: L("Voice Init Failed"),
             message: underlying.localizedDescription,
             underlying: String(describing: underlying),
             action: nil
@@ -183,8 +191,8 @@ extension AppError {
     static func voiceNotReady() -> AppError {
         AppError(
             code: "TS-VOICE-003",
-            title: "Voice Not Ready",
-            message: "Voice is only available during an active share.",
+            title: L("Voice Not Ready"),
+            message: L("Voice is only available during an active share."),
             underlying: nil,
             action: nil
         )
@@ -194,11 +202,13 @@ extension AppError {
     static func microphoneUnavailable(_ underlying: Error) -> AppError {
         AppError(
             code: "TS-VOICE-004",
-            title: "Microphone Unavailable",
+            title: L("Microphone Unavailable"),
             message:
-                "Tailscreen could not start the microphone: \(underlying.localizedDescription). Check System Settings → Privacy & Security → Microphone.",
+                L(
+                    "Tailscreen could not start the microphone: \(underlying.localizedDescription). Check System Settings → Privacy & Security → Microphone."
+                ),
             underlying: String(describing: underlying),
-            action: AppErrorAction(title: "Open System Settings") {
+            action: AppErrorAction(title: L("Open System Settings")) {
                 let urlString = "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
                 if let url = URL(string: urlString) {
                     NSWorkspace.shared.open(url)
@@ -211,8 +221,8 @@ extension AppError {
     static func loginFailed(_ underlying: Error) -> AppError {
         AppError(
             code: "TS-AUTH-001",
-            title: "Login Failed",
-            message: "Failed to log in: \(underlying.localizedDescription)",
+            title: L("Login Failed"),
+            message: L("Failed to log in: \(underlying.localizedDescription)"),
             underlying: String(describing: underlying),
             action: nil
         )
@@ -222,7 +232,7 @@ extension AppError {
     static func signOutFailed(_ underlying: Error) -> AppError {
         AppError(
             code: "TS-AUTH-002",
-            title: "Sign Out Failed",
+            title: L("Sign Out Failed"),
             message: underlying.localizedDescription,
             underlying: String(describing: underlying),
             action: nil
@@ -234,8 +244,8 @@ extension AppError {
     static func sharingGeneric(_ underlying: Error) -> AppError {
         AppError(
             code: "TS-SCREEN-100",
-            title: "Error",
-            message: "Failed to start sharing: \(underlying.localizedDescription)",
+            title: L("Error"),
+            message: L("Failed to start sharing: \(underlying.localizedDescription)"),
             underlying: String(describing: underlying),
             action: nil
         )

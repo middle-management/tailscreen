@@ -18,47 +18,47 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
-            Section("Viewers") {
+            Section(L("Viewers")) {
                 Toggle(
-                    "Require approval for new viewers",
+                    L("Require approval for new viewers"),
                     isOn: $appState.requireViewerApproval)
                 Text(
-                    "New viewers wait on a Connecting prompt until you Accept or Deny them."
+                    L("New viewers wait on a Connecting prompt until you Accept or Deny them.")
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)
             }
 
-            Section("Audio") {
+            Section(L("Audio")) {
                 Picker(
-                    "Microphone",
+                    L("Microphone"),
                     selection: Binding(
                         get: { appState.selectedInputDeviceID },
                         set: { appState.selectInputDevice($0) }
                     )
                 ) {
-                    Text("System default").tag(AudioDeviceID?.none)
+                    Text(L("System default")).tag(AudioDeviceID?.none)
                     ForEach(appState.availableInputDevices) { device in
                         Text(device.name).tag(AudioDeviceID?.some(device.id))
                     }
                 }
                 Picker(
-                    "Speaker",
+                    L("Speaker"),
                     selection: Binding(
                         get: { appState.selectedOutputDeviceID },
                         set: { appState.selectOutputDevice($0) }
                     )
                 ) {
-                    Text("System default").tag(AudioDeviceID?.none)
+                    Text(L("System default")).tag(AudioDeviceID?.none)
                     ForEach(appState.availableOutputDevices) { device in
                         Text(device.name).tag(AudioDeviceID?.some(device.id))
                     }
                 }
             }
 
-            Section("About") {
-                LabeledContent("Version", value: Self.versionString)
-                Link("Project on GitHub", destination: Self.projectURL)
+            Section(L("About")) {
+                LabeledContent(L("Version"), value: Self.versionString)
+                Link(L("Project on GitHub"), destination: Self.projectURL)
             }
         }
         .formStyle(.grouped)

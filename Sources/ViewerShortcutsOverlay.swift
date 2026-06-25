@@ -33,34 +33,34 @@ struct ViewerShortcutsOverlay: View {
 
     private static let sections: [Section] = [
         Section(
-            title: "Tools",
+            title: L("Tools"),
             items: [
-                Shortcut(keys: "1  or  ⌘1", description: "Pen"),
-                Shortcut(keys: "2  or  ⌘2", description: "Line"),
-                Shortcut(keys: "3  or  ⌘3", description: "Arrow"),
-                Shortcut(keys: "4  or  ⌘4", description: "Rectangle"),
-                Shortcut(keys: "5  or  ⌘5", description: "Oval"),
-                Shortcut(keys: "6  or  ⌘6", description: "Pointer / Click")
+                Shortcut(keys: "1  or  ⌘1", description: L("Pen")),
+                Shortcut(keys: "2  or  ⌘2", description: L("Line")),
+                Shortcut(keys: "3  or  ⌘3", description: L("Arrow")),
+                Shortcut(keys: "4  or  ⌘4", description: L("Rectangle")),
+                Shortcut(keys: "5  or  ⌘5", description: L("Oval")),
+                Shortcut(keys: "6  or  ⌘6", description: L("Pointer / Click"))
             ]),
         Section(
-            title: "Annotation",
+            title: L("Annotation"),
             items: [
-                Shortcut(keys: "⌘Z", description: "Undo last annotation"),
-                Shortcut(keys: "⇧⌘⌫", description: "Clear all annotations"),
-                Shortcut(keys: "Esc", description: "Cancel current drag"),
-                Shortcut(keys: "Right-click", description: "Clear all annotations")
+                Shortcut(keys: "⌘Z", description: L("Undo last annotation")),
+                Shortcut(keys: "⇧⌘⌫", description: L("Clear all annotations")),
+                Shortcut(keys: "Esc", description: L("Cancel current drag")),
+                Shortcut(keys: "Right-click", description: L("Clear all annotations"))
             ]),
         Section(
-            title: "Audio",
+            title: L("Audio"),
             items: [
-                Shortcut(keys: "⌃⌥M", description: "Toggle microphone (system-wide)")
+                Shortcut(keys: "⌃⌥M", description: L("Toggle microphone (system-wide)"))
             ]),
         Section(
-            title: "Window",
+            title: L("Window"),
             items: [
-                Shortcut(keys: "⌘W", description: "Disconnect viewer"),
-                Shortcut(keys: "⌘Q", description: "Quit Tailscreen"),
-                Shortcut(keys: "⇧⌘/", description: "Show / hide this help")
+                Shortcut(keys: "⌘W", description: L("Disconnect viewer")),
+                Shortcut(keys: "⌘Q", description: L("Quit Tailscreen")),
+                Shortcut(keys: "⇧⌘/", description: L("Show / hide this help"))
             ])
     ]
 
@@ -75,13 +75,13 @@ struct ViewerShortcutsOverlay: View {
                 .padding(40)
         }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Keyboard shortcuts")
+        .accessibilityLabel(L("Keyboard shortcuts"))
     }
 
     private var card: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Text("Keyboard Shortcuts")
+                Text(L("Keyboard Shortcuts"))
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(.white)
                 Spacer()
@@ -93,7 +93,7 @@ struct ViewerShortcutsOverlay: View {
                         .foregroundStyle(.white.opacity(0.7))
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Close keyboard shortcuts")
+                .accessibilityLabel(L("Close keyboard shortcuts"))
             }
 
             Divider().background(Color.white.opacity(0.2))
@@ -106,7 +106,7 @@ struct ViewerShortcutsOverlay: View {
 
             Divider().background(Color.white.opacity(0.2))
 
-            Text("Click anywhere or press ⇧⌘/ to dismiss.")
+            Text(L("Click anywhere or press ⇧⌘/ to dismiss."))
                 .font(.system(size: 11))
                 .foregroundStyle(.white.opacity(0.55))
         }

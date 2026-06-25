@@ -45,8 +45,8 @@ final class TailscreenUserNotifications {
             guard let self else { return }
             guard self.authState == .authorized else { return }
             let content = UNMutableNotificationContent()
-            content.title = "Tailscreen request"
-            content.body = "\(fromHostname) wants you to share your screen"
+            content.title = L("Tailscreen request")
+            content.body = L("\(fromHostname) wants you to share your screen")
             content.sound = .default
             content.userInfo = ["fromHostname": fromHostname]
             let request = UNNotificationRequest(
