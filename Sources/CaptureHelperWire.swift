@@ -40,6 +40,13 @@ enum CaptureHelperWire {
         /// respawning would immediately reopen the very recording
         /// the user just turned off.
         case userStopped = 0x05
+        /// Liveness ping (~1 Hz). Emitted while the SCStream is delivering
+        /// samples — including `.idle` frames for a static screen — so the
+        /// parent can distinguish a wedged capture (SCStream silently stopped
+        /// while the helper process is still alive, which process-death
+        /// detection never catches) from a screen that simply isn't changing.
+        /// Payload empty.
+        case heartbeat = 0x06
         /// UTF-8 log line from the helper, surfaced into the main
         /// process's merged log so investigation doesn't need to
         /// open the helper's separate stderr.
@@ -81,7 +88,15 @@ enum CaptureHelperWire {
 /// can't keep up, providing natural backpressure.
 final class HelperFrameWriter: @unchecked Sendable {
     private let handle: FileHandle
+    /// Serializes `write` so messages produced on different threads — encoded
+    /// AUs/params on the encoder's output thread, previews on the MainActor,
+    /// heartbeats on the SCStream delegate's queue — can't interleave their
+    /// header and payload writes and desync the framed protocol.
+    private let writeLock = NSLock()
     init(handle: FileHandle) { self.handle = handle }
+
+    /// Liveness ping; see `OutType.heartbeat`.
+    func writeHeartbeat() { write(type: .heartbeat, payload: Data()) }
 
     func writeAccessUnit(_ data: Data, containsKeyframe: Bool) {
         // Prepend a 1-byte keyframe flag so main can prioritize
@@ -125,6 +140,8 @@ final class HelperFrameWriter: @unchecked Sendable {
         var header = Data()
         header.append(type.rawValue)
         header.appendBE(UInt32(payload.count))
+        writeLock.lock()
+        defer { writeLock.unlock() }
         try? handle.write(contentsOf: header)
         if !payload.isEmpty {
             try? handle.write(contentsOf: payload)

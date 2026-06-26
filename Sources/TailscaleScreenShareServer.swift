@@ -243,6 +243,25 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// `append`/`removeAll` on a bare `Array` is heap corruption.
     private let helperCrashTimestampsNs = OSAllocatedUnfairLock<[UInt64]>(initialState: [])
 
+    /// Uptime-ns of the last message received from the capture helper — AUs,
+    /// params, logs, or the ~1 Hz heartbeat. The hung-helper watchdog compares
+    /// `now` against this. Seeded to "now" when a helper spawns so SCStream
+    /// bring-up gets a full grace window; 0 means no helper is running.
+    private let lastHelperActivityNs = OSAllocatedUnfairLock<UInt64>(initialState: 0)
+    /// If the helper emits nothing for this long while a share is live, the
+    /// watchdog assumes capture wedged — SCStream stopped delivering without
+    /// the process exiting, which process-death detection can't catch — and
+    /// restarts it. Generous (matches the viewer idle timeout): the helper
+    /// heartbeats ~1 Hz off *any* delivered SCStream sample, including the
+    /// `.idle` frames a static screen still produces, so a healthy idle share
+    /// never trips it.
+    private let helperLivenessTimeoutNs: UInt64 = 15_000_000_000
+    /// On by default; `TAILSCREEN_DISABLE_HELPER_WATCHDOG=1` is an escape hatch
+    /// in case some hardware delivers idle frames too sparsely to keep the
+    /// heartbeat alive and would otherwise trip false restarts.
+    private let helperWatchdogEnabled =
+        ProcessInfo.processInfo.environment["TAILSCREEN_DISABLE_HELPER_WATCHDOG"] != "1"
+
     /// In-flight `restartCapture()` work. `stop()` awaits this before
     /// tearing down `helperCapture`, otherwise a concurrent restart
     /// can finish spawning a new helper *after* `stop()` already
@@ -409,6 +428,12 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
 
     private func startHelperCapture(filterData: Data) throws {
         let helper = HelperScreenCapture()
+        // Seed the liveness clock now so SCStream bring-up gets a full grace
+        // window before the watchdog can fire, then tick it on every message.
+        lastHelperActivityNs.withLock { $0 = DispatchTime.now().uptimeNanoseconds }
+        helper.onActivity = { [weak self] in
+            self?.lastHelperActivityNs.withLock { $0 = DispatchTime.now().uptimeNanoseconds }
+        }
         helper.onAccessUnit = { [weak self] avcc, isKeyframe in
             self?.handleHelperAccessUnit(avcc, isKeyframe: isKeyframe)
         }
@@ -1223,6 +1248,25 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
                 notifyPendingViewersChanged()
                 for addr in droppedPending {
                     logger.log("Pending viewer timeout \(addr)")
+                }
+            }
+
+            // Hung-helper watchdog. A helper that's alive but no longer
+            // producing (SCStream wedged without firing didStopWithError)
+            // leaves `isRunning` true while viewers freeze, and process-death
+            // detection never fires. The helper heartbeats ~1 Hz off any
+            // delivered SCStream sample, so a gap past the timeout means
+            // capture is genuinely stuck — restart it. `lastHelperActivityNs
+            // == 0` means no helper yet; skip.
+            if helperWatchdogEnabled, helperCapture != nil {
+                let last = lastHelperActivityNs.withLock { $0 }
+                if last != 0, now &- last > helperLivenessTimeoutNs {
+                    logger.log(
+                        "Helper liveness watchdog: no output for \((now &- last) / 1_000_000) ms — restarting capture")
+                    // Re-seed so we don't re-fire every second before the
+                    // restart settles (the fresh helper re-seeds it too).
+                    lastHelperActivityNs.withLock { $0 = now }
+                    Task { [weak self] in try? await self?.restartCapture() }
                 }
             }
         }
