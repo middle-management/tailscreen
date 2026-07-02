@@ -9,7 +9,7 @@ import TailscaleKit
 /// online, so probing 7447 across every peer is unnecessary latency.
 /// `isOnline` reflects tsnet's view of whether the remote node is currently
 /// reachable; the rest of the fields are netmap-derived metadata.
-struct TailscreenPeer: Identifiable, Sendable {
+struct TailscreenPeer: Identifiable, Sendable, Equatable {
     let id: String
     let hostname: String
     let dnsName: String
@@ -31,6 +31,21 @@ class TailscalePeerDiscovery: ObservableObject {
 
     private let logger: TSLogger
     private var ipnWatcher: TailscaleIPNWatcher?
+    private var monitoringStartInFlight = false
+
+    /// Per-source peer maps, keyed by stable node ID and merged (watcher
+    /// wins per node) before publishing. The two sources race: the seed
+    /// (`backendStatus`) and the IPN watcher deliver overlapping data at
+    /// different times, and an early netmap can be incomplete — right
+    /// after login it may carry only the recently-active peers. Letting
+    /// either source wholesale-replace the list made the menu churn
+    /// (seeded offline rows vanished when a partial netmap landed, then
+    /// reappeared on the next seed). A node deleted from the tailnet
+    /// leaves `watcherPeers` on the next netmap and `seedPeers` on the
+    /// next refresh pass, so it still prunes — just not via a partial
+    /// netmap alone.
+    private var seedPeers: [String: TailscreenPeer] = [:]
+    private var watcherPeers: [String: TailscreenPeer] = [:]
 
     init() {
         self.logger = TSLogger()
@@ -57,67 +72,130 @@ class TailscalePeerDiscovery: ObservableObject {
         }
         let allPeers = status.Peer ?? [:]
 
-        var peers: [TailscreenPeer] = []
+        var peers: [String: TailscreenPeer] = [:]
         for (_, peerStatus) in allPeers {
             guard TailscreenInstance.isTailscreenServerHostname(peerStatus.HostName) else { continue }
-            // Key on `String(peerStatus.ID)` (stable node ID) so seed rows
-            // share an Identifiable id with the IPN-watcher rebuild path;
-            // the LocalAPI map key is the public node key and would shift
-            // the id when the watcher takes over.
-            peers.append(
-                TailscreenPeer(
-                    id: String(peerStatus.ID),
-                    hostname: peerStatus.HostName,
-                    dnsName: peerStatus.DNSName,
-                    tailscaleIP: Self.preferIPv4(peerStatus.TailscaleIPs ?? []),
-                    isOnline: peerStatus.Online,
-                    metadata: nil,
-                    lastSeen: nil
-                ))
+            let key = Self.mergeKey(
+                dnsName: peerStatus.DNSName, fallbackID: String(peerStatus.ID))
+            peers[key] = TailscreenPeer(
+                id: key,
+                hostname: Self.displayHostname(
+                    dnsName: peerStatus.DNSName, fallback: peerStatus.HostName),
+                dnsName: peerStatus.DNSName,
+                tailscaleIP: Self.preferIPv4(peerStatus.TailscaleIPs ?? []),
+                isOnline: peerStatus.Online,
+                metadata: nil,
+                lastSeen: nil
+            )
         }
 
-        availablePeers = Self.sortPeers(peers)
-        logger.log("Seeded \(availablePeers.count) Tailscreen peer(s) from netmap")
+        seedPeers = peers
+        publishMerged()
+        logger.log("Seeded \(seedPeers.count) Tailscreen peer(s) from backendStatus")
     }
 
-    /// Start real-time monitoring of peer status using IPN bus
+    /// Start real-time monitoring of peer status using IPN bus.
+    /// Idempotent: no-ops when monitoring is already live or a start is
+    /// still in flight, so callers can safely re-kick it on every refresh
+    /// (the initial fire-and-forget attempt can fail or park when tsnet's
+    /// LocalAPI isn't ready yet).
     func startRealTimeMonitoring(node: TailscaleNode) async throws {
+        guard ipnWatcher == nil, !monitoringStartInFlight else { return }
+        monitoringStartInFlight = true
+        defer { monitoringStartInFlight = false }
+
         let watcher = TailscaleIPNWatcher()
+        // Watchdog: `watchIPNBus` can park indefinitely when tsnet's
+        // LocalAPI isn't ready (typical right after launch — exactly when
+        // the first discovery runs). Without the timeout a parked start
+        // holds `monitoringStartInFlight` forever, and since the discovery
+        // object is reused across refreshes, real-time monitoring would
+        // stay wedged for the whole session. Timing out clears the flag
+        // (via defer) so the next refresh genuinely retries.
+        try await Self.withWatchdog(seconds: 5) {
+            try await watcher.startWatching(node: node)
+        }
         ipnWatcher = watcher
 
-        try await watcher.startWatching(node: node)
-
         // Observe peer status changes
-        Task { @MainActor in
+        Task { @MainActor [weak self] in
             for await _ in watcher.$peers.values {
-                await updatePeerListFromIPNWatcher()
+                guard let self else { return }
+                await self.updatePeerListFromIPNWatcher()
             }
         }
 
         logger.log("Real-time monitoring started")
     }
 
-    /// Rebuild `availablePeers` from the watcher's current peer map. This
-    /// is the source of truth once monitoring is live — it discovers new
-    /// rows (offline → online transitions) and prunes peers that have left
-    /// the netmap entirely, not just refreshes existing rows.
+    /// Refresh the watcher-side peer map from the watcher's current
+    /// snapshot and republish the merged view. Discovers new rows
+    /// (offline → online transitions) and updates existing ones; pruning
+    /// a node that left the tailnet completes once it's also gone from
+    /// the seed side (see `seedPeers`/`watcherPeers`).
     private func updatePeerListFromIPNWatcher() async {
         guard let watcher = ipnWatcher else { return }
         let snapshot = watcher.peers
-        let next: [TailscreenPeer] = snapshot.values
-            .filter { TailscreenInstance.isTailscreenServerHostname($0.hostname) }
-            .map { ps in
-                TailscreenPeer(
-                    id: ps.nodeID,
-                    hostname: ps.hostname,
-                    dnsName: ps.dnsName,
-                    tailscaleIP: Self.preferIPv4(ps.tailscaleIPs),
-                    isOnline: ps.online,
-                    metadata: nil,
-                    lastSeen: ps.lastSeen
-                )
-            }
-        availablePeers = Self.sortPeers(next)
+        var next: [String: TailscreenPeer] = [:]
+        for ps in snapshot.values {
+            guard TailscreenInstance.isTailscreenServerHostname(ps.hostname) else { continue }
+            let key = Self.mergeKey(dnsName: ps.dnsName, fallbackID: ps.nodeID)
+            next[key] = TailscreenPeer(
+                id: key,
+                hostname: Self.displayHostname(dnsName: ps.dnsName, fallback: ps.hostname),
+                dnsName: ps.dnsName,
+                tailscaleIP: Self.preferIPv4(ps.tailscaleIPs),
+                isOnline: ps.online,
+                metadata: nil,
+                lastSeen: ps.lastSeen
+            )
+        }
+        watcherPeers = next
+        publishMerged()
+    }
+
+    /// Publish the union of both sources, watcher winning per node ID
+    /// (its data is fresher — live `online` transitions come from it).
+    private func publishMerged() {
+        let merged = seedPeers.merging(watcherPeers) { _, fromWatcher in fromWatcher }
+        publishIfChanged(Self.sortPeers(Array(merged.values)))
+    }
+
+    /// Assign `availablePeers` only when the list actually differs. The IPN
+    /// bus ticks on plenty of netmap changes that don't affect our rows
+    /// (endpoint updates, unrelated peers); republishing an identical array
+    /// still fires `objectWillChange` downstream and re-renders the whole
+    /// menubar popover, which reads as flicker while it's open.
+    private func publishIfChanged(_ next: [TailscreenPeer]) {
+        guard next != availablePeers else { return }
+        availablePeers = next
+    }
+
+    /// Merge key (and SwiftUI row identity) for a peer. The two sources
+    /// report *different* node identifiers — LocalAPI's `PeerStatus.ID`
+    /// is the string StableNodeID ("nXXXX…") while a netmap node's `ID`
+    /// is the numeric NodeID — so keying each source by its own ID made
+    /// the merged union list every node twice. The MagicDNS name is
+    /// unique per node and present in both sources; normalize case and
+    /// the FQDN trailing dot so both spellings collide.
+    nonisolated static func mergeKey(dnsName: String, fallbackID: String) -> String {
+        let normalized = dnsName.lowercased()
+        let trimmed =
+            normalized.hasSuffix(".") ? String(normalized.dropLast()) : normalized
+        return trimmed.isEmpty ? fallbackID : trimmed
+    }
+
+    /// Canonical display hostname: the first DNS label. The seed path's
+    /// `HostName` (raw hostinfo name, mixed case — "tailscreen-Fredrik's
+    /// MacBook Pro (2)") and the watcher's `ComputedName` (DNS-safe
+    /// lowercase — "tailscreen-fredriks-macbook-pro-2") differ for the
+    /// same node, so a row's text flipped whenever the fresher source
+    /// changed — visible churn in an open menu. The DNS label is derived
+    /// from the same data on both paths, so identical state renders
+    /// byte-identically wherever it came from.
+    nonisolated static func displayHostname(dnsName: String, fallback: String) -> String {
+        let label = dnsName.split(separator: ".").first.map(String.init) ?? ""
+        return label.isEmpty ? fallback : label
     }
 
     /// Stop real-time monitoring

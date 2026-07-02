@@ -160,7 +160,18 @@ class AppState: ObservableObject {
     // Peer discovery
     @Published var availablePeers: [TailscreenPeer] = []
     @Published var isDiscovering = false
+    /// True once any discovery pass has finished (successfully or not).
+    /// The menubar devices section shows its loading skeleton until this
+    /// flips — an empty `availablePeers` before the first pass means "no
+    /// answer yet", not "no devices". Reset on sign-out with the rest of
+    /// the discovery state.
+    @Published var hasCompletedInitialDiscovery = false
     private var peerDiscovery: TailscalePeerDiscovery?
+    /// The node the current `peerDiscovery` (and its IPN watcher) is bound
+    /// to. There's one tsnet node per process, but sign-out replaces it —
+    /// identity mismatch tells `discoverPeers` to rebuild the watcher
+    /// instead of reusing one bound to a closed node.
+    private weak var peerDiscoveryNode: TailscaleNode?
 
     // IPN-bus watcher dedicated to surfacing the interactive-login URL.
     // tsnet's `node.up()` blocks until login completes, so the only way to
@@ -1207,39 +1218,88 @@ class AppState: ObservableObject {
     }
 
     func discoverPeers() async {
+        // Coalesce concurrent calls: the popover re-ids its tree on open
+        // (`MenuBarView.viewID`), which fires the devices section's
+        // onAppear twice in quick succession — one pass is enough.
+        if isDiscovering { return }
+
         // Need an active Tailscale node to discover peers
         // Try to get it from either server or client
         guard let node = server?.node ?? client?.node ?? self.node else {
             presentError(.discoveryUnauthenticated())
+            hasCompletedInitialDiscovery = true
             return
         }
 
+        // Reuse the long-lived discovery (and its IPN watcher) across
+        // popover opens. Creating a fresh TailscalePeerDiscovery per
+        // refresh stacked up watchers whose observer loops all kept
+        // writing `availablePeers` — each write re-rendered the whole
+        // popover, which read as flicker/jumping while it was open. The
+        // node is created once per process (see getOrCreateNode), but
+        // sign-out tears it down, so rebind if its identity changed.
+        if let discovery = peerDiscovery, peerDiscoveryNode === node {
+            isDiscovering = true
+            logger.log("Discovery: reseeding…")
+            do {
+                try await discovery.startDiscovery(node: node)
+                setAvailablePeers(discovery.availablePeers)
+                logger.log("Discovery: reseeded with \(self.availablePeers.count) peer(s)")
+                // Re-kick monitoring in case the initial fire-and-forget
+                // attempt failed (idempotent — no-ops when already live).
+                Task { @MainActor in
+                    try? await discovery.startRealTimeMonitoring(node: node)
+                }
+            } catch {
+                logger.log("Discovery: reseed failed with \(error)")
+                presentError(.discoveryFailed(error))
+            }
+            isDiscovering = false
+            settleInitialDiscoveryAnswer()
+            return
+        }
+
+        peerDiscovery?.stopRealTimeMonitoring()
         let discovery = TailscalePeerDiscovery()
         self.peerDiscovery = discovery
+        self.peerDiscoveryNode = node
 
         isDiscovering = true
         logger.log("Discovery: starting…")
         do {
             try await discovery.startDiscovery(node: node)
-            self.availablePeers = discovery.availablePeers
+            setAvailablePeers(discovery.availablePeers)
             logger.log("Discovery: returned with \(self.availablePeers.count) peer(s)")
 
-            // Real-time IPN monitoring runs fire-and-forget: its initial
-            // `client.watchIPNBus(...)` await can park indefinitely when
-            // tsnet's LocalAPI isn't ready, and `try?` only swallows
-            // thrown errors — it doesn't time out. If we await it here,
-            // the spinner stays up on "Looking for screens…" even though
-            // discovery itself already returned. Detaching keeps the
-            // monitor opportunistic: we set it up when we can, but
-            // never block the user-visible "done" signal on it.
-            Task { @MainActor in
-                try? await discovery.startRealTimeMonitoring(node: node)
+            // Real-time IPN monitoring runs fire-and-forget so it never
+            // blocks the user-visible "done" signal. The first attempt
+            // usually races tsnet bring-up (this path runs right after
+            // node.up(), before LocalAPI is ready), and the start is now
+            // watchdog-bounded instead of parking — so retry with backoff
+            // until it sticks. Without a live watcher the peer list only
+            // refreshes on popover opens, and the always-rendered menubar
+            // content goes stale between them.
+            Task { @MainActor [weak self] in
+                for attempt in 0..<5 {
+                    guard let self, self.peerDiscovery === discovery else { return }
+                    do {
+                        try await discovery.startRealTimeMonitoring(node: node)
+                        return
+                    } catch {
+                        self.logger.log(
+                            "Discovery: monitoring start failed (attempt \(attempt + 1)): \(error)")
+                        try? await Task.sleep(for: .seconds(1 << attempt))
+                    }
+                }
             }
 
-            // Observe peer changes
-            Task { @MainActor in
-                for await peers in discovery.$availablePeers.values {
-                    self.availablePeers = peers
+            // Observe peer changes. Ends when the discovery object (and
+            // its publisher) is torn down on rebind/sign-out.
+            Task { @MainActor [weak self, weak discovery] in
+                guard let stream = discovery?.$availablePeers.values else { return }
+                for await peers in stream {
+                    guard let self, let discovery, self.peerDiscovery === discovery else { return }
+                    self.setAvailablePeers(peers)
                 }
             }
 
@@ -1250,6 +1310,44 @@ class AppState: ObservableObject {
             presentError(.discoveryFailed(error))
         }
         isDiscovering = false
+        settleInitialDiscoveryAnswer()
+    }
+
+    /// Mark the initial discovery "answered" — immediately if peers were
+    /// found, or after a short grace period when the answer was empty. A
+    /// fresh tsnet node serves `backendStatus` before the control plane
+    /// has delivered the netmap, so an empty *first* pass often means
+    /// "not synced yet", not "no Tailscreen devices" — surfacing it
+    /// immediately flashed the empty state and then animated the real
+    /// rows in on top a beat later. The grace keeps the loading skeleton
+    /// up long enough for the IPN watcher's first netmap to land; a
+    /// genuinely empty tailnet settles to the real empty state after it.
+    private func settleInitialDiscoveryAnswer() {
+        guard !hasCompletedInitialDiscovery else { return }
+        if !availablePeers.isEmpty {
+            hasCompletedInitialDiscovery = true
+            return
+        }
+        let discovery = peerDiscovery
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            // Discovery identity check: a sign-out tears the discovery
+            // down and resets the flag — a stale timer must not re-set it.
+            guard let self, self.peerDiscovery === discovery else { return }
+            self.hasCompletedInitialDiscovery = true
+        }
+    }
+
+    /// Assign `availablePeers` only when the contents actually changed —
+    /// redundant writes fire `objectWillChange` and re-render the popover
+    /// for no visible reason. The devices section animates real changes
+    /// via `.animation(value:)` on its container.
+    private func setAvailablePeers(_ peers: [TailscreenPeer]) {
+        // Any non-empty answer settles the initial-discovery question,
+        // regardless of which path delivered it (seed or IPN watcher).
+        if !peers.isEmpty { hasCompletedInitialDiscovery = true }
+        guard peers != availablePeers else { return }
+        availablePeers = peers
     }
 
     /// Initialize Tailscale and trigger login flow
@@ -1516,6 +1614,11 @@ class AppState: ObservableObject {
             node = nil
             authIPNWatcher?.stopWatching()
             authIPNWatcher = nil
+            peerDiscovery?.stopRealTimeMonitoring()
+            peerDiscovery = nil
+            peerDiscoveryNode = nil
+            availablePeers = []
+            hasCompletedInitialDiscovery = false
             tailscaleIPs = []
 
         } catch {

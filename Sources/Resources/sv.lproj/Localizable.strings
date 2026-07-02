@@ -224,3 +224,8 @@
 "Rectangle (4 or ⌘4)" = "Rektangel (4 eller ⌘4)";
 "Oval (5 or ⌘5)" = "Oval (5 eller ⌘5)";
 "Pointer / Click (6 or ⌘6)" = "Pekare / Klick (6 eller ⌘6)";
+
+/* Menubar status-item accessibility labels */
+"Tailscreen: sharing your screen" = "Tailscreen: delar din skärm";
+"Tailscreen: viewing a shared screen" = "Tailscreen: visar en delad skärm";
+"Tailscreen: someone wants you to share" = "Tailscreen: någon vill att du delar";

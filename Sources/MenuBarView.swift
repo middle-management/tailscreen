@@ -28,7 +28,17 @@ struct MenuBarView: View {
         mainView
             .id(viewID)
             .onAppear {
-                viewID = UUID()
+                // Remount without animation. MenuBarExtra(.window) keeps
+                // this view alive (and rendering) while the popover is
+                // closed, so the pre-open tree can hold stale content; an
+                // animated id-swap crossfades that stale tree with the
+                // fresh one — seen as ghost rows / doubled headers on
+                // open whenever the content changed since last time.
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) {
+                    viewID = UUID()
+                }
             }
     }
 
@@ -752,6 +762,25 @@ private struct DevicesSection: View {
     @EnvironmentObject var appState: AppState
     @State private var didAutoDiscover = false
 
+    /// Off until the initial seed has landed. The popover-open moment
+    /// already has motion of its own (the window materializing), and
+    /// animating the first skeleton → list swap on top of it reads as
+    /// jitter — so the initial population snaps into place, and only
+    /// changes that happen while the user is actually looking (IPN
+    /// updates, manual refreshes) animate. Resets every open because
+    /// `MenuBarView` re-ids its subtree on appear.
+    @State private var animateChanges = false
+
+    /// Row count the list settled on last time, persisted across launches.
+    /// While discovery is still seeding, the skeleton reserves this many
+    /// row-heights so the popover opens at (almost certainly) its final
+    /// size and the list fades in in place, instead of a one-line spinner
+    /// snapping to an N-row list.
+    @AppStorage("menuLastPeerRowCount") private var lastPeerRowCount = 1
+
+    private static let maxRows = 6
+    private static let rowHeight: CGFloat = 36
+
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
@@ -789,33 +818,73 @@ private struct DevicesSection: View {
             content
         }
         .padding(.bottom, 4)
+        // Glide between skeleton → list → empty (and between row counts as
+        // IPN updates trickle in) instead of snapping the popover height —
+        // but only after the initial population has settled (see
+        // `animateChanges`).
+        .animation(
+            animateChanges ? .easeInOut(duration: 0.2) : nil,
+            value: appState.availablePeers
+        )
+        .animation(
+            animateChanges ? .easeInOut(duration: 0.2) : nil,
+            value: appState.isDiscovering
+        )
         .onAppear {
             guard !didAutoDiscover else { return }
             didAutoDiscover = true
             Task { await appState.discoverPeers() }
         }
+        .onChange(of: appState.isDiscovering) { _, discovering in
+            // Arm the animations only after the render that showed the
+            // first discovery's results. Setting this in the same
+            // MainActor turn as the population (e.g. right after
+            // `discoverPeers()` returns) can batch both writes into one
+            // SwiftUI transaction, which animates the initial swap after
+            // all. `onChange` runs after the view updated for the change.
+            if !discovering { animateChanges = true }
+        }
+        .onChange(of: appState.availablePeers.count) { _, count in
+            if count > 0 { lastPeerRowCount = min(count, Self.maxRows) }
+        }
+    }
+
+    /// Skeleton row count: last settled count, clamped in case defaults
+    /// hold junk or the tailnet shrank below one.
+    private var skeletonRowCount: Int {
+        max(1, min(lastPeerRowCount, Self.maxRows))
+    }
+
+    /// Show the skeleton while there is nothing to list *and* no settled
+    /// answer yet — a discovery pass is in flight, or the popover's first
+    /// frame rendered before `onAppear` could kick one off (gating on
+    /// `isDiscovering` alone flashed "No Tailscreen devices" for that
+    /// first frame). `hasCompletedInitialDiscovery` is the process-wide
+    /// "we have a real answer" signal.
+    private var showsLoadingSkeleton: Bool {
+        appState.availablePeers.isEmpty
+            && (appState.isDiscovering || !appState.hasCompletedInitialDiscovery)
     }
 
     @ViewBuilder
     private var content: some View {
-        if appState.isDiscovering && appState.availablePeers.isEmpty {
-            HStack(spacing: 8) {
-                ProgressView().controlSize(.small).scaleEffect(0.7)
-                Text(L("Looking for screens…"))
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+        if showsLoadingSkeleton {
+            VStack(spacing: 0) {
+                ForEach(0..<skeletonRowCount, id: \.self) { index in
+                    PeerRowSkeleton(index: index)
+                }
             }
-            .frame(height: 28)
-            .padding(.horizontal, 14)
+            .transition(.opacity)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(L("Looking for screens…"))
         } else if appState.availablePeers.isEmpty {
             Text(L("No Tailscreen devices on your tailnet"))
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .frame(height: 28)
                 .padding(.horizontal, 14)
+                .transition(.opacity)
         } else {
-            let maxRows = 6
-            let rowHeight: CGFloat = 36
             // `.frame(height:)` (not `maxHeight:`) commits to the
             // row count's height so SwiftUI's intrinsic sizing can't
             // collapse the ScrollView when its content negotiates a
@@ -831,9 +900,59 @@ private struct DevicesSection: View {
                 }
             }
             .frame(
-                height: rowHeight * CGFloat(min(appState.availablePeers.count, maxRows))
+                height: Self.rowHeight
+                    * CGFloat(min(appState.availablePeers.count, Self.maxRows))
             )
+            .transition(.opacity)
         }
+    }
+}
+
+/// Placeholder mirroring `PeerMenuRow`'s geometry (same height, icon slot,
+/// and horizontal padding) shown while the peer list is seeding. Matching
+/// the real row's layout means the fade from skeleton to content happens
+/// in place with no reflow. The name bar pulses gently so the section
+/// reads as "loading" rather than frozen.
+private struct PeerRowSkeleton: View {
+    /// Row position — used to vary the fake-hostname width so a stack of
+    /// skeletons looks like a list of different names, not a repeated tile.
+    let index: Int
+    @State private var pulsing = false
+
+    private static let widthFractions: [CGFloat] = [1.0, 0.72, 0.86, 0.64, 0.9, 0.78]
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "desktopcomputer")
+                .font(.body)
+                .frame(width: 16, alignment: .center)
+                .foregroundStyle(.quaternary)
+
+            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                .fill(Color(nsColor: .quaternaryLabelColor))
+                .frame(
+                    width: 130 * Self.widthFractions[index % Self.widthFractions.count],
+                    height: 10)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 36)
+        .opacity(pulsing ? 0.45 : 1.0)
+        // Scoped `.animation(value:)`, NOT a global `withAnimation` in
+        // onAppear: the skeleton mounts in the same transaction as the
+        // popover's id-swap on open, and `withAnimation` there leaks the
+        // repeat-forever curve onto that whole swap — observed as two
+        // full popover trees slowly crossfading. The delay keeps the
+        // placeholder fully static through a fast seed (the common case);
+        // visible pulsing before an almost immediate swap reads as
+        // flicker, not as loading.
+        .animation(
+            .easeInOut(duration: 0.8).repeatForever(autoreverses: true).delay(0.35),
+            value: pulsing
+        )
+        .onAppear { pulsing = true }
+        .accessibilityHidden(true)
     }
 }
 
@@ -868,21 +987,31 @@ private struct PeerMenuRow: View {
                         .accessibilityHidden(true)
 
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(peer.hostname)
-                            .font(.body)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
+                        // The status dot lives on the hostname line, not in
+                        // the outer HStack — there it would center against
+                        // the whole two-line block on offline rows and
+                        // float between the name and the "Offline" caption,
+                        // at a visibly different height than on single-line
+                        // online rows.
+                        HStack(spacing: 6) {
+                            Text(peer.hostname)
+                                .font(.body)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Circle()
+                                .fill(
+                                    peer.isOnline
+                                        ? Color.green : Color(nsColor: .tertiaryLabelColor)
+                                )
+                                .frame(width: 6, height: 6)
+                                .accessibilityHidden(true)
+                        }
                         if !peer.isOnline {
                             Text(L("Offline"))
                                 .font(.caption)
                                 .foregroundStyle(.tertiary)
                         }
                     }
-
-                    Circle()
-                        .fill(peer.isOnline ? Color.green : Color(nsColor: .tertiaryLabelColor))
-                        .frame(width: 6, height: 6)
-                        .accessibilityHidden(true)
 
                     Spacer(minLength: 0)
 
