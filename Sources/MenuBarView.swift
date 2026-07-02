@@ -752,6 +752,15 @@ private struct DevicesSection: View {
     @EnvironmentObject var appState: AppState
     @State private var didAutoDiscover = false
 
+    /// Off until the initial seed has landed. The popover-open moment
+    /// already has motion of its own (the window materializing), and
+    /// animating the first skeleton → list swap on top of it reads as
+    /// jitter — so the initial population snaps into place, and only
+    /// changes that happen while the user is actually looking (IPN
+    /// updates, manual refreshes) animate. Resets every open because
+    /// `MenuBarView` re-ids its subtree on appear.
+    @State private var animateChanges = false
+
     /// Row count the list settled on last time, persisted across launches.
     /// While discovery is still seeding, the skeleton reserves this many
     /// row-heights so the popover opens at (almost certainly) its final
@@ -800,13 +809,24 @@ private struct DevicesSection: View {
         }
         .padding(.bottom, 4)
         // Glide between skeleton → list → empty (and between row counts as
-        // IPN updates trickle in) instead of snapping the popover height.
-        .animation(.easeInOut(duration: 0.2), value: appState.availablePeers)
-        .animation(.easeInOut(duration: 0.2), value: appState.isDiscovering)
+        // IPN updates trickle in) instead of snapping the popover height —
+        // but only after the initial population has settled (see
+        // `animateChanges`).
+        .animation(
+            animateChanges ? .easeInOut(duration: 0.2) : nil,
+            value: appState.availablePeers
+        )
+        .animation(
+            animateChanges ? .easeInOut(duration: 0.2) : nil,
+            value: appState.isDiscovering
+        )
         .onAppear {
             guard !didAutoDiscover else { return }
             didAutoDiscover = true
-            Task { await appState.discoverPeers() }
+            Task {
+                await appState.discoverPeers()
+                animateChanges = true
+            }
         }
         .onChange(of: appState.availablePeers.count) { _, count in
             if count > 0 { lastPeerRowCount = min(count, Self.maxRows) }
@@ -893,7 +913,12 @@ private struct PeerRowSkeleton: View {
         .frame(height: 36)
         .opacity(pulsing ? 0.45 : 1.0)
         .onAppear {
-            withAnimation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true)) {
+            // The delay keeps the placeholder fully static through a fast
+            // seed (the common case) — visible pulsing before an almost
+            // immediate swap reads as flicker, not as loading.
+            withAnimation(
+                .easeInOut(duration: 0.8).repeatForever(autoreverses: true).delay(0.35)
+            ) {
                 pulsing = true
             }
         }
@@ -932,21 +957,31 @@ private struct PeerMenuRow: View {
                         .accessibilityHidden(true)
 
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(peer.hostname)
-                            .font(.body)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
+                        // The status dot lives on the hostname line, not in
+                        // the outer HStack — there it would center against
+                        // the whole two-line block on offline rows and
+                        // float between the name and the "Offline" caption,
+                        // at a visibly different height than on single-line
+                        // online rows.
+                        HStack(spacing: 6) {
+                            Text(peer.hostname)
+                                .font(.body)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Circle()
+                                .fill(
+                                    peer.isOnline
+                                        ? Color.green : Color(nsColor: .tertiaryLabelColor)
+                                )
+                                .frame(width: 6, height: 6)
+                                .accessibilityHidden(true)
+                        }
                         if !peer.isOnline {
                             Text(L("Offline"))
                                 .font(.caption)
                                 .foregroundStyle(.tertiary)
                         }
                     }
-
-                    Circle()
-                        .fill(peer.isOnline ? Color.green : Color(nsColor: .tertiaryLabelColor))
-                        .frame(width: 6, height: 6)
-                        .accessibilityHidden(true)
 
                     Spacer(minLength: 0)
 
