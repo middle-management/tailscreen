@@ -845,17 +845,20 @@ private struct DevicesSection: View {
         max(1, min(lastPeerRowCount, Self.maxRows))
     }
 
+    /// Show the skeleton while there is nothing to list *and* no settled
+    /// answer yet — a discovery pass is in flight, or the popover's first
+    /// frame rendered before `onAppear` could kick one off (gating on
+    /// `isDiscovering` alone flashed "No Tailscreen devices" for that
+    /// first frame). `hasCompletedInitialDiscovery` is the process-wide
+    /// "we have a real answer" signal.
+    private var showsLoadingSkeleton: Bool {
+        appState.availablePeers.isEmpty
+            && (appState.isDiscovering || !appState.hasCompletedInitialDiscovery)
+    }
+
     @ViewBuilder
     private var content: some View {
-        // The skeleton also covers the moment *before* the auto-discover
-        // task has flipped `isDiscovering`: the popover's first frame
-        // renders ahead of `onAppear`'s side effects, and gating on
-        // `isDiscovering` alone flashed "No Tailscreen devices" for that
-        // frame. `hasCompletedInitialDiscovery` is the process-wide "we
-        // have a real answer" signal.
-        if appState.availablePeers.isEmpty
-            && (appState.isDiscovering || !appState.hasCompletedInitialDiscovery)
-        {
+        if showsLoadingSkeleton {
             VStack(spacing: 0) {
                 ForEach(0..<skeletonRowCount, id: \.self) { index in
                     PeerRowSkeleton(index: index)
