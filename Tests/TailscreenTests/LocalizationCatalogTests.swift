@@ -32,7 +32,7 @@ final class LocalizationCatalogTests: XCTestCase {
         }
 
         let catalogText = try String(contentsOf: catalogURL, encoding: .utf8)
-        let catalog = Set(Self.parseCatalogKeys(catalogText).map(Self.normalizeCatalogKey))
+        let catalog = Set(try Self.parseCatalogKeys(catalogText).map { try Self.normalizeCatalogKey($0) })
         XCTAssertFalse(catalog.isEmpty, "catalog parsed to zero keys — parser broken?")
 
         var missing: [String] = []
@@ -64,13 +64,12 @@ final class LocalizationCatalogTests: XCTestCase {
 
     /// Extract the key of every `"key" = "value";` line. Keys/values may
     /// contain escaped quotes.
-    static func parseCatalogKeys(_ text: String) -> [String] {
+    static func parseCatalogKeys(_ text: String) throws -> [String] {
         let pattern = #"^\s*"((?:[^"\\]|\\.)*)"\s*=\s*"(?:[^"\\]|\\.)*"\s*;\s*$"#
-        let regex = try! NSRegularExpression(pattern: pattern, options: [.anchorsMatchLines])
+        let regex = try NSRegularExpression(pattern: pattern, options: [.anchorsMatchLines])
         let ns = text as NSString
         var keys: [String] = []
-        regex.enumerateMatches(in: text, range: NSRange(location: 0, length: ns.length)) {
-            match, _, _ in
+        regex.enumerateMatches(in: text, range: NSRange(location: 0, length: ns.length)) { match, _, _ in
             guard let match, match.numberOfRanges > 1 else { return }
             keys.append(unescape(ns.substring(with: match.range(at: 1))))
         }
@@ -79,9 +78,9 @@ final class LocalizationCatalogTests: XCTestCase {
 
     /// Replace printf-style format specifiers (including positional forms
     /// like `%1$@`) with the shared placeholder.
-    static func normalizeCatalogKey(_ key: String) -> String {
+    static func normalizeCatalogKey(_ key: String) throws -> String {
         let pattern = #"%(?:\d+\$)?(?:@|lld|ld|d|u|f|s)"#
-        let regex = try! NSRegularExpression(pattern: pattern)
+        let regex = try NSRegularExpression(pattern: pattern)
         let ns = key as NSString
         return regex.stringByReplacingMatches(
             in: key, range: NSRange(location: 0, length: ns.length),

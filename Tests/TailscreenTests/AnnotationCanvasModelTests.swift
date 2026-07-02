@@ -140,7 +140,7 @@ final class AnnotationCanvasModelTests: XCTestCase {
     // MARK: - Local undo
 
     @MainActor
-    func testLocalUndoPopsOnlyLocalShapes() {
+    func testLocalUndoPopsOnlyLocalShapes() throws {
         var ops: [AnnotationOp] = []
         let model = AnnotationCanvasModel()
         model.onOp = { ops.append($0) }
@@ -151,7 +151,7 @@ final class AnnotationCanvasModelTests: XCTestCase {
         model.pointerDown(at: CGPoint(x: 0.1, y: 0.1))
         model.pointerMoved(to: CGPoint(x: 0.2, y: 0.2))
         model.pointerUp()
-        let localID = model.annotations.first(where: { $0.id != remote.id })!.id
+        let localID = try XCTUnwrap(model.annotations.first(where: { $0.id != remote.id })).id
 
         ops.removeAll()
         model.performLocalUndo()

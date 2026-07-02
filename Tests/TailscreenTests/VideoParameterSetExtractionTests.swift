@@ -12,7 +12,11 @@ final class VideoParameterSetExtractionTests: XCTestCase {
     private func avcc(_ nals: [Data]) -> Data {
         var out = Data()
         for nal in nals {
-            out.appendBE(UInt32(nal.count))
+            let len = UInt32(nal.count)
+            out.append(UInt8((len >> 24) & 0xFF))
+            out.append(UInt8((len >> 16) & 0xFF))
+            out.append(UInt8((len >> 8) & 0xFF))
+            out.append(UInt8(len & 0xFF))
             out.append(nal)
         }
         return out

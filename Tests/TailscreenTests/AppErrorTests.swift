@@ -54,7 +54,7 @@ final class AppErrorTests: XCTestCase {
             (.loginFailed(underlying), "TS-AUTH-001"),
             (.signOutFailed(underlying), "TS-AUTH-002"),
             (.sharingGeneric(underlying), "TS-SCREEN-100"),
-            (.legacy(title: "t", message: "m"), "TS-GENERIC-001"),
+            (.legacy(title: "t", message: "m"), "TS-GENERIC-001")
         ]
         for (error, code) in expectations {
             XCTAssertEqual(error.code, code)

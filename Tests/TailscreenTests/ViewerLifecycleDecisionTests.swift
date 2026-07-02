@@ -54,7 +54,7 @@ final class ViewerLifecycleDecisionTests: XCTestCase {
     func testStaleAddrsDropsOnlyExpired() {
         let lastSeen: [String: UInt64] = [
             "fresh": 100 * s,  // 5 s ago
-            "stale": 80 * s,  // 25 s ago
+            "stale": 80 * s  // 25 s ago
         ]
         let stale = TailscaleScreenShareServer.staleAddrs(
             lastSeenNs: lastSeen, nowNs: 105 * s, timeoutNs: 15 * s)
