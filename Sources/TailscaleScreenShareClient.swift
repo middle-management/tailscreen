@@ -521,8 +521,9 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     /// Pulls parameter sets out of an IDR access unit. The server prepends
     /// them in-band on every keyframe (SPS+PPS for H.264; VPS+SPS+PPS for
     /// HEVC) so any AU flagged `containsIDR` should carry them. NAL types
-    /// 7/8 for H.264; 32/33/34 for HEVC.
-    private static func extractParameterSets(from au: VideoAccessUnit) -> CodecParameterSets? {
+    /// 7/8 for H.264; 32/33/34 for HEVC. Internal (not private) so the
+    /// extraction is unit testable.
+    static func extractParameterSets(from au: VideoAccessUnit) -> CodecParameterSets? {
         let nals = AVCCParser.nalUnits(from: au.avcc)
         switch au.codec {
         case .h264:
