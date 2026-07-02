@@ -426,6 +426,53 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         }
     }
 
+    /// What to do about a helper process that exited without being asked to.
+    enum HelperExitDisposition: Equatable {
+        /// replayd refused the capture slot (another same-bundle process
+        /// already holds one). Respawning hits the exact same wall — bail
+        /// straight to teardown instead of burning the crash budget.
+        case slotRefused
+        /// The helper tagged its own death as non-retryable (decode failure,
+        /// startup-watchdog timeout, …) via `writeFatal("permanent: …")`.
+        case permanent
+        /// Anything else — worth respawning, subject to the crash budget.
+        case retryable
+    }
+
+    /// Pure classification of a helper's unexpected-exit reason string.
+    /// -3805 ("application connection being interrupted") on the helper's
+    /// first SCStream startup is replayd refusing the slot; `permanent:` is
+    /// the helper's own non-retryable marker. Extracted from
+    /// `onUnexpectedExit` so the routing is unit testable.
+    static func classifyHelperExit(reason: String) -> HelperExitDisposition {
+        if reason.contains("-3805") || reason.localizedCaseInsensitiveContains("being interrupted") {
+            return .slotRefused
+        }
+        if reason.contains("permanent:") {
+            return .permanent
+        }
+        return .retryable
+    }
+
+    /// Crash budget: give up after this many helper exits inside the sliding
+    /// window (see `slidingWindowCrashCount`).
+    static let maxHelperCrashesPerWindow = 3
+
+    /// Pure sliding-window crash accounting: prune timestamps older than
+    /// `windowNs`, record `nowNs`, and return how many crashes the window now
+    /// holds (including this one). The caller gives up once the result
+    /// exceeds `maxHelperCrashesPerWindow`. Extracted from `onUnexpectedExit`
+    /// so the budget math is unit testable.
+    static func slidingWindowCrashCount(
+        _ stamps: inout [UInt64],
+        appending nowNs: UInt64,
+        windowNs: UInt64 = 30_000_000_000
+    ) -> Int {
+        stamps.removeAll { nowNs &- $0 > windowNs }
+        stamps.append(nowNs)
+        return stamps.count
+    }
+
     private func startHelperCapture(filterData: Data) throws {
         let helper = HelperScreenCapture()
         // Seed the liveness clock now so SCStream bring-up gets a full grace
@@ -480,13 +527,8 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             guard let self else { return }
             self.logger.log("HelperScreenCapture: unexpected exit (\(reason))")
             self.helperCapture = nil
-            // -3805 ("application connection being interrupted") on
-            // the helper's first SCStream startup is replayd
-            // refusing the slot — usually because another same-bundle
-            // process on this Mac already holds one. Respawning hits
-            // the exact same wall, so bail straight to teardown
-            // instead of burning the full crash budget.
-            if reason.contains("-3805") || reason.localizedCaseInsensitiveContains("being interrupted") {
+            switch Self.classifyHelperExit(reason: reason) {
+            case .slotRefused:
                 let err = NSError(
                     domain: "Tailscreen.HelperScreenCapture",
                     code: 1,
@@ -497,13 +539,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
                 )
                 self.onCaptureStopped?(err)
                 return
-            }
-            // Helper tagged its own death as non-retryable (decode
-            // failure, startup-watchdog timeout, etc.). Respawning
-            // would hit the same wall, so bail straight to teardown.
-            // The helper writes `permanent: ...` via `writeFatal`,
-            // which surfaces here as `"fatal: permanent: ..."`.
-            if reason.contains("permanent:") {
+            case .permanent:
                 let err = NSError(
                     domain: "Tailscreen.HelperScreenCapture",
                     code: 4,
@@ -511,19 +547,18 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
                 )
                 self.onCaptureStopped?(err)
                 return
+            case .retryable:
+                break
             }
             // Sliding-window restart: tolerate ≤3 crashes in 30 s,
             // give up after that. Each crash invalidates replayd's
             // slot for that PID, so respawning gets a fresh process
             // with no inherited bad state.
             let now = DispatchTime.now().uptimeNanoseconds
-            let windowNs: UInt64 = 30_000_000_000
-            let crashCount = self.helperCrashTimestampsNs.withLock { stamps -> Int in
-                stamps.removeAll { now &- $0 > windowNs }
-                stamps.append(now)
-                return stamps.count
+            let crashCount = self.helperCrashTimestampsNs.withLock { stamps in
+                Self.slidingWindowCrashCount(&stamps, appending: now)
             }
-            if crashCount > 3 || !self.isRunning {
+            if crashCount > Self.maxHelperCrashesPerWindow || !self.isRunning {
                 let err = NSError(
                     domain: "Tailscreen.HelperScreenCapture", code: 1,
                     userInfo: [NSLocalizedDescriptionKey: reason])
@@ -829,20 +864,34 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         }
     }
 
+    /// Pure inbound-audio relay decision. The sender must be a registered
+    /// viewer AND the embedded SSRC must match the one we assigned to that
+    /// address — without the SSRC check, a registered viewer could spoof
+    /// another viewer's audio by stuffing its SSRC into the RTP header. On
+    /// success, returns every *other* viewer as a relay recipient. Extracted
+    /// from `handleInboundAudioRTP` so the anti-spoof gate is unit testable.
+    static func audioRelayDecision(
+        viewerAudioSSRCs: [String: UInt32],
+        sender: String,
+        headerSSRC: UInt32
+    ) -> (valid: Bool, recipients: [String]) {
+        guard let assigned = viewerAudioSSRCs[sender], assigned == headerSSRC else {
+            return (false, [])
+        }
+        return (true, viewerAudioSSRCs.keys.filter { $0 != sender })
+    }
+
     /// Relay one inbound audio RTP packet to all other viewers and pass
     /// a copy to the local VoiceChannel via `onAudioReceived`. The packet
     /// is forwarded byte-for-byte (no transcode) so the receiving viewer
     /// sees the original sender's SSRC.
     private func handleInboundAudioRTP(_ packet: Data, header: RTPHeader, from sender: String) {
-        // Verify the sender is registered AND the embedded SSRC matches the
-        // one we assigned to this address. Without the SSRC check, a
-        // registered viewer could spoof another viewer's audio by stuffing
-        // its SSRC into the RTP header.
-        let validated = viewers.withLock { state -> (valid: Bool, recipients: [String]) in
-            guard let viewer = state[sender], viewer.audioSSRC == header.ssrc else {
-                return (false, [])
-            }
-            return (true, state.keys.filter { $0 != sender })
+        let validated = viewers.withLock { state in
+            Self.audioRelayDecision(
+                viewerAudioSSRCs: state.mapValues { $0.audioSSRC },
+                sender: sender,
+                headerSSRC: header.ssrc
+            )
         }
         guard validated.valid else { return }
         if !validated.recipients.isEmpty, let pl = packetListener {
@@ -859,6 +908,18 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         onAudioReceived?(packet)
     }
 
+    /// Pure PLI-ring append: add `timestampNs` and drop the oldest entries
+    /// once the ring exceeds `cap`. Extracted from `recordPLI` so the
+    /// bounded-growth invariant is unit testable.
+    static func appendingPLI(_ ring: [UInt64], timestampNs: UInt64, cap: Int = 32) -> [UInt64] {
+        var out = ring
+        out.append(timestampNs)
+        if out.count > cap {
+            out.removeFirst(out.count - cap)
+        }
+        return out
+    }
+
     /// Append a PLI timestamp to the viewer's ring. The adaptive sweep
     /// (every 5 s) reads these to decide whether to step bitrate down.
     /// Drop the oldest entry once we hold more than 32 — at our
@@ -869,10 +930,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         let now = DispatchTime.now().uptimeNanoseconds
         let recorded = viewers.withLock { state -> Bool in
             guard var viewer = state[addr] else { return false }
-            viewer.pliTimestampsNs.append(now)
-            if viewer.pliTimestampsNs.count > 32 {
-                viewer.pliTimestampsNs.removeFirst(viewer.pliTimestampsNs.count - 32)
-            }
+            viewer.pliTimestampsNs = Self.appendingPLI(viewer.pliTimestampsNs, timestampNs: now)
             state[addr] = viewer
             return true
         }
@@ -1204,6 +1262,26 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         if changed { notifyViewersChanged() }
     }
 
+    /// Pure staleness computation: which addresses have been silent longer
+    /// than `timeoutNs` as of `nowNs`? Shared by the connected-viewer and
+    /// pending-viewer sweeps (which differ only in their timeout). Extracted
+    /// from `sweepIdleViewers` so the timeout math is unit testable.
+    static func staleAddrs(
+        lastSeenNs: [String: UInt64], nowNs: UInt64, timeoutNs: UInt64
+    ) -> [String] {
+        lastSeenNs.filter { nowNs &- $0.value > timeoutNs }.map(\.key)
+    }
+
+    /// Pure hung-helper predicate: a helper is considered wedged when it has
+    /// produced *something* before (`lastActivityNs != 0` — 0 means no helper
+    /// yet) but nothing within `timeoutNs`. Extracted from the watchdog in
+    /// `sweepIdleViewers` so the liveness math is unit testable.
+    static func helperLooksHung(
+        lastActivityNs: UInt64, nowNs: UInt64, timeoutNs: UInt64
+    ) -> Bool {
+        lastActivityNs != 0 && nowNs &- lastActivityNs > timeoutNs
+    }
+
     /// Periodically prunes viewers that haven't said anything in a while.
     /// Covers the case where a viewer crashes without sending BYE — we
     /// can't rely on UDP for "the other side is gone" the way TCP gives
@@ -1213,9 +1291,11 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             try? await Task.sleep(nanoseconds: 1_000_000_000)
             let now = DispatchTime.now().uptimeNanoseconds
             let dropped = viewers.withLock { state -> [(addr: String, idleNs: UInt64)] in
-                let stale = state.filter { now &- $0.value.lastSeenNs > self.viewerIdleTimeoutNs }
-                let result = stale.map { (addr: $0.key, idleNs: now &- $0.value.lastSeenNs) }
-                for (addr, _) in stale { state.removeValue(forKey: addr) }
+                let stale = Self.staleAddrs(
+                    lastSeenNs: state.mapValues { $0.lastSeenNs },
+                    nowNs: now, timeoutNs: self.viewerIdleTimeoutNs)
+                let result = stale.map { (addr: $0, idleNs: now &- (state[$0]?.lastSeenNs ?? now)) }
+                for addr in stale { state.removeValue(forKey: addr) }
                 return result
             }
             if !dropped.isEmpty {
@@ -1237,9 +1317,11 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             // will catch them; the noisy ones we trust the sharer to
             // Deny explicitly.
             let droppedPending = pendingViewers.withLock { state -> [String] in
-                let stale = state.filter { now &- $0.value.lastSeenNs > self.pendingApprovalTimeoutNs }
-                for (addr, _) in stale { state.removeValue(forKey: addr) }
-                return stale.map { $0.key }
+                let stale = Self.staleAddrs(
+                    lastSeenNs: state.mapValues { $0.lastSeenNs },
+                    nowNs: now, timeoutNs: self.pendingApprovalTimeoutNs)
+                for addr in stale { state.removeValue(forKey: addr) }
+                return stale
             }
             if !droppedPending.isEmpty {
                 pendingViewerInfos.withLock { state in
@@ -1260,7 +1342,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             // == 0` means no helper yet; skip.
             if helperWatchdogEnabled, helperCapture != nil {
                 let last = lastHelperActivityNs.withLock { $0 }
-                if last != 0, now &- last > helperLivenessTimeoutNs {
+                if Self.helperLooksHung(lastActivityNs: last, nowNs: now, timeoutNs: helperLivenessTimeoutNs) {
                     logger.log(
                         "Helper liveness watchdog: no output for \((now &- last) / 1_000_000) ms — restarting capture")
                     // Re-seed so we don't re-fire every second before the
@@ -1494,8 +1576,9 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     }
 
     /// Overwrites bytes 2-3 (sequence) and 8-11 (SSRC) of an RTP packet.
-    /// Avoids re-encoding the whole header per viewer.
-    private static func rewriteRTPHeader(_ packet: inout Data, sequence: UInt16, ssrc: UInt32) {
+    /// Avoids re-encoding the whole header per viewer. Internal (not
+    /// private) so the per-viewer rewrite is unit testable.
+    static func rewriteRTPHeader(_ packet: inout Data, sequence: UInt16, ssrc: UInt32) {
         packet[2] = UInt8((sequence >> 8) & 0xFF)
         packet[3] = UInt8(sequence & 0xFF)
         packet[8] = UInt8((ssrc >> 24) & 0xFF)
