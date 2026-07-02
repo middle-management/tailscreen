@@ -823,10 +823,16 @@ private struct DevicesSection: View {
         .onAppear {
             guard !didAutoDiscover else { return }
             didAutoDiscover = true
-            Task {
-                await appState.discoverPeers()
-                animateChanges = true
-            }
+            Task { await appState.discoverPeers() }
+        }
+        .onChange(of: appState.isDiscovering) { _, discovering in
+            // Arm the animations only after the render that showed the
+            // first discovery's results. Setting this in the same
+            // MainActor turn as the population (e.g. right after
+            // `discoverPeers()` returns) can batch both writes into one
+            // SwiftUI transaction, which animates the initial swap after
+            // all. `onChange` runs after the view updated for the change.
+            if !discovering { animateChanges = true }
         }
         .onChange(of: appState.availablePeers.count) { _, count in
             if count > 0 { lastPeerRowCount = min(count, Self.maxRows) }
@@ -841,7 +847,15 @@ private struct DevicesSection: View {
 
     @ViewBuilder
     private var content: some View {
-        if appState.isDiscovering && appState.availablePeers.isEmpty {
+        // The skeleton also covers the moment *before* the auto-discover
+        // task has flipped `isDiscovering`: the popover's first frame
+        // renders ahead of `onAppear`'s side effects, and gating on
+        // `isDiscovering` alone flashed "No Tailscreen devices" for that
+        // frame. `hasCompletedInitialDiscovery` is the process-wide "we
+        // have a real answer" signal.
+        if appState.availablePeers.isEmpty
+            && (appState.isDiscovering || !appState.hasCompletedInitialDiscovery)
+        {
             VStack(spacing: 0) {
                 ForEach(0..<skeletonRowCount, id: \.self) { index in
                     PeerRowSkeleton(index: index)
@@ -912,16 +926,19 @@ private struct PeerRowSkeleton: View {
         .padding(.horizontal, 10)
         .frame(height: 36)
         .opacity(pulsing ? 0.45 : 1.0)
-        .onAppear {
-            // The delay keeps the placeholder fully static through a fast
-            // seed (the common case) — visible pulsing before an almost
-            // immediate swap reads as flicker, not as loading.
-            withAnimation(
-                .easeInOut(duration: 0.8).repeatForever(autoreverses: true).delay(0.35)
-            ) {
-                pulsing = true
-            }
-        }
+        // Scoped `.animation(value:)`, NOT a global `withAnimation` in
+        // onAppear: the skeleton mounts in the same transaction as the
+        // popover's id-swap on open, and `withAnimation` there leaks the
+        // repeat-forever curve onto that whole swap — observed as two
+        // full popover trees slowly crossfading. The delay keeps the
+        // placeholder fully static through a fast seed (the common case);
+        // visible pulsing before an almost immediate swap reads as
+        // flicker, not as loading.
+        .animation(
+            .easeInOut(duration: 0.8).repeatForever(autoreverses: true).delay(0.35),
+            value: pulsing
+        )
+        .onAppear { pulsing = true }
         .accessibilityHidden(true)
     }
 }

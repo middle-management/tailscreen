@@ -160,6 +160,12 @@ class AppState: ObservableObject {
     // Peer discovery
     @Published var availablePeers: [TailscreenPeer] = []
     @Published var isDiscovering = false
+    /// True once any discovery pass has finished (successfully or not).
+    /// The menubar devices section shows its loading skeleton until this
+    /// flips — an empty `availablePeers` before the first pass means "no
+    /// answer yet", not "no devices". Reset on sign-out with the rest of
+    /// the discovery state.
+    @Published var hasCompletedInitialDiscovery = false
     private var peerDiscovery: TailscalePeerDiscovery?
     /// The node the current `peerDiscovery` (and its IPN watcher) is bound
     /// to. There's one tsnet node per process, but sign-out replaces it —
@@ -1216,6 +1222,7 @@ class AppState: ObservableObject {
         // Try to get it from either server or client
         guard let node = server?.node ?? client?.node ?? self.node else {
             presentError(.discoveryUnauthenticated())
+            hasCompletedInitialDiscovery = true
             return
         }
 
@@ -1243,6 +1250,7 @@ class AppState: ObservableObject {
                 presentError(.discoveryFailed(error))
             }
             isDiscovering = false
+            hasCompletedInitialDiscovery = true
             return
         }
 
@@ -1287,6 +1295,7 @@ class AppState: ObservableObject {
             presentError(.discoveryFailed(error))
         }
         isDiscovering = false
+        hasCompletedInitialDiscovery = true
     }
 
     /// Assign `availablePeers` only when the contents actually changed —
@@ -1566,6 +1575,7 @@ class AppState: ObservableObject {
             peerDiscovery = nil
             peerDiscoveryNode = nil
             availablePeers = []
+            hasCompletedInitialDiscovery = false
             tailscaleIPs = []
 
         } catch {

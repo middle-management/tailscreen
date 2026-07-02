@@ -102,7 +102,13 @@ struct TailscreenApp: App {
     /// is separated from the TV outline by a transparent gap and reads as
     /// a badge rather than a smudge. The result stays a template image, so
     /// it adapts to menubar appearance like the other states.
-    private static func badgedWithAttentionDot(_ base: NSImage) -> NSImage {
+    ///
+    /// `nonisolated` because `TailscreenApp` is MainActor-isolated (via
+    /// `App`) and `Optional.map` takes a nonisolated function value —
+    /// passing an isolated method there is a Swift 6 error. The body only
+    /// constructs an NSImage (the drawing handler runs later, at render
+    /// time), so it has no main-actor dependency.
+    private nonisolated static func badgedWithAttentionDot(_ base: NSImage) -> NSImage {
         let dotDiameter: CGFloat = 6
         let gap: CGFloat = 1.5
         let badged = NSImage(size: base.size, flipped: false) { rect in
