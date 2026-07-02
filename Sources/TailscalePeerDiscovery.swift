@@ -33,6 +33,20 @@ class TailscalePeerDiscovery: ObservableObject {
     private var ipnWatcher: TailscaleIPNWatcher?
     private var monitoringStartInFlight = false
 
+    /// Per-source peer maps, keyed by stable node ID and merged (watcher
+    /// wins per node) before publishing. The two sources race: the seed
+    /// (`backendStatus`) and the IPN watcher deliver overlapping data at
+    /// different times, and an early netmap can be incomplete — right
+    /// after login it may carry only the recently-active peers. Letting
+    /// either source wholesale-replace the list made the menu churn
+    /// (seeded offline rows vanished when a partial netmap landed, then
+    /// reappeared on the next seed). A node deleted from the tailnet
+    /// leaves `watcherPeers` on the next netmap and `seedPeers` on the
+    /// next refresh pass, so it still prunes — just not via a partial
+    /// netmap alone.
+    private var seedPeers: [String: TailscreenPeer] = [:]
+    private var watcherPeers: [String: TailscreenPeer] = [:]
+
     init() {
         self.logger = TSLogger()
     }
@@ -58,27 +72,29 @@ class TailscalePeerDiscovery: ObservableObject {
         }
         let allPeers = status.Peer ?? [:]
 
-        var peers: [TailscreenPeer] = []
+        var peers: [String: TailscreenPeer] = [:]
         for (_, peerStatus) in allPeers {
             guard TailscreenInstance.isTailscreenServerHostname(peerStatus.HostName) else { continue }
             // Key on `String(peerStatus.ID)` (stable node ID) so seed rows
             // share an Identifiable id with the IPN-watcher rebuild path;
             // the LocalAPI map key is the public node key and would shift
             // the id when the watcher takes over.
-            peers.append(
-                TailscreenPeer(
-                    id: String(peerStatus.ID),
-                    hostname: peerStatus.HostName,
-                    dnsName: peerStatus.DNSName,
-                    tailscaleIP: Self.preferIPv4(peerStatus.TailscaleIPs ?? []),
-                    isOnline: peerStatus.Online,
-                    metadata: nil,
-                    lastSeen: nil
-                ))
+            let id = String(peerStatus.ID)
+            peers[id] = TailscreenPeer(
+                id: id,
+                hostname: Self.displayHostname(
+                    dnsName: peerStatus.DNSName, fallback: peerStatus.HostName),
+                dnsName: peerStatus.DNSName,
+                tailscaleIP: Self.preferIPv4(peerStatus.TailscaleIPs ?? []),
+                isOnline: peerStatus.Online,
+                metadata: nil,
+                lastSeen: nil
+            )
         }
 
-        publishIfChanged(Self.sortPeers(peers))
-        logger.log("Seeded \(availablePeers.count) Tailscreen peer(s) from netmap")
+        seedPeers = peers
+        publishMerged()
+        logger.log("Seeded \(seedPeers.count) Tailscreen peer(s) from backendStatus")
     }
 
     /// Start real-time monitoring of peer status using IPN bus.
@@ -115,27 +131,36 @@ class TailscalePeerDiscovery: ObservableObject {
         logger.log("Real-time monitoring started")
     }
 
-    /// Rebuild `availablePeers` from the watcher's current peer map. This
-    /// is the source of truth once monitoring is live — it discovers new
-    /// rows (offline → online transitions) and prunes peers that have left
-    /// the netmap entirely, not just refreshes existing rows.
+    /// Refresh the watcher-side peer map from the watcher's current
+    /// snapshot and republish the merged view. Discovers new rows
+    /// (offline → online transitions) and updates existing ones; pruning
+    /// a node that left the tailnet completes once it's also gone from
+    /// the seed side (see `seedPeers`/`watcherPeers`).
     private func updatePeerListFromIPNWatcher() async {
         guard let watcher = ipnWatcher else { return }
         let snapshot = watcher.peers
-        let next: [TailscreenPeer] = snapshot.values
-            .filter { TailscreenInstance.isTailscreenServerHostname($0.hostname) }
-            .map { ps in
-                TailscreenPeer(
-                    id: ps.nodeID,
-                    hostname: ps.hostname,
-                    dnsName: ps.dnsName,
-                    tailscaleIP: Self.preferIPv4(ps.tailscaleIPs),
-                    isOnline: ps.online,
-                    metadata: nil,
-                    lastSeen: ps.lastSeen
-                )
-            }
-        publishIfChanged(Self.sortPeers(next))
+        var next: [String: TailscreenPeer] = [:]
+        for ps in snapshot.values {
+            guard TailscreenInstance.isTailscreenServerHostname(ps.hostname) else { continue }
+            next[ps.nodeID] = TailscreenPeer(
+                id: ps.nodeID,
+                hostname: Self.displayHostname(dnsName: ps.dnsName, fallback: ps.hostname),
+                dnsName: ps.dnsName,
+                tailscaleIP: Self.preferIPv4(ps.tailscaleIPs),
+                isOnline: ps.online,
+                metadata: nil,
+                lastSeen: ps.lastSeen
+            )
+        }
+        watcherPeers = next
+        publishMerged()
+    }
+
+    /// Publish the union of both sources, watcher winning per node ID
+    /// (its data is fresher — live `online` transitions come from it).
+    private func publishMerged() {
+        let merged = seedPeers.merging(watcherPeers) { _, fromWatcher in fromWatcher }
+        publishIfChanged(Self.sortPeers(Array(merged.values)))
     }
 
     /// Assign `availablePeers` only when the list actually differs. The IPN
@@ -146,6 +171,19 @@ class TailscalePeerDiscovery: ObservableObject {
     private func publishIfChanged(_ next: [TailscreenPeer]) {
         guard next != availablePeers else { return }
         availablePeers = next
+    }
+
+    /// Canonical display hostname: the first DNS label. The seed path's
+    /// `HostName` (raw hostinfo name, mixed case — "tailscreen-Fredrik's
+    /// MacBook Pro (2)") and the watcher's `ComputedName` (DNS-safe
+    /// lowercase — "tailscreen-fredriks-macbook-pro-2") differ for the
+    /// same node, so a row's text flipped whenever the fresher source
+    /// changed — visible churn in an open menu. The DNS label is derived
+    /// from the same data on both paths, so identical state renders
+    /// byte-identically wherever it came from.
+    nonisolated static func displayHostname(dnsName: String, fallback: String) -> String {
+        let label = dnsName.split(separator: ".").first.map(String.init) ?? ""
+        return label.isEmpty ? fallback : label
     }
 
     /// Stop real-time monitoring

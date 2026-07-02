@@ -21,4 +21,21 @@ final class TailscalePeerDiscoveryTests: XCTestCase {
     func testPreferIPv4EmptyListYieldsEmptyString() {
         XCTAssertEqual(TailscalePeerDiscovery.preferIPv4([]), "")
     }
+
+    // The display hostname must be identical no matter which source
+    // (backendStatus seed or IPN watcher) produced the row — differing
+    // spellings of the same node made the open menu's rows flip text.
+    func testDisplayHostnameUsesFirstDNSLabel() {
+        XCTAssertEqual(
+            TailscalePeerDiscovery.displayHostname(
+                dnsName: "tailscreen-fredriks-macbook-pro-2.tail1234.ts.net.",
+                fallback: "tailscreen-Fredrik's MacBook Pro (2)"),
+            "tailscreen-fredriks-macbook-pro-2")
+    }
+
+    func testDisplayHostnameFallsBackWhenDNSNameEmpty() {
+        XCTAssertEqual(
+            TailscalePeerDiscovery.displayHostname(dnsName: "", fallback: "tailscreen-wisp-1"),
+            "tailscreen-wisp-1")
+    }
 }
