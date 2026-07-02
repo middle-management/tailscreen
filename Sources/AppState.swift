@@ -161,6 +161,11 @@ class AppState: ObservableObject {
     @Published var availablePeers: [TailscreenPeer] = []
     @Published var isDiscovering = false
     private var peerDiscovery: TailscalePeerDiscovery?
+    /// The node the current `peerDiscovery` (and its IPN watcher) is bound
+    /// to. There's one tsnet node per process, but sign-out replaces it —
+    /// identity mismatch tells `discoverPeers` to rebuild the watcher
+    /// instead of reusing one bound to a closed node.
+    private weak var peerDiscoveryNode: TailscaleNode?
 
     // IPN-bus watcher dedicated to surfacing the interactive-login URL.
     // tsnet's `node.up()` blocks until login completes, so the only way to
@@ -1214,14 +1219,43 @@ class AppState: ObservableObject {
             return
         }
 
+        // Reuse the long-lived discovery (and its IPN watcher) across
+        // popover opens. Creating a fresh TailscalePeerDiscovery per
+        // refresh stacked up watchers whose observer loops all kept
+        // writing `availablePeers` — each write re-rendered the whole
+        // popover, which read as flicker/jumping while it was open. The
+        // node is created once per process (see getOrCreateNode), but
+        // sign-out tears it down, so rebind if its identity changed.
+        if let discovery = peerDiscovery, peerDiscoveryNode === node {
+            isDiscovering = true
+            logger.log("Discovery: reseeding…")
+            do {
+                try await discovery.startDiscovery(node: node)
+                setAvailablePeers(discovery.availablePeers)
+                logger.log("Discovery: reseeded with \(self.availablePeers.count) peer(s)")
+                // Re-kick monitoring in case the initial fire-and-forget
+                // attempt failed (idempotent — no-ops when already live).
+                Task { @MainActor in
+                    try? await discovery.startRealTimeMonitoring(node: node)
+                }
+            } catch {
+                logger.log("Discovery: reseed failed with \(error)")
+                presentError(.discoveryFailed(error))
+            }
+            isDiscovering = false
+            return
+        }
+
+        peerDiscovery?.stopRealTimeMonitoring()
         let discovery = TailscalePeerDiscovery()
         self.peerDiscovery = discovery
+        self.peerDiscoveryNode = node
 
         isDiscovering = true
         logger.log("Discovery: starting…")
         do {
             try await discovery.startDiscovery(node: node)
-            self.availablePeers = discovery.availablePeers
+            setAvailablePeers(discovery.availablePeers)
             logger.log("Discovery: returned with \(self.availablePeers.count) peer(s)")
 
             // Real-time IPN monitoring runs fire-and-forget: its initial
@@ -1236,10 +1270,13 @@ class AppState: ObservableObject {
                 try? await discovery.startRealTimeMonitoring(node: node)
             }
 
-            // Observe peer changes
-            Task { @MainActor in
-                for await peers in discovery.$availablePeers.values {
-                    self.availablePeers = peers
+            // Observe peer changes. Ends when the discovery object (and
+            // its publisher) is torn down on rebind/sign-out.
+            Task { @MainActor [weak self, weak discovery] in
+                guard let stream = discovery?.$availablePeers.values else { return }
+                for await peers in stream {
+                    guard let self, let discovery, self.peerDiscovery === discovery else { return }
+                    self.setAvailablePeers(peers)
                 }
             }
 
@@ -1250,6 +1287,15 @@ class AppState: ObservableObject {
             presentError(.discoveryFailed(error))
         }
         isDiscovering = false
+    }
+
+    /// Assign `availablePeers` only when the contents actually changed —
+    /// redundant writes fire `objectWillChange` and re-render the popover
+    /// for no visible reason. The devices section animates real changes
+    /// via `.animation(value:)` on its container.
+    private func setAvailablePeers(_ peers: [TailscreenPeer]) {
+        guard peers != availablePeers else { return }
+        availablePeers = peers
     }
 
     /// Initialize Tailscale and trigger login flow
@@ -1516,6 +1562,10 @@ class AppState: ObservableObject {
             node = nil
             authIPNWatcher?.stopWatching()
             authIPNWatcher = nil
+            peerDiscovery?.stopRealTimeMonitoring()
+            peerDiscovery = nil
+            peerDiscoveryNode = nil
+            availablePeers = []
             tailscaleIPs = []
 
         } catch {

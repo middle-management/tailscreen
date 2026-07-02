@@ -9,7 +9,7 @@ import TailscaleKit
 /// online, so probing 7447 across every peer is unnecessary latency.
 /// `isOnline` reflects tsnet's view of whether the remote node is currently
 /// reachable; the rest of the fields are netmap-derived metadata.
-struct TailscreenPeer: Identifiable, Sendable {
+struct TailscreenPeer: Identifiable, Sendable, Equatable {
     let id: String
     let hostname: String
     let dnsName: String
@@ -31,6 +31,7 @@ class TailscalePeerDiscovery: ObservableObject {
 
     private let logger: TSLogger
     private var ipnWatcher: TailscaleIPNWatcher?
+    private var monitoringStartInFlight = false
 
     init() {
         self.logger = TSLogger()
@@ -76,21 +77,29 @@ class TailscalePeerDiscovery: ObservableObject {
                 ))
         }
 
-        availablePeers = Self.sortPeers(peers)
+        publishIfChanged(Self.sortPeers(peers))
         logger.log("Seeded \(availablePeers.count) Tailscreen peer(s) from netmap")
     }
 
-    /// Start real-time monitoring of peer status using IPN bus
+    /// Start real-time monitoring of peer status using IPN bus.
+    /// Idempotent: no-ops when monitoring is already live or a start is
+    /// still in flight, so callers can safely re-kick it on every refresh
+    /// (the initial fire-and-forget attempt can fail or park when tsnet's
+    /// LocalAPI isn't ready yet).
     func startRealTimeMonitoring(node: TailscaleNode) async throws {
+        guard ipnWatcher == nil, !monitoringStartInFlight else { return }
+        monitoringStartInFlight = true
+        defer { monitoringStartInFlight = false }
+
         let watcher = TailscaleIPNWatcher()
+        try await watcher.startWatching(node: node)
         ipnWatcher = watcher
 
-        try await watcher.startWatching(node: node)
-
         // Observe peer status changes
-        Task { @MainActor in
+        Task { @MainActor [weak self] in
             for await _ in watcher.$peers.values {
-                await updatePeerListFromIPNWatcher()
+                guard let self else { return }
+                await self.updatePeerListFromIPNWatcher()
             }
         }
 
@@ -117,7 +126,17 @@ class TailscalePeerDiscovery: ObservableObject {
                     lastSeen: ps.lastSeen
                 )
             }
-        availablePeers = Self.sortPeers(next)
+        publishIfChanged(Self.sortPeers(next))
+    }
+
+    /// Assign `availablePeers` only when the list actually differs. The IPN
+    /// bus ticks on plenty of netmap changes that don't affect our rows
+    /// (endpoint updates, unrelated peers); republishing an identical array
+    /// still fires `objectWillChange` downstream and re-renders the whole
+    /// menubar popover, which reads as flicker while it's open.
+    private func publishIfChanged(_ next: [TailscreenPeer]) {
+        guard next != availablePeers else { return }
+        availablePeers = next
     }
 
     /// Stop real-time monitoring

@@ -752,6 +752,16 @@ private struct DevicesSection: View {
     @EnvironmentObject var appState: AppState
     @State private var didAutoDiscover = false
 
+    /// Row count the list settled on last time, persisted across launches.
+    /// While discovery is still seeding, the skeleton reserves this many
+    /// row-heights so the popover opens at (almost certainly) its final
+    /// size and the list fades in in place, instead of a one-line spinner
+    /// snapping to an N-row list.
+    @AppStorage("menuLastPeerRowCount") private var lastPeerRowCount = 1
+
+    private static let maxRows = 6
+    private static let rowHeight: CGFloat = 36
+
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
@@ -789,33 +799,45 @@ private struct DevicesSection: View {
             content
         }
         .padding(.bottom, 4)
+        // Glide between skeleton → list → empty (and between row counts as
+        // IPN updates trickle in) instead of snapping the popover height.
+        .animation(.easeInOut(duration: 0.2), value: appState.availablePeers)
+        .animation(.easeInOut(duration: 0.2), value: appState.isDiscovering)
         .onAppear {
             guard !didAutoDiscover else { return }
             didAutoDiscover = true
             Task { await appState.discoverPeers() }
         }
+        .onChange(of: appState.availablePeers.count) { _, count in
+            if count > 0 { lastPeerRowCount = min(count, Self.maxRows) }
+        }
+    }
+
+    /// Skeleton row count: last settled count, clamped in case defaults
+    /// hold junk or the tailnet shrank below one.
+    private var skeletonRowCount: Int {
+        max(1, min(lastPeerRowCount, Self.maxRows))
     }
 
     @ViewBuilder
     private var content: some View {
         if appState.isDiscovering && appState.availablePeers.isEmpty {
-            HStack(spacing: 8) {
-                ProgressView().controlSize(.small).scaleEffect(0.7)
-                Text(L("Looking for screens…"))
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+            VStack(spacing: 0) {
+                ForEach(0..<skeletonRowCount, id: \.self) { index in
+                    PeerRowSkeleton(index: index)
+                }
             }
-            .frame(height: 28)
-            .padding(.horizontal, 14)
+            .transition(.opacity)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(L("Looking for screens…"))
         } else if appState.availablePeers.isEmpty {
             Text(L("No Tailscreen devices on your tailnet"))
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .frame(height: 28)
                 .padding(.horizontal, 14)
+                .transition(.opacity)
         } else {
-            let maxRows = 6
-            let rowHeight: CGFloat = 36
             // `.frame(height:)` (not `maxHeight:`) commits to the
             // row count's height so SwiftUI's intrinsic sizing can't
             // collapse the ScrollView when its content negotiates a
@@ -831,9 +853,51 @@ private struct DevicesSection: View {
                 }
             }
             .frame(
-                height: rowHeight * CGFloat(min(appState.availablePeers.count, maxRows))
+                height: Self.rowHeight
+                    * CGFloat(min(appState.availablePeers.count, Self.maxRows))
             )
+            .transition(.opacity)
         }
+    }
+}
+
+/// Placeholder mirroring `PeerMenuRow`'s geometry (same height, icon slot,
+/// and horizontal padding) shown while the peer list is seeding. Matching
+/// the real row's layout means the fade from skeleton to content happens
+/// in place with no reflow. The name bar pulses gently so the section
+/// reads as "loading" rather than frozen.
+private struct PeerRowSkeleton: View {
+    /// Row position — used to vary the fake-hostname width so a stack of
+    /// skeletons looks like a list of different names, not a repeated tile.
+    let index: Int
+    @State private var pulsing = false
+
+    private static let widthFractions: [CGFloat] = [1.0, 0.72, 0.86, 0.64, 0.9, 0.78]
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "desktopcomputer")
+                .font(.body)
+                .frame(width: 16, alignment: .center)
+                .foregroundStyle(.quaternary)
+
+            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                .fill(Color(nsColor: .quaternaryLabelColor))
+                .frame(
+                    width: 130 * Self.widthFractions[index % Self.widthFractions.count],
+                    height: 10)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 36)
+        .opacity(pulsing ? 0.45 : 1.0)
+        .onAppear {
+            withAnimation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true)) {
+                pulsing = true
+            }
+        }
+        .accessibilityHidden(true)
     }
 }
 

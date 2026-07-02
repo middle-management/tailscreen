@@ -3,7 +3,7 @@ import Foundation
 import TailscaleKit
 
 /// Metadata about a Tailscreen screen share
-struct TailscreenMetadata: Codable, Sendable {
+struct TailscreenMetadata: Codable, Sendable, Equatable {
     var version: String = "1.0"
     let shareName: String
     let hostname: String
@@ -17,7 +17,7 @@ struct TailscreenMetadata: Codable, Sendable {
     /// informational for the UI.
     var videoCodec: VideoCodec?
 
-    struct ScreenResolution: Codable, Sendable {
+    struct ScreenResolution: Codable, Sendable, Equatable {
         let width: Int
         let height: Int
     }
