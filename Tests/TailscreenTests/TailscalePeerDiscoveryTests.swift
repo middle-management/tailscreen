@@ -38,4 +38,21 @@ final class TailscalePeerDiscoveryTests: XCTestCase {
             TailscalePeerDiscovery.displayHostname(dnsName: "", fallback: "tailscreen-wisp-1"),
             "tailscreen-wisp-1")
     }
+
+    // The seed (PeerStatus.ID, string StableNodeID) and the watcher
+    // (netmap Node.ID, numeric) report different identifiers for the
+    // same node — the merge must key on something both sides share, or
+    // every peer renders twice.
+    func testMergeKeyCollidesAcrossSourceSpellings() {
+        let fromSeed = TailscalePeerDiscovery.mergeKey(
+            dnsName: "tailscreen-wisp-2.tail1234.ts.net.", fallbackID: "nAbCd1234")
+        let fromWatcher = TailscalePeerDiscovery.mergeKey(
+            dnsName: "Tailscreen-Wisp-2.tail1234.ts.net", fallbackID: "84921")
+        XCTAssertEqual(fromSeed, fromWatcher)
+        XCTAssertEqual(fromSeed, "tailscreen-wisp-2.tail1234.ts.net")
+    }
+
+    func testMergeKeyFallsBackToIDWhenDNSNameEmpty() {
+        XCTAssertEqual(TailscalePeerDiscovery.mergeKey(dnsName: "", fallbackID: "n123"), "n123")
+    }
 }

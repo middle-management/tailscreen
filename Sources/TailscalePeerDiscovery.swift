@@ -75,13 +75,10 @@ class TailscalePeerDiscovery: ObservableObject {
         var peers: [String: TailscreenPeer] = [:]
         for (_, peerStatus) in allPeers {
             guard TailscreenInstance.isTailscreenServerHostname(peerStatus.HostName) else { continue }
-            // Key on `String(peerStatus.ID)` (stable node ID) so seed rows
-            // share an Identifiable id with the IPN-watcher rebuild path;
-            // the LocalAPI map key is the public node key and would shift
-            // the id when the watcher takes over.
-            let id = String(peerStatus.ID)
-            peers[id] = TailscreenPeer(
-                id: id,
+            let key = Self.mergeKey(
+                dnsName: peerStatus.DNSName, fallbackID: String(peerStatus.ID))
+            peers[key] = TailscreenPeer(
+                id: key,
                 hostname: Self.displayHostname(
                     dnsName: peerStatus.DNSName, fallback: peerStatus.HostName),
                 dnsName: peerStatus.DNSName,
@@ -142,8 +139,9 @@ class TailscalePeerDiscovery: ObservableObject {
         var next: [String: TailscreenPeer] = [:]
         for ps in snapshot.values {
             guard TailscreenInstance.isTailscreenServerHostname(ps.hostname) else { continue }
-            next[ps.nodeID] = TailscreenPeer(
-                id: ps.nodeID,
+            let key = Self.mergeKey(dnsName: ps.dnsName, fallbackID: ps.nodeID)
+            next[key] = TailscreenPeer(
+                id: key,
                 hostname: Self.displayHostname(dnsName: ps.dnsName, fallback: ps.hostname),
                 dnsName: ps.dnsName,
                 tailscaleIP: Self.preferIPv4(ps.tailscaleIPs),
@@ -171,6 +169,20 @@ class TailscalePeerDiscovery: ObservableObject {
     private func publishIfChanged(_ next: [TailscreenPeer]) {
         guard next != availablePeers else { return }
         availablePeers = next
+    }
+
+    /// Merge key (and SwiftUI row identity) for a peer. The two sources
+    /// report *different* node identifiers — LocalAPI's `PeerStatus.ID`
+    /// is the string StableNodeID ("nXXXX…") while a netmap node's `ID`
+    /// is the numeric NodeID — so keying each source by its own ID made
+    /// the merged union list every node twice. The MagicDNS name is
+    /// unique per node and present in both sources; normalize case and
+    /// the FQDN trailing dot so both spellings collide.
+    nonisolated static func mergeKey(dnsName: String, fallbackID: String) -> String {
+        let normalized = dnsName.lowercased()
+        let trimmed =
+            normalized.hasSuffix(".") ? String(normalized.dropLast()) : normalized
+        return trimmed.isEmpty ? fallbackID : trimmed
     }
 
     /// Canonical display hostname: the first DNS label. The seed path's
