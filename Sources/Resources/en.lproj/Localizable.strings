@@ -229,3 +229,8 @@
 "Rectangle (4 or ⌘4)" = "Rectangle (4 or ⌘4)";
 "Oval (5 or ⌘5)" = "Oval (5 or ⌘5)";
 "Pointer / Click (6 or ⌘6)" = "Pointer / Click (6 or ⌘6)";
+
+/* Menubar status-item accessibility labels */
+"Tailscreen: sharing your screen" = "Tailscreen: sharing your screen";
+"Tailscreen: viewing a shared screen" = "Tailscreen: viewing a shared screen";
+"Tailscreen: someone wants you to share" = "Tailscreen: someone wants you to share";
