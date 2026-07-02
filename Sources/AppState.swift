@@ -1218,6 +1218,11 @@ class AppState: ObservableObject {
     }
 
     func discoverPeers() async {
+        // Coalesce concurrent calls: the popover re-ids its tree on open
+        // (`MenuBarView.viewID`), which fires the devices section's
+        // onAppear twice in quick succession — one pass is enough.
+        if isDiscovering { return }
+
         // Need an active Tailscale node to discover peers
         // Try to get it from either server or client
         guard let node = server?.node ?? client?.node ?? self.node else {
@@ -1250,7 +1255,7 @@ class AppState: ObservableObject {
                 presentError(.discoveryFailed(error))
             }
             isDiscovering = false
-            hasCompletedInitialDiscovery = true
+            settleInitialDiscoveryAnswer()
             return
         }
 
@@ -1295,7 +1300,32 @@ class AppState: ObservableObject {
             presentError(.discoveryFailed(error))
         }
         isDiscovering = false
-        hasCompletedInitialDiscovery = true
+        settleInitialDiscoveryAnswer()
+    }
+
+    /// Mark the initial discovery "answered" — immediately if peers were
+    /// found, or after a short grace period when the answer was empty. A
+    /// fresh tsnet node serves `backendStatus` before the control plane
+    /// has delivered the netmap, so an empty *first* pass often means
+    /// "not synced yet", not "no Tailscreen devices" — surfacing it
+    /// immediately flashed the empty state and then animated the real
+    /// rows in on top a beat later. The grace keeps the loading skeleton
+    /// up long enough for the IPN watcher's first netmap to land; a
+    /// genuinely empty tailnet settles to the real empty state after it.
+    private func settleInitialDiscoveryAnswer() {
+        guard !hasCompletedInitialDiscovery else { return }
+        if !availablePeers.isEmpty {
+            hasCompletedInitialDiscovery = true
+            return
+        }
+        let discovery = peerDiscovery
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            // Discovery identity check: a sign-out tears the discovery
+            // down and resets the flag — a stale timer must not re-set it.
+            guard let self, self.peerDiscovery === discovery else { return }
+            self.hasCompletedInitialDiscovery = true
+        }
     }
 
     /// Assign `availablePeers` only when the contents actually changed —
@@ -1303,6 +1333,9 @@ class AppState: ObservableObject {
     /// for no visible reason. The devices section animates real changes
     /// via `.animation(value:)` on its container.
     private func setAvailablePeers(_ peers: [TailscreenPeer]) {
+        // Any non-empty answer settles the initial-discovery question,
+        // regardless of which path delivered it (seed or IPN watcher).
+        if !peers.isEmpty { hasCompletedInitialDiscovery = true }
         guard peers != availablePeers else { return }
         availablePeers = peers
     }
