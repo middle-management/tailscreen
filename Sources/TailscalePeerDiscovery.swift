@@ -92,7 +92,16 @@ class TailscalePeerDiscovery: ObservableObject {
         defer { monitoringStartInFlight = false }
 
         let watcher = TailscaleIPNWatcher()
-        try await watcher.startWatching(node: node)
+        // Watchdog: `watchIPNBus` can park indefinitely when tsnet's
+        // LocalAPI isn't ready (typical right after launch — exactly when
+        // the first discovery runs). Without the timeout a parked start
+        // holds `monitoringStartInFlight` forever, and since the discovery
+        // object is reused across refreshes, real-time monitoring would
+        // stay wedged for the whole session. Timing out clears the flag
+        // (via defer) so the next refresh genuinely retries.
+        try await Self.withWatchdog(seconds: 5) {
+            try await watcher.startWatching(node: node)
+        }
         ipnWatcher = watcher
 
         // Observe peer status changes

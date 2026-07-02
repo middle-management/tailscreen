@@ -1271,16 +1271,26 @@ class AppState: ObservableObject {
             setAvailablePeers(discovery.availablePeers)
             logger.log("Discovery: returned with \(self.availablePeers.count) peer(s)")
 
-            // Real-time IPN monitoring runs fire-and-forget: its initial
-            // `client.watchIPNBus(...)` await can park indefinitely when
-            // tsnet's LocalAPI isn't ready, and `try?` only swallows
-            // thrown errors — it doesn't time out. If we await it here,
-            // the spinner stays up on "Looking for screens…" even though
-            // discovery itself already returned. Detaching keeps the
-            // monitor opportunistic: we set it up when we can, but
-            // never block the user-visible "done" signal on it.
-            Task { @MainActor in
-                try? await discovery.startRealTimeMonitoring(node: node)
+            // Real-time IPN monitoring runs fire-and-forget so it never
+            // blocks the user-visible "done" signal. The first attempt
+            // usually races tsnet bring-up (this path runs right after
+            // node.up(), before LocalAPI is ready), and the start is now
+            // watchdog-bounded instead of parking — so retry with backoff
+            // until it sticks. Without a live watcher the peer list only
+            // refreshes on popover opens, and the always-rendered menubar
+            // content goes stale between them.
+            Task { @MainActor [weak self] in
+                for attempt in 0..<5 {
+                    guard let self, self.peerDiscovery === discovery else { return }
+                    do {
+                        try await discovery.startRealTimeMonitoring(node: node)
+                        return
+                    } catch {
+                        self.logger.log(
+                            "Discovery: monitoring start failed (attempt \(attempt + 1)): \(error)")
+                        try? await Task.sleep(for: .seconds(1 << attempt))
+                    }
+                }
             }
 
             // Observe peer changes. Ends when the discovery object (and

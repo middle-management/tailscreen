@@ -28,7 +28,17 @@ struct MenuBarView: View {
         mainView
             .id(viewID)
             .onAppear {
-                viewID = UUID()
+                // Remount without animation. MenuBarExtra(.window) keeps
+                // this view alive (and rendering) while the popover is
+                // closed, so the pre-open tree can hold stale content; an
+                // animated id-swap crossfades that stale tree with the
+                // fresh one — seen as ghost rows / doubled headers on
+                // open whenever the content changed since last time.
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) {
+                    viewID = UUID()
+                }
             }
     }
 
