@@ -58,7 +58,11 @@ enum ScreenShareMessage {
     /// stream is unrecoverable) and the receive loop closes the connection.
     static let maxPayloadLength = 1 << 20  // 1 MiB
 
-    enum MessageType: UInt8 {
+    /// `CaseIterable` so `WireByteRegistryTests` can enumerate the live cases
+    /// and hold them against the pinned registry table (exhaustiveness leg).
+    /// 0x00–0x02 are historical/reserved — don't fill the gap without
+    /// checking what shipped peers do with those bytes.
+    enum MessageType: UInt8, CaseIterable {
         case annotation = 0x03
         case requestToShare = 0x04
         case shareResponse = 0x05
@@ -218,6 +222,15 @@ struct ScreenShareMessageParser {
     }
 
     private func decodeInputEvent(_ payload: Data) -> ScreenShareMessage? {
+        // INVARIANT: the stock JSONDecoder's default
+        // `nonConformingFloatDecodingStrategy = .throw` is load-bearing here —
+        // it rejects `NaN` / `Infinity` / `-Infinity` tokens and out-of-range
+        // literals like `1e999` in the coordinate fields, which is the first
+        // line of defense against a NaN reaching the injector's coordinate
+        // math. Pinned by `ScreenShareProtocolTests`; don't "improve" this
+        // decoder with `.convertFromString` without reading those tests.
+        // (`RemoteControlMapping.globalPoint` also defends itself now, but
+        // rejecting the frame outright is still the right call.)
         guard let event = try? JSONDecoder().decode(InputEvent.self, from: Data(payload)) else {
             return nil
         }

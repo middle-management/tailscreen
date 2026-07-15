@@ -339,3 +339,8 @@
 "Grants full keyboard and mouse control of your entire Mac" = "Grants full keyboard and mouse control of your entire Mac";
 "Gives full keyboard and mouse control of your entire Mac, not just the shared window" = "Gives full keyboard and mouse control of your entire Mac, not just the shared window";
 "Granting gives full keyboard and mouse control of your entire Mac — not just the shared window." = "Granting gives full keyboard and mouse control of your entire Mac — not just the shared window.";
+
+/* Remote control — Settings "Allow control requests" toggle */
+"Remote control" = "Remote control";
+"Allow control requests" = "Allow control requests";
+"Viewers can ask to control your Mac while you share; you still approve each request. Turn off to decline requests automatically and silence their notifications." = "Viewers can ask to control your Mac while you share; you still approve each request. Turn off to decline requests automatically and silence their notifications.";

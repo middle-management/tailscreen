@@ -704,17 +704,16 @@ final class HelloAckTests: XCTestCase {
 /// the legacy 5-byte `decodeHelloAck` — that rejection is exactly what keeps an
 /// old viewer on the PLI path.
 final class LossRecoveryWireTests: XCTestCase {
-    func testNewControlBytesAreDistinctAndInControlRange() {
+    /// Round-trip only — the exact byte values (and the ≤ 0x7F control-range
+    /// invariant across every case) are pinned by `WireByteRegistryTests`,
+    /// the single source of truth for wire constants.
+    func testNewControlBytesRoundTrip() {
         let kinds: [ScreenShareControlMessage] = [.nack, .receiverReport, .ping]
         for kind in kinds {
             let data = ScreenShareControlMessage.encode(kind)
             XCTAssertTrue(ScreenShareControlMessage.looksLikeControl(data))
-            XCTAssertLessThanOrEqual(kind.rawValue, 0x7F)
             XCTAssertEqual(ScreenShareControlMessage.decode(data), kind)
         }
-        XCTAssertEqual(ScreenShareControlMessage.nack.rawValue, 0x0A)
-        XCTAssertEqual(ScreenShareControlMessage.receiverReport.rawValue, 0x0B)
-        XCTAssertEqual(ScreenShareControlMessage.ping.rawValue, 0x0C)
     }
 
     func testNACKRoundTrip() {
@@ -728,6 +727,20 @@ final class LossRecoveryWireTests: XCTestCase {
         XCTAssertEqual(decoded[0].blp, 0x0304)
         XCTAssertEqual(decoded[1].pid, 0x1000)
         XCTAssertEqual(decoded[1].blp, 0x00FF)
+    }
+
+    func testNACKWrapSpanningEntriesRoundTrip() {
+        // A gap set spanning the 65535 → 0 wrap packs into two FCI groups
+        // (packFCI's numeric sort splits at the boundary — pinned in
+        // NACKSchedulerTests); the wire codec must carry both groups intact.
+        let entries = NACKScheduler.packFCI([65534, 65535, 0, 1])
+        let data = ScreenShareControlMessage.encodeNACK(entries)
+        let decoded = ScreenShareControlMessage.decodeNACK(data)
+        XCTAssertEqual(decoded.count, entries.count)
+        for (got, sent) in zip(decoded, entries) {
+            XCTAssertEqual(got.pid, sent.pid)
+            XCTAssertEqual(got.blp, sent.blp)
+        }
     }
 
     func testNACKCapsAtSixteenEntries() {

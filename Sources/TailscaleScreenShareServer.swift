@@ -171,7 +171,20 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// `RemoteControlPolicy.shouldInject`), so a NAT rebind can't inherit it
     /// and a non-grantee can't inject. At most one grant exists — granting a
     /// new viewer implicitly revokes the old.
-    private let controlGrant = OSAllocatedUnfairLock<ControlGrant?>(initialState: nil)
+    private let controlGrant = OSAllocatedUnfairLock<GrantState>(initialState: GrantState())
+
+    /// Grant + a monotonic mutation counter, mutated under one lock so
+    /// `notifyControlGrantChanged` can hand callbacks a `(generation,
+    /// snapshot)` pair that is consistent by construction. The generation is
+    /// what lets `AppState` discard stale notifications: its handler hops to
+    /// the MainActor via `Task`, so two notifies racing (e.g. a
+    /// disconnect-revoke against a fresh grant) can land out of order — and
+    /// without the counter the nil snapshot could apply *last*, unregistering
+    /// the ⌃⌥. panic hotkey while a grant is live.
+    private struct GrantState {
+        var grant: ControlGrant?
+        var generation: UInt64 = 0
+    }
     /// Viewers that asked for control and are awaiting the sharer's Grant /
     /// Deny, keyed by their TCP control connection's `UUID`.
     private let controlRequests = OSAllocatedUnfairLock<[UUID: ControlRequestInfo]>(initialState: [:])
@@ -182,13 +195,20 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     private let remoteControlInjector = RemoteControlInjector()
     /// Log a dropped (non-grantee) input event at most once per share.
     private let droppedInputLogged = OSAllocatedUnfairLock<Bool>(initialState: false)
+    /// Sharer preference gate on `.controlRequest` (see
+    /// `setAllowControlRequests`). Defaults on; when off, requests are
+    /// declined immediately with `.controlRevoked` so the viewer's UI clears.
+    private let controlRequestsAllowed = OSAllocatedUnfairLock<Bool>(initialState: true)
 
     /// Fires whenever the set of pending control requests changes. Snapshot;
     /// replace the UI list wholesale. Runs on any thread — bounce to MainActor.
     var onControlRequestsChanged: (@Sendable ([ControlRequestInfo]) -> Void)?
     /// Fires whenever the live grant changes (granted, revoked, auto-revoked).
-    /// `nil` means nobody holds control now.
-    var onControlGrantChanged: (@Sendable (ControlGrantInfo?) -> Void)?
+    /// `nil` means nobody holds control now. The `UInt64` is a monotonic
+    /// generation captured atomically with the snapshot — consumers that hop
+    /// actors before applying it MUST drop notifications whose generation is
+    /// below the last one they applied (see `GrantState`).
+    var onControlGrantChanged: (@Sendable (UInt64, ControlGrantInfo?) -> Void)?
     /// Fires when a grant is refused because the process lacks the
     /// Accessibility TCC grant `CGEvent` injection needs. AppState surfaces
     /// the prompt + deep-link to Privacy → Accessibility.
@@ -1151,7 +1171,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         notifyControlRequestsChanged()
 
         // Revoke a previous grantee before installing the new one.
-        let previous = controlGrant.withLock { $0 }
+        let previous = controlGrant.withLock { $0.grant }
         if let previous, previous.connectionID != connectionID {
             sendControlRevoked(to: previous.connectionID, reason: "granted to another viewer")
         }
@@ -1160,7 +1180,10 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         let grant = ControlGrant(
             connectionID: connectionID, viewerIP: request.viewerIP, stableID: stableID,
             hostname: request.hostname, grantedAt: Date())
-        controlGrant.withLock { $0 = grant }
+        controlGrant.withLock { state in
+            state.grant = grant
+            state.generation += 1
+        }
         droppedInputLogged.withLock { $0 = false }
         // Fresh grantee starts with a clean rate window (no inherited budget
         // from the previous grantee) and an armed injector (mapping set, gate
@@ -1179,9 +1202,12 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// input, and clear the sharer UI. `reason` is a short English tag for
     /// logs — the viewer shows its own localized message.
     func revokeControl(reason: String) {
-        let previous = controlGrant.withLock { grant -> ControlGrant? in
-            let value = grant
-            grant = nil
+        let previous = controlGrant.withLock { state -> ControlGrant? in
+            let value = state.grant
+            if value != nil {
+                state.grant = nil
+                state.generation += 1
+            }
             return value
         }
         guard let previous else { return }
@@ -1194,7 +1220,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// Revoke the grant only when `connectionID` holds it. Used by the
     /// connection-close hook (the reliable auto-revoke-on-disconnect signal).
     private func revokeControlIfHeld(byConnection connectionID: UUID, reason: String) {
-        let held = controlGrant.withLock { $0?.connectionID == connectionID }
+        let held = controlGrant.withLock { $0.grant?.connectionID == connectionID }
         if held { revokeControl(reason: reason) }
     }
 
@@ -1202,7 +1228,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// for the UDP-side disconnect signals (BYE / idle sweep / expel), which
     /// don't carry the TCP connection UUID.
     private func revokeControlIfHeld(byIP ip: String, reason: String) {
-        let held = controlGrant.withLock { $0?.viewerIP == ip }
+        let held = controlGrant.withLock { $0.grant?.viewerIP == ip }
         if held { revokeControl(reason: reason) }
     }
 
@@ -1222,12 +1248,16 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
 
     private func notifyControlGrantChanged() {
         guard let cb = onControlGrantChanged else { return }
-        let info = controlGrant.withLock { grant -> ControlGrantInfo? in
-            guard let grant else { return nil }
-            return ControlGrantInfo(
+        // Snapshot + generation read atomically: two racing notifies may
+        // both observe the final state, but neither can pair a stale
+        // snapshot with a newer generation (or vice versa).
+        let (generation, info) = controlGrant.withLock { state -> (UInt64, ControlGrantInfo?) in
+            guard let grant = state.grant else { return (state.generation, nil) }
+            let snapshot = ControlGrantInfo(
                 connectionID: grant.connectionID, viewerIP: grant.viewerIP, hostname: grant.hostname)
+            return (state.generation, snapshot)
         }
-        cb(info)
+        cb(generation, info)
     }
 
     /// Wire annotation + connection-close callbacks onto the
@@ -1278,13 +1308,23 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
                 self.logger.log("Dropped control request from non-admitted peer \(peerAddress ?? "unknown")")
                 return
             }
+            // Sharer preference: control requests disabled entirely. Reply
+            // with `.controlRevoked` on the same connection (rather than
+            // minting a new message type) so the viewer's UI leaves its
+            // "requested" state immediately instead of waiting forever —
+            // old viewers already handle it.
+            guard self.controlRequestsAllowed.withLock({ $0 }) else {
+                self.sendControlRevoked(to: connectionID, reason: "control requests disabled")
+                self.logger.log("Declined control request from \(peerIP) (control requests disabled)")
+                return
+            }
             self.recordControlRequest(connectionID: connectionID, ip: peerIP)
         }
         listener.onInputEvent = { [weak self] event, connectionID, _ in
             guard let self else { return }
             // Authoritative gate: inject only from the current grantee's
             // connection. Everything else is dropped and counted.
-            let grant = self.controlGrant.withLock { $0 }
+            let grant = self.controlGrant.withLock { $0.grant }
             guard RemoteControlPolicy.shouldInject(grant: grant, connectionID: connectionID) else {
                 self.logDroppedInput()
                 return
@@ -2030,8 +2070,8 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
                 }
                 var ssrc: UInt32
                 repeat {
-                    // Start at 2: sharer voice owns 0, system audio owns 1.
-                    ssrc = UInt32.random(in: 2...UInt32.max)
+                    // Sharer voice owns 0, system audio owns 1 (see RTPHeader).
+                    ssrc = UInt32.random(in: RTPHeader.firstViewerSSRC...UInt32.max)
                 } while state.values.contains(where: { $0.audioSSRC == ssrc })
                 state[addr] = PendingViewer(addr: addr, audioSSRC: ssrc, lastSeenNs: now)
                 return true
@@ -2071,12 +2111,12 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             }
             var newAudioSSRC: UInt32
             repeat {
-                // Start at 2: sharer voice owns 0, system audio owns 1.
-                newAudioSSRC = UInt32.random(in: 2...UInt32.max)
+                // Sharer voice owns 0, system audio owns 1 (see RTPHeader).
+                newAudioSSRC = UInt32.random(in: RTPHeader.firstViewerSSRC...UInt32.max)
             } while state.values.contains(where: { $0.audioSSRC == newAudioSSRC })
             let v = Viewer(
                 addr: addr,
-                ssrc: UInt32.random(in: 2...UInt32.max),
+                ssrc: UInt32.random(in: RTPHeader.firstViewerSSRC...UInt32.max),
                 audioSSRC: newAudioSSRC,
                 nextSequence: UInt16.random(in: 0...UInt16.max),
                 lastSeenNs: now
@@ -3305,6 +3345,38 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         enqueueAudioPackets(packet, to: recipients, on: pl)
     }
 
+    /// Enable/disable the "viewers may ask for remote control" gate. Called
+    /// from the MainActor by `AppState` — at share start (before viewers can
+    /// race a request in) and live when the Settings toggle flips. Turning it
+    /// off also **drains every parked request**: each requester gets
+    /// `.controlRevoked` (its UI leaves the requested state) and the sharer's
+    /// pending rows clear — matching the Settings caption's "decline requests
+    /// automatically". It doesn't revoke an existing grant (the sharer
+    /// granted that explicitly; the Stop button / ⌃⌥. handles it).
+    func setAllowControlRequests(_ on: Bool) {
+        controlRequestsAllowed.withLock { $0 = on }
+        guard !on else { return }
+        let drained = controlRequests.withLock { state -> [UUID] in
+            let ids = Array(state.keys)
+            state.removeAll()
+            return ids
+        }
+        guard !drained.isEmpty else { return }
+        notifyControlRequestsChanged()
+        for connectionID in drained {
+            sendControlRevoked(to: connectionID, reason: "control requests disabled")
+        }
+        logger.log("Declined \(drained.count) pending control request(s) (control requests disabled)")
+    }
+
+    /// Test-only: park a control request as if it arrived on the TCP control
+    /// channel, so CI-able unit tests can exercise `setAllowControlRequests`'s
+    /// decline-and-drain without a live listener (the `.controlRevoked` reply
+    /// no-ops when `controlListener` is nil).
+    func recordControlRequestForTesting(connectionID: UUID, ip: String) {
+        recordControlRequest(connectionID: connectionID, ip: ip)
+    }
+
     /// Enable/disable sharing system audio to viewers. Stores the latch (so a
     /// helper (re)spawn re-sends it) and forwards to the live helper for an
     /// instant mute/unmute. Called from the MainActor by `AppState`.
@@ -3334,9 +3406,12 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         // End any remote-control session. Viewers are torn down by SERVER_BYE
         // below, so there's no need to send a per-connection revoke — just
         // clear the grant/request state, drop queued input, and notify the UI.
-        let hadGrant = controlGrant.withLock { grant -> Bool in
-            let had = grant != nil
-            grant = nil
+        let hadGrant = controlGrant.withLock { state -> Bool in
+            let had = state.grant != nil
+            if had {
+                state.grant = nil
+                state.generation += 1
+            }
             return had
         }
         controlRequests.withLock { $0.removeAll() }
