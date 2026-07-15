@@ -236,6 +236,11 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     private let h264Packetizer = H264Packetizer()
     private let h265Packetizer = H265Packetizer()
 
+    /// Total non-timeout receive-loop errors survived this session. Feeds
+    /// the give-up log line and `stop()`'s summary. Locked: bumped from the
+    /// receive task, read from `stop()`.
+    private let receiveLoopErrorTotal = OSAllocatedUnfairLock<Int>(initialState: 0)
+
     /// Sliding-window restart counter for helper-process crashes.
     /// Each unexpected exit pushes its timestamp; we tolerate up to
     /// 3 exits within a 30 s window, after which we give up and
@@ -780,22 +785,86 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         }
     }
 
+    /// `NSError` domain marking a dead UDP receive loop. AppState treats
+    /// this domain as non-recoverable: respawning the capture helper can't
+    /// fix a socket loop that can no longer read, so it goes straight to
+    /// `stopSharing` instead of the capture-restart path.
+    static let receiveLoopErrorDomain = "Tailscreen.ReceiveLoop"
+
+    /// Error surfaced through `onCaptureStopped` when the control-receive
+    /// loop gives up — `ReceiveLoopPolicy.maxConsecutiveErrors` in a row, or
+    /// the `maxErrorsPerWindow` windowed backstop.
+    private static func receiveLoopDeadError(underlying: Error) -> NSError {
+        NSError(
+            domain: receiveLoopErrorDomain,
+            code: 1,
+            userInfo: [
+                NSLocalizedDescriptionKey:
+                    "UDP receive loop gave up after repeated receive errors: \(underlying)"
+            ]
+        )
+    }
+
     /// Drains UDP datagrams and routes control bytes (HELLO/KEEPALIVE/BYE/PLI).
     /// RTP packets shouldn't arrive at the server; if they do (a confused
     /// client), they're dropped — we identify them by V=2 in byte 0.
+    ///
+    /// A non-timeout receive error used to kill this loop permanently, which
+    /// silently killed joins/keepalives/PLIs/viewer audio while the share
+    /// still looked active to the sharer. Each error now retries after a
+    /// capped exponential backoff (`ReceiveLoopPolicy`); a run of
+    /// `maxConsecutiveErrors` — or `maxErrorsPerWindow` inside the trailing
+    /// window, for a flapping socket whose errors interleave with timeouts —
+    /// means the socket is genuinely dead, and the share is torn down through
+    /// `onCaptureStopped`. A share whose control loop can't read is
+    /// unrecoverable.
+    ///
+    /// `TailscaleError.readFailed` is ambiguous: the benign 1 s poll timeout
+    /// and a dead fd (POLLHUP → instant return) both surface as it. Treating
+    /// every `readFailed` as a timeout let a dead socket busy-spin with the
+    /// error counter permanently reset, so the give-up ladder was
+    /// unreachable — the elapsed-time classification below tells them apart.
     private func receiveControlLoop() async {
         guard let pl = packetListener else { return }
+        var consecutiveErrors = 0
+        var errorStampsNs: [UInt64] = []
         while isRunning {
+            let recvStartNs = DispatchTime.now().uptimeNanoseconds
             do {
                 let (data, from) = try await pl.recv(timeout: 1_000)
+                consecutiveErrors = 0
                 handleIncoming(data: data, from: from)
-            } catch TailscaleError.readFailed {
-                continue  // poll timeout, just keep polling
             } catch {
-                if isRunning {
-                    logger.log("Server: receive error: \(error)")
+                guard isRunning else { break }
+                if case TailscaleError.readFailed = error {
+                    let elapsedNs = DispatchTime.now().uptimeNanoseconds &- recvStartNs
+                    if !ReceiveLoopPolicy.classifyReadFailedAsError(elapsedNs: elapsedNs) {
+                        consecutiveErrors = 0
+                        continue  // poll timeout, just keep polling
+                    }
+                    // Near-instant readFailed = dead fd; fall through and
+                    // count it like any other receive error.
                 }
-                break
+                consecutiveErrors += 1
+                let nowNs = DispatchTime.now().uptimeNanoseconds
+                let windowCount = ReceiveLoopPolicy.slidingWindowErrorCount(&errorStampsNs, appending: nowNs)
+                let total = receiveLoopErrorTotal.withLock { count -> Int in
+                    count += 1
+                    return count
+                }
+                logger.log(
+                    "Server: receive error #\(consecutiveErrors) (\(windowCount) in window, total \(total)): \(error)"
+                )
+                let deadConsecutive = consecutiveErrors >= ReceiveLoopPolicy.maxConsecutiveErrors
+                let deadWindowed = windowCount >= ReceiveLoopPolicy.maxErrorsPerWindow
+                if deadConsecutive || deadWindowed {
+                    let detail = "\(consecutiveErrors) consecutive, \(windowCount) in window, \(total) total"
+                    logger.log("Server: receive loop dead (\(detail)) — stopping share")
+                    onCaptureStopped?(Self.receiveLoopDeadError(underlying: error))
+                    break
+                }
+                try? await Task.sleep(
+                    nanoseconds: ReceiveLoopPolicy.retryDelayNs(consecutiveErrors: consecutiveErrors))
             }
         }
     }
@@ -1695,6 +1764,15 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         await packetListener?.close()
         packetListener = nil
         logger.log("Server stop: packet listener closed")
+
+        let receiveErrors = receiveLoopErrorTotal.withLock { count -> Int in
+            let total = count
+            count = 0
+            return total
+        }
+        if receiveErrors > 0 {
+            logger.log("Server stop: receive loop survived \(receiveErrors) error(s) this session")
+        }
 
         // Wipe per-connection annotation-UUID state before clearing the
         // handlers so the cleanup path in `installControlHandlers` doesn't
