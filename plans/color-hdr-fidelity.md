@@ -1,5 +1,5 @@
 # Wide-gamut / 10-bit / HDR-aware pipeline (P3, BT.2020, HEVC Main 10)
-> Status: proposed — this PR contains only the plan; implementation is a follow-up iteration.
+> Status: implemented in this PR.
 
 ## Problem & motivation
 The whole pipeline is hardcoded to **BT.709 primaries + 8-bit 4:2:0**. On a
@@ -274,3 +274,77 @@ Local-only E2E (VideoToolbox + tsnet, per CLAUDE.md — CI can't grant TCC / run
 - Phase 3 (HDR/EDR): **M**, ~200–300 LOC — capture/encode transfer-function + EDR
   render path + tone-map fallback.
 Total ~800–1100 LOC across the three phases; each phase independently shippable.
+
+## Deviations
+Recorded where the implementation departed from the plan (line numbers in the
+plan had drifted five PRs; symbols were followed instead).
+
+- **Scope shipped.** Phase 1 (P3 tagging end-to-end at 8-bit) is fully wired
+  and **on by default**. Phases 2–3 (10-bit HEVC Main 10; HDR/EDR encode) are
+  implemented but **capability-gated behind env flags** (`TAILSCREEN_ENABLE_10BIT`
+  / `TAILSCREEN_ENABLE_HDR`) and additionally gated on the display actually
+  being wide-gamut / EDR-capable. They compile and are internally consistent;
+  they are simply dormant by default so no un-testable-on-CI 10-bit/HDR path
+  goes live untested. The EDR *render* switch (Phase 3 step 4:
+  `wantsExtendedDynamicRangeContent`, `.rgba16Float` drawable, PQ shader
+  tone-map) is **not** implemented — the renderer derives the correct
+  `CAMetalLayer.colorspace` from the decoded buffer's primaries (so BT.2020 is
+  tagged, not clipped) but still uses the 8-bit BGRA drawable + single-texture
+  shader. HDR content therefore renders SDR-tone-mapped by the compositor, not
+  true EDR. This is the one genuinely-half-of-a-phase area and is called out
+  here rather than left as half-wired code.
+
+- **`ColorInfo` carried as an encoder property, not a `setup(…)` parameter.**
+  The plan's step "add a `colorInfo:` param to `setup`/`createSession`" would
+  push both past SwiftLint's `function_parameter_count` max of 5 (post
+  quality-settings, `setup` already has 5). Instead `ColorInfo` is a settable
+  `VideoEncoder.colorInfo` property (identical idiom to the merged
+  `encoderQuality` property) read by `setup`; `createSession` takes a private
+  `SessionConfig` bundle for the same reason. `ScreenCapture.startStream`
+  similarly folded `pixelWidth`/`pixelHeight` into one `pixelSize` to make room
+  for `colorInfo` under the same 5-param ceiling.
+
+- **`ColorInfo` does not travel on the capture-helper wire.** The plan floated
+  *optionally* appending color bytes to the `parameterSets` wire message and to
+  `TailscreenMetadata` for a stats-overlay "P3 · 10-bit · HDR" readout. Skipped
+  (it was explicitly non-load-bearing — correctness rides the SPS VUI). The
+  `ViewerStatsOverlay` color/depth readout was likewise not added. No wire
+  schema changed except the one new UDP control byte.
+
+- **New control byte is PROFILE_NO (`0x08`), the client trigger is a seam.**
+  The Main10-unsupported → 8-bit negotiation is fully wired server-side
+  (`force8bit` latch → `TAILSCREEN_FORCE_8BIT` env → helper pins `ColorInfo` to
+  8-bit) and the message round-trips (`RTPPacketTests`). The *viewer-side
+  automatic trigger* is deliberately left as an internal seam
+  (`TailscaleScreenShareClient.sendBitDepthFallbackRequest()`): the production
+  decoder can't cheaply distinguish "profile unsupported" from "codec
+  unsupported" pre-decode, and since 10-bit is off by default no 8-bit-only
+  viewer ever receives a Main10 stream today. The mechanism is ready for when a
+  real 10-bit capability probe lands.
+
+- **10-bit encoder input attributes left at VideoToolbox defaults.** The plan
+  suggested constraining the compression session's source pixel format via
+  `imageBufferAttributes` / `PixelTransferProperties`. Left `nil` (as shipped):
+  setting `ProfileLevel = HEVC_Main10` is what makes VT emit a Main10 SPS, and
+  VT converts the source pixel format internally, so the extra constraints
+  weren't needed to produce a correct 10-bit bitstream. Noted in case a future
+  measurement shows VT picking a sub-optimal conversion.
+
+- **Decoder still outputs 32BGRA (8-bit).** Phase 2 step 4 (decode to packed
+  `ARGB2101010`) was **not** done: a 10-bit stream currently decodes and
+  truncates to 8-bit BGRA. Colors are correct (the primaries/transfer survive
+  on the buffer attachments and drive the layer colorspace); only the extra two
+  bits of gradient precision are lost. Kept 8-bit to avoid changing the
+  single-texture render path (Phase 2 step 5) without the on-GPU testing CI
+  can't provide. The decoder change + 10-bit drawable are the natural next
+  increment once the render path can be visually verified.
+
+- **Display-gamut / EDR probing lives in `CaptureHelperMain`, not
+  `ScreenCapture`.** `ColorInfo.forDisplay(…)` is the pure decision (CI-tested);
+  the impure probe (`CGColorSpaceIsWideGamutRGB(CGDisplayCopyColorSpace(id))`
+  and `NSScreen.maximumPotentialExtendedDynamicRangeColorComponentValue`) sits
+  in the helper next to `buildFilter`, which already resolves the selection's
+  display, rather than inside `ScreenCapture` (which only sees an opaque
+  `SCContentFilter`). Window/app shares fall back to the main display's gamut,
+  which is safe because SCStream losslessly converts SDR content into a
+  requested P3 space.
