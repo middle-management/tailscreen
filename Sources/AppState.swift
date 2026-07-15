@@ -1252,6 +1252,14 @@ class AppState: ObservableObject {
             c.onControlGranted = { [weak self] in
                 Task { @MainActor [weak self] in
                     guard let self, self.connectionState == .viewing else { return }
+                    // Only enter control if we're still actually asking for it.
+                    // A viewer that clicked Request then Stop before the answer
+                    // shouldn't be silently forced into capturing by a late
+                    // grant — tell the sharer to release it instead.
+                    guard self.viewerControlState == .requested else {
+                        Task { [weak self] in await self?.client?.releaseControl() }
+                        return
+                    }
                     self.enterViewerControl()
                 }
             }
@@ -2383,13 +2391,16 @@ class AppState: ObservableObject {
         Task { await client.requestControl() }
     }
 
-    /// Viewer leaves control mode locally (stops capturing + emitting input).
-    /// The sharer keeps the grant indicator until it revokes or the viewer
-    /// disconnects — there's no viewer→sharer "release" message today.
+    /// Viewer leaves control mode (stops capturing + emitting input) and tells
+    /// the sharer to release the grant via `.controlReleased`, so the sharer's
+    /// banner + gate clear in step rather than leaving a zombie grant. Covers
+    /// both the `.requested` (cancel a pending request) and `.controlling`
+    /// states.
     func stopViewerControl() {
         guard viewerControlState != .none else { return }
         viewerControlState = .none
         setViewerControlCapturing(false)
+        Task { [weak self] in await self?.client?.releaseControl() }
     }
 
     /// Enter control mode after the sharer grants (`onControlGranted`).

@@ -52,6 +52,18 @@ final class ScreenShareRemoteControlTests: XCTestCase {
             defer { lock.unlock() }
             return inputCount
         }
+
+        private var grantActive = false
+        func setGrantActive(_ active: Bool) {
+            lock.lock()
+            defer { lock.unlock() }
+            grantActive = active
+        }
+        var currentGrantActive: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return grantActive
+        }
     }
 
     func testGrantFlowAndInputGate() async throws {
@@ -68,6 +80,7 @@ final class ScreenShareRemoteControlTests: XCTestCase {
         server.onControlRequestsChanged = { requests in
             if let first = requests.first { box.setRequestID(first.id) }
         }
+        server.onControlGrantChanged = { grant in box.setGrantActive(grant != nil) }
         server.onInputEventForTesting = { _ in box.bumpInput() }
 
         try await server.start(
@@ -131,9 +144,26 @@ final class ScreenShareRemoteControlTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(150))
         }
         XCTAssertGreaterThan(box.currentInputCount, 0, "granted input must pass the gate")
+        XCTAssertTrue(box.currentGrantActive, "server should show an active grant")
 
-        server.revokeControl(reason: "test")
+        // Viewer-initiated release: the sharer revokes on `.controlReleased`,
+        // so the grant clears server-side and the viewer gets `.controlRevoked`
+        // — no zombie grant left behind.
+        for _ in 0..<5 {
+            await client.releaseControl()
+            try await Task.sleep(for: .milliseconds(150))
+        }
         await fulfillment(of: [revoked], timeout: 10)
+
+        var grantCleared = false
+        for _ in 0..<20 {
+            if !box.currentGrantActive {
+                grantCleared = true
+                break
+            }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        XCTAssertTrue(grantCleared, "viewer release must clear the server-side grant")
 
         await client.disconnect()
         await server.stop()

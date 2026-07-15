@@ -129,8 +129,9 @@ final class RemoteControlInputView: NSView {
     }
 
     /// Map AppKit modifier flags to a raw `CGEventFlags` bitmask for the wire.
-    /// Internal (not private) so the mapping is unit testable.
-    static func cgFlags(from flags: NSEvent.ModifierFlags) -> UInt64 {
+    /// Internal + `nonisolated` (pure — no main-actor state) so the mapping is
+    /// unit testable off the main actor.
+    nonisolated static func cgFlags(from flags: NSEvent.ModifierFlags) -> UInt64 {
         var out: CGEventFlags = []
         if flags.contains(.shift) { out.insert(.maskShift) }
         if flags.contains(.control) { out.insert(.maskControl) }

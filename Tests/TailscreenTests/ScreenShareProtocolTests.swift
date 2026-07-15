@@ -190,6 +190,83 @@ final class ScreenShareProtocolTests: XCTestCase {
         }
     }
 
+    func testControlReleasedRoundTrip() throws {
+        var parser = ScreenShareMessageParser()
+        parser.append(ScreenShareMessage.controlReleased.encode())
+        let decoded = try XCTUnwrap(parser.next())
+        guard case .controlReleased = decoded else {
+            return XCTFail("expected .controlReleased, got \(decoded)")
+        }
+        XCTAssertNil(parser.next())
+    }
+
+    func testMalformedInputEventDecodesToNilWithoutCrashing() throws {
+        // A well-formed frame header (type 0x09) with garbage JSON payload
+        // must yield nil (no crash), and a following valid frame still parses.
+        var frame = Data()
+        frame.append(ScreenShareMessage.MessageType.inputEvent.rawValue)
+        let garbage = Data([0x7B, 0x21, 0x40, 0x23])  // "{!@#"
+        let len = UInt32(garbage.count)
+        frame.append(UInt8((len >> 24) & 0xFF))
+        frame.append(UInt8((len >> 16) & 0xFF))
+        frame.append(UInt8((len >> 8) & 0xFF))
+        frame.append(UInt8(len & 0xFF))
+        frame.append(garbage)
+
+        var parser = ScreenShareMessageParser()
+        parser.append(frame)
+        XCTAssertNil(parser.next())  // garbage input event → nil, consumed
+        XCTAssertFalse(parser.isCorrupt)  // decode-fail is not a framing error
+
+        // The stream is still usable for the next frame.
+        parser.append(ScreenShareMessage.controlRequest.encode())
+        let decoded = try XCTUnwrap(parser.next())
+        guard case .controlRequest = decoded else {
+            return XCTFail("expected .controlRequest after garbage input event")
+        }
+    }
+
+    func testOversizedFrameLengthPoisonsParserAndBoundsBuffer() {
+        // A hostile peer advertises a 4 GiB payload then slow-streams bytes.
+        // The parser must reject at header-parse time, mark itself corrupt,
+        // and stop buffering — never grow toward the declared size.
+        var frame = Data()
+        frame.append(ScreenShareMessage.MessageType.annotation.rawValue)
+        frame.append(contentsOf: [0xFF, 0xFF, 0xFF, 0xFF])  // len = 0xFFFFFFFF
+
+        var parser = ScreenShareMessageParser()
+        parser.append(frame)
+        XCTAssertNil(parser.next())
+        XCTAssertTrue(parser.isCorrupt, "oversized length must poison the parser")
+
+        // Further bytes are ignored (buffer stays bounded), and next() stays nil.
+        parser.append(Data(repeating: 0xAB, count: 100_000))
+        XCTAssertNil(parser.next())
+        XCTAssertTrue(parser.isCorrupt)
+    }
+
+    func testFrameAtExactlyMaxPayloadLengthIsAccepted() throws {
+        // The ceiling is inclusive: a frame declaring exactly maxPayloadLength
+        // is honoured (not poisoned), so the bound doesn't reject legitimate
+        // large-but-in-spec frames.
+        let payload = Data(repeating: 0x20, count: ScreenShareMessage.maxPayloadLength)
+        var frame = Data()
+        frame.append(ScreenShareMessage.MessageType.annotation.rawValue)
+        let len = UInt32(payload.count)
+        frame.append(UInt8((len >> 24) & 0xFF))
+        frame.append(UInt8((len >> 16) & 0xFF))
+        frame.append(UInt8((len >> 8) & 0xFF))
+        frame.append(UInt8(len & 0xFF))
+        frame.append(payload)
+
+        var parser = ScreenShareMessageParser()
+        parser.append(frame)
+        // Payload is whitespace, not valid AnnotationOp JSON → decodes to nil,
+        // but crucially the parser is NOT corrupt (the length was in bounds).
+        XCTAssertNil(parser.next())
+        XCTAssertFalse(parser.isCorrupt)
+    }
+
     func testUnknownMessageTypeIsSkipped() throws {
         // Hand-build a bogus message with type=0xFF, then a valid annotation.
         var bogus = Data()

@@ -1162,8 +1162,11 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             hostname: request.hostname, grantedAt: Date())
         controlGrant.withLock { $0 = grant }
         droppedInputLogged.withLock { $0 = false }
-        remoteControlInjector.reset()
-        remoteControlInjector.setSelection(decodedSelection())
+        // Fresh grantee starts with a clean rate window (no inherited budget
+        // from the previous grantee) and an armed injector (mapping set, gate
+        // open, queue cleared).
+        inputRateLimiter.withLock { $0 = EventRateLimiter() }
+        remoteControlInjector.activate(selection: decodedSelection())
         Task { [weak self] in
             await self?.controlListener?.send(.controlGranted, to: connectionID)
         }
@@ -1182,7 +1185,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             return value
         }
         guard let previous else { return }
-        remoteControlInjector.reset()
+        remoteControlInjector.deactivate()
         sendControlRevoked(to: previous.connectionID, reason: reason)
         logger.log("Revoked remote control from \(previous.viewerIP) (\(reason))")
         notifyControlGrantChanged()
@@ -1293,6 +1296,14 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             self.onInputEventForTesting?(event)
             self.remoteControlInjector.apply(event)
         }
+        listener.onControlReleased = { [weak self] connectionID in
+            guard let self else { return }
+            // The grantee is voluntarily giving up control — clear any pending
+            // request on this connection and revoke if it holds the grant, so
+            // the sharer UI and the gate release together.
+            self.removeControlRequest(connectionID: connectionID)
+            self.revokeControlIfHeld(byConnection: connectionID, reason: "viewer released")
+        }
         listener.onConnectionClosed = { [weak self] connectionID in
             guard let self else { return }
             self.annotationConnectionIP.withLock { _ = $0.removeValue(forKey: connectionID) }
@@ -1327,6 +1338,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         controlListener?.onConnectionClosed = nil
         controlListener?.onControlRequest = nil
         controlListener?.onInputEvent = nil
+        controlListener?.onControlReleased = nil
     }
 
     /// Broadcast a framed `AnnotationOp` to every connection on the shared
@@ -3328,8 +3340,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             return had
         }
         controlRequests.withLock { $0.removeAll() }
-        remoteControlInjector.reset()
-        remoteControlInjector.setSelection(nil)
+        remoteControlInjector.deactivate()
         droppedInputLogged.withLock { $0 = false }
         inputRateLimiter.withLock { $0 = EventRateLimiter() }
         if hadGrant { notifyControlGrantChanged() }

@@ -43,4 +43,88 @@ final class RemoteControlMappingTests: XCTestCase {
         assertPoint(RemoteControlMapping.globalPoint(nx: 1.5, ny: 2.0, captureRect: rect), 110, 220)
         assertPoint(RemoteControlMapping.globalPoint(nx: -0.5, ny: -3.0, captureRect: rect), 10, 20)
     }
+
+    // MARK: - boundingRect union (app-share scoping)
+
+    func testBoundingRectUnionsWindowRects() {
+        let rects = [
+            CGRect(x: 100, y: 100, width: 200, height: 150),
+            CGRect(x: 400, y: 300, width: 100, height: 100)
+        ]
+        let union = try? XCTUnwrap(RemoteControlMapping.boundingRect(of: rects))
+        XCTAssertEqual(union, CGRect(x: 100, y: 100, width: 400, height: 300))
+    }
+
+    func testBoundingRectSingleRectIsIdentity() {
+        let rect = CGRect(x: 5, y: 6, width: 7, height: 8)
+        XCTAssertEqual(RemoteControlMapping.boundingRect(of: [rect]), rect)
+    }
+
+    func testBoundingRectEmptyIsNil() {
+        XCTAssertNil(RemoteControlMapping.boundingRect(of: []))
+    }
+
+    // MARK: - captureRect scoping per share kind (injected resolvers)
+
+    private func selection(_ kind: PickerSelection.Kind, windowID: UInt32? = nil) -> PickerSelection {
+        PickerSelection(kind: kind, displayID: 1, windowID: windowID, bundleIDs: ["com.example.app"])
+    }
+
+    func testCaptureRectDisplayUsesDisplayBounds() {
+        let displayRect = CGRect(x: 0, y: 0, width: 2560, height: 1440)
+        let rect = RemoteControlMapping.captureRect(
+            for: selection(.display),
+            displayBounds: { _ in displayRect },
+            windowBounds: { _ in nil },
+            appWindowBounds: { _, _ in [] })
+        XCTAssertEqual(rect, displayRect)
+    }
+
+    func testCaptureRectWindowUsesWindowBounds() {
+        let windowRect = CGRect(x: 300, y: 200, width: 640, height: 480)
+        let rect = RemoteControlMapping.captureRect(
+            for: selection(.window, windowID: 42),
+            displayBounds: { _ in .zero },
+            windowBounds: { id in id == 42 ? windowRect : nil },
+            appWindowBounds: { _, _ in [] })
+        XCTAssertEqual(rect, windowRect)
+    }
+
+    func testCaptureRectApplicationUsesAppWindowUnionNotWholeDisplay() {
+        // The whole display is far larger than the app's windows — an app
+        // share must clamp to the app's window union, not the display, so a
+        // granted viewer can't click the menu bar / Dock / other apps.
+        let displayRect = CGRect(x: 0, y: 0, width: 3000, height: 2000)
+        let appWindows = [
+            CGRect(x: 100, y: 100, width: 400, height: 300),
+            CGRect(x: 700, y: 500, width: 300, height: 200)
+        ]
+        let rect = RemoteControlMapping.captureRect(
+            for: selection(.application),
+            displayBounds: { _ in displayRect },
+            windowBounds: { _ in nil },
+            appWindowBounds: { _, _ in appWindows })
+        XCTAssertEqual(rect, CGRect(x: 100, y: 100, width: 900, height: 600))
+        XCTAssertNotEqual(rect, displayRect)
+    }
+
+    func testCaptureRectApplicationWithNoWindowsIsNil() {
+        // No visible app windows → drop the event rather than leak onto the
+        // rest of the display.
+        let rect = RemoteControlMapping.captureRect(
+            for: selection(.application),
+            displayBounds: { _ in CGRect(x: 0, y: 0, width: 3000, height: 2000) },
+            windowBounds: { _ in nil },
+            appWindowBounds: { _, _ in [] })
+        XCTAssertNil(rect)
+    }
+
+    func testCaptureRectWindowWithNoWindowIDIsNil() {
+        let rect = RemoteControlMapping.captureRect(
+            for: selection(.window, windowID: nil),
+            displayBounds: { _ in .zero },
+            windowBounds: { _ in CGRect(x: 1, y: 2, width: 3, height: 4) },
+            appWindowBounds: { _, _ in [] })
+        XCTAssertNil(rect)
+    }
 }

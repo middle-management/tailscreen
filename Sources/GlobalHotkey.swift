@@ -17,6 +17,27 @@ final class GlobalHotkey: @unchecked Sendable {
     private let action: @MainActor () -> Void
     private var hotKeyRef: EventHotKeyRef?
     private var handlerRef: EventHandlerRef?
+    /// This hotkey's registered id. The Carbon event handler compares the
+    /// fired event's `EventHotKeyID.id` against this and only runs `action`
+    /// on a match — every `GlobalHotkey` installs its own handler on the
+    /// shared application event target, and Carbon dispatches a hotkey-pressed
+    /// event to each installed handler most-recent-first, stopping at the
+    /// first `noErr`. Without this filter the last-registered handler would
+    /// swallow *every* hotkey (returning `noErr` unconditionally) and starve
+    /// the others — e.g. the revoke hotkey killing the mic toggle.
+    private let hotKeyIDValue: UInt32
+    /// Signature shared by all Tailscreen hotkeys ('TSNH').
+    static let signature = OSType(0x54534E48)
+
+    /// Pure dispatch predicate: should a handler registered for
+    /// `registeredSignature`/`registeredID` run for a fired event carrying
+    /// `eventSignature`/`eventID`? Extracted so the id-filtering is unit
+    /// testable without pressing real keys.
+    static func handlerShouldFire(
+        eventSignature: OSType, eventID: UInt32, registeredSignature: OSType, registeredID: UInt32
+    ) -> Bool {
+        eventSignature == registeredSignature && eventID == registeredID
+    }
 
     /// `keyCode` is a Carbon virtual key (e.g. `kVK_ANSI_M = 46`).
     /// `modifierFlags` is a Carbon mask (`controlKey`, `optionKey`,
@@ -24,11 +45,11 @@ final class GlobalHotkey: @unchecked Sendable {
     /// distinguishes concurrently-registered hotkeys — `RegisterEventHotKey`
     /// needs a unique `(signature, id)` per registration, so each live
     /// `GlobalHotkey` instance must pass a distinct value (the mic toggle
-    /// uses 1, the remote-control panic-revoke uses 2). Each instance installs
-    /// its own event handler bound to its own `self`, so the action still
-    /// dispatches correctly regardless of `id`.
+    /// uses 1, the remote-control panic-revoke uses 2). The installed handler
+    /// filters on this id so one hotkey's handler never swallows another's.
     init(keyCode: UInt32, modifiers: UInt32, id: UInt32 = 1, action: @escaping @MainActor () -> Void) {
         self.action = action
+        self.hotKeyIDValue = id
         register(keyCode: keyCode, modifiers: modifiers, id: id)
     }
 
@@ -38,7 +59,7 @@ final class GlobalHotkey: @unchecked Sendable {
     }
 
     private func register(keyCode: UInt32, modifiers: UInt32, id: UInt32) {
-        let hotKeyID = EventHotKeyID(signature: OSType(0x54534E48), id: id)  // 'TSNH'
+        let hotKeyID = EventHotKeyID(signature: Self.signature, id: id)  // 'TSNH'
         var ref: EventHotKeyRef?
         let regStatus = RegisterEventHotKey(
             keyCode,
@@ -54,10 +75,12 @@ final class GlobalHotkey: @unchecked Sendable {
         }
         self.hotKeyRef = ref
 
-        // Install once per process; the handler dispatches by the
-        // hotKeyID's `id` field, so multiple GlobalHotkey instances
-        // would each need their own ID. We currently only register
-        // one, so this is fine.
+        // Each instance installs its own handler bound to its own `self`.
+        // Carbon dispatches a hotkey-pressed event to every installed handler
+        // (most-recent-first, stopping at the first `noErr`), so the handler
+        // MUST filter on the fired event's `EventHotKeyID` and return
+        // `eventNotHandledErr` on a mismatch — otherwise it would swallow
+        // other hotkeys' events (e.g. the revoke handler eating ⌃⌥M).
         let selfPtr = Unmanaged.passUnretained(self).toOpaque()
         var spec = EventTypeSpec(
             eventClass: OSType(kEventClassKeyboard),
@@ -80,6 +103,15 @@ final class GlobalHotkey: @unchecked Sendable {
                 )
                 guard status == noErr else { return status }
                 let me = Unmanaged<GlobalHotkey>.fromOpaque(userData).takeUnretainedValue()
+                // Only handle the hotkey this instance registered; let Carbon
+                // fall through to the next handler otherwise.
+                guard
+                    GlobalHotkey.handlerShouldFire(
+                        eventSignature: id.signature, eventID: id.id,
+                        registeredSignature: GlobalHotkey.signature, registeredID: me.hotKeyIDValue)
+                else {
+                    return OSStatus(eventNotHandledErr)
+                }
                 Task { @MainActor in me.action() }
                 return noErr
             },

@@ -62,6 +62,12 @@ final class TailscreenControlListener: @unchecked Sendable {
     /// event order is preserved.
     var onInputEvent: ((InputEvent, UUID, String?) -> Void)?
 
+    /// Fires for a `.controlReleased` message (grantee viewer→sharer "I'm
+    /// done controlling"). Argument is the connection's `UUID`; the sharer
+    /// revokes the grant if this connection holds it, so the sharer UI and
+    /// the gate release in lockstep with the viewer leaving control mode.
+    var onControlReleased: ((UUID) -> Void)?
+
     /// Fires when an accepted TCP connection closes. Argument is the
     /// connection's stable `UUID`. Used by the share server to retire
     /// per-viewer annotation state.
@@ -189,6 +195,12 @@ final class TailscreenControlListener: @unchecked Sendable {
                 while let message = parser.next() {
                     dispatch(message, connectionID: id, peerAddress: peerAddress)
                 }
+                // A peer that framed an oversized (bogus) length poisons the
+                // parser; the stream can't resync, so drop the connection.
+                if parser.isCorrupt {
+                    logger.log("Control connection sent an oversized frame — closing")
+                    return
+                }
             } catch TailscaleError.readFailed {
                 if !isRunning { return }
                 continue  // poll timeout — keep reading
@@ -208,6 +220,8 @@ final class TailscreenControlListener: @unchecked Sendable {
             onControlRequest?(connectionID, peerAddress)
         case .inputEvent(let event):
             onInputEvent?(event, connectionID, peerAddress)
+        case .controlReleased:
+            onControlReleased?(connectionID)
         case .shareResponse, .controlGranted, .controlRevoked:
             // `.shareResponse` rides the requester's own outgoing connection,
             // read inline (see `TailscreenMetadataService.awaitShareResponse`).

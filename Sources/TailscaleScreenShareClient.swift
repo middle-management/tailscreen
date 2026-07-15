@@ -186,6 +186,18 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         }
     }
 
+    /// Tell the sharer we're done controlling (`.controlReleased`) so it
+    /// revokes the grant — keeping the sharer UI + gate in step with the
+    /// viewer leaving control mode. Best-effort; no-op if the channel is closed.
+    func releaseControl() async {
+        guard let conn = annotationChannel, isConnected else { return }
+        do {
+            try await annotationWriter.send(ScreenShareMessage.controlReleased.encode(), over: conn)
+        } catch {
+            logger.log("Client: releaseControl failed: \(error)")
+        }
+    }
+
     /// Drains framed annotation ops from the server's back-channel
     /// fan-out (sharer-painted strokes + other viewers' strokes that the
     /// server relays). Runs until the connection closes or `disconnect()`
@@ -209,6 +221,11 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                     default:
                         break
                     }
+                }
+                // Oversized/bogus frame: the stream can't resync, drop it.
+                if parser.isCorrupt {
+                    logger.log("Annotation back-channel sent an oversized frame — closing")
+                    return
                 }
             } catch TailscaleError.readFailed {
                 if Task.isCancelled { return }

@@ -45,8 +45,18 @@ enum ScreenShareMessage {
     case controlGranted
     case controlRevoked(reason: String)
     case inputEvent(InputEvent)
+    case controlReleased
 
     static let headerSize = 5
+
+    /// Hard ceiling on a single frame's payload. Every legitimate payload
+    /// (annotation op, input event, request/response JSON) is well under a
+    /// kilobyte; the cap stops a hostile peer from advertising a 4 GiB length
+    /// and slow-streaming bytes to grow the parser's buffer without bound —
+    /// especially now that a privileged `.inputEvent` consumer rides this
+    /// channel. A frame declaring more than this poisons the parser (the
+    /// stream is unrecoverable) and the receive loop closes the connection.
+    static let maxPayloadLength = 1 << 20  // 1 MiB
 
     enum MessageType: UInt8 {
         case annotation = 0x03
@@ -56,6 +66,9 @@ enum ScreenShareMessage {
         case controlGranted = 0x07
         case controlRevoked = 0x08
         case inputEvent = 0x09
+        // 0x0A–0x0C are used by the UDP control byte space (NACK/RR/PING);
+        // this is the disjoint TCP message-type space, so 0x0A is free here.
+        case controlReleased = 0x0A
     }
 
     /// Serialize this message as a wire-format packet (header + payload).
@@ -84,6 +97,8 @@ enum ScreenShareMessage {
         case .inputEvent(let event):
             let payload = (try? JSONEncoder().encode(event)) ?? Data()
             return Self.frame(type: .inputEvent, payload: payload)
+        case .controlReleased:
+            return Self.frame(type: .controlReleased, payload: Data())
         }
     }
 
@@ -99,17 +114,33 @@ enum ScreenShareMessage {
 /// Incremental parser. Feed bytes as they arrive; ``next()`` returns whole messages.
 struct ScreenShareMessageParser {
     private var buffer = Data()
+    /// Set once a frame declares a payload longer than
+    /// ``ScreenShareMessage/maxPayloadLength`` — the stream is unrecoverable
+    /// (we can't know where the next frame starts), so ``next()`` returns nil
+    /// forever and the receive loop should close the connection.
+    private(set) var isCorrupt = false
 
     mutating func append(_ data: Data) {
+        // Once poisoned, stop buffering — don't let a hostile peer keep
+        // growing memory after an oversized-length rejection.
+        guard !isCorrupt else { return }
         buffer.append(data)
     }
 
     mutating func next() -> ScreenShareMessage? {
+        guard !isCorrupt else { return nil }
         guard buffer.count >= ScreenShareMessage.headerSize else { return nil }
 
         let rawType = buffer[buffer.startIndex]
         let lengthStart = buffer.index(buffer.startIndex, offsetBy: 1)
         let length = Int(buffer.readBigEndian(UInt32.self, at: lengthStart))
+        // Reject an oversized frame at header-parse time — BEFORE buffering
+        // its payload — so a bogus 4 GiB length can't grow the buffer.
+        guard length <= ScreenShareMessage.maxPayloadLength else {
+            isCorrupt = true
+            buffer.removeAll(keepingCapacity: false)
+            return nil
+        }
         let totalSize = ScreenShareMessage.headerSize + length
         guard buffer.count >= totalSize else { return nil }
 
@@ -139,6 +170,8 @@ struct ScreenShareMessageParser {
             return decodeControlRevoked(payload)
         case .inputEvent:
             return decodeInputEvent(payload)
+        case .controlReleased:
+            return .controlReleased
         }
     }
 
