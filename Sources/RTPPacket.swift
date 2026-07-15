@@ -289,12 +289,14 @@ enum ScreenShareControlMessage: UInt8, CaseIterable {
     }
 
     /// Parse an FEC datagram. This is untrusted UDP input, so every field is
-    /// bounds-checked: nil on a short buffer, an out-of-range group count, or
-    /// a body too short to carry the XORed `[len:2][byte1][ts:4]` prefix —
-    /// truncated/garbage datagrams reject cleanly instead of feeding the
-    /// recovery solve.
+    /// bounds-checked: nil on a short buffer, an out-of-range group count, a
+    /// body too short to carry the XORed `[len:2][byte1][ts:4]` prefix, or a
+    /// body larger than any legitimate parity (`FECCodec.maxBodyBytes` — the
+    /// prefix plus one full MTU payload region) — truncated/garbage/oversized
+    /// datagrams reject cleanly instead of feeding the recovery solve.
     static func decodeFEC(_ data: Data) -> (baseSeq: UInt16, count: Int, body: Data)? {
         guard data.count >= 4 + FECCodec.minBodyBytes, data[data.startIndex] == fec.rawValue else { return nil }
+        guard data.count <= 4 + FECCodec.maxBodyBytes else { return nil }
         let baseSeq = data.readBE(UInt16.self, at: data.startIndex + 1)
         let count = Int(data[data.startIndex + 3])
         guard count >= FECCodec.minGroupSize, count <= FECCodec.maxGroupSize else { return nil }

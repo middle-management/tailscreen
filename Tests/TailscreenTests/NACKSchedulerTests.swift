@@ -175,6 +175,68 @@ final class NACKSchedulerTests: XCTestCase {
         XCTAssertFalse(sched.hasOpenGaps)
     }
 
+    func testNoteRecoveredAdvancesPastTailOfBatchLoss() {
+        // The marker (batch-final) packet is lost and FEC-recovered: the
+        // recovered seq is AHEAD of every wire packet, so a bare gap-cancel
+        // would leave highestSeq behind it and the NEXT batch's first packet
+        // would re-open a phantom gap for the already-recovered seq —
+        // burning a spurious NACK. `noteRecovered` must advance the cursor.
+        var sched = NACKScheduler()
+        for seq in 0...8 {
+            _ = sched.observe(seq: UInt16(seq), nowNs: UInt64(seq) * ms)
+        }
+        // Seq 9 (the marker) never arrives on the wire; FEC recovers it.
+        sched.noteRecovered(seq: 9, nowNs: 10 * ms)
+        XCTAssertFalse(sched.hasOpenGaps)
+        // Next batch starts at seq 10: contiguous with the recovery — no gap,
+        // no NACK, no PLI, ever.
+        XCTAssertTrue(sched.observe(seq: 10, nowNs: 11 * ms).isEmpty)
+        XCTAssertFalse(sched.hasOpenGaps)
+        XCTAssertTrue(sched.tick(nowNs: 2 * s).isEmpty)
+    }
+
+    func testNoteRecoveredClearsGapWithoutRTTSample() {
+        // Mid-batch recovery (gap already NACKed): same no-RTT-sample rule
+        // as cancelGap.
+        var sched = NACKScheduler(initialRTTNs: 60_000_000)
+        _ = sched.observe(seq: 0, nowNs: 0)
+        _ = sched.observe(seq: 2, nowNs: 0)  // gap 1
+        XCTAssertEqual(sched.tick(nowNs: 20 * ms), [.sendNACK([1])])
+        sched.noteRecovered(seq: 1, nowNs: 30 * ms)
+        XCTAssertFalse(sched.hasOpenGaps)
+        XCTAssertEqual(sched.rttEstimateNs, 60_000_000, "recovery latency must not feed the RTT EMA")
+        XCTAssertTrue(sched.tick(nowNs: 2 * s).isEmpty)
+    }
+
+    func testNoteRecoveredOpensGapsForGenuinelySkippedSeqs() {
+        // A recovery two ahead of the highest wire packet means the seq in
+        // between never arrived — it must still be tracked as a real gap.
+        var sched = NACKScheduler()
+        _ = sched.observe(seq: 0, nowNs: 0)
+        sched.noteRecovered(seq: 2, nowNs: 1 * ms)
+        XCTAssertTrue(sched.hasOpenGaps, "seq 1 is genuinely missing")
+        XCTAssertEqual(sched.tick(nowNs: 30 * ms), [.sendNACK([1])])
+    }
+
+    func testSetReorderTolerancesSwitchesInPlace() {
+        // FEC arming/disarming retunes eligibility WITHOUT dropping tracked
+        // gaps or the adapted RTT estimate (a scheduler rebuild would).
+        var sched = NACKScheduler(initialRTTNs: 60_000_000)
+        _ = sched.observe(seq: 0, nowNs: 0)
+        _ = sched.observe(seq: 2, nowNs: 0)  // gap 1, newerSeen 1
+        sched.setReorderTolerances(
+            toleranceNs: TransportTuning.fecSchedulerToleranceNs,
+            packetTolerance: TransportTuning.fecSchedulerPacketTolerance)
+        XCTAssertTrue(sched.tick(nowNs: 20 * ms).isEmpty, "20 ms < the relaxed 25 ms tolerance")
+        // Disarm back to phase-1: the still-tracked gap is now eligible on
+        // the original 15 ms tolerance and NACKs at once.
+        sched.setReorderTolerances(
+            toleranceNs: NACKScheduler.defaultReorderToleranceNs,
+            packetTolerance: NACKScheduler.defaultReorderPacketTolerance)
+        XCTAssertEqual(sched.tick(nowNs: 21 * ms), [.sendNACK([1])])
+        XCTAssertEqual(sched.rttEstimateNs, 60_000_000)
+    }
+
     func testFECModeTolerancesDelayNACKUntilBeyondGroupSpan() {
         // FEC-mode construction (N+2 packets / 25 ms): a gap must NOT become
         // NACK-eligible while a recovery could still be in flight — up to

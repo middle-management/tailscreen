@@ -2,45 +2,90 @@ import XCTest
 
 @testable import Tailscreen
 
-/// Pure-decision tests for the adaptive-FEC arm of the congestion sweep:
-/// the RTT ∧ loss on-gate, the raw-loss group-size ladder, raw-loss
-/// reconstruction from residual + recovered (the anti-oscillation term),
-/// the two-clean-windows off-hysteresis, the per-viewer send gate, input
-/// isolation (throttled/legacy viewers excluded), and the N/(N+1) encoder
-/// compensation.
+/// Pure-decision tests for the adaptive-FEC arm of the congestion sweep
+/// (`fecSweepDecision` + its helpers): the strictly PER-VIEWER RTT ∧ loss
+/// gate (mixing worst-RTT and worst-loss across different viewers must never
+/// switch FEC on with nobody gated), the raw-loss group-size ladder, raw-loss
+/// reconstruction from residual + recovered against each viewer's OWN
+/// expected packet count (multi-viewer recovery sums must not inflate; a
+/// keyframe-only throttled viewer's small denominator must keep its gate
+/// stable), the two-clean-windows off-hysteresis, and the N/(N+1) encoder
+/// compensation with its floor clamp.
 final class FECOverheadDecisionTests: XCTestCase {
     private typealias Server = TailscaleScreenShareServer
     private typealias State = TailscaleScreenShareServer.FECState
-    private typealias Inputs = TailscaleScreenShareServer.FECInputs
     private typealias Sample = TailscaleScreenShareServer.FECViewerSample
+    private typealias Decision = TailscaleScreenShareServer.FECSweepDecision
     private let ms: UInt64 = 1_000_000
 
-    private func inputs(
-        rttMs: UInt64, residualQ8: Int = 0, recoveredQ8: Int = 0, state: State = State()
-    ) -> Inputs {
-        Inputs(rttNs: rttMs * ms, residualLossQ8: residualQ8, recoveredQ8: recoveredQ8, state: state)
+    private func sample(
+        rttMs: UInt64, residualQ8: Int = 0, recovered: Int = 0, expected: Int = 1000, capable: Bool = true
+    ) -> Sample {
+        Sample(
+            rttNs: rttMs * ms, residualLossQ8: residualQ8, recovered: recovered,
+            expectedPackets: expected, fecCapable: capable)
     }
 
-    // MARK: - On-gate
+    private func decide(_ samples: [String: Sample], state: State = State()) -> Decision {
+        Server.fecSweepDecision(samples: samples, state: state)
+    }
+
+    // MARK: - Per-viewer on-gate
+
+    func testSlowLossyViewerGatesOn() {
+        let d = decide(["v": sample(rttMs: 200, residualQ8: 8)])
+        XCTAssertEqual(d.state, State(groupSize: 10, cleanWindows: 0))
+        XCTAssertEqual(d.gated, ["v"])
+    }
 
     func testLossyButFastPathStaysOff() {
         // ~3 % loss but RTT 100 ms < 150 ms: NACK beats render — no parity.
-        XCTAssertEqual(Server.fecOverheadDecision(inputs(rttMs: 100, residualQ8: 8)), State())
+        let d = decide(["v": sample(rttMs: 100, residualQ8: 8)])
+        XCTAssertEqual(d.state, State())
+        XCTAssertTrue(d.gated.isEmpty)
     }
 
     func testSlowButCleanPathStaysOff() {
-        XCTAssertEqual(Server.fecOverheadDecision(inputs(rttMs: 300, residualQ8: 2)), State())
+        let d = decide(["v": sample(rttMs: 300, residualQ8: 2)])
+        XCTAssertEqual(d.state, State())
+        XCTAssertTrue(d.gated.isEmpty)
     }
 
     func testGateBoundariesAreExclusive() {
         // Exactly 150 ms / exactly 2 % (Q8 5) do NOT gate on.
-        XCTAssertEqual(Server.fecOverheadDecision(inputs(rttMs: 150, residualQ8: 8)), State())
-        XCTAssertEqual(Server.fecOverheadDecision(inputs(rttMs: 200, residualQ8: 5)), State())
+        XCTAssertEqual(decide(["v": sample(rttMs: 150, residualQ8: 8)]).state, State())
+        XCTAssertEqual(decide(["v": sample(rttMs: 200, residualQ8: 5)]).state, State())
+        XCTAssertFalse(Server.fecViewerGate(rttNs: 150 * ms, rawLossQ8: 8))
+        XCTAssertFalse(Server.fecViewerGate(rttNs: 200 * ms, rawLossQ8: 5))
+        XCTAssertTrue(Server.fecViewerGate(rttNs: 151 * ms, rawLossQ8: 6))
     }
 
-    func testSlowLossyPathGatesOn() {
-        let next = Server.fecOverheadDecision(inputs(rttMs: 200, residualQ8: 8))
-        XCTAssertEqual(next, State(groupSize: 10, cleanWindows: 0))
+    func testCrossViewerMixingNeverTurnsFECOn() {
+        // Viewer A: slow but clean. Viewer B: lossy but fast. Taking
+        // worst-RTT and worst-loss over DIFFERENT viewers would say ON with
+        // an empty gated set — the encoder paying N/(N+1) for parity nobody
+        // receives. The per-viewer gate must keep FEC off entirely.
+        let samples = [
+            "slowClean": sample(rttMs: 200, residualQ8: 0),
+            "fastLossy": sample(rttMs: 50, residualQ8: 13)
+        ]
+        let d = decide(samples)
+        XCTAssertEqual(d.state, State(), "no single viewer qualifies — FEC must stay off")
+        XCTAssertTrue(d.gated.isEmpty)
+    }
+
+    func testCrossViewerMixingFromOnStateHoldsWithoutGatedViewers() {
+        // Same A+B while already ON (e.g. B's RTT just dropped): loss is
+        // still present (not clean) so N is held for a quick re-arm, but the
+        // gated set is EMPTY — the applier sends no parity and must pay no
+        // compensation (compensation follows the gated set, not the held N).
+        let samples = [
+            "slowClean": sample(rttMs: 200, residualQ8: 0),
+            "fastLossy": sample(rttMs: 50, residualQ8: 13)
+        ]
+        let d = decide(samples, state: State(groupSize: 10, cleanWindows: 0))
+        XCTAssertEqual(d.state, State(groupSize: 10, cleanWindows: 0))
+        XCTAssertTrue(d.gated.isEmpty, "held N with nobody gated ⇒ no parity, no compensation")
     }
 
     // MARK: - Loss ladder (raw loss → group size)
@@ -48,19 +93,31 @@ final class FECOverheadDecisionTests: XCTestCase {
     func testLadderBands() {
         // 2–4 % → 10; 4–8 % → 7; > 8 % → 5. Band edges: Q8 10 (~3.9 %) is
         // still the light band, 11 crosses to medium; 20 medium, 21 heavy.
-        XCTAssertEqual(Server.fecOverheadDecision(inputs(rttMs: 200, residualQ8: 6)).groupSize, 10)
-        XCTAssertEqual(Server.fecOverheadDecision(inputs(rttMs: 200, residualQ8: 10)).groupSize, 10)
-        XCTAssertEqual(Server.fecOverheadDecision(inputs(rttMs: 200, residualQ8: 11)).groupSize, 7)
-        XCTAssertEqual(Server.fecOverheadDecision(inputs(rttMs: 200, residualQ8: 20)).groupSize, 7)
-        XCTAssertEqual(Server.fecOverheadDecision(inputs(rttMs: 200, residualQ8: 21)).groupSize, 5)
-        XCTAssertEqual(Server.fecOverheadDecision(inputs(rttMs: 200, residualQ8: 255)).groupSize, 5)
+        XCTAssertEqual(decide(["v": sample(rttMs: 200, residualQ8: 6)]).state.groupSize, 10)
+        XCTAssertEqual(decide(["v": sample(rttMs: 200, residualQ8: 10)]).state.groupSize, 10)
+        XCTAssertEqual(decide(["v": sample(rttMs: 200, residualQ8: 11)]).state.groupSize, 7)
+        XCTAssertEqual(decide(["v": sample(rttMs: 200, residualQ8: 20)]).state.groupSize, 7)
+        XCTAssertEqual(decide(["v": sample(rttMs: 200, residualQ8: 21)]).state.groupSize, 5)
+        XCTAssertEqual(decide(["v": sample(rttMs: 200, residualQ8: 255)]).state.groupSize, 5)
     }
 
     func testLadderReadjustsWhileOn() {
         // Loss worsens: on at N=10, raw ~6 % → step to 7.
         let on = State(groupSize: 10, cleanWindows: 0)
-        XCTAssertEqual(
-            Server.fecOverheadDecision(inputs(rttMs: 200, residualQ8: 15, state: on)).groupSize, 7)
+        let d = decide(["v": sample(rttMs: 200, residualQ8: 15)], state: on)
+        XCTAssertEqual(d.state.groupSize, 7)
+        XCTAssertEqual(d.gated, ["v"])
+    }
+
+    func testLadderFollowsWorstGatedViewer() {
+        // Two gated viewers: the worse one sizes the group.
+        let samples = [
+            "mild": sample(rttMs: 200, residualQ8: 7),
+            "bad": sample(rttMs: 300, residualQ8: 25)
+        ]
+        let d = decide(samples)
+        XCTAssertEqual(d.state.groupSize, 5)
+        XCTAssertEqual(d.gated, ["mild", "bad"])
     }
 
     // MARK: - Anti-oscillation (the fecRecovered term)
@@ -70,68 +127,45 @@ final class FECOverheadDecisionTests: XCTestCase {
         // term reconstructs raw loss, so FEC must NOT gate off (which would
         // re-trigger the loss it's hiding).
         let on = State(groupSize: 10, cleanWindows: 0)
-        let next = Server.fecOverheadDecision(inputs(rttMs: 200, residualQ8: 0, recoveredQ8: 8, state: on))
-        XCTAssertEqual(next, State(groupSize: 10, cleanWindows: 0))
+        let d = decide(
+            ["v": sample(rttMs: 200, residualQ8: 0, recovered: 30, expected: 1000)], state: on)
+        XCTAssertEqual(d.state, State(groupSize: 10, cleanWindows: 0))
+        XCTAssertEqual(d.gated, ["v"], "a viewer whose parity is doing work keeps its parity")
     }
 
     func testRecoveredTermCountsTowardOnGate() {
-        // Same reconstruction on the on-gate: residual 1 % + recovered 2 %
-        // crosses the 2 % raw gate.
-        let next = Server.fecOverheadDecision(inputs(rttMs: 200, residualQ8: 3, recoveredQ8: 5))
-        XCTAssertEqual(next.groupSize, 10)
+        // Residual 1 % + recovered ~1.5 % crosses the 2 % raw gate.
+        let d = decide(["v": sample(rttMs: 200, residualQ8: 3, recovered: 15, expected: 1000)])
+        XCTAssertEqual(d.state.groupSize, 10)
+        XCTAssertEqual(d.gated, ["v"])
     }
 
-    // MARK: - Off-gate hysteresis
+    // MARK: - Per-viewer denominators (recovered → raw loss)
 
-    func testTwoConsecutiveCleanWindowsGateOff() {
-        let on = State(groupSize: 7, cleanWindows: 0)
-        let afterOne = Server.fecOverheadDecision(inputs(rttMs: 200, residualQ8: 0, state: on))
-        XCTAssertEqual(afterOne, State(groupSize: 7, cleanWindows: 1), "first clean window holds parity")
-        let afterTwo = Server.fecOverheadDecision(inputs(rttMs: 200, residualQ8: 0, state: afterOne))
-        XCTAssertEqual(afterTwo, State(), "second clean window gates off")
-    }
-
-    func testLossResetsCleanWindowCount() {
-        let oneClean = State(groupSize: 10, cleanWindows: 1)
-        let next = Server.fecOverheadDecision(inputs(rttMs: 200, residualQ8: 8, state: oneClean))
-        XCTAssertEqual(next.cleanWindows, 0)
-        XCTAssertEqual(next.groupSize, 10)
-    }
-
-    func testGrayZoneHoldsCurrentGroup() {
-        // Raw loss between clean (< 1 %) and the ladder floor (≤ 2 %): not
-        // clean, not ladder-worthy — hold the current group size.
-        let on = State(groupSize: 7, cleanWindows: 1)
-        let next = Server.fecOverheadDecision(inputs(rttMs: 200, residualQ8: 4, state: on))
-        XCTAssertEqual(next, State(groupSize: 7, cleanWindows: 0))
-    }
-
-    // MARK: - Input assembly (isolation)
-
-    func testThrottledAndLegacyViewersExcludedFromInputs() {
-        let samples: [String: Sample] = [
-            "good": Sample(rttNs: 60 * ms, residualLossQ8: 0, recovered: 0, fecCapable: true),
-            "throttled": Sample(
-                rttNs: 400 * ms, residualLossQ8: 60, recovered: 40, fecCapable: true, throttled: true),
-            "legacy": Sample(rttNs: 500 * ms, residualLossQ8: 80, recovered: 0, fecCapable: false)
+    func testMultiViewerRecoveriesDoNotInflate() {
+        // Two viewers each recovering ~3 % of their OWN 1000-packet stream:
+        // per-viewer raw loss is ~3 % each — NOT 6 % against one stream — so
+        // the ladder stays at 10, not 7.
+        let samples = [
+            "a": sample(rttMs: 200, residualQ8: 0, recovered: 30, expected: 1000),
+            "b": sample(rttMs: 250, residualQ8: 0, recovered: 30, expected: 1000)
         ]
-        let inputs = Server.fecDecisionInputs(samples: samples, expectedPackets: 1000, state: State())
-        XCTAssertEqual(inputs.rttNs, 60 * ms, "throttled/legacy RTT must not leak into the decision")
-        XCTAssertEqual(inputs.residualLossQ8, 0)
-        XCTAssertEqual(inputs.recoveredQ8, 0)
-        XCTAssertEqual(Server.fecOverheadDecision(inputs), State(), "one outlier can't force overhead on")
+        let d = decide(samples, state: State(groupSize: 10, cleanWindows: 0))
+        XCTAssertEqual(d.state.groupSize, 10, "summing recoveries across viewers over-ladders overhead")
+        XCTAssertEqual(d.gated, ["a", "b"])
     }
 
-    func testWorstOfEligibleViewersFeedsDecision() {
-        let samples: [String: Sample] = [
-            "ok": Sample(rttNs: 80 * ms, residualLossQ8: 1, recovered: 0, fecCapable: true),
-            "bad": Sample(rttNs: 250 * ms, residualLossQ8: 9, recovered: 25, fecCapable: true)
-        ]
-        let inputs = Server.fecDecisionInputs(samples: samples, expectedPackets: 800, state: State())
-        XCTAssertEqual(inputs.rttNs, 250 * ms)
-        XCTAssertEqual(inputs.residualLossQ8, 9)
-        XCTAssertEqual(inputs.recoveredQ8, Server.fecRecoveredQ8(recovered: 25, expectedPackets: 800))
-        XCTAssertGreaterThan(Server.fecOverheadDecision(inputs).groupSize, 0)
+    func testThrottledViewerGateStableAgainstOwnDenominator() {
+        // A keyframe-only throttled viewer's window carries few packets (40,
+        // not the ~1000 templates). Recovering 2 of them is 5 % raw loss —
+        // its gate must HOLD. Divided by the template-stream count it would
+        // read ~0.05 % and drop the gate, setting up the gate-drop → loss →
+        // PLI-storm → re-gate oscillation.
+        let d = decide(
+            ["throttled": sample(rttMs: 300, residualQ8: 0, recovered: 2, expected: 40)],
+            state: State(groupSize: 10, cleanWindows: 0))
+        XCTAssertEqual(d.gated, ["throttled"], "per-viewer denominator must keep the gate latched")
+        XCTAssertGreaterThan(d.state.groupSize, 0)
     }
 
     func testRecoveredQ8Conversion() {
@@ -142,13 +176,55 @@ final class FECOverheadDecisionTests: XCTestCase {
         XCTAssertEqual(Server.fecRecoveredQ8(recovered: 10, expectedPackets: 0), 0, "no expected → no signal")
     }
 
-    // MARK: - Per-viewer send gate
+    // MARK: - Off-gate hysteresis
 
-    func testViewerGateRequiresBothRTTAndLoss() {
-        XCTAssertTrue(Server.fecViewerGate(rttNs: 200 * ms, rawLossQ8: 8))
-        XCTAssertFalse(Server.fecViewerGate(rttNs: 100 * ms, rawLossQ8: 8), "fast path — NACK suffices")
-        XCTAssertFalse(Server.fecViewerGate(rttNs: 200 * ms, rawLossQ8: 3), "clean link pays zero overhead")
-        XCTAssertFalse(Server.fecViewerGate(rttNs: 150 * ms, rawLossQ8: 8), "boundary exclusive")
+    func testTwoConsecutiveCleanWindowsGateOff() {
+        let on = State(groupSize: 7, cleanWindows: 0)
+        let afterOne = decide(["v": sample(rttMs: 200, residualQ8: 0)], state: on)
+        XCTAssertEqual(
+            afterOne.state, State(groupSize: 7, cleanWindows: 1), "first clean window holds parity")
+        XCTAssertTrue(afterOne.gated.isEmpty, "clean viewer receives no parity while winding down")
+        let afterTwo = decide(["v": sample(rttMs: 200, residualQ8: 0)], state: afterOne.state)
+        XCTAssertEqual(afterTwo.state, State(), "second clean window gates off")
+        XCTAssertTrue(afterTwo.gated.isEmpty)
+    }
+
+    func testLossResetsCleanWindowCount() {
+        let oneClean = State(groupSize: 10, cleanWindows: 1)
+        let d = decide(["v": sample(rttMs: 200, residualQ8: 8)], state: oneClean)
+        XCTAssertEqual(d.state, State(groupSize: 10, cleanWindows: 0))
+    }
+
+    func testGrayZoneHoldsCurrentGroupWithEmptyGate() {
+        // Raw loss between clean (< 1 %) and the gate (≤ 2 %): not clean,
+        // nobody gated — hold N (quick re-arm) with an empty gated set.
+        let on = State(groupSize: 7, cleanWindows: 1)
+        let d = decide(["v": sample(rttMs: 200, residualQ8: 4)], state: on)
+        XCTAssertEqual(d.state, State(groupSize: 7, cleanWindows: 0))
+        XCTAssertTrue(d.gated.isEmpty)
+    }
+
+    // MARK: - Legacy exclusion
+
+    func testLegacyViewersNeverGateOrDriveTheDecision() {
+        // A non-`.fec` viewer, however lossy/slow, is invisible to the FEC
+        // arm — it can neither switch parity on nor hold it on.
+        let d = decide(["legacy": sample(rttMs: 500, residualQ8: 80, capable: false)])
+        XCTAssertEqual(d.state, State())
+        XCTAssertTrue(d.gated.isEmpty)
+        let fromOn = decide(
+            ["legacy": sample(rttMs: 500, residualQ8: 80, capable: false)],
+            state: State(groupSize: 10, cleanWindows: 0))
+        XCTAssertTrue(fromOn.gated.isEmpty)
+        XCTAssertEqual(
+            fromOn.state, State(groupSize: 10, cleanWindows: 1),
+            "legacy loss doesn't count as raw loss — window reads clean")
+    }
+
+    func testNoViewersReadsCleanAndWindsDown() {
+        let d = decide([:], state: State(groupSize: 10, cleanWindows: 1))
+        XCTAssertEqual(d.state, State())
+        XCTAssertTrue(d.gated.isEmpty)
     }
 
     // MARK: - Bitrate compensation
@@ -161,5 +237,15 @@ final class FECOverheadDecisionTests: XCTestCase {
 
     func testCompensationIdentityWhenOff() {
         XCTAssertEqual(Server.fecCompensatedBitrate(6_000_000, groupSize: 0), 6_000_000)
+    }
+
+    func testCompensationClampedAtScaledFloor() {
+        // The compensated rate can't sit below the adaptive floor's own
+        // compensated equivalent, even for a bitrate at/below the floor.
+        let floor = TransportTuning.adaptiveFloorMinBps
+        XCTAssertEqual(Server.fecCompensatedBitrate(floor, groupSize: 10), floor * 10 / 11)
+        XCTAssertEqual(
+            Server.fecCompensatedBitrate(floor / 2, groupSize: 10), floor * 10 / 11,
+            "sub-floor input clamps up to the scaled floor")
     }
 }

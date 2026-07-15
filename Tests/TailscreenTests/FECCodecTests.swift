@@ -112,14 +112,29 @@ final class FECCodecTests: XCTestCase {
 
     // MARK: - Group packing
 
-    func testGroupRangesChunksAtN() {
-        XCTAssertEqual(FECCodec.groupRanges(templateCount: 25, groupSize: 10), [0..<10, 10..<20, 20..<25])
+    func testGroupRangesBalancedChunks() {
+        // ⌈25/10⌉ = 3 balanced groups: 9+8+8 (not greedy 10+10+5).
+        XCTAssertEqual(FECCodec.groupRanges(templateCount: 25, groupSize: 10), [0..<9, 9..<17, 17..<25])
+        XCTAssertEqual(FECCodec.groupRanges(templateCount: 20, groupSize: 10), [0..<10, 10..<20])
     }
 
-    func testGroupRangesSkipsSingletonRemainder() {
-        // Trailing run of 1 < minGroupSize: left uncovered, not a
-        // duplication-degenerate parity.
-        XCTAssertEqual(FECCodec.groupRanges(templateCount: 21, groupSize: 10), [0..<10, 10..<20])
+    func testGroupRangesCoverEveryPacketIncludingMarker() {
+        // One past a group boundary balances 6+5 instead of leaving a lone
+        // uncovered remainder — the AU's marker packet (the last index) must
+        // always sit inside a covered group, since its reconstruction is the
+        // load-bearing recovery case.
+        XCTAssertEqual(FECCodec.groupRanges(templateCount: 11, groupSize: 10), [0..<6, 6..<11])
+        XCTAssertEqual(FECCodec.groupRanges(templateCount: 21, groupSize: 10), [0..<7, 7..<14, 14..<21])
+        for count in 2...60 {
+            let ranges = FECCodec.groupRanges(templateCount: count, groupSize: 10)
+            XCTAssertEqual(ranges.first?.lowerBound, 0)
+            XCTAssertEqual(ranges.last?.upperBound, count, "marker left uncovered for count \(count)")
+            for (i, range) in ranges.enumerated() {
+                XCTAssertGreaterThanOrEqual(range.count, FECCodec.minGroupSize)
+                XCTAssertLessThanOrEqual(range.count, 10)
+                if i > 0 { XCTAssertEqual(range.lowerBound, ranges[i - 1].upperBound, "gap between groups") }
+            }
+        }
     }
 
     func testGroupRangesSkipsSinglePacketBatch() {

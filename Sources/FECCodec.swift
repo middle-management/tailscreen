@@ -35,26 +35,45 @@ enum FECCodec {
     /// XORed per-packet prefix: `[len:2][byte1][timestamp:4]`. A parity body
     /// shorter than this cannot describe any packet — decode rejects it.
     static let minBodyBytes = 7
+    /// Largest legitimate parity body: the XOR prefix plus one full RTP
+    /// payload region (the padded body is sized to the longest member, and no
+    /// member's payload exceeds the packetizers' MTU budget). `decodeFEC`
+    /// rejects anything larger — an oversized body is garbage, not a group.
+    static let maxBodyBytes = minBodyBytes + H264Packetizer.maxPayloadBytes
     /// Body bytes that precede the XORed payload region.
     private static let payloadOffsetInBody = 7
 
     /// Partition a batch of `templateCount` packets (one access unit — groups
     /// must never span batches, see the throttled-viewer seq-contiguity rule)
-    /// into consecutive runs of up to `groupSize`. A trailing remainder
-    /// shorter than `minGroupSize` is left uncovered rather than emitting a
-    /// duplication-degenerate parity.
+    /// into `⌈count/groupSize⌉` **balanced** consecutive runs (sizes differ by
+    /// at most one). Balancing instead of greedy-chunking means a batch one
+    /// past a group boundary (e.g. 11 with N = 10) splits 6+5 rather than
+    /// 10+1: the same parity overhead, but no sub-`minGroupSize` remainder is
+    /// ever left uncovered — crucially the AU's **marker packet** always sits
+    /// inside a covered group. Batches smaller than `minGroupSize` get no
+    /// parity (a single-packet AU is the cheapest possible PLI).
     static func groupRanges(
         templateCount: Int, groupSize: Int, minGroupSize: Int = FECCodec.minGroupSize
     ) -> [Range<Int>] {
         guard groupSize >= minGroupSize, templateCount >= minGroupSize else { return [] }
-        let size = min(groupSize, maxGroupSize)
+        let cap = min(groupSize, maxGroupSize)
+        var groups = (templateCount + cap - 1) / cap  // ⌈count/cap⌉
+        // Degenerate tiny caps (cap < 2×minGroupSize) can balance below
+        // minGroupSize; shrink the group count until every group is legal.
+        // Sizes then exceed `cap` slightly but stay far under the wire's
+        // `maxGroupSize` (only reachable for cap = 2).
+        while groups > 1 && templateCount / groups < minGroupSize {
+            groups -= 1
+        }
+        let base = templateCount / groups
+        let extra = templateCount % groups
         var out: [Range<Int>] = []
+        out.reserveCapacity(groups)
         var start = 0
-        while templateCount - start >= minGroupSize {
-            let end = min(start + size, templateCount)
-            if end - start < minGroupSize { break }
-            out.append(start..<end)
-            start = end
+        for index in 0..<groups {
+            let size = base + (index < extra ? 1 : 0)
+            out.append(start..<(start + size))
+            start += size
         }
         return out
     }
@@ -80,22 +99,30 @@ enum FECCodec {
 
     /// XOR one packet's covered fields into `body` (in place). Shared by the
     /// parity compute (XOR of all members) and the recovery solve (XOR of the
-    /// received members against the parity body).
+    /// received members against the parity body). Uses raw-buffer access —
+    /// this runs on the broadcast path once per keyframe packet (megabytes
+    /// per keyframe), where per-byte `Data` subscripting is real overhead.
+    /// `withUnsafeBytes` on a `Data` slice exposes the slice's own bytes
+    /// zero-based, so both full `Data`s and re-based slices are safe here.
     private static func xorPacket(_ packet: Data, into body: inout Data) {
         let len = UInt16(truncatingIfNeeded: packet.count)
-        body[body.startIndex] ^= UInt8((len >> 8) & 0xFF)
-        body[body.startIndex + 1] ^= UInt8(len & 0xFF)
-        body[body.startIndex + 2] ^= packet[packet.startIndex + 1]
-        for i in 0..<4 {
-            body[body.startIndex + 3 + i] ^= packet[packet.index(packet.startIndex, offsetBy: 4 + i)]
-        }
         let payloadLen = packet.count - RTPHeader.size
-        let copyLen = min(payloadLen, body.count - payloadOffsetInBody)
-        guard copyLen > 0 else { return }
-        for i in 0..<copyLen {
-            let bodyIdx = body.index(body.startIndex, offsetBy: payloadOffsetInBody + i)
-            let pktIdx = packet.index(packet.startIndex, offsetBy: RTPHeader.size + i)
-            body[bodyIdx] ^= packet[pktIdx]
+        body.withUnsafeMutableBytes { (bodyRaw: UnsafeMutableRawBufferPointer) in
+            packet.withUnsafeBytes { (packetRaw: UnsafeRawBufferPointer) in
+                let out = bodyRaw.bindMemory(to: UInt8.self)
+                let pkt = packetRaw.bindMemory(to: UInt8.self)
+                out[0] ^= UInt8((len >> 8) & 0xFF)
+                out[1] ^= UInt8(len & 0xFF)
+                out[2] ^= pkt[1]
+                for i in 0..<4 {
+                    out[3 + i] ^= pkt[4 + i]
+                }
+                let copyLen = min(payloadLen, out.count - payloadOffsetInBody)
+                guard copyLen > 0 else { return }
+                for i in 0..<copyLen {
+                    out[payloadOffsetInBody + i] ^= pkt[RTPHeader.size + i]
+                }
+            }
         }
     }
 

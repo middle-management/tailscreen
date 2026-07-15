@@ -157,22 +157,30 @@ struct FECGroupBuffer: Sendable {
         return Recovery(seq: missingSeq, packet: packet)
     }
 
-    /// Re-run buffered parities after a media arrival; a group that just
-    /// became one-missing solves now. At most one recovery per call (a media
-    /// packet belongs to exactly one group per batch).
+    /// Re-run buffered parities after a media arrival: solve the first group
+    /// that just became one-missing, drop every fully-received parity, and
+    /// keep the rest — a single scan over a rebuilt array, so removing a
+    /// satisfied parity never skips or delays the others. At most one
+    /// recovery per call (a media packet belongs to exactly one group per
+    /// batch, so one arrival can complete at most one group).
     private mutating func solvePending(nowNs: UInt64) -> Recovery? {
         purgeAgedParities(nowNs: nowNs)
-        for (index, parity) in pending.enumerated() {
-            if let recovery = trySolve(parity) {
-                pending.remove(at: index)
-                return recovery
+        guard !pending.isEmpty else { return nil }
+        var recovery: Recovery?
+        var remaining: [PendingParity] = []
+        remaining.reserveCapacity(pending.count)
+        for parity in pending {
+            if recovery == nil, let solved = trySolve(parity) {
+                recovery = solved  // consumed — not retained
+                continue
             }
             if missingSeqs(baseSeq: parity.baseSeq, count: parity.count).isEmpty {
-                pending.remove(at: index)
-                return nil
+                continue  // fully received — parity has nothing left to add
             }
+            remaining.append(parity)
         }
-        return nil
+        pending = remaining
+        return recovery
     }
 
     private mutating func purgeAgedParities(nowNs: UInt64) {

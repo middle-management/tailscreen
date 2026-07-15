@@ -841,6 +841,18 @@ final class LossRecoveryWireTests: XCTestCase {
         var wrongTag = ScreenShareControlMessage.encodeFEC(baseSeq: 0, count: 2, body: okBody)
         wrongTag[wrongTag.startIndex] = 0x0C
         XCTAssertNil(ScreenShareControlMessage.decodeFEC(wrongTag), "wrong control byte")
+        // Body-length sanity cap: nothing legitimate exceeds the XOR prefix
+        // plus one full MTU payload region.
+        let oversized = Data(count: FECCodec.maxBodyBytes + 1)
+        XCTAssertNil(
+            ScreenShareControlMessage.decodeFEC(
+                ScreenShareControlMessage.encodeFEC(baseSeq: 0, count: 2, body: oversized)),
+            "oversized body must reject")
+        let maxOK = Data(count: FECCodec.maxBodyBytes)
+        XCTAssertNotNil(
+            ScreenShareControlMessage.decodeFEC(
+                ScreenShareControlMessage.encodeFEC(baseSeq: 0, count: 2, body: maxOK)),
+            "exactly max-sized body must decode")
     }
 
     func testExtendedReceiverReportBothLengths() {

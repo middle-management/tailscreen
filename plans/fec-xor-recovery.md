@@ -503,3 +503,39 @@ All CI-able (pure logic — no tsnet, per CLAUDE.md's CI constraint).
 **M.** ~550 LOC source (wire ~60, FECCodec ~120, FECGroupBuffer ~130, server
 ~140, client ~80, stats ~20) + ~600 LOC tests. No helper-wire, encoder, or
 TailscaleKitPackage changes; no new subprocess surface.
+
+## Post-review amendments (implemented; deviations from the design above)
+
+- **Parity is interleaved per group**, not sent after the whole batch: each
+  group's parity goes out immediately behind that group's last media packet
+  inside the same send-chain job. Batch-trailing parity defeated FEC for its
+  target case — a multi-hundred-packet keyframe evicts early groups from the
+  viewer's bounded `FECGroupBuffer` before their parity arrives, and leaves
+  early gaps NACK-eligible long before recovery data is on the wire.
+- **`groupRanges` balances group sizes** (⌈count/N⌉ groups, sizes ±1) instead
+  of greedy chunking, so no sub-`minGroupSize` remainder is ever left
+  uncovered — in particular the AU's marker packet is always parity-covered.
+- **Recovery advances the NACK scheduler** (`noteRecovered`, superseding the
+  bare `cancelGap` for the recovery path): a recovered tail-of-batch (marker)
+  seq is ahead of every wire packet, and without advancing `highestSeq` the
+  next batch's first packet re-opened a phantom gap for the already-recovered
+  seq (spurious NACK, possible PLI escalation).
+- **The FEC decision is per-viewer first** (`fecSweepDecision`): a viewer
+  gates only when its own path passes both on-gates; FEC turns on iff the
+  gated set is non-empty; the ladder reads the gated viewers' worst raw loss;
+  and each viewer's recovered count converts against its own expected packet
+  count (multi-viewer sums don't inflate, throttled viewers' gates stay
+  stable). Encoder compensation applies only while the gated set is non-empty
+  (never for a gray-zone-held N), forces a keyframe when it turns on, is
+  clamped to the scaled adaptive floor, and is re-pushed after every helper
+  (re)spawn.
+- **The viewer arms FEC on evidence, not negotiation**: relaxed scheduler
+  tolerances (switched in place, preserving gaps + the RTT estimate) and
+  media buffering start on the first 0x0D received and disarm after ~3 s
+  without parity — zero cost client-side on clean links even though the
+  server always advertises `.fec`.
+- **Known property (recorded, not a bug):** the bitrate arm sees residual
+  loss only, so on a congestion-limited link FEC can mask loss → clean-window
+  up-ramp → re-induced loss: a slow sawtooth bounded by the up-hysteresis.
+  The `fecRecovered` RR term de-oscillates only the FEC arm by design;
+  feeding raw loss to the bitrate arm would double-penalize repaired loss.

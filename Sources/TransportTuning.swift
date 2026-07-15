@@ -109,12 +109,22 @@ enum TransportTuning {
     static let fecGroupSizeMedium = 7
     static let fecGroupSizeHeavy = 5
 
-    /// Client: NACK-scheduler reorder tolerances while FEC is negotiated.
-    /// A packet lost first-in-group sees up to N−1 newer media packets plus
-    /// the parity before recovery, so the gap becomes NACK-eligible only
-    /// after N+2 newer packets (N = the largest ladder group) or 25 ms (one
+    /// Client: NACK-scheduler reorder tolerances while FEC parity is
+    /// actually FLOWING (armed on the first 0x0D received, not at bare
+    /// negotiation — the server always advertises `.fec`, and a clean link
+    /// that never sees parity must keep phase-1 NACK timing). A packet lost
+    /// first-in-group sees up to N−1 newer media packets plus the trailing
+    /// parity before recovery, so the gap becomes NACK-eligible only after
+    /// N+2 newer packets (N = the largest ladder group) or 25 ms (one
     /// 60 fps frame interval + parity slack) — FEC gets first shot at every
     /// gap; NACK fires only for the multi-loss groups FEC can't solve.
     static let fecSchedulerPacketTolerance = fecGroupSizeLight + 2
     static let fecSchedulerToleranceNs: UInt64 = 25_000_000
+
+    /// Client: how long without any parity datagram before the FEC receive
+    /// machinery disarms — scheduler tolerances back to phase-1, media
+    /// buffering off. Comfortably longer than a sweep window's worth of
+    /// parity cadence, short enough that a server that gated parity off
+    /// doesn't leave the viewer's NACK timing relaxed for long.
+    static let fecParityIdleNs: UInt64 = 3_000_000_000
 }

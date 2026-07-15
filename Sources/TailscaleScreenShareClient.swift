@@ -63,9 +63,21 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     /// tolerances).
     private var nackScheduler = NACKScheduler()
     /// FEC group buffer: retains recent video packets and solves XOR parity
-    /// datagrams into recovered packets. Consulted only once the server
-    /// advertised `.fec`.
+    /// datagrams into recovered packets. Consulted only while parity is
+    /// actually flowing (`fecParityActive`).
     private var fecBuffer = FECGroupBuffer()
+    /// True while parity is actually flowing: set on the first 0x0D received,
+    /// cleared after `TransportTuning.fecParityIdleNs` without one. Bare
+    /// `.fec` negotiation must NOT arm anything — the server always
+    /// advertises the cap, and its adaptive gate keeps parity off on clean
+    /// links, so an always-armed viewer would pay the relaxed NACK timing
+    /// (25 ms / N+2 packets) and per-packet buffering for nothing. Arming on
+    /// evidence keeps zero-cost-when-off true on BOTH ends; the first lossy
+    /// group right at arming is the accepted warm-up (its members predate
+    /// buffering — NACK still covers it).
+    private var fecParityActive = false
+    /// Uptime of the most recent parity datagram, for the disarm timer.
+    private var lastParityArrivalNs: UInt64 = 0
     /// Packets recovered via FEC since the last receiver report — carried in
     /// the extended RR's `fecRecovered` field so the server's FEC arm sees
     /// raw link loss even when parity is hiding all of it.
@@ -619,19 +631,11 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                                     depacketizer = MultiCodecDepacketizer(reorderDepth: 64)
                                     logger.log("Server advertised NACK — deep reorder window enabled")
                                 }
-                                // FEC mode: loosen the scheduler's reorder
-                                // tolerances so a parity recovery already in
-                                // flight (≤ N media packets + the trailing
-                                // parity away) isn't raced by a NACK — NACK
-                                // fires only for multi-loss groups FEC can't
-                                // solve. FEC-negotiated sessions only; plain
-                                // NACK sessions keep the tight defaults.
-                                if ack.caps.contains(.fec) {
-                                    nackScheduler = NACKScheduler(
-                                        reorderToleranceNs: TransportTuning.fecSchedulerToleranceNs,
-                                        reorderPacketTolerance: TransportTuning.fecSchedulerPacketTolerance)
-                                    logger.log("Server advertised FEC — parity recovery armed")
-                                }
+                                // `.fec` in the ack only permits the 0x0D
+                                // path; the FEC receive machinery (relaxed
+                                // scheduler tolerances + media buffering)
+                                // arms on the FIRST parity datagram actually
+                                // received — see `fecParityActive`.
                             }
                             if assignedAudioSSRC != ack.ssrc {
                                 assignedAudioSSRC = ack.ssrc
@@ -702,10 +706,13 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                     if isVideo {
                         let nowNs = DispatchTime.now().uptimeNanoseconds
                         await handleVideoFeedback(seq: videoHeader.sequenceNumber, nowNs: nowNs)
-                        // FEC: retain the packet for parity solves and check
-                        // whether it completed a group whose parity arrived
-                        // first (parity can outrun a reordered member).
-                        if negotiatedCaps.contains(.fec) {
+                        // FEC: while parity is flowing, retain the packet for
+                        // parity solves and check whether it completed a
+                        // group whose parity arrived first (parity can outrun
+                        // a reordered member). Gated on `fecParityActive`,
+                        // not bare negotiation, so a session that never sees
+                        // parity pays zero per-packet buffering cost.
+                        if fecParityActive {
                             let recovery = fecBuffer.noteMedia(
                                 seq: videoHeader.sequenceNumber, packet: datagram, nowNs: nowNs)
                             if let recovery, await processRecoveredPacket(recovery) {
@@ -812,22 +819,42 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         if negotiatedCaps.contains(.receiverReport) {
             rrAccounting.observe(seq: recovery.seq)
         }
-        nackScheduler.cancelGap(seq: recovery.seq)
+        // `noteRecovered`, not `cancelGap`: besides clearing the gap without
+        // an RTT sample, it advances the scheduler's highest-seen cursor when
+        // the recovery is ahead of every wire packet — the tail-of-batch
+        // (marker) case, where the next AU's first packet would otherwise
+        // re-open a phantom gap for the already-recovered seq and burn a
+        // spurious NACK.
+        nackScheduler.noteRecovered(seq: recovery.seq, nowNs: DispatchTime.now().uptimeNanoseconds)
         return await ingestVideoPacket(recovery.packet)
     }
 
     /// Handle one inbound FEC parity datagram (0x0D): bounds-checked decode
-    /// (untrusted UDP — truncated/garbage rejects cleanly), group solve, and
-    /// the recovered-packet flow. Returns true when a recovery completed an
-    /// AU. No-op unless `.fec` was negotiated.
+    /// (untrusted UDP — truncated/garbage rejects cleanly), arm/refresh the
+    /// FEC receive machinery (parity on the wire is the arming evidence),
+    /// group solve, and the recovered-packet flow. Returns true when a
+    /// recovery completed an AU. No-op unless `.fec` was negotiated.
     private func handleFECParityDatagram(_ datagram: Data) async -> Bool {
         guard negotiatedCaps.contains(.fec) else { return false }
         guard let parity = ScreenShareControlMessage.decodeFEC(datagram) else { return false }
+        let now = DispatchTime.now().uptimeNanoseconds
+        lastParityArrivalNs = now
+        if !fecParityActive {
+            fecParityActive = true
+            // Loosen the scheduler's reorder tolerances IN PLACE (gaps + RTT
+            // estimate survive) so a recovery already in flight — up to N−1
+            // trailing group members plus the parity away — isn't raced by a
+            // NACK; NACK fires only for multi-loss groups FEC can't solve.
+            nackScheduler.setReorderTolerances(
+                toleranceNs: TransportTuning.fecSchedulerToleranceNs,
+                packetTolerance: TransportTuning.fecSchedulerPacketTolerance)
+            logger.log("FEC parity flowing — recovery armed")
+        }
         let recovery = fecBuffer.noteParity(
             baseSeq: parity.baseSeq,
             count: parity.count,
             body: parity.body,
-            nowNs: DispatchTime.now().uptimeNanoseconds)
+            nowNs: now)
         guard let recovery else { return false }
         return await processRecoveredPacket(recovery)
     }
@@ -946,6 +973,8 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         nackScheduler = NACKScheduler()
         depacketizer = MultiCodecDepacketizer()
         fecBuffer = FECGroupBuffer()
+        fecParityActive = false
+        lastParityArrivalNs = 0
         fecRecoveredSinceReport = 0
         packetsReceived = 0
         framesDelivered = 0
@@ -970,9 +999,21 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     }
 
     /// Periodic (~1 Hz) tick: age out gaps that stopped seeing new packets
-    /// (re-NACK / PLI fallback) and send the receiver report.
+    /// (re-NACK / PLI fallback), disarm the FEC machinery once parity stops
+    /// flowing, and send the receiver report.
     private func maybePeriodicFeedback() async {
         let now = DispatchTime.now().uptimeNanoseconds
+        if fecParityActive, now &- lastParityArrivalNs > TransportTuning.fecParityIdleNs {
+            // The server gated parity off (link recovered) — restore phase-1
+            // NACK timing and drop the buffered media so the FEC path costs
+            // nothing again until parity reappears.
+            fecParityActive = false
+            fecBuffer.reset()
+            nackScheduler.setReorderTolerances(
+                toleranceNs: NACKScheduler.defaultReorderToleranceNs,
+                packetTolerance: NACKScheduler.defaultReorderPacketTolerance)
+            logger.log("FEC parity idle — recovery disarmed")
+        }
         if negotiatedCaps.contains(.nack) {
             for action in nackScheduler.tick(nowNs: now) {
                 await dispatchNACKAction(action)
