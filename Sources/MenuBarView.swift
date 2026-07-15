@@ -597,10 +597,11 @@ private struct PendingViewersList: View {
                         .truncationMode(.middle)
                     Spacer(minLength: 4)
                     Menu {
+                        // Enabled even before the StableNodeID resolves: the
+                        // intent is queued and persisted the moment it lands.
                         Button(L("Deny & Block")) {
                             appState.denyPendingViewerAndBlock(viewer.id)
                         }
-                        .disabled(viewer.stableID == nil)
                     } label: {
                         Text(L("Deny")).font(.caption)
                     } primaryAction: {
@@ -612,10 +613,11 @@ private struct PendingViewersList: View {
                     .fixedSize()
                     .accessibilityLabel(L("Deny \(viewer.hostname ?? viewer.tailscaleIP)"))
                     Menu {
+                        // Enabled even before the StableNodeID resolves: the
+                        // intent is queued and persisted the moment it lands.
                         Button(L("Always Allow")) {
                             appState.approvePendingViewerAlways(viewer.id)
                         }
-                        .disabled(viewer.stableID == nil)
                     } label: {
                         Text(L("Accept")).font(.caption)
                     } primaryAction: {
