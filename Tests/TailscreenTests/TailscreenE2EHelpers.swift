@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import TailscaleKit
 import XCTest
@@ -107,6 +108,74 @@ enum TailscreenE2E {
     /// Short, unique, role-prefixed hostname for tailnet nodes spun up in tests.
     static func makeHostname(_ role: String) -> String {
         "ts-\(role)-\(UUID().uuidString.prefix(6))"
+    }
+
+    /// Self-skip guard shared by the capture-helper E2E tests: they need a
+    /// real display and Screen Recording TCC, which GitHub-hosted macOS
+    /// runners can't provide. `TAILSCREEN_ALLOW_CAPTURE_TEST=1` is an
+    /// explicit opt-in for the user to force the test locally without
+    /// having to remove the CI env vars from their shell.
+    static func skipCaptureTestOnCI(
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws {
+        let env = ProcessInfo.processInfo.environment
+        if env["TAILSCREEN_ALLOW_CAPTURE_TEST"] != "1" {
+            try XCTSkipIf(
+                env["CI"] == "true" || env["GITHUB_ACTIONS"] == "true",
+                "Capture-helper test needs real display + Screen Recording TCC; not viable on CI.",
+                file: file, line: line
+            )
+        }
+    }
+
+    /// Point the helper-spawn sites (HelperScreenCapture, PickerHelperClient)
+    /// at the real built binary via TAILSCREEN_HELPER_EXE — Bundle.main
+    /// inside xctest is the test harness, not Tailscreen. Registers a
+    /// teardown that removes the override.
+    static func overrideHelperExecutable(testCase: XCTestCase) throws {
+        let binary = try resolveTailscreenBinary()
+        setenv("TAILSCREEN_HELPER_EXE", binary.path, 1)
+        testCase.addTeardownBlock { unsetenv("TAILSCREEN_HELPER_EXE") }
+    }
+
+    /// Build a main-display `PickerSelection` in the TEST process WITHOUT
+    /// touching SCShareableContent. CGMainDisplayID() is a CoreGraphics call
+    /// that doesn't register us with replayd, so the capture-helper child's
+    /// subsequent SCStream still comes up cleanly. The helper resolves the
+    /// display ID against SCShareableContent on its own side (legal there
+    /// per CaptureHelperMain.buildFilter).
+    static func mainDisplayFilterData() throws -> Data {
+        let selection = PickerSelection(
+            kind: .display,
+            displayID: UInt32(CGMainDisplayID()),
+            windowID: nil,
+            bundleIDs: []
+        )
+        return try JSONEncoder().encode(selection)
+    }
+
+    /// ScreenCaptureKit only delivers a frame when the captured content
+    /// changes; on a perfectly static display the helper emits its startup
+    /// keyframe and then nothing, so a viewer that joins after that initial
+    /// burst can starve (the server's force-keyframe-on-join has no encoder
+    /// input to act on). Jiggle the cursor a couple of pixels on a timer to
+    /// keep generating frame deltas until cancelled; restores the original
+    /// position when cancelled. Registers a teardown that cancels the task.
+    static func startCursorJiggle(testCase: XCTestCase) -> Task<Void, Never> {
+        let jiggle = Task {
+            let origin = CGEvent(source: nil)?.location ?? .zero
+            var toggled = false
+            while !Task.isCancelled {
+                let p = CGPoint(x: origin.x + (toggled ? 6 : 0), y: origin.y)
+                CGWarpMouseCursorPosition(p)
+                toggled.toggle()
+                try? await Task.sleep(for: .milliseconds(200))
+            }
+            CGWarpMouseCursorPosition(origin)
+        }
+        testCase.addTeardownBlock { jiggle.cancel() }
+        return jiggle
     }
 
     /// Encode a handful of frames of a synthetic pixel buffer to produce

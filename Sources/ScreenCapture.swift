@@ -164,7 +164,10 @@ class ScreenCapture: NSObject, @unchecked Sendable {
         max(2, value & ~1)
     }
 
-    func start(filter: SCContentFilter) async throws {
+    /// `fps` caps the SCStream's delivery rate via `minimumFrameInterval`
+    /// — the capture-helper threads the user's quality setting through
+    /// here so the stream and the encoder agree on the frame rate.
+    func start(filter: SCContentFilter, fps: Int = 60) async throws {
         try await applyStartCooldowns()
         // Pull resolution from the filter directly. `contentRect` is in
         // points (CG-coordinate space), so we multiply by the filter's
@@ -179,6 +182,7 @@ class ScreenCapture: NSObject, @unchecked Sendable {
             filter: filter,
             pixelWidth: pxWidth,
             pixelHeight: pxHeight,
+            fps: fps,
             sourceTag: "filter rect=\(Int(rect.width))x\(Int(rect.height))pt scale=\(scale)"
         )
     }
@@ -227,12 +231,13 @@ class ScreenCapture: NSObject, @unchecked Sendable {
         filter: SCContentFilter,
         pixelWidth: Int,
         pixelHeight: Int,
+        fps: Int,
         sourceTag: String
     ) async throws {
         let config = SCStreamConfiguration()
         config.width = Self.evenFloor(pixelWidth)
         config.height = Self.evenFloor(pixelHeight)
-        config.minimumFrameInterval = CMTime(value: 1, timescale: 60)
+        config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(max(1, fps)))
         // Full-range NV12 — matches what VideoToolbox wants natively, so the
         // encoder skips an internal BGRA→YUV conversion (cheaper, and removes
         // a 601/709 ambiguity that was crushing near-black UI surfaces under
@@ -245,7 +250,7 @@ class ScreenCapture: NSObject, @unchecked Sendable {
         logEvent(
             "start.config",
             extra:
-                "\(sourceTag) size=\(config.width)x\(config.height) fps=60 pixelFormat=420f queueDepth=5"
+                "\(sourceTag) size=\(config.width)x\(config.height) fps=\(fps) pixelFormat=420f queueDepth=5"
         )
 
         // Create stream
