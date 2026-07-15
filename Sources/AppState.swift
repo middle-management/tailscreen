@@ -36,6 +36,11 @@ enum ConnectionState: Equatable {
 class AppState: ObservableObject {
     @Published var sharingState: SharingState = .idle
     @Published var connectionState: ConnectionState = .idle
+    /// True while a mid-share "Change Source…" flow is in flight (picker
+    /// up, or the retargeted helper respawning). The SharingCard disables
+    /// its Change Source button on this so a second picker can't be
+    /// spawned while the first is still on screen.
+    @Published var isChangingSource = false
     @Published var connectedHostname: String?
     @Published var statusMessage = ""
     /// Whether the sharer's drawing overlay panel is currently visible and
@@ -84,8 +89,10 @@ class AppState: ObservableObject {
 
     /// User preference: park new viewers in a pending state and require
     /// explicit Accept/Deny before they see video. Persisted to
-    /// UserDefaults under `requireViewerApproval`. Defaults off so the
-    /// out-of-box experience matches the existing open-door behavior.
+    /// UserDefaults under `requireViewerApproval`. Defaults **on** for
+    /// installs that never touched the toggle (tri-state migration in
+    /// `ViewerApprovalDefaults.load`); an explicit opt-out sticks, and
+    /// `TAILSCREEN_OPEN_DOOR=1` forces it off for the scripted harnesses.
     /// SwiftUI views bind to this via `appState.requireViewerApproval`;
     /// the setter syncs the live server too so the toggle takes effect
     /// mid-share.
@@ -96,12 +103,66 @@ class AppState: ObservableObject {
         }
     }
 
+    /// Persistent per-peer allow/deny store behind "Always Allow" /
+    /// "Deny & Block" and the Settings "Remembered viewers" list. Keyed by
+    /// Tailscale StableNodeID. The live server never touches this store —
+    /// it gets a value snapshot via `setAccessPolicies` at share start and
+    /// on every change (see the `$entries` subscription in `init`).
+    let viewerAccessPolicies = ViewerAccessPolicyStore()
+
+    /// User preference: sharing-side quality knobs (fps cap, codec
+    /// preference, encoder quality, bandwidth ceiling). Persisted as a
+    /// JSON blob under `qualitySettings`. The bandwidth ceiling
+    /// live-applies to an active share via `updateQualityCeiling`; the
+    /// other knobs are snapshotted per share session
+    /// (`server.start(quality:)`) and apply the next time sharing starts —
+    /// the Settings pane says so in a caption.
+    ///
+    /// The save + live push are debounced (~500 ms, cancel-and-replace):
+    /// each ceiling down-push forces an IDR at the helper, so an
+    /// un-debounced Stepper run from 10 → 3 Mbps would burst seven
+    /// keyframes. The UI reads the property directly, so it stays live.
+    @Published var qualitySettings: QualitySettings = QualitySettingsStore.load() {
+        didSet {
+            qualitySettingsSyncTask?.cancel()
+            qualitySettingsSyncTask = Task { [weak self] in
+                try? await Task.sleep(for: .milliseconds(500))
+                guard !Task.isCancelled, let self else { return }
+                QualitySettingsStore.save(self.qualitySettings)
+                self.server?.updateQualityCeiling(self.qualitySettings.maxBitrateBps)
+            }
+        }
+    }
+
+    /// Debounce task for `qualitySettings.didSet` (see above). MainActor,
+    /// like everything else on AppState.
+    private var qualitySettingsSyncTask: Task<Void, Never>?
+
     /// Viewer IDs we've already fired a "joined" notification for this
     /// session. Keyed by the server's internal `"ip:port"` ID so a viewer
     /// who briefly drops and rejoins (different ephemeral port) gets a
     /// fresh ping, but hostname-resolution updates to the same viewer
     /// don't double-fire. Cleared on `stopSharing`.
     private var notifiedViewerIDs: Set<String> = []
+
+    /// Source `ip:port` per inbound request-to-share connection UUID, so
+    /// accepting a request can one-time pre-approve the requester's IP.
+    /// Populated in `handleIncomingRequestToShare`, consumed/cleared in
+    /// `respondToShareRequest`.
+    private var requestSourceAddrs: [UUID: String] = [:]
+
+    /// Requester IPs the sharer accepted (via request-to-share) but hasn't
+    /// pushed to a live server yet — applied to `server.preApproveViewer`
+    /// once the share starts. Cleared on `stopSharing`.
+    private var pendingPreApprovedIPs: Set<String> = []
+
+    /// "Always Allow" / "Deny & Block" intents recorded before the peer's
+    /// StableNodeID resolved, keyed by the pending viewer's `ip:port` id.
+    /// Applied (persisted under the resolved StableNodeID) the moment a
+    /// roster snapshot carries that id's stableID — so the user's decision
+    /// sticks instead of silently degrading to one-time. Cleared per-id on
+    /// application and wholesale on `stopSharing`.
+    private var queuedPolicyIntents: [String: PeerPolicy] = [:]
 
     private var server: TailscaleScreenShareServer?
     private var client: TailscaleScreenShareClient?
@@ -134,6 +195,12 @@ class AppState: ObservableObject {
     private var settingsWindow: NSWindow?
     private var viewerRenderer: MetalViewerRenderer?
     private var viewerOverlay: AnnotationOverlayHostView?
+    /// The viewer window's aspect-fit host — the view that owns the
+    /// continuous content zoom/pan state. Weak: the window's contentView
+    /// holds it for the process lifetime. Used to reset the zoom on
+    /// preset selection / video-size change / disconnect, and to route
+    /// the View-menu Zoom In / Zoom Out steps.
+    private weak var viewerHost: AspectFitHostView?
     /// Hosts the stats overlay subview pinned to the top-left of the
     /// viewer's content view. Held strongly so the visibility-toggle
     /// Combine subscription it owns lives for the lifetime of the
@@ -146,6 +213,12 @@ class AppState: ObservableObject {
     /// viewer window between HELLO_PENDING and the first decoded frame.
     /// Hidden by default; toggled by `viewerAwaitingApproval`.
     private var viewerWaitingPlacard: NSView?
+
+    /// Set by `onDeniedBySharer` when a HELLO_DENY arrives — including while
+    /// `connect()` is still `.connecting`. Read once by `connect()` after
+    /// `client.connect()` returns so a deny that raced the connect doesn't
+    /// get re-promoted to `.viewing`. Reset at the top of `connect()`.
+    private var viewerWasDenied = false
 
     /// True between the sharer reporting HELLO_PENDING and the viewer
     /// receiving its first decoded frame. Drives the placard overlaid on
@@ -251,6 +324,26 @@ class AppState: ObservableObject {
             self?.objectWillChange.send()
         }.store(in: &cancellables)
 
+        // Mirror the remembered-viewers store to the UI on every change,
+        // including cosmetic display-name refreshes.
+        viewerAccessPolicies.$entries.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }.store(in: &cancellables)
+
+        // Push a fresh policy snapshot to the live server so "Always allow" /
+        // "Deny & block" / removal take effect mid-share — but ONLY when the
+        // policy-by-StableNodeID projection actually changes. A cosmetic
+        // display-name refresh (fired on every viewer sighting) must not
+        // trigger a full setAccessPolicies + pending/connected re-sweep.
+        // `$entries` delivers the *new* array before the property write, so
+        // the projection is computed from the payload, not the store.
+        viewerAccessPolicies.$entries
+            .map { ViewerAccessPolicyStore.policiesByStableID($0) }
+            .removeDuplicates()
+            .sink { [weak self] policies in
+                self?.server?.setAccessPolicies(policies)
+            }.store(in: &cancellables)
+
         // Try to restore a previous session silently. If on-disk Tailscale
         // state is valid, `up()` returns quickly and the user is signed in
         // without clicking anything. If the state is stale or missing, the
@@ -306,11 +399,32 @@ class AppState: ObservableObject {
                 Task { @MainActor [weak self] in
                     guard let self = self, self.connectionState == .viewing else { return }
                     self.showAlertMessage(
-                        title: "Can't decode the video",
-                        message:
-                            "This Mac can't decode the \(codec) video stream from the sharer "
-                            + "(it likely lacks \(codec) hardware decode). Asking the sharer to "
-                            + "switch to H.264 — the screen should appear in a moment.")
+                        title: L("Can't decode the video"),
+                        message: L(
+                            "This Mac can't decode the \(codec) video stream from the sharer (it likely lacks \(codec) hardware decode). Asking the sharer to switch to H.264 — the screen should appear in a moment."
+                        ))
+                }
+            }
+        )
+
+        // The decode-failure escalation ladder's last rung: frames are
+        // arriving but decoding has been failing for several seconds despite
+        // a keyframe request and a decoder-session rebuild. Tell the user
+        // the video has stalled rather than letting a frozen frame
+        // masquerade as a live stream.
+        notificationObservers.append(
+            NotificationCenter.default.addObserver(
+                forName: .tailscreenViewerVideoStalled,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self = self, self.connectionState == .viewing else { return }
+                    self.showAlertMessage(
+                        title: L("Video Has Stalled"),
+                        message: L(
+                            "Decoding has been failing for several seconds and automatic recovery hasn't helped. Check the connection on both ends, or disconnect and reconnect."
+                        ))
                 }
             }
         )
@@ -443,21 +557,130 @@ class AppState: ObservableObject {
     /// Screen Recording TCC prompt inside the picker-helper on first
     /// use; the parent process never preflights or requests permission.
     func presentNativePicker() async {
-        let result: Data?
-        do {
-            result = try await PickerHelperClient.run()
-        } catch {
-            showAlertMessage(
-                title: "Couldn't Open Picker",
-                message: "macOS's screen-sharing picker failed to start: \(error.localizedDescription)"
-            )
-            return
-        }
-        guard let filterData = result else {
-            // User cancelled — nothing to do.
+        guard let filterData = await runPickerOrAlert() else {
+            // User cancelled (or the picker failed and was already alerted).
             return
         }
         await startSharing(filterData: filterData)
+    }
+
+    /// Spawn the `--picker-helper` subprocess and return the JSON
+    /// `PickerSelection` bytes it produced. Returns nil on user cancel — and
+    /// on spawn failure, after surfacing the localized alert — so the two
+    /// picker entry points (`presentNativePicker()`, `changeShareSource()`)
+    /// share one error surface and can't drift apart.
+    private func runPickerOrAlert() async -> Data? {
+        do {
+            return try await PickerHelperClient.run()
+        } catch {
+            showAlertMessage(
+                title: L("Couldn't Open Picker"),
+                message: L("macOS's screen-sharing picker failed to start: \(error.localizedDescription)")
+            )
+            return nil
+        }
+    }
+
+    /// Tailnet-visible hostname for this instance. Shared by `startSharing`
+    /// (server bring-up + metadata) and `changeShareSource` (metadata
+    /// refresh) so the strings can't drift apart.
+    private static func localHostname() -> String {
+        "\(Host.current().localizedName ?? "tailscreen-share")\(TailscreenInstance.hostnameSuffix)"
+    }
+
+    /// Share name published to peers via the metadata service. Deliberately
+    /// not localized — it travels over the wire to viewers whose locale we
+    /// don't know, matching `TailscreenMetadataService.updateMetadata`'s own
+    /// default.
+    private static func localShareName() -> String {
+        "\(localHostname())'s Screen"
+    }
+
+    /// Mid-share "Change Source…": re-run the picker-helper and retarget
+    /// the live server at the new selection *without* disconnecting
+    /// viewers, dropping the tsnet listeners, or releasing the share lock
+    /// (we already hold it — re-acquiring would trip the guard). Picker
+    /// cancel or picker error leaves the current share untouched; a failed
+    /// retarget tears the share down (the old helper is already gone by
+    /// then, so there is nothing to keep sharing). A Stop Sharing that
+    /// races the retarget is a quiet no-op here — the stop path owns
+    /// teardown, and every success side effect is gated on a post-await
+    /// re-validation of the share.
+    ///
+    /// Deliberately separate from `presentNativePicker()` — that path is
+    /// the share *entry point* (takes the lock, builds the server); this
+    /// one requires an already-active share.
+    func changeShareSource() async {
+        guard sharingState == .active, let server, !isChangingSource else { return }
+        isChangingSource = true
+        defer { isChangingSource = false }
+
+        guard let filterData = await runPickerOrAlert() else {
+            // User cancelled (or the picker failed and was already
+            // alerted) — keep the current share running unchanged.
+            return
+        }
+        // The user may have clicked Stop Sharing (or the helper may have
+        // died past its crash budget and torn the share down) while the
+        // picker was up. Identity-check the server so a stale selection
+        // can't retarget a share that already ended or restarted.
+        guard sharingState == .active, self.server === server else { return }
+
+        currentSelection = try? JSONDecoder().decode(PickerSelection.self, from: filterData)
+        let didRetarget: Bool
+        do {
+            didRetarget = try await server.changeSource(filterData: filterData)
+        } catch is CancellationError {
+            // The restart task throws CancellationError when the share was
+            // stopped while the retarget was in flight — a deliberate stop,
+            // not a retarget failure. The stop path owns teardown; a second
+            // stopSharing or an error alert here would fight it.
+            logger.log("changeShareSource: share stopped mid-retarget — leaving teardown to the stop path")
+            return
+        } catch {
+            logger.log("changeShareSource: retarget failed (\(error)); tearing sharing down")
+            await stopSharing(reason: "changeSource failed: \(error)")
+            presentError(.sharingGeneric(error))
+            return
+        }
+
+        // Re-validate after the awaits: `changeSource` returns false when
+        // the server was already stopping, and the share may have been torn
+        // down (or even restarted with a fresh server) while the retarget
+        // was in flight. Running the success side effects below against a
+        // stopped share would re-advertise it via metadata and resurrect
+        // overlay state the stop path just tore down — the phantom-share
+        // bug. On a failed re-check the stop path owns teardown; just leave.
+        guard didRetarget, sharingState == .active, self.server === server else {
+            logger.log("changeShareSource: share ended mid-retarget — skipping success side effects")
+            return
+        }
+
+        // Annotations were scoped to the old surface — a window-relative
+        // stroke floating over an unrelated display share is noise. Clear
+        // every viewer's canvas; the sharer's own canvas is cleared by the
+        // overlay rebuild below.
+        await server.broadcastAnnotation(.clearAll)
+
+        // The overlay's mode is immutable, so it can't be retargeted —
+        // rebuild it for the new selection, preserving the sharer's draw
+        // toggle. When drawing is off, leave it nil: `ensureSharerOverlay`
+        // lazily rebuilds on the next viewer op or Draw toggle.
+        let wasDrawing = isSharerOverlayVisible
+        sharerOverlay?.hide()
+        sharerOverlay = nil
+        if wasDrawing {
+            ensureSharerOverlay().setInputEnabled(true)
+        }
+
+        // Refresh the metadata served to peers (share name / resolution)
+        // and drop the stale thumbnail — the fresh helper repopulates it
+        // with its first preview frame. Viewers need no signaling: the new
+        // helper's first AU is an IDR with in-band parameter sets, which
+        // rides the existing decoder-reconfigure → onVideoSizeChanged path.
+        metadataService.updateMetadata(isSharing: true, shareName: Self.localShareName())
+        previewImage = nil
+        logger.log("changeShareSource: retargeted capture (filter=\(filterData.count)B)")
     }
 
     /// Start a share against the `PickerSelection` produced by the
@@ -502,8 +725,7 @@ class AppState: ObservableObject {
             // If Tailscale is already initialized, just start sharing
             // Otherwise, initialize it first
             if server == nil {
-                let hostname =
-                    "\(Host.current().localizedName ?? "tailscreen-share")\(TailscreenInstance.hostnameSuffix)"
+                let hostname = Self.localHostname()
                 let srv = TailscaleScreenShareServer()
                 server = srv
 
@@ -531,6 +753,22 @@ class AppState: ObservableObject {
                         if Self.isUserInitiatedCaptureStop(error) {
                             await self.stopSharing(
                                 reason: "SCStream userStopped: \(error?.localizedDescription ?? "nil")")
+                            return
+                        }
+                        let receiveLoopDomain = TailscaleScreenShareServer.receiveLoopErrorDomain
+                        if let error, (error as NSError).domain == receiveLoopDomain {
+                            // The share's UDP control loop is dead — that's
+                            // not something a fresh capture helper can fix,
+                            // so skip the restart path and tear down. Tell
+                            // the user: the share ending on its own must
+                            // not be a silent mystery.
+                            self.logger.log("Share receive loop dead (\(error)); tearing sharing down.")
+                            await self.stopSharing(reason: "receive loop dead: \(error.localizedDescription)")
+                            self.showAlertMessage(
+                                title: L("Sharing Stopped"),
+                                message: L(
+                                    "The connection to your viewers was lost and couldn't be re-established, so the share was stopped. Check the network and start sharing again."
+                                ))
                             return
                         }
                         guard let server = self.server else { return }
@@ -581,8 +819,15 @@ class AppState: ObservableObject {
                 }
 
                 // Sync the toggle state to the server before `start()` so a
-                // viewer racing to HELLO during bring-up is caught.
+                // viewer racing to HELLO during bring-up is caught. Same
+                // for the remembered allow/deny snapshot.
                 srv.setRequireApproval(requireViewerApproval)
+                srv.setAccessPolicies(viewerAccessPolicies.policiesByStableID)
+                // Carry over any request-to-share pre-approvals so an
+                // accepted requester's HELLO auto-admits on this fresh server.
+                for ip in pendingPreApprovedIPs {
+                    srv.preApproveViewer(ip: ip)
+                }
 
                 // Sharer's audio SSRC is fixed at 0. Build the channel up
                 // front so HELLO_ACK assignment for viewers can route
@@ -612,6 +857,7 @@ class AppState: ObservableObject {
                     try await srv.start(
                         hostname: hostname,
                         filterData: filterData,
+                        quality: qualitySettings,
                         existingNode: sharedNode,
                         controlListener: controlListener
                     )
@@ -644,10 +890,8 @@ class AppState: ObservableObject {
                 tailscaleIPs = [ips.ip4, ips.ip6].compactMap { $0 }
             }
 
-            let hostname = "\(Host.current().localizedName ?? "tailscreen-share")\(TailscreenInstance.hostnameSuffix)"
-
             // Update metadata
-            metadataService.updateMetadata(isSharing: true, shareName: "\(hostname)'s Screen")
+            metadataService.updateMetadata(isSharing: true, shareName: Self.localShareName())
 
             // Hold the UI on the picker until the first preview frame
             // arrives, so SharingCard skips its black "Capturing…"
@@ -660,7 +904,20 @@ class AppState: ObservableObject {
         }
     }
 
+    /// Reentrancy guard for `stopSharing`. The give-up paths (receive-loop
+    /// death, exhausted helper crash budget) can fire `onCaptureStopped`
+    /// concurrently with a user-initiated Stop Sharing; both land on the
+    /// MainActor but interleave across `stopSharing`'s await points, which
+    /// double-ran `server.stop()` and `shareLock.release()`.
+    private var isStoppingShare = false
+
     func stopSharing(reason: String = "<unknown>", caller: String = #function) async {
+        if isStoppingShare {
+            logger.log("stopSharing: already in progress — ignoring reentrant call by \(caller) (reason=\(reason))")
+            return
+        }
+        isStoppingShare = true
+        defer { isStoppingShare = false }
         logger.log("stopSharing: called by \(caller) (reason=\(reason))")
         // Unblock any startSharing still waiting on the first preview, so
         // a fast start→stop doesn't strand its continuation.
@@ -679,6 +936,8 @@ class AppState: ObservableObject {
         currentViewers = []
         pendingViewers = []
         notifiedViewerIDs.removeAll()
+        pendingPreApprovedIPs.removeAll()
+        queuedPolicyIntents.removeAll()
         tailscaleIPs = []
 
         // Update metadata
@@ -743,8 +1002,10 @@ class AppState: ObservableObject {
     /// Project a `PickerSelection` onto the overlay mode that matches it.
     /// Nil / empty selections (legacy entry points, decode failures) fall
     /// back to the full-display overlay so the feature degrades gracefully
-    /// rather than refusing to render annotations.
-    private static func overlayMode(for selection: PickerSelection?) -> SharerOverlayWindow.Mode {
+    /// rather than refusing to render annotations. Internal (not private)
+    /// so the pure selection→mode decision is unit testable
+    /// (`OverlayModeDecisionTests`).
+    static func overlayMode(for selection: PickerSelection?) -> SharerOverlayWindow.Mode {
         guard let selection else { return .display(nil) }
         switch selection.kind {
         case .display:
@@ -840,8 +1101,14 @@ class AppState: ObservableObject {
         defer {
             if connectionState == .connecting { connectionState = .idle }
         }
+        viewerWasDenied = false
         viewerAwaitingApproval = false
         let renderer = ensureViewer()
+        // Belt-and-braces zoom reset at session entry: disconnect()
+        // already resets, and `videoSize.didSet` resets on a resolution
+        // change — but a new sharer streaming at the *same* resolution
+        // fires neither, and must not inherit the previous session's zoom.
+        viewerHost?.zoomState = ViewerZoomState()
         do {
             let c = TailscaleScreenShareClient(renderer: renderer)
             client = c
@@ -853,6 +1120,30 @@ class AppState: ObservableObject {
             c.onAwaitingApproval = { [weak self] in
                 Task { @MainActor [weak self] in
                     self?.viewerAwaitingApproval = true
+                }
+            }
+
+            // HELLO_DENY: the sharer clicked Deny (or has us blocked). Tear
+            // the session down first, then explain — the alert is modal, so
+            // running it before disconnect would leave a dead session on
+            // screen behind it.
+            c.onDeniedBySharer = { [weak self] in
+                Task { @MainActor [weak self] in
+                    guard let self = self else { return }
+                    // Accept the deny in `.connecting` too: a synchronous
+                    // HELLO_DENY (cached StableNodeID) can land while
+                    // `connect()` is still mid-flight, and dropping it would
+                    // strand a zombie session — the receive loop has already
+                    // returned. The `viewerWasDenied` flag keeps `connect()`
+                    // from re-promoting to `.viewing` after this teardown.
+                    let state = self.connectionState
+                    guard state == .viewing || state == .connecting else { return }
+                    self.viewerWasDenied = true
+                    await self.disconnect()
+                    self.showAlertMessage(
+                        title: L("Connection Declined"),
+                        message: L("The sharer declined your request to view their screen.")
+                    )
                 }
             }
 
@@ -902,6 +1193,11 @@ class AppState: ObservableObject {
             // spin up a third machine + browser sign-in flow.
             let sharedNode = try await getOrCreateNode()
             try await c.connect(to: host, port: NetworkConfig.tailscreenPort, existingNode: sharedNode)
+
+            // A HELLO_DENY that landed while we were still `.connecting` has
+            // already torn the session down and alerted; don't re-promote it
+            // to `.viewing` (which would resurrect a dead session).
+            if viewerWasDenied { return }
 
             connectionState = .viewing
             connectedHostname = host
@@ -998,8 +1294,12 @@ class AppState: ObservableObject {
         host.wantsLayer = true
         host.layer = CALayer()
         host.layer?.backgroundColor = NSColor.black.cgColor
+        // Clip at the host's edges: while content-zoomed the video rect
+        // (and the metal layer with it) extends past the window bounds.
+        host.layer?.masksToBounds = true
         host.metalLayer = r.metalLayer
         host.layer?.addSublayer(r.metalLayer)
+        self.viewerHost = host
         // Mirror any video-size changes onto the host so it relays out the
         // overlay to the new aspect rect, and (unless the user has
         // dragged the viewer to a custom size) snap the window to the
@@ -1008,6 +1308,9 @@ class AppState: ObservableObject {
         // skipped once the user has manually resized; the View menu's
         // Actual Size / 50% / 200% items reset that opt-out.
         r.onVideoSizeChanged = { [weak self, weak host, weak win] size in
+            // A resolution change also resets the content zoom — that
+            // lives in `AspectFitHostView.videoSize.didSet` so it holds
+            // for every producer of the property.
             host?.videoSize = size
             guard let self, let win else { return }
             MainActor.assumeIsolated {
@@ -1067,6 +1370,9 @@ class AppState: ObservableObject {
         statsHost.layout(in: host)
         self.viewerStatsHost = statsHost
         ViewerCommands.shared.statsModel = r.statsModel
+        // Degraded-connection badge on the toolbar's stats button — the
+        // overlay above may be hidden, the toolbar never is.
+        toolbar.bind(statsModel: r.statsModel)
 
         // Shortcut cheat-sheet overlay (toggled by toolbar "?" /
         // Help → Keyboard Shortcuts / ⇧⌘/). Added last so it draws
@@ -1122,6 +1428,10 @@ class AppState: ObservableObject {
     /// `videoSize × factor` clamped to the current screen.
     @MainActor
     func setViewerZoom(_ factor: CGFloat) {
+        // The presets also mean "give me a predictable view" — drop any
+        // content zoom/pan before the decoded-frame guard so ⌘0 and the
+        // presets clear a stray zoom even before the first frame lands.
+        viewerHost?.zoomState = ViewerZoomState()
         guard let win = viewerWindow, let r = viewerRenderer,
             r.videoSize.width > 0, r.videoSize.height > 0
         else { return }
@@ -1130,6 +1440,17 @@ class AppState: ObservableObject {
             width: r.videoSize.width * factor,
             height: r.videoSize.height * factor)
         programmaticSnap(win, toVideoPixelSize: target)
+    }
+
+    /// View → Zoom In / Zoom Out (⌥⌘+ / ⌥⌘-). Steps the continuous
+    /// content zoom by a multiplicative `delta`, anchored at the viewport
+    /// center — unlike the window-sizing presets above, this magnifies a
+    /// region of the received video inside the current window. Pinch and
+    /// ⌥-scroll on the viewer do the same anchored at the cursor (see
+    /// `AspectFitHostView`).
+    @MainActor
+    func zoomViewerContent(by delta: CGFloat) {
+        viewerHost?.zoomContent(by: delta)
     }
 
     /// Wraps `snapViewerWindow` with the suppress-flag dance so the
@@ -1206,6 +1527,10 @@ class AppState: ObservableObject {
         connectedHostname = nil
         viewerAwaitingApproval = false
         viewerRenderer?.clearPendingBuffer()
+        // The window survives disconnect (process-lifetime); drop the
+        // content zoom so the next session doesn't inherit a magnified
+        // view of a screen that's gone.
+        viewerHost?.zoomState = ViewerZoomState()
         viewerWindow?.orderOut(nil)
         // Next connect should snap to the new sharer's dims even if the
         // user dragged the previous session's window to a custom size.
@@ -1542,9 +1867,10 @@ class AppState: ObservableObject {
     private func ensureControlListener(node: TailscaleNode) async throws {
         if controlListener != nil { return }
         let l = TailscreenControlListener()
-        l.onRequestToShare = { [weak self] fromHostname in
+        l.onRequestToShare = { [weak self] fromHostname, connectionID, peerAddress in
             Task { @MainActor [weak self] in
-                self?.handleIncomingRequestToShare(from: fromHostname)
+                self?.handleIncomingRequestToShare(
+                    from: fromHostname, sourceAddr: peerAddress, connectionID: connectionID)
             }
         }
         try await l.start(node: node)
@@ -1552,10 +1878,49 @@ class AppState: ObservableObject {
         logger.log("Control listener bound on TCP/\(NetworkConfig.tailscreenPort)")
     }
 
-    private func handleIncomingRequestToShare(from hostname: String) {
+    private func handleIncomingRequestToShare(
+        from hostname: String, sourceAddr: String?, connectionID: UUID
+    ) {
         logger.log("Incoming request-to-share from \(hostname)")
-        metadataService.handleRequestToShare(from: hostname)
+        metadataService.handleRequestToShare(
+            from: hostname, sourceAddr: sourceAddr, connectionID: connectionID)
+        // Stash the requester's source IP so accepting the request can
+        // one-time pre-approve their imminent HELLO (fix: double-consent).
+        if let sourceAddr {
+            requestSourceAddrs[connectionID] = sourceAddr
+        }
         TailscreenUserNotifications.shared.postRequestToShareNotification(fromHostname: hostname)
+    }
+
+    /// Answer an incoming request-to-share banner. Sends the accept /
+    /// decline response back on the TCP connection the request arrived on
+    /// (best-effort — the requester may have timed out and closed it, and
+    /// `TailscreenControlListener.send` silently no-ops on a dead
+    /// connection), clears the banner row, and on accept drops into the
+    /// normal picker flow.
+    func respondToShareRequest(_ request: TailscreenMetadataService.PendingRequest, accepted: Bool) {
+        metadataService.clearRequest(request)
+        if let connectionID = request.connectionID, let listener = controlListener {
+            Task {
+                await listener.send(.shareResponse(accepted: accepted), to: connectionID)
+            }
+        }
+        if accepted {
+            // The sharer just consented to this named peer, so pre-approve
+            // its imminent HELLO — otherwise it would park behind the
+            // approval gate for a second, redundant consent. Apply to a live
+            // server now and remember it for the server the picker is about
+            // to spin up.
+            if let connectionID = request.connectionID, let addr = requestSourceAddrs[connectionID] {
+                let ip = TailscreenMetadataService.sourceKey(from: addr)
+                pendingPreApprovedIPs.insert(ip)
+                server?.preApproveViewer(ip: ip)
+            }
+            Task { await presentNativePicker() }
+        }
+        if let connectionID = request.connectionID {
+            requestSourceAddrs.removeValue(forKey: connectionID)
+        }
     }
 
     /// Spin up an IPN-bus watcher whose only job is to open the
@@ -1673,16 +2038,38 @@ class AppState: ObservableObject {
         logger.log("TAILSCREEN_AUTOCONNECT_TO=\(prefix): gave up; peer never appeared")
     }
 
+    /// Send a request-to-share to `peer` and surface the round-trip outcome.
+    /// The await can run for up to two minutes (the peer's banner may sit
+    /// unanswered for a while); the calling Task just parks — no UI blocks.
     func requestToShare(from peer: TailscreenPeer) async {
         let hostname = Host.current().localizedName ?? "Unknown"
         do {
             let node = try await getOrCreateNode()
-            try await metadataService.sendRequestToShare(
+            let outcome = try await metadataService.sendRequestToShareAwaitingResponse(
                 toIP: peer.tailscaleIP,
                 port: NetworkConfig.tailscreenPort,
                 from: hostname,
                 via: node
             )
+            switch outcome {
+            case .accepted:
+                showAlertMessage(
+                    title: L("Request Accepted"),
+                    message: L("\(peer.hostname) accepted your request and is choosing what to share.")
+                )
+            case .declined:
+                showAlertMessage(
+                    title: L("Request Declined"),
+                    message: L("\(peer.hostname) declined your request to share their screen.")
+                )
+            case .noAnswer:
+                showAlertMessage(
+                    title: L("No Response"),
+                    message: L(
+                        "\(peer.hostname) hasn't responded to your request. They may be away or running an older Tailscreen."
+                    )
+                )
+            }
         } catch {
             presentError(.requestToShareFailed(peer: peer.hostname, underlying: error))
         }
@@ -1774,6 +2161,9 @@ class AppState: ObservableObject {
         let newIDs = Set(viewers.map { $0.id })
         let joinedIDs = newIDs.subtracting(previousIDs)
         currentViewers = viewers
+        refreshRememberedDisplayNames(stableIDHostnamePairs: viewers.map { ($0.stableID, $0.hostname) })
+        applyQueuedPolicyIntents(
+            rows: viewers.map { (id: $0.id, stableID: $0.stableID, displayName: $0.hostname ?? $0.tailscaleIP) })
         // Forget IDs that have left so a reconnect from the same
         // address fires a new notification.
         notifiedViewerIDs.formIntersection(newIDs)
@@ -1794,6 +2184,9 @@ class AppState: ObservableObject {
         let newIDs = Set(pending.map { $0.id })
         let arrivedIDs = newIDs.subtracting(previousIDs)
         pendingViewers = pending
+        refreshRememberedDisplayNames(stableIDHostnamePairs: pending.map { ($0.stableID, $0.hostname) })
+        applyQueuedPolicyIntents(
+            rows: pending.map { (id: $0.id, stableID: $0.stableID, displayName: $0.hostname ?? $0.tailscaleIP) })
         for id in arrivedIDs {
             guard let viewer = pending.first(where: { $0.id == id }) else { continue }
             let label = viewer.hostname ?? viewer.tailscaleIP
@@ -1807,10 +2200,95 @@ class AppState: ObservableObject {
         server?.approveViewer(addr: id)
     }
 
-    /// Reject a pending viewer — server sends SERVER_BYE so the viewer
-    /// tears their session down immediately.
+    /// Reject a pending viewer — server sends HELLO_DENY + SERVER_BYE so
+    /// the viewer tears their session down immediately.
     func denyPendingViewer(_ id: String) {
         server?.denyViewer(addr: id)
+    }
+
+    /// "Always Allow": remember the peer as allowed (so future HELLOs skip
+    /// the prompt), then admit them now. If the StableNodeID hasn't resolved
+    /// yet, queue the intent so it's persisted the instant resolution lands
+    /// — the peer is admitted one-time in the meantime.
+    func approvePendingViewerAlways(_ id: String) {
+        if !persistPendingViewerPolicy(id, policy: .allow) {
+            queuedPolicyIntents[id] = .allow
+            logger.log("Queued 'always allow' for \(id): StableNodeID unresolved — persist on resolve")
+        }
+        server?.approveViewer(addr: id)
+    }
+
+    /// "Deny & Block": remember the peer as denied (future HELLOs are
+    /// silently rejected), then deny them now. If the StableNodeID hasn't
+    /// resolved yet, queue the intent and leave the peer parked (denied
+    /// access, no video) so the server keeps resolving its StableNodeID —
+    /// the block is persisted the instant resolution lands, rather than
+    /// silently degrading to a one-time deny the peer could re-HELLO past.
+    func denyPendingViewerAndBlock(_ id: String) {
+        if persistPendingViewerPolicy(id, policy: .deny) {
+            server?.denyViewer(addr: id)
+        } else {
+            queuedPolicyIntents[id] = .deny
+            logger.log("Queued 'deny & block' for \(id): StableNodeID unresolved — parked until resolve")
+        }
+    }
+
+    /// Keep the remembered-viewers list readable across machine renames:
+    /// whenever a roster snapshot carries a resolved hostname for a peer
+    /// we've remembered, refresh its cosmetic display name. No-ops (no
+    /// persist, no publish) when nothing changed.
+    private func refreshRememberedDisplayNames(stableIDHostnamePairs: [(String?, String?)]) {
+        for (stableID, hostname) in stableIDHostnamePairs {
+            guard let stableID, let hostname else { continue }
+            viewerAccessPolicies.refreshDisplayName(stableID: stableID, displayName: hostname)
+        }
+    }
+
+    /// Persist a policy under the pending viewer's resolved StableNodeID.
+    /// Returns false (nothing persisted) when the row is gone or its
+    /// StableNodeID hasn't resolved — the caller then queues the intent.
+    private func persistPendingViewerPolicy(_ id: String, policy: PeerPolicy) -> Bool {
+        guard let viewer = pendingViewers.first(where: { $0.id == id }) else { return false }
+        guard let stableID = viewer.stableID else { return false }
+        viewerAccessPolicies.upsert(
+            stableID: stableID,
+            displayName: viewer.hostname ?? viewer.tailscaleIP,
+            policy: policy
+        )
+        return true
+    }
+
+    /// Which queued policy intents can now be persisted, given a roster
+    /// snapshot: for each row whose `id` has a queued intent AND a resolved
+    /// StableNodeID, emit `(id, stableID, policy)`. Pure so the
+    /// late-resolution application is unit-testable.
+    nonisolated static func resolvableIntents(
+        intents: [String: PeerPolicy],
+        snapshot: [(id: String, stableID: String?)]
+    ) -> [(id: String, stableID: String, policy: PeerPolicy)] {
+        snapshot.compactMap { row in
+            guard let policy = intents[row.id], let stableID = row.stableID else { return nil }
+            return (id: row.id, stableID: stableID, policy: policy)
+        }
+    }
+
+    /// Apply any queued "Always Allow" / "Deny & Block" intents whose peer's
+    /// StableNodeID just resolved in `rows`. Persisting fires the
+    /// remembered-store subscription, which pushes the policy to the live
+    /// server (admitting/expelling as needed).
+    private func applyQueuedPolicyIntents(rows: [(id: String, stableID: String?, displayName: String)]) {
+        guard !queuedPolicyIntents.isEmpty else { return }
+        let resolvable = Self.resolvableIntents(
+            intents: queuedPolicyIntents,
+            snapshot: rows.map { (id: $0.id, stableID: $0.stableID) })
+        guard !resolvable.isEmpty else { return }
+        let nameByID = Dictionary(rows.map { ($0.id, $0.displayName) }, uniquingKeysWith: { first, _ in first })
+        for item in resolvable {
+            viewerAccessPolicies.upsert(
+                stableID: item.stableID, displayName: nameByID[item.id] ?? item.id, policy: item.policy)
+            queuedPolicyIntents.removeValue(forKey: item.id)
+            logger.log("Applied queued \(item.policy) intent for \(item.id) → \(item.stableID)")
+        }
     }
 
     /// Vibrancy-backed centered placard reading "Waiting for sharer to
@@ -1889,29 +2367,130 @@ private final class ViewerWindowDelegate: NSObject, NSWindowDelegate {
 
 /// Container for the viewer window's video + annotation overlay. Lays
 /// both out at the aspect-fit rect of the source video inside the host
-/// bounds, so a click on the overlay maps 1:1 to a pixel on the sharer's
-/// captured screen no matter how the user resizes the window.
+/// bounds — optionally magnified/panned by `zoomState` — so a click on
+/// the overlay maps 1:1 to a pixel on the sharer's captured screen no
+/// matter how the user resizes the window or zooms the content.
 private final class AspectFitHostView: NSView {
     weak var metalLayer: CAMetalLayer?
     weak var contentSubview: NSView?
     var videoSize: CGSize = .zero {
         didSet {
             guard videoSize != oldValue else { return }
+            // A sharer-side resolution change invalidates the content
+            // zoom's pan space — reset to fit rather than keep magnifying
+            // a stale region of the old frame.
+            zoomState = ViewerZoomState()
+            needsLayout = true
+        }
+    }
+
+    /// Continuous content zoom/pan applied on top of the aspect-fit rect.
+    /// All geometry lives in `ViewerZoomMath`; this view only feeds it
+    /// gesture deltas and lays out both the metal layer and the annotation
+    /// overlay from the single rect it returns — keeping the two congruent
+    /// is the invariant that keeps strokes pixel-correct at any zoom.
+    var zoomState = ViewerZoomState() {
+        didSet {
+            guard zoomState != oldValue else { return }
             needsLayout = true
         }
     }
 
     override func layout() {
         super.layout()
-        let rect = aspectFitRect()
+        let rect = ViewerZoomMath.videoRect(fit: aspectFitRect(), state: zoomState)
         // CALayer frame changes go through an implicit animation by
         // default — disable it so the layer snaps to the new aspect rect
-        // in lockstep with the overlay subview.
+        // in lockstep with the overlay subview (and so pinch-zoom doesn't
+        // rubber-band through implicit animations).
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         metalLayer?.frame = rect
         CATransaction.commit()
         contentSubview?.frame = rect
+    }
+
+    // MARK: - Content zoom gestures
+    //
+    // Events land on the annotation overlay first (it's the subview under
+    // the cursor) but bubble up the responder chain to this host — the
+    // overlay doesn't override any of these.
+
+    /// The texture-safe zoom ceiling for the given fit rect: keeps the
+    /// zoomed rect (which frames the layer-backed annotation overlay)
+    /// under Core Animation's per-axis texture limit at this window's
+    /// backing scale.
+    private func effectiveMaxScale(fit: CGRect) -> CGFloat {
+        ViewerZoomMath.effectiveMaxScale(fit: fit, backingScale: window?.backingScaleFactor ?? 2)
+    }
+
+    /// Pinch zoom, anchored under the cursor.
+    override func magnify(with event: NSEvent) {
+        let fit = aspectFitRect()
+        let anchor = convert(event.locationInWindow, from: nil)
+        zoomState = ViewerZoomMath.zoomed(
+            state: zoomState, by: 1 + event.magnification, anchor: anchor, fit: fit,
+            maxScale: effectiveMaxScale(fit: fit))
+    }
+
+    /// Two-finger double-tap: toggle fit ↔ 2× at the tap point.
+    override func smartMagnify(with event: NSEvent) {
+        let fit = aspectFitRect()
+        let anchor = convert(event.locationInWindow, from: nil)
+        zoomState = ViewerZoomMath.smartMagnifyToggled(
+            state: zoomState, anchor: anchor, fit: fit,
+            maxScale: effectiveMaxScale(fit: fit))
+    }
+
+    /// ⌥-scroll zooms at the cursor; plain scroll pans while zoomed in.
+    /// At fit (scale 1) an unmodified scroll falls through to the
+    /// responder chain — nothing scrolls there today, so behavior at fit
+    /// is unchanged.
+    override func scrollWheel(with event: NSEvent) {
+        // Non-precise devices (classic mouse wheels) report deltas in
+        // line units, not points — scale up so one wheel notch moves or
+        // zooms a useful amount.
+        let unit: CGFloat = event.hasPreciseScrollingDeltas ? 1 : 16
+        if event.modifierFlags.contains(.option) {
+            let fit = aspectFitRect()
+            let anchor = convert(event.locationInWindow, from: nil)
+            // Normalize so scrolling up (device-up) always zooms in,
+            // regardless of the natural-scrolling preference — zoom has
+            // no "content to drag", so direction shouldn't flip with it.
+            // ~100 points of scroll doubles (or halves) the zoom.
+            let dy = event.scrollingDeltaY * unit
+            let zoomDelta = event.isDirectionInvertedFromDevice ? -dy : dy
+            let delta = CGFloat(pow(2.0, Double(zoomDelta) / 100.0))
+            zoomState = ViewerZoomMath.zoomed(
+                state: zoomState, by: delta, anchor: anchor, fit: fit,
+                maxScale: effectiveMaxScale(fit: fit))
+            return
+        }
+        if zoomState.isZoomedIn {
+            let fit = aspectFitRect()
+            // scrollingDelta is expressed for a flipped (y-down)
+            // coordinate space; this view is non-flipped, so negate Y to
+            // keep the content tracking the fingers. Unlike the ⌥-zoom
+            // above, panning deliberately follows the natural-scrolling
+            // preference — it *is* dragging content.
+            zoomState = ViewerZoomMath.panned(
+                state: zoomState,
+                by: CGSize(
+                    width: event.scrollingDeltaX * unit,
+                    height: -event.scrollingDeltaY * unit),
+                fit: fit)
+            return
+        }
+        super.scrollWheel(with: event)
+    }
+
+    /// Center-anchored continuous zoom step for the View-menu items
+    /// (⌥⌘+ / ⌥⌘-), which have no cursor position to anchor at.
+    func zoomContent(by delta: CGFloat) {
+        let fit = aspectFitRect()
+        zoomState = ViewerZoomMath.zoomed(
+            state: zoomState, by: delta, anchor: CGPoint(x: fit.midX, y: fit.midY), fit: fit,
+            maxScale: effectiveMaxScale(fit: fit))
     }
 
     override func resizeSubviews(withOldSize oldSize: NSSize) {

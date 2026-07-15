@@ -197,13 +197,12 @@ private struct PendingRequestsBanner: View {
                         }
                         Spacer(minLength: 4)
                         Button(L("Decline")) {
-                            appState.metadataService.clearRequest(req)
+                            appState.respondToShareRequest(req, accepted: false)
                         }
                         .controlSize(.small)
                         .buttonStyle(.bordered)
                         Button(L("Share")) {
-                            appState.metadataService.clearRequest(req)
-                            Task { await appState.presentNativePicker() }
+                            appState.respondToShareRequest(req, accepted: true)
                         }
                         .controlSize(.small)
                         .buttonStyle(.borderedProminent)
@@ -416,10 +415,24 @@ private struct SharingCard: View {
             }
             .frame(height: previewHeight)
 
-            // Three buttons in 280px popover would truncate ("Unmut…",
-            // "Stop Shari…"). Icon-only for Draw + Mic; full label only
-            // on the destructive action so it stays prominent.
+            // Multiple buttons in a 280px popover would truncate ("Unmut…",
+            // "Stop Shari…"). Icon-only for Change Source + Draw + Mic;
+            // full label only on the destructive action so it stays
+            // prominent.
             HStack(spacing: 6) {
+                Button {
+                    Task { await appState.changeShareSource() }
+                } label: {
+                    Image(systemName: "rectangle.on.rectangle")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(appState.isChangingSource)
+                .help(L("Change Source…"))
+                .accessibilityLabel(L("Change what you're sharing"))
+                .accessibilityHint(L("Reopens the picker without disconnecting viewers"))
+
                 Button {
                     appState.toggleSharerOverlay()
                 } label: {
@@ -528,40 +541,77 @@ private struct AudioDevicePickers: View {
     }
 }
 
-/// Single-line viewer roster shown inside the SharingCard. Hostnames come
-/// from the netmap lookup in `TailscaleScreenShareServer.resolveHostname`;
-/// rows that haven't resolved yet (or whose peer isn't in the netmap) fall
-/// back to the raw Tailscale IP. Truncates to keep the SharingCard
-/// vertical layout stable as viewers come and go.
+/// Viewer roster shown inside the SharingCard — one row per connected viewer
+/// with a leading health dot (green / yellow / orange) that reflects the
+/// server's per-viewer loss attribution: `good`, `degraded` (packet loss this
+/// window), or `throttled` (keyframe-only mode because that viewer's link was
+/// isolating the session). Hostnames come from the netmap lookup in
+/// `TailscaleScreenShareServer`; rows that haven't resolved yet (or whose peer
+/// isn't in the netmap) fall back to the raw Tailscale IP, truncated to keep
+/// the layout stable. Falls back to a single "No viewers yet" line when empty.
 private struct ViewersList: View {
     let viewers: [ViewerInfo]
 
     var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: viewers.isEmpty ? "person" : "person.2.fill")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-            Text(label)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-            Spacer(minLength: 0)
+        if viewers.isEmpty {
+            HStack(spacing: 6) {
+                Image(systemName: "person")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Text(L("No viewers yet"))
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Spacer(minLength: 0)
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(viewers) { viewer in
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(Self.dotColor(for: viewer.health))
+                            .frame(width: 8, height: 8)
+                            .help(Self.tooltip(for: viewer.health))
+                        Text(viewer.hostname ?? viewer.tailscaleIP)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        Spacer(minLength: 0)
+                    }
+                }
+            }
         }
     }
 
-    private var label: String {
-        if viewers.isEmpty { return L("No viewers yet") }
-        let names = viewers.map { $0.hostname ?? $0.tailscaleIP }
-        return L("\(viewers.count) watching: \(names.joined(separator: ", "))")
+    private static func dotColor(for health: ViewerHealth) -> Color {
+        switch health {
+        case .good: return .green
+        case .degraded: return .yellow
+        case .throttled: return .orange
+        }
+    }
+
+    private static func tooltip(for health: ViewerHealth) -> String {
+        switch health {
+        case .good: return L("Connection healthy")
+        case .degraded: return L("Connection degraded — packet loss")
+        case .throttled: return L("Limited to keyframes — poor connection")
+        }
     }
 }
 
-/// One row per pending viewer with inline Accept / Deny buttons. Shown
-/// in the SharingCard whenever `requireViewerApproval` is on and at
-/// least one viewer is waiting for a decision. Hostnames may take a
-/// moment to resolve via the netmap lookup; the row falls back to the
-/// raw Tailscale IP in the gap.
+/// One row per pending viewer with inline Accept / Deny split buttons.
+/// The primary click acts once; each button's attached menu adds the
+/// remembered variant — "Always Allow" / "Deny & Block" — which persists
+/// the decision under the peer's StableNodeID so future HELLOs skip the
+/// prompt (or are silently rejected). Shown in the SharingCard whenever
+/// `requireViewerApproval` is on and at least one viewer is waiting for a
+/// decision. Hostnames (and the StableNodeID the remembered variants
+/// need) may take a moment to resolve via the netmap lookup; the row
+/// falls back to the raw Tailscale IP in the gap, and a remembered-allow
+/// peer may flash here briefly before auto-admission kicks in.
 private struct PendingViewersList: View {
     @EnvironmentObject var appState: AppState
     let viewers: [PendingViewerInfo]
@@ -578,21 +628,37 @@ private struct PendingViewersList: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Spacer(minLength: 4)
-                    Button {
-                        appState.denyPendingViewer(viewer.id)
+                    Menu {
+                        // Enabled even before the StableNodeID resolves: the
+                        // intent is queued and persisted the moment it lands.
+                        Button(L("Deny & Block")) {
+                            appState.denyPendingViewerAndBlock(viewer.id)
+                        }
                     } label: {
                         Text(L("Deny")).font(.caption)
+                    } primaryAction: {
+                        appState.denyPendingViewer(viewer.id)
                     }
+                    .menuStyle(.button)
                     .buttonStyle(.bordered)
                     .controlSize(.mini)
+                    .fixedSize()
                     .accessibilityLabel(L("Deny \(viewer.hostname ?? viewer.tailscaleIP)"))
-                    Button {
-                        appState.approvePendingViewer(viewer.id)
+                    Menu {
+                        // Enabled even before the StableNodeID resolves: the
+                        // intent is queued and persisted the moment it lands.
+                        Button(L("Always Allow")) {
+                            appState.approvePendingViewerAlways(viewer.id)
+                        }
                     } label: {
                         Text(L("Accept")).font(.caption)
+                    } primaryAction: {
+                        appState.approvePendingViewer(viewer.id)
                     }
+                    .menuStyle(.button)
                     .buttonStyle(.borderedProminent)
                     .controlSize(.mini)
+                    .fixedSize()
                     .accessibilityLabel(L("Accept \(viewer.hostname ?? viewer.tailscaleIP)"))
                 }
             }

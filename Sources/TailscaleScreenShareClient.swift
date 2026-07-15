@@ -63,6 +63,12 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     /// disconnect.
     var onAwaitingApproval: (() -> Void)?
 
+    /// Fires when the sharer declines (or has blocked) this viewer
+    /// (HELLO_DENY). AppState surfaces an alert and disconnects. When
+    /// unset, the receive loop falls back to the generic peer-closed
+    /// teardown — same as the SERVER_BYE that follows on the wire.
+    var onDeniedBySharer: (() -> Void)?
+
     /// Fires on every inbound audio RTP packet (PT=98). AppState pipes
     /// this into VoiceChannel.receive(_:).
     var onAudioReceived: ((Data) -> Void)?
@@ -159,17 +165,20 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     private func runAnnotationChannel(initial: OutgoingConnection?, host: String, port: UInt16) async {
         let target = "\(host):\(port)"
         var conn = initial
-        var backoffMs: UInt64 = 250
+        var reconnectAttempts = 0
         while !Task.isCancelled && isConnected {
             if conn == nil {
                 conn = await dialAnnotation(to: target)
                 guard conn != nil else {
                     if Task.isCancelled || !isConnected { break }
-                    try? await Task.sleep(for: .milliseconds(backoffMs))
-                    backoffMs = min(backoffMs * 2, 5_000)
+                    reconnectAttempts += 1
+                    // Same 250 ms → 5 s capped doubling as the UDP receive
+                    // loops; the constants live in `ReceiveLoopPolicy`.
+                    try? await Task.sleep(
+                        nanoseconds: ReceiveLoopPolicy.retryDelayNs(consecutiveErrors: reconnectAttempts))
                     continue
                 }
-                backoffMs = 250  // reset after a clean (re)connect
+                reconnectAttempts = 0  // reset after a clean (re)connect
             }
             guard let live = conn else { break }
             // Drains until the connection drops or the task is cancelled.
@@ -233,6 +242,22 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     func sendPLIForTesting() async {
         guard isConnected, let pl = packetListener, let addr = serverAddr else { return }
         try? await pl.send(ScreenShareControlMessage.encode(.pli), to: addr)
+    }
+
+    /// Ask the sharer to fall back to 8-bit (PROFILE_NO) — the lighter cousin
+    /// of the `codecUnsupported` H.264 fallback, for a viewer that decodes
+    /// HEVC but not its 10-bit Main 10 profile. Sent a few times since it
+    /// rides best-effort UDP. Reserved for the opt-in 10-bit/HDR path: the
+    /// production decoder can't cheaply tell "profile unsupported" from
+    /// "codec unsupported" pre-decode, so today's 8-bit-only streams never
+    /// trigger it; exposed so a test (and a future 10-bit capability probe)
+    /// can drive the server's `force8bit` latch.
+    func sendBitDepthFallbackRequest() async {
+        guard isConnected, let pl = packetListener, let addr = serverAddr else { return }
+        for _ in 0..<3 {
+            try? await pl.send(ScreenShareControlMessage.encode(.profileUnsupported), to: addr)
+            try? await Task.sleep(for: .milliseconds(200))
+        }
     }
 
     func connect(
@@ -317,6 +342,16 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         decoder.onDecodeFailure = { [weak self] codec in
             self?.handleDecodeFailure(codec)
         }
+        decoder.onFrameDecodeFailed = { [weak self] in
+            self?.renderer.noteDecodeFailure()
+        }
+        decoder.onRecoveryAction = { [weak self] action in
+            self?.handleDecodeRecoveryAction(action)
+        }
+        decoder.onRecovered = { [weak self] in
+            self?.logger.log("Client: decoding recovered — clearing degraded indication")
+            self?.renderer.setDegraded(false)
+        }
         self.decoder = decoder
 
         self.isConnected = true
@@ -384,6 +419,31 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         )
     }
 
+    /// One rung of the decoder's consecutive-failure escalation ladder (see
+    /// `DecodeRecoveryAction`). Fires on the decoder's serial queue, so the
+    /// PLI sends hop into a Task. Ladder PLIs deliberately bypass the 100 ms
+    /// throttle: each rung fires at most once per failing episode (rare by
+    /// construction, so no amplification risk), and letting the throttle
+    /// swallow one would leave the wedged decoder waiting on the next rung
+    /// for another chance. Loss-driven PLIs stay throttled.
+    private func handleDecodeRecoveryAction(_ action: DecodeRecoveryAction) {
+        logger.log("Client: decode-recovery action \(action)")
+        switch action {
+        case .requestKeyframe, .recreateSession:
+            // The decoder handles the session rebuild itself; either way a
+            // fresh IDR is what un-wedges decoding, so ask the sharer for
+            // one. This also feeds the server's adaptive-bitrate PLI window,
+            // so a genuinely lossy link steps its rate down.
+            Task { [weak self] in
+                await self?.sendPLIUnthrottled()
+            }
+        case .signalDegraded:
+            renderer.setDegraded(true)
+        case .surfaceError:
+            NotificationCenter.default.post(name: .tailscreenViewerVideoStalled, object: nil)
+        }
+    }
+
     private func receiveLoop() async {
         guard let pl = packetListener else { return }
         var packetsReceived = 0
@@ -393,16 +453,30 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         // switches Spaces) doesn't fully tear our session down. The
         // sharer's own watchdog will still notice if we've truly gone
         // silent for >15 s, at which point both ends time out together.
-        let idleDisconnectAfterNs: UInt64 = 15_000_000_000
+        // Both constants live in TransportTuning to keep them coupled.
+        let idleDisconnectAfterNs = TransportTuning.clientIdleDisconnectNs
         var lastDataNs = DispatchTime.now().uptimeNanoseconds
+        // Suppresses the idle-disconnect while the sharer has us parked
+        // behind their approval gate (HELLO_PENDING, then silence — the
+        // sharer may take minutes to click Accept). Set on HELLO_PENDING,
+        // cleared on HELLO_ACK/HELLO_DENY or the first decoded AU. An
+        // actively-KEEPALIVE'ing pending viewer is never swept server-side
+        // (its lastSeen refreshes), so waiting indefinitely is consistent
+        // with the server's 60 s pending sweep; a real teardown still comes
+        // via SERVER_BYE on Stop Sharing.
+        var awaitingApproval = false
+        var consecutiveErrors = 0
+        var errorStampsNs: [UInt64] = []
 
         while isConnected {
+            let recvStartNs = DispatchTime.now().uptimeNanoseconds
             do {
                 // recv returns one UDP datagram. The server is the only
                 // party that should be sending to us (it learned our addr
                 // from the HELLO source); ignore datagrams from anywhere
                 // else as a precaution.
                 let (datagram, from) = try await pl.recv(timeout: 1_000)
+                consecutiveErrors = 0
                 if datagram.isEmpty { continue }
                 if from != serverAddr {
                     // Don't pollute the depacketizer with packets from
@@ -427,6 +501,8 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                         NotificationCenter.default.post(name: .tailscreenViewerPeerClosed, object: nil)
                         return
                     case .helloAck:
+                        // Admitted — normal idle handling resumes.
+                        awaitingApproval = false
                         if let ssrc = ScreenShareControlMessage.decodeHelloAck(datagram),
                             assignedAudioSSRC != ssrc
                         {
@@ -434,7 +510,17 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                             onAudioSSRCAssigned?(ssrc)
                         }
                     case .helloPending:
+                        awaitingApproval = true
                         onAwaitingApproval?()
+                    case .helloDenied:
+                        logger.log("Receive: HELLO_DENY — the sharer declined this viewer")
+                        if let onDeniedBySharer {
+                            onDeniedBySharer()
+                        } else {
+                            NotificationCenter.default.post(
+                                name: .tailscreenViewerPeerClosed, object: nil)
+                        }
+                        return
                     default:
                         break
                     }
@@ -467,19 +553,13 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                 }
 
                 if let au = depacketizer.ingest(datagram) {
+                    // Video is flowing — we're past the approval gate.
+                    awaitingApproval = false
                     framesDelivered += 1
-                    if au.lostBeforeThisAU, let addr = serverAddr {
-                        // Rate-limit PLIs. Each one forces the encoder to emit
-                        // a (large) keyframe, which fragments into more packets
-                        // and, on a lossy link, can lose *more* — so a PLI per
-                        // dropped frame is a loss-amplification loop. One per
-                        // pliMinIntervalNs is plenty: the keyframe it triggers
-                        // covers all loss up to its arrival.
-                        let nowNs = DispatchTime.now().uptimeNanoseconds
-                        if nowNs &- lastPLISentNs >= pliMinIntervalNs {
-                            lastPLISentNs = nowNs
-                            try? await pl.send(ScreenShareControlMessage.encode(.pli), to: addr)
-                        }
+                    if au.lostBeforeThisAU {
+                        // Rate-limited — see `sendPLIThrottled` for the
+                        // loss-amplification hazard the throttle prevents.
+                        await sendPLIThrottled()
                     }
                     if framesDelivered == 1 || framesDelivered % 60 == 0 {
                         logger.log(
@@ -489,19 +569,54 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                     self.lastReceiveUptimeNs = DispatchTime.now().uptimeNanoseconds
                     deliverAU(au)
                 }
-            } catch TailscaleError.readFailed {
-                if !isConnected { break }
+            } catch {
+                guard isConnected else { break }
+                // `TailscaleError.readFailed` is thrown both for the benign
+                // 1 s poll timeout and for a dead fd (POLLHUP → instant
+                // return). errno isn't visible from here, but elapsed time
+                // tells them apart — treating every readFailed as a timeout
+                // let a dead socket busy-spin with the error counter
+                // permanently reset.
+                if case TailscaleError.readFailed = error {
+                    let elapsedNs = DispatchTime.now().uptimeNanoseconds &- recvStartNs
+                    if !ReceiveLoopPolicy.classifyReadFailedAsError(elapsedNs: elapsedNs) {
+                        consecutiveErrors = 0
+                        let nowNs = DispatchTime.now().uptimeNanoseconds
+                        // Don't self-disconnect while parked for approval —
+                        // the sharer's silence there is expected, not a dead
+                        // server. Stop Sharing still reaches us via SERVER_BYE.
+                        if !awaitingApproval && nowNs &- lastDataNs > idleDisconnectAfterNs {
+                            let idleMs = (nowNs &- lastDataNs) / 1_000_000
+                            logger.log("Receive: idle for \(idleMs) ms, assuming server gone")
+                            NotificationCenter.default.post(name: .tailscreenViewerPeerClosed, object: nil)
+                            break
+                        }
+                        continue
+                    }
+                    // Near-instant readFailed = dead fd; count it below.
+                }
+                // A one-off receive error used to kill this loop permanently
+                // — and, unlike the idle-timeout path, without posting
+                // `.tailscreenViewerPeerClosed`, so the window froze on a
+                // stale frame with a live-looking UI. Retry with a capped
+                // backoff instead, and if the socket is genuinely dead
+                // (`maxConsecutiveErrors` in a row, or the windowed backstop
+                // for errors interleaved with timeouts) tear down through
+                // the same notification the idle path uses.
+                consecutiveErrors += 1
                 let nowNs = DispatchTime.now().uptimeNanoseconds
-                if nowNs &- lastDataNs > idleDisconnectAfterNs {
-                    let idleMs = (nowNs &- lastDataNs) / 1_000_000
-                    logger.log("Receive: idle for \(idleMs) ms, assuming server gone")
+                let windowCount = ReceiveLoopPolicy.slidingWindowErrorCount(&errorStampsNs, appending: nowNs)
+                logger.log("Receive error #\(consecutiveErrors) (\(windowCount) in window): \(error)")
+                let deadConsecutive = consecutiveErrors >= ReceiveLoopPolicy.maxConsecutiveErrors
+                let deadWindowed = windowCount >= ReceiveLoopPolicy.maxErrorsPerWindow
+                if deadConsecutive || deadWindowed {
+                    let detail = "\(consecutiveErrors) consecutive, \(windowCount) in window"
+                    logger.log("Receive loop dead (\(detail)) — disconnecting")
                     NotificationCenter.default.post(name: .tailscreenViewerPeerClosed, object: nil)
                     break
                 }
-                continue
-            } catch {
-                if isConnected { logger.log("Receive error: \(error)") }
-                break
+                try? await Task.sleep(
+                    nanoseconds: ReceiveLoopPolicy.retryDelayNs(consecutiveErrors: consecutiveErrors))
             }
         }
     }
@@ -562,7 +677,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         // scheduling stall) doesn't push us past the server's 15 s idle
         // sweep. Two missed sends in a row still leaves ~14 s of slack.
         while isConnected {
-            try? await Task.sleep(nanoseconds: 500_000_000)
+            try? await Task.sleep(nanoseconds: TransportTuning.keepaliveIntervalNs)
             guard isConnected, let pl = packetListener, let addr = serverAddr else { return }
             try? await pl.send(ScreenShareControlMessage.encode(.keepalive), to: addr)
         }
@@ -570,11 +685,46 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
 
     private var lastReceiveUptimeNs: UInt64 = 0
 
-    /// Throttle for loss-driven PLIs (see the send site in `receiveLoop`).
-    private var lastPLISentNs: UInt64 = 0
+    /// Throttle state for PLIs (see `sendPLIThrottled`). Locked because it's
+    /// written from the receive task *and* from decoder-escalation Tasks.
+    private let lastPLISentNs = OSAllocatedUnfairLock<UInt64>(initialState: 0)
     /// Minimum spacing between PLIs. ~100 ms caps keyframe requests at ~10/s
     /// instead of up to one per dropped frame (60/s), while staying responsive.
     private let pliMinIntervalNs: UInt64 = 100_000_000
+
+    /// Send a PLI to the server unless one went out within
+    /// `pliMinIntervalNs`. The loss-driven path (depacketizer gap in
+    /// `receiveLoop`) routes through this throttle: each PLI forces the
+    /// encoder to emit a (large) keyframe, which fragments into more packets
+    /// and, on a lossy link, can lose *more* — unthrottled loss-driven PLIs
+    /// are a loss-amplification loop. One per interval is plenty; the
+    /// keyframe it triggers covers all loss up to its arrival. The
+    /// decode-recovery ladder uses `sendPLIUnthrottled` instead.
+    private func sendPLIThrottled() async {
+        guard isConnected, let pl = packetListener, let addr = serverAddr else { return }
+        let nowNs = DispatchTime.now().uptimeNanoseconds
+        let shouldSend = lastPLISentNs.withLock { last -> Bool in
+            guard nowNs &- last >= pliMinIntervalNs else { return false }
+            last = nowNs
+            return true
+        }
+        guard shouldSend else { return }
+        renderer.notePLISent()
+        try? await pl.send(ScreenShareControlMessage.encode(.pli), to: addr)
+    }
+
+    /// Send a PLI immediately, bypassing the 100 ms throttle. Reserved for
+    /// the decode-recovery ladder: its rungs fire at most once per failing
+    /// episode, so there's no amplification risk — and a ladder PLI the
+    /// throttle swallowed would stall recovery until the next rung. Pushes
+    /// the throttle window forward so an immediately-following loss-driven
+    /// PLI still spaces out.
+    private func sendPLIUnthrottled() async {
+        guard isConnected, let pl = packetListener, let addr = serverAddr else { return }
+        lastPLISentNs.withLock { $0 = DispatchTime.now().uptimeNanoseconds }
+        renderer.notePLISent()
+        try? await pl.send(ScreenShareControlMessage.encode(.pli), to: addr)
+    }
 
     private func handleDecodedFrame(_ buffer: CVPixelBuffer) {
         guard isConnected, !isDisconnecting else { return }
@@ -628,9 +778,19 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
 
         if let decoder = decoder {
             decoder.onDecodedFrame = nil
+            decoder.onFrameDecodeFailed = nil
+            decoder.onRecoveryAction = nil
+            decoder.onRecovered = nil
             decoder.shutdown()
             self.decoder = nil
         }
+
+        // Teardown owns clearing the degraded indication — the ladder that
+        // set it is gone with the decoder, and leaving it latched kept the
+        // toolbar triangle + overlay banner up through the disconnected
+        // state and into the next session's first paint. The remaining
+        // counters reset on the next connect via `resetStats()`.
+        renderer.setDegraded(false)
 
         logger.log("Client disconnected")
     }
@@ -667,6 +827,12 @@ extension Notification.Name {
     /// alert; the client has already asked the sharer to fall back to H.264.
     /// `userInfo["codec"]` carries the codec name as a String.
     static let tailscreenViewerDecodeFailed = Notification.Name("tailscreen.viewer.decodeFailed")
+
+    /// Posted from the decode-failure escalation ladder's last rung: frames
+    /// are arriving but decoding has been failing for several seconds
+    /// despite a keyframe request and a decoder-session rebuild. AppState
+    /// surfaces an alert so a frozen frame isn't a silent mystery.
+    static let tailscreenViewerVideoStalled = Notification.Name("tailscreen.viewer.videoStalled")
 }
 
 /// Serializes `send(_:)` calls on an `OutgoingConnection`. Two concurrent

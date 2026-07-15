@@ -82,4 +82,84 @@ final class ScreenShareSyntheticFramesTests: XCTestCase {
         await client.disconnect()
         await server.stop()
     }
+
+    /// Mid-stream source/resolution change, viewer side. A "Change
+    /// Source…" retarget is (to the viewer) just a fresh encoder emitting
+    /// an IDR with new in-band parameter sets — this proves the client
+    /// re-installs the params, rebuilds its decoder, and decodes frames at
+    /// the new dimensions with zero out-of-band signaling, using no
+    /// capture machinery at all. Mirrors what
+    /// `TailscaleScreenShareServer.changeSource` produces after the helper
+    /// respawn.
+    func testClientAdaptsToMidStreamResolutionChange() async throws {
+        let env = try TailscreenE2E.loadEnvOrSkip()
+        let dirs = try TailscreenE2E.makeStateDirs(testCase: self, label: "synth-reschange")
+
+        // Two synthetic streams at different dimensions — "before" and
+        // "after" the source switch.
+        let synthBefore = try await TailscreenE2E.encodeSyntheticAUs(width: 640, height: 360)
+        let synthAfter = try await TailscreenE2E.encodeSyntheticAUs(width: 960, height: 540)
+
+        let server = TailscaleScreenShareServer()
+        try await server.start(
+            hostname: TailscreenE2E.makeHostname("resw-server"),
+            authKey: env.authKey,
+            path: dirs.server,
+            controlURL: env.controlURL,
+            filterData: nil
+        )
+        addTeardownBlock { Task { await server.stop() } }
+        server.injectSyntheticParameters(synthBefore.params)
+
+        let ips = try await server.getIPAddresses()
+        guard let serverIP = ips.ip4 ?? ips.ip6 else {
+            XCTFail("server has no tailnet IP")
+            return
+        }
+
+        let renderer = await MainActor.run { MetalViewerRenderer() }
+        let client = TailscaleScreenShareClient(renderer: renderer)
+        let assignedAck = expectation(description: "HELLO_ACK assigned by server")
+        client.onAudioSSRCAssigned = { _ in assignedAck.fulfill() }
+        try await client.connect(
+            to: serverIP,
+            port: NetworkConfig.tailscreenPort,
+            authKey: env.authKey,
+            path: dirs.client,
+            controlURL: env.controlURL
+        )
+        addTeardownBlock { Task { await client.disconnect() } }
+        await fulfillment(of: [assignedAck], timeout: 30)
+
+        let decodedOld = expectation(description: "client decoded a 640x360 frame")
+        decodedOld.assertForOverFulfill = false
+        let decodedNew = expectation(description: "client decoded a 960x540 frame")
+        decodedNew.assertForOverFulfill = false
+        client.onDecodedFrameForTesting = { buffer in
+            let width = CVPixelBufferGetWidth(buffer)
+            if width == 640 { decodedOld.fulfill() }
+            if width == 960 { decodedNew.fulfill() }
+        }
+
+        // Phase 1: old dimensions decode.
+        for (i, au) in synthBefore.aus.enumerated() {
+            server.broadcastForTesting(avccData: au.data, isKeyframe: i == 0 || au.isKey)
+            try await Task.sleep(for: .milliseconds(33))
+        }
+        await fulfillment(of: [decodedOld], timeout: 10)
+
+        // Phase 2: swap the cached parameter sets — exactly what the fresh
+        // helper's onParameterSets callback does after a changeSource
+        // respawn — and broadcast the new stream, first AU keyframed so the
+        // new params ship in-band immediately.
+        server.injectSyntheticParameters(synthAfter.params)
+        for (i, au) in synthAfter.aus.enumerated() {
+            server.broadcastForTesting(avccData: au.data, isKeyframe: i == 0 || au.isKey)
+            try await Task.sleep(for: .milliseconds(33))
+        }
+        await fulfillment(of: [decodedNew], timeout: 10)
+
+        await client.disconnect()
+        await server.stop()
+    }
 }
