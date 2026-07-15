@@ -2482,8 +2482,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             // per-viewer PLI count, its (freshness-decayed) RR loss, and who's
             // currently in keyframe-only mode.
             let cutoff = now &- windowNs
-            let (pliCounts, lossQ8ByAddr, currentlyThrottled):
-                ([String: Int], [String: Int], Set<String>) =
+            let (pliCounts, lossQ8ByAddr, currentlyThrottled) =
                 viewers.withLock { state -> ([String: Int], [String: Int], Set<String>) in
                     var counts: [String: Int] = [:]
                     var lossQ8: [String: Int] = [:]
