@@ -1546,7 +1546,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// sharer accepts that peer's request-to-share, so their connect doesn't
     /// hit a second consent prompt.
     func preApproveViewer(ip: String) {
-        preApprovedIPs.withLock { $0.insert(ip) }
+        preApprovedIPs.withLock { _ = $0.insert(ip) }
     }
 
     /// Run the admission gate for a viewer currently parked in
@@ -1849,17 +1849,24 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// is never in both sets at once (approve moves it), so a plain merge is
     /// safe.
     private func outstandingResolveTargets() -> [String: String] {
-        var out: [String: String] = [:]
-        pendingViewerInfos.withLock { state in
+        // Each `withLock` closure is `@Sendable`, so it can't mutate a
+        // captured outer var — collect inside and merge the returned maps.
+        let pending = pendingViewerInfos.withLock { state -> [String: String] in
+            var m: [String: String] = [:]
             for (addr, info) in state where info.hostname == nil || info.stableID == nil {
-                out[addr] = info.tailscaleIP
+                m[addr] = info.tailscaleIP
             }
+            return m
         }
-        viewerInfos.withLock { state in
+        let connected = viewerInfos.withLock { state -> [String: String] in
+            var m: [String: String] = [:]
             for (addr, info) in state where info.hostname == nil || info.stableID == nil {
-                out[addr] = info.tailscaleIP
+                m[addr] = info.tailscaleIP
             }
+            return m
         }
+        var out = pending
+        out.merge(connected) { _, new in new }
         return out
     }
 
