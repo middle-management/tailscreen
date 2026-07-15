@@ -26,10 +26,25 @@ import Foundation
 ///         (`.acceptShare` / `.declineShare`). Old peers' parsers drop
 ///         unknown type bytes, so this is backward compatible — a legacy
 ///         requester just never sees an answer.
+///     .controlRequest (0x06)  — viewer→sharer
+///         "please grant me remote control." Empty payload.
+///     .controlGranted (0x07)  — sharer→viewer
+///         the sharer granted this viewer control. Empty payload.
+///     .controlRevoked (0x08)  — sharer→viewer
+///         the sharer revoked (or never granted) control. payload = JSON
+///         `ControlRevokedPayload` carrying a short reason string.
+///     .inputEvent     (0x09)  — viewer→sharer
+///         one ``InputEvent`` (mouse/scroll/key) to inject on the sharer's
+///         machine. payload = JSON-encoded ``InputEvent``. Honoured only
+///         from the current grantee's connection; dropped otherwise.
 enum ScreenShareMessage {
     case annotation(AnnotationOp)
     case requestToShare(fromHostname: String)
     case shareResponse(accepted: Bool)
+    case controlRequest
+    case controlGranted
+    case controlRevoked(reason: String)
+    case inputEvent(InputEvent)
 
     static let headerSize = 5
 
@@ -37,6 +52,10 @@ enum ScreenShareMessage {
         case annotation = 0x03
         case requestToShare = 0x04
         case shareResponse = 0x05
+        case controlRequest = 0x06
+        case controlGranted = 0x07
+        case controlRevoked = 0x08
+        case inputEvent = 0x09
     }
 
     /// Serialize this message as a wire-format packet (header + payload).
@@ -54,6 +73,17 @@ enum ScreenShareMessage {
             let request: TailscreenRequest = accepted ? .acceptShare : .declineShare
             let payload = (try? JSONEncoder().encode(request)) ?? Data()
             return Self.frame(type: .shareResponse, payload: payload)
+        case .controlRequest:
+            return Self.frame(type: .controlRequest, payload: Data())
+        case .controlGranted:
+            return Self.frame(type: .controlGranted, payload: Data())
+        case .controlRevoked(let reason):
+            let payload =
+                (try? JSONEncoder().encode(ControlRevokedPayload(reason: reason))) ?? Data()
+            return Self.frame(type: .controlRevoked, payload: payload)
+        case .inputEvent(let event):
+            let payload = (try? JSONEncoder().encode(event)) ?? Data()
+            return Self.frame(type: .inputEvent, payload: payload)
         }
     }
 
@@ -101,6 +131,14 @@ struct ScreenShareMessageParser {
             return decodeRequestToShare(payload)
         case .shareResponse:
             return decodeShareResponse(payload)
+        case .controlRequest:
+            return .controlRequest
+        case .controlGranted:
+            return .controlGranted
+        case .controlRevoked:
+            return decodeControlRevoked(payload)
+        case .inputEvent:
+            return decodeInputEvent(payload)
         }
     }
 
@@ -135,6 +173,33 @@ struct ScreenShareMessageParser {
             return nil
         }
     }
+
+    private func decodeControlRevoked(_ payload: Data) -> ScreenShareMessage? {
+        // An empty payload is tolerated (a bare revoke with no reason).
+        guard !payload.isEmpty else { return .controlRevoked(reason: "") }
+        guard
+            let decoded = try? JSONDecoder().decode(ControlRevokedPayload.self, from: Data(payload))
+        else { return .controlRevoked(reason: "") }
+        let clamped = String(decoded.reason.prefix(ControlRevokedPayload.maxReasonLength))
+        return .controlRevoked(reason: clamped)
+    }
+
+    private func decodeInputEvent(_ payload: Data) -> ScreenShareMessage? {
+        guard let event = try? JSONDecoder().decode(InputEvent.self, from: Data(payload)) else {
+            return nil
+        }
+        return .inputEvent(event)
+    }
+}
+
+/// Wire payload for `.controlRevoked`. Its own type so a reason field (and
+/// future metadata) can grow without bumping the message-type byte.
+struct ControlRevokedPayload: Codable, Sendable {
+    /// The reason string is displayed in the viewer's UI; clamp it so a
+    /// hostile sharer can't bloat the placard.
+    static let maxReasonLength = 128
+
+    let reason: String
 }
 
 /// Wire payload for `.requestToShare`. Kept as its own type so the field

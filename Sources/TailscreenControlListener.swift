@@ -47,6 +47,21 @@ final class TailscreenControlListener: @unchecked Sendable {
     /// the spoofable wire-claimed hostname.
     var onRequestToShare: ((String, UUID, String?) -> Void)?
 
+    /// Fires for every `.controlRequest` message (viewer→sharer "please grant
+    /// me remote control"). Arguments are the connection's stable `UUID` (the
+    /// handle the grant + input-event gate key on) and its remote tailnet
+    /// address (`ip:port`, nil if unreported) so the sharer can confirm the
+    /// requester is an admitted viewer and label the request row.
+    var onControlRequest: ((UUID, String?) -> Void)?
+
+    /// Fires for every `.inputEvent` message (viewer→sharer mouse/scroll/key).
+    /// Arguments are the event, the connection's `UUID` (checked against the
+    /// live grant — events from any non-grantee connection are dropped
+    /// server-side), and the remote address. Fires off the connection's
+    /// receive task, which is single-threaded per connection so per-connection
+    /// event order is preserved.
+    var onInputEvent: ((InputEvent, UUID, String?) -> Void)?
+
     /// Fires when an accepted TCP connection closes. Argument is the
     /// connection's stable `UUID`. Used by the share server to retire
     /// per-viewer annotation state.
@@ -189,10 +204,15 @@ final class TailscreenControlListener: @unchecked Sendable {
             onAnnotation?(op, connectionID, peerAddress)
         case .requestToShare(let from):
             onRequestToShare?(from, connectionID, peerAddress)
-        case .shareResponse:
-            // Responses ride the requester's own outgoing connection, which
-            // reads them inline (see `TailscreenMetadataService.awaitShareResponse`),
-            // so there's nothing to dispatch on the listener side.
+        case .controlRequest:
+            onControlRequest?(connectionID, peerAddress)
+        case .inputEvent(let event):
+            onInputEvent?(event, connectionID, peerAddress)
+        case .shareResponse, .controlGranted, .controlRevoked:
+            // `.shareResponse` rides the requester's own outgoing connection,
+            // read inline (see `TailscreenMetadataService.awaitShareResponse`).
+            // `.controlGranted` / `.controlRevoked` are sharer→viewer only —
+            // a viewer sending them to us is confused or malicious; drop.
             break
         }
     }

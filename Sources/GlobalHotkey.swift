@@ -20,10 +20,16 @@ final class GlobalHotkey: @unchecked Sendable {
 
     /// `keyCode` is a Carbon virtual key (e.g. `kVK_ANSI_M = 46`).
     /// `modifierFlags` is a Carbon mask (`controlKey`, `optionKey`,
-    /// `cmdKey`, `shiftKey` from `Carbon.HIToolbox.Events`).
-    init(keyCode: UInt32, modifiers: UInt32, action: @escaping @MainActor () -> Void) {
+    /// `cmdKey`, `shiftKey` from `Carbon.HIToolbox.Events`). `id`
+    /// distinguishes concurrently-registered hotkeys — `RegisterEventHotKey`
+    /// needs a unique `(signature, id)` per registration, so each live
+    /// `GlobalHotkey` instance must pass a distinct value (the mic toggle
+    /// uses 1, the remote-control panic-revoke uses 2). Each instance installs
+    /// its own event handler bound to its own `self`, so the action still
+    /// dispatches correctly regardless of `id`.
+    init(keyCode: UInt32, modifiers: UInt32, id: UInt32 = 1, action: @escaping @MainActor () -> Void) {
         self.action = action
-        register(keyCode: keyCode, modifiers: modifiers)
+        register(keyCode: keyCode, modifiers: modifiers, id: id)
     }
 
     deinit {
@@ -31,8 +37,8 @@ final class GlobalHotkey: @unchecked Sendable {
         if let handlerRef { RemoveEventHandler(handlerRef) }
     }
 
-    private func register(keyCode: UInt32, modifiers: UInt32) {
-        let hotKeyID = EventHotKeyID(signature: OSType(0x54534E48), id: 1)  // 'TSNH'
+    private func register(keyCode: UInt32, modifiers: UInt32, id: UInt32) {
+        let hotKeyID = EventHotKeyID(signature: OSType(0x54534E48), id: id)  // 'TSNH'
         var ref: EventHotKeyRef?
         let regStatus = RegisterEventHotKey(
             keyCode,
