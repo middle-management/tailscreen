@@ -1,6 +1,6 @@
 # Per-viewer isolation: one slow viewer must not degrade the session for everyone
 
-> Status: proposed — this PR contains only the plan; implementation is a follow-up iteration.
+> Status: implemented in this PR.
 
 ## Problem & motivation
 
@@ -288,3 +288,46 @@ per-viewer accounting (PLI maps, health states) is the substrate it would build 
 **M.** ~180-240 LOC in `TailscaleScreenShareServer.swift` (audio chains ~60, attribution/throttle
 ~80, stats/health ~60), ~40 LOC in `MenuBarView.swift`, ~10 LOC catalog, ~250 LOC tests. No wire or
 helper changes; stretch (simulcast) explicitly deferred.
+
+## Deviations (as implemented)
+
+Line numbers in this plan predate six merged PRs (zoom/pan, voice-resilience, silent-failures,
+source-switching, quality-settings, viewer-consent) — the implementation followed symbol names, not
+the drifted line references. Substantive adaptations:
+
+- **Audio-chain pruning is NOT rebuild-to-prune.** The plan suggested "reuse the video approach —
+  rebuild/prune against the live recipient set on each send." That is unsafe for audio: video has a
+  single producer (`broadcast`) that always addresses *every* viewer, so rebuilding the dict from its
+  plan set prunes correctly. Audio has **multiple** producers (`sendAudioRTP` mic-out addresses all
+  viewers; each viewer's `handleInboundAudioRTP` relay addresses all-but-the-sender) hitting
+  *different* recipient subsets, so a rebuild-to-prune on one path would drop a non-recipient's live
+  chain and break its ordering/backpressure. Instead `enqueueAudioPackets` mutates chains **in place**
+  and stale chains are pruned at the viewer-removal points (`removeViewer`, `expelViewer`, the idle
+  sweep's drop path, and `stop()`).
+- **`shouldEnqueue` is the shared drop-policy seam**, extracted as the plan asked, but placed as a
+  general per-chain gate (used by the audio path; the video path keeps its existing inline
+  `>= cap` check to avoid churning the already-tested `broadcast` fan-out — the two are the same
+  predicate, `queued < cap`).
+- **`droppedFrames` lives on `ViewerSendChain`** (per the plan) and is incremented in both the video
+  backlog-drop branch and the new audio drop branch; because video and audio keep separate chain
+  dicts, a video chain's count is that viewer's video drops and an audio chain's is its audio drops
+  (the stats line reports both).
+- **`fairnessDecision` takes `currentlyThrottled` and excludes *all* throttled viewers (current +
+  newly) from `globalBitrateInput`, in every verdict** — not only `.isolated`. A viewer already in
+  keyframe-only mode is deliberately frame-skipped, so its PLIs are expected and must never drive the
+  global cut, even in a `.widespread` window caused by a *different* viewer. When `currentlyThrottled`
+  is empty (the common case) this equals the plan's "true max," so `.healthy`/`.widespread` behave
+  exactly as before and `AdaptiveBitrateTests` are untouched (they test `nextAdaptiveBitrate`
+  directly). Throttle renewal is also driven off `currentlyThrottled` (renewed while still over
+  threshold; expires after a clean window).
+- **Throttle skip is gated by the pure `shouldSendFrame(isKeyframe:throttledUntilNs:nowNs:)`** so the
+  "keyframe always sent; inter frame skipped without advancing `nextSequence`" rule is CI-testable —
+  the sequence-space-contiguity invariant the plan flags as correctness-critical is asserted in
+  `ViewerLifecycleDecisionTests` by replaying the plan loop's advance-only-on-send logic.
+- **UI:** `ViewersList` became one row per viewer with a leading health dot (green/yellow/orange) and
+  a `.help` tooltip; the old single "%lld watching: %@" summary line is dropped from the roster view
+  (the count still shows in the card header). Three new tooltip strings added to both `en.lproj` and
+  `sv.lproj`.
+- **Constant home:** `maxQueuedAudioPacketsPerViewer = 24` lives in `TransportTuning` next to
+  `maxQueuedVideoFramesPerViewer` (both were centralized there by the quality-settings PR) and is
+  pinned in `QualitySettingsTests`.

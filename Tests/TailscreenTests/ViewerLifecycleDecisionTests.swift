@@ -131,4 +131,67 @@ final class ViewerLifecycleDecisionTests: XCTestCase {
         XCTAssertEqual(header.ssrc, 0xDEAD_BEEF)
         XCTAssertEqual(header.timestamp, 9000)
     }
+
+    // MARK: - shouldEnqueue (per-viewer send-chain drop policy)
+
+    func testShouldEnqueueBelowCap() {
+        XCTAssertTrue(TailscaleScreenShareServer.shouldEnqueue(queued: 0, cap: 24))
+        XCTAssertTrue(TailscaleScreenShareServer.shouldEnqueue(queued: 23, cap: 24))
+    }
+
+    func testShouldNotEnqueueAtOrAboveCap() {
+        // Drop-newest: at the cap the incoming packet isn't enqueued.
+        XCTAssertFalse(TailscaleScreenShareServer.shouldEnqueue(queued: 24, cap: 24))
+        XCTAssertFalse(TailscaleScreenShareServer.shouldEnqueue(queued: 25, cap: 24))
+    }
+
+    // MARK: - shouldSendFrame (throttle sequence-space invariant)
+
+    func testKeyframeAlwaysSentEvenWhileThrottled() {
+        // A throttled viewer still receives keyframes (self-contained, with
+        // in-band parameter sets) — that's the decodable slideshow.
+        XCTAssertTrue(
+            TailscaleScreenShareServer.shouldSendFrame(
+                isKeyframe: true, throttledUntilNs: 1_000, nowNs: 500))
+    }
+
+    func testInterFrameSkippedWhileThrottled() {
+        XCTAssertFalse(
+            TailscaleScreenShareServer.shouldSendFrame(
+                isKeyframe: false, throttledUntilNs: 1_000, nowNs: 500))
+    }
+
+    func testInterFrameSentOnceThrottleExpires() {
+        // At/after the deadline the throttle is off — inter frames flow again.
+        XCTAssertTrue(
+            TailscaleScreenShareServer.shouldSendFrame(
+                isKeyframe: false, throttledUntilNs: 1_000, nowNs: 1_000))
+        XCTAssertTrue(
+            TailscaleScreenShareServer.shouldSendFrame(
+                isKeyframe: false, throttledUntilNs: 0, nowNs: 42))
+    }
+
+    func testThrottledViewerSequenceStaysContiguousAcrossSkips() {
+        // Mirror the broadcast plan loop: advance the seq cursor only for
+        // frames actually sent. A throttled viewer sees a gapless keyframe-
+        // only stream, so the depacketizer never reads a skipped inter frame
+        // as loss (the PLI-storm feedback loop the plan warns about).
+        let throttledUntilNs: UInt64 = 10_000
+        // Frame pattern over one throttle window: KF, then 4 inter, then KF…
+        let frames: [(isKeyframe: Bool, nowNs: UInt64)] = [
+            (true, 0), (false, 1), (false, 2), (false, 3), (false, 4), (true, 5),
+        ]
+        var nextSequence: UInt16 = 100
+        var sentSeqs: [UInt16] = []
+        for frame in frames {
+            let send = TailscaleScreenShareServer.shouldSendFrame(
+                isKeyframe: frame.isKeyframe, throttledUntilNs: throttledUntilNs, nowNs: frame.nowNs)
+            guard send else { continue }
+            sentSeqs.append(nextSequence)
+            nextSequence &+= 1  // one packet per frame in this model
+        }
+        // Only the two keyframes were sent, and their sequence numbers are
+        // contiguous — no reserved gap for the skipped inter frames.
+        XCTAssertEqual(sentSeqs, [100, 101])
+    }
 }
