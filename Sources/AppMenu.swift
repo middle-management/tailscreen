@@ -206,6 +206,28 @@ enum AppMenu {
         zoomDouble.target = ViewerCommands.shared
         viewMenu.addItem(zoomDouble)
 
+        viewMenu.addItem(.separator())
+
+        // Continuous content zoom (⇧⌘+ / ⇧⌘-) — magnifies a region of
+        // the received video inside the current window, unlike the
+        // window-sizing presets above. Pinch / ⌥-scroll on the viewer
+        // window do the same anchored at the cursor.
+        let contentZoomIn = NSMenuItem(
+            title: L("Zoom In"),
+            action: #selector(ViewerCommands.viewerContentZoomIn(_:)),
+            keyEquivalent: "+")
+        contentZoomIn.keyEquivalentModifierMask = [.command, .shift]
+        contentZoomIn.target = ViewerCommands.shared
+        viewMenu.addItem(contentZoomIn)
+
+        let contentZoomOut = NSMenuItem(
+            title: L("Zoom Out"),
+            action: #selector(ViewerCommands.viewerContentZoomOut(_:)),
+            keyEquivalent: "-")
+        contentZoomOut.keyEquivalentModifierMask = [.command, .shift]
+        contentZoomOut.target = ViewerCommands.shared
+        viewMenu.addItem(contentZoomOut)
+
         // ── Tools ──
         let toolsItem = NSMenuItem(title: "Tools", action: nil, keyEquivalent: "")
         let toolsMenu = NSMenu(title: "Tools")

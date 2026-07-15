@@ -51,6 +51,16 @@ struct ViewerShortcutsOverlay: View {
                 Shortcut(keys: "Right-click", description: L("Clear all annotations"))
             ]),
         Section(
+            title: L("Zoom"),
+            items: [
+                Shortcut(keys: "Pinch", description: L("Zoom in or out at the cursor")),
+                Shortcut(keys: "⌥ Scroll", description: L("Zoom in or out at the cursor")),
+                Shortcut(keys: "Scroll", description: L("Pan while zoomed in")),
+                Shortcut(keys: "Double-tap", description: L("Toggle 2× zoom")),
+                Shortcut(keys: "⇧⌘+ / ⇧⌘-", description: L("Zoom in / out")),
+                Shortcut(keys: "⌘0", description: L("Reset zoom and window size"))
+            ]),
+        Section(
             title: L("Audio"),
             items: [
                 Shortcut(keys: "⌃⌥M", description: L("Toggle microphone (system-wide)"))
