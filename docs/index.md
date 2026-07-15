@@ -35,14 +35,27 @@ your machine, and a window opens. That's the whole thing.
 - A 60 fps, full-Retina, hardware-encoded HEVC stream over the same
   WireGuard tunnel that Tailscale already gives you. Direct peer-to-peer when
   the network allows; Tailscale's DERP relays when it doesn't. Falls back to
-  H.264 on Macs whose VideoToolbox can't do HEVC.
+  H.264 on Macs whose VideoToolbox can't do HEVC, tags wide color (Display
+  P3) on wide-gamut displays, and rides out packet loss with selective
+  retransmission, forward error correction, and adaptive bitrate/frame-rate
+  control.
 - Automatic peer discovery — Tailscreen probes your tailnet and shows you
   which machines are sharing. No IP-typing.
+- Viewer approval, on by default. Nobody sees your screen until you Accept
+  them, and you can remember peers as Always Allow or Deny & Block.
 - Ephemeral tsnet nodes. Each session spins up a fresh node and tears it down
   when you're done, so your Tailscale admin console doesn't fill up with
   ghosts.
 - Two-way annotations. The viewer can scribble on the sharer's screen over a
   reliable TCP back-channel, so strokes don't get dropped when video does.
+- Voice chat and system-audio sharing over the same tunnel — viewers can
+  hear you *and* what your Mac is playing, one mute button each.
+- A real viewer, not a dumb window: cursor-anchored zoom and pan, a live
+  stats overlay, and quality presets when you'd rather trade fidelity for
+  bandwidth.
+- Opt-in remote control. A viewer can request your mouse and keyboard; you
+  grant per session, revoke with one click (or the ⌃⌥. panic hotkey), and
+  it's off the moment they disconnect.
 - A menubar icon. That's it for UI. No dock icon, no main window, nothing
   bouncing for attention.
 
@@ -53,6 +66,7 @@ your machine, and a window opens. That's the whole thing.
   release.
 - A Tailscale account. The free personal tier is fine.
 - Screen Recording permission. macOS will ask the first time you share.
+  (Accessibility too, but only if you ever grant a viewer remote control.)
 
 ## Where to go next
 

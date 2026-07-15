@@ -31,7 +31,8 @@ fully airgapped tailnet — see
 ## Sharing your screen
 
 1. Click the 📺 in the menubar.
-2. Pick **Start Sharing**.
+2. Pick **Start Sharing**. macOS's native picker opens — choose a display,
+   a single window, or one or more apps.
 3. Approve Screen Recording if macOS asks. (See
    [Install → Permissions]({% link install.md %}#permissions) — the
    permission only takes effect after a relaunch.)
@@ -41,8 +42,16 @@ fully airgapped tailnet — see
    100.x.x.x address to whoever's connecting.
 
 That's the whole sharing flow. There's no "create a meeting", no
-"copy link". The screen is up. People who can reach your machine on your
-tailnet can see it.
+"copy link". The screen is up. People on your tailnet can connect — and by
+default each one waits for your approval before they see anything (see
+[Approving viewers](#approving-viewers)).
+
+### Changing what you share mid-session
+
+While sharing, pick **Change Source…** in the sharing card. It reopens the
+picker without disconnecting anyone — viewers see a brief pause and then
+the new content. Annotations are cleared on both ends when the source
+changes, so stale strokes don't float over the new content.
 
 ## Viewing a shared screen
 
@@ -56,7 +65,9 @@ You have two options. Browse Shares is usually the easier one.
    and shows you the ones that said yes.
 4. Click **Connect** next to the share you want.
 
-A window opens. You're done.
+A window opens. You're done — unless the sharer has viewer approval on (the
+default), in which case you'll sit on the Connecting screen until they
+accept you.
 
 ### Connect to...
 
@@ -69,6 +80,43 @@ discovery to finish.
 
 Same window opens.
 
+## Approving viewers
+
+**Require approval for new viewers** is on by default. When someone
+connects to your share, they don't see pixels — they wait on their
+Connecting screen while your menubar shows a row for them with four
+choices:
+
+- **Accept** — admit them, this once.
+- **Always Allow** — admit them now and automatically in the future.
+- **Deny** — reject them, this once. They see "Connection Declined".
+- **Deny & Block** — reject them now and automatically in the future.
+  Blocking someone who's *already* connected kicks them out too.
+
+You also get a notification ("Viewer Wants to Connect") if the menubar
+isn't open. Remembered decisions live in **Settings → Viewers** under
+"Remembered viewers", where you can remove entries any time. They're keyed
+to the peer's stable Tailscale node identity, not its IP or hostname, so a
+renamed machine stays remembered.
+
+If you'd rather have the old anyone-on-the-tailnet-connects-instantly
+behavior, turn the toggle off in **Settings → Viewers**. Blocked peers
+stay blocked even then — the deny list outranks the toggle.
+
+## Asking someone to share
+
+The flow also works in reverse. Every online Tailscreen device in your
+menubar list has a request button that asks that peer to share *their*
+screen. Clicking it puts a banner on their menubar — "*name* wants you to
+share", with **Share** and **Decline** buttons. If they hit Share, the
+picker opens on their Mac, and you're automatically pre-approved for the
+share that follows — no second approval round-trip.
+
+You'll get one of three outcomes: **Request Accepted** ("…is choosing what
+to share" — connect via Browse Shares once their share is up), **Request
+Declined**, or **No Response** ("They may be away or running an older
+Tailscreen").
+
 ## Annotations
 
 The viewer's toolbar has drawing tools. Doodle on the sharer's screen and
@@ -79,6 +127,120 @@ won't drop even if you lose a video frame or two.
 
 Annotations are not persisted on either end. Quit the viewer or hit "Stop
 Sharing" and they're gone.
+
+## Voice chat
+
+Both sides have a mic button (and **⌃⌥M** works system-wide, even when
+Tailscreen isn't focused). Audio is AAC over the same tunnel as the video.
+With multiple viewers, everyone hears everyone — the sharer relays each
+viewer's voice to the other viewers. The receive path runs an adaptive
+jitter buffer with packet-loss concealment, so a lossy Wi-Fi link degrades
+into brief soft spots rather than robotic stutter.
+
+## Sharing system audio
+
+The sharing card has a **Share System Audio** button — everything your Mac
+plays gets captured and streamed to viewers alongside the video. **Mute
+System Audio** toggles it back off instantly. If you want it on from the
+start of every share, flip **Share system audio when sharing starts** in
+**Settings → Audio**.
+
+Two details worth knowing:
+
+- Tailscreen excludes its **own** audio output from the capture, so
+  viewers' voice chat never loops back to them through the system-audio
+  stream.
+- On the viewer, system audio and voice are mixed together and follow the
+  same speaker-device selection.
+
+## Zoom and pan
+
+The viewer window supports continuous content zoom, independent of window
+size:
+
+| Gesture / key | Action |
+|---|---|
+| Pinch | Zoom in or out at the cursor |
+| ⌥ Scroll | Zoom in or out at the cursor |
+| Scroll | Pan while zoomed in |
+| Double-tap (trackpad smart-magnify) | Toggle 2× zoom |
+| `⌥⌘+` / `⌥⌘-` | Zoom in / out (viewport center) |
+| `⌘0` | Reset zoom and window size |
+
+Zoom is anchored under the cursor — the pixel you're pointing at stays
+put while everything magnifies around it — and panning is clamped so you
+can't scroll the video off-screen. The **View** menu's Actual Size /
+Zoom to 50% / Zoom to 200% entries are different: those resize the
+*window*, not the content.
+
+## Remote control
+
+A viewer can drive the sharer's Mac — mouse and keyboard — but only after
+an explicit grant, and only one viewer at a time.
+
+**As the viewer:** open the menubar while viewing and click **Request
+Control**. You'll see "Waiting for the sharer to grant control" until the
+sharer answers. Once granted, your clicks and keystrokes in the viewer
+window are injected on their Mac. Click **Stop controlling** when you're
+done.
+
+**As the sharer:** a request shows up as "*name* wants control" with
+**Grant** and **Deny** buttons (plus a notification if the menubar is
+closed). Before you grant, read the caption:
+
+> Granting gives full keyboard and mouse control of your entire Mac — not
+> just the shared window.
+
+That's not boilerplate. The *pointer* is confined to the shared content
+(a shared window or app can't be used to click your menu bar or Dock),
+but keystrokes land wherever macOS focus is — scoping the keyboard to one
+app isn't something macOS lets us do reliably, so we don't pretend
+otherwise.
+
+The first grant prompts for **Accessibility** permission (System Settings
+→ Privacy & Security → Accessibility) — that's the macOS permission for
+synthesizing input events, separate from Screen Recording. The grant is
+refused until it's given; allow Tailscreen there and grant again.
+
+Ending it: the **Stop** button in the sharing card, **File → Stop Remote
+Control**, or the **⌃⌥.** panic hotkey — which is registered system-wide
+only while a grant is live, so you can kill control from inside any app,
+including whatever the viewer is currently driving. Control also revokes
+automatically when the viewer disconnects, when they release it, or when
+you stop sharing.
+
+Don't want to be asked at all? Turn off **Allow control requests** in
+**Settings → Remote control**. Requests are then declined automatically
+and silently.
+
+## Quality settings
+
+**Settings → Quality** controls the sharing side:
+
+- **Preset** — Low / Balanced / High / Custom. Balanced is the default and
+  matches Tailscreen's original behavior; Low caps at 30 fps and 3 Mbps
+  for constrained links; High spends more encoder quality. Touch any knob
+  individually and the preset re-labels itself Custom.
+- **Frame rate** — 15 / 30 / 60 fps cap.
+- **Codec** — Automatic (HEVC with H.264 fallback) or H.264.
+- **Limit bandwidth** — an optional hard ceiling, 1–50 Mbps.
+
+The bandwidth ceiling applies live, mid-share. Frame rate and codec
+changes apply the next time you start sharing. Note these are *caps*, not
+targets — the adaptive congestion control still reduces bitrate and frame
+rate below them when the network demands it.
+
+## The stats overlay
+
+The **Stats** button in the viewer toolbar toggles a live overlay:
+Latency, FPS, Dropped, Decode errs, PLIs sent, FEC recovered, Bitrate,
+Codec, and Connection. It's the first place to look when video quality
+drops — see [Troubleshooting]({% link troubleshooting.md %}) for how to
+read it.
+
+When the connection degrades badly enough that automatic recovery is
+struggling, the Stats button itself flags it ("Connection degraded — click
+for stats") so you don't need the overlay open to notice.
 
 ## Keyboard shortcuts
 
@@ -94,7 +256,10 @@ shortcut.
 | `⇧⌘⌫` | Clear all annotations |
 | Right-click on the canvas | Clear all annotations |
 | `Esc` | Cancel the in-progress drag |
+| `⌥⌘+` / `⌥⌘-` | Zoom the video in / out |
+| `⌘0` | Reset zoom and window size |
 | `⌃⌥M` | Toggle the microphone on/off (works system-wide, even when Tailscreen isn't focused) |
+| `⌃⌥.` | Sharer only: instantly revoke remote control (system-wide, active only while a grant is live) |
 | `⌘W` | Disconnect the viewer |
 | `⌘Q` | Quit Tailscreen |
 | `⇧⌘/` | Show/hide the keyboard-shortcut overlay |
@@ -127,6 +292,11 @@ device, and **Browse Shares** comes back empty — each instance is looking
 at its own node and excluding it. It's by far the most common cause of an
 empty peer list when testing locally.
 
+The launcher also sets `TAILSCREEN_OPEN_DOOR=1` so the second instance
+isn't left parked on the viewer-approval prompt — see
+[Troubleshooting]({% link troubleshooting.md %}) if you're scripting your
+own automation.
+
 Logs from all children are merged into `/tmp/tailscreen-merged.log`
 (`TAILSCREEN_LOG=...` to override). Ctrl-C kills the whole process group.
 
@@ -154,3 +324,7 @@ Things you can do:
 - **Pause large background uploads.** Cloud sync, backups, or anything
   saturating the upstream link will crowd out the video and show up as
   stutters — pause them while you share.
+- **On a genuinely bad link, pick the Low preset** in Settings → Quality.
+  The adaptive machinery (bitrate, frame rate, retransmission, FEC) copes
+  with loss automatically, but starting from a smaller budget gives it
+  less work to do.
