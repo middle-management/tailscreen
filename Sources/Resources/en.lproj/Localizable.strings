@@ -82,6 +82,9 @@
 "Reopens the picker without disconnecting viewers" = "Reopens the picker without disconnecting viewers";
 "No viewers yet" = "No viewers yet";
 "%lld watching: %@" = "%lld watching: %@";
+"Connection healthy" = "Connection healthy";
+"Connection degraded — packet loss" = "Connection degraded — packet loss";
+"Limited to keyframes — poor connection" = "Limited to keyframes — poor connection";
 
 /* MARK: - Viewer approval rows (MenuBarView.swift) */
 "Deny" = "Deny";

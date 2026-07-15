@@ -23,6 +23,19 @@ import os
 /// send is non-blocking and a slow viewer just drops packets at the network
 /// boundary instead of stalling our process.
 
+/// Per-viewer connection health, computed by the adaptive sweep from that
+/// viewer's PLI rate this window and its throttle state. Value type carried
+/// on the `ViewerInfo` snapshot so the sharer UI can show a health dot
+/// without touching the server's internal RTP bookkeeping.
+///  - `good`: no meaningful loss.
+///  - `degraded`: over the loss threshold this window (but not throttled).
+///  - `throttled`: keyframe-only mode — its link is isolating the session.
+enum ViewerHealth: String, Sendable, Hashable {
+    case good
+    case degraded
+    case throttled
+}
+
 /// Public-facing snapshot of one connected viewer. Built from the server's
 /// internal `Viewer` plus a netmap lookup against the live `TailscaleNode`
 /// to translate the source IP into a friendly hostname. `hostname` is `nil`
@@ -32,6 +45,9 @@ struct ViewerInfo: Sendable, Identifiable, Hashable {
     let id: String  // matches the server's internal viewer key ("ip:port")
     let tailscaleIP: String
     var hostname: String?
+    /// Connection health for the sharer's roster dot. Defaults to `good`
+    /// at join; updated in place by the adaptive sweep.
+    var health: ViewerHealth = .good
     /// Tailscale StableNodeID (LocalAPI `PeerStatus.ID`) resolved from the
     /// same netmap lookup that fills `hostname`. nil until resolution
     /// completes (or if the peer isn't in the netmap). This is the key the
@@ -97,6 +113,14 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         var nextSequence: UInt16
         var lastSeenNs: UInt64
         var pliTimestampsNs: [UInt64] = []
+        /// While `DispatchTime.now() < throttledUntilNs`, this viewer is in
+        /// keyframe-only mode: `broadcast` sends it only IDR frames and skips
+        /// inter frames *without* reserving their sequence numbers, so its
+        /// link (which is isolating the session) gets a decodable slideshow
+        /// instead of dragging the global bitrate down. Set/renewed by the
+        /// adaptive sweep's `fairnessDecision`; expires by simply not being
+        /// renewed after a clean window (asymmetric hysteresis for free).
+        var throttledUntilNs: UInt64 = 0
     }
 
     private let viewers = OSAllocatedUnfairLock<[String: Viewer]>(initialState: [:])
@@ -271,6 +295,12 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     private struct ViewerSendChain {
         var task: Task<Void, Never>?
         var queuedFrames: Int = 0
+        /// Cumulative frames/packets dropped for this viewer when its queue
+        /// was full behind a stalled send. Surfaced in the per-viewer stats
+        /// log line by the adaptive sweep. Video and audio each keep their
+        /// own chain, so a video chain's count is that viewer's video drops
+        /// and an audio chain's is its audio drops.
+        var droppedFrames: Int = 0
     }
     /// Keyed by viewer addr; pruned to the live viewer set on each broadcast.
     private let videoSendTails = OSAllocatedUnfairLock<[String: ViewerSendChain]>(initialState: [:])
@@ -279,15 +309,20 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// loss; a PLI recovers) rather than accumulating unbounded latency/memory.
     private static let maxQueuedVideoFramesPerViewer = TransportTuning.maxQueuedVideoFramesPerViewer
 
-    /// A single shared tail for audio fan-out (sharer mic out plus
-    /// viewer-to-viewer relay): every audio send chains through here so we
-    /// don't spawn a fresh detached `Task` per ~21 ms AU × N viewers. Audio
-    /// packets are tiny (one AAC AU each), so head-of-line blocking across
-    /// viewers isn't the concern it is for video — a single chain is fine.
-    /// Under congestion the chain provides natural backpressure — the next
-    /// packet's job parks on the previous one's `await prev?.value` rather
-    /// than piling up unbounded.
-    private let audioBroadcastTail = OSAllocatedUnfairLock<Task<Void, Never>?>(initialState: nil)
+    /// Per-viewer audio send chains, mirroring `videoSendTails`. Both the
+    /// sharer-mic fan-out (`sendAudioRTP`) and the viewer-to-viewer relay
+    /// (`handleInboundAudioRTP`) enqueue on the recipient's own chain, so a
+    /// viewer whose `pl.send` blocks (socketpair backpressure on a DERP path)
+    /// delays only its own audio — not every other viewer's, as the previous
+    /// single shared tail did. Unlike video, audio has multiple producers
+    /// addressing different recipient subsets, so chains are NOT rebuilt to
+    /// prune (that would drop a non-recipient's live chain and break its
+    /// order); they're pruned at viewer-removal points instead
+    /// (`removeViewer` / `expelViewer` / idle sweep / `stop`).
+    private let audioSendTails = OSAllocatedUnfairLock<[String: ViewerSendChain]>(initialState: [:])
+    /// Drop a viewer's audio packet once this many are already queued behind
+    /// a stalled send (drop-newest, matching video). ~0.5 s at one AU/21.3 ms.
+    private static let maxQueuedAudioPacketsPerViewer = TransportTuning.maxQueuedAudioPacketsPerViewer
 
     /// Drop viewers that have gone silent for this long. Has to absorb a
     /// run of consecutive UDP keepalive losses plus any Task scheduling
@@ -1282,6 +1317,46 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         return (true, viewerAudioSSRCs.keys.filter { $0 != sender })
     }
 
+    /// Pure per-viewer send-chain gate: enqueue a frame/packet only while
+    /// fewer than `cap` are already queued behind a stalled send (drop-newest
+    /// past the cap). Extracted so the drop policy — shared by the video and
+    /// audio chains — is unit testable.
+    static func shouldEnqueue(queued: Int, cap: Int) -> Bool {
+        queued < cap
+    }
+
+    /// Enqueue one audio packet onto each recipient's own send chain. Recipient
+    /// N+1's packet awaits only its own previous send (`await prev?.value`), so
+    /// one stalled viewer's audio doesn't delay everyone else's — the isolation
+    /// the single shared tail lacked. Drop-newest at the cap: audio is
+    /// loss-tolerant and the receiver conceals the gap. Chains are mutated in
+    /// place (not rebuilt-to-prune like video) because audio has multiple
+    /// producers addressing different recipient subsets; stale chains are
+    /// pruned at viewer-removal points.
+    private func enqueueAudioPackets(_ packet: Data, to recipients: [String], on pl: PacketListener) {
+        guard !recipients.isEmpty else { return }
+        audioSendTails.withLock { tails in
+            for addr in recipients {
+                var chain = tails[addr] ?? ViewerSendChain()
+                let cap = Self.maxQueuedAudioPacketsPerViewer
+                guard Self.shouldEnqueue(queued: chain.queuedFrames, cap: cap) else {
+                    chain.droppedFrames += 1
+                    tails[addr] = chain
+                    continue
+                }
+                let prev = chain.task
+                chain.queuedFrames += 1
+                let job = Task { [weak self] in
+                    await prev?.value
+                    try? await pl.send(packet, to: addr)
+                    self?.audioSendTails.withLock { $0[addr]?.queuedFrames -= 1 }
+                }
+                chain.task = job
+                tails[addr] = chain
+            }
+        }
+    }
+
     /// Relay one inbound audio RTP packet to all other viewers and pass
     /// a copy to the local VoiceChannel via `onAudioReceived`. The packet
     /// is forwarded byte-for-byte (no transcode) so the receiving viewer
@@ -1295,16 +1370,8 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             )
         }
         guard validated.valid else { return }
-        if !validated.recipients.isEmpty, let pl = packetListener {
-            let recipients = validated.recipients
-            let prev = audioBroadcastTail.withLock { $0 }
-            let job = Task {
-                await prev?.value
-                for addr in recipients {
-                    try? await pl.send(packet, to: addr)
-                }
-            }
-            audioBroadcastTail.withLock { $0 = job }
+        if let pl = packetListener {
+            enqueueAudioPackets(packet, to: validated.recipients, on: pl)
         }
         onAudioReceived?(packet)
     }
@@ -1319,6 +1386,84 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             out.removeFirst(out.count - cap)
         }
         return out
+    }
+
+    /// Per-viewer loss attribution: is loss this window isolated to one
+    /// viewer (whose link we can throttle without touching the shared
+    /// encoder) or widespread (everyone's suffering — cut the global rate)?
+    enum LossVerdict: Equatable {
+        /// No viewer over the loss threshold.
+        case healthy
+        /// Exactly one viewer over threshold, every OTHER viewer perfectly
+        /// clean (0 PLIs), and at least two viewers total. That viewer's
+        /// link — not the encoder — is the problem, so throttle it alone.
+        case isolated(addr: String, plis: Int)
+        /// More than one viewer losing (or a merely-nonzero peer), or a
+        /// single viewer with no peers to protect: today's global cut.
+        case widespread(worstPLIs: Int)
+    }
+
+    /// Pure loss attribution. Rules: no viewer over `lossThreshold` →
+    /// `.healthy`; exactly one over threshold with every other viewer at 0
+    /// PLIs and ≥2 viewers total → `.isolated`; anything else → `.widespread`
+    /// (with a single viewer there is no "everyone else", so it stays
+    /// `.widespread` — identical to today's behavior). Extracted so the
+    /// precedence is unit testable, same pattern as `audioRelayDecision`.
+    static func lossAttribution(pliCounts: [String: Int], lossThreshold: Int = 2) -> LossVerdict {
+        let worst = pliCounts.values.max() ?? 0
+        guard worst > lossThreshold else { return .healthy }
+        let over = pliCounts.filter { $0.value > lossThreshold }
+        if over.count == 1, pliCounts.count >= 2, let bad = over.first {
+            let othersAllClean = pliCounts.allSatisfy { $0.key == bad.key || $0.value == 0 }
+            if othersAllClean {
+                return .isolated(addr: bad.key, plis: bad.value)
+            }
+        }
+        return .widespread(worstPLIs: worst)
+    }
+
+    /// Output of `fairnessDecision`: which viewers to keep in keyframe-only
+    /// mode this window, and the PLI count (worst over the NON-throttled
+    /// viewers) to feed the global `nextAdaptiveBitrate`.
+    struct FairnessDecision: Equatable {
+        var throttle: [String]  // sorted for determinism
+        var globalBitrateInput: Int
+    }
+
+    /// Pure fairness decision layered over `lossAttribution`. An `.isolated`
+    /// viewer is throttled (keyframe-only) so its bad link stops dragging the
+    /// session; an already-throttled viewer is renewed while it keeps losing
+    /// (over threshold) and expires after a clean window (asymmetric
+    /// hysteresis, matching the sweep's style). Throttled viewers never drive
+    /// the global bitrate — they're deliberately frame-skipped, so their PLIs
+    /// are expected and must not re-introduce the worst-link-wins coupling.
+    /// The global input is therefore the worst PLI count over the
+    /// *non-throttled* viewers, which for a `.widespread` verdict with nobody
+    /// throttled equals the true max (today's path, so `AdaptiveBitrateTests`
+    /// stay valid).
+    static func fairnessDecision(
+        pliCounts: [String: Int],
+        currentlyThrottled: Set<String>,
+        lossThreshold: Int = 2
+    ) -> FairnessDecision {
+        let verdict = lossAttribution(pliCounts: pliCounts, lossThreshold: lossThreshold)
+        var throttle = currentlyThrottled.filter { (pliCounts[$0] ?? 0) > lossThreshold }
+        if case .isolated(let addr, _) = verdict {
+            throttle.insert(addr)
+        }
+        let globalInput = pliCounts.filter { !throttle.contains($0.key) }.values.max() ?? 0
+        return FairnessDecision(throttle: throttle.sorted(), globalBitrateInput: globalInput)
+    }
+
+    /// Pure per-viewer broadcast gate: does this viewer receive this frame
+    /// (and advance its sequence cursor)? A throttled viewer skips inter
+    /// frames — but ALWAYS receives keyframes — so it gets a decodable
+    /// keyframe-only slideshow. Crucially the caller advances `nextSequence`
+    /// only when this returns true, so the throttled viewer sees a contiguous
+    /// stream, not a perceived-loss gap that would provoke a PLI storm.
+    static func shouldSendFrame(isKeyframe: Bool, throttledUntilNs: UInt64, nowNs: UInt64) -> Bool {
+        if isKeyframe { return true }
+        return nowNs >= throttledUntilNs
     }
 
     /// Append a PLI timestamp to the viewer's ring. The adaptive sweep
@@ -1726,6 +1871,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         // inbound-annotation gate). Closing the connection makes the listener
         // fire onConnectionClosed, which retires the peer's tracked strokes.
         videoSendTails.withLock { _ = $0.removeValue(forKey: addr) }
+        audioSendTails.withLock { _ = $0.removeValue(forKey: addr) }
         closeAnnotationChannels(forIP: ipFromAddr(addr))
         notifyViewersChanged()
         logger.log("Viewer expelled (remembered deny) \(addr)")
@@ -1780,6 +1926,9 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         }
         if removed {
             viewerInfos.withLock { _ = $0.removeValue(forKey: addr) }
+            // Prune the departed viewer's audio send chain (video chains
+            // self-prune on the next broadcast's rebuild).
+            audioSendTails.withLock { _ = $0.removeValue(forKey: addr) }
             notifyViewersChanged()
             logger.log("Viewer disconnected \(addr)")
         }
@@ -2044,6 +2193,9 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
                 viewerInfos.withLock { state in
                     for entry in dropped { state.removeValue(forKey: entry.addr) }
                 }
+                audioSendTails.withLock { state in
+                    for entry in dropped { state.removeValue(forKey: entry.addr) }
+                }
                 notifyViewersChanged()
             }
             for entry in dropped {
@@ -2124,22 +2276,59 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             guard baseline > 0 else { continue }
             let now = DispatchTime.now().uptimeNanoseconds
 
-            let worstPLIs = viewers.withLock { state -> Int in
-                var worst = 0
-                let cutoff = now &- windowNs
-                let keys = Array(state.keys)
-                for key in keys {
-                    guard var viewer = state[key] else { continue }
-                    viewer.pliTimestampsNs.removeAll { $0 < cutoff }
-                    state[key] = viewer
-                    worst = max(worst, viewer.pliTimestampsNs.count)
+            // Prune each viewer's PLI ring to this window and snapshot the
+            // per-viewer count plus who's currently in keyframe-only mode.
+            let cutoff = now &- windowNs
+            let (pliCounts, currentlyThrottled): ([String: Int], Set<String>) =
+                viewers.withLock { state -> ([String: Int], Set<String>) in
+                    var counts: [String: Int] = [:]
+                    var throttled = Set<String>()
+                    for key in Array(state.keys) {
+                        guard var viewer = state[key] else { continue }
+                        viewer.pliTimestampsNs.removeAll { $0 < cutoff }
+                        state[key] = viewer
+                        counts[key] = viewer.pliTimestampsNs.count
+                        if now < viewer.throttledUntilNs { throttled.insert(key) }
+                    }
+                    return (counts, throttled)
                 }
-                return worst
+
+            // Attribute loss: throttle an isolated bad viewer (keyframe-only)
+            // instead of cutting the global rate; feed the worst NON-throttled
+            // PLI count to the unchanged global decision.
+            let fairness = Self.fairnessDecision(
+                pliCounts: pliCounts,
+                currentlyThrottled: currentlyThrottled,
+                lossThreshold: lossThreshold)
+            let throttleSet = Set(fairness.throttle)
+            let throttleDeadline = now &+ (2 &* windowNs)  // ~10 s; renewed while isolated
+
+            // Apply/renew throttle windows and derive each viewer's health.
+            let healthByAddr = viewers.withLock { state -> [String: ViewerHealth] in
+                var health: [String: ViewerHealth] = [:]
+                for key in Array(state.keys) {
+                    guard var viewer = state[key] else { continue }
+                    if throttleSet.contains(key) {
+                        viewer.throttledUntilNs = throttleDeadline
+                        state[key] = viewer
+                    }
+                    let plis = pliCounts[key] ?? 0
+                    if now < viewer.throttledUntilNs {
+                        health[key] = .throttled
+                    } else if plis > lossThreshold {
+                        health[key] = .degraded
+                    } else {
+                        health[key] = .good
+                    }
+                }
+                return health
             }
+            publishViewerHealth(healthByAddr)
+            logViewerStats(pliCounts: pliCounts, healthByAddr: healthByAddr)
 
             let elapsedSinceChange = now &- lastChange
             if let next = Self.nextAdaptiveBitrate(
-                worstPLIs: worstPLIs,
+                worstPLIs: fairness.globalBitrateInput,
                 current: current,
                 baseline: baseline,
                 elapsedSinceChangeNs: elapsedSinceChange,
@@ -2147,9 +2336,43 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
                 downHysteresisNs: downHysteresisNs,
                 upHysteresisNs: upHysteresisNs
             ) {
-                let reason = next < current ? "loss (\(worstPLIs) PLIs/5s)" : "clean window"
+                let reason = next < current ? "loss (\(fairness.globalBitrateInput) PLIs/5s)" : "clean window"
                 applyAdaptiveBitrate(next, reason: reason)
             }
+        }
+    }
+
+    /// Update each connected viewer's `health` in the public `viewerInfos`
+    /// snapshot and republish if anything changed. Value-type write only —
+    /// keeps the Sendable `ViewerInfo` seam intact.
+    private func publishViewerHealth(_ healthByAddr: [String: ViewerHealth]) {
+        let changed = viewerInfos.withLock { state -> Bool in
+            var didChange = false
+            for (addr, health) in healthByAddr {
+                guard var info = state[addr] else { continue }
+                if info.health != health {
+                    info.health = health
+                    state[addr] = info
+                    didChange = true
+                }
+            }
+            return didChange
+        }
+        if changed { notifyViewersChanged() }
+    }
+
+    /// Emit one stats log line per viewer with nonzero activity this window
+    /// (PLIs, dropped video/audio frames, or a live throttle). Cheap and
+    /// once-per-5 s; the drop counts are cumulative per send chain.
+    private func logViewerStats(pliCounts: [String: Int], healthByAddr: [String: ViewerHealth]) {
+        let videoDrops = videoSendTails.withLock { $0.mapValues { $0.droppedFrames } }
+        let audioDrops = audioSendTails.withLock { $0.mapValues { $0.droppedFrames } }
+        for (addr, plis) in pliCounts {
+            let vDrops = videoDrops[addr] ?? 0
+            let aDrops = audioDrops[addr] ?? 0
+            let thr = healthByAddr[addr] == .throttled
+            guard plis > 0 || vDrops > 0 || aDrops > 0 || thr else { continue }
+            logger.log("Viewer stats \(addr) plis/5s=\(plis) vDrops=\(vDrops) aDrops=\(aDrops) throttled=\(thr)")
         }
     }
 
@@ -2298,6 +2521,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         }
         let packetCount = UInt16(templates.count)
 
+        let nowNs = DispatchTime.now().uptimeNanoseconds
         let plans = viewers.withLock { state -> [Plan] in
             var out: [Plan] = []
             // Snapshot keys before the lookup/update loop so we don't iterate
@@ -2306,6 +2530,17 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             out.reserveCapacity(addrs.count)
             for addr in addrs {
                 guard var viewer = state[addr] else { continue }
+                // Keyframe-only throttle: a viewer whose link is isolating the
+                // session receives ONLY keyframes. We do NOT reserve sequence
+                // numbers for the skipped inter frames, so the viewer sees a
+                // contiguous keyframe-only stream (a valid slideshow) instead
+                // of a perceived-loss gap that would provoke a PLI storm and
+                // re-trigger the very signal we throttled on. Contrast the
+                // backlog drop below, which deliberately keeps the reserved
+                // seq so the gap reads as loss — do not unify the two.
+                let until = viewer.throttledUntilNs
+                let send = Self.shouldSendFrame(isKeyframe: isKeyframe, throttledUntilNs: until, nowNs: nowNs)
+                guard send else { continue }
                 out.append(Plan(addr: addr, ssrc: viewer.ssrc, startSeq: viewer.nextSequence))
                 viewer.nextSequence &+= packetCount
                 state[addr] = viewer
@@ -2328,6 +2563,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
                     // Viewer is behind — drop this frame for it. Its seq numbers
                     // were already reserved, so the gap reads as loss and the
                     // viewer's PLI fetches a fresh keyframe.
+                    chain.droppedFrames += 1
                     next[plan.addr] = chain
                     continue
                 }
@@ -2376,21 +2612,13 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     }
 
     /// Send one outbound audio RTP packet (sharer's mic) to all viewers.
-    /// VoiceChannel calls this from its onSend closure. Chains through
-    /// `audioBroadcastTail` so a slow `pl.send` parks the next packet's
-    /// job rather than piling up detached Tasks at 50 Hz × N viewers.
+    /// VoiceChannel calls this from its onSend closure. Fans out on the
+    /// per-viewer audio send chains so a slow viewer's `pl.send` parks only
+    /// its own next packet instead of stalling audio to everyone.
     func sendAudioRTP(_ packet: Data) {
         guard let pl = packetListener else { return }
         let recipients = viewers.withLock { Array($0.keys) }
-        guard !recipients.isEmpty else { return }
-        let prev = audioBroadcastTail.withLock { $0 }
-        let job = Task {
-            await prev?.value
-            for addr in recipients {
-                try? await pl.send(packet, to: addr)
-            }
-        }
-        audioBroadcastTail.withLock { $0 = job }
+        enqueueAudioPackets(packet, to: recipients, on: pl)
     }
 
     /// Enable/disable sharing system audio to viewers. Stores the latch (so a
@@ -2472,6 +2700,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         // Drop per-viewer send chains. Any in-flight send job completes on its
         // own (its pl.send just fails once the listener closes below).
         videoSendTails.withLock { $0.removeAll() }
+        audioSendTails.withLock { $0.removeAll() }
         notifyViewersChanged()
         notifyPendingViewersChanged()
 
