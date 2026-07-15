@@ -112,6 +112,22 @@ final class ViewerCommands: NSObject {
             userInfo: ["factor": factor])
     }
 
+    /// View → Zoom In (⌥⌘+). Continuous *content* zoom — magnifies a
+    /// region of the received video inside the current window, unlike the
+    /// presets above which resize the window itself. Center-anchored;
+    /// pinch and ⌥-scroll on the viewer zoom at the cursor instead.
+    /// Routed straight into AppState (both classes are @MainActor) —
+    /// no notification hop needed.
+    @objc func viewerContentZoomIn(_ sender: Any?) {
+        appState?.zoomViewerContent(by: ViewerZoomMath.menuZoomStep)
+    }
+
+    /// View → Zoom Out (⌥⌘-). Inverse step of `viewerContentZoomIn`;
+    /// clamps back to aspect-fit at 1×.
+    @objc func viewerContentZoomOut(_ sender: Any?) {
+        appState?.zoomViewerContent(by: 1 / ViewerZoomMath.menuZoomStep)
+    }
+
     /// Weakly held reference to the viewer's stats model. AppState sets
     /// this on `ensureViewer()` so the toolbar action above can flip
     /// `isVisible` without depending on AppState directly.
@@ -171,12 +187,14 @@ extension ViewerCommands: NSMenuItemValidation {
             return shortcutsModel != nil
         case #selector(viewerZoomActualSize(_:)),
             #selector(viewerZoomHalf(_:)),
-            #selector(viewerZoomDouble(_:)):
-            // `setViewerZoom` already no-ops when there's no viewer
-            // window or no decoded frame yet, so leaving these enabled
-            // always is harmless — and avoids the pill-style menus on
-            // macOS 15+ rendering disabled items so faintly that users
-            // miss them entirely.
+            #selector(viewerZoomDouble(_:)),
+            #selector(viewerContentZoomIn(_:)),
+            #selector(viewerContentZoomOut(_:)):
+            // `setViewerZoom` / `zoomViewerContent` already no-op when
+            // there's no viewer window or no decoded frame yet, so leaving
+            // these enabled always is harmless — and avoids the pill-style
+            // menus on macOS 15+ rendering disabled items so faintly that
+            // users miss them entirely.
             return true
         default:
             return true
