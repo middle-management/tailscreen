@@ -145,9 +145,27 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// reconnect / KEEPALIVE storm. Cleared in `stop()`.
     private let peerNameCache = OSAllocatedUnfairLock<[String: String]>(initialState: [:])
 
-    /// Encoder bitrate the most recent `setup` produced, in bits/sec. The
-    /// adaptive-bitrate sweep treats this as the ceiling and never raises
-    /// above it. Recomputed on every encoder reinit (resolution change).
+    /// Quality knobs snapshotted at `start()` and reused for **every**
+    /// helper respawn, so a crash-restart mid-share can't silently pick up
+    /// different settings (fps/codec edits apply on the next share). The
+    /// one exception is the bandwidth ceiling, which live-applies via
+    /// `updateQualityCeiling` — that also folds the new value into this
+    /// snapshot so respawns spawn with the ceiling the user last set.
+    /// Locked: written from `start()`/`updateQualityCeiling` (MainActor)
+    /// and read from `startHelperCapture` and the helper's reader thread.
+    private let sessionQuality = OSAllocatedUnfairLock<QualitySettings>(initialState: .default)
+
+    /// Raw encoder-formula baseline (`w × h × bpp × fpsCap`) anchored on
+    /// each parameter-sets emit, *before* the user ceiling is applied.
+    /// Kept separate from `baselineBitrate` so raising or removing the
+    /// ceiling mid-share can recompute the effective baseline without
+    /// waiting for the next encoder reinit.
+    private let anchoredBaselineBitrate = OSAllocatedUnfairLock<Int>(initialState: 0)
+
+    /// Effective adaptive-sweep ceiling: the anchored formula baseline
+    /// clamped by the user's bandwidth ceiling. The sweep never raises
+    /// above it. Recomputed on every encoder reinit (resolution change)
+    /// and on `updateQualityCeiling`.
     private let baselineBitrate = OSAllocatedUnfairLock<Int>(initialState: 0)
     /// Current applied bitrate. Set equal to baseline at encoder setup,
     /// then cut/raised by the adaptive sweep.
@@ -317,17 +335,21 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// `PickerSelection` the picker subprocess produced. Pass `nil`
     /// only from tests that exercise the network/audio path and
     /// don't want the capture-helper subprocess to spawn — production
-    /// callers always pass a real selection.
+    /// callers always pass a real selection. `quality` is snapshotted
+    /// for the whole share session (see `sessionQuality`).
     func start(
         hostname: String = "tailscreen-server",
         authKey: String? = nil,
         path: String? = nil,
         controlURL: String = kDefaultControlURL,
         filterData: Data?,
+        quality: QualitySettings = .default,
         existingNode: TailscaleNode? = nil,
         controlListener: TailscreenControlListener? = nil
     ) async throws {
         guard !isRunning else { return }
+
+        sessionQuality.withLock { $0 = quality.normalized() }
 
         let node: TailscaleNode
         if let existing = existingNode {
@@ -497,15 +519,23 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             // Anchor the adaptive-bitrate ceiling. `defaultBitsPerPixel`
             // wants a codec; default to HEVC's value if helperCodec
             // hasn't landed yet — encoder will overwrite it on its
-            // next emit anyway.
+            // next emit anyway. The fps factor comes from the same
+            // session snapshot the helper's encoder runs at, so the two
+            // ends of the formula can't diverge (this used to hardcode
+            // 60.0), and the user's bandwidth ceiling clamps the result
+            // exactly like the helper clamps its own DataRateLimits.
             let codec: VideoCodec = self.helperCodec ?? .hevc
             let bpp = VideoEncoder.defaultBitsPerPixel(for: codec)
-            let baseline = Int(Double(width * height) * bpp * 60.0)
+            let quality = self.sessionQuality.withLock { $0 }
+            let anchor = Int(Double(width * height) * bpp * Double(quality.fpsCap))
+            self.anchoredBaselineBitrate.withLock { $0 = anchor }
+            let baseline = min(anchor, quality.maxBitrateBps ?? anchor)
             self.baselineBitrate.withLock { $0 = baseline }
             self.currentBitrate.withLock { $0 = baseline }
             self.lastBitrateChangeNs.withLock { $0 = DispatchTime.now().uptimeNanoseconds }
             self.logger.log(
-                "HelperScreenCapture: anchored baseline bitrate \(baseline / 1000) kbps for \(width)x\(height) \(codec)"
+                "HelperScreenCapture: anchored baseline bitrate \(baseline / 1000) kbps for "
+                    + "\(width)x\(height) \(codec) @\(quality.fpsCap)fps"
             )
         }
         helper.onPreviewImage = { [weak self] image in
@@ -583,7 +613,13 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
                         userInfo: [NSLocalizedDescriptionKey: "respawn failed: \(err)"]))
             }
         }
-        try helper.start(filterData: filterData, forceH264: forceH264.withLock { $0 })
+        // Quality knobs travel as env vars (the framed contentFilter
+        // payload stays schema-stable). Reading the session snapshot here
+        // means crash-restart respawns reuse the same fps/codec — and the
+        // latest live-applied bandwidth ceiling — automatically.
+        let qualityEnv = sessionQuality.withLock { $0 }.helperEnvironment()
+        try helper.start(
+            filterData: filterData, forceH264: forceH264.withLock { $0 }, qualityEnv: qualityEnv)
         helperCapture = helper
         logger.log("HelperScreenCapture started (filter=\(filterData.count)B)")
     }
@@ -1460,6 +1496,38 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         let kbps = Double(bitrate) / 1000.0
         let prevKbps = Double(prev) / 1000.0
         logger.log("Adaptive bitrate: \(Int(prevKbps)) → \(Int(kbps)) kbps (\(reason))")
+    }
+
+    /// Live-apply a new user bandwidth ceiling mid-share (`nil` = back to
+    /// automatic). fps / codec edits need a helper respawn and deliberately
+    /// wait for the next share, but the ceiling rides the existing
+    /// `setBitrate` wire message, so Settings changes take effect at once.
+    /// Recomputes `baselineBitrate = min(anchoredBaseline, ceiling)` and
+    /// pushes the current bitrate down if it now exceeds the new baseline;
+    /// a raised (or removed) ceiling instead lets the adaptive sweep
+    /// recover gradually toward the new baseline. Also folds the value
+    /// into the session snapshot so a crash-restart respawn spawns the
+    /// helper with the ceiling the user last set. Safe to call while not
+    /// sharing (no-ops until an encoder anchors a baseline).
+    func updateQualityCeiling(_ bps: Int?) {
+        let ceiling = bps.map { min(max($0, QualitySettings.minCeilingBps), QualitySettings.maxCeilingBps) }
+        let changed = sessionQuality.withLock { quality -> Bool in
+            guard quality.maxBitrateBps != ceiling else { return false }
+            quality.maxBitrateBps = ceiling
+            return true
+        }
+        guard changed else { return }
+        let anchor = anchoredBaselineBitrate.withLock { $0 }
+        // No encoder anchored yet — the snapshot applies at anchor time.
+        guard anchor > 0 else { return }
+        let newBaseline = min(anchor, ceiling ?? anchor)
+        baselineBitrate.withLock { $0 = newBaseline }
+        let current = currentBitrate.withLock { $0 }
+        if current > newBaseline {
+            applyAdaptiveBitrate(newBaseline, reason: "user bandwidth ceiling")
+        } else {
+            logger.log("Quality ceiling: baseline now \(newBaseline / 1000) kbps")
+        }
     }
 
     /// Convert an encoded AVCC access unit into RTP packets and fan them out

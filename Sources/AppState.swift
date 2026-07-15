@@ -96,6 +96,19 @@ class AppState: ObservableObject {
         }
     }
 
+    /// User preference: sharing-side quality knobs (preset, fps cap, codec
+    /// preference, bandwidth ceiling). Persisted as a JSON blob under
+    /// `qualitySettings`. The bandwidth ceiling live-applies to an active
+    /// share via `updateQualityCeiling`; fps / codec are snapshotted per
+    /// share session (`server.start(quality:)`) and apply the next time
+    /// sharing starts — the Settings pane says so in a caption.
+    @Published var qualitySettings: QualitySettings = QualitySettingsStore.load() {
+        didSet {
+            QualitySettingsStore.save(qualitySettings)
+            server?.updateQualityCeiling(qualitySettings.maxBitrateBps)
+        }
+    }
+
     /// Viewer IDs we've already fired a "joined" notification for this
     /// session. Keyed by the server's internal `"ip:port"` ID so a viewer
     /// who briefly drops and rejoins (different ephemeral port) gets a
@@ -618,6 +631,7 @@ class AppState: ObservableObject {
                     try await srv.start(
                         hostname: hostname,
                         filterData: filterData,
+                        quality: qualitySettings,
                         existingNode: sharedNode,
                         controlListener: controlListener
                     )

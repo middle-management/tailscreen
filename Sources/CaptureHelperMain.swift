@@ -215,6 +215,13 @@ private final class CaptureHelperRunner {
     private let writer: HelperFrameWriter
     private let captureWrapper = ScreenCapture()
     private var encoder: VideoEncoder?
+    /// Spawn-time quality knobs (fps cap, codec preference, bandwidth
+    /// ceiling) the parent delivered via environment variables — see
+    /// `QualitySettings.helperEnvironment()`. Read once: the parent
+    /// snapshots settings per share session, so a helper's knobs never
+    /// change mid-life (live ceiling changes ride the `setBitrate` wire
+    /// message instead).
+    private let quality = QualitySettings.fromEnvironment(ProcessInfo.processInfo.environment)
     private var lastWidth: Int = 0
     private var lastHeight: Int = 0
     /// True once `startWithFilter(_:)` has been called. Read by the
@@ -281,7 +288,7 @@ private final class CaptureHelperRunner {
             }
         }
         do {
-            try await captureWrapper.start(filter: filter)
+            try await captureWrapper.start(filter: filter, fps: quality.fpsCap)
             writer.writeLog("capture-helper: SCStream up")
         } catch {
             writer.writeFatal("SCStream start failed: \(error)")
@@ -379,14 +386,26 @@ private final class CaptureHelperRunner {
             let newEncoder = VideoEncoder()
             do {
                 // The parent sets TAILSCREEN_FORCE_H264=1 when a viewer
-                // reported it can't decode HEVC; honor it so the whole share
-                // falls back to the universally-decodable codec.
-                let preferred: VideoCodec =
-                    ProcessInfo.processInfo.environment["TAILSCREEN_FORCE_H264"] == "1"
-                    ? .h264 : .hevc
-                try newEncoder.setup(width: width, height: height, fps: 60, preferredCodec: preferred)
+                // reported it can't decode HEVC; it overrides the user's
+                // codec preference so the whole share falls back to the
+                // universally-decodable codec.
+                let forceH264 = ProcessInfo.processInfo.environment["TAILSCREEN_FORCE_H264"] == "1"
+                let preferred = quality.preferredVideoCodec(forceH264: forceH264)
+                try newEncoder.setup(
+                    width: width, height: height, fps: Int32(quality.fpsCap), preferredCodec: preferred)
                 let codec = newEncoder.codec
-                writer.writeLog("capture-helper: encoder \(codec) \(width)x\(height) @60fps")
+                // If the user capped bandwidth, tighten the encoder's
+                // DataRateLimits ceiling below the bits-per-pixel formula
+                // it was set up with. The server's adaptive sweep anchors
+                // its baseline to the same min(), so the two stay coherent.
+                if let ceiling = quality.maxBitrateBps {
+                    let bpp = VideoEncoder.defaultBitsPerPixel(for: codec)
+                    let computed = Int(Double(width * height) * bpp * Double(quality.fpsCap))
+                    if ceiling < computed {
+                        newEncoder.setBitrate(ceiling)
+                    }
+                }
+                writer.writeLog("capture-helper: encoder \(codec) \(width)x\(height) @\(quality.fpsCap)fps")
                 lastWidth = width
                 lastHeight = height
                 // Capture `writer` directly so the callback writes
