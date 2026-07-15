@@ -25,6 +25,8 @@
 "Actual Size" = "Actual Size";
 "Zoom to 50%" = "Zoom to 50%";
 "Zoom to 200%" = "Zoom to 200%";
+"Zoom In" = "Zoom In";
+"Zoom Out" = "Zoom Out";
 "Minimize" = "Minimize";
 "Zoom" = "Zoom";
 "Bring All to Front" = "Bring All to Front";
@@ -185,6 +187,15 @@
 "Tools" = "Tools";
 "Annotation" = "Annotation";
 "Window" = "Window";
+"Pinch" = "Pinch";
+"⌥ Scroll" = "⌥ Scroll";
+"Scroll" = "Scroll";
+"Double-tap" = "Double-tap";
+"Zoom in or out at the cursor" = "Zoom in or out at the cursor";
+"Pan while zoomed in" = "Pan while zoomed in";
+"Toggle 2× zoom" = "Toggle 2× zoom";
+"Zoom in / out" = "Zoom in / out";
+"Reset zoom and window size" = "Reset zoom and window size";
 "Pointer / Click" = "Pointer / Click";
 "Cancel current drag" = "Cancel current drag";
 "Toggle microphone (system-wide)" = "Toggle microphone (system-wide)";
