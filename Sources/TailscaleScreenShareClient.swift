@@ -816,7 +816,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         switch action {
         case .sendNACK(let seqs):
             guard !seqs.isEmpty else { return }
-            renderer.noteNACKSent(seqs.count)
+            renderer.noteNACKSent()
             let entries = NACKScheduler.packFCI(seqs)
             try? await pl.send(ScreenShareControlMessage.encodeNACK(entries), to: addr)
         case .sendPLI:

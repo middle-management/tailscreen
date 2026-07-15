@@ -12,11 +12,10 @@ final class CongestionDecisionTests: XCTestCase {
     private let s: UInt64 = 1_000_000_000
 
     private func inputs(
-        lossQ8: Int = 0, plis: Int = 0, nacks: Int = 0, current: Int, fps: Int = 60,
-        elapsed: UInt64
+        lossQ8: Int = 0, plis: Int = 0, current: Int, fps: Int = 60, elapsed: UInt64
     ) -> TailscaleScreenShareServer.CongestionInputs {
         .init(
-            lossFractionQ8: lossQ8, pliCount: plis, nackServed: nacks, current: current,
+            lossFractionQ8: lossQ8, pliCount: plis, nackServed: 0, current: current,
             baseline: baseline, fpsTier: fps, elapsedSinceChangeNs: elapsed)
     }
 
@@ -48,8 +47,10 @@ final class CongestionDecisionTests: XCTestCase {
     func testNACKRecoveredLossWeighsHalfAPLI() {
         // 4 PLIs would cut, but 8 NACKs served halve the weight to 0 effective
         // PLIs; with low RR loss that's a hold, not a cut.
-        let d = decide(inputs(lossQ8: 0, plis: 4, nacks: 8, current: baseline, elapsed: 5 * s))
-        XCTAssertEqual(d, .hold)
+        let i = TailscaleScreenShareServer.CongestionInputs(
+            lossFractionQ8: 0, pliCount: 4, nackServed: 8, current: baseline, baseline: baseline,
+            fpsTier: 60, elapsedSinceChangeNs: 5 * s)
+        XCTAssertEqual(decide(i), .hold)
     }
 
     func testLegacyPLIParityCut() {

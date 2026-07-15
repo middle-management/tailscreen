@@ -357,9 +357,9 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
         publishCounterUpdate { $0.plisSent = total }
     }
 
-    /// Client hook: `count` sequence numbers requested in one NACK datagram.
-    /// Safe to call from any thread.
-    func noteNACKSent(_ count: Int) {
+    /// Client hook: one NACK datagram sent to the sharer (a selective
+    /// retransmit request). Safe to call from any thread.
+    func noteNACKSent() {
         lock.lock()
         nacksSentTotal &+= 1
         let total = nacksSentTotal
