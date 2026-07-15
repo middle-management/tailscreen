@@ -1,6 +1,6 @@
 # Share system/computer audio to viewers
 
-> Status: proposed — this PR contains only the plan; implementation is a follow-up iteration.
+> Status: implemented in this PR.
 
 ## Problem & motivation
 
@@ -116,6 +116,19 @@ Rationale: capture cannot leave the helper (CLAUDE.md: all SCStream lifecycle li
 - **Port 7447 untouched**; PT 99 rides the existing UDP socket. No discovery/metadata changes.
 - **Localization**: every new UI string needs an `L(_:)` call + a byte-for-byte key in `en.lproj/Localizable.strings` or `LocalizationCatalogTests` fails on CI.
 - **TCC**: SCK audio capture is covered by the existing Screen Recording grant — no new permission prompt; do not add a parent-side preflight (explicitly forbidden by CLAUDE.md).
+
+## Deviations
+
+Recorded where the shipped implementation departs from the plan (six PRs had merged since it was written, so several line numbers drifted — symbol names were trusted instead).
+
+- **`capturesAudio` is configured whenever the share starts (AppState always sets `PickerSelection.captureAudio = true`), not gated on the default.** The plan configured the audio SCStream output only when the share *starts with audio allowed*. Shipping it that way makes the menubar toggle dead when a share started muted (turning it on would need a helper respawn / video blip). Instead the helper always adds the audio output when the field is present, and the `setAudioEnabled` latch — initialised from `shareSystemAudioByDefault` and re-sent after every (re)spawn — gates *emission*. Result: the toggle is always instant, and audio never leaves the helper while the latch is off. Privacy posture is identical to video (always captured into the helper, never sent unless enabled).
+- **Separate `AudioStreamOutput` object instead of extending the video `StreamOutput`.** The plan added the `.audio` handling inside the existing `StreamOutput` before its `.screen` guard. That object's `lastSampleNotifyNs`/counters are documented as lock-free *because* they're touched only on one serial queue; feeding a second (audio) queue into the same object would race them. A dedicated `AudioStreamOutput` on its own queue keeps that invariant intact.
+- **Viewer system-audio decode reuses the decoder/failure-cooldown machinery but skips the voice jitter/concealment pipeline** (`VoiceChannel.processSystemAudioInbound`). Playback is queue-paced in `MicCapture`, and the system SSRC (1) is disjoint from every voice SSRC, so the concealment/jitter estimator (voice-tuned) is intentionally not applied — a smaller, lower-risk path than routing PT 99 through the full voice state machine.
+- **`onSystemAudioPCM` is wired inside `MicCapture.init`** (next to `onMixedPCM`), not in `AppState`. Both the sharer's and viewer's `MicCapture` get it for free; `AppState` only owns the toggle state, the latch call, and the `captureAudio` re-encode.
+- **`broadcastSystemAudio` reuses `sendAudioRTP`** for fan-out rather than duplicating the `audioBroadcastTail` chaining.
+- **All four viewer SSRC random ranges** (`2...UInt32.max`), including the two *video* SSRC allocations, were bumped — the plan only strictly needed the audio ones, but bumping all keeps "viewers ≥ 2" uniform and is harmless.
+
+Wire values chosen: system-audio RTP **payload type 99**, reserved **SSRC 1**; helper wire **`OutType.audioAccessUnit = 0x07`** and **`InType.setAudioEnabled = 0x04`**.
 
 ## Estimated scope
 
