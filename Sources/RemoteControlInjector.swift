@@ -129,7 +129,7 @@ final class RemoteControlInjector: @unchecked Sendable {
     private func postMouse(type: CGEventType, at point: CGPoint, button: CGMouseButton) {
         // Warp the hardware cursor so it visibly tracks the viewer, then post
         // the event so apps under the point receive it.
-        CGWarpMouseCursorPosition(point)
+        _ = CGWarpMouseCursorPosition(point)
         guard
             let event = CGEvent(
                 mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: button)

@@ -1040,6 +1040,10 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     func grantControl(toConnectionID connectionID: UUID) -> Bool {
         guard isRunning else { return false }
         guard grantBypassesAccessibilityForTesting || remoteControlInjector.isTrusted() else {
+            // Trigger the native Accessibility prompt and surface the in-app
+            // alert + deep-link, rather than installing a grant CGEventPost
+            // would silently ignore.
+            remoteControlInjector.promptForAccess()
             onControlAccessibilityRequired?()
             return false
         }
