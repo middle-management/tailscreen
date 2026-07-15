@@ -111,6 +111,17 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     /// strokes render alongside locally drawn ones.
     var onAnnotationReceived: ((AnnotationOp) -> Void)?
 
+    /// Fires when the sharer grants this viewer remote control
+    /// (`.controlGranted`). AppState flips the viewer into control mode and
+    /// starts capturing input.
+    var onControlGranted: (() -> Void)?
+
+    /// Fires when the sharer revokes (or declines) control (`.controlRevoked`).
+    /// The argument is the sharer's short reason tag (English, for logs — the
+    /// viewer UI shows its own localized message). AppState leaves control
+    /// mode and stops capturing input.
+    var onControlRevoked: ((String) -> Void)?
+
     init(renderer: MetalViewerRenderer) {
         self.renderer = renderer
         self.logger = TSLogger()
@@ -129,6 +140,30 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         }
     }
 
+    /// Ask the sharer for remote control (`.controlRequest`) over the TCP
+    /// back-channel. Best-effort; no-op if the channel isn't open.
+    func requestControl() async {
+        guard let conn = annotationChannel, isConnected else { return }
+        do {
+            try await annotationWriter.send(ScreenShareMessage.controlRequest.encode(), over: conn)
+        } catch {
+            logger.log("Client: requestControl failed: \(error)")
+        }
+    }
+
+    /// Send one input event to the sharer for injection (`.inputEvent`). Rides
+    /// the same reliable, serialized TCP channel as annotations so a
+    /// `mouseDown` never arrives without its `mouseUp`. No-op if the channel
+    /// isn't open.
+    func sendInputEvent(_ event: InputEvent) async {
+        guard let conn = annotationChannel, isConnected else { return }
+        do {
+            try await annotationWriter.send(ScreenShareMessage.inputEvent(event).encode(), over: conn)
+        } catch {
+            logger.log("Client: sendInputEvent failed: \(error)")
+        }
+    }
+
     /// Drains framed annotation ops from the server's back-channel
     /// fan-out (sharer-painted strokes + other viewers' strokes that the
     /// server relays). Runs until the connection closes or `disconnect()`
@@ -142,8 +177,15 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                 if chunk.isEmpty { return }  // EOF
                 parser.append(chunk)
                 while let message = parser.next() {
-                    if case .annotation(let op) = message {
+                    switch message {
+                    case .annotation(let op):
                         onAnnotationReceived?(op)
+                    case .controlGranted:
+                        onControlGranted?()
+                    case .controlRevoked(let reason):
+                        onControlRevoked?(reason)
+                    default:
+                        break
                     }
                 }
             } catch TailscaleError.readFailed {

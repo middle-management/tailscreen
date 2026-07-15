@@ -126,6 +126,46 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// back-channel by IP.
     private let annotationConnectionIP = OSAllocatedUnfairLock<[UUID: String]>(initialState: [:])
 
+    // MARK: - Remote control
+
+    /// The single live remote-control grant, or nil when nobody holds control.
+    /// The input-event gate matches purely on `connectionID` (see
+    /// `RemoteControlPolicy.shouldInject`), so a NAT rebind can't inherit it
+    /// and a non-grantee can't inject. At most one grant exists — granting a
+    /// new viewer implicitly revokes the old.
+    private let controlGrant = OSAllocatedUnfairLock<ControlGrant?>(initialState: nil)
+    /// Viewers that asked for control and are awaiting the sharer's Grant /
+    /// Deny, keyed by their TCP control connection's `UUID`.
+    private let controlRequests = OSAllocatedUnfairLock<[UUID: ControlRequestInfo]>(initialState: [:])
+    /// Per-share event-rate ceiling on injected input (defense against a
+    /// malicious grantee flooding the injector). Reset in `stop()`.
+    private let inputRateLimiter = OSAllocatedUnfairLock<EventRateLimiter>(initialState: EventRateLimiter())
+    /// Injects the grantee's events on this (main) process via `CGEvent`.
+    private let remoteControlInjector = RemoteControlInjector()
+    /// Log a dropped (non-grantee) input event at most once per share.
+    private let droppedInputLogged = OSAllocatedUnfairLock<Bool>(initialState: false)
+
+    /// Fires whenever the set of pending control requests changes. Snapshot;
+    /// replace the UI list wholesale. Runs on any thread — bounce to MainActor.
+    var onControlRequestsChanged: (@Sendable ([ControlRequestInfo]) -> Void)?
+    /// Fires whenever the live grant changes (granted, revoked, auto-revoked).
+    /// `nil` means nobody holds control now.
+    var onControlGrantChanged: (@Sendable (ControlGrantInfo?) -> Void)?
+    /// Fires when a grant is refused because the process lacks the
+    /// Accessibility TCC grant `CGEvent` injection needs. AppState surfaces
+    /// the prompt + deep-link to Privacy → Accessibility.
+    var onControlAccessibilityRequired: (@Sendable () -> Void)?
+    /// Test-only: fires with every input event that passes the grant gate,
+    /// before injection. Lets an E2E test assert the gate admits the grantee's
+    /// events and drops non-grantee ones without a real `CGEventPost`.
+    var onInputEventForTesting: ((InputEvent) -> Void)?
+    /// Test-only: skip the Accessibility-TCC precondition in `grantControl`.
+    /// xctest can't hold the Accessibility grant, and with `filterData: nil`
+    /// the injector has no selection so it no-ops anyway — this lets an E2E
+    /// test exercise the grant gate without real `CGEvent` posting. Never set
+    /// in production. Internal (not private) so `@testable import` reaches it.
+    var grantBypassesAccessibilityForTesting = false
+
     /// Public projection of `viewers` that the UI can read without touching
     /// the internal RTP bookkeeping. Kept in lockstep with `viewers` from
     /// the same lifecycle hooks (`registerOrRefresh`, `removeViewer`,
@@ -546,6 +586,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         Task { [weak self] in await self?.adaptiveBitrateSweep() }
 
         lastFilterData.withLock { $0 = filterData }
+        remoteControlInjector.setSelection(decodedSelection())
         if let filterData {
             try startHelperCapture(filterData: filterData)
         } else {
@@ -809,6 +850,9 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     func changeSource(filterData: Data) async throws -> Bool {
         guard isRunning else { return false }
         lastFilterData.withLock { $0 = filterData }
+        // Keep the injector's coordinate mapping in step with the new source
+        // so a live control grant keeps landing events on the right region.
+        remoteControlInjector.setSelection(decodedSelection())
         // Schedule directly (rather than via `restartCapture()`) so a stop
         // racing this call surfaces as the restart task's CancellationError
         // instead of silently succeeding past restartCapture's own guard.
@@ -932,6 +976,154 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         logger.log("Pending-approval set full (\(Self.maxPendingViewers)) — dropping HELLO from \(addr)")
     }
 
+    /// Log a dropped (non-grantee) input event at most once per share so a
+    /// peer spamming the input channel can't flood the log.
+    private func logDroppedInput() {
+        let firstTime = droppedInputLogged.withLock { logged -> Bool in
+            if logged { return false }
+            logged = true
+            return true
+        }
+        guard firstTime else { return }
+        logger.log("Dropped input event from a connection that doesn't hold the control grant")
+    }
+
+    // MARK: - Remote-control grant
+
+    /// Decode the cached `PickerSelection` so the injector can map normalized
+    /// coordinates onto the shared region. Safe anywhere — it's just IDs, not
+    /// an `SCContentFilter`.
+    private func decodedSelection() -> PickerSelection? {
+        guard let data = lastFilterData.withLock({ $0 }) else { return nil }
+        return try? JSONDecoder().decode(PickerSelection.self, from: data)
+    }
+
+    /// Record (or refresh) a viewer's control request and surface it to the
+    /// sharer UI. Resolves a cached hostname if we have one.
+    private func recordControlRequest(connectionID: UUID, ip: String) {
+        let hostname = peerNameCache.withLock { $0[ip] }
+        controlRequests.withLock { state in
+            if var existing = state[connectionID] {
+                existing.hostname = existing.hostname ?? hostname
+                state[connectionID] = existing
+            } else {
+                state[connectionID] = ControlRequestInfo(
+                    id: connectionID, viewerIP: ip, hostname: hostname, arrivedAt: Date())
+            }
+        }
+        logger.log("Remote-control request from \(ip)")
+        notifyControlRequestsChanged()
+    }
+
+    private func removeControlRequest(connectionID: UUID) {
+        let removed = controlRequests.withLock { $0.removeValue(forKey: connectionID) != nil }
+        if removed { notifyControlRequestsChanged() }
+    }
+
+    /// Deny a pending control request (sharer clicked Deny): drop it and tell
+    /// the requester via `.controlRevoked` so its UI leaves the "requested"
+    /// state. No-op for an unknown connection.
+    func declineControlRequest(connectionID: UUID) {
+        let existed = controlRequests.withLock { $0.removeValue(forKey: connectionID) != nil }
+        guard existed else { return }
+        notifyControlRequestsChanged()
+        sendControlRevoked(to: connectionID, reason: "request declined")
+        logger.log("Declined remote-control request on \(connectionID)")
+    }
+
+    /// Grant remote control to the pending request on `connectionID`. Refuses
+    /// (returns false) when the process lacks Accessibility TCC — firing
+    /// `onControlAccessibilityRequired` so the UI can prompt — rather than
+    /// installing a grant that `CGEventPost` would silently ignore. Granting
+    /// implicitly revokes any previous grantee (single-holder invariant).
+    @discardableResult
+    func grantControl(toConnectionID connectionID: UUID) -> Bool {
+        guard isRunning else { return false }
+        guard grantBypassesAccessibilityForTesting || remoteControlInjector.isTrusted() else {
+            onControlAccessibilityRequired?()
+            return false
+        }
+        let request = controlRequests.withLock { $0.removeValue(forKey: connectionID) }
+        guard let request else { return false }
+        notifyControlRequestsChanged()
+
+        // Revoke a previous grantee before installing the new one.
+        let previous = controlGrant.withLock { $0 }
+        if let previous, previous.connectionID != connectionID {
+            sendControlRevoked(to: previous.connectionID, reason: "granted to another viewer")
+        }
+
+        let stableID = peerStableIDCache.withLock { $0[request.viewerIP] }
+        let grant = ControlGrant(
+            connectionID: connectionID, viewerIP: request.viewerIP, stableID: stableID,
+            hostname: request.hostname, grantedAt: Date())
+        controlGrant.withLock { $0 = grant }
+        droppedInputLogged.withLock { $0 = false }
+        remoteControlInjector.reset()
+        remoteControlInjector.setSelection(decodedSelection())
+        Task { [weak self] in
+            await self?.controlListener?.send(.controlGranted, to: connectionID)
+        }
+        logger.log("Granted remote control to \(request.viewerIP)")
+        notifyControlGrantChanged()
+        return true
+    }
+
+    /// Revoke the live grant (if any): tell the grantee, drop any queued
+    /// input, and clear the sharer UI. `reason` is a short English tag for
+    /// logs — the viewer shows its own localized message.
+    func revokeControl(reason: String) {
+        let previous = controlGrant.withLock { grant -> ControlGrant? in
+            let value = grant
+            grant = nil
+            return value
+        }
+        guard let previous else { return }
+        remoteControlInjector.reset()
+        sendControlRevoked(to: previous.connectionID, reason: reason)
+        logger.log("Revoked remote control from \(previous.viewerIP) (\(reason))")
+        notifyControlGrantChanged()
+    }
+
+    /// Revoke the grant only when `connectionID` holds it. Used by the
+    /// connection-close hook (the reliable auto-revoke-on-disconnect signal).
+    private func revokeControlIfHeld(byConnection connectionID: UUID, reason: String) {
+        let held = controlGrant.withLock { $0?.connectionID == connectionID }
+        if held { revokeControl(reason: reason) }
+    }
+
+    /// Revoke the grant only when the peer at `ip` holds it. Belt-and-braces
+    /// for the UDP-side disconnect signals (BYE / idle sweep / expel), which
+    /// don't carry the TCP connection UUID.
+    private func revokeControlIfHeld(byIP ip: String, reason: String) {
+        let held = controlGrant.withLock { $0?.viewerIP == ip }
+        if held { revokeControl(reason: reason) }
+    }
+
+    private func sendControlRevoked(to connectionID: UUID, reason: String) {
+        Task { [weak self] in
+            await self?.controlListener?.send(.controlRevoked(reason: reason), to: connectionID)
+        }
+    }
+
+    private func notifyControlRequestsChanged() {
+        guard let cb = onControlRequestsChanged else { return }
+        let snapshot = controlRequests.withLock { state -> [ControlRequestInfo] in
+            state.values.sorted { $0.arrivedAt < $1.arrivedAt }
+        }
+        cb(snapshot)
+    }
+
+    private func notifyControlGrantChanged() {
+        guard let cb = onControlGrantChanged else { return }
+        let info = controlGrant.withLock { grant -> ControlGrantInfo? in
+            guard let grant else { return nil }
+            return ControlGrantInfo(
+                connectionID: grant.connectionID, viewerIP: grant.viewerIP, hostname: grant.hostname)
+        }
+        cb(info)
+    }
+
     /// Wire annotation + connection-close callbacks onto the
     /// `TailscreenControlListener`. The listener handles the framed-TCP
     /// accept loop and dispatch; we only see decoded
@@ -970,9 +1162,40 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
                 await self?.broadcastAnnotation(op, excludingConnection: connectionID)
             }
         }
+        listener.onControlRequest = { [weak self] connectionID, peerAddress in
+            guard let self else { return }
+            // Only an admitted viewer may even ask for control — the TCP
+            // channel accepts a dial from any peer, so gate on the same
+            // admitted-viewer-IP anchor the annotation path uses.
+            let peerIP = peerAddress.map { self.ipFromAddr($0) }
+            guard let peerIP, self.isAdmittedViewerIP(peerIP) else {
+                self.logger.log("Dropped control request from non-admitted peer \(peerAddress ?? "unknown")")
+                return
+            }
+            self.recordControlRequest(connectionID: connectionID, ip: peerIP)
+        }
+        listener.onInputEvent = { [weak self] event, connectionID, _ in
+            guard let self else { return }
+            // Authoritative gate: inject only from the current grantee's
+            // connection. Everything else is dropped and counted.
+            let grant = self.controlGrant.withLock { $0 }
+            guard RemoteControlPolicy.shouldInject(grant: grant, connectionID: connectionID) else {
+                self.logDroppedInput()
+                return
+            }
+            // Hard per-share rate ceiling on top of the viewer-side throttle.
+            let nowNs = DispatchTime.now().uptimeNanoseconds
+            let allowed = self.inputRateLimiter.withLock { $0.allow(nowNs: nowNs) }
+            guard allowed else { return }
+            self.onInputEventForTesting?(event)
+            self.remoteControlInjector.apply(event)
+        }
         listener.onConnectionClosed = { [weak self] connectionID in
             guard let self else { return }
             self.annotationConnectionIP.withLock { _ = $0.removeValue(forKey: connectionID) }
+            // A closed connection can't hold a grant or a pending request.
+            self.removeControlRequest(connectionID: connectionID)
+            self.revokeControlIfHeld(byConnection: connectionID, reason: "viewer disconnected")
             let outstanding = self.annotationsByConnection.withLock {
                 $0.removeValue(forKey: connectionID) ?? []
             }
@@ -999,6 +1222,8 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     private func uninstallControlHandlers() {
         controlListener?.onAnnotation = nil
         controlListener?.onConnectionClosed = nil
+        controlListener?.onControlRequest = nil
+        controlListener?.onInputEvent = nil
     }
 
     /// Broadcast a framed `AnnotationOp` to every connection on the shared
@@ -1704,6 +1929,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         // fire onConnectionClosed, which retires the peer's tracked strokes.
         videoSendTails.withLock { _ = $0.removeValue(forKey: addr) }
         closeAnnotationChannels(forIP: ipFromAddr(addr))
+        revokeControlIfHeld(byIP: ipFromAddr(addr), reason: "viewer blocked")
         notifyViewersChanged()
         logger.log("Viewer expelled (remembered deny) \(addr)")
         sendDenialDatagrams(to: addr)
@@ -1758,6 +1984,10 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         if removed {
             viewerInfos.withLock { _ = $0.removeValue(forKey: addr) }
             notifyViewersChanged()
+            // A viewer that BYE'd/left surrenders any control grant. The TCP
+            // close usually beats this via `revokeControlIfHeld(byConnection:)`;
+            // this covers a UDP BYE that outruns the TCP FIN.
+            revokeControlIfHeld(byIP: ipFromAddr(addr), reason: "viewer disconnected")
             logger.log("Viewer disconnected \(addr)")
         }
     }
@@ -2025,6 +2255,8 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             }
             for entry in dropped {
                 let idleMs = Int(entry.idleNs / 1_000_000)
+                // An idled-out viewer surrenders any control grant.
+                revokeControlIfHeld(byIP: ipFromAddr(entry.addr), reason: "viewer idle timeout")
                 logger.log("Viewer timeout \(entry.addr) (idle \(idleMs) ms)")
             }
 
@@ -2378,6 +2610,22 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     func stop() async {
         logger.log("Server stopping…")
         isRunning = false
+
+        // End any remote-control session. Viewers are torn down by SERVER_BYE
+        // below, so there's no need to send a per-connection revoke — just
+        // clear the grant/request state, drop queued input, and notify the UI.
+        let hadGrant = controlGrant.withLock { grant -> Bool in
+            let had = grant != nil
+            grant = nil
+            return had
+        }
+        controlRequests.withLock { $0.removeAll() }
+        remoteControlInjector.reset()
+        remoteControlInjector.setSelection(nil)
+        droppedInputLogged.withLock { $0 = false }
+        inputRateLimiter.withLock { $0 = EventRateLimiter() }
+        if hadGrant { notifyControlGrantChanged() }
+        notifyControlRequestsChanged()
 
         // Drain any in-flight `restartCapture` before we touch
         // `helperCapture`. The restart's final assignment otherwise
