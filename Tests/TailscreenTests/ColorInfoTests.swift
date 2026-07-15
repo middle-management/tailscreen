@@ -102,8 +102,11 @@ final class ColorInfoTests: XCTestCase {
     func testCapturePixelFormat() {
         let sdr = ColorInfo.bt709FullRange8
         XCTAssertEqual(sdr.capturePixelFormat, kCVPixelFormatType_420YpCbCr8BiPlanarFullRange)
+        // 10-bit capture is video-range ('x420') — the only deep-color format
+        // ScreenCaptureKit vends; `forDisplay` sets fullRange=false for 10-bit.
         let tenBit = ColorInfo.forDisplay(wideGamut: true, hdrCapable: true, bitDepth: 10)
-        XCTAssertEqual(tenBit.capturePixelFormat, kCVPixelFormatType_420YpCbCr10BiPlanarFullRange)
+        XCTAssertFalse(tenBit.fullRange)
+        XCTAssertEqual(tenBit.capturePixelFormat, kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange)
         var limited = sdr
         limited.fullRange = false
         XCTAssertEqual(limited.capturePixelFormat, kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)

@@ -311,7 +311,7 @@ plan had drifted five PRs; symbols were followed instead).
   `ViewerStatsOverlay` color/depth readout was likewise not added. No wire
   schema changed except the one new UDP control byte.
 
-- **New control byte is PROFILE_NO (`0x08`), the client trigger is a seam.**
+- **New control byte is PROFILE_NO (`0x09`), the client trigger is a seam.**
   The Main10-unsupported → 8-bit negotiation is fully wired server-side
   (`force8bit` latch → `TAILSCREEN_FORCE_8BIT` env → helper pins `ColorInfo` to
   8-bit) and the message round-trips (`RTPPacketTests`). The *viewer-side

@@ -71,6 +71,14 @@ struct ColorInfo: Codable, Equatable, Sendable {
     static func forDisplay(wideGamut: Bool, hdrCapable: Bool, bitDepth: Int) -> ColorInfo {
         var info = bt709FullRange8
         info.bitDepth = bitDepth
+        // ScreenCaptureKit's deep-color (10-bit) capture is the *video-range*
+        // biplanar format ('x420'); the full-range 10-bit format SCStream does
+        // not vend, so a 10-bit share must be video-range end-to-end (the
+        // encoder's range tag then follows this `fullRange`). 8-bit stays
+        // full-range (the shipped default is unchanged).
+        if bitDepth >= 10 {
+            info.fullRange = false
+        }
         if hdrCapable && bitDepth >= 10 {
             info.primaries = .bt2020
             info.transfer = .pq
