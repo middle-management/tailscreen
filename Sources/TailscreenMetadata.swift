@@ -75,6 +75,13 @@ class TailscreenMetadataService: ObservableObject {
     @Published var currentMetadata: TailscreenMetadata?
     @Published var pendingRequests: [PendingRequest] = []
 
+    /// Cap on the pending request-to-share banner set. Each incoming
+    /// request pins a 120 s awaiting-response TCP connection on the
+    /// requester's side and a banner row here; without a cap a peer flood
+    /// (varying the wire-claimed hostname to defeat coalescing) could stack
+    /// unbounded rows. New distinct requesters past the cap are dropped.
+    static let maxPendingRequests = 16
+
     struct PendingRequest: Identifiable {
         let id: UUID
         let fromHostname: String
@@ -84,12 +91,21 @@ class TailscreenMetadataService: ObservableObject {
         /// (best-effort — the requester may have given up and closed it).
         /// nil for legacy call sites that never learned the connection.
         let connectionID: UUID?
+        /// Trust-worthy coalescing key — the requester's source IP (port
+        /// stripped) when the transport reported it, else `host:<hostname>`.
+        /// Deliberately NOT the raw wire-claimed hostname: an attacker can
+        /// vary that to stack banner rows and pin one connection each.
+        let sourceKey: String
 
-        init(id: UUID = UUID(), fromHostname: String, timestamp: Date, connectionID: UUID? = nil) {
+        init(
+            id: UUID = UUID(), fromHostname: String, timestamp: Date,
+            connectionID: UUID? = nil, sourceKey: String = ""
+        ) {
             self.id = id
             self.fromHostname = fromHostname
             self.timestamp = timestamp
             self.connectionID = connectionID
+            self.sourceKey = sourceKey
         }
     }
 
@@ -126,18 +142,39 @@ class TailscreenMetadataService: ObservableObject {
     /// timestamp is refreshed so the row stays sorted as "newest", and its
     /// connection ID is replaced with the retry's (the old connection is
     /// likely dead, and the response should ride the freshest one).
-    func handleRequestToShare(from hostname: String, connectionID: UUID? = nil) {
-        if let idx = pendingRequests.firstIndex(where: { $0.fromHostname == hostname }) {
+    func handleRequestToShare(from hostname: String, sourceAddr: String? = nil, connectionID: UUID? = nil) {
+        // Coalesce on the source identity, not the wire-claimed hostname —
+        // retries dial a fresh connection (new ephemeral port), so we key on
+        // the peer IP; fall back to the hostname only when no address was
+        // reported (legacy path).
+        let key = sourceAddr.map { Self.sourceKey(from: $0) } ?? "host:\(hostname)"
+        if let idx = pendingRequests.firstIndex(where: { $0.sourceKey == key }) {
             let existing = pendingRequests.remove(at: idx)
             pendingRequests.append(
                 PendingRequest(
                     id: existing.id, fromHostname: hostname, timestamp: Date(),
-                    connectionID: connectionID ?? existing.connectionID)
+                    connectionID: connectionID ?? existing.connectionID, sourceKey: key)
             )
             return
         }
+        // Bound the set: once the sharer's backlog is full, drop new distinct
+        // requesters rather than growing unbounded under a flood.
+        guard pendingRequests.count < Self.maxPendingRequests else { return }
         pendingRequests.append(
-            PendingRequest(fromHostname: hostname, timestamp: Date(), connectionID: connectionID))
+            PendingRequest(
+                fromHostname: hostname, timestamp: Date(), connectionID: connectionID, sourceKey: key))
+    }
+
+    /// Strip the trailing `:port` (and IPv6 brackets) so retries from the
+    /// same peer — which dial a fresh source port each time — coalesce onto
+    /// one banner row. Same split-on-last-colon rule the server uses.
+    nonisolated static func sourceKey(from addr: String) -> String {
+        guard let lastColon = addr.lastIndex(of: ":") else { return addr }
+        var ip = String(addr[..<lastColon])
+        if ip.hasPrefix("["), ip.hasSuffix("]") {
+            ip = String(ip.dropFirst().dropLast())
+        }
+        return ip
     }
 
     /// Clear a pending request
@@ -216,9 +253,9 @@ class TailscreenMetadataService: ObservableObject {
         let deadlineNs =
             DispatchTime.now().uptimeNanoseconds &+ UInt64(timeout * 1_000_000_000)
         while DispatchTime.now().uptimeNanoseconds < deadlineNs {
+            let recvStartNs = DispatchTime.now().uptimeNanoseconds
             do {
                 let chunk = try await conn.receive(maximumLength: 16 * 1024, timeout: 5_000)
-                if chunk.isEmpty { return .noAnswer }  // EOF — peer closed without answering
                 parser.append(chunk)
                 while let message = parser.next() {
                     if case .shareResponse(let accepted) = message {
@@ -226,6 +263,18 @@ class TailscreenMetadataService: ObservableObject {
                     }
                 }
             } catch TailscaleError.readFailed {
+                // `OutgoingConnection.receive` throws readFailed for BOTH a
+                // benign poll timeout AND a dead/closed fd (EOF returns
+                // instantly). Elapsed time tells them apart — the same
+                // classification the UDP receive loops use: a near-instant
+                // readFailed is a dead socket (peer closed without
+                // answering), so stop waiting instead of hot-spinning the
+                // closed connection for the full timeout; a full-interval
+                // one is just a poll timeout, so keep waiting.
+                let elapsedNs = DispatchTime.now().uptimeNanoseconds &- recvStartNs
+                if ReceiveLoopPolicy.classifyReadFailedAsError(elapsedNs: elapsedNs) {
+                    return .noAnswer
+                }
                 continue  // poll timeout — keep waiting for an answer
             } catch {
                 return .noAnswer
