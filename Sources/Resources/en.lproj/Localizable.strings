@@ -187,6 +187,10 @@
 "Tools" = "Tools";
 "Annotation" = "Annotation";
 "Window" = "Window";
+"Pinch" = "Pinch";
+"⌥ Scroll" = "⌥ Scroll";
+"Scroll" = "Scroll";
+"Double-tap" = "Double-tap";
 "Zoom in or out at the cursor" = "Zoom in or out at the cursor";
 "Pan while zoomed in" = "Pan while zoomed in";
 "Toggle 2× zoom" = "Toggle 2× zoom";

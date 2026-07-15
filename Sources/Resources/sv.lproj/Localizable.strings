@@ -182,6 +182,10 @@
 "Tools" = "Verktyg";
 "Annotation" = "Anteckning";
 "Window" = "Fönster";
+"Pinch" = "Nyp";
+"⌥ Scroll" = "⌥ Skrolla";
+"Scroll" = "Skrolla";
+"Double-tap" = "Dubbeltryck";
 "Zoom in or out at the cursor" = "Zooma in eller ut vid markören";
 "Pan while zoomed in" = "Panorera medan du är inzoomad";
 "Toggle 2× zoom" = "Växla 2× zoom";

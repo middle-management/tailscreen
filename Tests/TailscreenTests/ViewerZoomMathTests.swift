@@ -108,6 +108,32 @@ final class ViewerZoomMathTests: XCTestCase {
         XCTAssertEqual(zoomed.scale, ViewerZoomMath.maxScale, accuracy: 1e-9)
     }
 
+    func testZoomInClampsAtCallerMaxScale() {
+        // Gesture call sites pass `effectiveMaxScale` — the parameterized
+        // ceiling must win over the static one.
+        let center = CGPoint(x: fit.midX, y: fit.midY)
+        let zoomed = ViewerZoomMath.zoomed(
+            state: ViewerZoomState(), by: 8, anchor: center, fit: fit, maxScale: 3)
+        XCTAssertEqual(zoomed.scale, 3, accuracy: 1e-9)
+    }
+
+    func testZoomAfterFitShrinkKeepsAnchorStable() {
+        // A window resize between gestures left `offset` legal only for
+        // the old, larger fit. The displayed rect re-clamps it — and the
+        // next zoom must anchor against that displayed rect, not the
+        // stale offset, or the first gesture jumps discontinuously.
+        let stale = ViewerZoomState(scale: 2, offset: CGPoint(x: 320, y: 180))
+        let shrunken = CGRect(x: 0, y: 0, width: 320, height: 180)
+        let displayed = ViewerZoomMath.videoRect(fit: shrunken, state: stale)
+        let anchor = CGPoint(x: 80, y: 45)
+        let after = ViewerZoomMath.zoomed(state: stale, by: 1.5, anchor: anchor, fit: shrunken)
+        let pointBefore = videoPoint(under: anchor, in: displayed)
+        let pointAfter = videoPoint(
+            under: anchor, in: ViewerZoomMath.videoRect(fit: shrunken, state: after))
+        XCTAssertEqual(pointBefore.x, pointAfter.x, accuracy: 1e-6)
+        XCTAssertEqual(pointBefore.y, pointAfter.y, accuracy: 1e-6)
+    }
+
     func testZoomOutClampsAtFitAndRecenters() {
         let state = ViewerZoomState(scale: 1.5, offset: CGPoint(x: 80, y: 40))
         let zoomed = ViewerZoomMath.zoomed(state: state, by: 0.1, anchor: CGPoint(x: 100, y: 50), fit: fit)
@@ -191,5 +217,57 @@ final class ViewerZoomMathTests: XCTestCase {
         XCTAssertEqual(
             ViewerZoomMath.smartMagnifyToggled(state: state, anchor: CGPoint(x: 100, y: 100), fit: fit),
             ViewerZoomState())
+    }
+
+    func testSmartMagnifyRespectsCallerMaxScale() {
+        // Below-2× texture cap: the double-tap target clamps to it.
+        let state = ViewerZoomMath.smartMagnifyToggled(
+            state: ViewerZoomState(), anchor: CGPoint(x: fit.midX, y: fit.midY), fit: fit,
+            maxScale: 1.5)
+        XCTAssertEqual(state.scale, 1.5, accuracy: 1e-9)
+    }
+
+    // MARK: - effectiveMaxScale
+
+    func testEffectiveMaxScaleCapsLargeContent() {
+        // A 3000-pt fit on a 2× display would hit 48k px at 8× — well past
+        // Core Animation's texture limit. The cap is exactly the scale
+        // that keeps the longer axis at `safeMaxContentPixels`.
+        let large = CGRect(x: 0, y: 0, width: 3000, height: 1800)
+        let cap = ViewerZoomMath.effectiveMaxScale(fit: large, backingScale: 2)
+        XCTAssertEqual(cap, ViewerZoomMath.safeMaxContentPixels / (3000 * 2), accuracy: 1e-9)
+        XCTAssertLessThan(cap, ViewerZoomMath.maxScale)
+        XCTAssertGreaterThanOrEqual(cap, ViewerZoomMath.minScale)
+    }
+
+    func testEffectiveMaxScaleNoOpForSmallContent() {
+        // 640 pt × 2× × 8 = 10 240 px — comfortably under the limit, so
+        // the static ceiling stands.
+        XCTAssertEqual(
+            ViewerZoomMath.effectiveMaxScale(fit: fit, backingScale: 2),
+            ViewerZoomMath.maxScale, accuracy: 1e-9)
+    }
+
+    func testEffectiveMaxScaleFloorsAtMinScale() {
+        // A pathologically huge fit can't push the cap below fit itself.
+        let huge = CGRect(x: 0, y: 0, width: 100_000, height: 100_000)
+        XCTAssertEqual(
+            ViewerZoomMath.effectiveMaxScale(fit: huge, backingScale: 2),
+            ViewerZoomMath.minScale, accuracy: 1e-9)
+    }
+
+    func testEffectiveMaxScaleDegenerateFitPassesThrough() {
+        XCTAssertEqual(
+            ViewerZoomMath.effectiveMaxScale(fit: .zero, backingScale: 2),
+            ViewerZoomMath.maxScale, accuracy: 1e-9)
+    }
+
+    // MARK: - isZoomedIn
+
+    func testIsZoomedIn() {
+        XCTAssertFalse(ViewerZoomState().isZoomedIn)
+        XCTAssertFalse(ViewerZoomState(scale: ViewerZoomMath.minScale, offset: .zero).isZoomedIn)
+        XCTAssertTrue(ViewerZoomState(scale: 1.01, offset: .zero).isZoomedIn)
+        XCTAssertTrue(ViewerZoomState(scale: ViewerZoomMath.maxScale, offset: .zero).isZoomedIn)
     }
 }

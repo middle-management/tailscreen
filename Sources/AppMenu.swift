@@ -208,15 +208,17 @@ enum AppMenu {
 
         viewMenu.addItem(.separator())
 
-        // Continuous content zoom (⇧⌘+ / ⇧⌘-) — magnifies a region of
+        // Continuous content zoom (⌥⌘+ / ⌥⌘-) — magnifies a region of
         // the received video inside the current window, unlike the
         // window-sizing presets above. Pinch / ⌥-scroll on the viewer
-        // window do the same anchored at the cursor.
+        // window do the same anchored at the cursor. ⌥⌘ (not ⇧⌘): "+"
+        // is already a shifted character, so ⇧⌘+ would collide with
+        // the "Zoom to 200%" preset's plain ⌘+ above.
         let contentZoomIn = NSMenuItem(
             title: L("Zoom In"),
             action: #selector(ViewerCommands.viewerContentZoomIn(_:)),
             keyEquivalent: "+")
-        contentZoomIn.keyEquivalentModifierMask = [.command, .shift]
+        contentZoomIn.keyEquivalentModifierMask = [.command, .option]
         contentZoomIn.target = ViewerCommands.shared
         viewMenu.addItem(contentZoomIn)
 
@@ -224,7 +226,7 @@ enum AppMenu {
             title: L("Zoom Out"),
             action: #selector(ViewerCommands.viewerContentZoomOut(_:)),
             keyEquivalent: "-")
-        contentZoomOut.keyEquivalentModifierMask = [.command, .shift]
+        contentZoomOut.keyEquivalentModifierMask = [.command, .option]
         contentZoomOut.target = ViewerCommands.shared
         viewMenu.addItem(contentZoomOut)
 

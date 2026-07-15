@@ -13,6 +13,10 @@ struct ViewerZoomState: Equatable {
     /// Pan offset of the zoomed video's center from the fit rect's center,
     /// in viewport points. Always `.zero` at scale 1.
     var offset: CGPoint = .zero
+
+    /// True when the content is magnified past aspect-fit — the "am I
+    /// zoomed" predicate gesture handling branches on.
+    var isZoomedIn: Bool { scale > ViewerZoomMath.minScale }
 }
 
 /// Pure zoom/pan geometry for the viewer's content zoom. The host view
@@ -31,6 +35,24 @@ enum ViewerZoomMath {
     static let maxScale: CGFloat = 8.0
     /// Target scale for the double-tap (smart-magnify) toggle.
     static let smartMagnifyScale: CGFloat = 2.0
+    /// Multiplicative step for the View-menu Zoom In item; Zoom Out uses
+    /// its reciprocal.
+    static let menuZoomStep: CGFloat = 1.25
+    /// Conservative ceiling on the zoomed content's pixel extent. The
+    /// annotation overlay is a layer-backed NSHostingView framed at the
+    /// zoomed rect; Core Animation textures top out around 16384 px per
+    /// axis, and exceeding that blanks the layer.
+    static let safeMaxContentPixels: CGFloat = 16_384
+
+    /// The largest scale the current fit rect can support without the
+    /// zoomed rect's backing store exceeding ``safeMaxContentPixels`` on
+    /// its longer axis. Clamped to `minScale...maxScale`; a degenerate
+    /// fit imposes no cap.
+    static func effectiveMaxScale(fit: CGRect, backingScale: CGFloat) -> CGFloat {
+        guard fit.width > 0, fit.height > 0 else { return maxScale }
+        let cap = safeMaxContentPixels / (max(fit.width, fit.height) * max(backingScale, 1))
+        return max(minScale, min(maxScale, cap))
+    }
 
     /// The rect the video (and the congruent annotation overlay) should
     /// occupy: `fit` scaled by `state.scale` about its own center, then
@@ -52,19 +74,28 @@ enum ViewerZoomMath {
     /// State after zooming by the multiplicative `delta`, anchored at
     /// `anchor` (a viewport point): the video point under `anchor` before
     /// the zoom is still under `anchor` after it, up to the scale and
-    /// offset clamps.
+    /// offset clamps. Callers pass `maxScale` from
+    /// ``effectiveMaxScale(fit:backingScale:)`` to stay under the texture
+    /// limit; the default is the static ceiling.
     static func zoomed(
-        state: ViewerZoomState, by delta: CGFloat, anchor: CGPoint, fit: CGRect
+        state: ViewerZoomState, by delta: CGFloat, anchor: CGPoint, fit: CGRect,
+        maxScale: CGFloat = ViewerZoomMath.maxScale
     ) -> ViewerZoomState {
         guard delta > 0, fit.width > 0, fit.height > 0 else { return state }
         let oldScale = clampedScale(state.scale)
-        let newScale = clampedScale(oldScale * delta)
+        let newScale = min(max(oldScale * delta, minScale), maxScale)
         let factor = newScale / oldScale
+        // Re-clamp the incoming offset against the *current* fit first —
+        // a window resize between gestures can leave `state.offset` stale
+        // (legal for the old fit only), and anchoring against the stale
+        // center would make the first gesture jump away from the rect
+        // `videoRect` is actually displaying.
+        let oldOffset = clampedOffset(state.offset, scale: oldScale, fit: fit)
         // Anchor invariance in center form: with the video rect's center
         // c = fitCenter + offset, the anchor's center-relative position
         // scales by `factor`, so cNew = anchor - (anchor - cOld) * factor.
         let fitCenter = CGPoint(x: fit.midX, y: fit.midY)
-        let oldCenter = CGPoint(x: fitCenter.x + state.offset.x, y: fitCenter.y + state.offset.y)
+        let oldCenter = CGPoint(x: fitCenter.x + oldOffset.x, y: fitCenter.y + oldOffset.y)
         let newCenter = CGPoint(
             x: anchor.x - (anchor.x - oldCenter.x) * factor,
             y: anchor.y - (anchor.y - oldCenter.y) * factor)
@@ -77,23 +108,31 @@ enum ViewerZoomMath {
     /// State after panning the content by `delta`, in viewport points. A
     /// positive `width` moves the video right; a positive `height` moves it
     /// up (non-flipped AppKit coordinates). No-ops at fit — the offset
-    /// clamp collapses to zero when there is nothing to pan over.
+    /// clamp collapses to zero when there is nothing to pan over. The
+    /// scale passes through unclamped: panning never changes it, every
+    /// producer already clamps it, and `videoRect`'s defensive re-clamp
+    /// remains the single stale-state barrier.
     static func panned(state: ViewerZoomState, by delta: CGSize, fit: CGRect) -> ViewerZoomState {
         guard fit.width > 0, fit.height > 0 else { return state }
-        let scale = clampedScale(state.scale)
         let offset = CGPoint(x: state.offset.x + delta.width, y: state.offset.y + delta.height)
-        return ViewerZoomState(scale: scale, offset: clampedOffset(offset, scale: scale, fit: fit))
+        return ViewerZoomState(
+            scale: state.scale,
+            offset: clampedOffset(offset, scale: state.scale, fit: fit))
     }
 
     /// Double-tap (smart-magnify) toggle: zoomed in → reset to fit; at fit
-    /// → jump to ``smartMagnifyScale`` anchored at the tap point.
+    /// → jump to ``smartMagnifyScale`` anchored at the tap point (capped
+    /// at the caller's `maxScale`).
     static func smartMagnifyToggled(
-        state: ViewerZoomState, anchor: CGPoint, fit: CGRect
+        state: ViewerZoomState, anchor: CGPoint, fit: CGRect,
+        maxScale: CGFloat = ViewerZoomMath.maxScale
     ) -> ViewerZoomState {
-        if state.scale > minScale {
+        if state.isZoomedIn {
             return ViewerZoomState()
         }
-        return zoomed(state: ViewerZoomState(), by: smartMagnifyScale, anchor: anchor, fit: fit)
+        return zoomed(
+            state: ViewerZoomState(), by: smartMagnifyScale, anchor: anchor, fit: fit,
+            maxScale: maxScale)
     }
 
     // MARK: - Clamps

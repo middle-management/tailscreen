@@ -259,3 +259,31 @@ Recorded while implementing; everything else landed as planned.
   need a hands-on check on real hardware: scroll/pan *direction* (natural-scrolling sign
   conventions; the pan negates `scrollingDeltaY` for the non-flipped host view) and the
   ⌥-scroll zoom sensitivity constant (2× per ~100 points of scroll).
+
+### Review fixes
+
+Applied after code review; supersedes the corresponding details above.
+
+- **Menu chord is ⌥⌘+ / ⌥⌘-, not ⇧⌘+ / ⇧⌘-.** "+" is already a shifted character,
+  so ⇧⌘+ collided with the pre-existing "Zoom to 200%" preset (keyEquivalent "+",
+  plain ⌘). The shortcuts overlay row and doc comments were updated to match.
+- **Dynamic texture-safe zoom cap.** `layout()` frames the layer-backed annotation
+  overlay at the zoomed rect; at 8× a large retina window could exceed Core
+  Animation's ~16384 px per-axis texture limit. `ViewerZoomMath.effectiveMaxScale(fit:backingScale:)`
+  (backed by `safeMaxContentPixels`) now computes the per-window ceiling, and every
+  gesture/menu call site passes it into `zoomed` / `smartMagnifyToggled` via their new
+  `maxScale` parameter.
+- **Input-device handling.** Non-precise scroll devices (classic mouse wheels) report
+  line-unit deltas — `scrollWheel` multiplies them by 16 for both the ⌥-zoom and pan
+  paths. The ⌥-zoom direction is normalized via `isDirectionInvertedFromDevice` so
+  device-up always zooms in; panning still follows the natural-scrolling preference.
+- **Direct menu routing.** `viewerContentZoomIn/Out` call
+  `appState?.zoomViewerContent(by:)` directly (step = `ViewerZoomMath.menuZoomStep`);
+  the `.tailscreenViewerContentZoom` notification and its AppState observer are gone.
+- **Zoom-reset ownership.** The resolution-change reset moved into
+  `AspectFitHostView.videoSize.didSet`; `setViewerZoom` resets content zoom before its
+  decoded-frame guard (so ⌘0 works pre-frame); `connect(to:)` resets at session entry
+  so a same-resolution next session can't inherit stale zoom.
+- **Stale-offset anchor stability.** `zoomed` re-clamps the incoming offset against
+  the current fit before the anchor math, so a window resize between gestures can't
+  make the first gesture jump (covered by `testZoomAfterFitShrinkKeepsAnchorStable`).
