@@ -20,6 +20,8 @@
 "Actual Size" = "Verklig storlek";
 "Zoom to 50%" = "Zooma till 50 %";
 "Zoom to 200%" = "Zooma till 200 %";
+"Zoom In" = "Zooma in";
+"Zoom Out" = "Zooma ut";
 "Minimize" = "Minimera";
 "Zoom" = "Zooma";
 "Bring All to Front" = "Lägg alla överst";
@@ -64,6 +66,9 @@
 "Toggles voice chat with viewers" = "Växlar röstchatt med tittare";
 "Stop Sharing" = "Sluta dela";
 "Disconnects all viewers and ends the screen share" = "Kopplar från alla tittare och avslutar skärmdelningen";
+"Change Source…" = "Byt källa…";
+"Change what you're sharing" = "Ändra vad du delar";
+"Reopens the picker without disconnecting viewers" = "Öppnar väljaren igen utan att koppla från tittarna";
 "No viewers yet" = "Inga tittare än";
 "%lld watching: %@" = "%lld tittar: %@";
 
@@ -119,6 +124,18 @@
 "Viewers" = "Tittare";
 "Require approval for new viewers" = "Kräv godkännande för nya tittare";
 "New viewers wait on a Connecting prompt until you Accept or Deny them." = "Nya tittare väntar på en Ansluter-prompt tills du accepterar eller nekar dem.";
+"Quality" = "Kvalitet";
+"Preset" = "Förval";
+"Low" = "Låg";
+"Balanced" = "Balanserad";
+"High" = "Hög";
+"Custom" = "Anpassad";
+"Frame rate" = "Bildfrekvens";
+"%lld fps" = "%lld fps";
+"Automatic" = "Automatisk";
+"Limit bandwidth" = "Begränsa bandbredd";
+"%lld Mbps" = "%lld Mbps";
+"Frame rate and codec changes apply the next time you start sharing." = "Ändringar av bildfrekvens och codec gäller nästa gång du börjar dela.";
 "Audio" = "Ljud";
 "Speaker" = "Högtalare";
 "About" = "Om";
@@ -134,6 +151,8 @@
 "OK" = "OK";
 "Open System Settings" = "Öppna Systeminställningar";
 "Couldn't Start Sharing" = "Kunde inte starta delning";
+"Couldn't Open Picker" = "Kunde inte öppna väljaren";
+"macOS's screen-sharing picker failed to start: %@" = "macOS skärmdelningsväljare kunde inte startas: %@";
 "macOS didn't return shareable screens in time. If this is the first time you've shared, grant Tailscreen permission in System Settings → Privacy & Security → Screen Recording, then try again." = "macOS returnerade inte delbara skärmar i tid. Om det här är första gången du delar, ge Tailscreen behörighet i Systeminställningar → Integritet och säkerhet → Skärminspelning och försök igen.";
 "Restart Required" = "Omstart krävs";
 "macOS's screen-recording daemon is in a stuck state for Tailscreen and won't deliver any more frames until the app restarts. This usually follows a startCapture timeout or a stream interruption. Quit Tailscreen (⌘Q) and reopen — sharing will work again." = "macOS skärminspelningsdaemon har fastnat för Tailscreen och levererar inga fler bildrutor förrän appen startas om. Detta följer vanligtvis efter en startCapture-timeout eller ett avbrott i strömmen. Avsluta Tailscreen (⌘Q) och öppna igen – delning fungerar då igen.";
@@ -155,6 +174,12 @@
 "Sign Out Failed" = "Utloggning misslyckades";
 "Error" = "Fel";
 "Failed to start sharing: %@" = "Misslyckades att starta delning: %@";
+"Can't decode the video" = "Kan inte avkoda videon";
+"This Mac can't decode the %@ video stream from the sharer (it likely lacks %@ hardware decode). Asking the sharer to switch to H.264 — the screen should appear in a moment." = "Den här datorn kan inte avkoda %@-videoströmmen från delaren (den saknar troligen maskinvaruavkodning för %@). Ber delaren att byta till H.264 — skärmen bör visas om en stund.";
+"Video Has Stalled" = "Videon har stannat";
+"Decoding has been failing for several seconds and automatic recovery hasn't helped. Check the connection on both ends, or disconnect and reconnect." = "Avkodningen har misslyckats i flera sekunder och automatisk återställning har inte hjälpt. Kontrollera anslutningen i båda ändar, eller koppla från och anslut igen.";
+"Sharing Stopped" = "Delning stoppad";
+"The connection to your viewers was lost and couldn't be re-established, so the share was stopped. Check the network and start sharing again." = "Anslutningen till dina tittare förlorades och kunde inte återupprättas, så delningen stoppades. Kontrollera nätverket och starta delningen igen.";
 
 /* MARK: - Notifications (TailscreenUserNotifications.swift / ViewerApproval.swift) */
 "Tailscreen request" = "Tailscreen-begäran";
@@ -172,14 +197,35 @@
 "Latency" = "Latens";
 "FPS" = "FPS";
 "Dropped" = "Tappade";
+"Decode errs" = "Avkodningsfel";
+"PLIs sent" = "Skickade PLI:er";
 "Bitrate" = "Bithastighet";
 "Codec" = "Codec";
 "Connection" = "Anslutning";
+"Connection degraded" = "Anslutningen är försämrad";
+"Stream stats: " = "Strömstatistik: ";
+"Stream stats, connection degraded: " = "Strömstatistik, anslutningen är försämrad: ";
+"latency %lld milliseconds" = "latens %lld millisekunder";
+"%lld frames per second" = "%lld bildrutor per sekund";
+"%@ percent dropped" = "%@ procent tappade";
+"%lld decode errors" = "%lld avkodningsfel";
+"%lld keyframe requests sent" = "%lld skickade nyckelbildsbegäranden";
+"%@ kilobits per second" = "%@ kilobit per sekund";
+"codec %@" = "codec %@";
 
 /* MARK: - Shortcuts overlay (ViewerShortcutsOverlay.swift) */
 "Tools" = "Verktyg";
 "Annotation" = "Anteckning";
 "Window" = "Fönster";
+"Pinch" = "Nyp";
+"⌥ Scroll" = "⌥ Skrolla";
+"Scroll" = "Skrolla";
+"Double-tap" = "Dubbeltryck";
+"Zoom in or out at the cursor" = "Zooma in eller ut vid markören";
+"Pan while zoomed in" = "Panorera medan du är inzoomad";
+"Toggle 2× zoom" = "Växla 2× zoom";
+"Zoom in / out" = "Zooma in / ut";
+"Reset zoom and window size" = "Återställ zoom och fönsterstorlek";
 "Pointer / Click" = "Pekare / Klick";
 "Cancel current drag" = "Avbryt aktuell dragning";
 "Toggle microphone (system-wide)" = "Växla mikrofon (systemomfattande)";
@@ -202,6 +248,7 @@
 "Toggle microphone (⌃⌥M)" = "Växla mikrofon (⌃⌥M)";
 "Stats" = "Statistik";
 "Toggle stream stats overlay" = "Växla statistiköverlägg";
+"Connection degraded — click for stats" = "Anslutningen är försämrad — klicka för statistik";
 "Shortcuts" = "Genvägar";
 "Show keyboard shortcuts" = "Visa tangentbordsgenvägar";
 "Keyboard shortcuts (⇧⌘/)" = "Tangentbordsgenvägar (⇧⌘/)";

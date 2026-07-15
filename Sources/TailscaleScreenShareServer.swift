@@ -97,8 +97,10 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// behalf (mid-drag entries the viewer never finished count too —
     /// they've already been added to the sharer's overlay via in-progress
     /// `.add` ops). Cleared incrementally as the viewer's own `.undo` /
-    /// `.clearAll` ops arrive, and en masse when the control listener
-    /// reports the connection closed — we fire `.undo` for each remaining
+    /// `.clearAll` ops arrive, wholesale (every connection's set) whenever
+    /// any `.clearAll` is broadcast — see `broadcastAnnotation` — and en
+    /// masse when the control listener reports the connection closed — we
+    /// fire `.undo` for each remaining
     /// UUID so the sharer's overlay (and every other viewer, via
     /// `broadcastAnnotation`) stops showing strokes nobody is around to
     /// clean up.
@@ -138,16 +140,54 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// sweep as connected viewers, using a longer timeout so the sharer
     /// has plausibly enough time to react. Matches the typical macOS
     /// notification banner dwell + a few seconds of user attention.
-    private let pendingApprovalTimeoutNs: UInt64 = 60_000_000_000
+    private let pendingApprovalTimeoutNs = TransportTuning.pendingApprovalTimeoutNs
 
     /// IP → hostname cache. Filled lazily by `resolveHostname` from the
     /// LocalAPI backend status. Avoids re-querying tsnet on every
     /// reconnect / KEEPALIVE storm. Cleared in `stop()`.
     private let peerNameCache = OSAllocatedUnfairLock<[String: String]>(initialState: [:])
 
-    /// Encoder bitrate the most recent `setup` produced, in bits/sec. The
-    /// adaptive-bitrate sweep treats this as the ceiling and never raises
-    /// above it. Recomputed on every encoder reinit (resolution change).
+    /// Quality knobs snapshotted at `start()` and reused for **every**
+    /// helper respawn, so a crash-restart mid-share can't silently pick up
+    /// different settings (fps/codec edits apply on the next share). The
+    /// one exception is the bandwidth ceiling, which live-applies via
+    /// `updateQualityCeiling` — that also folds the new value into this
+    /// snapshot so respawns spawn with the ceiling the user last set.
+    /// Locked: written from `start()`/`updateQualityCeiling` (MainActor)
+    /// and read from `startHelperCapture` and the helper's reader thread.
+    private let sessionQuality = OSAllocatedUnfairLock<QualitySettings>(initialState: .default)
+
+    /// Raw encoder-formula baseline (`w × h × bpp × fpsCap`) anchored on
+    /// each parameter-sets emit, *before* the user ceiling is applied.
+    /// Kept separate from `baselineBitrate` so raising or removing the
+    /// ceiling mid-share can recompute the effective baseline without
+    /// waiting for the next encoder reinit.
+    private let anchoredBaselineBitrate = OSAllocatedUnfairLock<Int>(initialState: 0)
+
+    /// Inputs that produced the current adaptive-bitrate anchor. Parameter
+    /// sets — and therefore `onEncoderResolution` — re-emit on *every* IDR
+    /// (roughly every 2 s under PLI-driven keyframes), so the anchor
+    /// handler compares against this and only resets the sweep's state
+    /// (`currentBitrate` / `lastBitrateChangeNs`) when the encoder
+    /// configuration genuinely changed; an unconditional reset would wipe
+    /// every cut and every recovery step within one hysteresis window.
+    /// Cleared per helper spawn so a fresh helper (whose encoder starts
+    /// back at the formula/ceiling bitrate) always re-anchors, and updated
+    /// by `updateQualityCeiling` so a live ceiling edit doesn't look like
+    /// a config change on the next IDR.
+    private struct AnchorInputs: Equatable {
+        let width: Int
+        let height: Int
+        let codec: VideoCodec
+        let fpsCap: Int
+        var ceilingBps: Int?
+    }
+    private let lastAnchorInputs = OSAllocatedUnfairLock<AnchorInputs?>(initialState: nil)
+
+    /// Effective adaptive-sweep ceiling: the anchored formula baseline
+    /// clamped by the user's bandwidth ceiling. The sweep never raises
+    /// above it. Recomputed on every encoder reinit (resolution change)
+    /// and on `updateQualityCeiling`.
     private let baselineBitrate = OSAllocatedUnfairLock<Int>(initialState: 0)
     /// Current applied bitrate. Set equal to baseline at encoder setup,
     /// then cut/raised by the adaptive sweep.
@@ -172,7 +212,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// Drop a viewer's frame once this many are already queued behind a stalled
     /// send, so a viewer that can't keep up sheds frames (UDP video tolerates
     /// loss; a PLI recovers) rather than accumulating unbounded latency/memory.
-    private static let maxQueuedVideoFramesPerViewer = 4
+    private static let maxQueuedVideoFramesPerViewer = TransportTuning.maxQueuedVideoFramesPerViewer
 
     /// A single shared tail for audio fan-out (sharer mic out plus
     /// viewer-to-viewer relay): every audio send chains through here so we
@@ -192,19 +232,23 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// "no video" disconnect and tore the whole call down. Clients send
     /// KEEPALIVE every 500 ms, so 15 s tolerates ~30 consecutive misses
     /// while still collecting a truly crashed viewer well before any
-    /// HELLO retry would.
-    private let viewerIdleTimeoutNs: UInt64 = 15_000_000_000
+    /// HELLO retry would. Must stay equal to the client's idle disconnect
+    /// — both are defined in `TransportTuning` to keep them coupled.
+    private let viewerIdleTimeoutNs = TransportTuning.viewerIdleTimeoutNs
 
     var onCaptureStopped: ((Error?) -> Void)?
     var onPreviewImage: ((NSImage) -> Void)?
 
-    /// JSON-encoded `PickerSelection` describing what the user
-    /// picked. Cached so `restartCapture()` can rebuild the SCStream
-    /// against the same content (display / window / app / multi-app)
-    /// without forcing the caller to track that state. Carried as
-    /// raw `Data` so the main process never has to know the schema
-    /// — the helper decodes it.
-    private var lastFilterData: Data?
+    /// JSON-encoded `PickerSelection` describing what the user picked —
+    /// set by `start()` and replaced by the most recent `changeSource`.
+    /// Cached so `restartCapture()` can rebuild the SCStream against the
+    /// same content (display / window / app / multi-app) without forcing
+    /// the caller to track that state. Carried as raw `Data` so the main
+    /// process never has to know the schema — the helper decodes it.
+    /// Locked: written from `start()` and the nonisolated-async
+    /// `changeSource`, read inside the detached restart tasks — cross-thread
+    /// like the class's other locked mutables.
+    private let lastFilterData = OSAllocatedUnfairLock<Data?>(initialState: nil)
 
     /// Helper-process wrapper. Owns the child Tailscreen process
     /// running `--capture-helper`, which holds the SCStream and
@@ -234,6 +278,11 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     private let h264Packetizer = H264Packetizer()
     private let h265Packetizer = H265Packetizer()
 
+    /// Total non-timeout receive-loop errors survived this session. Feeds
+    /// the give-up log line and `stop()`'s summary. Locked: bumped from the
+    /// receive task, read from `stop()`.
+    private let receiveLoopErrorTotal = OSAllocatedUnfairLock<Int>(initialState: 0)
+
     /// Sliding-window restart counter for helper-process crashes.
     /// Each unexpected exit pushes its timestamp; we tolerate up to
     /// 3 exits within a 30 s window, after which we give up and
@@ -255,7 +304,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// heartbeats ~1 Hz off *any* delivered SCStream sample, including the
     /// `.idle` frames a static screen still produces, so a healthy idle share
     /// never trips it.
-    private let helperLivenessTimeoutNs: UInt64 = 15_000_000_000
+    private let helperLivenessTimeoutNs = TransportTuning.helperLivenessTimeoutNs
     /// On by default; `TAILSCREEN_DISABLE_HELPER_WATCHDOG=1` is an escape hatch
     /// in case some hardware delivers idle frames too sparsely to keep the
     /// heartbeat alive and would otherwise trip false restarts.
@@ -316,17 +365,21 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// `PickerSelection` the picker subprocess produced. Pass `nil`
     /// only from tests that exercise the network/audio path and
     /// don't want the capture-helper subprocess to spawn — production
-    /// callers always pass a real selection.
+    /// callers always pass a real selection. `quality` is snapshotted
+    /// for the whole share session (see `sessionQuality`).
     func start(
         hostname: String = "tailscreen-server",
         authKey: String? = nil,
         path: String? = nil,
         controlURL: String = kDefaultControlURL,
         filterData: Data?,
+        quality: QualitySettings = .default,
         existingNode: TailscaleNode? = nil,
         controlListener: TailscreenControlListener? = nil
     ) async throws {
         guard !isRunning else { return }
+
+        sessionQuality.withLock { $0 = quality.normalized() }
 
         let node: TailscaleNode
         if let existing = existingNode {
@@ -418,7 +471,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         Task { [weak self] in await self?.sweepIdleViewers() }
         Task { [weak self] in await self?.adaptiveBitrateSweep() }
 
-        lastFilterData = filterData
+        lastFilterData.withLock { $0 = filterData }
         if let filterData {
             try startHelperCapture(filterData: filterData)
         } else {
@@ -456,7 +509,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
 
     /// Crash budget: give up after this many helper exits inside the sliding
     /// window (see `slidingWindowCrashCount`).
-    static let maxHelperCrashesPerWindow = 3
+    static let maxHelperCrashesPerWindow = TransportTuning.maxHelperCrashesPerWindow
 
     /// Pure sliding-window crash accounting: prune timestamps older than
     /// `windowNs`, record `nowNs`, and return how many crashes the window now
@@ -466,7 +519,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     static func slidingWindowCrashCount(
         _ stamps: inout [UInt64],
         appending nowNs: UInt64,
-        windowNs: UInt64 = 30_000_000_000
+        windowNs: UInt64 = TransportTuning.helperCrashWindowNs
     ) -> Int {
         stamps.removeAll { nowNs &- $0 > windowNs }
         stamps.append(nowNs)
@@ -475,6 +528,11 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
 
     private func startHelperCapture(filterData: Data) throws {
         let helper = HelperScreenCapture()
+        // Fresh helper ⇒ fresh anchor state: its encoder starts back at the
+        // formula/ceiling bitrate, so the first parameter-sets emit must
+        // re-anchor even if the resolution/codec are unchanged from the
+        // previous helper's.
+        lastAnchorInputs.withLock { $0 = nil }
         // Seed the liveness clock now so SCStream bring-up gets a full grace
         // window before the watchdog can fire, then tick it on every message.
         lastHelperActivityNs.withLock { $0 = DispatchTime.now().uptimeNanoseconds }
@@ -493,18 +551,42 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         }
         helper.onEncoderResolution = { [weak self] width, height in
             guard let self else { return }
-            // Anchor the adaptive-bitrate ceiling. `defaultBitsPerPixel`
-            // wants a codec; default to HEVC's value if helperCodec
-            // hasn't landed yet — encoder will overwrite it on its
-            // next emit anyway.
+            // Anchor the adaptive-bitrate ceiling. Parameter sets — and
+            // this callback — re-emit on *every* IDR, so re-anchor only
+            // when the inputs actually changed: an unconditional reset
+            // would wipe the sweep's currentBitrate/hysteresis state every
+            // couple of seconds and permanently defeat both cuts and
+            // recovery. `helperCodec` is already set here because the
+            // wrapper fires `onParameterSets` first (see the ordering
+            // invariant in HelperScreenCapture's readLoop); the HEVC
+            // default is a belt-and-braces fallback only. The fps factor
+            // comes from the same session snapshot the helper's encoder
+            // runs at, so the two ends of the formula can't diverge (this
+            // used to hardcode 60.0), and the user's bandwidth ceiling
+            // clamps the result exactly like the helper clamps its own
+            // DataRateLimits.
             let codec: VideoCodec = self.helperCodec ?? .hevc
+            let quality = self.sessionQuality.withLock { $0 }
+            let inputs = AnchorInputs(
+                width: width, height: height, codec: codec,
+                fpsCap: quality.fpsCap, ceilingBps: quality.maxBitrateBps)
+            let changed = self.lastAnchorInputs.withLock { last -> Bool in
+                guard last != inputs else { return false }
+                last = inputs
+                return true
+            }
+            guard changed else { return }
             let bpp = VideoEncoder.defaultBitsPerPixel(for: codec)
-            let baseline = Int(Double(width * height) * bpp * 60.0)
+            let anchor = VideoEncoder.computeBitrate(
+                width: width, height: height, fps: quality.fpsCap, bitsPerPixel: bpp)
+            self.anchoredBaselineBitrate.withLock { $0 = anchor }
+            let baseline = min(anchor, quality.maxBitrateBps ?? anchor)
             self.baselineBitrate.withLock { $0 = baseline }
             self.currentBitrate.withLock { $0 = baseline }
             self.lastBitrateChangeNs.withLock { $0 = DispatchTime.now().uptimeNanoseconds }
             self.logger.log(
-                "HelperScreenCapture: anchored baseline bitrate \(baseline / 1000) kbps for \(width)x\(height) \(codec)"
+                "HelperScreenCapture: anchored baseline bitrate \(baseline / 1000) kbps for "
+                    + "\(width)x\(height) \(codec) @\(quality.fpsCap)fps"
             )
         }
         helper.onPreviewImage = { [weak self] image in
@@ -582,7 +664,13 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
                         userInfo: [NSLocalizedDescriptionKey: "respawn failed: \(err)"]))
             }
         }
-        try helper.start(filterData: filterData, forceH264: forceH264.withLock { $0 })
+        // Quality knobs travel as env vars (the framed contentFilter
+        // payload stays schema-stable). Reading the session snapshot here
+        // means crash-restart respawns reuse the same fps/codec — and the
+        // latest live-applied bandwidth ceiling — automatically.
+        let qualityEnv = sessionQuality.withLock { $0 }.helperEnvironment()
+        try helper.start(
+            filterData: filterData, forceH264: forceH264.withLock { $0 }, qualityEnv: qualityEnv)
         helperCapture = helper
         logger.log("HelperScreenCapture started (filter=\(filterData.count)B)")
     }
@@ -613,21 +701,66 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         }
     }
 
+    /// Retarget capture to a new `PickerSelection` without touching the
+    /// UDP/TCP listeners, the viewer roster, the approval state, or the
+    /// annotation back-channel. Swaps the cached selection, then rides the
+    /// same tracked-restart path as `restartCapture()` — never spawning a
+    /// helper directly — so it inherits both orphan-safety properties of
+    /// `scheduleHelperRestart` (the `stop()` drain and the post-spawn
+    /// `isRunning` re-check). The crash budget is reset: the new target
+    /// deserves a fresh run of auto-restarts.
+    ///
+    /// A crash-triggered auto-restart racing this call is benign in either
+    /// order: both funnel through `scheduleHelperRestart` (which chains
+    /// restarts strictly), and `lastFilterData` already holds the new bytes.
+    ///
+    /// Returns `false` — without restarting anything — when the server is
+    /// not running, so a caller racing a concurrent `stop()` can tell the
+    /// no-op apart from a successful retarget and skip its success side
+    /// effects. Throws `CancellationError` when the share stops while the
+    /// restart is in flight (the restart task unwinds deliberately — the
+    /// stop path owns teardown).
+    ///
+    /// `forceH264` is deliberately left latched (viewer decode capability
+    /// didn't change with the source) and `parameterSets` / `helperCodec`
+    /// are left in place — the fresh helper overwrites them, in order,
+    /// before its first encoded AU broadcasts.
+    func changeSource(filterData: Data) async throws -> Bool {
+        guard isRunning else { return false }
+        lastFilterData.withLock { $0 = filterData }
+        // Schedule directly (rather than via `restartCapture()`) so a stop
+        // racing this call surfaces as the restart task's CancellationError
+        // instead of silently succeeding past restartCapture's own guard.
+        if let result = await scheduleHelperRestart(resetCrashBudget: true).value {
+            throw result
+        }
+        return true
+    }
+
     /// Spawn a fresh helper against the cached filter, wrapped in a tracked
     /// `Task` stored in `restartTask` so `stop()` can await it. Shared by the
-    /// AppState-driven `restartCapture()` and the helper's own
-    /// `onUnexpectedExit` auto-restart, so *both* respawn paths go through the
-    /// same guard. Two properties make it orphan-safe:
+    /// AppState-driven `restartCapture()` / `changeSource(filterData:)` and
+    /// the helper's own `onUnexpectedExit` auto-restart, so *every* respawn
+    /// path goes through the same guard. Three properties make it orphan-safe:
     ///
-    ///   1. `stop()` drains `restartTask` and awaits the in-flight work before
-    ///      nulling `helperCapture`, so a respawn can't finish *after* teardown
-    ///      unnoticed.
-    ///   2. The Task re-checks `isRunning` *after* `startHelperCapture` assigns
+    ///   1. Restarts are strictly serialized: the slot swap below is atomic
+    ///      (snapshot the previous occupant and install the new task under a
+    ///      single lock hold), and each new task's first act is to await its
+    ///      predecessor to completion. Two overlapping restarts (a crash
+    ///      auto-restart racing a `changeSource`) could otherwise both
+    ///      observe `helperCapture == nil`, both spawn helpers, and the
+    ///      second assignment would clobber the first — orphaning a live
+    ///      `--capture-helper` that keeps holding replayd's recording slot
+    ///      (the stuck-badge bug).
+    ///   2. `stop()` drains `restartTask` and awaits the in-flight work before
+    ///      nulling `helperCapture` — the slot always holds the *newest*
+    ///      restart, and awaiting it transitively drains the whole chain, so
+    ///      a respawn can't finish *after* teardown unnoticed.
+    ///   3. The Task re-checks `isRunning` *after* `startHelperCapture` assigns
     ///      `helperCapture` and tears the new helper back down if the share was
     ///      stopped meanwhile. This post-spawn check — not just the await — is
     ///      what prevents a Stop-Sharing that races the respawn from orphaning
-    ///      a child process holding replayd's recording slot (the stuck-badge
-    ///      bug).
+    ///      a child process holding replayd's recording slot.
     ///
     /// `resetCrashBudget` clears the sliding crash-window so the AppState-driven
     /// recovery path gets a fresh run of auto-restarts; the auto-restart path
@@ -635,42 +768,55 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     ///
     /// The slot is deliberately not cleared on completion: a finished `Task`
     /// left in `restartTask` is harmless (`stop()` awaits it and returns at
-    /// once), and *not* clearing avoids a clobber race where one restart nils
-    /// out a slot another restart just populated.
+    /// once, and chaining onto it is instant), and *not* clearing avoids a
+    /// clobber race where one restart nils out a slot another restart just
+    /// populated.
     @discardableResult
     private func scheduleHelperRestart(resetCrashBudget: Bool) -> Task<Error?, Never> {
-        let work = Task { [weak self] () -> Error? in
-            guard let self else { return nil }
-            if let existing = self.helperCapture {
-                self.helperCapture = nil
-                await existing.stop()
-            }
-            if resetCrashBudget {
-                self.helperCrashTimestampsNs.withLock { $0.removeAll() }
-            }
-            do {
-                guard self.isRunning else { throw CancellationError() }
-                guard let filterData = self.lastFilterData else {
-                    throw NSError(
-                        domain: "Tailscreen.HelperScreenCapture", code: 3,
-                        userInfo: [NSLocalizedDescriptionKey: "no cached filter to restart against"])
+        // Snapshot-and-install under one lock hold (property 1 above): any
+        // concurrent scheduleHelperRestart serializes on this lock, so each
+        // new task chains onto its true predecessor — never onto a stale
+        // snapshot taken before another restart slipped into the slot.
+        return restartTask.withLock { slot in
+            let previous = slot
+            let work = Task { [weak self] () -> Error? in
+                // Serialize restarts strictly: let the previous one finish
+                // (normally, or by unwinding from a stop-induced
+                // CancellationError) before touching `helperCapture`.
+                _ = await previous?.value
+                guard let self else { return nil }
+                if let existing = self.helperCapture {
+                    self.helperCapture = nil
+                    await existing.stop()
                 }
-                try self.startHelperCapture(filterData: filterData)
-            } catch {
+                if resetCrashBudget {
+                    self.helperCrashTimestampsNs.withLock { $0.removeAll() }
+                }
+                do {
+                    guard self.isRunning else { throw CancellationError() }
+                    let cachedFilter = self.lastFilterData.withLock { $0 }
+                    guard let filterData = cachedFilter else {
+                        throw NSError(
+                            domain: "Tailscreen.HelperScreenCapture", code: 3,
+                            userInfo: [NSLocalizedDescriptionKey: "no cached filter to restart against"])
+                    }
+                    try self.startHelperCapture(filterData: filterData)
+                } catch {
+                    if !self.isRunning {
+                        await self.helperCapture?.stop()
+                        self.helperCapture = nil
+                    }
+                    return error
+                }
                 if !self.isRunning {
                     await self.helperCapture?.stop()
                     self.helperCapture = nil
                 }
-                return error
+                return nil
             }
-            if !self.isRunning {
-                await self.helperCapture?.stop()
-                self.helperCapture = nil
-            }
-            return nil
+            slot = work
+            return work
         }
-        restartTask.withLock { $0 = work }
-        return work
     }
 
     /// Wire annotation + connection-close callbacks onto the
@@ -733,6 +879,21 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// sharer-painted strokes (no exclusion — sharer has no annotation
     /// connection) and viewer-to-viewer fan-out (exclude the source).
     func broadcastAnnotation(_ op: AnnotationOp, excludingConnection: UUID? = nil) async {
+        // A `.clearAll` wipes every stroke on every canvas — regardless of
+        // who originated it (the server's own "Change Source…" broadcast,
+        // the sharer's Clear All, or a viewer's fanned-out op). Retire every
+        // per-connection tracked UUID with it: leaving them tracked would
+        // replay spurious `.undo`s for already-cleared strokes on a later
+        // viewer disconnect, and via the sharer's `onAnnotationReceived` →
+        // `ensureSharerOverlay` those replays resurrect an already-torn-down
+        // sharer overlay. Same lock discipline as the inbound
+        // `trackAnnotationOp` path; keys stay (connections are still alive),
+        // only the tracked sets empty out.
+        if case .clearAll = op {
+            annotationsByConnection.withLock { state in
+                state = state.mapValues { _ in [] }
+            }
+        }
         await controlListener?.broadcast(.annotation(op), excluding: excludingConnection)
     }
 
@@ -755,22 +916,86 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         }
     }
 
+    /// `NSError` domain marking a dead UDP receive loop. AppState treats
+    /// this domain as non-recoverable: respawning the capture helper can't
+    /// fix a socket loop that can no longer read, so it goes straight to
+    /// `stopSharing` instead of the capture-restart path.
+    static let receiveLoopErrorDomain = "Tailscreen.ReceiveLoop"
+
+    /// Error surfaced through `onCaptureStopped` when the control-receive
+    /// loop gives up — `ReceiveLoopPolicy.maxConsecutiveErrors` in a row, or
+    /// the `maxErrorsPerWindow` windowed backstop.
+    private static func receiveLoopDeadError(underlying: Error) -> NSError {
+        NSError(
+            domain: receiveLoopErrorDomain,
+            code: 1,
+            userInfo: [
+                NSLocalizedDescriptionKey:
+                    "UDP receive loop gave up after repeated receive errors: \(underlying)"
+            ]
+        )
+    }
+
     /// Drains UDP datagrams and routes control bytes (HELLO/KEEPALIVE/BYE/PLI).
     /// RTP packets shouldn't arrive at the server; if they do (a confused
     /// client), they're dropped — we identify them by V=2 in byte 0.
+    ///
+    /// A non-timeout receive error used to kill this loop permanently, which
+    /// silently killed joins/keepalives/PLIs/viewer audio while the share
+    /// still looked active to the sharer. Each error now retries after a
+    /// capped exponential backoff (`ReceiveLoopPolicy`); a run of
+    /// `maxConsecutiveErrors` — or `maxErrorsPerWindow` inside the trailing
+    /// window, for a flapping socket whose errors interleave with timeouts —
+    /// means the socket is genuinely dead, and the share is torn down through
+    /// `onCaptureStopped`. A share whose control loop can't read is
+    /// unrecoverable.
+    ///
+    /// `TailscaleError.readFailed` is ambiguous: the benign 1 s poll timeout
+    /// and a dead fd (POLLHUP → instant return) both surface as it. Treating
+    /// every `readFailed` as a timeout let a dead socket busy-spin with the
+    /// error counter permanently reset, so the give-up ladder was
+    /// unreachable — the elapsed-time classification below tells them apart.
     private func receiveControlLoop() async {
         guard let pl = packetListener else { return }
+        var consecutiveErrors = 0
+        var errorStampsNs: [UInt64] = []
         while isRunning {
+            let recvStartNs = DispatchTime.now().uptimeNanoseconds
             do {
                 let (data, from) = try await pl.recv(timeout: 1_000)
+                consecutiveErrors = 0
                 handleIncoming(data: data, from: from)
-            } catch TailscaleError.readFailed {
-                continue  // poll timeout, just keep polling
             } catch {
-                if isRunning {
-                    logger.log("Server: receive error: \(error)")
+                guard isRunning else { break }
+                if case TailscaleError.readFailed = error {
+                    let elapsedNs = DispatchTime.now().uptimeNanoseconds &- recvStartNs
+                    if !ReceiveLoopPolicy.classifyReadFailedAsError(elapsedNs: elapsedNs) {
+                        consecutiveErrors = 0
+                        continue  // poll timeout, just keep polling
+                    }
+                    // Near-instant readFailed = dead fd; fall through and
+                    // count it like any other receive error.
                 }
-                break
+                consecutiveErrors += 1
+                let nowNs = DispatchTime.now().uptimeNanoseconds
+                let windowCount = ReceiveLoopPolicy.slidingWindowErrorCount(&errorStampsNs, appending: nowNs)
+                let total = receiveLoopErrorTotal.withLock { count -> Int in
+                    count += 1
+                    return count
+                }
+                logger.log(
+                    "Server: receive error #\(consecutiveErrors) (\(windowCount) in window, total \(total)): \(error)"
+                )
+                let deadConsecutive = consecutiveErrors >= ReceiveLoopPolicy.maxConsecutiveErrors
+                let deadWindowed = windowCount >= ReceiveLoopPolicy.maxErrorsPerWindow
+                if deadConsecutive || deadWindowed {
+                    let detail = "\(consecutiveErrors) consecutive, \(windowCount) in window, \(total) total"
+                    logger.log("Server: receive loop dead (\(detail)) — stopping share")
+                    onCaptureStopped?(Self.receiveLoopDeadError(underlying: error))
+                    break
+                }
+                try? await Task.sleep(
+                    nanoseconds: ReceiveLoopPolicy.retryDelayNs(consecutiveErrors: consecutiveErrors))
             }
         }
     }
@@ -1380,7 +1605,6 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             let current = currentBitrate.withLock { $0 }
             let lastChange = lastBitrateChangeNs.withLock { $0 }
             guard baseline > 0 else { continue }
-            let floor = max(baseline * 3 / 10, 500_000)  // 30 % of baseline, never below 500 kbps
             let now = DispatchTime.now().uptimeNanoseconds
 
             let worstPLIs = viewers.withLock { state -> Int in
@@ -1420,8 +1644,9 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// loss exceeds `lossThreshold` and the down-hysteresis has elapsed; recover
     /// +10 % (min 100 kbps step, capped at baseline) after a clean window once
     /// the longer up-hysteresis has elapsed. Asymmetric hysteresis makes cuts
-    /// fast and recovery slow. Extracted from the sweep so the math is unit
-    /// testable without a live encoder.
+    /// fast and recovery slow. A `current` above `baseline` clamps straight
+    /// down to it with no hysteresis (see below). Extracted from the sweep so
+    /// the math is unit testable without a live encoder.
     static func nextAdaptiveBitrate(
         worstPLIs: Int,
         current: Int,
@@ -1432,7 +1657,15 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         upHysteresisNs: UInt64 = 10_000_000_000
     ) -> Int? {
         guard baseline > 0 else { return nil }
-        let floor = max(baseline * 3 / 10, 500_000)  // 30 % of baseline, never below 500 kbps
+        // Self-heal: a mid-share ceiling drop can race an in-flight sweep
+        // apply and leave `current` parked above the (new, lower) baseline,
+        // where neither arm below would ever fire on a loss-free link (the
+        // raise arm requires current < baseline). Clamp straight down, no
+        // hysteresis — the encoder should never run above the effective
+        // ceiling.
+        if current > baseline { return baseline }
+        // 30 % of baseline, never below 500 kbps (see TransportTuning).
+        let floor = TransportTuning.adaptiveBitrateFloor(baseline: baseline)
         if worstPLIs > lossThreshold && elapsedSinceChangeNs >= downHysteresisNs && current > floor {
             return max(floor, current * 3 / 4)  // -25 %
         } else if worstPLIs == 0 && elapsedSinceChangeNs >= upHysteresisNs && current < baseline {
@@ -1459,6 +1692,44 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         let kbps = Double(bitrate) / 1000.0
         let prevKbps = Double(prev) / 1000.0
         logger.log("Adaptive bitrate: \(Int(prevKbps)) → \(Int(kbps)) kbps (\(reason))")
+    }
+
+    /// Live-apply a new user bandwidth ceiling mid-share (`nil` = back to
+    /// automatic). fps / codec edits need a helper respawn and deliberately
+    /// wait for the next share, but the ceiling rides the existing
+    /// `setBitrate` wire message, so Settings changes take effect at once.
+    /// Recomputes `baselineBitrate = min(anchoredBaseline, ceiling)` and
+    /// pushes the current bitrate down if it now exceeds the new baseline;
+    /// a raised (or removed) ceiling instead lets the adaptive sweep
+    /// recover gradually toward the new baseline. Also folds the value
+    /// into the session snapshot so a crash-restart respawn spawns the
+    /// helper with the ceiling the user last set. Safe to call while not
+    /// sharing (no-ops until an encoder anchors a baseline).
+    func updateQualityCeiling(_ bps: Int?) {
+        // Same clamp/rounding as persistence (`normalized()`), so the live
+        // path can't disagree with what the Settings pane stores.
+        let ceiling = QualitySettings.normalizedCeiling(bps)
+        let changed = sessionQuality.withLock { quality -> Bool in
+            guard quality.maxBitrateBps != ceiling else { return false }
+            quality.maxBitrateBps = ceiling
+            return true
+        }
+        guard changed else { return }
+        // Fold the new ceiling into the anchor inputs so the next IDR's
+        // parameter-sets emit doesn't read as a config change and re-anchor
+        // over the adjustment applied below.
+        lastAnchorInputs.withLock { $0?.ceilingBps = ceiling }
+        let anchor = anchoredBaselineBitrate.withLock { $0 }
+        // No encoder anchored yet — the snapshot applies at anchor time.
+        guard anchor > 0 else { return }
+        let newBaseline = min(anchor, ceiling ?? anchor)
+        baselineBitrate.withLock { $0 = newBaseline }
+        let current = currentBitrate.withLock { $0 }
+        if current > newBaseline {
+            applyAdaptiveBitrate(newBaseline, reason: "user bandwidth ceiling")
+        } else {
+            logger.log("Quality ceiling: baseline now \(newBaseline / 1000) kbps")
+        }
     }
 
     /// Convert an encoded AVCC access unit into RTP packets and fan them out
@@ -1654,6 +1925,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         await helperCapture?.stop()
         helperCapture = nil
         helperCodec = nil
+        lastAnchorInputs.withLock { $0 = nil }
         logger.log("Server stop: capture done")
 
         viewers.withLock { $0.removeAll() }
@@ -1670,6 +1942,15 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         await packetListener?.close()
         packetListener = nil
         logger.log("Server stop: packet listener closed")
+
+        let receiveErrors = receiveLoopErrorTotal.withLock { count -> Int in
+            let total = count
+            count = 0
+            return total
+        }
+        if receiveErrors > 0 {
+            logger.log("Server stop: receive loop survived \(receiveErrors) error(s) this session")
+        }
 
         // Wipe per-connection annotation-UUID state before clearing the
         // handlers so the cleanup path in `installControlHandlers` doesn't
