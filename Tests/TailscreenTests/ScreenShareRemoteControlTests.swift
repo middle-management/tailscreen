@@ -168,4 +168,65 @@ final class ScreenShareRemoteControlTests: XCTestCase {
         await client.disconnect()
         await server.stop()
     }
+
+    /// "Allow control requests" off: an admitted viewer's `.controlRequest`
+    /// is declined immediately with `.controlRevoked` (its UI leaves the
+    /// requested state instead of waiting forever), and the request never
+    /// surfaces to the sharer (`onControlRequestsChanged` never fires).
+    func testControlRequestsDisabledDeclinesImmediately() async throws {
+        let env = try TailscreenE2E.loadEnvOrSkip()
+        let dirs = try TailscreenE2E.makeStateDirs(testCase: self, label: "rc-disabled")
+        let box = Box()
+
+        let server = TailscaleScreenShareServer()
+        server.grantBypassesAccessibilityForTesting = true
+        server.setAllowControlRequests(false)
+        server.onControlRequestsChanged = { requests in
+            if let first = requests.first { box.setRequestID(first.id) }
+        }
+
+        try await server.start(
+            hostname: TailscreenE2E.makeHostname("rc-off-server"),
+            authKey: env.authKey,
+            path: dirs.server,
+            controlURL: env.controlURL,
+            filterData: nil
+        )
+        addTeardownBlock { Task { await server.stop() } }
+
+        let ips = try await server.getIPAddresses()
+        guard let serverIP = ips.ip4 ?? ips.ip6 else {
+            XCTFail("server has no tailnet IP")
+            return
+        }
+
+        let renderer = await MainActor.run { MetalViewerRenderer() }
+        let client = TailscaleScreenShareClient(renderer: renderer)
+
+        let registered = expectation(description: "viewer registered")
+        client.onAudioSSRCAssigned = { _ in registered.fulfill() }
+        let declined = expectation(description: "viewer received controlRevoked decline")
+        declined.assertForOverFulfill = false
+        client.onControlRevoked = { _ in declined.fulfill() }
+
+        try await client.connect(
+            to: serverIP, port: NetworkConfig.tailscreenPort,
+            authKey: env.authKey, path: dirs.client, controlURL: env.controlURL)
+        addTeardownBlock { Task { await client.disconnect() } }
+        await fulfillment(of: [registered], timeout: 30)
+
+        // Let the TCP back-channel come up, then ask for control.
+        try await Task.sleep(for: .milliseconds(500))
+        for _ in 0..<10 {
+            await client.requestControl()
+            try await Task.sleep(for: .milliseconds(200))
+        }
+        await fulfillment(of: [declined], timeout: 10)
+        XCTAssertNil(
+            box.currentRequestID,
+            "a declined request must never surface to the sharer UI")
+
+        await client.disconnect()
+        await server.stop()
+    }
 }

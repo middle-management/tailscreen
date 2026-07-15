@@ -103,4 +103,62 @@ final class RemoteControlPolicyTests: XCTestCase {
         XCTAssertFalse(limiter.allow(nowNs: 999_000_000))
         XCTAssertTrue(limiter.allow(nowNs: 1_000_000_001))
     }
+
+    // MARK: - Control-request notification dedupe (per viewer IP per share)
+
+    private func request(_ ip: String, id: UUID = UUID()) -> ControlRequestInfo {
+        ControlRequestInfo(id: id, viewerIP: ip, hostname: nil, arrivedAt: Date())
+    }
+
+    func testNotificationDedupeFiresOncePerIP() {
+        let first = request("100.64.0.7")
+        let initial = AppState.controlRequestNotificationDecision(
+            requests: [first], previouslyNotifiedIPs: [])
+        XCTAssertEqual(initial.notify.map(\.id), [first.id])
+        XCTAssertEqual(initial.notifiedIPs, ["100.64.0.7"])
+
+        // Reconnect-and-request spam: same IP, fresh connection UUID every
+        // time. The connectionID-keyed dedupe this replaces notified on every
+        // one of these; the IP-keyed decision must notify on none.
+        let respam = request("100.64.0.7")
+        let second = AppState.controlRequestNotificationDecision(
+            requests: [respam], previouslyNotifiedIPs: initial.notifiedIPs)
+        XCTAssertTrue(second.notify.isEmpty, "a re-request from a notified IP must not re-notify")
+        XCTAssertEqual(second.notifiedIPs, ["100.64.0.7"])
+    }
+
+    func testNotificationDedupeStillNotifiesNewIPs() {
+        let known = request("100.64.0.7")
+        let newcomer = request("100.64.0.9")
+        let decision = AppState.controlRequestNotificationDecision(
+            requests: [known, newcomer], previouslyNotifiedIPs: ["100.64.0.7"])
+        XCTAssertEqual(decision.notify.map(\.viewerIP), ["100.64.0.9"])
+        XCTAssertEqual(decision.notifiedIPs, ["100.64.0.7", "100.64.0.9"])
+    }
+
+    func testNotificationDedupeNotifiesOneIPOncePerBatch() {
+        // Two live requests from the same IP in one snapshot (parallel
+        // connections): a single notification.
+        let a = request("100.64.0.7")
+        let b = request("100.64.0.7")
+        let decision = AppState.controlRequestNotificationDecision(
+            requests: [a, b], previouslyNotifiedIPs: [])
+        XCTAssertEqual(decision.notify.count, 1)
+        XCTAssertEqual(decision.notifiedIPs, ["100.64.0.7"])
+    }
+
+    // MARK: - RemoteControlDefaults persistence
+
+    func testRemoteControlDefaultsDefaultOnAndRoundTrip() throws {
+        let suiteName = "RemoteControlDefaultsTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        XCTAssertTrue(
+            RemoteControlDefaults.load(defaults: defaults),
+            "allowControlRequests must default on for untouched installs")
+        RemoteControlDefaults.save(false, defaults: defaults)
+        XCTAssertFalse(RemoteControlDefaults.load(defaults: defaults), "explicit opt-out sticks")
+        RemoteControlDefaults.save(true, defaults: defaults)
+        XCTAssertTrue(RemoteControlDefaults.load(defaults: defaults))
+    }
 }

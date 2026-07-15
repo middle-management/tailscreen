@@ -182,6 +182,10 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     private let remoteControlInjector = RemoteControlInjector()
     /// Log a dropped (non-grantee) input event at most once per share.
     private let droppedInputLogged = OSAllocatedUnfairLock<Bool>(initialState: false)
+    /// Sharer preference gate on `.controlRequest` (see
+    /// `setAllowControlRequests`). Defaults on; when off, requests are
+    /// declined immediately with `.controlRevoked` so the viewer's UI clears.
+    private let controlRequestsAllowed = OSAllocatedUnfairLock<Bool>(initialState: true)
 
     /// Fires whenever the set of pending control requests changes. Snapshot;
     /// replace the UI list wholesale. Runs on any thread — bounce to MainActor.
@@ -1278,6 +1282,16 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
                 self.logger.log("Dropped control request from non-admitted peer \(peerAddress ?? "unknown")")
                 return
             }
+            // Sharer preference: control requests disabled entirely. Reply
+            // with `.controlRevoked` on the same connection (rather than
+            // minting a new message type) so the viewer's UI leaves its
+            // "requested" state immediately instead of waiting forever —
+            // old viewers already handle it.
+            guard self.controlRequestsAllowed.withLock({ $0 }) else {
+                self.sendControlRevoked(to: connectionID, reason: "control requests disabled")
+                self.logger.log("Declined control request from \(peerIP) (control requests disabled)")
+                return
+            }
             self.recordControlRequest(connectionID: connectionID, ip: peerIP)
         }
         listener.onInputEvent = { [weak self] event, connectionID, _ in
@@ -2030,8 +2044,8 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
                 }
                 var ssrc: UInt32
                 repeat {
-                    // Start at 2: sharer voice owns 0, system audio owns 1.
-                    ssrc = UInt32.random(in: 2...UInt32.max)
+                    // Sharer voice owns 0, system audio owns 1 (see RTPHeader).
+                    ssrc = UInt32.random(in: RTPHeader.firstViewerSSRC...UInt32.max)
                 } while state.values.contains(where: { $0.audioSSRC == ssrc })
                 state[addr] = PendingViewer(addr: addr, audioSSRC: ssrc, lastSeenNs: now)
                 return true
@@ -2071,12 +2085,12 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             }
             var newAudioSSRC: UInt32
             repeat {
-                // Start at 2: sharer voice owns 0, system audio owns 1.
-                newAudioSSRC = UInt32.random(in: 2...UInt32.max)
+                // Sharer voice owns 0, system audio owns 1 (see RTPHeader).
+                newAudioSSRC = UInt32.random(in: RTPHeader.firstViewerSSRC...UInt32.max)
             } while state.values.contains(where: { $0.audioSSRC == newAudioSSRC })
             let v = Viewer(
                 addr: addr,
-                ssrc: UInt32.random(in: 2...UInt32.max),
+                ssrc: UInt32.random(in: RTPHeader.firstViewerSSRC...UInt32.max),
                 audioSSRC: newAudioSSRC,
                 nextSequence: UInt16.random(in: 0...UInt16.max),
                 lastSeenNs: now
@@ -3303,6 +3317,15 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         guard let pl = packetListener else { return }
         let recipients = viewers.withLock { Array($0.keys) }
         enqueueAudioPackets(packet, to: recipients, on: pl)
+    }
+
+    /// Enable/disable the "viewers may ask for remote control" gate. Called
+    /// from the MainActor by `AppState` — at share start (before viewers can
+    /// race a request in) and live when the Settings toggle flips. Turning it
+    /// off doesn't revoke an existing grant (the sharer granted that
+    /// explicitly; the Stop button / ⌃⌥. handles it) — it only stops new asks.
+    func setAllowControlRequests(_ on: Bool) {
+        controlRequestsAllowed.withLock { $0 = on }
     }
 
     /// Enable/disable sharing system audio to viewers. Stores the latch (so a

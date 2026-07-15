@@ -158,4 +158,77 @@ final class NACKSchedulerTests: XCTestCase {
         XCTAssertEqual(split[1].pid, 20)
         XCTAssertEqual(split[1].blp, 0)
     }
+
+    // MARK: - Sequence wraparound (65535 → 0)
+
+    func testGapAcrossWrapIsTrackedAndNACKed() {
+        // Gap opened across the 16-bit boundary: observing 65534 then 2 must
+        // open gaps {65535, 0, 1} — all tracked and all NACKed together.
+        var sched = NACKScheduler()
+        XCTAssertTrue(sched.observe(seq: 65534, nowNs: 0).isEmpty)
+        XCTAssertTrue(sched.observe(seq: 2, nowNs: 0).isEmpty)
+        XCTAssertTrue(sched.hasOpenGaps)
+        // fciCappedSeqs sorts numerically, so the datagram covers [0, 1, 65535].
+        XCTAssertEqual(sched.tick(nowNs: 20 * ms), [.sendNACK([0, 1, 65535])])
+    }
+
+    func testStragglerAcrossWrapFillsGapAndFeedsRTT() {
+        // A retransmit that lands on the far side of the wrap clears its gap
+        // (no PLI) and its NACK→retransmit round trip feeds the RTT sample.
+        var sched = NACKScheduler(initialRTTNs: 60_000_000)
+        _ = sched.observe(seq: 65534, nowNs: 0)
+        _ = sched.observe(seq: 1, nowNs: 0)  // gaps {65535, 0}
+        XCTAssertEqual(sched.tick(nowNs: 20 * ms), [.sendNACK([0, 65535])])
+        // Both retransmits land 40 ms after the NACK (inside the re-NACK
+        // interval, so no re-NACK fires while the second gap is still open).
+        XCTAssertTrue(sched.observe(seq: 65535, nowNs: 60 * ms).isEmpty)
+        XCTAssertTrue(sched.observe(seq: 0, nowNs: 60 * ms).isEmpty)
+        XCTAssertFalse(sched.hasOpenGaps)
+        // EMA after two 40 ms samples: 60 → 57.5 → 55.3125 ms.
+        XCTAssertEqual(sched.rttEstimateNs, 55_312_500)
+        // Nothing left to abandon: no PLI on later ticks.
+        XCTAssertTrue(sched.tick(nowNs: 2 * s).isEmpty)
+    }
+
+    func testLargeSeqJumpAcrossWrapFallsBackToPLI() {
+        // A >maxGaps discontinuity computed ACROSS the wrap must still be
+        // classified as a discontinuity (wrap-safe `&-` distance), → PLI.
+        var sched = NACKScheduler()
+        _ = sched.observe(seq: 65530, nowNs: 0)
+        let actions = sched.observe(seq: 65530 &+ 300, nowNs: 1 * ms)
+        XCTAssertEqual(actions, [.sendPLI])
+        XCTAssertFalse(sched.hasOpenGaps)
+    }
+
+    func testPackFCIWrapPinsCurrentTwoGroupBehavior() {
+        // PINS CURRENT BEHAVIOR: packFCI uses a plain numeric sort, which is
+        // not wrap-aware — a gap set spanning the wrap splits into TWO FCI
+        // groups ([0,1] and [65534,65535]) instead of one. That's an
+        // efficiency wart, not a correctness bug: every seq is still covered
+        // (decodeNACK / the server's lookup are per-seq). If you "fix" the
+        // sort to be wrap-aware, update this test — and make sure no seq is
+        // dropped in the process, which is the invariant that matters.
+        let entries = NACKScheduler.packFCI([65534, 65535, 0, 1])
+        XCTAssertEqual(entries.count, 2, "wrap-spanning set currently splits at the boundary")
+        XCTAssertEqual(entries[0].pid, 0)
+        XCTAssertEqual(entries[0].blp, 0b1)  // covers 1
+        XCTAssertEqual(entries[1].pid, 65534)
+        XCTAssertEqual(entries[1].blp, 0b1)  // covers 65535
+        // Coverage invariant: expanding the entries yields exactly the input.
+        var covered: Set<UInt16> = []
+        for entry in entries {
+            covered.insert(entry.pid)
+            for bit in 0..<16 where entry.blp & (1 << bit) != 0 {
+                covered.insert(entry.pid &+ UInt16(bit) &+ 1)
+            }
+        }
+        XCTAssertEqual(covered, [65534, 65535, 0, 1])
+    }
+
+    func testFCICappedSeqsWrapCoversEverySeq() {
+        // Same wrap set through the datagram-capping path: still two groups'
+        // worth, but every seq goes on the wire (none silently dropped).
+        let onWire = NACKScheduler.fciCappedSeqs([65534, 65535, 0, 1])
+        XCTAssertEqual(Set(onWire), [65534, 65535, 0, 1])
+    }
 }

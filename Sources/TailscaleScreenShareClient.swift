@@ -59,12 +59,10 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     /// Gap tracker driving NACK-based selective retransmission. Consulted only
     /// once the server advertised `.nack`.
     private var nackScheduler = NACKScheduler()
-    /// Receiver-report accounting (video packets only), reset each report.
-    private var rrHighestSeq: UInt16?
-    private var rrSeqCycles: UInt32 = 0
-    private var rrExpectedBaseSeq: UInt32 = 0
-    private var rrReceivedSinceReport: Int = 0
-    private var rrHasBaseline = false
+    /// Receiver-report accounting (video packets only). Pure `RRAccounting`
+    /// value — baseline/duplicate math lives there so `RRAccountingTests`
+    /// covers it on CI; this class just feeds it seqs and ships the report.
+    private var rrAccounting = RRAccounting()
     private var lastRRSentNs: UInt64 = 0
     /// Server uptime from the last PING, and our local uptime at its arrival —
     /// echoed in the next report so the sharer can compute RTT.
@@ -857,11 +855,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         negotiatedCaps = []
         nackScheduler = NACKScheduler()
         depacketizer = MultiCodecDepacketizer()
-        rrHighestSeq = nil
-        rrSeqCycles = 0
-        rrExpectedBaseSeq = 0
-        rrReceivedSinceReport = 0
-        rrHasBaseline = false
+        rrAccounting = RRAccounting()
         lastRRSentNs = 0
         lastServerPingNs = 0
         lastPingArrivalNs = 0
@@ -874,7 +868,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     /// the NACK scheduler (when NACK was negotiated). Dispatches any NACK/PLI
     /// actions the scheduler emits.
     private func handleVideoFeedback(seq: UInt16, nowNs: UInt64) async {
-        if negotiatedCaps.contains(.receiverReport) { recordRRPacket(seq: seq) }
+        if negotiatedCaps.contains(.receiverReport) { rrAccounting.observe(seq: seq) }
         guard negotiatedCaps.contains(.nack) else { return }
         for action in nackScheduler.observe(seq: seq, nowNs: nowNs) {
             await dispatchNACKAction(action)
@@ -909,50 +903,25 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         }
     }
 
-    /// Update the running receiver-report counters for one video packet.
-    private func recordRRPacket(seq: UInt16) {
-        rrReceivedSinceReport += 1
-        guard let highest = rrHighestSeq else {
-            rrHighestSeq = seq
-            rrExpectedBaseSeq = UInt32(seq)
-            rrHasBaseline = true
-            return
-        }
-        let forward = seq &- highest
-        if forward != 0 && forward < UInt16(1 << 15) {
-            if seq < highest { rrSeqCycles &+= 1 }  // wrapped past 0xFFFF
-            rrHighestSeq = seq
-        }
-    }
-
     /// Build and send the RTCP-RR-style receiver report, then reset the
-    /// per-interval accounting.
+    /// per-interval accounting (both handled by `RRAccounting.makeReport`).
     private func sendReceiverReport(now: UInt64) async {
         guard isConnected, let pl = packetListener, let addr = serverAddr else { return }
-        guard rrHasBaseline, let highest = rrHighestSeq else {
+        guard let (fracLostQ8, extHighestSeq) = rrAccounting.makeReport() else {
             lastRRSentNs = now
             return
-        }
-        let extHighest = (rrSeqCycles << 16) | UInt32(highest)
-        let expected = extHighest >= rrExpectedBaseSeq ? Int(extHighest &- rrExpectedBaseSeq) : 0
-        var fracQ8 = 0
-        if expected > 0 {
-            let lost = max(0, expected - rrReceivedSinceReport)
-            fracQ8 = min(255, lost * 256 / expected)
         }
         var delayMs: UInt16 = 0
         if lastPingArrivalNs != 0 {
             delayMs = UInt16(min(65535, (now &- lastPingArrivalNs) / 1_000_000))
         }
         let report = ReceiverReport(
-            fracLostQ8: UInt8(fracQ8),
-            extHighestSeq: extHighest,
+            fracLostQ8: fracLostQ8,
+            extHighestSeq: extHighestSeq,
             jitterTicks: 0,
             lastPingTs: lastServerPingNs,
             delaySincePingMs: delayMs)
         try? await pl.send(ScreenShareControlMessage.encodeReceiverReport(report), to: addr)
-        rrExpectedBaseSeq = extHighest
-        rrReceivedSinceReport = 0
         lastRRSentNs = now
     }
 

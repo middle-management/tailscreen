@@ -234,7 +234,7 @@ final class HelperScreenCapture: @unchecked Sendable {
                 // the session's first anchor with `helperCodec == nil`
                 // (HEVC's bpp) even for an H.264 session. Both handlers are
                 // otherwise independent, so the swap is side-effect-free.
-                if let params = decodeParameterSets(payload) {
+                if let params = Self.decodeParameterSets(payload) {
                     if !debugParamsLogged {
                         debugParamsLogged = true
                         switch params {
@@ -249,8 +249,8 @@ final class HelperScreenCapture: @unchecked Sendable {
                     onParameterSets?(params)
                 }
                 if payload.count >= 9 {
-                    let w = Int(readBE32(payload, offset: 1))
-                    let h = Int(readBE32(payload, offset: 5))
+                    let w = Int(Self.readBE32(payload, offset: 1))
+                    let h = Int(Self.readBE32(payload, offset: 5))
                     if w > 0 && h > 0 {
                         onEncoderResolution?(w, h)
                     }
@@ -281,10 +281,16 @@ final class HelperScreenCapture: @unchecked Sendable {
         }
     }
 
-    private func decodeParameterSets(_ data: Data) -> CodecParameterSets? {
+    /// Parse a `parameterSets` payload. All indexing is `startIndex`-relative
+    /// so the parser is correct for `Data` *slices* too, not just zero-based
+    /// buffers — the historical absolute-offset `readBE32` only worked because
+    /// `HelperFrameReader.readExactly` always hands over a fresh zero-based
+    /// `Data`; a slice would have trapped. Internal (not private) so
+    /// `ParserFuzzTests` can feed it hostile bytes and re-based slices.
+    static func decodeParameterSets(_ data: Data) -> CodecParameterSets? {
         // Layout: [codec:1][width:4 BE][height:4 BE][count:4 BE]([len:4 BE][data:N])*
         guard data.count >= 13 else { return nil }
-        let codec = data[0]
+        let codec = data[data.startIndex]
         // width/height are informational only; CodecParameterSets carries
         // just the NAL byte arrays.
         let count = readBE32(data, offset: 9)
@@ -294,8 +300,10 @@ final class HelperScreenCapture: @unchecked Sendable {
             guard cursor + 4 <= data.count else { return nil }
             let len = Int(readBE32(data, offset: cursor))
             cursor += 4
-            guard cursor + len <= data.count else { return nil }
-            paramSets.append(data.subdata(in: cursor..<cursor + len))
+            guard len <= data.count - cursor else { return nil }
+            let start = data.index(data.startIndex, offsetBy: cursor)
+            let end = data.index(start, offsetBy: len)
+            paramSets.append(Data(data[start..<end]))
             cursor += len
         }
         switch codec {
@@ -310,11 +318,15 @@ final class HelperScreenCapture: @unchecked Sendable {
         }
     }
 
-    private func readBE32(_ data: Data, offset: Int) -> UInt32 {
-        let b0 = UInt32(data[offset])
-        let b1 = UInt32(data[offset + 1])
-        let b2 = UInt32(data[offset + 2])
-        let b3 = UInt32(data[offset + 3])
+    /// Big-endian UInt32 at `offset` bytes past `data.startIndex` —
+    /// slice-safe, unlike absolute `data[offset]` subscripting. Caller
+    /// guarantees `offset + 4 <= data.count`.
+    private static func readBE32(_ data: Data, offset: Int) -> UInt32 {
+        let base = data.index(data.startIndex, offsetBy: offset)
+        let b0 = UInt32(data[base])
+        let b1 = UInt32(data[data.index(base, offsetBy: 1)])
+        let b2 = UInt32(data[data.index(base, offsetBy: 2)])
+        let b3 = UInt32(data[data.index(base, offsetBy: 3)])
         return (b0 << 24) | (b1 << 16) | (b2 << 8) | b3
     }
 }

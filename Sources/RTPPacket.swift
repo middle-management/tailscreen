@@ -37,7 +37,7 @@ import Foundation
 ///                       fallback than CODEC_NO (stay on HEVC, just drop to
 ///                       8-bit) for the 10-bit/HDR path.
 ///     0x80..0xBF        RTP packet (V=2)
-enum ScreenShareControlMessage: UInt8 {
+enum ScreenShareControlMessage: UInt8, CaseIterable {
     case hello = 0x00
     case keepalive = 0x01
     case bye = 0x02
@@ -298,6 +298,12 @@ struct RTPHeader {
     /// kept disjoint on purpose: sharer voice owns 0, system audio owns 1,
     /// and viewer-assigned SSRCs start at 2 (see the server's allocation).
     static let systemAudioSSRC: UInt32 = 1
+    /// Lowest SSRC the server may assign to a viewer. SSRCs below it are
+    /// reserved (sharer voice owns 0, system audio owns `systemAudioSSRC`);
+    /// the server's allocation loop draws from `firstViewerSSRC...UInt32.max`.
+    /// Pinned by `WireByteRegistryTests` — renumbering breaks the disjoint
+    /// SSRC spaces deployed peers rely on.
+    static let firstViewerSSRC: UInt32 = 2
     /// RTP clock rate for AAC audio at 48 kHz.
     static let audioClockHz: UInt32 = 48_000
     static let clockHz: UInt32 = 90_000

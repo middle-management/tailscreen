@@ -32,6 +32,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: recursive  # Initialize all submodules
+          # Full history so the diff-coverage gate can diff against the
+          # PR's base (origin/main).
+          fetch-depth: 0
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -100,6 +103,58 @@ jobs:
             .build/**/codecov/default.profdata
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Diff coverage gate (warn-only)
+        # Fails when < 70 % of the changed executable Sources/ lines are
+        # covered, printing the uncovered file:line list. Currently
+        # informational (continue-on-error: true), same convention as the
+        # `format` job: observe it across a few real PRs first, then flip
+        # to required.
+        # TODO: drop `continue-on-error` once the gate is observed stable.
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        env:
+          PKG_CONFIG_PATH: ${{ github.workspace }}/TailscaleKitPackage
+        run: |
+          set -u
+          BUILD_BIN_PATH="$(swift build --show-bin-path 2>/dev/null || echo)"
+          PROFDATA="${BUILD_BIN_PATH}/codecov/default.profdata"
+          XCTEST_BUNDLE="$(find "${BUILD_BIN_PATH}" -maxdepth 2 -name '*.xctest' | head -n1 || true)"
+          if [ -z "${XCTEST_BUNDLE}" ] || [ ! -f "${PROFDATA}" ]; then
+            echo "::warning::diff-coverage: could not locate coverage data — skipping"
+            exit 0
+          fi
+          XCTEST_BIN="${XCTEST_BUNDLE}/Contents/MacOS/$(basename "${XCTEST_BUNDLE}" .xctest)"
+          if [ ! -x "${XCTEST_BIN}" ]; then
+            XCTEST_BIN="$(find "${XCTEST_BUNDLE}" -type f -perm -u+x | head -n1)"
+          fi
+          xcrun llvm-cov export -format=lcov \
+            -instr-profile="${PROFDATA}" \
+            -ignore-filename-regex='\.build/|Tests/' \
+            "${XCTEST_BIN}" > coverage.lcov
+          ./scripts/diff-coverage.sh coverage.lcov "origin/${{ github.base_ref }}" 70
+
+  # Release-config compile check: -O + cross-module optimization + stripped
+  # assert()s surface a different class of errors than debug builds, and
+  # before this job they first broke on a published release. No tests, no
+  # artifact — compiling clean is the point. Required (not
+  # continue-on-error): a release-config compile break is always real.
+  build-release:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+          cache-dependency-path: TailscaleKitPackage/upstream/libtailscale/go.sum
+      - name: Build libtailscale
+        run: make tailscale
+      - name: Build (release)
+        run: PKG_CONFIG_PATH="$PWD/TailscaleKitPackage" swift build -c release
 
   lint:
     runs-on: macos-latest
