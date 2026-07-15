@@ -1,6 +1,6 @@
 # Continuous zoom (pinch/scroll) and pan in the viewer window
 
-> Status: proposed — this PR contains only the plan; implementation is a follow-up iteration.
+> Status: implemented in this PR.
 
 ## Problem & motivation
 
@@ -225,3 +225,37 @@ item for v1; the shortcuts overlay (`Sources/ViewerShortcutsOverlay.swift`) gets
 
 **M** — ~350-450 LOC total: ~120 new geometry + ~150 tests + ~120 view/menu/wiring
 changes. One iteration, no protocol or helper changes.
+
+## Deviations
+
+Recorded while implementing; everything else landed as planned.
+
+- **File name.** The pure geometry lives in `Sources/ViewerZoomMath.swift` (named for
+  the `ViewerZoomMath` enum it contains), not `Sources/ViewerZoomModel.swift`.
+- **`AspectFitHostView` stays `private`.** The plan's local-E2E step assumed the class
+  was already internal ("`AspectFitHostView.zoomState` is internal already since it
+  lives in `Sources/`") — it is in fact `private` at file scope in `Sources/AppState.swift`.
+  Rather than widen its access for one assertion, the planned
+  `ScreenShareCaptureHelperTests` congruence check was dropped: `layout()` assigns both
+  `metalLayer.frame` and `contentSubview.frame` from the *single* rect
+  `ViewerZoomMath.videoRect` returns (same one-rect discipline as before), and the rect
+  math itself is covered by `ViewerZoomMathTests` on CI.
+- **Center reset instead of proportional survival across fit changes.** `videoRect`
+  re-clamps a stale `offset` against the current fit rect (so a window resize can never
+  open a letterbox gap), but the offset is not proportionally rescaled — the plan's
+  "state survives fit-rect change proportionally" test became the re-clamp test
+  `testVideoRectReclampsStaleOffsetAfterFitShrinks`.
+- **`smartMagnify` toggle threshold.** Toggles back to fit from *any* scale > 1 (not
+  only from exactly 2×), matching Preview's behavior.
+- **Shortcuts overlay.** Got a dedicated "Zoom" section (6 rows: pinch, ⌥-scroll,
+  scroll-pan, double-tap, ⇧⌘+/⇧⌘-, ⌘0) instead of "two rows" folded into existing
+  sections — the gesture surface warranted its own group.
+- **Menu wiring symmetry.** `viewerContentZoomIn/Out` post `.tailscreenViewerContentZoom`
+  with a multiplicative `delta` (1.25 / 1÷1.25) and AppState routes it to the host via a
+  weak `viewerHost` reference, exactly as planned; the anchor for menu-driven zoom is the
+  fit rect's center (computed in the host, not passed in the notification).
+- **Manual pass (step 10) not performed.** This change was authored in a Linux
+  environment with no macOS host; CI covers build + unit tests. The two things that
+  need a hands-on check on real hardware: scroll/pan *direction* (natural-scrolling sign
+  conventions; the pan negates `scrollingDeltaY` for the non-flipped host view) and the
+  ⌥-scroll zoom sensitivity constant (2× per ~100 points of scroll).
