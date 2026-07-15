@@ -558,9 +558,16 @@ class AppState: ObservableObject {
                         if let error, (error as NSError).domain == receiveLoopDomain {
                             // The share's UDP control loop is dead — that's
                             // not something a fresh capture helper can fix,
-                            // so skip the restart path and tear down.
+                            // so skip the restart path and tear down. Tell
+                            // the user: the share ending on its own must
+                            // not be a silent mystery.
                             self.logger.log("Share receive loop dead (\(error)); tearing sharing down.")
                             await self.stopSharing(reason: "receive loop dead: \(error.localizedDescription)")
+                            self.showAlertMessage(
+                                title: L("Sharing Stopped"),
+                                message: L(
+                                    "The connection to your viewers was lost and couldn't be re-established, so the share was stopped. Check the network and start sharing again."
+                                ))
                             return
                         }
                         guard let server = self.server else { return }
@@ -690,7 +697,20 @@ class AppState: ObservableObject {
         }
     }
 
+    /// Reentrancy guard for `stopSharing`. The give-up paths (receive-loop
+    /// death, exhausted helper crash budget) can fire `onCaptureStopped`
+    /// concurrently with a user-initiated Stop Sharing; both land on the
+    /// MainActor but interleave across `stopSharing`'s await points, which
+    /// double-ran `server.stop()` and `shareLock.release()`.
+    private var isStoppingShare = false
+
     func stopSharing(reason: String = "<unknown>", caller: String = #function) async {
+        if isStoppingShare {
+            logger.log("stopSharing: already in progress — ignoring reentrant call by \(caller) (reason=\(reason))")
+            return
+        }
+        isStoppingShare = true
+        defer { isStoppingShare = false }
         logger.log("stopSharing: called by \(caller) (reason=\(reason))")
         // Unblock any startSharing still waiting on the first preview, so
         // a fast start→stop doesn't strand its continuation.

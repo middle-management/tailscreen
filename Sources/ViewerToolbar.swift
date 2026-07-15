@@ -100,8 +100,12 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
 
     private func updateStatsIcon(degraded: Bool) {
         let symbol = degraded ? "exclamationmark.triangle" : "chart.bar.xaxis"
-        statsToolbarItem?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+        // The symbol's accessibilityDescription is what VoiceOver reads for
+        // the item (see `makeButton`) — passing nil here would clobber the
+        // description the initial build set and leave VoiceOver users with
+        // no degraded signal at all.
         let tip = degraded ? L("Connection degraded — click for stats") : L("Toggle stream stats overlay")
+        statsToolbarItem?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: tip)
         statsToolbarItem?.toolTip = tip
     }
 

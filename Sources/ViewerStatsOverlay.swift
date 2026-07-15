@@ -167,16 +167,29 @@ struct ViewerStatsOverlay: View {
         }
     }
 
+    /// VoiceOver summary for the combined overlay element. Every fragment
+    /// routes through `L(...)`; numbers that need printf precision are
+    /// pre-formatted into a `String` first so the catalog key carries a
+    /// plain `%@` / `%lld` (interpolating a raw Double would emit a
+    /// specifier the catalog doesn't use).
     private func accessibilitySummary(_ stats: ViewerStats) -> String {
         var parts: [String] = []
-        if let ms = stats.latencyMs { parts.append(String(format: "latency %.0f milliseconds", ms)) }
-        parts.append(String(format: "%.0f frames per second", stats.fps))
-        if let pct = stats.droppedPct { parts.append(String(format: "%.1f percent dropped", pct)) }
-        if stats.decodeFailures > 0 { parts.append("\(stats.decodeFailures) decode errors") }
-        if stats.plisSent > 0 { parts.append("\(stats.plisSent) keyframe requests sent") }
-        if let bps = stats.bitrateBps { parts.append(String(format: "%.0f kilobits per second", bps / 1000)) }
-        if let codec = stats.codec { parts.append("codec \(formatCodec(codec))") }
-        let prefix = stats.isDegraded ? "Stream stats, connection degraded: " : "Stream stats: "
+        if let ms = stats.latencyMs {
+            parts.append(L("latency \(Int(ms.rounded())) milliseconds"))
+        }
+        parts.append(L("\(Int(stats.fps.rounded())) frames per second"))
+        if let pct = stats.droppedPct {
+            let pctText = String(format: "%.1f", pct)
+            parts.append(L("\(pctText) percent dropped"))
+        }
+        if stats.decodeFailures > 0 { parts.append(L("\(stats.decodeFailures) decode errors")) }
+        if stats.plisSent > 0 { parts.append(L("\(stats.plisSent) keyframe requests sent")) }
+        if let bps = stats.bitrateBps {
+            let kbpsText = String(format: "%.0f", bps / 1000)
+            parts.append(L("\(kbpsText) kilobits per second"))
+        }
+        if let codec = stats.codec { parts.append(L("codec \(formatCodec(codec))")) }
+        let prefix = stats.isDegraded ? L("Stream stats, connection degraded: ") : L("Stream stats: ")
         return prefix + parts.joined(separator: ", ")
     }
 }

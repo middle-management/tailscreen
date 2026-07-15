@@ -159,17 +159,20 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     private func runAnnotationChannel(initial: OutgoingConnection?, host: String, port: UInt16) async {
         let target = "\(host):\(port)"
         var conn = initial
-        var backoffMs: UInt64 = 250
+        var reconnectAttempts = 0
         while !Task.isCancelled && isConnected {
             if conn == nil {
                 conn = await dialAnnotation(to: target)
                 guard conn != nil else {
                     if Task.isCancelled || !isConnected { break }
-                    try? await Task.sleep(for: .milliseconds(backoffMs))
-                    backoffMs = min(backoffMs * 2, 5_000)
+                    reconnectAttempts += 1
+                    // Same 250 ms → 5 s capped doubling as the UDP receive
+                    // loops; the constants live in `ReceiveLoopPolicy`.
+                    try? await Task.sleep(
+                        nanoseconds: ReceiveLoopPolicy.retryDelayNs(consecutiveErrors: reconnectAttempts))
                     continue
                 }
-                backoffMs = 250  // reset after a clean (re)connect
+                reconnectAttempts = 0  // reset after a clean (re)connect
             }
             guard let live = conn else { break }
             // Drains until the connection drops or the task is cancelled.
@@ -396,9 +399,11 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
 
     /// One rung of the decoder's consecutive-failure escalation ladder (see
     /// `DecodeRecoveryAction`). Fires on the decoder's serial queue, so the
-    /// PLI sends hop into a Task; both keyframe-shaped rungs go through the
-    /// shared throttle — the ladder must not bypass the loss-amplification
-    /// guard in `sendPLIThrottled`.
+    /// PLI sends hop into a Task. Ladder PLIs deliberately bypass the 100 ms
+    /// throttle: each rung fires at most once per failing episode (rare by
+    /// construction, so no amplification risk), and letting the throttle
+    /// swallow one would leave the wedged decoder waiting on the next rung
+    /// for another chance. Loss-driven PLIs stay throttled.
     private func handleDecodeRecoveryAction(_ action: DecodeRecoveryAction) {
         logger.log("Client: decode-recovery action \(action)")
         switch action {
@@ -408,7 +413,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
             // one. This also feeds the server's adaptive-bitrate PLI window,
             // so a genuinely lossy link steps its rate down.
             Task { [weak self] in
-                await self?.sendPLIThrottled()
+                await self?.sendPLIUnthrottled()
             }
         case .signalDegraded:
             renderer.setDegraded(true)
@@ -429,8 +434,10 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         let idleDisconnectAfterNs: UInt64 = 15_000_000_000
         var lastDataNs = DispatchTime.now().uptimeNanoseconds
         var consecutiveErrors = 0
+        var errorStampsNs: [UInt64] = []
 
         while isConnected {
+            let recvStartNs = DispatchTime.now().uptimeNanoseconds
             do {
                 // recv returns one UDP datagram. The server is the only
                 // party that should be sending to us (it learned our addr
@@ -516,31 +523,46 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                     self.lastReceiveUptimeNs = DispatchTime.now().uptimeNanoseconds
                     deliverAU(au)
                 }
-            } catch TailscaleError.readFailed {
-                if !isConnected { break }
-                consecutiveErrors = 0
-                let nowNs = DispatchTime.now().uptimeNanoseconds
-                if nowNs &- lastDataNs > idleDisconnectAfterNs {
-                    let idleMs = (nowNs &- lastDataNs) / 1_000_000
-                    logger.log("Receive: idle for \(idleMs) ms, assuming server gone")
-                    NotificationCenter.default.post(name: .tailscreenViewerPeerClosed, object: nil)
-                    break
-                }
-                continue
             } catch {
+                guard isConnected else { break }
+                // `TailscaleError.readFailed` is thrown both for the benign
+                // 1 s poll timeout and for a dead fd (POLLHUP → instant
+                // return). errno isn't visible from here, but elapsed time
+                // tells them apart — treating every readFailed as a timeout
+                // let a dead socket busy-spin with the error counter
+                // permanently reset.
+                if case TailscaleError.readFailed = error {
+                    let elapsedNs = DispatchTime.now().uptimeNanoseconds &- recvStartNs
+                    if !ReceiveLoopPolicy.classifyReadFailedAsError(elapsedNs: elapsedNs) {
+                        consecutiveErrors = 0
+                        let nowNs = DispatchTime.now().uptimeNanoseconds
+                        if nowNs &- lastDataNs > idleDisconnectAfterNs {
+                            let idleMs = (nowNs &- lastDataNs) / 1_000_000
+                            logger.log("Receive: idle for \(idleMs) ms, assuming server gone")
+                            NotificationCenter.default.post(name: .tailscreenViewerPeerClosed, object: nil)
+                            break
+                        }
+                        continue
+                    }
+                    // Near-instant readFailed = dead fd; count it below.
+                }
                 // A one-off receive error used to kill this loop permanently
                 // — and, unlike the idle-timeout path, without posting
                 // `.tailscreenViewerPeerClosed`, so the window froze on a
                 // stale frame with a live-looking UI. Retry with a capped
                 // backoff instead, and if the socket is genuinely dead
-                // (`maxConsecutiveErrors` in a row) tear down through the
-                // same notification the idle path uses.
-                guard isConnected else { break }
+                // (`maxConsecutiveErrors` in a row, or the windowed backstop
+                // for errors interleaved with timeouts) tear down through
+                // the same notification the idle path uses.
                 consecutiveErrors += 1
-                logger.log("Receive error #\(consecutiveErrors): \(error)")
-                if consecutiveErrors >= ReceiveLoopPolicy.maxConsecutiveErrors {
-                    logger.log(
-                        "Receive loop dead after \(consecutiveErrors) consecutive errors — disconnecting")
+                let nowNs = DispatchTime.now().uptimeNanoseconds
+                let windowCount = ReceiveLoopPolicy.slidingWindowErrorCount(&errorStampsNs, appending: nowNs)
+                logger.log("Receive error #\(consecutiveErrors) (\(windowCount) in window): \(error)")
+                let deadConsecutive = consecutiveErrors >= ReceiveLoopPolicy.maxConsecutiveErrors
+                let deadWindowed = windowCount >= ReceiveLoopPolicy.maxErrorsPerWindow
+                if deadConsecutive || deadWindowed {
+                    let detail = "\(consecutiveErrors) consecutive, \(windowCount) in window"
+                    logger.log("Receive loop dead (\(detail)) — disconnecting")
                     NotificationCenter.default.post(name: .tailscreenViewerPeerClosed, object: nil)
                     break
                 }
@@ -622,13 +644,13 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     private let pliMinIntervalNs: UInt64 = 100_000_000
 
     /// Send a PLI to the server unless one went out within
-    /// `pliMinIntervalNs`. Both the loss-driven path (depacketizer gap in
-    /// `receiveLoop`) and the decode-failure escalation ladder route through
-    /// this shared throttle: each PLI forces the encoder to emit a (large)
-    /// keyframe, which fragments into more packets and, on a lossy link, can
-    /// lose *more* — unthrottled PLIs are a loss-amplification loop. One per
-    /// interval is plenty; the keyframe it triggers covers all loss up to
-    /// its arrival.
+    /// `pliMinIntervalNs`. The loss-driven path (depacketizer gap in
+    /// `receiveLoop`) routes through this throttle: each PLI forces the
+    /// encoder to emit a (large) keyframe, which fragments into more packets
+    /// and, on a lossy link, can lose *more* — unthrottled loss-driven PLIs
+    /// are a loss-amplification loop. One per interval is plenty; the
+    /// keyframe it triggers covers all loss up to its arrival. The
+    /// decode-recovery ladder uses `sendPLIUnthrottled` instead.
     private func sendPLIThrottled() async {
         guard isConnected, let pl = packetListener, let addr = serverAddr else { return }
         let nowNs = DispatchTime.now().uptimeNanoseconds
@@ -638,6 +660,19 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
             return true
         }
         guard shouldSend else { return }
+        renderer.notePLISent()
+        try? await pl.send(ScreenShareControlMessage.encode(.pli), to: addr)
+    }
+
+    /// Send a PLI immediately, bypassing the 100 ms throttle. Reserved for
+    /// the decode-recovery ladder: its rungs fire at most once per failing
+    /// episode, so there's no amplification risk — and a ladder PLI the
+    /// throttle swallowed would stall recovery until the next rung. Pushes
+    /// the throttle window forward so an immediately-following loss-driven
+    /// PLI still spaces out.
+    private func sendPLIUnthrottled() async {
+        guard isConnected, let pl = packetListener, let addr = serverAddr else { return }
+        lastPLISentNs.withLock { $0 = DispatchTime.now().uptimeNanoseconds }
         renderer.notePLISent()
         try? await pl.send(ScreenShareControlMessage.encode(.pli), to: addr)
     }
@@ -700,6 +735,13 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
             decoder.shutdown()
             self.decoder = nil
         }
+
+        // Teardown owns clearing the degraded indication — the ladder that
+        // set it is gone with the decoder, and leaving it latched kept the
+        // toolbar triangle + overlay banner up through the disconnected
+        // state and into the next session's first paint. The remaining
+        // counters reset on the next connect via `resetStats()`.
+        renderer.setDegraded(false)
 
         logger.log("Client disconnected")
     }

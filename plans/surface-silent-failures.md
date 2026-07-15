@@ -192,4 +192,69 @@ Where the implementation diverges from the letter of the plan, and why:
 - **`.signalDegraded` does not send an extra PLI.** The two keyframe-shaped
   rungs (`.requestKeyframe`, `.recreateSession`) do, through the shared
   throttle; the degraded rung only flips the indication, exactly as listed in
-  design (a).
+  design (a). *(Superseded by review fix 6 below: ladder PLIs now bypass the
+  throttle.)*
+
+### Review fixes
+
+A verified post-implementation review batch changed the following (severity
+order):
+
+1. **Ladder freeze at the recreate rung.** `decodeOnQueue`'s
+   `guard let formatDescription` / `guard let session` early-outs returned
+   without counting a failure, so after `.recreateSession` nil'd the session
+   a persistently failing rebuild pinned the counter at 30 and the
+   degraded/alert rungs never fired. Both guards now call
+   `recordDecodeFailureOnQueue(reason:)`.
+2. **`>=` thresholds + per-episode latch.** `decodeRecoveryAction` no longer
+   matches exact counts; it takes the count plus the set of already-fired
+   rungs and returns the highest unfired rung whose threshold is met (rungs
+   below a fired higher rung are superseded, never fired late). Latches reset
+   with the counter on the first successful frame.
+3. **`readFailed` dead-socket classification.** `TailscaleError.readFailed`
+   covers both the benign 1 s poll timeout and a dead fd (POLLHUP → instant
+   return); treating it always as a timeout let a dead socket busy-spin with
+   the error counter permanently reset. Both loops now measure elapsed time
+   around `recv` and classify via
+   `ReceiveLoopPolicy.classifyReadFailedAsError(elapsedNs:)`
+   (< 200 ms → error).
+4. **Windowed give-up backstop.** A socket alternating error → timeout →
+   error never reached `maxConsecutiveErrors`; both loops additionally give
+   up at `ReceiveLoopPolicy.maxErrorsPerWindow` (30) errors within a trailing
+   60 s window (`slidingWindowErrorCount`, same shape as the helper crash
+   budget).
+5. **Rebuild failures skip the codec-unsupported path.** An
+   `isRebuildingSession` flag makes a failed mid-session
+   `createDecompressionSession` log + count only; `onDecodeFailure` (CODEC_NO
+   ×3 + the "lacks hardware decode" alert) fires solely for the initial
+   session creation.
+6. **Ladder PLIs bypass the 100 ms throttle** (`sendPLIUnthrottled`): rungs
+   fire once per episode, so no amplification risk, and a swallowed ladder
+   PLI stalled recovery until the next rung. Loss-driven PLIs stay throttled.
+7. **Degraded state clears on disconnect.** `client.disconnect()` calls
+   `renderer.setDegraded(false)` so the toolbar triangle/banner can't leak
+   into the next session.
+8. **Receive-loop share death now alerts** ("Sharing Stopped", localized in
+   en + sv) instead of tearing down with only a log.
+9. **`stopSharing` reentrancy guard** (`isStoppingShare` MainActor flag) —
+   give-up paths could interleave with a user-initiated stop across await
+   points, double-running `server.stop()` / `shareLock.release()`.
+10. **Healthy-path cost.** The VT output callback only dispatches the
+    success-reset hop while an `episodeActive` flag (set by failures) reads
+    true, instead of a per-frame `queue.async` at 60 fps.
+11. **Failure-path publish coalescing.** `noteDecodeFailure` keeps at most
+    one pending main-queue stats publish (pending flag) instead of one per
+    failing frame; the `isDegraded` flip stays immediate.
+12. **Per-frame failure logs throttled** to the first of a run and every
+    60th, via the `reason:` parameter on `recordDecodeFailureOnQueue`.
+13. **Annotation back-channel reuses `ReceiveLoopPolicy.retryDelayNs`**
+    instead of its own inline 250 ms → 5 s doubling (behavior identical).
+14. **Accessibility summary localized.** `ViewerStatsOverlay`'s
+    `accessibilitySummary` fragments route through `L(...)` (Doubles
+    pre-formatted to `String` so keys carry `%@`/`%lld`); keys added to both
+    catalogs.
+15. **Stats toolbar icon keeps a VoiceOver description.** `updateStatsIcon`
+    passes the degraded/normal `L(...)` string as the symbol's
+    `accessibilityDescription` instead of nil.
+16. **`VideoEncoder` diagnostics use the per-file `TSLogger`** pattern
+    (matching `VideoDecoder`) instead of bare `print`.

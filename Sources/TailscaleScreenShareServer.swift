@@ -767,14 +767,15 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     static let receiveLoopErrorDomain = "Tailscreen.ReceiveLoop"
 
     /// Error surfaced through `onCaptureStopped` when the control-receive
-    /// loop exhausts `ReceiveLoopPolicy.maxConsecutiveErrors`.
+    /// loop gives up — `ReceiveLoopPolicy.maxConsecutiveErrors` in a row, or
+    /// the `maxErrorsPerWindow` windowed backstop.
     private static func receiveLoopDeadError(underlying: Error) -> NSError {
         NSError(
             domain: receiveLoopErrorDomain,
             code: 1,
             userInfo: [
                 NSLocalizedDescriptionKey:
-                    "UDP receive loop gave up after \(ReceiveLoopPolicy.maxConsecutiveErrors) consecutive errors: \(underlying)"
+                    "UDP receive loop gave up after repeated receive errors: \(underlying)"
             ]
         )
     }
@@ -787,32 +788,53 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// silently killed joins/keepalives/PLIs/viewer audio while the share
     /// still looked active to the sharer. Each error now retries after a
     /// capped exponential backoff (`ReceiveLoopPolicy`); a run of
-    /// `maxConsecutiveErrors` means the socket is genuinely dead, and the
-    /// share is torn down through `onCaptureStopped` — a share whose control
-    /// loop can't read is unrecoverable.
+    /// `maxConsecutiveErrors` — or `maxErrorsPerWindow` inside the trailing
+    /// window, for a flapping socket whose errors interleave with timeouts —
+    /// means the socket is genuinely dead, and the share is torn down through
+    /// `onCaptureStopped`. A share whose control loop can't read is
+    /// unrecoverable.
+    ///
+    /// `TailscaleError.readFailed` is ambiguous: the benign 1 s poll timeout
+    /// and a dead fd (POLLHUP → instant return) both surface as it. Treating
+    /// every `readFailed` as a timeout let a dead socket busy-spin with the
+    /// error counter permanently reset, so the give-up ladder was
+    /// unreachable — the elapsed-time classification below tells them apart.
     private func receiveControlLoop() async {
         guard let pl = packetListener else { return }
         var consecutiveErrors = 0
+        var errorStampsNs: [UInt64] = []
         while isRunning {
+            let recvStartNs = DispatchTime.now().uptimeNanoseconds
             do {
                 let (data, from) = try await pl.recv(timeout: 1_000)
                 consecutiveErrors = 0
                 handleIncoming(data: data, from: from)
-            } catch TailscaleError.readFailed {
-                consecutiveErrors = 0
-                continue  // poll timeout, just keep polling
             } catch {
                 guard isRunning else { break }
+                if case TailscaleError.readFailed = error {
+                    let elapsedNs = DispatchTime.now().uptimeNanoseconds &- recvStartNs
+                    if !ReceiveLoopPolicy.classifyReadFailedAsError(elapsedNs: elapsedNs) {
+                        consecutiveErrors = 0
+                        continue  // poll timeout, just keep polling
+                    }
+                    // Near-instant readFailed = dead fd; fall through and
+                    // count it like any other receive error.
+                }
                 consecutiveErrors += 1
+                let nowNs = DispatchTime.now().uptimeNanoseconds
+                let windowCount = ReceiveLoopPolicy.slidingWindowErrorCount(&errorStampsNs, appending: nowNs)
                 let total = receiveLoopErrorTotal.withLock { count -> Int in
                     count += 1
                     return count
                 }
-                logger.log("Server: receive error #\(consecutiveErrors) (total \(total)): \(error)")
-                if consecutiveErrors >= ReceiveLoopPolicy.maxConsecutiveErrors {
-                    logger.log(
-                        "Server: receive loop dead after \(consecutiveErrors) consecutive errors (\(total) total this session) — stopping share"
-                    )
+                logger.log(
+                    "Server: receive error #\(consecutiveErrors) (\(windowCount) in window, total \(total)): \(error)"
+                )
+                let deadConsecutive = consecutiveErrors >= ReceiveLoopPolicy.maxConsecutiveErrors
+                let deadWindowed = windowCount >= ReceiveLoopPolicy.maxErrorsPerWindow
+                if deadConsecutive || deadWindowed {
+                    let detail = "\(consecutiveErrors) consecutive, \(windowCount) in window, \(total) total"
+                    logger.log("Server: receive loop dead (\(detail)) — stopping share")
                     onCaptureStopped?(Self.receiveLoopDeadError(underlying: error))
                     break
                 }

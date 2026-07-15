@@ -1,6 +1,7 @@
 import CoreMedia
 import CoreVideo
 import Foundation
+import TailscaleKit
 import VideoToolbox
 
 /// Codec used on the wire. The sharer picks at startup (preferring HEVC
@@ -58,6 +59,7 @@ final class VideoEncoder: @unchecked Sendable {
     /// per session instead of once per adaptive-sweep tick. Cleared on
     /// `createSession`. Guarded by `lock`.
     private var didLogRuntimePropertyFailures = false
+    private let logger = TSLogger()
 
     /// Codec the encoder is currently configured for. `.h264` until the
     /// first successful `setup`.
@@ -241,7 +243,7 @@ final class VideoEncoder: @unchecked Sendable {
             failures: &propertyFailures)
 
         if !propertyFailures.isEmpty {
-            print("VideoEncoder: unsupported properties: \(propertyFailures.joined(separator: ", "))")
+            logger.log("VideoEncoder: unsupported properties: \(propertyFailures.joined(separator: ", "))")
         }
 
         VTCompressionSessionPrepareToEncodeFrames(newSession)
@@ -299,7 +301,7 @@ final class VideoEncoder: @unchecked Sendable {
         didLogRuntimePropertyFailures = true
         lock.unlock()
         if shouldLog {
-            print("VideoEncoder: unsupported properties: \(failures.joined(separator: ", "))")
+            logger.log("VideoEncoder: unsupported properties: \(failures.joined(separator: ", "))")
         }
     }
 
@@ -504,4 +506,14 @@ extension CMSampleBuffer {
 
 enum VideoEncoderError: Error {
     case sessionCreationFailed(OSStatus)
+}
+
+// MARK: - Logger
+
+private struct TSLogger: LogSink {
+    var logFileHandle: Int32?
+
+    func log(_ message: String) {
+        print("[VideoEncoder] \(message)")
+    }
 }

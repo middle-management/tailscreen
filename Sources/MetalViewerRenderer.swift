@@ -180,6 +180,12 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
 
     /// Decode failures reported via `noteDecodeFailure`. Reset on `resetStats`.
     private var decodeFailuresTotal: Int = 0
+    /// True while a decode-failure publish is already queued on main.
+    /// `noteDecodeFailure` fires per failing frame (60 Hz during exactly the
+    /// stress episodes), so publishes are coalesced: at most one main-queue
+    /// block in flight, reading the then-current total when it runs.
+    /// Guarded by `lock`.
+    private var decodeFailurePublishPending = false
     /// PLIs reported via `notePLISent`. Reset on `resetStats`.
     private var plisSentTotal: Int = 0
     /// Degraded indication driven via `setDegraded`. Reset on `resetStats`.
@@ -302,15 +308,27 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
     }
 
     /// Client hook: one per-frame decode failure reported by the decoder.
-    /// Safe to call from any thread. Published immediately — a stalled
-    /// stream stops rendering (so the display-link flush stops firing), and
-    /// these counters are exactly what the user needs to see then.
+    /// Safe to call from any thread. Published without waiting for the
+    /// display-link flush — a stalled stream stops rendering, so the flush
+    /// stops firing — but coalesced to one pending main-queue publish at a
+    /// time so a 60 Hz failure storm doesn't drive 60 Hz SwiftUI updates.
     func noteDecodeFailure() {
         lock.lock()
         decodeFailuresTotal &+= 1
-        let total = decodeFailuresTotal
+        let shouldPublish = !decodeFailurePublishPending
+        if shouldPublish { decodeFailurePublishPending = true }
         lock.unlock()
-        publishCounterUpdate { $0.decodeFailures = total }
+        guard shouldPublish else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.lock.lock()
+            let total = self.decodeFailuresTotal
+            self.decodeFailurePublishPending = false
+            self.lock.unlock()
+            var snap = self.statsModel.stats
+            snap.decodeFailures = total
+            self.statsModel.update(snap)
+        }
     }
 
     /// Client hook: one PLI (keyframe request) actually sent to the sharer
