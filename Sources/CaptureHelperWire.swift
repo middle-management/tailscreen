@@ -47,6 +47,12 @@ enum CaptureHelperWire {
         /// detection never catches) from a screen that simply isn't changing.
         /// Payload empty.
         case heartbeat = 0x06
+        /// Encoded system/computer-audio access unit (AAC-LC mono 48 kHz).
+        /// Payload is the raw AAC AU bytes — no keyframe flag, unlike video.
+        /// The parent packetizes these as RTP PT 99 and fans them out on the
+        /// UDP audio path. Emitted only while the sharer has system audio on
+        /// (gated in the helper by the `setAudioEnabled` latch).
+        case audioAccessUnit = 0x07
         /// UTF-8 log line from the helper, surfaced into the main
         /// process's merged log so investigation doesn't need to
         /// open the helper's separate stderr.
@@ -70,6 +76,12 @@ enum CaptureHelperWire {
         /// The helper resolves the IDs to live SC* objects via
         /// `SCShareableContent` and rebuilds the filter on its side.
         case contentFilter = 0x03
+        /// `[1 byte: 0=off 1=on]` — enable/disable system-audio *emission*.
+        /// The audio SCStream output is configured at start time (see
+        /// `PickerSelection.captureAudio`); this latch just gates whether the
+        /// helper forwards the encoded AUs, so mute/unmute is instant and
+        /// avoids `updateConfiguration` churn on the audio path.
+        case setAudioEnabled = 0x04
         /// Helper drains its current frame, calls SCStream.stopCapture,
         /// exits. Payload empty.
         case shutdown = 0xFF
@@ -90,13 +102,18 @@ final class HelperFrameWriter: @unchecked Sendable {
     private let handle: FileHandle
     /// Serializes `write` so messages produced on different threads — encoded
     /// AUs/params on the encoder's output thread, previews on the MainActor,
-    /// heartbeats on the SCStream delegate's queue — can't interleave their
-    /// header and payload writes and desync the framed protocol.
+    /// heartbeats on the SCStream delegate's queue, and system-audio AUs on
+    /// the SCStream audio-output queue — can't interleave their header and
+    /// payload writes and desync the framed protocol. Four writer threads now.
     private let writeLock = NSLock()
     init(handle: FileHandle) { self.handle = handle }
 
     /// Liveness ping; see `OutType.heartbeat`.
     func writeHeartbeat() { write(type: .heartbeat, payload: Data()) }
+
+    /// Encoded system-audio AU; see `OutType.audioAccessUnit`. Payload is the
+    /// raw AAC AU bytes — no keyframe flag.
+    func writeAudioAccessUnit(_ au: Data) { write(type: .audioAccessUnit, payload: au) }
 
     func writeAccessUnit(_ data: Data, containsKeyframe: Bool) {
         // Prepend a 1-byte keyframe flag so main can prioritize
@@ -227,6 +244,11 @@ final class HelperControlWriter {
 
     func sendContentFilter(_ data: Data) {
         write(type: .contentFilter, payload: data)
+    }
+
+    /// Toggle system-audio emission in the helper; see `InType.setAudioEnabled`.
+    func sendAudioEnabled(_ on: Bool) {
+        write(type: .setAudioEnabled, payload: Data([on ? 1 : 0]))
     }
 
     func sendShutdown() { write(type: .shutdown, payload: Data()) }
