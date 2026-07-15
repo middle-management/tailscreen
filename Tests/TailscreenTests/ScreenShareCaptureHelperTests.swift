@@ -3,6 +3,7 @@ import CoreGraphics
 import Foundation
 import TailscaleKit
 import XCTest
+import os
 
 @testable import Tailscreen
 
@@ -141,6 +142,115 @@ final class ScreenShareCaptureHelperTests: XCTestCase {
         // cold machine without letting a real regression hide.
         await fulfillment(of: [firstFrame], timeout: 30)
         jiggle.cancel()
+
+        await client.disconnect()
+        await server.stop()
+    }
+
+    /// Mid-share source switch over the full pipeline: real capture-helper,
+    /// real tsnet transport, one connected viewer. After the first decoded
+    /// frame, `server.changeSource(filterData:)` retargets capture — a
+    /// same-target switch back to the main display, which is deterministic
+    /// on a one-display Mac while still exercising the full stop-helper →
+    /// respawn → fresh-IDR path — and the test asserts (1) the viewer
+    /// resumes decoding after the swap and (2) `onCaptureStopped` never
+    /// fired (the share survived). Local-only, like its sibling above.
+    func testChangeSourceRestartsCaptureWithoutDroppingViewer() async throws {
+        let env = ProcessInfo.processInfo.environment
+        if env["TAILSCREEN_ALLOW_CAPTURE_TEST"] != "1" {
+            try XCTSkipIf(
+                env["CI"] == "true" || env["GITHUB_ACTIONS"] == "true",
+                "Capture-helper test needs real display + Screen Recording TCC; not viable on CI."
+            )
+        }
+
+        let envCfg = try TailscreenE2E.loadEnvOrSkip()
+        let dirs = try TailscreenE2E.makeStateDirs(testCase: self, label: "change-source")
+
+        let binary = try TailscreenE2E.resolveTailscreenBinary()
+        setenv("TAILSCREEN_HELPER_EXE", binary.path, 1)
+        addTeardownBlock { unsetenv("TAILSCREEN_HELPER_EXE") }
+
+        let selection = PickerSelection(
+            kind: .display,
+            displayID: UInt32(CGMainDisplayID()),
+            windowID: nil,
+            bundleIDs: []
+        )
+        let filterData = try JSONEncoder().encode(selection)
+
+        let server = TailscaleScreenShareServer()
+        // The share must survive the switch: any capture-stop callback
+        // (user stop, crash budget exhausted, respawn failure) is a
+        // failure of the retarget path.
+        let captureStopped = OSAllocatedUnfairLock(initialState: false)
+        server.onCaptureStopped = { _ in captureStopped.withLock { $0 = true } }
+        try await server.start(
+            hostname: TailscreenE2E.makeHostname("chsrc-server"),
+            authKey: envCfg.authKey,
+            path: dirs.server,
+            controlURL: envCfg.controlURL,
+            filterData: filterData
+        )
+        addTeardownBlock { Task { await server.stop() } }
+
+        let ips = try await server.getIPAddresses()
+        guard let serverIP = ips.ip4 ?? ips.ip6 else {
+            XCTFail("server has no tailnet IP")
+            return
+        }
+
+        let renderer = await MainActor.run { MetalViewerRenderer() }
+        let client = TailscaleScreenShareClient(renderer: renderer)
+
+        let decodedBefore = expectation(description: "viewer decoded a frame before the switch")
+        decodedBefore.assertForOverFulfill = false
+        client.onDecodedFrameForTesting = { _ in decodedBefore.fulfill() }
+
+        try await client.connect(
+            to: serverIP,
+            port: NetworkConfig.tailscreenPort,
+            authKey: envCfg.authKey,
+            path: dirs.client,
+            controlURL: envCfg.controlURL
+        )
+        addTeardownBlock { Task { await client.disconnect() } }
+
+        // Keep ScreenCaptureKit delivering frames on a static screen —
+        // same cursor jiggle as the sibling test.
+        let jiggle = Task {
+            let origin = CGEvent(source: nil)?.location ?? .zero
+            var toggled = false
+            while !Task.isCancelled {
+                let p = CGPoint(x: origin.x + (toggled ? 6 : 0), y: origin.y)
+                CGWarpMouseCursorPosition(p)
+                toggled.toggle()
+                try? await Task.sleep(for: .milliseconds(200))
+            }
+            CGWarpMouseCursorPosition(origin)
+        }
+        addTeardownBlock { jiggle.cancel() }
+
+        await fulfillment(of: [decodedBefore], timeout: 30)
+
+        // Retarget. Same selection bytes — the helper re-resolves the IDs
+        // independently, so this runs the identical respawn machinery a
+        // window→display switch would.
+        try await server.changeSource(filterData: filterData)
+
+        // Install the post-switch expectation only after changeSource
+        // returned: the old helper is already dead by then, so any decode
+        // from here on proves the fresh helper's stream reached the viewer.
+        let decodedAfter = expectation(description: "viewer decoded a frame after the switch")
+        decodedAfter.assertForOverFulfill = false
+        client.onDecodedFrameForTesting = { _ in decodedAfter.fulfill() }
+
+        await fulfillment(of: [decodedAfter], timeout: 30)
+        jiggle.cancel()
+
+        XCTAssertFalse(
+            captureStopped.withLock { $0 },
+            "onCaptureStopped fired during a source switch — the share should have survived")
 
         await client.disconnect()
         await server.stop()
