@@ -43,6 +43,25 @@ Walk this checklist in order:
    If that doesn't work, neither will Tailscreen — the issue is in the
    underlying Tailscale connection, not Tailscreen.
 
+## Viewer stuck on the Connecting screen
+
+If the connection succeeds but you sit on "Connecting…" indefinitely,
+you're most likely **waiting in the sharer's approval queue**. "Require
+approval for new viewers" is on by default: the sharer's menubar (and a
+notification) is showing an Accept/Deny row for you, and nothing happens
+until they click it. Ask them to look at the menubar.
+
+If you instead get **"Connection Declined"**, the sharer denied you — or
+has previously hit "Deny & Block" on your machine, in which case every
+future attempt is rejected automatically until they remove you under
+**Settings → Viewers → Remembered viewers**.
+
+If you're scripting Tailscreen (CI, kiosks, `test-local.sh`-style
+automation) and there's no human to click Accept, launch the **sharer**
+with `TAILSCREEN_OPEN_DOOR=1` to force the approval gate off. Don't use
+it outside automation — it's the "anyone on the tailnet connects
+instantly" switch.
+
 ## Two local instances see no peers
 
 This is by far the most common cause of an empty peer list when testing
@@ -96,6 +115,53 @@ If `tailscale status` confirms `direct` and it's still bad:
   filter for `Tailscreen`, and look for VideoToolbox errors. Encoder
   starvation or decoder backpressure produces logs.
 - Disable Wi-Fi power saving on both ends.
+
+## "Connection degraded" badge in the viewer toolbar
+
+The Stats button turning into a "Connection degraded — click for stats"
+badge means video decoding has been failing repeatedly and the automatic
+recovery ladder is already several rungs in. The viewer escalates
+through: request a keyframe → recreate the decoder session → show this
+badge → and finally a **"Video Has Stalled"** alert if several seconds
+pass with no successful decode.
+
+The badge is informational — recovery keeps running behind it, and a
+single good keyframe clears it. If it persists, click it: the stats
+overlay's **PLIs sent**, **Dropped**, and **FEC recovered** rows tell you
+whether you're looking at network loss (fix the network — see the DERP
+and Wi-Fi sections above) versus **Decode errs** climbing on a clean
+connection (a decoder problem — disconnect and reconnect, and check
+Console.app for VideoToolbox errors). If you get all the way to the
+stalled alert, reconnecting is the reliable reset.
+
+## Remote control grant fails asking for Accessibility
+
+Granting control the first time pops **"Accessibility Permission
+Needed"**. This is expected: injecting mouse and keyboard events requires
+the Accessibility permission, which is separate from Screen Recording.
+Open **System Settings → Privacy & Security → Accessibility**, toggle
+Tailscreen on, then grant control again — the grant is refused (not
+queued) until the permission exists, so you do need to click Grant a
+second time. If you launched Tailscreen from Terminal, the permission may
+need to go to Terminal instead, same as with Screen Recording.
+
+## Capture restarts by itself mid-share
+
+Viewers see a brief pause, the sharer's log shows a helper restart. The
+parent process watches the capture helper for liveness and restarts it if
+a live helper goes silent for 15 seconds — that's the hung-capture
+watchdog catching an SCStream that wedged without exiting, and the
+restart *is* the fix.
+
+A completely static screen does **not** trip this: the helper emits a
+~1 Hz heartbeat off ScreenCaptureKit's idle frames even when no pixels
+change, so "nothing on screen is moving" and "capture is dead" are
+distinguishable. You can share a motionless dashboard for hours.
+
+If the watchdog misfires in some environment we haven't met,
+`TAILSCREEN_DISABLE_HELPER_WATCHDOG=1` is the escape hatch — but file an
+issue, because a legitimate 15-second silence from a live helper isn't
+supposed to exist.
 
 ## Black viewer window, no frames at all
 
