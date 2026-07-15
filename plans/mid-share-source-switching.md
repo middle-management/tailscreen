@@ -303,6 +303,47 @@ with the viewer-side param-reinstall path covered CI-eligibly by
 `ScreenShareSyntheticFramesTests.testClientAdaptsToMidStreamResolutionChange` and the
 selection→overlay-mode decision by `OverlayModeDecisionTests`.
 
+### Review fixes
+
+Post-implementation review batch (independent-reviewer findings):
+
+- **Restart serialization.** `scheduleHelperRestart` now snapshot-and-installs the
+  `restartTask` slot under a single lock hold, and each new restart task's first act is
+  to await its predecessor. Two overlapping restarts (crash auto-restart racing a
+  `changeSource`) could previously both see `helperCapture == nil`, both spawn helpers,
+  and the second assignment clobbered the first — an orphaned `--capture-helper` holding
+  replayd's slot (the stuck-badge pitfall). `stop()`'s drain is unchanged: the slot holds
+  the newest task, and awaiting it transitively drains the whole chain.
+- **`lastFilterData` locked.** Now `OSAllocatedUnfairLock<Data?>` — it's written by the
+  nonisolated-async `changeSource` and read inside detached restart tasks, so the
+  earlier "MainActor-only writes" doc claim was a data race under TSan.
+- **`changeSource` signals no-ops.** Returns `Bool` (`false` when the server isn't
+  running) and schedules the tracked restart directly instead of via `restartCapture()`,
+  so a stop racing the call surfaces as the restart task's `CancellationError` rather
+  than silently succeeding past `restartCapture`'s own `isRunning` guard.
+- **Post-await re-validation.** `changeShareSource` re-checks
+  `didRetarget && sharingState == .active && self.server === server` after
+  `changeSource` returns, before any success side effect (clearAll broadcast, overlay
+  rebuild, `updateMetadata(isSharing: true, …)`, preview drop) — killing the
+  phantom-share-advertised bug. `CancellationError` from the retarget is treated as a
+  deliberate-stop artifact: log and return, no second `stopSharing`, no alert (the stop
+  path owns teardown).
+- **Server-broadcast `.clearAll` clears tracking.** `broadcastAnnotation` now empties
+  every connection's tracked-UUID set on any `.clearAll` — otherwise a later viewer
+  disconnect replayed `.undo` for already-cleared strokes and (via the sharer's
+  `onAnnotationReceived` → `ensureSharerOverlay`) resurrected a torn-down sharer
+  overlay. The tracking has no test seam (it's private and observable only through the
+  live control listener), so this is covered by the local E2E flow rather than a unit
+  test.
+- **Picker-failure alert localized + deduped.** Both picker entry points now share
+  `AppState.runPickerOrAlert()`; the alert strings route through `L()` with keys added
+  to both `en.lproj` and `sv.lproj`.
+- **Shared E2E bring-up helpers.** The CI-skip guard, `TAILSCREEN_HELPER_EXE` override,
+  main-display `PickerSelection` encode, and cursor-jiggle task moved from the two
+  `ScreenShareCaptureHelperTests` tests into `TailscreenE2E`
+  (`skipCaptureTestOnCI` / `overrideHelperExecutable` / `mainDisplayFilterData` /
+  `startCursorJiggle`), behavior-identical.
+
 ## Estimated scope
 
 **M** — ~250-350 LOC: ~40 server+AppState logic, ~40 UI/strings, ~180-250 tests. No wire

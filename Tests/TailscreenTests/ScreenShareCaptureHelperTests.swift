@@ -1,5 +1,4 @@
 import AppKit
-import CoreGraphics
 import Foundation
 import TailscaleKit
 import XCTest
@@ -26,40 +25,12 @@ import os
 ///   - Screen Recording permission granted to `.build/debug/Tailscreen`.
 final class ScreenShareCaptureHelperTests: XCTestCase {
     func testFullPipelineCapturesMainDisplay() async throws {
-        // Self-skip in obvious CI; `TAILSCREEN_ALLOW_CAPTURE_TEST=1` is an
-        // explicit opt-in for the user to force the test locally without
-        // having to remove the CI env vars from their shell.
-        let env = ProcessInfo.processInfo.environment
-        if env["TAILSCREEN_ALLOW_CAPTURE_TEST"] != "1" {
-            try XCTSkipIf(
-                env["CI"] == "true" || env["GITHUB_ACTIONS"] == "true",
-                "Capture-helper test needs real display + Screen Recording TCC; not viable on CI."
-            )
-        }
+        try TailscreenE2E.skipCaptureTestOnCI()
 
         let envCfg = try TailscreenE2E.loadEnvOrSkip()
         let dirs = try TailscreenE2E.makeStateDirs(testCase: self, label: "capture-helper")
-
-        // Bundle.main inside xctest is the test harness, not Tailscreen. The
-        // helper-spawn sites (HelperScreenCapture, PickerHelperClient) honour
-        // TAILSCREEN_HELPER_EXE as an override; point them at the real binary.
-        let binary = try TailscreenE2E.resolveTailscreenBinary()
-        setenv("TAILSCREEN_HELPER_EXE", binary.path, 1)
-        addTeardownBlock { unsetenv("TAILSCREEN_HELPER_EXE") }
-
-        // Build the picker selection in the TEST process WITHOUT touching
-        // SCShareableContent. CGMainDisplayID() is a CoreGraphics call that
-        // doesn't register us with replayd, so the capture-helper child's
-        // subsequent SCStream still comes up cleanly. The helper resolves
-        // the display ID against SCShareableContent on its own side (legal
-        // there per CaptureHelperMain.buildFilter).
-        let selection = PickerSelection(
-            kind: .display,
-            displayID: UInt32(CGMainDisplayID()),
-            windowID: nil,
-            bundleIDs: []
-        )
-        let filterData = try JSONEncoder().encode(selection)
+        try TailscreenE2E.overrideHelperExecutable(testCase: self)
+        let filterData = try TailscreenE2E.mainDisplayFilterData()
 
         let server = TailscaleScreenShareServer()
         try await server.start(
@@ -117,25 +88,9 @@ final class ScreenShareCaptureHelperTests: XCTestCase {
         )
         addTeardownBlock { Task { await client.disconnect() } }
 
-        // ScreenCaptureKit only delivers a frame when the captured content
-        // changes; on a perfectly static display the helper emits its startup
-        // keyframe and then nothing, so a viewer that joins after that initial
-        // burst can starve (the server's force-keyframe-on-join has no encoder
-        // input to act on). Jiggle the cursor a couple of pixels on a timer to
-        // keep generating frame deltas until the viewer decodes one. Restores
-        // the original position when cancelled.
-        let jiggle = Task {
-            let origin = CGEvent(source: nil)?.location ?? .zero
-            var toggled = false
-            while !Task.isCancelled {
-                let p = CGPoint(x: origin.x + (toggled ? 6 : 0), y: origin.y)
-                CGWarpMouseCursorPosition(p)
-                toggled.toggle()
-                try? await Task.sleep(for: .milliseconds(200))
-            }
-            CGWarpMouseCursorPosition(origin)
-        }
-        addTeardownBlock { jiggle.cancel() }
+        // Keep ScreenCaptureKit delivering frames on a static screen until
+        // the viewer decodes one (see TailscreenE2E.startCursorJiggle).
+        let jiggle = TailscreenE2E.startCursorJiggle(testCase: self)
 
         // 30 s ceiling: SCStream startup, first keyframe, tsnet propagation,
         // RTP delivery, decode, display-link render. Loose enough to absorb a
@@ -156,28 +111,12 @@ final class ScreenShareCaptureHelperTests: XCTestCase {
     /// resumes decoding after the swap and (2) `onCaptureStopped` never
     /// fired (the share survived). Local-only, like its sibling above.
     func testChangeSourceRestartsCaptureWithoutDroppingViewer() async throws {
-        let env = ProcessInfo.processInfo.environment
-        if env["TAILSCREEN_ALLOW_CAPTURE_TEST"] != "1" {
-            try XCTSkipIf(
-                env["CI"] == "true" || env["GITHUB_ACTIONS"] == "true",
-                "Capture-helper test needs real display + Screen Recording TCC; not viable on CI."
-            )
-        }
+        try TailscreenE2E.skipCaptureTestOnCI()
 
         let envCfg = try TailscreenE2E.loadEnvOrSkip()
         let dirs = try TailscreenE2E.makeStateDirs(testCase: self, label: "change-source")
-
-        let binary = try TailscreenE2E.resolveTailscreenBinary()
-        setenv("TAILSCREEN_HELPER_EXE", binary.path, 1)
-        addTeardownBlock { unsetenv("TAILSCREEN_HELPER_EXE") }
-
-        let selection = PickerSelection(
-            kind: .display,
-            displayID: UInt32(CGMainDisplayID()),
-            windowID: nil,
-            bundleIDs: []
-        )
-        let filterData = try JSONEncoder().encode(selection)
+        try TailscreenE2E.overrideHelperExecutable(testCase: self)
+        let filterData = try TailscreenE2E.mainDisplayFilterData()
 
         let server = TailscaleScreenShareServer()
         // The share must survive the switch: any capture-stop callback
@@ -218,25 +157,15 @@ final class ScreenShareCaptureHelperTests: XCTestCase {
 
         // Keep ScreenCaptureKit delivering frames on a static screen —
         // same cursor jiggle as the sibling test.
-        let jiggle = Task {
-            let origin = CGEvent(source: nil)?.location ?? .zero
-            var toggled = false
-            while !Task.isCancelled {
-                let p = CGPoint(x: origin.x + (toggled ? 6 : 0), y: origin.y)
-                CGWarpMouseCursorPosition(p)
-                toggled.toggle()
-                try? await Task.sleep(for: .milliseconds(200))
-            }
-            CGWarpMouseCursorPosition(origin)
-        }
-        addTeardownBlock { jiggle.cancel() }
+        let jiggle = TailscreenE2E.startCursorJiggle(testCase: self)
 
         await fulfillment(of: [decodedBefore], timeout: 30)
 
         // Retarget. Same selection bytes — the helper re-resolves the IDs
         // independently, so this runs the identical respawn machinery a
         // window→display switch would.
-        try await server.changeSource(filterData: filterData)
+        let retargeted = try await server.changeSource(filterData: filterData)
+        XCTAssertTrue(retargeted, "changeSource reported the server as not running mid-share")
 
         // Install the post-switch expectation only after changeSource
         // returned: the old helper is already dead by then, so any decode

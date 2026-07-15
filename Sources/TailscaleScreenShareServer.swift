@@ -97,8 +97,10 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// behalf (mid-drag entries the viewer never finished count too —
     /// they've already been added to the sharer's overlay via in-progress
     /// `.add` ops). Cleared incrementally as the viewer's own `.undo` /
-    /// `.clearAll` ops arrive, and en masse when the control listener
-    /// reports the connection closed — we fire `.undo` for each remaining
+    /// `.clearAll` ops arrive, wholesale (every connection's set) whenever
+    /// any `.clearAll` is broadcast — see `broadcastAnnotation` — and en
+    /// masse when the control listener reports the connection closed — we
+    /// fire `.undo` for each remaining
     /// UUID so the sharer's overlay (and every other viewer, via
     /// `broadcastAnnotation`) stops showing strokes nobody is around to
     /// clean up.
@@ -204,9 +206,10 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// same content (display / window / app / multi-app) without forcing
     /// the caller to track that state. Carried as raw `Data` so the main
     /// process never has to know the schema — the helper decodes it.
-    /// Written only from the `@MainActor` call sites (`start`,
-    /// `changeSource`) and read inside the tracked restart task.
-    private var lastFilterData: Data?
+    /// Locked: written from `start()` and the nonisolated-async
+    /// `changeSource`, read inside the detached restart tasks — cross-thread
+    /// like the class's other locked mutables.
+    private let lastFilterData = OSAllocatedUnfairLock<Data?>(initialState: nil)
 
     /// Helper-process wrapper. Owns the child Tailscreen process
     /// running `--capture-helper`, which holds the SCStream and
@@ -425,7 +428,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         Task { [weak self] in await self?.sweepIdleViewers() }
         Task { [weak self] in await self?.adaptiveBitrateSweep() }
 
-        lastFilterData = filterData
+        lastFilterData.withLock { $0 = filterData }
         if let filterData {
             try startHelperCapture(filterData: filterData)
         } else {
@@ -630,34 +633,56 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// deserves a fresh run of auto-restarts.
     ///
     /// A crash-triggered auto-restart racing this call is benign in either
-    /// order: both funnel through `scheduleHelperRestart`, whichever runs
-    /// last wins, and `lastFilterData` already holds the new bytes by then.
+    /// order: both funnel through `scheduleHelperRestart` (which chains
+    /// restarts strictly), and `lastFilterData` already holds the new bytes.
+    ///
+    /// Returns `false` — without restarting anything — when the server is
+    /// not running, so a caller racing a concurrent `stop()` can tell the
+    /// no-op apart from a successful retarget and skip its success side
+    /// effects. Throws `CancellationError` when the share stops while the
+    /// restart is in flight (the restart task unwinds deliberately — the
+    /// stop path owns teardown).
     ///
     /// `forceH264` is deliberately left latched (viewer decode capability
     /// didn't change with the source) and `parameterSets` / `helperCodec`
     /// are left in place — the fresh helper overwrites them, in order,
     /// before its first encoded AU broadcasts.
-    func changeSource(filterData: Data) async throws {
-        guard isRunning else { return }
-        lastFilterData = filterData
-        try await restartCapture()
+    func changeSource(filterData: Data) async throws -> Bool {
+        guard isRunning else { return false }
+        lastFilterData.withLock { $0 = filterData }
+        // Schedule directly (rather than via `restartCapture()`) so a stop
+        // racing this call surfaces as the restart task's CancellationError
+        // instead of silently succeeding past restartCapture's own guard.
+        if let result = await scheduleHelperRestart(resetCrashBudget: true).value {
+            throw result
+        }
+        return true
     }
 
     /// Spawn a fresh helper against the cached filter, wrapped in a tracked
     /// `Task` stored in `restartTask` so `stop()` can await it. Shared by the
-    /// AppState-driven `restartCapture()` and the helper's own
-    /// `onUnexpectedExit` auto-restart, so *both* respawn paths go through the
-    /// same guard. Two properties make it orphan-safe:
+    /// AppState-driven `restartCapture()` / `changeSource(filterData:)` and
+    /// the helper's own `onUnexpectedExit` auto-restart, so *every* respawn
+    /// path goes through the same guard. Three properties make it orphan-safe:
     ///
-    ///   1. `stop()` drains `restartTask` and awaits the in-flight work before
-    ///      nulling `helperCapture`, so a respawn can't finish *after* teardown
-    ///      unnoticed.
-    ///   2. The Task re-checks `isRunning` *after* `startHelperCapture` assigns
+    ///   1. Restarts are strictly serialized: the slot swap below is atomic
+    ///      (snapshot the previous occupant and install the new task under a
+    ///      single lock hold), and each new task's first act is to await its
+    ///      predecessor to completion. Two overlapping restarts (a crash
+    ///      auto-restart racing a `changeSource`) could otherwise both
+    ///      observe `helperCapture == nil`, both spawn helpers, and the
+    ///      second assignment would clobber the first — orphaning a live
+    ///      `--capture-helper` that keeps holding replayd's recording slot
+    ///      (the stuck-badge bug).
+    ///   2. `stop()` drains `restartTask` and awaits the in-flight work before
+    ///      nulling `helperCapture` — the slot always holds the *newest*
+    ///      restart, and awaiting it transitively drains the whole chain, so
+    ///      a respawn can't finish *after* teardown unnoticed.
+    ///   3. The Task re-checks `isRunning` *after* `startHelperCapture` assigns
     ///      `helperCapture` and tears the new helper back down if the share was
     ///      stopped meanwhile. This post-spawn check — not just the await — is
     ///      what prevents a Stop-Sharing that races the respawn from orphaning
-    ///      a child process holding replayd's recording slot (the stuck-badge
-    ///      bug).
+    ///      a child process holding replayd's recording slot.
     ///
     /// `resetCrashBudget` clears the sliding crash-window so the AppState-driven
     /// recovery path gets a fresh run of auto-restarts; the auto-restart path
@@ -665,42 +690,55 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     ///
     /// The slot is deliberately not cleared on completion: a finished `Task`
     /// left in `restartTask` is harmless (`stop()` awaits it and returns at
-    /// once), and *not* clearing avoids a clobber race where one restart nils
-    /// out a slot another restart just populated.
+    /// once, and chaining onto it is instant), and *not* clearing avoids a
+    /// clobber race where one restart nils out a slot another restart just
+    /// populated.
     @discardableResult
     private func scheduleHelperRestart(resetCrashBudget: Bool) -> Task<Error?, Never> {
-        let work = Task { [weak self] () -> Error? in
-            guard let self else { return nil }
-            if let existing = self.helperCapture {
-                self.helperCapture = nil
-                await existing.stop()
-            }
-            if resetCrashBudget {
-                self.helperCrashTimestampsNs.withLock { $0.removeAll() }
-            }
-            do {
-                guard self.isRunning else { throw CancellationError() }
-                guard let filterData = self.lastFilterData else {
-                    throw NSError(
-                        domain: "Tailscreen.HelperScreenCapture", code: 3,
-                        userInfo: [NSLocalizedDescriptionKey: "no cached filter to restart against"])
+        // Snapshot-and-install under one lock hold (property 1 above): any
+        // concurrent scheduleHelperRestart serializes on this lock, so each
+        // new task chains onto its true predecessor — never onto a stale
+        // snapshot taken before another restart slipped into the slot.
+        return restartTask.withLock { slot in
+            let previous = slot
+            let work = Task { [weak self] () -> Error? in
+                // Serialize restarts strictly: let the previous one finish
+                // (normally, or by unwinding from a stop-induced
+                // CancellationError) before touching `helperCapture`.
+                _ = await previous?.value
+                guard let self else { return nil }
+                if let existing = self.helperCapture {
+                    self.helperCapture = nil
+                    await existing.stop()
                 }
-                try self.startHelperCapture(filterData: filterData)
-            } catch {
+                if resetCrashBudget {
+                    self.helperCrashTimestampsNs.withLock { $0.removeAll() }
+                }
+                do {
+                    guard self.isRunning else { throw CancellationError() }
+                    let cachedFilter = self.lastFilterData.withLock { $0 }
+                    guard let filterData = cachedFilter else {
+                        throw NSError(
+                            domain: "Tailscreen.HelperScreenCapture", code: 3,
+                            userInfo: [NSLocalizedDescriptionKey: "no cached filter to restart against"])
+                    }
+                    try self.startHelperCapture(filterData: filterData)
+                } catch {
+                    if !self.isRunning {
+                        await self.helperCapture?.stop()
+                        self.helperCapture = nil
+                    }
+                    return error
+                }
                 if !self.isRunning {
                     await self.helperCapture?.stop()
                     self.helperCapture = nil
                 }
-                return error
+                return nil
             }
-            if !self.isRunning {
-                await self.helperCapture?.stop()
-                self.helperCapture = nil
-            }
-            return nil
+            slot = work
+            return work
         }
-        restartTask.withLock { $0 = work }
-        return work
     }
 
     /// Wire annotation + connection-close callbacks onto the
@@ -763,6 +801,21 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// sharer-painted strokes (no exclusion — sharer has no annotation
     /// connection) and viewer-to-viewer fan-out (exclude the source).
     func broadcastAnnotation(_ op: AnnotationOp, excludingConnection: UUID? = nil) async {
+        // A `.clearAll` wipes every stroke on every canvas — regardless of
+        // who originated it (the server's own "Change Source…" broadcast,
+        // the sharer's Clear All, or a viewer's fanned-out op). Retire every
+        // per-connection tracked UUID with it: leaving them tracked would
+        // replay spurious `.undo`s for already-cleared strokes on a later
+        // viewer disconnect, and via the sharer's `onAnnotationReceived` →
+        // `ensureSharerOverlay` those replays resurrect an already-torn-down
+        // sharer overlay. Same lock discipline as the inbound
+        // `trackAnnotationOp` path; keys stay (connections are still alive),
+        // only the tracked sets empty out.
+        if case .clearAll = op {
+            annotationsByConnection.withLock { state in
+                state = state.mapValues { _ in [] }
+            }
+        }
         await controlListener?.broadcast(.annotation(op), excluding: excludingConnection)
     }
 

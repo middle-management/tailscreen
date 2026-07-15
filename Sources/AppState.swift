@@ -475,21 +475,28 @@ class AppState: ObservableObject {
     /// Screen Recording TCC prompt inside the picker-helper on first
     /// use; the parent process never preflights or requests permission.
     func presentNativePicker() async {
-        let result: Data?
-        do {
-            result = try await PickerHelperClient.run()
-        } catch {
-            showAlertMessage(
-                title: "Couldn't Open Picker",
-                message: "macOS's screen-sharing picker failed to start: \(error.localizedDescription)"
-            )
-            return
-        }
-        guard let filterData = result else {
-            // User cancelled — nothing to do.
+        guard let filterData = await runPickerOrAlert() else {
+            // User cancelled (or the picker failed and was already alerted).
             return
         }
         await startSharing(filterData: filterData)
+    }
+
+    /// Spawn the `--picker-helper` subprocess and return the JSON
+    /// `PickerSelection` bytes it produced. Returns nil on user cancel — and
+    /// on spawn failure, after surfacing the localized alert — so the two
+    /// picker entry points (`presentNativePicker()`, `changeShareSource()`)
+    /// share one error surface and can't drift apart.
+    private func runPickerOrAlert() async -> Data? {
+        do {
+            return try await PickerHelperClient.run()
+        } catch {
+            showAlertMessage(
+                title: L("Couldn't Open Picker"),
+                message: L("macOS's screen-sharing picker failed to start: \(error.localizedDescription)")
+            )
+            return nil
+        }
     }
 
     /// Tailnet-visible hostname for this instance. Shared by `startSharing`
@@ -513,7 +520,10 @@ class AppState: ObservableObject {
     /// (we already hold it — re-acquiring would trip the guard). Picker
     /// cancel or picker error leaves the current share untouched; a failed
     /// retarget tears the share down (the old helper is already gone by
-    /// then, so there is nothing to keep sharing).
+    /// then, so there is nothing to keep sharing). A Stop Sharing that
+    /// races the retarget is a quiet no-op here — the stop path owns
+    /// teardown, and every success side effect is gated on a post-await
+    /// re-validation of the share.
     ///
     /// Deliberately separate from `presentNativePicker()` — that path is
     /// the share *entry point* (takes the lock, builds the server); this
@@ -523,18 +533,9 @@ class AppState: ObservableObject {
         isChangingSource = true
         defer { isChangingSource = false }
 
-        let result: Data?
-        do {
-            result = try await PickerHelperClient.run()
-        } catch {
-            showAlertMessage(
-                title: "Couldn't Open Picker",
-                message: "macOS's screen-sharing picker failed to start: \(error.localizedDescription)"
-            )
-            return
-        }
-        guard let filterData = result else {
-            // User cancelled — keep the current share running unchanged.
+        guard let filterData = await runPickerOrAlert() else {
+            // User cancelled (or the picker failed and was already
+            // alerted) — keep the current share running unchanged.
             return
         }
         // The user may have clicked Stop Sharing (or the helper may have
@@ -544,12 +545,32 @@ class AppState: ObservableObject {
         guard sharingState == .active, self.server === server else { return }
 
         currentSelection = try? JSONDecoder().decode(PickerSelection.self, from: filterData)
+        let didRetarget: Bool
         do {
-            try await server.changeSource(filterData: filterData)
+            didRetarget = try await server.changeSource(filterData: filterData)
+        } catch is CancellationError {
+            // The restart task throws CancellationError when the share was
+            // stopped while the retarget was in flight — a deliberate stop,
+            // not a retarget failure. The stop path owns teardown; a second
+            // stopSharing or an error alert here would fight it.
+            logger.log("changeShareSource: share stopped mid-retarget — leaving teardown to the stop path")
+            return
         } catch {
             logger.log("changeShareSource: retarget failed (\(error)); tearing sharing down")
             await stopSharing(reason: "changeSource failed: \(error)")
             presentError(.sharingGeneric(error))
+            return
+        }
+
+        // Re-validate after the awaits: `changeSource` returns false when
+        // the server was already stopping, and the share may have been torn
+        // down (or even restarted with a fresh server) while the retarget
+        // was in flight. Running the success side effects below against a
+        // stopped share would re-advertise it via metadata and resurrect
+        // overlay state the stop path just tore down — the phantom-share
+        // bug. On a failed re-check the stop path owns teardown; just leave.
+        guard didRetarget, sharingState == .active, self.server === server else {
+            logger.log("changeShareSource: share ended mid-retarget — skipping success side effects")
             return
         }
 
