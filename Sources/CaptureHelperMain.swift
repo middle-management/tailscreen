@@ -119,8 +119,12 @@ enum CaptureHelperMain {
                             let selection = try JSONDecoder().decode(
                                 PickerSelection.self, from: payloadCopy)
                             let filter = try await Self.buildFilter(from: selection)
+                            let colorInfo = Self.captureColorInfo(
+                                for: selection,
+                                env: ProcessInfo.processInfo.environment)
                             await runner.startWithFilter(
-                                filter, captureAudio: selection.captureAudio)
+                                filter, colorInfo: colorInfo,
+                                captureAudio: selection.captureAudio)
                         } catch {
                             // `permanent:` prefix tells the server's
                             // onUnexpectedExit handler not to burn the
@@ -191,6 +195,50 @@ enum CaptureHelperMain {
                 display: display, including: apps, exceptingWindows: [])
         }
     }
+
+    /// Pick the `ColorInfo` to capture + encode with for this selection.
+    /// Phase 1 (Display P3 tagging at 8-bit) is on by default for wide-gamut
+    /// displays; 10-bit HEVC Main 10 and HDR (BT.2020 PQ) are opt-in via
+    /// `TAILSCREEN_ENABLE_10BIT` / `TAILSCREEN_ENABLE_HDR` and gated on the
+    /// display actually being capable. A viewer's 8-bit fallback request
+    /// (`TAILSCREEN_FORCE_8BIT`) or codec fallback (`TAILSCREEN_FORCE_H264`,
+    /// which forces the 8-bit-only H.264 path) both pin the capture to 8-bit.
+    @MainActor
+    static func captureColorInfo(for selection: PickerSelection, env: [String: String]) -> ColorInfo {
+        let forceH264 = env["TAILSCREEN_FORCE_H264"] == "1"
+        let force8bit = env["TAILSCREEN_FORCE_8BIT"] == "1"
+        let enable10bit = env["TAILSCREEN_ENABLE_10BIT"] == "1"
+        let enableHDR = env["TAILSCREEN_ENABLE_HDR"] == "1"
+        let displayID = selection.displayID ?? CGMainDisplayID()
+        let wideGamut = displayIsWideGamut(displayID)
+        let hdrCapable = enableHDR && displayIsHDR(displayID)
+        // 10-bit is HEVC-only (H.264 stays 8-bit) and opt-in; a viewer's
+        // 8-bit request overrides.
+        let want10 = (enable10bit || hdrCapable) && !forceH264 && !force8bit
+        let bitDepth = want10 ? 10 : 8
+        return ColorInfo.forDisplay(wideGamut: wideGamut, hdrCapable: hdrCapable, bitDepth: bitDepth)
+    }
+
+    /// True when the display renders a wider gamut than sRGB (P3 or better) —
+    /// every modern MacBook / Studio Display. Reads the display's assigned
+    /// color space; safe on any thread.
+    static func displayIsWideGamut(_ displayID: CGDirectDisplayID) -> Bool {
+        let colorSpace = CGDisplayCopyColorSpace(displayID)
+        return colorSpace.isWideGamutRGB
+    }
+
+    /// True when the display advertises EDR headroom above SDR (an XDR / Pro
+    /// Display XDR panel). Must run on the main thread (`NSScreen`).
+    @MainActor
+    static func displayIsHDR(_ displayID: CGDirectDisplayID) -> Bool {
+        let screenNumberKey = NSDeviceDescriptionKey(rawValue: "NSScreenNumber")
+        for screen in NSScreen.screens {
+            let number = screen.deviceDescription[screenNumberKey] as? NSNumber
+            guard number?.uint32Value == displayID else { continue }
+            return screen.maximumPotentialExtendedDynamicRangeColorComponentValue > 1.0
+        }
+        return false
+    }
 }
 
 enum PickerReconstructionError: Error {
@@ -235,6 +283,11 @@ private final class CaptureHelperRunner {
     /// change mid-life (live ceiling changes ride the `setBitrate` wire
     /// message instead).
     private let quality = QualitySettings.fromEnvironment(ProcessInfo.processInfo.environment)
+    /// Color characteristics chosen for this share (BT.709 8-bit by default,
+    /// Display P3 on wide-gamut displays, BT.2020 PQ 10-bit for opt-in HDR).
+    /// Threaded into both the SCStream config (pixel format + colorSpaceName)
+    /// and the encoder (color VUI tags + profile) so capture and encode agree.
+    private var colorInfo: ColorInfo = .bt709FullRange8
     private var lastWidth: Int = 0
     private var lastHeight: Int = 0
     /// True once `startWithFilter(_:)` has been called. Read by the
@@ -265,7 +318,10 @@ private final class CaptureHelperRunner {
     /// system services it acquired in the picker subprocess; calling
     /// any other `SCContentFilter`/`SCShareableContent` API in this
     /// process before this point would invalidate them.
-    func startWithFilter(_ filter: SCContentFilter, captureAudio: Bool) async {
+    func startWithFilter(
+        _ filter: SCContentFilter, colorInfo: ColorInfo = .bt709FullRange8, captureAudio: Bool
+    ) async {
+        self.colorInfo = colorInfo
         if hasStarted {
             // A second start request is a parent-side bug. Refuse it
             // rather than racing two SCStreams against the same
@@ -322,7 +378,7 @@ private final class CaptureHelperRunner {
             }
         }
         do {
-            try await captureWrapper.start(filter: filter, fps: quality.fpsCap)
+            try await captureWrapper.start(filter: filter, fps: quality.fpsCap, colorInfo: colorInfo)
             writer.writeLog("capture-helper: SCStream up")
         } catch {
             writer.writeFatal("SCStream start failed: \(error)")
@@ -434,6 +490,10 @@ private final class CaptureHelperRunner {
                 let forceH264 = ProcessInfo.processInfo.environment["TAILSCREEN_FORCE_H264"] == "1"
                 let preferred = quality.preferredVideoCodec(forceH264: forceH264)
                 newEncoder.encoderQuality = quality.encoderQuality
+                // Tag the encoder with the captured color (BT.709 / P3 /
+                // BT.2020) + bit depth; the encoder's fallback ladder drops
+                // 10-bit → 8-bit and HEVC → H.264 if VideoToolbox refuses.
+                newEncoder.colorInfo = colorInfo
                 try newEncoder.setup(
                     width: width, height: height, fps: Int32(quality.fpsCap), preferredCodec: preferred)
                 let codec = newEncoder.codec

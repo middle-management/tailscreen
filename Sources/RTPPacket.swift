@@ -30,6 +30,12 @@ import Foundation
 ///                       request" instead of the generic peer-closed
 ///                       teardown. Old viewers ignore the unknown byte and
 ///                       still tear down on the SERVER_BYE that follows.
+///     0x09 (PROFILE_NO) viewer → server: I can decode this codec but not this
+///                       profile/bit-depth; please fall back to 8-bit. Sent
+///                       when a Main 10 (10-bit HEVC) stream reaches a viewer
+///                       whose hardware only decodes 8-bit HEVC — a lighter
+///                       fallback than CODEC_NO (stay on HEVC, just drop to
+///                       8-bit) for the 10-bit/HDR path.
 ///     0x80..0xBF        RTP packet (V=2)
 enum ScreenShareControlMessage: UInt8 {
     case hello = 0x00
@@ -54,6 +60,14 @@ enum ScreenShareControlMessage: UInt8 {
     /// (and the blocked-peer rejection paths) alongside SERVER_BYE so the
     /// viewer can distinguish "declined/blocked" from "sharer stopped".
     case helloDenied = 0x08
+
+    /// Viewer→sharer "I can decode this codec but not its profile/bit-depth."
+    /// Sent when a 10-bit HEVC Main 10 stream reaches a viewer whose hardware
+    /// only decodes 8-bit HEVC. The sharer responds by latching the share to
+    /// 8-bit (staying on HEVC) rather than all the way to H.264 — a lighter
+    /// fallback than `codecUnsupported`. Ignored by servers that never emit
+    /// 10-bit; unknown bytes are dropped, so it's backward compatible.
+    case profileUnsupported = 0x09
 
     static func encode(_ kind: ScreenShareControlMessage) -> Data {
         Data([kind.rawValue])
