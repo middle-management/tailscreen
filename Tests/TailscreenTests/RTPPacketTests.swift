@@ -696,3 +696,93 @@ final class HelloAckTests: XCTestCase {
         XCTAssertEqual(RTPHeader.audioClockHz, 48_000)
     }
 }
+
+/// Wire codecs for the loss-recovery control messages (NACK / receiver report
+/// / ping) and the capability handshake that negotiates them. Backward
+/// compatibility is the load-bearing property: new bytes stay ≤ 0x7F so
+/// `looksLikeControl` is untouched, and the extended HELLO_ACK is rejected by
+/// the legacy 5-byte `decodeHelloAck` — that rejection is exactly what keeps an
+/// old viewer on the PLI path.
+final class LossRecoveryWireTests: XCTestCase {
+    func testNewControlBytesAreDistinctAndInControlRange() {
+        let kinds: [ScreenShareControlMessage] = [.nack, .receiverReport, .ping]
+        for kind in kinds {
+            let data = ScreenShareControlMessage.encode(kind)
+            XCTAssertTrue(ScreenShareControlMessage.looksLikeControl(data))
+            XCTAssertLessThanOrEqual(kind.rawValue, 0x7F)
+            XCTAssertEqual(ScreenShareControlMessage.decode(data), kind)
+        }
+        XCTAssertEqual(ScreenShareControlMessage.nack.rawValue, 0x0A)
+        XCTAssertEqual(ScreenShareControlMessage.receiverReport.rawValue, 0x0B)
+        XCTAssertEqual(ScreenShareControlMessage.ping.rawValue, 0x0C)
+    }
+
+    func testNACKRoundTrip() {
+        let entries: [(pid: UInt16, blp: UInt16)] = [(0x0102, 0x0304), (0x1000, 0x00FF)]
+        let data = ScreenShareControlMessage.encodeNACK(entries)
+        XCTAssertEqual(data[data.startIndex], 0x0A)
+        XCTAssertEqual(data.count, 2 + entries.count * 4)
+        let decoded = ScreenShareControlMessage.decodeNACK(data)
+        XCTAssertEqual(decoded.count, entries.count)
+        XCTAssertEqual(decoded[0].pid, 0x0102)
+        XCTAssertEqual(decoded[0].blp, 0x0304)
+        XCTAssertEqual(decoded[1].pid, 0x1000)
+        XCTAssertEqual(decoded[1].blp, 0x00FF)
+    }
+
+    func testNACKCapsAtSixteenEntries() {
+        let entries = (0..<40).map { (pid: UInt16($0), blp: UInt16(0)) }
+        let data = ScreenShareControlMessage.encodeNACK(entries)
+        XCTAssertEqual(ScreenShareControlMessage.decodeNACK(data).count, 16)
+    }
+
+    func testNACKDecodeRejectsTruncated() {
+        // Claims 2 entries but carries only one entry's worth of bytes.
+        let bad = Data([0x0A, 0x02, 0x00, 0x01, 0x00, 0x02])
+        XCTAssertTrue(ScreenShareControlMessage.decodeNACK(bad).isEmpty)
+    }
+
+    func testReceiverReportRoundTrip() {
+        let report = ReceiverReport(
+            fracLostQ8: 42, extHighestSeq: 0x0001_2345, jitterTicks: 987,
+            lastPingTs: 0x0102_0304_0506_0708, delaySincePingMs: 250)
+        let data = ScreenShareControlMessage.encodeReceiverReport(report)
+        XCTAssertEqual(data.count, 20)
+        XCTAssertEqual(data[data.startIndex], 0x0B)
+        XCTAssertEqual(ScreenShareControlMessage.decodeReceiverReport(data), report)
+    }
+
+    func testReceiverReportRejectsShort() {
+        XCTAssertNil(ScreenShareControlMessage.decodeReceiverReport(Data([0x0B, 0x00])))
+    }
+
+    func testPingRoundTrip() {
+        let data = ScreenShareControlMessage.encodePing(serverUptimeNs: 0xDEAD_BEEF_CAFE_F00D)
+        XCTAssertEqual(data.count, 9)
+        XCTAssertEqual(ScreenShareControlMessage.decodePing(data), 0xDEAD_BEEF_CAFE_F00D)
+    }
+
+    func testHelloCapsHandshake() {
+        let caps: ScreenShareCaps = [.nack, .receiverReport]
+        let hello = ScreenShareControlMessage.encodeHello(caps: caps)
+        XCTAssertEqual(hello, Data([0x00, 0x03]))
+        XCTAssertEqual(ScreenShareControlMessage.decodeHelloCaps(hello), caps)
+        // Legacy 1-byte HELLO advertises no capabilities.
+        XCTAssertEqual(ScreenShareControlMessage.decodeHelloCaps(Data([0x00])), [])
+    }
+
+    func testExtendedHelloAckBackCompat() {
+        let extended = ScreenShareControlMessage.encodeHelloAck(ssrc: 0xAABB_CCDD, caps: [.nack])
+        XCTAssertEqual(extended.count, 6)
+        // The compat mechanism: legacy strict decode rejects the 6-byte form.
+        XCTAssertNil(ScreenShareControlMessage.decodeHelloAck(extended))
+        // The tolerant decode reads both forms.
+        let parsedExtended = ScreenShareControlMessage.decodeHelloAckCaps(extended)
+        XCTAssertEqual(parsedExtended?.ssrc, 0xAABB_CCDD)
+        XCTAssertEqual(parsedExtended?.caps, [.nack])
+        let legacy = ScreenShareControlMessage.encodeHelloAck(ssrc: 12345)
+        let parsedLegacy = ScreenShareControlMessage.decodeHelloAckCaps(legacy)
+        XCTAssertEqual(parsedLegacy?.ssrc, 12345)
+        XCTAssertEqual(parsedLegacy?.caps, [])
+    }
+}

@@ -44,6 +44,10 @@ struct ViewerStats: Sendable, Equatable {
     /// True while the decode-failure escalation ladder considers the
     /// connection degraded; cleared when decoding recovers.
     var isDegraded: Bool
+    /// NACK datagrams sent to the sharer since reset (selective-retransmit
+    /// requests). On a lossy link this should rise while `plisSent` stays low —
+    /// the whole point of the retransmit path vs. the old keyframe storm.
+    var nacksSent: Int
 
     static let empty = ViewerStats(
         latencyMs: nil,
@@ -55,7 +59,8 @@ struct ViewerStats: Sendable, Equatable {
         framesDropped: 0,
         decodeFailures: 0,
         plisSent: 0,
-        isDegraded: false
+        isDegraded: false,
+        nacksSent: 0
     )
 }
 
@@ -194,6 +199,8 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
     private var decodeFailurePublishPending = false
     /// PLIs reported via `notePLISent`. Reset on `resetStats`.
     private var plisSentTotal: Int = 0
+    /// NACK datagrams reported via `noteNACKSent`. Reset on `resetStats`.
+    private var nacksSentTotal: Int = 0
     /// Degraded indication driven via `setDegraded`. Reset on `resetStats`.
     private var degraded: Bool = false
 
@@ -350,6 +357,16 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
         publishCounterUpdate { $0.plisSent = total }
     }
 
+    /// Client hook: one NACK datagram sent to the sharer (a selective
+    /// retransmit request). Safe to call from any thread.
+    func noteNACKSent() {
+        lock.lock()
+        nacksSentTotal &+= 1
+        let total = nacksSentTotal
+        lock.unlock()
+        publishCounterUpdate { $0.nacksSent = total }
+    }
+
     /// Client hook: flip the degraded-connection indication driven by the
     /// decoder's escalation ladder. Safe to call from any thread; no-ops
     /// when the flag hasn't changed.
@@ -386,6 +403,7 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
         observedCodec = nil
         decodeFailuresTotal = 0
         plisSentTotal = 0
+        nacksSentTotal = 0
         degraded = false
         lock.unlock()
         DispatchQueue.main.async { [weak self] in
@@ -550,6 +568,7 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
         let codecSnap = observedCodec
         let decodeFailuresSnap = decodeFailuresTotal
         let plisSentSnap = plisSentTotal
+        let nacksSentSnap = nacksSentTotal
         let degradedSnap = degraded
         let bucketPresentedSnap = bucketFramesPresented
         let bucketDroppedSnap = bucketFramesDropped
@@ -607,7 +626,8 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
             framesDropped: totalDropped,
             decodeFailures: decodeFailuresSnap,
             plisSent: plisSentSnap,
-            isDegraded: degradedSnap
+            isDegraded: degradedSnap,
+            nacksSent: nacksSentSnap
         )
         let historySample = HistorySample(
             latencyMs: latencyForSnapshot,
