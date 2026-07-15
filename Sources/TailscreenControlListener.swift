@@ -28,14 +28,24 @@ final class TailscreenControlListener: @unchecked Sendable {
     private var isRunning = false
     private let connections = OSAllocatedUnfairLock<[UUID: IncomingConnection]>(initialState: [:])
 
-    /// Fires for every `.annotation` message. Argument is the op plus the
+    /// Fires for every `.annotation` message. Arguments are the op, the
     /// `UUID` of the connection it arrived on (so the sharer can avoid
-    /// echoing the op back to its origin).
-    var onAnnotation: ((AnnotationOp, UUID) -> Void)?
+    /// echoing the op back to its origin), and the connection's remote
+    /// tailnet address (`ip:port`, nil if libtailscale couldn't report it)
+    /// so the sharer can gate annotations to *admitted* viewers only — the
+    /// TCP back-channel otherwise accepts ops from any peer that can dial
+    /// port 7447, including pending/denied ones.
+    var onAnnotation: ((AnnotationOp, UUID, String?) -> Void)?
 
-    /// Fires for every `.requestToShare` message. Argument is the
-    /// requesting peer's friendly hostname (as sent in the payload).
-    var onRequestToShare: ((String) -> Void)?
+    /// Fires for every `.requestToShare` message. Arguments are the
+    /// requesting peer's friendly hostname (as sent in the payload), the
+    /// `UUID` of the TCP connection it arrived on (so the handler can send
+    /// the eventual `.shareResponse` back on the *same* connection — no
+    /// dial-back, so the answer provably reaches the actual requester), and
+    /// the connection's remote tailnet address (`ip:port`, nil if
+    /// unreported) so the handler can dedupe by source identity rather than
+    /// the spoofable wire-claimed hostname.
+    var onRequestToShare: ((String, UUID, String?) -> Void)?
 
     /// Fires when an accepted TCP connection closes. Argument is the
     /// connection's stable `UUID`. Used by the share server to retire
@@ -92,6 +102,16 @@ final class TailscreenControlListener: @unchecked Sendable {
         try? await conn.send(message.encode())
     }
 
+    /// Close and deregister a single accepted connection by ID. Used by the
+    /// share server to sever an expelled viewer's annotation back-channel so
+    /// a blocked peer loses it along with its video. The connection's own
+    /// receive loop then unwinds and fires `onConnectionClosed`, retiring the
+    /// peer's tracked strokes on every canvas.
+    func close(connectionID: UUID) async {
+        guard let conn = connections.withLock({ $0.removeValue(forKey: connectionID) }) else { return }
+        await conn.close()
+    }
+
     /// Send a framed message to every connection except (optionally) one.
     /// Used by the share server's annotation fan-out so viewer A's stroke
     /// reaches viewer B without bouncing back to A.
@@ -135,6 +155,11 @@ final class TailscreenControlListener: @unchecked Sendable {
     }
 
     private func receiveLoop(connection: IncomingConnection, id: UUID) async {
+        // Capture the peer address once: it's constant for the connection's
+        // lifetime, and `remoteAddress` is actor-isolated so it can only be
+        // read with `await` — doing it per message would needlessly hop the
+        // actor on every frame.
+        let peerAddress = await connection.remoteAddress
         defer {
             connections.withLock { _ = $0.removeValue(forKey: id) }
             onConnectionClosed?(id)
@@ -147,7 +172,7 @@ final class TailscreenControlListener: @unchecked Sendable {
                 if chunk.isEmpty { return }  // EOF
                 parser.append(chunk)
                 while let message = parser.next() {
-                    dispatch(message, connectionID: id)
+                    dispatch(message, connectionID: id, peerAddress: peerAddress)
                 }
             } catch TailscaleError.readFailed {
                 if !isRunning { return }
@@ -158,12 +183,17 @@ final class TailscreenControlListener: @unchecked Sendable {
         }
     }
 
-    private func dispatch(_ message: ScreenShareMessage, connectionID: UUID) {
+    private func dispatch(_ message: ScreenShareMessage, connectionID: UUID, peerAddress: String?) {
         switch message {
         case .annotation(let op):
-            onAnnotation?(op, connectionID)
+            onAnnotation?(op, connectionID, peerAddress)
         case .requestToShare(let from):
-            onRequestToShare?(from)
+            onRequestToShare?(from, connectionID, peerAddress)
+        case .shareResponse:
+            // Responses ride the requester's own outgoing connection, which
+            // reads them inline (see `TailscreenMetadataService.awaitShareResponse`),
+            // so there's nothing to dispatch on the listener side.
+            break
         }
     }
 }

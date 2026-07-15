@@ -25,6 +25,8 @@
 "Actual Size" = "Actual Size";
 "Zoom to 50%" = "Zoom to 50%";
 "Zoom to 200%" = "Zoom to 200%";
+"Zoom In" = "Zoom In";
+"Zoom Out" = "Zoom Out";
 "Minimize" = "Minimize";
 "Zoom" = "Zoom";
 "Bring All to Front" = "Bring All to Front";
@@ -69,14 +71,19 @@
 "Toggles voice chat with viewers" = "Toggles voice chat with viewers";
 "Stop Sharing" = "Stop Sharing";
 "Disconnects all viewers and ends the screen share" = "Disconnects all viewers and ends the screen share";
+"Change Source…" = "Change Source…";
+"Change what you're sharing" = "Change what you're sharing";
+"Reopens the picker without disconnecting viewers" = "Reopens the picker without disconnecting viewers";
 "No viewers yet" = "No viewers yet";
 "%lld watching: %@" = "%lld watching: %@";
 
 /* MARK: - Viewer approval rows (MenuBarView.swift) */
 "Deny" = "Deny";
 "Deny %@" = "Deny %@";
+"Deny & Block" = "Deny & Block";
 "Accept" = "Accept";
 "Accept %@" = "Accept %@";
+"Always Allow" = "Always Allow";
 "New viewers will see a Connecting prompt until you Accept or Deny" = "New viewers will see a Connecting prompt until you Accept or Deny";
 
 /* MARK: - Viewing card (MenuBarView.swift) */
@@ -123,7 +130,25 @@
 /* MARK: - Settings window (SettingsView.swift) */
 "Viewers" = "Viewers";
 "Require approval for new viewers" = "Require approval for new viewers";
-"New viewers wait on a Connecting prompt until you Accept or Deny them." = "New viewers wait on a Connecting prompt until you Accept or Deny them.";
+"New viewers wait on a Connecting prompt until you Accept or Deny them. On by default — turn off to let anyone on your tailnet connect instantly." = "New viewers wait on a Connecting prompt until you Accept or Deny them. On by default — turn off to let anyone on your tailnet connect instantly.";
+"Remembered viewers" = "Remembered viewers";
+"Viewers you Always Allow or Deny & Block will appear here." = "Viewers you Always Allow or Deny & Block will appear here.";
+"Allowed" = "Allowed";
+"Blocked" = "Blocked";
+"Remove" = "Remove";
+"Remove %@" = "Remove %@";
+"Quality" = "Quality";
+"Preset" = "Preset";
+"Low" = "Low";
+"Balanced" = "Balanced";
+"High" = "High";
+"Custom" = "Custom";
+"Frame rate" = "Frame rate";
+"%lld fps" = "%lld fps";
+"Automatic" = "Automatic";
+"Limit bandwidth" = "Limit bandwidth";
+"%lld Mbps" = "%lld Mbps";
+"Frame rate and codec changes apply the next time you start sharing." = "Frame rate and codec changes apply the next time you start sharing.";
 "Audio" = "Audio";
 "Speaker" = "Speaker";
 "About" = "About";
@@ -133,12 +158,24 @@
 /* MARK: - Window titles (AppState.swift) */
 "Tailscreen Settings" = "Tailscreen Settings";
 
+/* MARK: - Viewer consent + request-to-share outcomes (AppState.swift) */
+"Connection Declined" = "Connection Declined";
+"The sharer declined your request to view their screen." = "The sharer declined your request to view their screen.";
+"Request Accepted" = "Request Accepted";
+"%@ accepted your request and is choosing what to share." = "%@ accepted your request and is choosing what to share.";
+"Request Declined" = "Request Declined";
+"%@ declined your request to share their screen." = "%@ declined your request to share their screen.";
+"No Response" = "No Response";
+"%@ hasn't responded to your request. They may be away or running an older Tailscreen." = "%@ hasn't responded to your request. They may be away or running an older Tailscreen.";
+
 /* MARK: - Error alerts (AppError.swift / AppState.swift) */
 "%@\n\nError code: %@" = "%@\n\nError code: %@";
 "Copy Details" = "Copy Details";
 "OK" = "OK";
 "Open System Settings" = "Open System Settings";
 "Couldn't Start Sharing" = "Couldn't Start Sharing";
+"Couldn't Open Picker" = "Couldn't Open Picker";
+"macOS's screen-sharing picker failed to start: %@" = "macOS's screen-sharing picker failed to start: %@";
 "macOS didn't return shareable screens in time. If this is the first time you've shared, grant Tailscreen permission in System Settings → Privacy & Security → Screen Recording, then try again." = "macOS didn't return shareable screens in time. If this is the first time you've shared, grant Tailscreen permission in System Settings → Privacy & Security → Screen Recording, then try again.";
 "Restart Required" = "Restart Required";
 "macOS's screen-recording daemon is in a stuck state for Tailscreen and won't deliver any more frames until the app restarts. This usually follows a startCapture timeout or a stream interruption. Quit Tailscreen (⌘Q) and reopen — sharing will work again." = "macOS's screen-recording daemon is in a stuck state for Tailscreen and won't deliver any more frames until the app restarts. This usually follows a startCapture timeout or a stream interruption. Quit Tailscreen (⌘Q) and reopen — sharing will work again.";
@@ -160,6 +197,12 @@
 "Sign Out Failed" = "Sign Out Failed";
 "Error" = "Error";
 "Failed to start sharing: %@" = "Failed to start sharing: %@";
+"Can't decode the video" = "Can't decode the video";
+"This Mac can't decode the %@ video stream from the sharer (it likely lacks %@ hardware decode). Asking the sharer to switch to H.264 — the screen should appear in a moment." = "This Mac can't decode the %@ video stream from the sharer (it likely lacks %@ hardware decode). Asking the sharer to switch to H.264 — the screen should appear in a moment.";
+"Video Has Stalled" = "Video Has Stalled";
+"Decoding has been failing for several seconds and automatic recovery hasn't helped. Check the connection on both ends, or disconnect and reconnect." = "Decoding has been failing for several seconds and automatic recovery hasn't helped. Check the connection on both ends, or disconnect and reconnect.";
+"Sharing Stopped" = "Sharing Stopped";
+"The connection to your viewers was lost and couldn't be re-established, so the share was stopped. Check the network and start sharing again." = "The connection to your viewers was lost and couldn't be re-established, so the share was stopped. Check the network and start sharing again.";
 
 /* MARK: - Notifications (TailscreenUserNotifications.swift / ViewerApproval.swift) */
 "Tailscreen request" = "Tailscreen request";
@@ -177,14 +220,35 @@
 "Latency" = "Latency";
 "FPS" = "FPS";
 "Dropped" = "Dropped";
+"Decode errs" = "Decode errs";
+"PLIs sent" = "PLIs sent";
 "Bitrate" = "Bitrate";
 "Codec" = "Codec";
 "Connection" = "Connection";
+"Connection degraded" = "Connection degraded";
+"Stream stats: " = "Stream stats: ";
+"Stream stats, connection degraded: " = "Stream stats, connection degraded: ";
+"latency %lld milliseconds" = "latency %lld milliseconds";
+"%lld frames per second" = "%lld frames per second";
+"%@ percent dropped" = "%@ percent dropped";
+"%lld decode errors" = "%lld decode errors";
+"%lld keyframe requests sent" = "%lld keyframe requests sent";
+"%@ kilobits per second" = "%@ kilobits per second";
+"codec %@" = "codec %@";
 
 /* MARK: - Shortcuts overlay (ViewerShortcutsOverlay.swift) */
 "Tools" = "Tools";
 "Annotation" = "Annotation";
 "Window" = "Window";
+"Pinch" = "Pinch";
+"⌥ Scroll" = "⌥ Scroll";
+"Scroll" = "Scroll";
+"Double-tap" = "Double-tap";
+"Zoom in or out at the cursor" = "Zoom in or out at the cursor";
+"Pan while zoomed in" = "Pan while zoomed in";
+"Toggle 2× zoom" = "Toggle 2× zoom";
+"Zoom in / out" = "Zoom in / out";
+"Reset zoom and window size" = "Reset zoom and window size";
 "Pointer / Click" = "Pointer / Click";
 "Cancel current drag" = "Cancel current drag";
 "Toggle microphone (system-wide)" = "Toggle microphone (system-wide)";
@@ -207,6 +271,7 @@
 "Toggle microphone (⌃⌥M)" = "Toggle microphone (⌃⌥M)";
 "Stats" = "Stats";
 "Toggle stream stats overlay" = "Toggle stream stats overlay";
+"Connection degraded — click for stats" = "Connection degraded — click for stats";
 "Shortcuts" = "Shortcuts";
 "Show keyboard shortcuts" = "Show keyboard shortcuts";
 "Keyboard shortcuts (⇧⌘/)" = "Keyboard shortcuts (⇧⌘/)";

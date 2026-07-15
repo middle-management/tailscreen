@@ -1,8 +1,8 @@
 import AppKit
-import CoreGraphics
 import Foundation
 import TailscaleKit
 import XCTest
+import os
 
 @testable import Tailscreen
 
@@ -25,40 +25,12 @@ import XCTest
 ///   - Screen Recording permission granted to `.build/debug/Tailscreen`.
 final class ScreenShareCaptureHelperTests: XCTestCase {
     func testFullPipelineCapturesMainDisplay() async throws {
-        // Self-skip in obvious CI; `TAILSCREEN_ALLOW_CAPTURE_TEST=1` is an
-        // explicit opt-in for the user to force the test locally without
-        // having to remove the CI env vars from their shell.
-        let env = ProcessInfo.processInfo.environment
-        if env["TAILSCREEN_ALLOW_CAPTURE_TEST"] != "1" {
-            try XCTSkipIf(
-                env["CI"] == "true" || env["GITHUB_ACTIONS"] == "true",
-                "Capture-helper test needs real display + Screen Recording TCC; not viable on CI."
-            )
-        }
+        try TailscreenE2E.skipCaptureTestOnCI()
 
         let envCfg = try TailscreenE2E.loadEnvOrSkip()
         let dirs = try TailscreenE2E.makeStateDirs(testCase: self, label: "capture-helper")
-
-        // Bundle.main inside xctest is the test harness, not Tailscreen. The
-        // helper-spawn sites (HelperScreenCapture, PickerHelperClient) honour
-        // TAILSCREEN_HELPER_EXE as an override; point them at the real binary.
-        let binary = try TailscreenE2E.resolveTailscreenBinary()
-        setenv("TAILSCREEN_HELPER_EXE", binary.path, 1)
-        addTeardownBlock { unsetenv("TAILSCREEN_HELPER_EXE") }
-
-        // Build the picker selection in the TEST process WITHOUT touching
-        // SCShareableContent. CGMainDisplayID() is a CoreGraphics call that
-        // doesn't register us with replayd, so the capture-helper child's
-        // subsequent SCStream still comes up cleanly. The helper resolves
-        // the display ID against SCShareableContent on its own side (legal
-        // there per CaptureHelperMain.buildFilter).
-        let selection = PickerSelection(
-            kind: .display,
-            displayID: UInt32(CGMainDisplayID()),
-            windowID: nil,
-            bundleIDs: []
-        )
-        let filterData = try JSONEncoder().encode(selection)
+        try TailscreenE2E.overrideHelperExecutable(testCase: self)
+        let filterData = try TailscreenE2E.mainDisplayFilterData()
 
         let server = TailscaleScreenShareServer()
         try await server.start(
@@ -116,31 +88,98 @@ final class ScreenShareCaptureHelperTests: XCTestCase {
         )
         addTeardownBlock { Task { await client.disconnect() } }
 
-        // ScreenCaptureKit only delivers a frame when the captured content
-        // changes; on a perfectly static display the helper emits its startup
-        // keyframe and then nothing, so a viewer that joins after that initial
-        // burst can starve (the server's force-keyframe-on-join has no encoder
-        // input to act on). Jiggle the cursor a couple of pixels on a timer to
-        // keep generating frame deltas until the viewer decodes one. Restores
-        // the original position when cancelled.
-        let jiggle = Task {
-            let origin = CGEvent(source: nil)?.location ?? .zero
-            var toggled = false
-            while !Task.isCancelled {
-                let p = CGPoint(x: origin.x + (toggled ? 6 : 0), y: origin.y)
-                CGWarpMouseCursorPosition(p)
-                toggled.toggle()
-                try? await Task.sleep(for: .milliseconds(200))
-            }
-            CGWarpMouseCursorPosition(origin)
-        }
-        addTeardownBlock { jiggle.cancel() }
+        // Keep ScreenCaptureKit delivering frames on a static screen until
+        // the viewer decodes one (see TailscreenE2E.startCursorJiggle).
+        let jiggle = TailscreenE2E.startCursorJiggle(testCase: self)
 
         // 30 s ceiling: SCStream startup, first keyframe, tsnet propagation,
         // RTP delivery, decode, display-link render. Loose enough to absorb a
         // cold machine without letting a real regression hide.
         await fulfillment(of: [firstFrame], timeout: 30)
         jiggle.cancel()
+
+        await client.disconnect()
+        await server.stop()
+    }
+
+    /// Mid-share source switch over the full pipeline: real capture-helper,
+    /// real tsnet transport, one connected viewer. After the first decoded
+    /// frame, `server.changeSource(filterData:)` retargets capture — a
+    /// same-target switch back to the main display, which is deterministic
+    /// on a one-display Mac while still exercising the full stop-helper →
+    /// respawn → fresh-IDR path — and the test asserts (1) the viewer
+    /// resumes decoding after the swap and (2) `onCaptureStopped` never
+    /// fired (the share survived). Local-only, like its sibling above.
+    func testChangeSourceRestartsCaptureWithoutDroppingViewer() async throws {
+        try TailscreenE2E.skipCaptureTestOnCI()
+
+        let envCfg = try TailscreenE2E.loadEnvOrSkip()
+        let dirs = try TailscreenE2E.makeStateDirs(testCase: self, label: "change-source")
+        try TailscreenE2E.overrideHelperExecutable(testCase: self)
+        let filterData = try TailscreenE2E.mainDisplayFilterData()
+
+        let server = TailscaleScreenShareServer()
+        // The share must survive the switch: any capture-stop callback
+        // (user stop, crash budget exhausted, respawn failure) is a
+        // failure of the retarget path.
+        let captureStopped = OSAllocatedUnfairLock(initialState: false)
+        server.onCaptureStopped = { _ in captureStopped.withLock { $0 = true } }
+        try await server.start(
+            hostname: TailscreenE2E.makeHostname("chsrc-server"),
+            authKey: envCfg.authKey,
+            path: dirs.server,
+            controlURL: envCfg.controlURL,
+            filterData: filterData
+        )
+        addTeardownBlock { Task { await server.stop() } }
+
+        let ips = try await server.getIPAddresses()
+        guard let serverIP = ips.ip4 ?? ips.ip6 else {
+            XCTFail("server has no tailnet IP")
+            return
+        }
+
+        let renderer = await MainActor.run { MetalViewerRenderer() }
+        let client = TailscaleScreenShareClient(renderer: renderer)
+
+        let decodedBefore = expectation(description: "viewer decoded a frame before the switch")
+        decodedBefore.assertForOverFulfill = false
+        client.onDecodedFrameForTesting = { _ in decodedBefore.fulfill() }
+
+        try await client.connect(
+            to: serverIP,
+            port: NetworkConfig.tailscreenPort,
+            authKey: envCfg.authKey,
+            path: dirs.client,
+            controlURL: envCfg.controlURL
+        )
+        addTeardownBlock { Task { await client.disconnect() } }
+
+        // Keep ScreenCaptureKit delivering frames on a static screen —
+        // same cursor jiggle as the sibling test.
+        let jiggle = TailscreenE2E.startCursorJiggle(testCase: self)
+
+        await fulfillment(of: [decodedBefore], timeout: 30)
+
+        // Retarget. Same selection bytes — the helper re-resolves the IDs
+        // independently, so this runs the identical respawn machinery a
+        // window→display switch would.
+        let retargeted = try await server.changeSource(filterData: filterData)
+        XCTAssertTrue(retargeted, "changeSource reported the server as not running mid-share")
+
+        // Install the post-switch expectation only after changeSource
+        // returned: the old helper is already dead by then, so any decode
+        // from here on proves the fresh helper's stream reached the viewer.
+        let decodedAfter = expectation(description: "viewer decoded a frame after the switch")
+        decodedAfter.assertForOverFulfill = false
+        client.onDecodedFrameForTesting = { _ in decodedAfter.fulfill() }
+
+        await fulfillment(of: [decodedAfter], timeout: 30)
+        jiggle.cancel()
+
+        XCTAssertFalse(
+            captureStopped.withLock { $0 },
+            "onCaptureStopped fired during a source switch — the share should have survived")
 
         await client.disconnect()
         await server.stop()
