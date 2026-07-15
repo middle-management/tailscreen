@@ -106,7 +106,7 @@ final class ScreenShareRequestToShareTests: XCTestCase {
         let gotRequest = expectation(description: "listener received request-to-share")
         gotRequest.assertForOverFulfill = false
         let requesterName = "requester-\(UUID().uuidString.prefix(6))"
-        peers.listener.onRequestToShare = { hostname, _ in
+        peers.listener.onRequestToShare = { hostname, _, _ in
             if hostname == requesterName { gotRequest.fulfill() }
         }
 
@@ -130,7 +130,7 @@ final class ScreenShareRequestToShareTests: XCTestCase {
         // connection the request arrived on (the production path — see
         // AppState.respondToShareRequest).
         let accepts = FirstAcceptThenDeclineFlag(true)
-        listener.onRequestToShare = { [weak listener] _, connectionID in
+        listener.onRequestToShare = { [weak listener] _, connectionID, _ in
             let accepted = accepts.getAndClear()
             Task { [weak listener] in
                 await listener?.send(.shareResponse(accepted: accepted), to: connectionID)

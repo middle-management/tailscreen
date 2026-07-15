@@ -147,6 +147,76 @@ final class ViewerAccessPolicyTests: XCTestCase {
         XCTAssertTrue(decision.deny.isEmpty)
     }
 
+    // MARK: - connectedDenyList (policy→deny sweep of the connected roster)
+
+    func testConnectedDenyListPicksResolvedBlockedViewers() {
+        let connected: [String: String?] = [
+            "1.1.1.1:1": "nALLOWED",
+            "2.2.2.2:2": "nBLOCKED",
+            "3.3.3.3:3": nil,  // unresolved — can't match a policy
+            "4.4.4.4:4": "nBLOCKED"
+        ]
+        let policies: [String: PeerPolicy] = ["nALLOWED": .allow, "nBLOCKED": .deny]
+        let expelled = TailscaleScreenShareServer.connectedDenyList(
+            viewerStableIDs: connected, policies: policies)
+        XCTAssertEqual(expelled, ["2.2.2.2:2", "4.4.4.4:4"])
+    }
+
+    func testConnectedDenyListEmptyWhenNoDenies() {
+        let expelled = TailscaleScreenShareServer.connectedDenyList(
+            viewerStableIDs: ["1.1.1.1:1": "nALLOWED"], policies: ["nALLOWED": .allow])
+        XCTAssertTrue(expelled.isEmpty)
+    }
+
+    // MARK: - pending cap (DoS bound)
+
+    func testPendingCapRejectsNewOnceFull() {
+        typealias Server = TailscaleScreenShareServer
+        // A brand-new addr is rejected at/above the cap…
+        XCTAssertFalse(Server.canAcceptPending(currentCount: 3, isExisting: false, cap: 3))
+        XCTAssertFalse(Server.canAcceptPending(currentCount: 4, isExisting: false, cap: 3))
+        // …but an existing slot (a re-HELLO) always refreshes…
+        XCTAssertTrue(Server.canAcceptPending(currentCount: 3, isExisting: true, cap: 3))
+        // …and there's room below the cap.
+        XCTAssertTrue(Server.canAcceptPending(currentCount: 2, isExisting: false, cap: 3))
+    }
+
+    // MARK: - queued policy intents applied on late StableNodeID resolution
+
+    @MainActor
+    func testResolvableIntentsMatchesOnlyResolvedRowsWithIntent() {
+        let intents: [String: PeerPolicy] = ["1.1.1.1:1": .deny, "2.2.2.2:2": .allow]
+        let snapshot: [(id: String, stableID: String?)] = [
+            ("1.1.1.1:1", "nBLOCKED"),  // intent + resolved → applied
+            ("2.2.2.2:2", nil),  // intent but unresolved → skipped
+            ("3.3.3.3:3", "nOTHER")  // resolved but no intent → skipped
+        ]
+        let resolvable = AppState.resolvableIntents(intents: intents, snapshot: snapshot)
+        XCTAssertEqual(resolvable.count, 1)
+        let item = try? XCTUnwrap(resolvable.first)
+        XCTAssertEqual(item?.id, "1.1.1.1:1")
+        XCTAssertEqual(item?.stableID, "nBLOCKED")
+        XCTAssertEqual(item?.policy, .deny)
+    }
+
+    @MainActor
+    func testResolvableIntentsEmptyWhenNothingQueued() {
+        let resolvable = AppState.resolvableIntents(
+            intents: [:], snapshot: [("1.1.1.1:1", "nX")])
+        XCTAssertTrue(resolvable.isEmpty)
+    }
+
+    // MARK: - readFailed classification reuse (awaitShareResponse dead-socket)
+
+    func testReadFailedClassificationDistinguishesDeadSocketFromPollTimeout() {
+        // `awaitShareResponse` reuses this exact classifier so a dead/closed
+        // connection returns .noAnswer instead of hot-spinning the full
+        // 120 s: a near-instant readFailed is a dead fd, a full-interval one
+        // (its 5 s poll) is a benign timeout.
+        XCTAssertTrue(ReceiveLoopPolicy.classifyReadFailedAsError(elapsedNs: 1_000_000))  // 1 ms → dead
+        XCTAssertFalse(ReceiveLoopPolicy.classifyReadFailedAsError(elapsedNs: 5_000_000_000))  // 5 s → timeout
+    }
+
     // MARK: - ViewerApprovalDefaults tri-state migration
 
     func testApprovalDefaultsUnsetMeansOn() throws {
