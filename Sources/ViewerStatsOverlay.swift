@@ -15,11 +15,17 @@ struct ViewerStatsOverlay: View {
     var body: some View {
         let stats = model.stats
         VStack(alignment: .leading, spacing: 4) {
+            if stats.isDegraded {
+                Label(L("Connection degraded"), systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(Color(red: 1.0, green: 0.45, blue: 0.45))
+            }
             row(L("Latency"), formatLatency(stats.latencyMs), color: latencyColor(stats.latencyMs))
             row(L("FPS"), String(format: "%.1f", stats.fps), color: fpsColor(stats.fps))
             row(
                 L("Dropped"), formatDropped(stats.droppedPct, total: stats.framesDropped),
                 color: dropColor(stats.droppedPct))
+            row(L("Decode errs"), "\(stats.decodeFailures)", color: countColor(stats.decodeFailures))
+            row(L("PLIs sent"), "\(stats.plisSent)")
             row(L("Bitrate"), formatBitrate(stats.bitrateBps))
             row(L("Codec"), stats.codec.map(formatCodec) ?? "—")
             row(L("Connection"), "Tailscale")
@@ -127,6 +133,12 @@ struct ViewerStatsOverlay: View {
         return Color(red: 1.0, green: 0.45, blue: 0.45)
     }
 
+    /// White while the counter is zero, red once anything has gone wrong —
+    /// a nonzero decode-failure count deserves attention even when small.
+    private func countColor(_ count: Int) -> Color {
+        count == 0 ? .white : Color(red: 1.0, green: 0.45, blue: 0.45)
+    }
+
     private func formatLatency(_ ms: Double?) -> String {
         guard let ms else { return "—" }
         return String(format: "%.0f ms", ms)
@@ -155,14 +167,30 @@ struct ViewerStatsOverlay: View {
         }
     }
 
+    /// VoiceOver summary for the combined overlay element. Every fragment
+    /// routes through `L(...)`; numbers that need printf precision are
+    /// pre-formatted into a `String` first so the catalog key carries a
+    /// plain `%@` / `%lld` (interpolating a raw Double would emit a
+    /// specifier the catalog doesn't use).
     private func accessibilitySummary(_ stats: ViewerStats) -> String {
         var parts: [String] = []
-        if let ms = stats.latencyMs { parts.append(String(format: "latency %.0f milliseconds", ms)) }
-        parts.append(String(format: "%.0f frames per second", stats.fps))
-        if let pct = stats.droppedPct { parts.append(String(format: "%.1f percent dropped", pct)) }
-        if let bps = stats.bitrateBps { parts.append(String(format: "%.0f kilobits per second", bps / 1000)) }
-        if let codec = stats.codec { parts.append("codec \(formatCodec(codec))") }
-        return "Stream stats: " + parts.joined(separator: ", ")
+        if let ms = stats.latencyMs {
+            parts.append(L("latency \(Int(ms.rounded())) milliseconds"))
+        }
+        parts.append(L("\(Int(stats.fps.rounded())) frames per second"))
+        if let pct = stats.droppedPct {
+            let pctText = String(format: "%.1f", pct)
+            parts.append(L("\(pctText) percent dropped"))
+        }
+        if stats.decodeFailures > 0 { parts.append(L("\(stats.decodeFailures) decode errors")) }
+        if stats.plisSent > 0 { parts.append(L("\(stats.plisSent) keyframe requests sent")) }
+        if let bps = stats.bitrateBps {
+            let kbpsText = String(format: "%.0f", bps / 1000)
+            parts.append(L("\(kbpsText) kilobits per second"))
+        }
+        if let codec = stats.codec { parts.append(L("codec \(formatCodec(codec))")) }
+        let prefix = stats.isDegraded ? L("Stream stats, connection degraded: ") : L("Stream stats: ")
+        return prefix + parts.joined(separator: ", ")
     }
 }
 
