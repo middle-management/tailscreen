@@ -71,6 +71,9 @@
 "Reopens the picker without disconnecting viewers" = "Öppnar väljaren igen utan att koppla från tittarna";
 "No viewers yet" = "Inga tittare än";
 "%lld watching: %@" = "%lld tittar: %@";
+"Connection healthy" = "Anslutningen är stabil";
+"Connection degraded — packet loss" = "Anslutningen är försämrad — paketförlust";
+"Limited to keyframes — poor connection" = "Begränsad till nyckelbildrutor — dålig anslutning";
 
 /* MARK: - Viewer approval rows (MenuBarView.swift) */
 "Deny" = "Neka";
