@@ -334,3 +334,8 @@
 "You are controlling this Mac" = "You are controlling this Mac";
 "Stop controlling" = "Stop controlling";
 "Stop Remote Control" = "Stop Remote Control";
+
+/* Remote control — grant-time whole-Mac scope warning */
+"Grants full keyboard and mouse control of your entire Mac" = "Grants full keyboard and mouse control of your entire Mac";
+"Gives full keyboard and mouse control of your entire Mac, not just the shared window" = "Gives full keyboard and mouse control of your entire Mac, not just the shared window";
+"Granting gives full keyboard and mouse control of your entire Mac — not just the shared window." = "Granting gives full keyboard and mouse control of your entire Mac — not just the shared window.";

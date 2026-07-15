@@ -735,9 +735,21 @@ private struct ControlRequestsList: View {
                     .buttonStyle(.borderedProminent)
                     .controlSize(.mini)
                     .fixedSize()
+                    .help(L("Grants full keyboard and mouse control of your entire Mac"))
                     .accessibilityLabel(L("Grant control to \(request.displayName)"))
+                    .accessibilityHint(
+                        L("Gives full keyboard and mouse control of your entire Mac, not just the shared window"))
                 }
             }
+            // Whole-Mac scope warning: keyboard input lands on the sharer's
+            // frontmost app (not confined to the shared window/app), so the
+            // sharer isn't surprised. Stated once at grant time.
+            Text(
+                L("Granting gives full keyboard and mouse control of your entire Mac — not just the shared window.")
+            )
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.vertical, 4)
         .padding(.horizontal, 8)
