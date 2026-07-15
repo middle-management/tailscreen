@@ -415,10 +415,24 @@ private struct SharingCard: View {
             }
             .frame(height: previewHeight)
 
-            // Three buttons in 280px popover would truncate ("Unmut…",
-            // "Stop Shari…"). Icon-only for Draw + Mic; full label only
-            // on the destructive action so it stays prominent.
+            // Multiple buttons in a 280px popover would truncate ("Unmut…",
+            // "Stop Shari…"). Icon-only for Change Source + Draw + Mic;
+            // full label only on the destructive action so it stays
+            // prominent.
             HStack(spacing: 6) {
+                Button {
+                    Task { await appState.changeShareSource() }
+                } label: {
+                    Image(systemName: "rectangle.on.rectangle")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(appState.isChangingSource)
+                .help(L("Change Source…"))
+                .accessibilityLabel(L("Change what you're sharing"))
+                .accessibilityHint(L("Reopens the picker without disconnecting viewers"))
+
                 Button {
                     appState.toggleSharerOverlay()
                 } label: {
