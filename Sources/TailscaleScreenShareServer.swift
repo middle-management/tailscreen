@@ -1829,7 +1829,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             }
             let outstanding = outstandingResolveTargets()
             guard !outstanding.isEmpty else { return }
-            guard let byIP = await backendStatusByIP() else { continue }
+            let byIP = await backendStatusByIP()
             var anyMissing = false
             for (addr, ip) in outstanding {
                 guard let identity = byIP[ip] else {
@@ -1868,10 +1868,14 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// StableNodeID — distinct from the netmap's numeric node ID, see the
     /// note at `TailscalePeerDiscovery.mergeKey`. nil on LocalAPI failure so
     /// the caller retries.
-    private func backendStatusByIP() async -> [String: (hostname: String?, stableID: String)]? {
-        guard let node = self.node else { return nil }
+    /// An empty map means "couldn't fetch" — the caller treats that the same
+    /// as "no outstanding addr resolved this tick" and retries, so there's no
+    /// need to distinguish it from a genuinely peerless netmap with an
+    /// optional.
+    private func backendStatusByIP() async -> [String: (hostname: String?, stableID: String)] {
+        guard let node = self.node else { return [:] }
         let client = LocalAPIClient(localNode: node, logger: logger)
-        guard let status = try? await client.backendStatus() else { return nil }
+        guard let status = try? await client.backendStatus() else { return [:] }
         var byIP: [String: (hostname: String?, stableID: String)] = [:]
         for (_, peer) in status.Peer ?? [:] {
             guard let ips = peer.TailscaleIPs else { continue }

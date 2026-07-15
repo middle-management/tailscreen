@@ -155,6 +155,11 @@ final class TailscreenControlListener: @unchecked Sendable {
     }
 
     private func receiveLoop(connection: IncomingConnection, id: UUID) async {
+        // Capture the peer address once: it's constant for the connection's
+        // lifetime, and `remoteAddress` is actor-isolated so it can only be
+        // read with `await` — doing it per message would needlessly hop the
+        // actor on every frame.
+        let peerAddress = await connection.remoteAddress
         defer {
             connections.withLock { _ = $0.removeValue(forKey: id) }
             onConnectionClosed?(id)
@@ -167,7 +172,7 @@ final class TailscreenControlListener: @unchecked Sendable {
                 if chunk.isEmpty { return }  // EOF
                 parser.append(chunk)
                 while let message = parser.next() {
-                    dispatch(message, connectionID: id, peerAddress: connection.remoteAddress)
+                    dispatch(message, connectionID: id, peerAddress: peerAddress)
                 }
             } catch TailscaleError.readFailed {
                 if !isRunning { return }
