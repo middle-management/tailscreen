@@ -162,6 +162,26 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// waiting for the next encoder reinit.
     private let anchoredBaselineBitrate = OSAllocatedUnfairLock<Int>(initialState: 0)
 
+    /// Inputs that produced the current adaptive-bitrate anchor. Parameter
+    /// sets — and therefore `onEncoderResolution` — re-emit on *every* IDR
+    /// (roughly every 2 s under PLI-driven keyframes), so the anchor
+    /// handler compares against this and only resets the sweep's state
+    /// (`currentBitrate` / `lastBitrateChangeNs`) when the encoder
+    /// configuration genuinely changed; an unconditional reset would wipe
+    /// every cut and every recovery step within one hysteresis window.
+    /// Cleared per helper spawn so a fresh helper (whose encoder starts
+    /// back at the formula/ceiling bitrate) always re-anchors, and updated
+    /// by `updateQualityCeiling` so a live ceiling edit doesn't look like
+    /// a config change on the next IDR.
+    private struct AnchorInputs: Equatable {
+        let width: Int
+        let height: Int
+        let codec: VideoCodec
+        let fpsCap: Int
+        var ceilingBps: Int?
+    }
+    private let lastAnchorInputs = OSAllocatedUnfairLock<AnchorInputs?>(initialState: nil)
+
     /// Effective adaptive-sweep ceiling: the anchored formula baseline
     /// clamped by the user's bandwidth ceiling. The sweep never raises
     /// above it. Recomputed on every encoder reinit (resolution change)
@@ -503,6 +523,11 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
 
     private func startHelperCapture(filterData: Data) throws {
         let helper = HelperScreenCapture()
+        // Fresh helper ⇒ fresh anchor state: its encoder starts back at the
+        // formula/ceiling bitrate, so the first parameter-sets emit must
+        // re-anchor even if the resolution/codec are unchanged from the
+        // previous helper's.
+        lastAnchorInputs.withLock { $0 = nil }
         // Seed the liveness clock now so SCStream bring-up gets a full grace
         // window before the watchdog can fire, then tick it on every message.
         lastHelperActivityNs.withLock { $0 = DispatchTime.now().uptimeNanoseconds }
@@ -521,18 +546,34 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         }
         helper.onEncoderResolution = { [weak self] width, height in
             guard let self else { return }
-            // Anchor the adaptive-bitrate ceiling. `defaultBitsPerPixel`
-            // wants a codec; default to HEVC's value if helperCodec
-            // hasn't landed yet — encoder will overwrite it on its
-            // next emit anyway. The fps factor comes from the same
-            // session snapshot the helper's encoder runs at, so the two
-            // ends of the formula can't diverge (this used to hardcode
-            // 60.0), and the user's bandwidth ceiling clamps the result
-            // exactly like the helper clamps its own DataRateLimits.
+            // Anchor the adaptive-bitrate ceiling. Parameter sets — and
+            // this callback — re-emit on *every* IDR, so re-anchor only
+            // when the inputs actually changed: an unconditional reset
+            // would wipe the sweep's currentBitrate/hysteresis state every
+            // couple of seconds and permanently defeat both cuts and
+            // recovery. `helperCodec` is already set here because the
+            // wrapper fires `onParameterSets` first (see the ordering
+            // invariant in HelperScreenCapture's readLoop); the HEVC
+            // default is a belt-and-braces fallback only. The fps factor
+            // comes from the same session snapshot the helper's encoder
+            // runs at, so the two ends of the formula can't diverge (this
+            // used to hardcode 60.0), and the user's bandwidth ceiling
+            // clamps the result exactly like the helper clamps its own
+            // DataRateLimits.
             let codec: VideoCodec = self.helperCodec ?? .hevc
-            let bpp = VideoEncoder.defaultBitsPerPixel(for: codec)
             let quality = self.sessionQuality.withLock { $0 }
-            let anchor = Int(Double(width * height) * bpp * Double(quality.fpsCap))
+            let inputs = AnchorInputs(
+                width: width, height: height, codec: codec,
+                fpsCap: quality.fpsCap, ceilingBps: quality.maxBitrateBps)
+            let changed = self.lastAnchorInputs.withLock { last -> Bool in
+                guard last != inputs else { return false }
+                last = inputs
+                return true
+            }
+            guard changed else { return }
+            let bpp = VideoEncoder.defaultBitsPerPixel(for: codec)
+            let anchor = VideoEncoder.computeBitrate(
+                width: width, height: height, fps: quality.fpsCap, bitsPerPixel: bpp)
             self.anchoredBaselineBitrate.withLock { $0 = anchor }
             let baseline = min(anchor, quality.maxBitrateBps ?? anchor)
             self.baselineBitrate.withLock { $0 = baseline }
@@ -1525,8 +1566,9 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// loss exceeds `lossThreshold` and the down-hysteresis has elapsed; recover
     /// +10 % (min 100 kbps step, capped at baseline) after a clean window once
     /// the longer up-hysteresis has elapsed. Asymmetric hysteresis makes cuts
-    /// fast and recovery slow. Extracted from the sweep so the math is unit
-    /// testable without a live encoder.
+    /// fast and recovery slow. A `current` above `baseline` clamps straight
+    /// down to it with no hysteresis (see below). Extracted from the sweep so
+    /// the math is unit testable without a live encoder.
     static func nextAdaptiveBitrate(
         worstPLIs: Int,
         current: Int,
@@ -1537,6 +1579,13 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         upHysteresisNs: UInt64 = 10_000_000_000
     ) -> Int? {
         guard baseline > 0 else { return nil }
+        // Self-heal: a mid-share ceiling drop can race an in-flight sweep
+        // apply and leave `current` parked above the (new, lower) baseline,
+        // where neither arm below would ever fire on a loss-free link (the
+        // raise arm requires current < baseline). Clamp straight down, no
+        // hysteresis — the encoder should never run above the effective
+        // ceiling.
+        if current > baseline { return baseline }
         // 30 % of baseline, never below 500 kbps (see TransportTuning).
         let floor = TransportTuning.adaptiveBitrateFloor(baseline: baseline)
         if worstPLIs > lossThreshold && elapsedSinceChangeNs >= downHysteresisNs && current > floor {
@@ -1579,13 +1628,19 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// helper with the ceiling the user last set. Safe to call while not
     /// sharing (no-ops until an encoder anchors a baseline).
     func updateQualityCeiling(_ bps: Int?) {
-        let ceiling = bps.map { min(max($0, QualitySettings.minCeilingBps), QualitySettings.maxCeilingBps) }
+        // Same clamp/rounding as persistence (`normalized()`), so the live
+        // path can't disagree with what the Settings pane stores.
+        let ceiling = QualitySettings.normalizedCeiling(bps)
         let changed = sessionQuality.withLock { quality -> Bool in
             guard quality.maxBitrateBps != ceiling else { return false }
             quality.maxBitrateBps = ceiling
             return true
         }
         guard changed else { return }
+        // Fold the new ceiling into the anchor inputs so the next IDR's
+        // parameter-sets emit doesn't read as a config change and re-anchor
+        // over the adjustment applied below.
+        lastAnchorInputs.withLock { $0?.ceilingBps = ceiling }
         let anchor = anchoredBaselineBitrate.withLock { $0 }
         // No encoder anchored yet — the snapshot applies at anchor time.
         guard anchor > 0 else { return }
@@ -1792,6 +1847,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         await helperCapture?.stop()
         helperCapture = nil
         helperCodec = nil
+        lastAnchorInputs.withLock { $0 = nil }
         logger.log("Server stop: capture done")
 
         viewers.withLock { $0.removeAll() }

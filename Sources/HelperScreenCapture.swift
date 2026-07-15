@@ -205,13 +205,14 @@ final class HelperScreenCapture: @unchecked Sendable {
                 }
                 onAccessUnit?(avcc, isKeyframe)
             case .parameterSets:
-                if payload.count >= 9 {
-                    let w = Int(readBE32(payload, offset: 1))
-                    let h = Int(readBE32(payload, offset: 5))
-                    if w > 0 && h > 0 {
-                        onEncoderResolution?(w, h)
-                    }
-                }
+                // Ordering invariant: fire `onParameterSets` BEFORE
+                // `onEncoderResolution`. The server's params handler caches
+                // the codec (`helperCodec`); its resolution handler reads
+                // that codec to pick the bits-per-pixel figure for the
+                // adaptive-bitrate anchor. Resolution-first would compute
+                // the session's first anchor with `helperCodec == nil`
+                // (HEVC's bpp) even for an H.264 session. Both handlers are
+                // otherwise independent, so the swap is side-effect-free.
                 if let params = decodeParameterSets(payload) {
                     if !debugParamsLogged {
                         debugParamsLogged = true
@@ -225,6 +226,13 @@ final class HelperScreenCapture: @unchecked Sendable {
                         }
                     }
                     onParameterSets?(params)
+                }
+                if payload.count >= 9 {
+                    let w = Int(readBE32(payload, offset: 1))
+                    let h = Int(readBE32(payload, offset: 5))
+                    if w > 0 && h > 0 {
+                        onEncoderResolution?(w, h)
+                    }
                 }
             case .firstFrame:
                 onFirstFrame?()

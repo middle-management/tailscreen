@@ -96,18 +96,33 @@ class AppState: ObservableObject {
         }
     }
 
-    /// User preference: sharing-side quality knobs (preset, fps cap, codec
-    /// preference, bandwidth ceiling). Persisted as a JSON blob under
-    /// `qualitySettings`. The bandwidth ceiling live-applies to an active
-    /// share via `updateQualityCeiling`; fps / codec are snapshotted per
-    /// share session (`server.start(quality:)`) and apply the next time
-    /// sharing starts — the Settings pane says so in a caption.
+    /// User preference: sharing-side quality knobs (fps cap, codec
+    /// preference, encoder quality, bandwidth ceiling). Persisted as a
+    /// JSON blob under `qualitySettings`. The bandwidth ceiling
+    /// live-applies to an active share via `updateQualityCeiling`; the
+    /// other knobs are snapshotted per share session
+    /// (`server.start(quality:)`) and apply the next time sharing starts —
+    /// the Settings pane says so in a caption.
+    ///
+    /// The save + live push are debounced (~500 ms, cancel-and-replace):
+    /// each ceiling down-push forces an IDR at the helper, so an
+    /// un-debounced Stepper run from 10 → 3 Mbps would burst seven
+    /// keyframes. The UI reads the property directly, so it stays live.
     @Published var qualitySettings: QualitySettings = QualitySettingsStore.load() {
         didSet {
-            QualitySettingsStore.save(qualitySettings)
-            server?.updateQualityCeiling(qualitySettings.maxBitrateBps)
+            qualitySettingsSyncTask?.cancel()
+            qualitySettingsSyncTask = Task { [weak self] in
+                try? await Task.sleep(for: .milliseconds(500))
+                guard !Task.isCancelled, let self else { return }
+                QualitySettingsStore.save(self.qualitySettings)
+                self.server?.updateQualityCeiling(self.qualitySettings.maxBitrateBps)
+            }
         }
     }
+
+    /// Debounce task for `qualitySettings.didSet` (see above). MainActor,
+    /// like everything else on AppState.
+    private var qualitySettingsSyncTask: Task<Void, Never>?
 
     /// Viewer IDs we've already fired a "joined" notification for this
     /// session. Keyed by the server's internal `"ip:port"` ID so a viewer

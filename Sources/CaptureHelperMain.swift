@@ -392,15 +392,19 @@ private final class CaptureHelperRunner {
                 let forceH264 = ProcessInfo.processInfo.environment["TAILSCREEN_FORCE_H264"] == "1"
                 let preferred = quality.preferredVideoCodec(forceH264: forceH264)
                 try newEncoder.setup(
-                    width: width, height: height, fps: Int32(quality.fpsCap), preferredCodec: preferred)
+                    width: width, height: height, fps: Int32(quality.fpsCap), preferredCodec: preferred,
+                    quality: quality.encoderQuality)
                 let codec = newEncoder.codec
                 // If the user capped bandwidth, tighten the encoder's
                 // DataRateLimits ceiling below the bits-per-pixel formula
-                // it was set up with. The server's adaptive sweep anchors
-                // its baseline to the same min(), so the two stay coherent.
+                // it was set up with. Uses the shared
+                // `VideoEncoder.computeBitrate` — the server's adaptive
+                // sweep anchors its baseline to the same min() over the
+                // same formula, so the two stay coherent.
                 if let ceiling = quality.maxBitrateBps {
                     let bpp = VideoEncoder.defaultBitsPerPixel(for: codec)
-                    let computed = Int(Double(width * height) * bpp * Double(quality.fpsCap))
+                    let computed = VideoEncoder.computeBitrate(
+                        width: width, height: height, fps: quality.fpsCap, bitsPerPixel: bpp)
                     if ceiling < computed {
                         newEncoder.setBitrate(ceiling)
                     }

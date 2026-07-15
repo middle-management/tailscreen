@@ -68,9 +68,10 @@ struct SettingsView: View {
                     )
                 ) {
                     // Codec names are brand nouns — deliberately unlocalized
-                    // (see CLAUDE.md's Localization section).
+                    // (see CLAUDE.md's Localization section). No HEVC row:
+                    // Automatic already prefers HEVC (with H.264 fallback),
+                    // so a dedicated HEVC choice would behave identically.
                     Text(L("Automatic")).tag(QualitySettings.CodecPreference.auto)
-                    Text(verbatim: "HEVC").tag(QualitySettings.CodecPreference.hevc)
                     Text(verbatim: "H.264").tag(QualitySettings.CodecPreference.h264)
                 }
                 Toggle(
@@ -84,17 +85,20 @@ struct SettingsView: View {
                         }
                     ))
                 if let ceilingBps = appState.qualitySettings.maxBitrateBps {
+                    // `normalized()` keeps the ceiling clamped to the
+                    // bounds and rounded to a whole Mbps, so the integer
+                    // division here is always exact — no display fudging.
                     Stepper(
                         value: Binding(
-                            get: { max(1, ceilingBps / 1_000_000) },
+                            get: { ceilingBps / 1_000_000 },
                             set: { mbps in
                                 appState.qualitySettings =
                                     appState.qualitySettings.updating(maxBitrateBps: mbps * 1_000_000)
                             }
                         ),
-                        in: 1...50
+                        in: (QualitySettings.minCeilingBps / 1_000_000)...(QualitySettings.maxCeilingBps / 1_000_000)
                     ) {
-                        Text(L("\(max(1, ceilingBps / 1_000_000)) Mbps"))
+                        Text(L("\(ceilingBps / 1_000_000) Mbps"))
                     }
                 }
                 Text(L("Frame rate and codec changes apply the next time you start sharing."))

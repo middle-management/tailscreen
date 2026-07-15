@@ -70,11 +70,25 @@ final class AdaptiveBitrateTests: XCTestCase {
         XCTAssertNil(decide(plis: 0, current: baseline, elapsed: 30 * s))
     }
 
+    func testClampsDownWhenCurrentExceedsBaseline() {
+        // Self-heal: a mid-share ceiling drop can race an in-flight sweep
+        // apply and park `current` above the new baseline — where neither
+        // arm ever fires on a loss-free link (raising requires current <
+        // baseline). The clamp-down arm returns baseline immediately, with
+        // no hysteresis…
+        XCTAssertEqual(decide(plis: 0, current: 12_000_000, elapsed: 0), baseline)
+        // …and it wins over the loss arm too: a 25 % cut from an
+        // above-baseline current (15 Mbps here) could still exceed the
+        // effective ceiling.
+        XCTAssertEqual(decide(plis: 9, current: 20_000_000, elapsed: 30 * s), baseline)
+    }
+
     func testCeilingClampedBaselineDrivesFloorAndCut() {
         // A 30 fps session with a 2 Mbps user ceiling: the server anchors
-        // baseline = min(w×h×bpp×fpsCap, ceiling). 1920×1080 × 0.08 bpp ×
-        // 30 fps ≈ 4.98 Mbps, clamped to the 2 Mbps ceiling.
-        let anchor = Int(Double(1920 * 1080) * 0.08 * 30.0)
+        // baseline = min(computeBitrate, ceiling), using the same shared
+        // formula as the encoder. 1920×1080 × 0.08 bpp × 30 fps ≈ 4.98
+        // Mbps, clamped to the 2 Mbps ceiling.
+        let anchor = VideoEncoder.computeBitrate(width: 1920, height: 1080, fps: 30, bitsPerPixel: 0.08)
         XCTAssertGreaterThan(anchor, 2_000_000)
         let clamped = min(anchor, 2_000_000)
         // The floor derives from the clamped baseline, not the raw anchor:

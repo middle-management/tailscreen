@@ -110,19 +110,26 @@ final class VideoEncoder: @unchecked Sendable {
     ///     content earn back ~30% efficiency vs H.264, so the HEVC default
     ///     is lower; idle screens routinely settle far below the ceiling
     ///     because Quality lets the encoder skip bits when nothing changed.
+    ///   - quality: perceptual-quality target for
+    ///     `kVTCompressionPropertyKey_Quality`. Defaults to the tuned
+    ///     constant; the capture-helper threads the user's
+    ///     `QualitySettings.encoderQuality` through here.
     func setup(
         width: Int,
         height: Int,
         fps: Int32 = 60,
         preferredCodec: VideoCodec = .hevc,
-        bitsPerPixel: Double? = nil
+        bitsPerPixel: Double? = nil,
+        quality: Double = EncoderTuning.quality
     ) throws {
         let codecOrder: [VideoCodec] = preferredCodec == .hevc ? [.hevc, .h264] : [.h264]
         var lastError: OSStatus = noErr
         for codec in codecOrder {
             let bpp = bitsPerPixel ?? Self.defaultBitsPerPixel(for: codec)
             do {
-                try createSession(width: width, height: height, fps: fps, codec: codec, bitsPerPixel: bpp)
+                try createSession(
+                    width: width, height: height, fps: fps, codec: codec, bitsPerPixel: bpp,
+                    quality: quality)
                 if codec != preferredCodec {
                     print("VideoEncoder: \(preferredCodec) not available, fell back to \(codec)")
                 }
@@ -165,7 +172,9 @@ final class VideoEncoder: @unchecked Sendable {
         }
     }
 
-    private func createSession(width: Int, height: Int, fps: Int32, codec: VideoCodec, bitsPerPixel: Double) throws {
+    private func createSession(
+        width: Int, height: Int, fps: Int32, codec: VideoCodec, bitsPerPixel: Double, quality: Double
+    ) throws {
         var newSession: VTCompressionSession?
 
         let codecType: CMVideoCodecType = (codec == .hevc) ? kCMVideoCodecType_HEVC : kCMVideoCodecType_H264
@@ -252,7 +261,7 @@ final class VideoEncoder: @unchecked Sendable {
         // right shape for screen sharing. If the encoder ignores Quality,
         // the ceiling alone still bounds bandwidth.
         Self.setProperty(
-            newSession, key: kVTCompressionPropertyKey_Quality, value: EncoderTuning.quality as CFNumber,
+            newSession, key: kVTCompressionPropertyKey_Quality, value: quality as CFNumber,
             failures: &propertyFailures)
 
         let bitrate = Self.computeBitrate(width: width, height: height, fps: Int(fps), bitsPerPixel: bitsPerPixel)
@@ -288,7 +297,13 @@ final class VideoEncoder: @unchecked Sendable {
         lock.unlock()
     }
 
-    private static func computeBitrate(width: Int, height: Int, fps: Int, bitsPerPixel: Double) -> Int {
+    /// The bitrate-ceiling formula (`w × h × bpp × fps`). Internal (not
+    /// private) because it's the single source of truth shared by three
+    /// call sites that must agree byte-for-byte: this encoder's session
+    /// setup, the capture-helper's user-ceiling clamp
+    /// (`CaptureHelperRunner.handleFrame`), and the server's
+    /// adaptive-bitrate baseline anchor (`onEncoderResolution`).
+    static func computeBitrate(width: Int, height: Int, fps: Int, bitsPerPixel: Double) -> Int {
         Int(Double(width * height) * bitsPerPixel * Double(fps))
     }
 

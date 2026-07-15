@@ -3,7 +3,7 @@ import XCTest
 @testable import Tailscreen
 
 /// CI-able unit tests for the quality-settings model (no tsnet, no SCK):
-/// preset → knob mapping, normalization clamps, helper-environment
+/// preset ↔ knob derivation, normalization clamps, helper-environment
 /// round-trip, `UserDefaults` persistence with decode-with-fallback — plus
 /// pins for the centralized `TransportTuning` / `EncoderTuning` constants,
 /// which must keep reproducing the literals they replaced (including the
@@ -18,6 +18,7 @@ final class QualitySettingsTests: XCTestCase {
         XCTAssertEqual(defaults.fpsCap, 60)
         XCTAssertEqual(defaults.codecPreference, .auto)
         XCTAssertNil(defaults.maxBitrateBps)
+        XCTAssertEqual(defaults.encoderQuality, 0.7)
         // Defaults are already normalized — a fresh install changes nothing.
         XCTAssertEqual(defaults, defaults.normalized())
     }
@@ -57,9 +58,13 @@ final class QualitySettingsTests: XCTestCase {
         XCTAssertEqual(TransportTuning.adaptiveBitrateFloor(baseline: 1_000_000), 500_000)
     }
 
-    func testUserCeilingLowerBoundMatchesAdaptiveFloor() {
-        // A user ceiling can never sit below where the sweep bottoms out.
-        XCTAssertEqual(QualitySettings.minCeilingBps, TransportTuning.adaptiveFloorMinBps)
+    func testCeilingBoundsPins() {
+        // The 1 Mbps UX floor keeps the whole-Mbps stepper honest.
+        XCTAssertEqual(QualitySettings.minCeilingBps, 1_000_000)
+        XCTAssertEqual(QualitySettings.maxCeilingBps, 50_000_000)
+        // Decoupled from the adaptive sweep's absolute floor, but a user
+        // ceiling must never sit below where the sweep bottoms out.
+        XCTAssertGreaterThanOrEqual(QualitySettings.minCeilingBps, TransportTuning.adaptiveFloorMinBps)
     }
 
     // MARK: - normalized()
@@ -73,35 +78,51 @@ final class QualitySettingsTests: XCTestCase {
         XCTAssertEqual(QualitySettings(fpsCap: -5).normalized().fpsCap, 15)
     }
 
-    func testNormalizedClampsCeiling() {
-        XCTAssertEqual(QualitySettings(maxBitrateBps: 100_000).normalized().maxBitrateBps, 500_000)
+    func testNormalizedClampsAndRoundsCeiling() {
+        XCTAssertEqual(QualitySettings(maxBitrateBps: 100_000).normalized().maxBitrateBps, 1_000_000)
         XCTAssertEqual(QualitySettings(maxBitrateBps: 999_000_000).normalized().maxBitrateBps, 50_000_000)
         XCTAssertEqual(QualitySettings(maxBitrateBps: 2_000_000).normalized().maxBitrateBps, 2_000_000)
+        // Rounds to a whole Mbps so the stepper's integer display is exact.
+        XCTAssertEqual(QualitySettings(maxBitrateBps: 2_400_000).normalized().maxBitrateBps, 2_000_000)
+        XCTAssertEqual(QualitySettings(maxBitrateBps: 2_500_000).normalized().maxBitrateBps, 3_000_000)
         XCTAssertNil(QualitySettings(maxBitrateBps: nil).normalized().maxBitrateBps)
     }
 
+    func testNormalizedClampsEncoderQuality() {
+        XCTAssertEqual(QualitySettings(encoderQuality: 0.1).normalized().encoderQuality, 0.3)
+        XCTAssertEqual(QualitySettings(encoderQuality: 1.5).normalized().encoderQuality, 1.0)
+        XCTAssertEqual(QualitySettings(encoderQuality: 0.85).normalized().encoderQuality, 0.85)
+    }
+
     func testNormalizedIsIdempotent() {
-        let weird = QualitySettings(preset: .custom, fpsCap: 47, codecPreference: .h264, maxBitrateBps: 3)
+        let weird = QualitySettings(fpsCap: 47, codecPreference: .h264, maxBitrateBps: 1_700_000, encoderQuality: 7)
         XCTAssertEqual(weird.normalized(), weird.normalized().normalized())
     }
 
-    // MARK: - Preset → knob mapping
+    // MARK: - Preset ↔ knob derivation
 
     func testPresetKnobMapping() {
         let low = QualitySettings.applying(preset: .low, to: .default)
-        XCTAssertEqual(low.preset, .low)
-        XCTAssertEqual(low.fpsCap, 15)
+        XCTAssertEqual(low.fpsCap, 30)
         XCTAssertEqual(low.codecPreference, .auto)
-        XCTAssertEqual(low.maxBitrateBps, 2_000_000)
+        XCTAssertEqual(low.maxBitrateBps, 3_000_000)
+        XCTAssertEqual(low.encoderQuality, 0.6)
 
         // Balanced IS today's exact behavior.
         XCTAssertEqual(QualitySettings.applying(preset: .balanced, to: low), .default)
 
         let high = QualitySettings.applying(preset: .high, to: low)
-        XCTAssertEqual(high.preset, .high)
         XCTAssertEqual(high.fpsCap, 60)
-        XCTAssertEqual(high.codecPreference, .hevc)
+        XCTAssertEqual(high.codecPreference, .auto)
         XCTAssertNil(high.maxBitrateBps)
+        XCTAssertEqual(high.encoderQuality, 0.85)
+    }
+
+    func testPresetIsDerivedFromKnobs() {
+        XCTAssertEqual(QualitySettings.default.preset, .balanced)
+        for preset in [QualitySettings.Preset.low, .balanced, .high] {
+            XCTAssertEqual(QualitySettings.applying(preset: preset, to: .default).preset, preset)
+        }
     }
 
     func testApplyingPresetIsIdempotent() {
@@ -114,22 +135,21 @@ final class QualitySettingsTests: XCTestCase {
 
     func testApplyingCustomKeepsKnobs() {
         let low = QualitySettings.applying(preset: .low, to: .default)
-        let custom = QualitySettings.applying(preset: .custom, to: low)
-        XCTAssertEqual(custom.preset, .custom)
-        XCTAssertEqual(custom.fpsCap, low.fpsCap)
-        XCTAssertEqual(custom.codecPreference, low.codecPreference)
-        XCTAssertEqual(custom.maxBitrateBps, low.maxBitrateBps)
+        XCTAssertEqual(QualitySettings.applying(preset: .custom, to: low), low)
     }
 
-    func testEditingAnyKnobFlipsPresetToCustom() {
-        XCTAssertEqual(QualitySettings.default.updating(fpsCap: 30).preset, .custom)
+    func testEditingAnyKnobDerivesCustom() {
+        XCTAssertEqual(QualitySettings.default.updating(fpsCap: 15).preset, .custom)
         XCTAssertEqual(QualitySettings.default.updating(codecPreference: .h264).preset, .custom)
         XCTAssertEqual(QualitySettings.default.updating(maxBitrateBps: 5_000_000).preset, .custom)
+        // …and editing back to a named combination re-derives its label —
+        // the label can never contradict the knobs.
+        XCTAssertEqual(QualitySettings.default.updating(fpsCap: 15).updating(fpsCap: 60).preset, .balanced)
     }
 
     func testUpdatingNormalizesTheNewKnob() {
         XCTAssertEqual(QualitySettings.default.updating(fpsCap: 45).fpsCap, 30)
-        XCTAssertEqual(QualitySettings.default.updating(maxBitrateBps: 1).maxBitrateBps, 500_000)
+        XCTAssertEqual(QualitySettings.default.updating(maxBitrateBps: 1).maxBitrateBps, 1_000_000)
         XCTAssertNil(QualitySettings.default.updating(maxBitrateBps: nil).maxBitrateBps)
     }
 
@@ -137,7 +157,6 @@ final class QualitySettingsTests: XCTestCase {
 
     func testPreferredVideoCodec() {
         XCTAssertEqual(QualitySettings(codecPreference: .auto).preferredVideoCodec(forceH264: false), .hevc)
-        XCTAssertEqual(QualitySettings(codecPreference: .hevc).preferredVideoCodec(forceH264: false), .hevc)
         XCTAssertEqual(QualitySettings(codecPreference: .h264).preferredVideoCodec(forceH264: false), .h264)
     }
 
@@ -155,17 +174,15 @@ final class QualitySettingsTests: XCTestCase {
 
     func testHelperEnvironmentRoundTrip() {
         let settings = QualitySettings(
-            preset: .custom, fpsCap: 30, codecPreference: .h264, maxBitrateBps: 2_000_000)
-        let round = QualitySettings.fromEnvironment(settings.helperEnvironment())
-        XCTAssertEqual(round.fpsCap, 30)
-        XCTAssertEqual(round.codecPreference, .h264)
-        XCTAssertEqual(round.maxBitrateBps, 2_000_000)
+            fpsCap: 30, codecPreference: .h264, maxBitrateBps: 2_000_000, encoderQuality: 0.6)
+        XCTAssertEqual(QualitySettings.fromEnvironment(settings.helperEnvironment()), settings)
     }
 
     func testHelperEnvironmentOmitsCeilingWhenAutomatic() {
         let env = QualitySettings.default.helperEnvironment()
         XCTAssertEqual(env["TAILSCREEN_FPS_CAP"], "60")
         XCTAssertEqual(env["TAILSCREEN_CODEC_PREF"], "auto")
+        XCTAssertEqual(env["TAILSCREEN_ENCODER_QUALITY"], "0.7")
         XCTAssertNil(env["TAILSCREEN_MAX_BITRATE"])
     }
 
@@ -177,7 +194,8 @@ final class QualitySettingsTests: XCTestCase {
         let settings = QualitySettings.fromEnvironment([
             "TAILSCREEN_FPS_CAP": "fast",
             "TAILSCREEN_CODEC_PREF": "av1",
-            "TAILSCREEN_MAX_BITRATE": "lots"
+            "TAILSCREEN_MAX_BITRATE": "lots",
+            "TAILSCREEN_ENCODER_QUALITY": "high"
         ])
         XCTAssertEqual(settings, .default)
     }
@@ -185,10 +203,12 @@ final class QualitySettingsTests: XCTestCase {
     func testFromEnvironmentNormalizesParsedValues() {
         let settings = QualitySettings.fromEnvironment([
             "TAILSCREEN_FPS_CAP": "45",
-            "TAILSCREEN_MAX_BITRATE": "1"
+            "TAILSCREEN_MAX_BITRATE": "1",
+            "TAILSCREEN_ENCODER_QUALITY": "9.9"
         ])
         XCTAssertEqual(settings.fpsCap, 30)
-        XCTAssertEqual(settings.maxBitrateBps, 500_000)
+        XCTAssertEqual(settings.maxBitrateBps, 1_000_000)
+        XCTAssertEqual(settings.encoderQuality, 1.0)
     }
 
     // MARK: - Store persistence
@@ -209,7 +229,7 @@ final class QualitySettingsTests: XCTestCase {
     func testStoreRoundTrip() throws {
         try withScratchDefaults { defaults in
             let settings = QualitySettings(
-                preset: .custom, fpsCap: 30, codecPreference: .hevc, maxBitrateBps: 8_000_000)
+                fpsCap: 30, codecPreference: .h264, maxBitrateBps: 8_000_000, encoderQuality: 0.85)
             QualitySettingsStore.save(settings, to: defaults)
             XCTAssertEqual(QualitySettingsStore.load(from: defaults), settings)
         }
@@ -223,13 +243,24 @@ final class QualitySettingsTests: XCTestCase {
     }
 
     func testDecodeToleratesUnknownAndMissingFields() throws {
-        // A blob from a future version (unknown enum value, missing keys)
+        // A blob from another version (stored preset label, missing keys)
         // degrades field-by-field to defaults instead of failing the load.
         let blob = Data(#"{"preset":"ultra","fpsCap":30}"#.utf8)
         let decoded = try JSONDecoder().decode(QualitySettings.self, from: blob)
-        XCTAssertEqual(decoded.preset, .balanced)
         XCTAssertEqual(decoded.fpsCap, 30)
         XCTAssertEqual(decoded.codecPreference, .auto)
         XCTAssertNil(decoded.maxBitrateBps)
+        XCTAssertEqual(decoded.encoderQuality, 0.7)
+        // The stored preset label is ignored — preset derives from the
+        // knobs, and 30 fps with no ceiling matches no named combination.
+        XCTAssertEqual(decoded.preset, .custom)
+    }
+
+    func testDecodeMapsLegacyHEVCPreferenceToAuto() throws {
+        // Older builds offered (and persisted) an "hevc" codec preference
+        // that was behaviorally identical to auto; it decodes as .auto now.
+        let blob = Data(#"{"codecPreference":"hevc"}"#.utf8)
+        let decoded = try JSONDecoder().decode(QualitySettings.self, from: blob)
+        XCTAssertEqual(decoded.codecPreference, .auto)
     }
 }
