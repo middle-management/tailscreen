@@ -234,4 +234,164 @@ final class RTPLossyChannelTests: XCTestCase {
             "pipeline wedged under combined impairment — \(delivered.count)/\(expected.count)")
         assertIntactAndOrdered(delivered, expected: expected)
     }
+
+    // MARK: - NACK closed loop
+
+    private static func seqOf(_ packet: Data) -> UInt16 {
+        RTPHeader.decode(from: packet)?.header.sequenceNumber ?? 0
+    }
+
+    private struct NACKLoopOutcome {
+        var delivered: [VideoAccessUnit]
+        var nacks: Int
+        var plis: Int
+    }
+
+    /// Drive packetize → loss → (`NACKScheduler` + depacketizer) → retransmit
+    /// re-injection, in discrete 1 ms steps (one per arriving packet). NACKed
+    /// sequence numbers are looked up in the byte-identical wire map and
+    /// re-injected `rttSteps` later — unless `retransmitReliable` is false,
+    /// which models a link so lossy even retransmits drop, forcing the
+    /// scheduler's PLI fallback. The first packet is never dropped so the
+    /// receiver's cold-start baseline is clean and every later loss is
+    /// recoverable.
+    private func runNACKLoop(
+        packets: [Data],
+        lossSeed: UInt64,
+        lossRate: Double,
+        rttSteps: Int,
+        retransmitReliable: Bool,
+        ingest: (Data) -> VideoAccessUnit?,
+        drain: () -> [VideoAccessUnit]
+    ) -> NACKLoopOutcome {
+        var wire: [UInt16: Data] = [:]
+        for packet in packets { wire[Self.seqOf(packet)] = packet }
+
+        var scheduler = NACKScheduler()
+        var rng = SeededRNG(seed: lossSeed)
+        var delivered: [VideoAccessUnit] = []
+        var pending: [Int: [Data]] = [:]
+        var nacks = 0
+        var plis = 0
+        let stepNs: UInt64 = 1_000_000
+
+        func handleActions(_ actions: [NACKAction], atStep step: Int) {
+            for action in actions {
+                switch action {
+                case .sendNACK(let seqs):
+                    nacks += 1
+                    guard retransmitReliable else { continue }
+                    for seq in seqs where wire[seq] != nil {
+                        if let packet = wire[seq] {
+                            pending[step + rttSteps, default: []].append(packet)
+                        }
+                    }
+                case .sendPLI:
+                    plis += 1
+                }
+            }
+        }
+
+        func deliver(_ packet: Data, atStep step: Int) {
+            if let au = ingest(packet) { delivered.append(au) }
+            let now = UInt64(step) &* stepNs
+            handleActions(scheduler.observe(seq: Self.seqOf(packet), nowNs: now), atStep: step)
+        }
+
+        var step = 0
+        for packet in packets {
+            step += 1
+            let now = UInt64(step) &* stepNs
+            if let arrivals = pending.removeValue(forKey: step) {
+                for retransmit in arrivals { deliver(retransmit, atStep: step) }
+            }
+            let lost = step > 1 && lossRate > 0 && Double.random(in: 0..<1, using: &rng) < lossRate
+            if !lost { deliver(packet, atStep: step) }
+            handleActions(scheduler.tick(nowNs: now), atStep: step)
+        }
+        // Age out remaining gaps and drain scheduled retransmits.
+        let maxStep = (pending.keys.max() ?? step) + rttSteps + 2500
+        while step <= maxStep {
+            step += 1
+            let now = UInt64(step) &* stepNs
+            if let arrivals = pending.removeValue(forKey: step) {
+                for retransmit in arrivals { deliver(retransmit, atStep: step) }
+            }
+            handleActions(scheduler.tick(nowNs: now), atStep: step)
+            if pending.isEmpty && !scheduler.hasOpenGaps { break }
+        }
+        delivered.append(contentsOf: drain())
+        return NACKLoopOutcome(delivered: delivered, nacks: nacks, plis: plis)
+    }
+
+    func testLossRecoveredByNACKWithoutPLI() {
+        // 3 % loss with reliable retransmits: every gap is NACKed and refilled
+        // before the reorder window overflows, so no PLI ever fires and no
+        // frame is torn.
+        let (packets, expected) = Self.buildH264Stream(
+            frameCount: 90, bytesPerFrame: 1500, ssrc: 0x77)
+        let dp = H264Depacketizer(reorderDepth: 64)
+        let outcome = runNACKLoop(
+            packets: packets, lossSeed: 12345, lossRate: 0.03, rttSteps: 4,
+            retransmitReliable: true, ingest: dp.ingest, drain: dp.drainReady)
+
+        XCTAssertGreaterThan(outcome.nacks, 0, "loss should have driven NACKs")
+        XCTAssertEqual(outcome.plis, 0, "NACK recovery must not fall back to PLI at 3% loss")
+        XCTAssertFalse(
+            outcome.delivered.contains { $0.lostBeforeThisAU },
+            "recovered loss must not surface as a loss signal")
+        assertIntactAndOrdered(outcome.delivered, expected: expected)
+        XCTAssertGreaterThanOrEqual(
+            outcome.delivered.count, expected.count - 1,
+            "NACK recovery should deliver essentially every frame")
+    }
+
+    func testHEVCLossRecoveredByNACKWithoutPLI() {
+        let (packets, expected) = Self.buildHEVCStream(
+            frameCount: 70, bytesPerFrame: 1500, ssrc: 0x99)
+        let dp = H265Depacketizer(reorderDepth: 64)
+        let outcome = runNACKLoop(
+            packets: packets, lossSeed: 555, lossRate: 0.03, rttSteps: 4,
+            retransmitReliable: true, ingest: dp.ingest, drain: dp.drainReady)
+
+        XCTAssertGreaterThan(outcome.nacks, 0)
+        XCTAssertEqual(outcome.plis, 0)
+        XCTAssertFalse(outcome.delivered.contains { $0.lostBeforeThisAU })
+        assertIntactAndOrdered(outcome.delivered, expected: expected)
+    }
+
+    func testNACKFallsBackToPLIWhenRetransmitsAlsoDrop() {
+        // Retransmits never arrive: the scheduler must abandon each gap to a
+        // PLI (never wedge), and every delivered frame must still be intact.
+        let (packets, expected) = Self.buildH264Stream(
+            frameCount: 90, bytesPerFrame: 1500, ssrc: 0x33)
+        let dp = H264Depacketizer(reorderDepth: 64)
+        let outcome = runNACKLoop(
+            packets: packets, lossSeed: 777, lossRate: 0.04, rttSteps: 4,
+            retransmitReliable: false, ingest: dp.ingest, drain: dp.drainReady)
+
+        XCTAssertGreaterThan(outcome.plis, 0, "unrecoverable loss must fall back to PLI")
+        XCTAssertGreaterThan(
+            outcome.delivered.count, expected.count / 2,
+            "pipeline wedged — \(outcome.delivered.count)/\(expected.count)")
+        assertIntactAndOrdered(outcome.delivered, expected: expected)
+    }
+
+    func testSmallReorderProducesNoNACKsInLoop() {
+        // Reordering within a 3-packet window (displacement ≤ 2, under the
+        // scheduler's 3-newer-packet tolerance and 15 ms time tolerance) must
+        // never trip a NACK or a PLI.
+        let (packets, expected) = Self.buildH264Stream(
+            frameCount: 60, bytesPerFrame: 1500, ssrc: 0x44)
+        var channel = LossyChannel(seed: 4242, reorderWindow: 3)
+        let received = channel.transmit(packets)
+        let dp = H264Depacketizer(reorderDepth: 64)
+        let outcome = runNACKLoop(
+            packets: received, lossSeed: 1, lossRate: 0, rttSteps: 4,
+            retransmitReliable: true, ingest: dp.ingest, drain: dp.drainReady)
+
+        XCTAssertEqual(outcome.nacks, 0, "small reordering must not NACK")
+        XCTAssertEqual(outcome.plis, 0, "small reordering must not PLI")
+        assertIntactAndOrdered(outcome.delivered, expected: expected)
+    }
 }
