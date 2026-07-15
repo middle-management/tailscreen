@@ -2510,9 +2510,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             if let nextBitrate = decision.bitrate {
                 var reason = "clean window"
                 if nextBitrate < current {
-                    reason =
-                        "loss (\(fairness.globalBitrateInput) PLIs, \(worstLossQ8)/256 frac, "
-                        + "\(nackServed) NACKs/5s)"
+                    reason = "loss \(fairness.globalBitrateInput)plis/\(worstLossQ8)frac/\(nackServed)nack"
                 }
                 applyAdaptiveBitrate(nextBitrate, reason: reason)
             }
@@ -2860,7 +2858,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         // frame the send-chain cap sheds below is still registered, so a NACK
         // can recover an intentionally dropped frame (subject to budget).
         let nackAddrs = viewerCaps.withLock { caps in
-            plans.compactMap { caps[$0.addr]?.contains(.nack) == true ? $0.addr : nil }
+            plans.compactMap { (caps[$0.addr]?.contains(.nack) ?? false) ? $0.addr : nil }
         }
         if !nackAddrs.isEmpty {
             let batchID = retransmitBuffer.record(templates: templates, nowNs: nowNs)

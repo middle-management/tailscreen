@@ -1,6 +1,6 @@
 # NACK-based selective retransmission (+ deferred FEC) and receiver-feedback congestion control
 
-> Status: proposed — this PR contains only the plan; implementation is a follow-up iteration.
+> Status: implemented in this PR.
 
 ## Problem & motivation
 
@@ -107,6 +107,59 @@ Today the only loss-recovery tool is the PLI: any unrecoverable sequence gap dro
 - **Per-viewer seq spaces:** the ring index is per viewer (random `nextSequence` start, Server.swift:1008); all arithmetic must be `&-`/`&+` wrap-safe like `RTPReorderBuffer`.
 - **CLAUDE.md constraints:** tsnet suites are local-only (CI runs only the pure-logic suites — everything new here except the E2E seam must be pure); SCStream reconfiguration for the fps ladder happens **only in the capture helper** (never `SCShareableContent`/SCStream in the main process); port 7447 stays hardcoded; new control bytes must stay ≤ 0x7F for `looksLikeControl`; don't edit `TailscaleKitPackage/Sources` (no patch needed — `PacketListener` already suffices); Swift 6 — new networking types follow the `@unchecked Sendable` + internal-lock convention, pure structs are plain `Sendable`; update CLAUDE.md protocol/testing sections in the same commit.
 - **Compat matrix must be tested explicitly:** old-viewer↔new-server (PLI path untouched, Server.swift:826-829), new-viewer↔old-server (0x08 dropped by `decode` nil → `handleIncoming` guard, Server.swift:790; viewer stays in PLI mode absent server caps).
+
+## Deviations
+
+Recorded where the implementation diverged from the plan (adapted minimally to
+the code that actually merged, or scoped to bound compile risk):
+
+- **Control-byte values.** Plan wrote NACK=0x08 / RR=0x09 / PING=0x0A against a
+  stale enum; since color/HDR (#79) took 0x09 (PROFILE_NO) and consent (#74)
+  took 0x08 (HELLO_DENY), the loss-recovery bytes land at **NACK=0x0A,
+  RECEIVER_REPORT=0x0B, PING=0x0C** (all still ≤ 0x7F).
+- **Caps stored in a side map, not on `Viewer`.** `viewerCaps: [addr: ScreenShareCaps]`
+  keyed by addr survives the pending→approve promotion without threading caps
+  through that path. RR feedback + retransmit budget + NACK-served counter *do*
+  live on `Viewer` (defaulted fields, so the existing initializers are untouched).
+- **`nextCongestionDecision` evolves `nextAdaptiveBitrate` rather than shimming
+  through it.** The pure func takes RR loss fraction *and* the legacy PLI count;
+  a PLI-only session (`lossFractionQ8 == 0`, `nackServed == 0`) reproduces the
+  old ±25 %/+10 % math exactly, so `AdaptiveBitrateTests` pass unchanged (pinned
+  by `CongestionDecisionTests.testLegacyPLIParity*`). `nextAdaptiveBitrate` is
+  retained verbatim.
+- **Reorder window: depth increase, gap-age bound deferred.** The viewer deepens
+  the reorder window to **64** (not 128) in NACK mode and does **not** add the
+  time-based `skipGap` gap-age bound (`RTPReorderBuffer` has no clock; adding one
+  changes its many call sites). 64 packets at 60 fps is a small bounded stall on
+  a truly-abandoned loss, and the `NACKScheduler`'s PLI fallback (which triggers a
+  keyframe that resyncs) caps the worst case. `maxGapAgeNs` threading is not done.
+- **Retransmit sends on a detached `Task`, not a dedicated per-viewer tail.** The
+  25 % token budget bounds the rate, so a simple detached send is sufficient;
+  the `videoSendTails`-style chained tail was not added for retransmits.
+- **Client re-NACK cadence uses a fixed default RTT.** The server measures RTT
+  from the RR/PING round trip for congestion control, but that value isn't fed
+  back to the viewer, so `NACKScheduler`'s re-NACK interval uses its default RTT
+  estimate rather than a live one.
+- **fps ladder applies `minimumFrameInterval` only.** The helper reconfigures the
+  SCStream delivery rate live; it does **not** re-init `VideoEncoder` for the new
+  fps (MaxKeyFrameInterval / DataRateLimits window), and the server's baseline
+  bitrate anchor still tracks `quality.fpsCap` rather than the live tier. Encoder
+  fps-retuning is a follow-up.
+- **Stats overlay: NACKs-sent only.** `ViewerStats.nacksSent` is added (rises
+  while `plisSent` stays low — the net-impair validation signal). Packets-recovered
+  and RTT overlay rows are not surfaced client-side (the viewer doesn't receive
+  the server-measured RTT).
+- **E2E `sendNACKForTesting` seam deferred.** The plan's local-only tsnet seam
+  test isn't added — a non-compiling local-only test would still break CI's
+  `swift test` build with no CI-runtime benefit. The `onNACKServedForTesting`
+  server seam exists for a future local test; NACK recovery is CI-covered by the
+  `RTPLossyChannelTests` closed loop. Live validation stays `scripts/net-impair.sh`
+  (`--loss 3 --delay 80` + `./test-local.sh 2`; watch NACKs-sent rise and PLIs
+  stay near zero in the stats overlay).
+- **Phase 3 FEC: deferred as planned** (not implemented). Rationale stands: at
+  tailnet RTTs NACK recovers before a viewer renders the gap, FEC costs a
+  constant ~10 % exactly when bandwidth is scarce, and it touches the packetizer
+  hot path. Enable adaptively only when RR-measured RTT > 150 ms and loss > 2 %.
 
 ## Estimated scope
 

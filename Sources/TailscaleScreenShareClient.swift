@@ -855,9 +855,10 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
             let lost = max(0, expected - rrReceivedSinceReport)
             fracQ8 = min(255, lost * 256 / expected)
         }
-        let delayMs =
-            lastPingArrivalNs != 0
-            ? UInt16(min(65535, (now &- lastPingArrivalNs) / 1_000_000)) : 0
+        var delayMs: UInt16 = 0
+        if lastPingArrivalNs != 0 {
+            delayMs = UInt16(min(65535, (now &- lastPingArrivalNs) / 1_000_000))
+        }
         let report = ReceiverReport(
             fracLostQ8: UInt8(fracQ8),
             extHighestSeq: extHighest,

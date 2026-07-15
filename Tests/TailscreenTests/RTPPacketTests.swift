@@ -705,9 +705,8 @@ final class HelloAckTests: XCTestCase {
 /// old viewer on the PLI path.
 final class LossRecoveryWireTests: XCTestCase {
     func testNewControlBytesAreDistinctAndInControlRange() {
-        for kind in [
-            ScreenShareControlMessage.nack, .receiverReport, .ping,
-        ] {
+        let kinds: [ScreenShareControlMessage] = [.nack, .receiverReport, .ping]
+        for kind in kinds {
             let data = ScreenShareControlMessage.encode(kind)
             XCTAssertTrue(ScreenShareControlMessage.looksLikeControl(data))
             XCTAssertLessThanOrEqual(kind.rawValue, 0x7F)

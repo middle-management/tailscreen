@@ -96,7 +96,7 @@ final class RetransmitBuffer: @unchecked Sendable {
     /// Register a viewer's reserved sequence range for a recorded batch, so a
     /// later NACK from that viewer resolves seq → batch template.
     func recordViewerRange(addr: String, startSeq: UInt16, count: UInt16, batchID: UInt64) {
-        guard count > 0 else { return }
+        guard count >= 1 else { return }
         lock.withLock { state in
             var list = state.ranges[addr] ?? []
             list.append(ViewerRange(startSeq: startSeq, count: count, batchID: batchID))
