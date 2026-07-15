@@ -33,3 +33,5 @@ exclude:
   - superpowers/
 
 permalink: pretty
+
+# Site content last refreshed alongside the 2026-07 improvement wave (PRs #73-#86).
