@@ -2391,6 +2391,115 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         return nil
     }
 
+    /// Measured congestion inputs for `nextCongestionDecision`. Bundled so the
+    /// decision stays under the argument-count limit and the sweep builds it in
+    /// one place. Legacy viewers contribute only `pliCount` (their RR fraction
+    /// is 0 and they never NACK), so a PLI-only session degrades to exactly the
+    /// `nextAdaptiveBitrate` behavior `AdaptiveBitrateTests` pins.
+    struct CongestionInputs: Equatable {
+        /// Worst per-viewer RR "fraction lost" this window, Q8 (0…255).
+        var lossFractionQ8: Int
+        /// Worst non-throttled per-viewer PLI count this window (legacy signal).
+        var pliCount: Int
+        /// Retransmits served this window. NACK-recovered loss is cheap (one
+        /// packet, not a keyframe), so it weighs half a PLI in the cut decision.
+        var nackServed: Int
+        var current: Int
+        var baseline: Int
+        /// Current capture frame-rate tier (60 / 30 / 15).
+        var fpsTier: Int
+        var elapsedSinceChangeNs: UInt64
+    }
+
+    /// Bitrate + fps-tier decision from receiver feedback. `nil` on either
+    /// field means "leave it". Extracted as a pure func (same pattern as
+    /// `nextAdaptiveBitrate`) so the loss bands, NACK weighting, and fps-ladder
+    /// transitions are unit testable without a live encoder.
+    struct CongestionDecision: Equatable {
+        var bitrate: Int?
+        var fpsTier: Int?
+        static let hold = CongestionDecision(bitrate: nil, fpsTier: nil)
+    }
+
+    /// The fps downshift ladder: 60 → 30 → 15 (and back). `nil` at the ends.
+    static func lowerFpsTier(_ tier: Int) -> Int? {
+        switch tier {
+        case let t where t > 30: return 30
+        case let t where t > 15: return 15
+        default: return nil
+        }
+    }
+    static func raiseFpsTier(_ tier: Int) -> Int? {
+        switch tier {
+        case let t where t < 30: return 30
+        case let t where t < 60: return 60
+        default: return nil
+        }
+    }
+
+    /// Receiver-feedback congestion control. Bitrate is the primary lever (cut
+    /// 25 % on heavy loss, recover 10 % on a clean window, asymmetric
+    /// hysteresis — same math as `nextAdaptiveBitrate`); the fps ladder is the
+    /// second lever once bitrate bottoms out. Loss severity comes from the RR
+    /// fraction (> ~10 % Q8 cut, < ~2 % clean) *or* the legacy PLI count, so a
+    /// PLI-only session behaves exactly as before. NACK-served packets soften
+    /// the cut (recoverable loss the retransmit path already handled).
+    ///
+    /// fps rules: downshift only when the bitrate is already at the floor and
+    /// loss persists; on recovery, restore fps *before* letting bitrate climb
+    /// past ~60 % of baseline (frame rate hurts perception less than blocking
+    /// artifacts).
+    static func nextCongestionDecision(
+        _ inputs: CongestionInputs,
+        lossThreshold: Int = 2,
+        downHysteresisNs: UInt64 = 5_000_000_000,
+        upHysteresisNs: UInt64 = 10_000_000_000
+    ) -> CongestionDecision {
+        guard inputs.baseline > 0 else { return .hold }
+        if inputs.current > inputs.baseline {
+            return CongestionDecision(bitrate: inputs.baseline, fpsTier: nil)
+        }
+
+        let highLossQ8 = 26  // ~10 %
+        let lowLossQ8 = 5  // ~2 %
+        let floor = TransportTuning.adaptiveBitrateFloor(baseline: inputs.baseline)
+        // NACK recoveries halve the effective PLI weight — the loss was fixed
+        // cheaply, so it shouldn't drive a full-rate cut on its own.
+        let effectivePLIs = inputs.pliCount - min(inputs.pliCount, inputs.nackServed / 2)
+        let heavyLoss = inputs.lossFractionQ8 > highLossQ8 || effectivePLIs > lossThreshold
+        let clean =
+            inputs.lossFractionQ8 <= lowLossQ8 && inputs.pliCount == 0 && inputs.nackServed == 0
+
+        let downReady = inputs.elapsedSinceChangeNs >= downHysteresisNs
+        let upReady = inputs.elapsedSinceChangeNs >= upHysteresisNs
+
+        // Bitrate cut.
+        if heavyLoss && downReady && inputs.current > floor {
+            return CongestionDecision(bitrate: max(floor, inputs.current * 3 / 4), fpsTier: nil)
+        }
+        // fps downshift: bitrate can't cut further (at/below floor) but loss
+        // persists — drop the frame-rate tier instead.
+        if heavyLoss && downReady && inputs.current <= floor {
+            if let lower = lowerFpsTier(inputs.fpsTier) {
+                return CongestionDecision(bitrate: nil, fpsTier: lower)
+            }
+            return .hold
+        }
+        // Recovery. Restore fps first once bitrate has climbed back to ~60 %
+        // of baseline; otherwise raise bitrate.
+        if clean && upReady {
+            let sixtyPct = inputs.baseline * 6 / 10
+            if inputs.current >= sixtyPct, let higher = raiseFpsTier(inputs.fpsTier) {
+                return CongestionDecision(bitrate: nil, fpsTier: higher)
+            }
+            if inputs.current < inputs.baseline {
+                let raised = min(inputs.baseline, inputs.current + max(inputs.current / 10, 100_000))
+                return CongestionDecision(bitrate: raised, fpsTier: nil)
+            }
+        }
+        return .hold
+    }
+
     /// Push a new bitrate to the live encoder and update the bookkeeping
     /// the sweep reads on the next tick. Forces a keyframe on a down-step
     /// so viewers don't have to wait for the next periodic IDR to recover

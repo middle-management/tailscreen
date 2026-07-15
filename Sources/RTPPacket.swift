@@ -69,6 +69,34 @@ enum ScreenShareControlMessage: UInt8 {
     /// 10-bit; unknown bytes are dropped, so it's backward compatible.
     case profileUnsupported = 0x09
 
+    /// Viewer→sharer generic NACK (RFC 4588 generic-NACK FCI semantics).
+    /// Requests selective retransmission of missing RTP sequence numbers in
+    /// *this viewer's* sequence space:
+    ///     `[0x0A][count:1][(pid:2 BE, blp:2 BE) × count]`
+    /// where `pid` is the first missing seq and `blp` is a bitmask of the 16
+    /// sequence numbers following it. The sharer retransmits byte-identical
+    /// RTP from its send-side ring, or falls back to PLI when the gap is too
+    /// old / over budget. Capability-negotiated (see `ScreenShareCaps`): a
+    /// server that never advertised NACK support drops the unknown byte, so a
+    /// new viewer paired with an old server stays on the PLI path.
+    case nack = 0x0A
+
+    /// Viewer→sharer RTCP-RR-style receiver report (~1 Hz):
+    ///     `[0x0B][fracLostQ8:1][extHighestSeq:4][jitterTicks:4]
+    ///      [lastPingTs:8][delaySincePingMs:2]`
+    /// Feeds the sharer's receiver-feedback congestion controller with real
+    /// loss fraction, cumulative sequence position, RTP jitter, and an RTT
+    /// echo (`lastPingTs` + `delaySincePingMs` — the last `ping` this viewer
+    /// saw and how long it held it before reporting).
+    case receiverReport = 0x0B
+
+    /// Sharer→viewer RTT ping (~1 Hz, piggybacked on the idle sweep):
+    ///     `[0x0C][serverUptimeNs:8]`
+    /// The viewer echoes `serverUptimeNs` back in its next `receiverReport`
+    /// (as `lastPingTs`) so the sharer can compute RTT = now − lastPingTs −
+    /// delaySincePingMs. Server→viewer only; ignored if a viewer sends it.
+    case ping = 0x0C
+
     static func encode(_ kind: ScreenShareControlMessage) -> Data {
         Data([kind.rawValue])
     }
@@ -94,10 +122,159 @@ enum ScreenShareControlMessage: UInt8 {
     }
 
     /// Parse a HELLO_ACK datagram. Returns the SSRC, or nil if malformed.
+    /// Strict 5-byte form used by legacy viewers — a 6-byte extended ack
+    /// (with server caps) is rejected here, which is exactly the
+    /// backward-compat mechanism: an old viewer never enters NACK mode.
     static func decodeHelloAck(_ data: Data) -> UInt32? {
         guard data.count == 5, data[data.startIndex] == helloAck.rawValue else { return nil }
         return data.readBE(UInt32.self, at: data.startIndex + 1)
     }
+
+    // MARK: - Capability handshake (NACK / receiver-report negotiation)
+
+    /// Encode an extended HELLO carrying the viewer's capability bits:
+    /// `[0x00][caps:1]`. Old servers read byte 0 only, so the extra byte is
+    /// invisible to them; a cap-aware server records the bits and replies with
+    /// an extended HELLO_ACK.
+    static func encodeHello(caps: ScreenShareCaps) -> Data {
+        Data([hello.rawValue, caps.rawValue])
+    }
+
+    /// Read the capability byte off a HELLO. Returns `[]` for a legacy 1-byte
+    /// HELLO (no advertised capabilities).
+    static func decodeHelloCaps(_ data: Data) -> ScreenShareCaps {
+        guard data.count >= 2, data[data.startIndex] == hello.rawValue else { return [] }
+        return ScreenShareCaps(rawValue: data[data.startIndex + 1])
+    }
+
+    /// Encode an extended HELLO_ACK: `[0x04][ssrc:4 BE][serverCaps:1]` (6
+    /// bytes). Sent only to cap-advertising viewers — a legacy viewer's
+    /// strict `decodeHelloAck` would reject the 6-byte form, so the server
+    /// keeps sending it the plain 5-byte ack via `encodeHelloAck(ssrc:)`.
+    static func encodeHelloAck(ssrc: UInt32, caps: ScreenShareCaps) -> Data {
+        var data = Data(capacity: 6)
+        data.append(helloAck.rawValue)
+        data.appendBE(ssrc)
+        data.append(caps.rawValue)
+        return data
+    }
+
+    /// Tolerant HELLO_ACK parser used by cap-aware viewers: accepts both the
+    /// legacy 5-byte form (caps `[]`) and the 6-byte extended form. Returns
+    /// the SSRC plus the server's advertised caps, or nil if malformed.
+    static func decodeHelloAckCaps(_ data: Data) -> (ssrc: UInt32, caps: ScreenShareCaps)? {
+        guard data.count >= 5, data[data.startIndex] == helloAck.rawValue else { return nil }
+        let ssrc = data.readBE(UInt32.self, at: data.startIndex + 1)
+        let caps = data.count >= 6 ? ScreenShareCaps(rawValue: data[data.startIndex + 5]) : []
+        return (ssrc, caps)
+    }
+
+    // MARK: - NACK / receiver report / ping codecs
+
+    /// Encode a generic NACK. Each entry is `(pid, blp)` in the viewer's own
+    /// sequence space; `count` is capped at 16 (69 bytes max on the wire).
+    static func encodeNACK(_ entries: [(pid: UInt16, blp: UInt16)]) -> Data {
+        let capped = Array(entries.prefix(16))
+        var data = Data(capacity: 2 + capped.count * 4)
+        data.append(nack.rawValue)
+        data.append(UInt8(capped.count))
+        for entry in capped {
+            data.appendBE(entry.pid)
+            data.appendBE(entry.blp)
+        }
+        return data
+    }
+
+    /// Parse a generic NACK back into its `(pid, blp)` entries. Returns `[]`
+    /// on any malformation (short buffer, truncated entry list).
+    static func decodeNACK(_ data: Data) -> [(pid: UInt16, blp: UInt16)] {
+        guard data.count >= 2, data[data.startIndex] == nack.rawValue else { return [] }
+        let count = Int(data[data.startIndex + 1])
+        guard data.count >= 2 + count * 4 else { return [] }
+        var out: [(pid: UInt16, blp: UInt16)] = []
+        out.reserveCapacity(count)
+        var idx = data.startIndex + 2
+        for _ in 0..<count {
+            let pid = data.readBE(UInt16.self, at: idx)
+            let blp = data.readBE(UInt16.self, at: data.index(idx, offsetBy: 2))
+            out.append((pid, blp))
+            idx = data.index(idx, offsetBy: 4)
+        }
+        return out
+    }
+
+    /// Encode a receiver report. See `receiverReport` for the layout.
+    static func encodeReceiverReport(_ report: ReceiverReport) -> Data {
+        var data = Data(capacity: 20)
+        data.append(receiverReport.rawValue)
+        data.append(report.fracLostQ8)
+        data.appendBE(report.extHighestSeq)
+        data.appendBE(report.jitterTicks)
+        data.appendBE(report.lastPingTs)
+        data.appendBE(report.delaySincePingMs)
+        return data
+    }
+
+    /// Parse a receiver report; nil if malformed (needs exactly 20 bytes).
+    static func decodeReceiverReport(_ data: Data) -> ReceiverReport? {
+        guard data.count >= 20, data[data.startIndex] == receiverReport.rawValue else { return nil }
+        let base = data.startIndex
+        return ReceiverReport(
+            fracLostQ8: data[data.index(base, offsetBy: 1)],
+            extHighestSeq: data.readBE(UInt32.self, at: data.index(base, offsetBy: 2)),
+            jitterTicks: data.readBE(UInt32.self, at: data.index(base, offsetBy: 6)),
+            lastPingTs: data.readBE(UInt64.self, at: data.index(base, offsetBy: 10)),
+            delaySincePingMs: data.readBE(UInt16.self, at: data.index(base, offsetBy: 18))
+        )
+    }
+
+    /// Encode a PING carrying the server's monotonic uptime clock.
+    static func encodePing(serverUptimeNs: UInt64) -> Data {
+        var data = Data(capacity: 9)
+        data.append(ping.rawValue)
+        data.appendBE(serverUptimeNs)
+        return data
+    }
+
+    /// Parse a PING; nil if malformed (needs 9 bytes).
+    static func decodePing(_ data: Data) -> UInt64? {
+        guard data.count >= 9, data[data.startIndex] == ping.rawValue else { return nil }
+        return data.readBE(UInt64.self, at: data.startIndex + 1)
+    }
+}
+
+/// Capability bits negotiated in the extended HELLO / HELLO_ACK. A viewer
+/// advertises what it can do; the server replies with what it supports; each
+/// side enables a feature only when both advertised it. Absent (legacy 1-byte
+/// HELLO / 5-byte ack) means `[]` — the PLI-only path, unchanged.
+struct ScreenShareCaps: OptionSet, Sendable, Hashable {
+    let rawValue: UInt8
+    init(rawValue: UInt8) { self.rawValue = rawValue }
+
+    /// Viewer detects sequence gaps and requests selective retransmission;
+    /// server retransmits from its send-side ring.
+    static let nack = ScreenShareCaps(rawValue: 1 << 0)
+    /// Viewer sends periodic receiver reports; server pings for RTT.
+    static let receiverReport = ScreenShareCaps(rawValue: 1 << 1)
+}
+
+/// RTCP-RR-style receiver report payload (see `ScreenShareControlMessage`
+/// `.receiverReport`). Value type so it can round-trip through the wire
+/// codecs and be unit-tested without a live socket.
+struct ReceiverReport: Sendable, Equatable {
+    /// Fraction of packets lost since the previous report, Q8 fixed point
+    /// (loss × 256, clamped to 255). RFC 3550 §6.4.1 "fraction lost".
+    var fracLostQ8: UInt8
+    /// Extended highest sequence number received (cycles << 16 | highest).
+    var extHighestSeq: UInt32
+    /// Interarrival jitter in RTP timestamp ticks (90 kHz).
+    var jitterTicks: UInt32
+    /// The `serverUptimeNs` from the most recent PING this viewer saw, echoed
+    /// so the server can measure RTT. 0 if no PING has arrived yet.
+    var lastPingTs: UInt64
+    /// Milliseconds the viewer held `lastPingTs` before sending this report,
+    /// so the server subtracts its own processing delay from the RTT.
+    var delaySincePingMs: UInt16
 }
 
 /// 12-byte fixed RTP header (no CSRC list, no extension).
@@ -1019,8 +1196,18 @@ final class H265Depacketizer {
 /// step — whichever codec the server picked, the receiver discovers it
 /// from the first packet's PT.
 final class MultiCodecDepacketizer {
-    private let h264 = H264Depacketizer()
-    private let h265 = H265Depacketizer()
+    private let h264: H264Depacketizer
+    private let h265: H265Depacketizer
+
+    /// `reorderDepth` sizes each codec's `RTPReorderBuffer`. The viewer plumbs
+    /// a deeper window when the server advertised NACK support — retransmits
+    /// have to land before the window overflows, and the default 16 packets is
+    /// only a few frames (shallower than one WAN RTT). Defaults to the
+    /// happy-path 16 for legacy / non-NACK sessions.
+    init(reorderDepth: Int = 16) {
+        self.h264 = H264Depacketizer(reorderDepth: reorderDepth)
+        self.h265 = H265Depacketizer(reorderDepth: reorderDepth)
+    }
 
     func ingest(_ packet: Data) -> VideoAccessUnit? {
         guard let (header, _) = RTPHeader.decode(from: packet) else { return nil }
@@ -1060,5 +1247,19 @@ extension Data {
         let b2 = UInt32(self[self.index(index, offsetBy: 2)])
         let b3 = UInt32(self[self.index(index, offsetBy: 3)])
         return (b0 << 24) | (b1 << 16) | (b2 << 8) | b3
+    }
+
+    fileprivate mutating func appendBE(_ value: UInt64) {
+        for shift in stride(from: 56, through: 0, by: -8) {
+            append(UInt8((value >> UInt64(shift)) & 0xFF))
+        }
+    }
+
+    fileprivate func readBE(_: UInt64.Type, at index: Data.Index) -> UInt64 {
+        var value: UInt64 = 0
+        for offset in 0..<8 {
+            value = (value << 8) | UInt64(self[self.index(index, offsetBy: offset)])
+        }
+        return value
     }
 }
