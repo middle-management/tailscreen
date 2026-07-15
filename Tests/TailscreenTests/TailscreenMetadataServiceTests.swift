@@ -40,4 +40,24 @@ final class TailscreenMetadataServiceTests: XCTestCase {
         // doesn't remount the banner.
         XCTAssertEqual(firstID, secondID)
     }
+
+    @MainActor
+    func testHandleRequestToShareCoalesceTakesFreshestConnectionID() {
+        // A retry arrives on a new TCP connection; the response must ride
+        // the freshest one (the old connection is likely dead). A retry
+        // without a connection ID keeps the previous one.
+        let svc = TailscreenMetadataService()
+        let firstConn = UUID()
+        let secondConn = UUID()
+
+        svc.handleRequestToShare(from: "wisp-1", connectionID: firstConn)
+        XCTAssertEqual(svc.pendingRequests.first?.connectionID, firstConn)
+
+        svc.handleRequestToShare(from: "wisp-1", connectionID: secondConn)
+        XCTAssertEqual(svc.pendingRequests.count, 1)
+        XCTAssertEqual(svc.pendingRequests.first?.connectionID, secondConn)
+
+        svc.handleRequestToShare(from: "wisp-1")
+        XCTAssertEqual(svc.pendingRequests.first?.connectionID, secondConn)
+    }
 }

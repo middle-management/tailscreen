@@ -1386,9 +1386,8 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         let client = LocalAPIClient(localNode: node, logger: logger)
         guard let status = try? await client.backendStatus() else { return (nil, nil) }
         for (_, peer) in status.Peer ?? [:] {
-            if let ips = peer.TailscaleIPs, ips.contains(ip) {
-                return (peer.HostName, String(peer.ID))
-            }
+            guard let ips = peer.TailscaleIPs, ips.contains(ip) else { continue }
+            return (peer.HostName, String(peer.ID))
         }
         return (nil, nil)
     }

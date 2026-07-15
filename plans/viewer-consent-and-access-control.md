@@ -1,6 +1,6 @@
 # Default-on viewer consent, persistent per-peer allow/deny list, and a finished accept/decline handshake
 
-> Status: proposed — this PR contains only the plan; implementation is a follow-up iteration.
+> Status: implemented in this PR.
 
 ## Problem & motivation
 
@@ -66,7 +66,7 @@ Owned by AppState; `displayName` refreshed on each sighting so renames stay read
 - **TCP control channel** (`ScreenShareProtocol.swift`): new message type `case shareResponse = 0x05`, payload = JSON-encoded existing `TailscreenRequest` (reusing the scaffolded `.acceptShare`/`.declineShare` cases, `TailscreenMetadata.swift:27-70`). Backward compatible: old peers' parsers drop unknown type bytes (`ScreenShareProtocol.swift:79-82`).
 - **Response routing**: reply on the **same TCP connection** the request arrived on — no dial-back, so the response provably goes to the actual requester. `TailscreenControlListener.dispatch` passes `connectionID` to `onRequestToShare` (like `.annotation`, `:163-164`); `PendingRequest` (`TailscreenMetadata.swift:78-88`) gains `connectionID: UUID?`; banner buttons send via `controlListener.send(_:to:)` (`TailscreenControlListener.swift:90-93`), best-effort if the connection died.
 - **Requester side**: `sendRequestToShare` (`TailscreenMetadata.swift:162-186`) stops closing immediately; after the send it reads frames with `ScreenShareMessageParser` under a generous timeout (120 s, `TailscalePeerDiscovery.withWatchdog`) and returns `.accepted`/`.declined`/`.noAnswer` (timeout/EOF ⇒ `.noAnswer`, which is also what an old peer produces). `AppState.requestToShare` (`AppState.swift:1676-1689`) surfaces the outcome via `presentError`-style alert or notification.
-- **UDP control byte (optional, small)**: `helloDenied = 0x09` (0x00–0x08 are taken, `RTPPacket.swift:28-46`; stays < 0x80 per `looksLikeControl`) sent by `denyViewer` alongside SERVER_BYE so the viewer can show "The sharer declined your request" instead of the generic peer-closed teardown (`TailscaleScreenShareClient.swift:423-441`). Old viewers ignore unknown control bytes.
+- **UDP control byte (optional, small)**: `helloDenied = 0x08` (0x00–0x07 are taken — the plan originally guessed 0x09, but `codecUnsupported = 0x07` is the last assigned value in `RTPPacket.swift`, so 0x08 is the next free byte; stays < 0x80 per `looksLikeControl`) sent by `denyViewer` alongside SERVER_BYE so the viewer can show "The sharer declined your request" instead of the generic peer-closed teardown (`TailscaleScreenShareClient.swift:423-441`). Old viewers ignore unknown control bytes.
 
 ### UI
 
@@ -77,19 +77,19 @@ Owned by AppState; `displayName` refreshed on each sighting so renames stay read
 
 ## Implementation steps
 
-1. [ ] `Sources/ViewerAccessPolicy.swift`: `PeerPolicy`, `PeerAccessEntry`, `ViewerAccessPolicyStore` (injectable `UserDefaults`), plus pure `admissionDecision(policy:requireApproval:)` (put it here or as a static on the server, matching the extract-the-decision pattern).
-2. [ ] `Sources/ViewerApproval.swift:12-14`: tri-state `load()` (`object(forKey:) as? Bool ?? true`) + `TAILSCREEN_OPEN_DOOR=1` escape; update the doc comment.
-3. [ ] `TailscaleScreenShareServer.swift`: add `stableID: String?` to `ViewerInfo`/`PendingViewerInfo` (`:31-49`); add `accessPolicies` lock + `setAccessPolicies(_:)`; extend both resolve functions (`:1215-1263`) to capture `PeerStatus.ID` and, in the pending variant, apply `admissionDecision` → `approveViewer`/`denyViewer`; fix the `setRequireApproval(false)` drain (`:1069-1076`) and the race self-promote (`:988-990`) to deny blocked peers; add `helloDenied` emit in `denyViewer` (`:1135-1152`).
-4. [ ] `RTPPacket.swift:28-46`: add `helloDenied = 0x09`; `TailscaleScreenShareClient.swift:423-441`: handle it (new `onDeniedBySharer` callback → AppState alert + disconnect).
-5. [ ] `ScreenShareProtocol.swift`: `shareResponse = 0x05` message type, encode/decode using `TailscreenRequest` as payload; clamp/validate like `:104-107`.
-6. [ ] `TailscreenControlListener.swift:161-168`: pass `connectionID` through `onRequestToShare`; add `onShareResponse` (unused server-side, harmless).
-7. [ ] `TailscreenMetadata.swift`: `PendingRequest` + `connectionID: UUID?` (`:78-88`); `sendRequestToShare` → `sendRequestToShareAwaitingResponse` returning `.accepted/.declined/.noAnswer` (`:162-186`).
-8. [ ] `AppState.swift`: own `ViewerAccessPolicyStore`; push snapshots to server at `:585` and on store change; new funcs `approvePendingViewerAlways`/`denyPendingViewerAndBlock` (`near :1806-1814`); thread `connectionID` through `handleIncomingRequestToShare` (`:1555-1559`); surface request outcome in `requestToShare` (`:1676-1689`).
-9. [ ] `MenuBarView.swift`: split Accept/Deny controls (`:560-596`); banner responses (`:199-210`).
-10. [ ] `SettingsView.swift`: remembered-viewers section; update toggle caption.
-11. [ ] `en.lproj/Localizable.strings`: add every new `L("…")` key byte-for-byte.
-12. [ ] Tests (below) + set `TAILSCREEN_OPEN_DOOR=1` in `test-local.sh` and the harness/E2E helpers that assume open-door joins.
-13. [ ] Update `CLAUDE.md` (protocol section: new 0x05 TCP type + 0x09 control byte; testing list: new suites) in the same commit, per its own header rule.
+1. [x] `Sources/ViewerAccessPolicy.swift`: `PeerPolicy`, `PeerAccessEntry`, `ViewerAccessPolicyStore` (injectable `UserDefaults`), plus pure `admissionDecision(policy:requireApproval:)` (put it here or as a static on the server, matching the extract-the-decision pattern).
+2. [x] `Sources/ViewerApproval.swift:12-14`: tri-state `load()` (`object(forKey:) as? Bool ?? true`) + `TAILSCREEN_OPEN_DOOR=1` escape; update the doc comment.
+3. [x] `TailscaleScreenShareServer.swift`: add `stableID: String?` to `ViewerInfo`/`PendingViewerInfo` (`:31-49`); add `accessPolicies` lock + `setAccessPolicies(_:)`; extend both resolve functions (`:1215-1263`) to capture `PeerStatus.ID` and, in the pending variant, apply `admissionDecision` → `approveViewer`/`denyViewer`; fix the `setRequireApproval(false)` drain (`:1069-1076`) and the race self-promote (`:988-990`) to deny blocked peers; add `helloDenied` emit in `denyViewer` (`:1135-1152`).
+4. [x] `RTPPacket.swift:28-46`: add `helloDenied = 0x08`; `TailscaleScreenShareClient.swift:423-441`: handle it (new `onDeniedBySharer` callback → AppState alert + disconnect).
+5. [x] `ScreenShareProtocol.swift`: `shareResponse = 0x05` message type, encode/decode using `TailscreenRequest` as payload; clamp/validate like `:104-107`.
+6. [x] `TailscreenControlListener.swift:161-168`: pass `connectionID` through `onRequestToShare`; add `onShareResponse` (unused server-side, harmless).
+7. [x] `TailscreenMetadata.swift`: `PendingRequest` + `connectionID: UUID?` (`:78-88`); `sendRequestToShare` → `sendRequestToShareAwaitingResponse` returning `.accepted/.declined/.noAnswer` (`:162-186`).
+8. [x] `AppState.swift`: own `ViewerAccessPolicyStore`; push snapshots to server at `:585` and on store change; new funcs `approvePendingViewerAlways`/`denyPendingViewerAndBlock` (`near :1806-1814`); thread `connectionID` through `handleIncomingRequestToShare` (`:1555-1559`); surface request outcome in `requestToShare` (`:1676-1689`).
+9. [x] `MenuBarView.swift`: split Accept/Deny controls (`:560-596`); banner responses (`:199-210`).
+10. [x] `SettingsView.swift`: remembered-viewers section; update toggle caption.
+11. [x] `en.lproj/Localizable.strings`: add every new `L("…")` key byte-for-byte.
+12. [x] Tests (below) + set `TAILSCREEN_OPEN_DOOR=1` in `test-local.sh` and the harness/E2E helpers that assume open-door joins.
+13. [x] Update `CLAUDE.md` (protocol section: new 0x05 TCP type + 0x08 control byte; testing list: new suites) in the same commit, per its own header rule.
 
 ## Files to change / add
 
@@ -121,3 +121,17 @@ Change: `Sources/ViewerApproval.swift`, `Sources/TailscaleScreenShareServer.swif
 ## Estimated scope
 
 **M** — roughly 700–1000 LOC total: ~120 store+decision, ~150 server, ~80 protocol/listener/metadata, ~120 AppState, ~150 UI, ~40 strings/scripts/docs, ~300 tests. No build-system, patch, or helper-subprocess changes.
+
+## Deviations
+
+Where the implementation differs from the plan text above, and why:
+
+- **`helloDenied` is `0x08`, not `0x09`.** The plan miscounted the assigned control bytes: `codecUnsupported = 0x07` is the last one, so the next free value is 0x08.
+- **Deny outranks the open-door gate everywhere.** The plan only specified policy application for parked (pending) viewers. `admissionDecision` returns `.reject` for a remembered deny even with the gate off, and two extra paths enforce it: a cached-StableNodeID re-HELLO is rejected synchronously in `registerOrRefresh`, and a blocked peer that slipped into the fan-out before its async resolution completed is expelled by `resolveHostnameAndUpdate` (new `expelViewer`). Without these, "Deny & block" would be a no-op the moment the sharer turned the gate off.
+- **`setAccessPolicies` re-evaluates parked viewers.** Not in the plan, but pushing a policy while someone is pending (e.g. "Always allow" clicked in one surface while the row still shows in another, or the store changing mid-share) now applies `admissionDecision` to every resolved pending entry. This is also what makes the E2E suite deterministic — the test parks a viewer, waits for its StableNodeID, then pushes the policy.
+- **Resolve tasks retry (5 × 1 s).** The plan treated resolution as one-shot. A peer that HELLOs right after joining the tailnet may not be in the server's `backendStatus()` snapshot yet; a bounded retry keeps hostname rows and (more importantly) policy application from silently never happening. Resolution is also now triggered whenever *either* the hostname or the StableNodeID is uncached, not just the hostname.
+- **Split buttons keep single Accept/Deny labels.** `PendingViewersList` uses SwiftUI `Menu(content:label:primaryAction:)` — primary click = one-time Accept/Deny, attached menu = "Always Allow" / "Deny & Block" — rather than a custom chevron control; the remembered items are disabled until the StableNodeID resolves (nothing to key the entry on before that).
+- **`.noAnswer` is surfaced with an alert too.** The plan left the no-answer UX open ("alert or notification"); all three outcomes get an `NSAlert`, with the no-answer copy hedging that the peer may be running an older Tailscreen (old peers can't answer).
+- **The IP→identity cache gained a StableNodeID side** (`peerStableIDCache`) alongside the existing hostname cache, so re-HELLOs from resolved peers apply policy synchronously instead of re-parking behind another LocalAPI round-trip.
+- **E2E shape.** `ScreenShareAccessControlTests` is one test with three sequential viewers against one server (unknown/park+approve, remembered-allow auto-admit, remembered-deny reject) instead of three separate bring-ups — tsnet node bring-up dominates runtime. The policy is injected after the pending entry's StableNodeID resolves (see the `setAccessPolicies` re-evaluation deviation) rather than read from the viewer node's own LocalAPI before connect, because the client creates its node inside `connect()`.
+- **Direct-constructed test servers stay open-door with no changes** (as the plan's Risks section predicted): the server-side gate lock still defaults to `false` and only AppState reads the flipped UserDefault, so the existing `ScreenShare*Tests` bring-ups auto-admit unchanged. `TAILSCREEN_OPEN_DOOR=1` was added to `scripts/test-e2e-local.sh` (both instances) and `test-local.sh` (overridable via `TAILSCREEN_OPEN_DOOR=0` for manual approval-flow testing).
