@@ -2913,7 +2913,10 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
                 }
             }
         }
-        fecGatedAddrs.withLock { $0 = gated }
+        // `let` copy — the @Sendable `withLock` closure can't capture the
+        // outer mutable `gated`.
+        let gatedSnapshot = gated
+        fecGatedAddrs.withLock { $0 = gatedSnapshot }
         applyFECState(next)
     }
 
