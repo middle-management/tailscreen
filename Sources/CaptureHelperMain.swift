@@ -218,7 +218,7 @@ enum CaptureHelperMain {
     /// color space; safe on any thread.
     static func displayIsWideGamut(_ displayID: CGDirectDisplayID) -> Bool {
         let colorSpace = CGDisplayCopyColorSpace(displayID)
-        return CGColorSpaceIsWideGamutRGB(colorSpace)
+        return colorSpace.isWideGamutRGB
     }
 
     /// True when the display advertises EDR headroom above SDR (an XDR / Pro
