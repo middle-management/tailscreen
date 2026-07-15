@@ -2268,7 +2268,7 @@ class AppState: ObservableObject {
     ) -> [(id: String, stableID: String, policy: PeerPolicy)] {
         snapshot.compactMap { row in
             guard let policy = intents[row.id], let stableID = row.stableID else { return nil }
-            return (row.id, stableID, policy)
+            return (id: row.id, stableID: stableID, policy: policy)
         }
     }
 
