@@ -104,6 +104,9 @@ enum CaptureHelperMain {
                 case .setAudioEnabled:
                     let on = (payload.first ?? 0) != 0
                     Task { await runner.setAudioEnabled(on) }
+                case .setFrameInterval:
+                    let fps = payload.readBE32() ?? 60
+                    Task { await runner.setFrameInterval(Int(fps)) }
                 case .contentFilter:
                     // Decode the JSON `PickerSelection`, fetch the
                     // shareable content (allowed in the helper —
@@ -444,6 +447,16 @@ private final class CaptureHelperRunner {
     func setBitrate(_ bps: Int) async {
         guard bps > 0 else { return }
         encoder?.setBitrate(bps)
+    }
+
+    /// Apply an fps-ladder step from the server's congestion controller by
+    /// retuning the SCStream's `minimumFrameInterval`. The encoder keeps its
+    /// configured parameters; a lower delivery rate simply feeds it fewer
+    /// frames (the primary rate lever). Runs in the helper — never the main
+    /// process — per CLAUDE.md.
+    func setFrameInterval(_ fps: Int) async {
+        guard fps > 0 else { return }
+        await captureWrapper.updateFrameInterval(fps: fps)
     }
 
     private var frameCounter: UInt64 = 0

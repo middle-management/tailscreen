@@ -82,6 +82,11 @@ enum CaptureHelperWire {
         /// helper forwards the encoded AUs, so mute/unmute is instant and
         /// avoids `updateConfiguration` churn on the audio path.
         case setAudioEnabled = 0x04
+        /// `[4 bytes fps BE]` — fps-ladder downshift/upshift (60 / 30 / 15).
+        /// The helper reconfigures the SCStream's `minimumFrameInterval` (the
+        /// second congestion lever, applied once bitrate bottoms out). Runs in
+        /// the capture helper, never the main process, per CLAUDE.md.
+        case setFrameInterval = 0x05
         /// Helper drains its current frame, calls SCStream.stopCapture,
         /// exits. Payload empty.
         case shutdown = 0xFF
@@ -249,6 +254,12 @@ final class HelperControlWriter {
     /// Toggle system-audio emission in the helper; see `InType.setAudioEnabled`.
     func sendAudioEnabled(_ on: Bool) {
         write(type: .setAudioEnabled, payload: Data([on ? 1 : 0]))
+    }
+
+    func sendFrameInterval(_ fps: Int) {
+        var payload = Data()
+        payload.appendBE(UInt32(max(1, fps)))
+        write(type: .setFrameInterval, payload: payload)
     }
 
     func sendShutdown() { write(type: .shutdown, payload: Data()) }

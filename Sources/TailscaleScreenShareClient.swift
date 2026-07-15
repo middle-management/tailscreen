@@ -49,6 +49,28 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     private var isConnected = false
     private var isDisconnecting = false
 
+    // MARK: NACK / receiver-report state (all touched only on the receive task)
+
+    /// Capabilities the server advertised in the extended HELLO_ACK. Empty
+    /// until the ack lands (or if the server is legacy), so the viewer stays on
+    /// the PLI-only path until negotiation completes — a new-viewer↔old-server
+    /// pairing degrades automatically.
+    private var negotiatedCaps: ScreenShareCaps = []
+    /// Gap tracker driving NACK-based selective retransmission. Consulted only
+    /// once the server advertised `.nack`.
+    private var nackScheduler = NACKScheduler()
+    /// Receiver-report accounting (video packets only), reset each report.
+    private var rrHighestSeq: UInt16?
+    private var rrSeqCycles: UInt32 = 0
+    private var rrExpectedBaseSeq: UInt32 = 0
+    private var rrReceivedSinceReport: Int = 0
+    private var rrHasBaseline = false
+    private var lastRRSentNs: UInt64 = 0
+    /// Server uptime from the last PING, and our local uptime at its arrival —
+    /// echoed in the next report so the sharer can compute RTT.
+    private var lastServerPingNs: UInt64 = 0
+    private var lastPingArrivalNs: UInt64 = 0
+
     /// Audio SSRC the sharer assigned via HELLO_ACK. nil until the ack
     /// arrives; the VoiceChannel waits on this before sending mic audio.
     private(set) var assignedAudioSSRC: UInt32?
@@ -316,6 +338,11 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         // the stats overlay doesn't inherit a stale drop-rate or codec
         // label across reconnects.
         renderer.resetStats()
+        // Reset loss-recovery / receiver-report state too: these are instance
+        // fields, so a client reused across disconnect→reconnect would
+        // otherwise misclassify the new session's first packets (stale
+        // highest-seq, negotiated caps, gap tracker).
+        resetLossRecoveryState()
 
         let node: TailscaleNode
         if let existing = existingNode {
@@ -398,8 +425,12 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
 
         self.isConnected = true
 
-        try await pl.send(ScreenShareControlMessage.encode(.hello), to: addr)
-        logger.log("HELLO sent to \(addr)")
+        // Advertise NACK + receiver-report support in the extended HELLO. Old
+        // servers read byte 0 only and reply with a legacy 5-byte ack (caps
+        // `[]`), so the viewer stays on the PLI path against them.
+        let hello = ScreenShareControlMessage.encodeHello(caps: [.nack, .receiverReport])
+        try await pl.send(hello, to: addr)
+        logger.log("HELLO sent to \(addr) (caps=nack,rr)")
 
         receiveTask = Task { [weak self] in
             await self?.receiveLoop()
@@ -511,6 +542,9 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         var errorStampsNs: [UInt64] = []
 
         while isConnected {
+            // ~1 Hz cadence (recv blocks up to 1 s): re-NACK / PLI-fallback for
+            // stale gaps and emit the receiver report.
+            await maybePeriodicFeedback()
             let recvStartNs = DispatchTime.now().uptimeNanoseconds
             do {
                 // recv returns one UDP datagram. The server is the only
@@ -545,15 +579,31 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                     case .helloAck:
                         // Admitted — normal idle handling resumes.
                         awaitingApproval = false
-                        if let ssrc = ScreenShareControlMessage.decodeHelloAck(datagram),
-                            assignedAudioSSRC != ssrc
-                        {
-                            assignedAudioSSRC = ssrc
-                            onAudioSSRCAssigned?(ssrc)
+                        if let ack = ScreenShareControlMessage.decodeHelloAckCaps(datagram) {
+                            if negotiatedCaps != ack.caps {
+                                negotiatedCaps = ack.caps
+                                // Deepen the reorder window so retransmits land
+                                // before it overflows; the ack precedes video,
+                                // so recreating the depacketizer loses nothing.
+                                if ack.caps.contains(.nack) {
+                                    depacketizer = MultiCodecDepacketizer(reorderDepth: 64)
+                                    logger.log("Server advertised NACK — deep reorder window enabled")
+                                }
+                            }
+                            if assignedAudioSSRC != ack.ssrc {
+                                assignedAudioSSRC = ack.ssrc
+                                onAudioSSRCAssigned?(ack.ssrc)
+                            }
                         }
                     case .helloPending:
                         awaitingApproval = true
                         onAwaitingApproval?()
+                    case .ping:
+                        // RTT probe — stash it to echo in the next report.
+                        if let uptime = ScreenShareControlMessage.decodePing(datagram) {
+                            lastServerPingNs = uptime
+                            lastPingArrivalNs = DispatchTime.now().uptimeNanoseconds
+                        }
                     case .helloDenied:
                         logger.log("Receive: HELLO_DENY — the sharer declined this viewer")
                         if let onDeniedBySharer {
@@ -585,15 +635,23 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                 // just decoded payload, and report the codec the first time
                 // we see one of the video payload types.
                 if let (videoHeader, _) = RTPHeader.decode(from: datagram) {
+                    var isVideo = false
                     switch videoHeader.payloadType {
                     case RTPHeader.h264PayloadType:
                         renderer.noteReceivedBytes(datagram.count)
                         renderer.noteCodec(.h264)
+                        isVideo = true
                     case RTPHeader.hevcPayloadType:
                         renderer.noteReceivedBytes(datagram.count)
                         renderer.noteCodec(.hevc)
+                        isVideo = true
                     default:
                         break
+                    }
+                    if isVideo {
+                        await handleVideoFeedback(
+                            seq: videoHeader.sequenceNumber,
+                            nowNs: DispatchTime.now().uptimeNanoseconds)
                     }
                 }
 
@@ -601,9 +659,12 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                     // Video is flowing — we're past the approval gate.
                     awaitingApproval = false
                     framesDelivered += 1
-                    if au.lostBeforeThisAU {
-                        // Rate-limited — see `sendPLIThrottled` for the
-                        // loss-amplification hazard the throttle prevents.
+                    if au.lostBeforeThisAU && !negotiatedCaps.contains(.nack) {
+                        // In NACK mode the scheduler owns loss recovery
+                        // (retransmit, then a PLI fallback for gaps it abandons),
+                        // so the depacketizer's own loss signal must not
+                        // double-fire keyframes. Rate-limited otherwise — see
+                        // `sendPLIThrottled` for the loss-amplification hazard.
                         await sendPLIThrottled()
                     }
                     if framesDelivered == 1 || framesDelivered % 60 == 0 {
@@ -769,6 +830,113 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         lastPLISentNs.withLock { $0 = DispatchTime.now().uptimeNanoseconds }
         renderer.notePLISent()
         try? await pl.send(ScreenShareControlMessage.encode(.pli), to: addr)
+    }
+
+    /// Clear all NACK / receiver-report / depacketizer state for a fresh
+    /// session. Called from `connect()` so a reused client instance doesn't
+    /// carry a previous session's negotiated caps, sequence baseline, or gap
+    /// tracker into the new one.
+    private func resetLossRecoveryState() {
+        negotiatedCaps = []
+        nackScheduler = NACKScheduler()
+        depacketizer = MultiCodecDepacketizer()
+        rrHighestSeq = nil
+        rrSeqCycles = 0
+        rrExpectedBaseSeq = 0
+        rrReceivedSinceReport = 0
+        rrHasBaseline = false
+        lastRRSentNs = 0
+        lastServerPingNs = 0
+        lastPingArrivalNs = 0
+    }
+
+    // MARK: - NACK / receiver-report feedback (receive-task-only)
+
+    /// Feed one received video packet's sequence number into the loss-recovery
+    /// machinery: receiver-report accounting (always, if the server pings) and
+    /// the NACK scheduler (when NACK was negotiated). Dispatches any NACK/PLI
+    /// actions the scheduler emits.
+    private func handleVideoFeedback(seq: UInt16, nowNs: UInt64) async {
+        if negotiatedCaps.contains(.receiverReport) { recordRRPacket(seq: seq) }
+        guard negotiatedCaps.contains(.nack) else { return }
+        for action in nackScheduler.observe(seq: seq, nowNs: nowNs) {
+            await dispatchNACKAction(action)
+        }
+    }
+
+    /// Periodic (~1 Hz) tick: age out gaps that stopped seeing new packets
+    /// (re-NACK / PLI fallback) and send the receiver report.
+    private func maybePeriodicFeedback() async {
+        let now = DispatchTime.now().uptimeNanoseconds
+        if negotiatedCaps.contains(.nack) {
+            for action in nackScheduler.tick(nowNs: now) {
+                await dispatchNACKAction(action)
+            }
+        }
+        if negotiatedCaps.contains(.receiverReport), now &- lastRRSentNs >= 1_000_000_000 {
+            await sendReceiverReport(now: now)
+        }
+    }
+
+    /// Send one NACK datagram or fall back to a (throttled) PLI.
+    private func dispatchNACKAction(_ action: NACKAction) async {
+        guard isConnected, let pl = packetListener, let addr = serverAddr else { return }
+        switch action {
+        case .sendNACK(let seqs):
+            guard !seqs.isEmpty else { return }
+            renderer.noteNACKSent()
+            let entries = NACKScheduler.packFCI(seqs)
+            try? await pl.send(ScreenShareControlMessage.encodeNACK(entries), to: addr)
+        case .sendPLI:
+            await sendPLIThrottled()
+        }
+    }
+
+    /// Update the running receiver-report counters for one video packet.
+    private func recordRRPacket(seq: UInt16) {
+        rrReceivedSinceReport += 1
+        guard let highest = rrHighestSeq else {
+            rrHighestSeq = seq
+            rrExpectedBaseSeq = UInt32(seq)
+            rrHasBaseline = true
+            return
+        }
+        let forward = seq &- highest
+        if forward != 0 && forward < UInt16(1 << 15) {
+            if seq < highest { rrSeqCycles &+= 1 }  // wrapped past 0xFFFF
+            rrHighestSeq = seq
+        }
+    }
+
+    /// Build and send the RTCP-RR-style receiver report, then reset the
+    /// per-interval accounting.
+    private func sendReceiverReport(now: UInt64) async {
+        guard isConnected, let pl = packetListener, let addr = serverAddr else { return }
+        guard rrHasBaseline, let highest = rrHighestSeq else {
+            lastRRSentNs = now
+            return
+        }
+        let extHighest = (rrSeqCycles << 16) | UInt32(highest)
+        let expected = extHighest >= rrExpectedBaseSeq ? Int(extHighest &- rrExpectedBaseSeq) : 0
+        var fracQ8 = 0
+        if expected > 0 {
+            let lost = max(0, expected - rrReceivedSinceReport)
+            fracQ8 = min(255, lost * 256 / expected)
+        }
+        var delayMs: UInt16 = 0
+        if lastPingArrivalNs != 0 {
+            delayMs = UInt16(min(65535, (now &- lastPingArrivalNs) / 1_000_000))
+        }
+        let report = ReceiverReport(
+            fracLostQ8: UInt8(fracQ8),
+            extHighestSeq: extHighest,
+            jitterTicks: 0,
+            lastPingTs: lastServerPingNs,
+            delaySincePingMs: delayMs)
+        try? await pl.send(ScreenShareControlMessage.encodeReceiverReport(report), to: addr)
+        rrExpectedBaseSeq = extHighest
+        rrReceivedSinceReport = 0
+        lastRRSentNs = now
     }
 
     private func handleDecodedFrame(_ buffer: CVPixelBuffer) {
