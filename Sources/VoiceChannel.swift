@@ -24,13 +24,15 @@ struct VoiceStats: Equatable, Sendable {
 
     /// True when any *counter* differs from `other`. `smoothedJitterMs` is
     /// excluded — it moves constantly and would defeat the "only log when
-    /// something happened" guard.
+    /// something happened" guard. Compares via `Equatable` with the
+    /// non-counter field normalized, so a future counter can't be
+    /// forgotten here.
     func countersDiffer(from other: VoiceStats) -> Bool {
-        overrunDrops != other.overrunDrops
-            || underruns != other.underruns
-            || concealedFrames != other.concealedFrames
-            || discontinuities != other.discontinuities
-            || clampedBuffers != other.clampedBuffers
+        var normalizedSelf = self
+        var normalizedOther = other
+        normalizedSelf.smoothedJitterMs = 0
+        normalizedOther.smoothedJitterMs = 0
+        return normalizedSelf != normalizedOther
     }
 }
 
@@ -88,12 +90,22 @@ final class VoiceChannel: @unchecked Sendable {
     private let logger = TSLogger()
 
     /// One AAC AU's worth of samples at 48 kHz ≈ 21.33 ms.
-    private static let samplesPerFrame = 1024
+    static let samplesPerFrame = 1024
     /// Samples faded at a concealment boundary to mask the MDCT
     /// overlap-add discontinuity click.
-    private static let fadeSampleCount = 64
+    static let fadeSampleCount = 64
     /// Startup playback queue depth, in `samplesPerFrame` buffers.
     static let initialJitterTargetDepth = 3
+    /// Headroom above the adaptive target depth before `MicCapture` drops
+    /// an incoming buffer instead of scheduling it — the clock-drift
+    /// backstop (see `MicCapture.scheduleSamples`). Lives here so the
+    /// concealment cap (`concealmentEmitCount`) and the playback cap can
+    /// never drift apart.
+    static let playbackSlackBuffers = 3
+    /// Idle time after which a peer's receive state is evicted (10 s).
+    /// A departed peer's frozen `smoothedJitterMs` would otherwise pin the
+    /// jitter target high for the rest of the session.
+    static let receiveStateIdleNs: UInt64 = 10_000_000_000
     /// Live-path values for `decoderGateAction`'s cooldown/permanent knobs —
     /// also the function's defaults; kept as named constants so the gate
     /// and the failure logging agree on when we've given up.
@@ -126,6 +138,18 @@ final class VoiceChannel: @unchecked Sendable {
         case discontinuity
     }
 
+    /// `GapAction` narrowed for `trackArrival`: `.dropStale` returns from
+    /// `processInbound` before arrival tracking runs, so this type has no
+    /// case for it — the compiler enforces the invariant.
+    private enum ArrivalKind: Equatable {
+        /// `GapAction.decode` — in order.
+        case inOrder
+        /// `GapAction.concealThenDecode` — gap filled, fade in the frame.
+        case concealed
+        /// `GapAction.discontinuity` — resync, skip the jitter fold.
+        case discontinuity
+    }
+
     /// Per-SSRC inbound bookkeeping. Queue-confined like `decoders`.
     private struct ReceiveState {
         var lastSequence: UInt16
@@ -133,9 +157,9 @@ final class VoiceChannel: @unchecked Sendable {
         var lastRTPTimestamp: UInt32
         /// RFC 3550 smoothed inter-arrival jitter, in ms.
         var smoothedJitterMs = 0.0
-        /// Last `fadeSampleCount` emitted samples — faded out at the
-        /// leading edge of a concealment gap.
-        var tail: [Float] = []
+        /// Very last emitted sample — the leading edge of a concealment
+        /// gap ramps from here down to zero so the boundary has no step.
+        var lastEmittedSample: Float = 0
         /// Fade in the next decoded frame (set after conceal/resync).
         var needsFadeIn = false
     }
@@ -207,8 +231,9 @@ final class VoiceChannel: @unchecked Sendable {
         statsLock.withLock { $0.overrunDrops += 1 }
     }
 
-    /// Record an audible playback starve (pending queue hit zero while the
-    /// player was running). Called from the MainActor (`MicCapture`).
+    /// Record an audible playback starve (pending queue hit zero while
+    /// the player was running, and audio resumed shortly after — see
+    /// `isStarveResume`). Called from the MainActor (`MicCapture`).
     func noteUnderrun() {
         statsLock.withLock { $0.underruns += 1 }
     }
@@ -288,6 +313,76 @@ final class VoiceChannel: @unchecked Sendable {
         return clamped
     }
 
+    /// Pure eviction decision: SSRCs whose last packet arrived more than
+    /// `idleNs` ago (strictly). `refreshJitterTarget` evicts these so a
+    /// departed peer's frozen `smoothedJitterMs` can't pin the jitter
+    /// target high for the rest of the session; a returning peer starts
+    /// fresh. Arrivals stamped ahead of `nowNs` (clock skew) are never
+    /// stale. Sorted for determinism.
+    static func staleSSRCs(
+        lastArrivalsNs: [UInt32: UInt64],
+        nowNs: UInt64,
+        idleNs: UInt64 = VoiceChannel.receiveStateIdleNs
+    ) -> [UInt32] {
+        lastArrivalsNs
+            .compactMap { ssrc, lastNs in nowNs > lastNs && nowNs - lastNs > idleNs ? ssrc : nil }
+            .sorted()
+    }
+
+    /// Pure concealment-emission cap: at most `slackBuffers - 1` silence
+    /// frames per gap. The playback queue caps at `targetDepth +
+    /// playbackSlackBuffers`; reserving one slot of that slack guarantees
+    /// the silence fill alone can never push the gap's next *real* decoded
+    /// frame into an overrun drop. (Live headroom isn't readable from the
+    /// channel queue — `pendingBuffers` is MainActor-confined in
+    /// `MicCapture` — so this is the conservative static form.)
+    static func concealmentEmitCount(
+        missing: Int, slackBuffers: Int = VoiceChannel.playbackSlackBuffers
+    ) -> Int {
+        min(max(missing, 0), max(slackBuffers - 1, 0))
+    }
+
+    /// Pure first-concealment-frame synthesis: a linear ramp from the last
+    /// emitted sample down to zero across `fadeSamples`, then silence.
+    /// Ramping from the actual last sample — not a replay of the previous
+    /// frame's tail, which would be an audible 63-samples-back step —
+    /// keeps the gap boundary click-free.
+    static func concealmentFadeOut(
+        from lastSample: Float,
+        frameSamples: Int = VoiceChannel.samplesPerFrame,
+        fadeSamples: Int = VoiceChannel.fadeSampleCount
+    ) -> [Float] {
+        var frame = [Float](repeating: 0, count: frameSamples)
+        let span = min(fadeSamples, frameSamples)
+        guard lastSample != 0, span > 0 else { return frame }
+        for i in 0..<span {
+            frame[i] = lastSample * (1.0 - Float(i + 1) / Float(span))
+        }
+        return frame
+    }
+
+    /// Pure underrun verdict: a drain-to-zero is an audible underrun only
+    /// when new audio arrives within `resumeWindowNs` of it — the
+    /// starve-then-resume pattern. A drain followed by a long silence is
+    /// benign (mute, end of stream, teardown) and must not count.
+    /// `drainedAtNs == 0` means no drain is pending.
+    static func isStarveResume(
+        drainedAtNs: UInt64, nowNs: UInt64, resumeWindowNs: UInt64 = 1_000_000_000
+    ) -> Bool {
+        drainedAtNs != 0 && nowNs &- drainedAtNs < resumeWindowNs
+    }
+
+    /// Pure pause detector for the jitter estimator. A send-side mute
+    /// keeps sequence numbers contiguous but stops the packets, so the
+    /// resume packet shows an arrival-vs-RTP deviation of the whole pause
+    /// length; folding that into RFC 3550's `J += (|D| - J) / 16` would
+    /// pin the jitter target at max for the better part of a minute.
+    /// Deviations past `thresholdMs` skip the fold and just resync the
+    /// arrival/RTP baseline.
+    static func isPauseDeviation(deviationMs: Double, thresholdMs: Double = 500) -> Bool {
+        deviationMs > thresholdMs
+    }
+
     // MARK: - Inbound pipeline (queue-confined)
 
     private func processInbound(_ packet: Data) {
@@ -295,66 +390,108 @@ final class VoiceChannel: @unchecked Sendable {
         // Drop our own loopback if the network somehow returned it.
         guard parsed.ssrc != localSSRC else { return }
         let now = DispatchTime.now().uptimeNanoseconds
+        // Single dictionary fetch per packet (50 Hz hot path): the helpers
+        // thread `state` through and each exit path writes it back once.
+        var state = receiveStates[parsed.ssrc]
         guard case .allow = Self.decoderGateAction(record: decoderFailures[parsed.ssrc], nowNs: now) else {
+            // Gate-dropped packets still advance the sequence/timestamp
+            // baseline (no jitter fold, no concealment, no decode) so the
+            // first packet after the cooldown doesn't read as a spurious
+            // gap — a needless discontinuity count and fade-in.
+            Self.advanceBaseline(&state, parsed: parsed, arrivalNs: now)
+            receiveStates[parsed.ssrc] = state
             return
         }
 
-        let action = Self.gapAction(
-            lastSeq: receiveStates[parsed.ssrc]?.lastSequence,
-            newSeq: parsed.sequenceNumber
-        )
+        let action = Self.gapAction(lastSeq: state?.lastSequence, newSeq: parsed.sequenceNumber)
+        let kind: ArrivalKind
         switch action {
         case .dropStale:
             // Late arrival of a packet whose gap was already concealed —
-            // decoding it now would play those 21 ms twice.
+            // decoding it now would play those 21 ms twice. State is
+            // untouched, so nothing needs writing back.
             return
         case .decode:
-            break
+            kind = .inOrder
         case .concealThenDecode(let missing):
-            statsLock.withLock { $0.concealedFrames += missing }
-            emitConcealment(frames: missing, ssrc: parsed.ssrc)
+            emitConcealment(
+                frames: Self.concealmentEmitCount(missing: missing),
+                lastSample: state?.lastEmittedSample ?? 0)
+            kind = .concealed
         case .discontinuity:
             statsLock.withLock { $0.discontinuities += 1 }
+            kind = .discontinuity
         }
-        trackArrival(parsed, arrivalNs: now, action: action)
+        Self.trackArrival(&state, parsed: parsed, arrivalNs: now, kind: kind)
+        decodeAndEmit(parsed, state: &state, nowNs: now)
+        receiveStates[parsed.ssrc] = state
         refreshJitterTarget(nowNs: now)
-        decodeAndEmit(parsed, nowNs: now)
         maybeLogStats(nowNs: now)
     }
 
     /// Advance the per-SSRC sequence/timestamp clocks and fold this
     /// packet into the RFC 3550 smoothed inter-arrival jitter:
     /// `J += (|D| - J) / 16`, where `D` compares the arrival-time delta
-    /// against the RTP-timestamp delta (48 kHz units → ms). Skipped on a
-    /// discontinuity — a resync's huge timestamp jump isn't jitter.
-    private func trackArrival(
-        _ parsed: AudioRTPDepacketizer.Parsed, arrivalNs: UInt64, action: GapAction
+    /// against the RTP-timestamp delta (48 kHz units → ms). The fold is
+    /// skipped on a discontinuity — a resync's huge timestamp jump isn't
+    /// jitter — and on a pause-shaped deviation (send-side mute), which
+    /// just resyncs the baseline instead of poisoning the estimator.
+    private static func trackArrival(
+        _ state: inout ReceiveState?,
+        parsed: AudioRTPDepacketizer.Parsed,
+        arrivalNs: UInt64,
+        kind: ArrivalKind
     ) {
-        guard var state = receiveStates[parsed.ssrc] else {
-            receiveStates[parsed.ssrc] = ReceiveState(
+        guard var updated = state else {
+            state = ReceiveState(
                 lastSequence: parsed.sequenceNumber,
                 lastArrivalNs: arrivalNs,
                 lastRTPTimestamp: parsed.timestamp
             )
             return
         }
-        switch action {
+        switch kind {
         case .discontinuity:
-            state.needsFadeIn = true
-        case .concealThenDecode, .decode, .dropStale:
-            if case .concealThenDecode = action { state.needsFadeIn = true }
-            let rtpDeltaMs = Double(parsed.timestamp &- state.lastRTPTimestamp) / 48.0
-            let arrivalDeltaMs = Double(arrivalNs &- state.lastArrivalNs) / 1_000_000.0
+            updated.needsFadeIn = true
+        case .inOrder, .concealed:
+            if kind == .concealed { updated.needsFadeIn = true }
+            let rtpDeltaMs = Double(parsed.timestamp &- updated.lastRTPTimestamp) / 48.0
+            let arrivalDeltaMs = Double(arrivalNs &- updated.lastArrivalNs) / 1_000_000.0
             let deviation = abs(arrivalDeltaMs - rtpDeltaMs)
-            state.smoothedJitterMs += (deviation - state.smoothedJitterMs) / 16.0
+            if !isPauseDeviation(deviationMs: deviation) {
+                updated.smoothedJitterMs += (deviation - updated.smoothedJitterMs) / 16.0
+            }
         }
-        state.lastSequence = parsed.sequenceNumber
-        state.lastRTPTimestamp = parsed.timestamp
-        state.lastArrivalNs = arrivalNs
-        receiveStates[parsed.ssrc] = state
+        updated.lastSequence = parsed.sequenceNumber
+        updated.lastRTPTimestamp = parsed.timestamp
+        updated.lastArrivalNs = arrivalNs
+        state = updated
     }
 
-    /// Once a second, re-derive the target playback depth from the worst
+    /// Gate-drop path: advance the sequence/timestamp/arrival baseline
+    /// without folding jitter, concealing, or decoding.
+    private static func advanceBaseline(
+        _ state: inout ReceiveState?,
+        parsed: AudioRTPDepacketizer.Parsed,
+        arrivalNs: UInt64
+    ) {
+        guard var updated = state else {
+            state = ReceiveState(
+                lastSequence: parsed.sequenceNumber,
+                lastArrivalNs: arrivalNs,
+                lastRTPTimestamp: parsed.timestamp
+            )
+            return
+        }
+        updated.lastSequence = parsed.sequenceNumber
+        updated.lastRTPTimestamp = parsed.timestamp
+        updated.lastArrivalNs = arrivalNs
+        state = updated
+    }
+
+    /// Once a second, evict receive state for SSRCs that have gone idle
+    /// (a departed peer's frozen jitter must not pin the target), then
+    /// re-derive the target playback depth from the worst remaining
     /// per-SSRC smoothed jitter and publish it for `MicCapture`.
     private func refreshJitterTarget(nowNs: UInt64) {
         if lastTargetRefreshNs == 0 {
@@ -363,39 +500,49 @@ final class VoiceChannel: @unchecked Sendable {
         }
         guard nowNs &- lastTargetRefreshNs >= 1_000_000_000 else { return }
         lastTargetRefreshNs = nowNs
+        let stale = Self.staleSSRCs(lastArrivalsNs: receiveStates.mapValues(\.lastArrivalNs), nowNs: nowNs)
+        for ssrc in stale {
+            receiveStates.removeValue(forKey: ssrc)
+            decoders.removeValue(forKey: ssrc)
+            decoderFailures.removeValue(forKey: ssrc)
+            logger.log("VoiceChannel: evicted idle ssrc=\(ssrc) (no packets for 10 s); returning peers start fresh")
+        }
         let worstJitterMs = receiveStates.values.map(\.smoothedJitterMs).max() ?? 0
         statsLock.withLock { $0.smoothedJitterMs = worstJitterMs }
-        let current = jitterTargetDepth.withLock { $0 }
-        let next = Self.jitterBufferTarget(smoothedJitterMs: worstJitterMs, currentTarget: current)
-        guard next != current else { return }
-        jitterTargetDepth.withLock { $0 = next }
+        let (previous, next) = jitterTargetDepth.withLock { depth -> (Int, Int) in
+            let old = depth
+            depth = Self.jitterBufferTarget(smoothedJitterMs: worstJitterMs, currentTarget: old)
+            return (old, depth)
+        }
+        guard next != previous else { return }
         logger.log(
-            "VoiceChannel: jitter buffer target \(current) → \(next) buffers "
+            "VoiceChannel: jitter buffer target \(previous) → \(next) buffers "
                 + "(smoothed jitter \(String(format: "%.1f", worstJitterMs)) ms)")
     }
 
-    /// Emit `frames` frames of silence to cover a sequence gap, fading the
-    /// previously emitted frame's tail into the first silence frame so the
+    /// Emit `frames` frames of silence to cover a sequence gap, ramping
+    /// the last emitted sample down to zero at the leading edge so the
     /// MDCT discontinuity doesn't land as a hard click. AudioToolbox
     /// exposes no codec-level concealment input, so the decoder is never
-    /// fed anything for the lost AUs — only its next real one.
-    private func emitConcealment(frames: Int, ssrc: UInt32) {
-        guard let emit = onMixedPCM else { return }
-        let tail = receiveStates[ssrc]?.tail ?? []
+    /// fed anything for the lost AUs — only its next real one. `frames`
+    /// arrives pre-capped by `concealmentEmitCount`, so this fill can
+    /// never occupy the playback-queue headroom the gap's next real frame
+    /// needs. `concealedFrames` counts only what is actually emitted.
+    private func emitConcealment(frames: Int, lastSample: Float) {
+        guard frames > 0, let emit = onMixedPCM else { return }
+        statsLock.withLock { $0.concealedFrames += frames }
         for frameIndex in 0..<frames {
-            var silence = [Float](repeating: 0, count: Self.samplesPerFrame)
-            if frameIndex == 0 && !tail.isEmpty {
-                let span = min(Self.fadeSampleCount, tail.count)
-                for i in 0..<span {
-                    let gain = 1.0 - Float(i + 1) / Float(span)
-                    silence[i] = tail[i] * gain
-                }
+            if frameIndex == 0 {
+                emit(Self.concealmentFadeOut(from: lastSample))
+            } else {
+                emit([Float](repeating: 0, count: Self.samplesPerFrame))
             }
-            emit(silence)
         }
     }
 
-    private func decodeAndEmit(_ parsed: AudioRTPDepacketizer.Parsed, nowNs: UInt64) {
+    private func decodeAndEmit(
+        _ parsed: AudioRTPDepacketizer.Parsed, state: inout ReceiveState?, nowNs: UInt64
+    ) {
         do {
             let decoder = try ensureDecoder(for: parsed.ssrc)
             let raw = try decoder.decode(au: parsed.au)
@@ -415,13 +562,13 @@ final class VoiceChannel: @unchecked Sendable {
                             + "(latest ssrc=\(parsed.ssrc)) — possible codec regression")
                 }
             }
-            if var state = receiveStates[parsed.ssrc] {
-                if state.needsFadeIn {
+            if var updated = state {
+                if updated.needsFadeIn {
                     Self.applyFadeIn(&samples)
-                    state.needsFadeIn = false
+                    updated.needsFadeIn = false
                 }
-                state.tail = Array(samples.suffix(Self.fadeSampleCount))
-                receiveStates[parsed.ssrc] = state
+                if let last = samples.last { updated.lastEmittedSample = last }
+                state = updated
             }
             onMixedPCM?(samples)
         } catch {
@@ -822,6 +969,15 @@ final class MicCapture {
     /// so listening works without prompting for microphone permission.
     func startPlayback() throws {
         guard !isPlaying else { return }
+        // New playback session: the warmup counter and pending count are
+        // per-session ("since last startPlayback()"), and bumping the
+        // generation orphans any scheduleBuffer completion still in
+        // flight from a previous session — a stale completion must not
+        // drive `pendingBuffers` negative or record a bogus drain.
+        playbackGeneration += 1
+        scheduledCount = 0
+        pendingBuffers = 0
+        drainedAtNs = 0
         let player = AVAudioPlayerNode()
         engine.attach(player)
         engine.connect(player, to: mixer, format: outputFormat)
@@ -944,6 +1100,10 @@ final class MicCapture {
             isCapturing = false
         }
         if isPlaying {
+            // Orphan in-flight scheduleBuffer completions (see
+            // `playbackGeneration`) before tearing the players down.
+            playbackGeneration += 1
+            drainedAtNs = 0
             for node in playerNodes { node.stop() }
             engine.stop()
             playerNodes.removeAll()
@@ -1085,28 +1245,50 @@ final class MicCapture {
     /// the channel's adaptive target depth has been queued ahead.
     private var scheduledCount: Int = 0
 
-    /// Headroom above the adaptive target depth before we drop the
-    /// incoming buffer instead of scheduling it. The sender's
+    /// Pending-buffer counter. AVAudioPlayerNode doesn't expose its
+    /// queue depth, so we increment on schedule and decrement in the
+    /// completion handler. Touched only on @MainActor.
+    ///
+    /// The headroom above the adaptive target depth before we drop the
+    /// incoming buffer instead of scheduling it is
+    /// `VoiceChannel.playbackSlackBuffers`. The sender's
     /// `DispatchSourceTimer` drifts a hair faster than the receiver's
     /// audio clock, so without a cap the queue grows unbounded → seconds
     /// of playback latency that you hear when muting (queue keeps
     /// draining after the sender stops). Dropping at the cap eats one
     /// frame (~21 ms) at most and keeps end-to-end latency bounded near
     /// `(targetDepth + slack) * 21 ms` — the clock-drift backstop.
-    private static let pendingSlackBuffers = 3
-
-    /// Pending-buffer counter. AVAudioPlayerNode doesn't expose its
-    /// queue depth, so we increment on schedule and decrement in the
-    /// completion handler. Touched only on @MainActor.
     private var pendingBuffers: Int = 0
+
+    /// Playback-session marker, bumped by `startPlayback()` and `stop()`.
+    /// Every scheduleBuffer completion captures it and bails if a new
+    /// session has started, so a completion Task racing a stop/start
+    /// cycle can't corrupt `pendingBuffers` or `drainedAtNs`.
+    private var playbackGeneration = 0
+
+    /// Uptime when the pending queue last drained to zero while the
+    /// player was running; 0 = no drain pending. Whether that drain was
+    /// an audible underrun is decided on the next arrival — see
+    /// `VoiceChannel.isStarveResume`.
+    private var drainedAtNs: UInt64 = 0
 
     private func scheduleSamples(_ samples: [Float]) {
         guard isPlaying, let player = playerNodes.first else { return }
+        // A past drain-to-zero counts as an underrun only if audio
+        // resumes shortly after (starve-then-resume). A drain followed by
+        // this long a silence was a benign stop (mute / end of stream).
+        if drainedAtNs != 0 {
+            let now = DispatchTime.now().uptimeNanoseconds
+            if VoiceChannel.isStarveResume(drainedAtNs: drainedAtNs, nowNs: now) {
+                channel.noteUnderrun()
+            }
+            drainedAtNs = 0
+        }
         // Adaptive jitter-buffer depth: 21.33 ms buffers, sized by the
         // channel from RFC 3550 inter-arrival jitter (initially 3 ≈ 64 ms,
         // bounded at 12 ≈ 256 ms of added latency).
         let targetDepth = channel.currentJitterTargetDepth
-        if pendingBuffers >= targetDepth + Self.pendingSlackBuffers {
+        if pendingBuffers >= targetDepth + VoiceChannel.playbackSlackBuffers {
             channel.noteOverrunDrop()
             return
         }
@@ -1123,17 +1305,19 @@ final class MicCapture {
         }
         scheduledCount += 1
         pendingBuffers += 1
+        let generation = playbackGeneration
         player.scheduleBuffer(buffer) { [weak self] in
             // Completion fires on AVAudioPlayer's render thread.
             // Hop to MainActor before mutating @MainActor state.
             Task { @MainActor [weak self] in
-                guard let self else { return }
+                guard let self, self.playbackGeneration == generation else { return }
                 self.pendingBuffers -= 1
-                // Queue drained while the player is still running — the
-                // audible starve. Re-read the player from self rather than
-                // capturing the non-Sendable node in this closure.
+                // Queue drained while the player is still running —
+                // possibly the audible starve; the next arrival decides.
+                // Re-read the player from self rather than capturing the
+                // non-Sendable node in this closure.
                 if self.pendingBuffers == 0, self.playerNodes.first?.isPlaying == true {
-                    self.channel.noteUnderrun()
+                    self.drainedAtNs = DispatchTime.now().uptimeNanoseconds
                 }
             }
         }

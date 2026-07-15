@@ -107,9 +107,11 @@ final class VoiceChannelTests: XCTestCase {
         XCTAssertGreaterThan(stats.concealedFrames, 0, "10% seeded loss must trigger concealment")
         XCTAssertLessThanOrEqual(
             stats.discontinuities, 5, "small gaps must be concealed, not resynced")
-        // Concealment fills the gaps, so total output should approximate the
-        // sent duration (decoder priming may eat a frame; late reordered
-        // packets are dropped as stale after their gap was concealed).
+        // Concealment fills the gaps (capped at 2 silence frames per gap so
+        // the fill can't overrun the playback queue), so total output should
+        // approximate the sent duration (decoder priming may eat a frame;
+        // late reordered packets are dropped as stale after their gap was
+        // concealed).
         XCTAssertGreaterThanOrEqual(
             totalSamples, sent.count * 1024 * 7 / 10, "audio flow wedged under impairment")
     }
@@ -164,5 +166,83 @@ final class VoiceChannelTests: XCTestCase {
             listener.decoderFailuresForTesting[0xBB],
             VoiceChannel.DecoderFailureRecord(consecutiveInitFailures: 1, lastFailureNs: now),
             "dropping packets must not mutate the failure record")
+    }
+
+    /// Packets dropped by the decoder-failure gate must still advance the
+    /// per-SSRC sequence baseline, so the first packet after the cooldown
+    /// is not misread as a gap (spurious discontinuity / concealment).
+    func testGateDroppedPacketsKeepSequenceBaseline() throws {
+        let sent = try encodedPackets(count: 12, ssrc: 0xBB)
+        try XCTSkipIf(sent.count < 10, "AAC encoder produced no usable output on this host")
+
+        let listener = try VoiceChannel(localSSRC: 0xCC, onSend: { _ in })
+        var receivedAnyPCM = false
+        listener.onMixedPCM = { samples in
+            if !samples.isEmpty { receivedAnyPCM = true }
+        }
+        // Establish a healthy baseline with the first two packets.
+        for packet in sent.prefix(2) { listener.receive(packet) }
+        listener.flushForTesting()
+        // Gate the SSRC (inside cooldown) and feed the middle packets —
+        // all dropped, but the baseline must keep advancing. Without the
+        // fix, this 8-packet hole reads as a discontinuity afterwards.
+        listener.injectDecoderFailureForTesting(
+            ssrc: 0xBB,
+            record: VoiceChannel.DecoderFailureRecord(
+                consecutiveInitFailures: 1,
+                lastFailureNs: DispatchTime.now().uptimeNanoseconds
+            )
+        )
+        for packet in sent.dropFirst(2).dropLast(2) { listener.receive(packet) }
+        listener.flushForTesting()
+        // Cooldown long elapsed: the tail packets flow again.
+        listener.injectDecoderFailureForTesting(
+            ssrc: 0xBB,
+            record: VoiceChannel.DecoderFailureRecord(consecutiveInitFailures: 1, lastFailureNs: 1)
+        )
+        for packet in sent.suffix(2) { listener.receive(packet) }
+        listener.flushForTesting()
+
+        let stats = listener.currentStats
+        XCTAssertEqual(stats.discontinuities, 0, "contiguous sequence must not resync after the gate")
+        XCTAssertEqual(stats.concealedFrames, 0, "contiguous sequence must not conceal after the gate")
+        XCTAssertTrue(receivedAnyPCM, "the retry after the cooldown must decode")
+    }
+
+    /// `concealedFrames` counts silence frames actually *emitted* — with
+    /// no PCM sink attached nothing is emitted, so nothing is counted.
+    func testConcealedFramesCountsOnlyEmittedFrames() throws {
+        let sent = try encodedPackets(count: 10, ssrc: 0xBB)
+        try XCTSkipIf(sent.count < 6, "AAC encoder produced no usable output on this host")
+
+        let listener = try VoiceChannel(localSSRC: 0xCC, onSend: { _ in })
+        // No onMixedPCM sink. Drop one packet mid-stream to force a gap.
+        for (index, packet) in sent.enumerated() where index != 3 {
+            listener.receive(packet)
+        }
+        listener.flushForTesting()
+        XCTAssertEqual(
+            listener.currentStats.concealedFrames, 0,
+            "concealment that emitted nothing must not be counted")
+    }
+
+    /// Concealment per gap is capped below the playback queue's slack
+    /// (`playbackSlackBuffers - 1` frames) so the silence fill can never
+    /// overrun-drop the gap's next real decoded frame.
+    func testConcealmentEmissionIsCappedPerGap() throws {
+        let sent = try encodedPackets(count: 12, ssrc: 0xBB)
+        try XCTSkipIf(sent.count < 10, "AAC encoder produced no usable output on this host")
+
+        let listener = try VoiceChannel(localSSRC: 0xCC, onSend: { _ in })
+        listener.onMixedPCM = { _ in }
+        // Drop 4 consecutive packets: gapAction wants 4 concealment
+        // frames, but emission must cap at playbackSlackBuffers - 1 == 2.
+        for (index, packet) in sent.enumerated() where !(4...7).contains(index) {
+            listener.receive(packet)
+        }
+        listener.flushForTesting()
+        let stats = listener.currentStats
+        XCTAssertEqual(stats.concealedFrames, VoiceChannel.playbackSlackBuffers - 1)
+        XCTAssertEqual(stats.discontinuities, 0, "a 4-packet gap is still a concealed gap, not a resync")
     }
 }

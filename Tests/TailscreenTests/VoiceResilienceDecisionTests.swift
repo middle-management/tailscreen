@@ -6,7 +6,10 @@ import XCTest
 /// tsnet, no audio hardware — the extract-the-decision pattern from
 /// `AdaptiveBitrateTests`. Covers the decoder-failure cooldown gate,
 /// wrap-aware sequence-gap concealment, adaptive jitter-buffer sizing, the
-/// clamp-log throttle, and the single-pass clamp helper.
+/// clamp-log throttle, the single-pass clamp helper, idle-SSRC eviction,
+/// the concealment emission cap and fade-out shape, the underrun
+/// starve-then-resume verdict, the jitter-estimator pause detector, and
+/// the stats change-detection compare.
 final class VoiceResilienceDecisionTests: XCTestCase {
     private let s: UInt64 = 1_000_000_000
 
@@ -160,5 +163,141 @@ final class VoiceResilienceDecisionTests: XCTestCase {
         var samples: [Float] = [-6.0, -0.5, 0.5, 6.0]
         XCTAssertTrue(VoiceChannel.clampToUnitRange(&samples))
         XCTAssertEqual(samples, [-1.0, -0.5, 0.5, 1.0])
+    }
+
+    // MARK: - staleSSRCs
+
+    func testNoEntriesNothingStale() {
+        XCTAssertEqual(VoiceChannel.staleSSRCs(lastArrivalsNs: [:], nowNs: 100 * s), [])
+    }
+
+    func testFreshEntriesAreKept() {
+        let arrivals: [UInt32: UInt64] = [1: 95 * s, 2: 99 * s]
+        XCTAssertEqual(VoiceChannel.staleSSRCs(lastArrivalsNs: arrivals, nowNs: 100 * s), [])
+    }
+
+    func testIdleEntriesAreEvictedSorted() {
+        let arrivals: [UInt32: UInt64] = [7: 10 * s, 3: 20 * s, 5: 99 * s]
+        XCTAssertEqual(VoiceChannel.staleSSRCs(lastArrivalsNs: arrivals, nowNs: 100 * s), [3, 7])
+    }
+
+    func testIdleBoundaryIsExclusive() {
+        // Staleness must strictly exceed the idle window (default 10 s).
+        let arrivals: [UInt32: UInt64] = [1: 90 * s]
+        XCTAssertEqual(VoiceChannel.staleSSRCs(lastArrivalsNs: arrivals, nowNs: 100 * s), [])
+        XCTAssertEqual(VoiceChannel.staleSSRCs(lastArrivalsNs: arrivals, nowNs: 100 * s + 1), [1])
+    }
+
+    func testFutureArrivalIsNotStale() {
+        // Clock-skew safety: an arrival stamped ahead of `now` must not
+        // wrap into a huge idle time.
+        let arrivals: [UInt32: UInt64] = [1: 200 * s]
+        XCTAssertEqual(VoiceChannel.staleSSRCs(lastArrivalsNs: arrivals, nowNs: 100 * s), [])
+    }
+
+    // MARK: - concealmentEmitCount
+
+    func testConcealmentCapReservesARealFrameSlot() {
+        // Default slack 3 → at most 2 silence frames per gap, so the fill
+        // alone can never push the next real frame into an overrun drop.
+        XCTAssertEqual(VoiceChannel.concealmentEmitCount(missing: 1), 1)
+        XCTAssertEqual(VoiceChannel.concealmentEmitCount(missing: 2), 2)
+        XCTAssertEqual(VoiceChannel.concealmentEmitCount(missing: 3), 2)
+        XCTAssertEqual(VoiceChannel.concealmentEmitCount(missing: 5), 2)
+    }
+
+    func testConcealmentCapDegenerateInputs() {
+        XCTAssertEqual(VoiceChannel.concealmentEmitCount(missing: 0), 0)
+        XCTAssertEqual(VoiceChannel.concealmentEmitCount(missing: -1), 0)
+        XCTAssertEqual(VoiceChannel.concealmentEmitCount(missing: 5, slackBuffers: 1), 0)
+        XCTAssertEqual(VoiceChannel.concealmentEmitCount(missing: 5, slackBuffers: 0), 0)
+    }
+
+    // MARK: - concealmentFadeOut
+
+    func testFadeOutRampsFromLastEmittedSample() {
+        let frame = VoiceChannel.concealmentFadeOut(from: 1.0)
+        XCTAssertEqual(frame.count, VoiceChannel.samplesPerFrame)
+        // First sample continues from the last emitted one (one ramp step
+        // below it), not from 63 samples back in time.
+        XCTAssertEqual(frame[0], 1.0 - 1.0 / 64.0, accuracy: 1e-6)
+        for i in 1..<VoiceChannel.fadeSampleCount {
+            XCTAssertLessThan(frame[i], frame[i - 1], "fade-out must decrease monotonically")
+        }
+        XCTAssertEqual(frame[VoiceChannel.fadeSampleCount - 1], 0)
+        XCTAssertTrue(frame[VoiceChannel.fadeSampleCount...].allSatisfy { $0 == 0 })
+    }
+
+    func testFadeOutFromNegativeSampleRampsUpTowardZero() {
+        let frame = VoiceChannel.concealmentFadeOut(from: -0.5)
+        XCTAssertEqual(frame[0], -0.5 * (1.0 - 1.0 / 64.0), accuracy: 1e-6)
+        for i in 1..<VoiceChannel.fadeSampleCount {
+            XCTAssertGreaterThan(frame[i], frame[i - 1], "fade toward zero from below")
+        }
+    }
+
+    func testFadeOutFromSilenceIsAllZeros() {
+        XCTAssertTrue(VoiceChannel.concealmentFadeOut(from: 0).allSatisfy { $0 == 0 })
+    }
+
+    // MARK: - isStarveResume
+
+    func testDrainWithQuickResumeIsAnUnderrun() {
+        XCTAssertTrue(VoiceChannel.isStarveResume(drainedAtNs: 100 * s, nowNs: 100 * s + s / 2))
+    }
+
+    func testDrainFollowedByLongSilenceIsBenign() {
+        // Mute / end-of-stream / teardown: the queue legitimately drains.
+        XCTAssertFalse(VoiceChannel.isStarveResume(drainedAtNs: 100 * s, nowNs: 102 * s))
+    }
+
+    func testResumeWindowBoundaryIsExclusive() {
+        XCTAssertFalse(VoiceChannel.isStarveResume(drainedAtNs: 100 * s, nowNs: 101 * s))
+        XCTAssertTrue(VoiceChannel.isStarveResume(drainedAtNs: 100 * s, nowNs: 101 * s - 1))
+    }
+
+    func testNoPendingDrainIsNotAnUnderrun() {
+        XCTAssertFalse(VoiceChannel.isStarveResume(drainedAtNs: 0, nowNs: 100 * s))
+    }
+
+    // MARK: - isPauseDeviation
+
+    func testOrdinaryJitterIsNotAPause() {
+        XCTAssertFalse(VoiceChannel.isPauseDeviation(deviationMs: 0))
+        XCTAssertFalse(VoiceChannel.isPauseDeviation(deviationMs: 80))
+        XCTAssertFalse(VoiceChannel.isPauseDeviation(deviationMs: 500))
+    }
+
+    func testPauseSizedDeviationIsAPause() {
+        XCTAssertTrue(VoiceChannel.isPauseDeviation(deviationMs: 500.1))
+        XCTAssertTrue(VoiceChannel.isPauseDeviation(deviationMs: 30_000))
+    }
+
+    // MARK: - VoiceStats.countersDiffer
+
+    func testJitterOnlyChangeDoesNotCountAsDiffer() {
+        var stats = VoiceStats()
+        stats.smoothedJitterMs = 42
+        XCTAssertFalse(stats.countersDiffer(from: VoiceStats()))
+        XCTAssertFalse(VoiceStats().countersDiffer(from: stats))
+    }
+
+    func testEqualStatsDoNotDiffer() {
+        XCTAssertFalse(VoiceStats().countersDiffer(from: VoiceStats()))
+    }
+
+    func testEachCounterChangeCountsAsDiffer() {
+        let mutations: [(String, (inout VoiceStats) -> Void)] = [
+            ("overrunDrops", { $0.overrunDrops += 1 }),
+            ("underruns", { $0.underruns += 1 }),
+            ("concealedFrames", { $0.concealedFrames += 1 }),
+            ("discontinuities", { $0.discontinuities += 1 }),
+            ("clampedBuffers", { $0.clampedBuffers += 1 })
+        ]
+        for (name, mutate) in mutations {
+            var stats = VoiceStats()
+            mutate(&stats)
+            XCTAssertTrue(stats.countersDiffer(from: VoiceStats()), "\(name) must register a change")
+        }
     }
 }

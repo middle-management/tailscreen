@@ -296,3 +296,51 @@ Recorded while implementing; all are minor adaptations to the actual code, none 
 - **Stats logging is opportunistic.** `VoiceChannel` has no timer; the once-per-minute stats line
   is emitted from the inbound path (first packet past the 60 s mark), guarded to log only when a
   counter moved — dead-idle channels stay silent, matching the plan's intent.
+
+### Review fixes
+
+Applied after a multi-reviewer pass over the implementation; none change the wire format or the
+public surface.
+
+- **Idle-SSRC eviction.** `receiveStates` (and the matching `decoders` / `decoderFailures`
+  entries) for an SSRC silent for >10 s are evicted by the once-per-second refresh
+  (`staleSSRCs`, pure) — a departed peer's frozen `smoothedJitterMs` no longer pins the jitter
+  target high for the rest of the session. A returning peer starts fresh, including its failure
+  record.
+- **Concealment capped below the playback slack.** `emitConcealment` previously emitted up to 5
+  silence frames — enough to fill the playback queue to its cap and overrun-drop the gap's next
+  *real* decoded frame. Live headroom isn't readable from the channel queue (`pendingBuffers` is
+  MainActor-confined in `MicCapture`), so the cap is the conservative static form:
+  `concealmentEmitCount` (pure) limits emission to `playbackSlackBuffers - 1` (= 2) frames per
+  gap — bounded silence that can never fill the cap alone. The slack constant moved from
+  `MicCapture` to `VoiceChannel.playbackSlackBuffers` so the two sides can't drift apart.
+- **Fade-out ramps from the last emitted sample.** The first concealment frame used to replay the
+  previous frame's 64-sample tail with a fade — an audible 63-samples-back step.
+  `concealmentFadeOut` (pure) now ramps linearly from the actual last emitted sample to zero.
+  Fade-in was verified correct (it scales the next real frame's own leading samples in place) and
+  is unchanged. Per-SSRC state shrank from a 64-sample tail array to one `lastEmittedSample`.
+- **Playback session state resets.** `startPlayback()` now resets `scheduledCount` and
+  `pendingBuffers` (per the doc comment's "since last startPlayback()"), and both it and `stop()`
+  bump a `playbackGeneration` that every scheduleBuffer completion captures — a stale completion
+  from a previous session can no longer drive `pendingBuffers` negative or record a bogus drain.
+- **Underruns count only starve-then-resume.** A drain-to-zero now just records `drainedAtNs`;
+  the next arrival decides via `isStarveResume` (pure): resume within 1 s → underrun, longer →
+  benign drain (mute, end of stream, teardown).
+- **Send-side pauses don't poison the jitter estimator.** Arrival-vs-RTP deviations beyond 500 ms
+  (`isPauseDeviation`, pure) skip the RFC 3550 fold and just resync the baseline — a mute pause is
+  seq-contiguous, so it previously folded the entire pause length into `J`.
+- **Gate-dropped packets advance the sequence baseline** (no jitter fold, no concealment, no
+  decode), so the first packet after a decoder cooldown no longer reads as a spurious
+  discontinuity plus a needless fade-in.
+- **`concealedFrames` counts emitted frames.** The increment moved inside `emitConcealment`
+  behind the PCM-sink guard and uses the capped count, so it reflects silence actually played.
+- **Dead `.dropStale` arm removed from arrival tracking.** `trackArrival` now takes a narrowed
+  `ArrivalKind` enum with no `.dropStale` case (that action returns from `processInbound` before
+  tracking), so the compiler enforces the invariant while keeping exhaustiveness checking.
+- **`countersDiffer` is drift-proof.** Equatable-based compare with `smoothedJitterMs` normalized
+  to zero on both sides, so a future counter can't silently be left out of change detection.
+- **Single receive-state lookup on the hot path.** `processInbound` fetches the per-SSRC state
+  once and threads it through `trackArrival` / `decodeAndEmit` (inout), writing back once per
+  exit path instead of ~5 hashed lookups per 50 Hz packet.
+- **`refreshJitterTarget` takes the target-depth lock once** (swap and return the old value for
+  the change log) instead of a separate read then write.
