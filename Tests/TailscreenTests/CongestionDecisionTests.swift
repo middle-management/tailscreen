@@ -8,18 +8,18 @@ import XCTest
 /// with hysteresis, and the legacy-PLI-input parity that keeps
 /// `AdaptiveBitrateTests` valid unchanged.
 final class CongestionDecisionTests: XCTestCase {
-    private typealias CI = TailscaleScreenShareServer.CongestionInputs
-    private typealias CD = TailscaleScreenShareServer.CongestionDecision
+    private typealias Inputs = TailscaleScreenShareServer.CongestionInputs
+    private typealias Decision = TailscaleScreenShareServer.CongestionDecision
     private let baseline = 10_000_000  // 10 Mbps; floor = 3 Mbps
     private let s: UInt64 = 1_000_000_000
 
-    private func inputs(lossQ8: Int = 0, plis: Int = 0, current: Int, fps: Int = 60, elapsed: UInt64) -> CI {
-        CI(
+    private func inputs(lossQ8: Int = 0, plis: Int = 0, current: Int, fps: Int = 60, elapsed: UInt64) -> Inputs {
+        Inputs(
             lossFractionQ8: lossQ8, pliCount: plis, nackServed: 0, current: current,
             baseline: baseline, fpsTier: fps, elapsedSinceChangeNs: elapsed)
     }
 
-    private func decide(_ i: CI) -> CD {
+    private func decide(_ i: Inputs) -> Decision {
         TailscaleScreenShareServer.nextCongestionDecision(i)
     }
 
