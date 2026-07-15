@@ -169,6 +169,12 @@
 "Sign Out Failed" = "Utloggning misslyckades";
 "Error" = "Fel";
 "Failed to start sharing: %@" = "Misslyckades att starta delning: %@";
+"Can't decode the video" = "Kan inte avkoda videon";
+"This Mac can't decode the %@ video stream from the sharer (it likely lacks %@ hardware decode). Asking the sharer to switch to H.264 — the screen should appear in a moment." = "Den här datorn kan inte avkoda %@-videoströmmen från delaren (den saknar troligen maskinvaruavkodning för %@). Ber delaren att byta till H.264 — skärmen bör visas om en stund.";
+"Video Has Stalled" = "Videon har stannat";
+"Decoding has been failing for several seconds and automatic recovery hasn't helped. Check the connection on both ends, or disconnect and reconnect." = "Avkodningen har misslyckats i flera sekunder och automatisk återställning har inte hjälpt. Kontrollera anslutningen i båda ändar, eller koppla från och anslut igen.";
+"Sharing Stopped" = "Delning stoppad";
+"The connection to your viewers was lost and couldn't be re-established, so the share was stopped. Check the network and start sharing again." = "Anslutningen till dina tittare förlorades och kunde inte återupprättas, så delningen stoppades. Kontrollera nätverket och starta delningen igen.";
 
 /* MARK: - Notifications (TailscreenUserNotifications.swift / ViewerApproval.swift) */
 "Tailscreen request" = "Tailscreen-begäran";
@@ -186,9 +192,21 @@
 "Latency" = "Latens";
 "FPS" = "FPS";
 "Dropped" = "Tappade";
+"Decode errs" = "Avkodningsfel";
+"PLIs sent" = "Skickade PLI:er";
 "Bitrate" = "Bithastighet";
 "Codec" = "Codec";
 "Connection" = "Anslutning";
+"Connection degraded" = "Anslutningen är försämrad";
+"Stream stats: " = "Strömstatistik: ";
+"Stream stats, connection degraded: " = "Strömstatistik, anslutningen är försämrad: ";
+"latency %lld milliseconds" = "latens %lld millisekunder";
+"%lld frames per second" = "%lld bildrutor per sekund";
+"%@ percent dropped" = "%@ procent tappade";
+"%lld decode errors" = "%lld avkodningsfel";
+"%lld keyframe requests sent" = "%lld skickade nyckelbildsbegäranden";
+"%@ kilobits per second" = "%@ kilobit per sekund";
+"codec %@" = "codec %@";
 
 /* MARK: - Shortcuts overlay (ViewerShortcutsOverlay.swift) */
 "Tools" = "Verktyg";
@@ -225,6 +243,7 @@
 "Toggle microphone (⌃⌥M)" = "Växla mikrofon (⌃⌥M)";
 "Stats" = "Statistik";
 "Toggle stream stats overlay" = "Växla statistiköverlägg";
+"Connection degraded — click for stats" = "Anslutningen är försämrad — klicka för statistik";
 "Shortcuts" = "Genvägar";
 "Show keyboard shortcuts" = "Visa tangentbordsgenvägar";
 "Keyboard shortcuts (⇧⌘/)" = "Tangentbordsgenvägar (⇧⌘/)";

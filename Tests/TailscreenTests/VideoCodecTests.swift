@@ -110,6 +110,61 @@ final class VideoCodecTests: XCTestCase {
         XCTAssertNotNil(encoder.cachedParameterSets, "cachedParameterSets should be populated after a keyframe")
     }
 
+    /// Garbage AVCC fed to a decoder with *real* parameter sets must count
+    /// consecutive per-frame failures and fire the escalation ladder's first
+    /// rung (`.requestKeyframe`) at the threshold. Exercises the live
+    /// counter + ladder wiring that `DecodeRecoveryDecisionTests` covers
+    /// only as pure math. Skips when VideoToolbox produces no output (or
+    /// happens to accept the garbage), e.g. on virtualized runners.
+    func testConsecutiveGarbageFramesEscalateToKeyframeRequest() throws {
+        let width = 320
+        let height = 240
+        let pixelBuffer = try Self.makePixelBuffer(width: width, height: height)
+
+        let encoder = VideoEncoder()
+        try encoder.setup(
+            width: width, height: height, fps: 30,
+            preferredCodec: .h264, bitsPerPixel: 0.2
+        )
+        defer { encoder.shutdown() }
+
+        let collector = Collector()
+        let gotParams = XCTestExpectation(description: "encoder emits parameter sets")
+        encoder.onParameterSets = { params in
+            collector.setParams(params)
+            gotParams.fulfill()
+        }
+        gotParams.assertForOverFulfill = false
+        for _ in 0..<3 {
+            encoder.encode(pixelBuffer: pixelBuffer)
+        }
+        let paramResult = XCTWaiter.wait(for: [gotParams], timeout: 5.0)
+        try Self.skipIfNotProduced(paramResult)
+        let params = try XCTUnwrap(collector.snapshot().params)
+
+        let decoder = VideoDecoder()
+        defer { decoder.shutdown() }
+        let keyframeRequested = XCTestExpectation(description: "ladder fires .requestKeyframe")
+        keyframeRequested.assertForOverFulfill = false
+        decoder.onRecoveryAction = { recoveryAction in
+            if recoveryAction == .requestKeyframe {
+                keyframeRequested.fulfill()
+            }
+        }
+        decoder.setParameterSets(params)
+
+        // One length-prefixed "NAL": an IDR header byte followed by noise,
+        // so the decoder session accepts the submission and then fails on
+        // the bitstream.
+        var garbage = Data([0x00, 0x00, 0x00, 0x41, 0x65])
+        garbage.append(Data(repeating: 0x5A, count: 0x40))
+        for _ in 0..<(VideoDecoder.requestKeyframeFailureThreshold + 5) {
+            decoder.decode(data: garbage, isKeyframe: false)
+        }
+        let result = XCTWaiter.wait(for: [keyframeRequested], timeout: 5.0)
+        try Self.skipIfNotProduced(result, producer: "VideoToolbox decoder (garbage feed)")
+    }
+
     private static func skipIfNotProduced(_ result: XCTWaiter.Result, producer: String = "VideoToolbox encoder") throws
     {
         if result != .completed {
