@@ -385,6 +385,14 @@ private struct SharingCard: View {
                 PendingViewersList(viewers: appState.pendingViewers)
             }
 
+            if let grantee = appState.controlGrantee {
+                RemoteControlGranteeBanner(grantee: grantee)
+            }
+
+            if !appState.controlRequests.isEmpty {
+                ControlRequestsList(requests: appState.controlRequests)
+            }
+
             ApprovalToggle()
 
             // GeometryReader measures the popover's actual width, which
@@ -640,6 +648,89 @@ private struct PendingViewersList: View {
     }
 }
 
+/// One row per viewer asking for remote control, with inline Grant / Deny
+/// buttons. Shown in the SharingCard whenever a viewer has requested control.
+/// Granting revokes any current grantee (single-holder). Granting is refused
+/// with an Accessibility prompt if the app lacks that permission.
+private struct ControlRequestsList: View {
+    @EnvironmentObject var appState: AppState
+    let requests: [ControlRequestInfo]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(requests) { request in
+                HStack(spacing: 6) {
+                    Image(systemName: "cursorarrow.rays")
+                        .font(.subheadline)
+                        .foregroundStyle(.blue)
+                    Text(L("\(request.displayName) wants control"))
+                        .font(.subheadline.weight(.medium))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 4)
+                    Button(L("Deny")) {
+                        appState.denyRemoteControl(request.id)
+                    }
+                    .font(.caption)
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+                    .fixedSize()
+                    .accessibilityLabel(L("Deny control for \(request.displayName)"))
+                    Button(L("Grant")) {
+                        appState.grantRemoteControl(request.id)
+                    }
+                    .font(.caption)
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.mini)
+                    .fixedSize()
+                    .accessibilityLabel(L("Grant control to \(request.displayName)"))
+                }
+            }
+        }
+        .padding(.vertical, 4)
+        .padding(.horizontal, 8)
+        .background(
+            RoundedRectangle(cornerRadius: PopoverRadius.inner, style: .continuous)
+                .fill(Color.blue.opacity(0.12))
+        )
+    }
+}
+
+/// "X is controlling your Mac" banner with a prominent Stop button, shown in
+/// the SharingCard while a viewer holds remote control.
+private struct RemoteControlGranteeBanner: View {
+    @EnvironmentObject var appState: AppState
+    let grantee: ControlGrantInfo
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "cursorarrow.click.badge.clock")
+                .font(.subheadline)
+                .foregroundStyle(.orange)
+            Text(L("\(grantee.displayName) is controlling your Mac"))
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(2)
+            Spacer(minLength: 4)
+            Button(L("Stop")) {
+                appState.revokeRemoteControl()
+            }
+            .font(.caption)
+            .buttonStyle(.borderedProminent)
+            .tint(.red)
+            .controlSize(.mini)
+            .fixedSize()
+            .accessibilityLabel(L("Stop remote control"))
+            .accessibilityHint(L("Immediately revokes the viewer's control of your Mac (⌃⌥.)"))
+        }
+        .padding(.vertical, 6)
+        .padding(.horizontal, 8)
+        .background(
+            RoundedRectangle(cornerRadius: PopoverRadius.inner, style: .continuous)
+                .fill(Color.orange.opacity(0.16))
+        )
+    }
+}
+
 /// Compact toggle for the "Require approval for new viewers" preference.
 /// Backed by `AppState.requireViewerApproval` (persisted in UserDefaults
 /// and propagated to the live server). Rendered inside both the
@@ -684,6 +775,8 @@ private struct ViewingCard: View {
                 Spacer(minLength: 0)
             }
 
+            RemoteControlViewerButton()
+
             HStack(spacing: 6) {
                 Button {
                     Task { await appState.toggleMic() }
@@ -719,6 +812,61 @@ private struct ViewingCard: View {
         )
         .padding(.horizontal, 8)
         .padding(.bottom, 6)
+    }
+}
+
+/// Viewer-side remote-control control: request control, show the pending /
+/// active state, and stop controlling. State comes from
+/// `AppState.viewerControlState`; the sharer's Grant/Revoke drive the
+/// transitions. Full input injection needs the sharer's Accessibility grant.
+private struct RemoteControlViewerButton: View {
+    @EnvironmentObject var appState: AppState
+
+    var body: some View {
+        switch appState.viewerControlState {
+        case .none:
+            Button {
+                appState.requestRemoteControl()
+            } label: {
+                Label(L("Request Control"), systemImage: "cursorarrow.rays")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .help(L("Ask the sharer to let you control their Mac"))
+            .accessibilityHint(L("The sharer must grant control before your input is injected"))
+        case .requested:
+            Button {
+                appState.stopViewerControl()
+            } label: {
+                Label(L("Requesting control…"), systemImage: "hourglass")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .help(L("Waiting for the sharer to grant control"))
+        case .controlling:
+            HStack(spacing: 6) {
+                Label(L("You are controlling this Mac"), systemImage: "cursorarrow.click.badge.clock")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                Button(L("Stop")) {
+                    appState.stopViewerControl()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+                .fixedSize()
+                .accessibilityLabel(L("Stop controlling"))
+            }
+            .padding(.vertical, 4)
+            .padding(.horizontal, 8)
+            .background(
+                RoundedRectangle(cornerRadius: PopoverRadius.inner, style: .continuous)
+                    .fill(Color.orange.opacity(0.14))
+            )
+        }
     }
 }
 

@@ -299,3 +299,29 @@
 "Tailscreen: sharing your screen" = "Tailscreen: sharing your screen";
 "Tailscreen: viewing a shared screen" = "Tailscreen: viewing a shared screen";
 "Tailscreen: someone wants you to share" = "Tailscreen: someone wants you to share";
+
+/* Remote control */
+"Viewer Wants Control" = "Viewer Wants Control";
+"%@ is asking to control your Mac. Open Tailscreen to Grant or Deny." = "%@ is asking to control your Mac. Open Tailscreen to Grant or Deny.";
+"Accessibility Permission Needed" = "Accessibility Permission Needed";
+"To let a viewer control your Mac, allow Tailscreen under System Settings → Privacy & Security → Accessibility, then grant control again." = "To let a viewer control your Mac, allow Tailscreen under System Settings → Privacy & Security → Accessibility, then grant control again.";
+"Open Settings" = "Open Settings";
+"Cancel" = "Cancel";
+"Remote Control Ended" = "Remote Control Ended";
+"The sharer ended your remote-control session." = "The sharer ended your remote-control session.";
+"%@ wants control" = "%@ wants control";
+"Grant" = "Grant";
+"Deny control for %@" = "Deny control for %@";
+"Grant control to %@" = "Grant control to %@";
+"%@ is controlling your Mac" = "%@ is controlling your Mac";
+"Stop" = "Stop";
+"Stop remote control" = "Stop remote control";
+"Immediately revokes the viewer's control of your Mac (⌃⌥.)" = "Immediately revokes the viewer's control of your Mac (⌃⌥.)";
+"Request Control" = "Request Control";
+"Ask the sharer to let you control their Mac" = "Ask the sharer to let you control their Mac";
+"The sharer must grant control before your input is injected" = "The sharer must grant control before your input is injected";
+"Requesting control…" = "Requesting control…";
+"Waiting for the sharer to grant control" = "Waiting for the sharer to grant control";
+"You are controlling this Mac" = "You are controlling this Mac";
+"Stop controlling" = "Stop controlling";
+"Stop Remote Control" = "Stop Remote Control";

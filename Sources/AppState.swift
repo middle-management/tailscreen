@@ -87,6 +87,25 @@ class AppState: ObservableObject {
     /// `onPendingViewersChanged` callback. Cleared on `stopSharing`.
     @Published var pendingViewers: [PendingViewerInfo] = []
 
+    /// Viewers (sharer side) asking for remote control, awaiting Grant / Deny.
+    /// Mirrors the server's `onControlRequestsChanged`. Cleared on stopSharing.
+    @Published var controlRequests: [ControlRequestInfo] = []
+
+    /// The viewer (sharer side) that currently holds remote control, or nil.
+    /// Mirrors the server's `onControlGrantChanged`; drives the "X is
+    /// controlling your Mac" banner + Stop button. Cleared on stopSharing.
+    @Published var controlGrantee: ControlGrantInfo?
+
+    /// Viewer-side remote-control mode. `.requested` between clicking Request
+    /// Control and the sharer's answer; `.controlling` once granted (input
+    /// capture live). Reset on disconnect.
+    @Published var viewerControlState: ViewerControlState = .none
+
+    /// Second global hotkey (⌃⌥. by default) — an always-available panic
+    /// revoke of any live remote-control grant while sharing. Created in
+    /// `init` alongside the mic hotkey.
+    private var revokeControlHotkey: GlobalHotkey?
+
     /// User preference: park new viewers in a pending state and require
     /// explicit Accept/Deny before they see video. Persisted to
     /// UserDefaults under `requireViewerApproval`. Defaults **on** for
@@ -195,6 +214,10 @@ class AppState: ObservableObject {
     private var settingsWindow: NSWindow?
     private var viewerRenderer: MetalViewerRenderer?
     private var viewerOverlay: AnnotationOverlayHostView?
+    /// Input-capture layer above the annotation overlay, active only while
+    /// this viewer holds a remote-control grant. Framed to the video rect by
+    /// `AspectFitHostView.layout`.
+    private var viewerControlInput: RemoteControlInputView?
     /// The viewer window's aspect-fit host — the view that owns the
     /// continuous content zoom/pan state. Weak: the window's contentView
     /// holds it for the process lifetime. Used to reset the zoom on
@@ -481,6 +504,17 @@ class AppState: ObservableObject {
             Task { @MainActor [weak self] in
                 await self?.toggleMic()
             }
+        }
+
+        // ⌃⌥. — panic revoke of any live remote-control grant, from anywhere.
+        // Distinct hotkey `id` (see GlobalHotkey) so it coexists with the mic
+        // toggle. A no-op when nobody holds control.
+        revokeControlHotkey = GlobalHotkey(
+            keyCode: UInt32(kVK_ANSI_Period),
+            modifiers: .controlOptionMask,
+            id: 2
+        ) { [weak self] in
+            self?.revokeRemoteControl(reason: "panic hotkey")
         }
 
         ViewerCommands.shared.appState = self
@@ -818,6 +852,24 @@ class AppState: ObservableObject {
                     }
                 }
 
+                srv.onControlRequestsChanged = { [weak self] requests in
+                    Task { @MainActor [weak self] in
+                        self?.handleControlRequestsChanged(requests)
+                    }
+                }
+
+                srv.onControlGrantChanged = { [weak self] grant in
+                    Task { @MainActor [weak self] in
+                        self?.controlGrantee = grant
+                    }
+                }
+
+                srv.onControlAccessibilityRequired = { [weak self] in
+                    Task { @MainActor [weak self] in
+                        self?.presentAccessibilityRequiredAlert()
+                    }
+                }
+
                 // Sync the toggle state to the server before `start()` so a
                 // viewer racing to HELLO during bring-up is caught. Same
                 // for the remembered allow/deny snapshot.
@@ -935,6 +987,8 @@ class AppState: ObservableObject {
         previewImage = nil
         currentViewers = []
         pendingViewers = []
+        controlRequests = []
+        controlGrantee = nil
         notifiedViewerIDs.removeAll()
         pendingPreApprovedIPs.removeAll()
         queuedPolicyIntents.removeAll()
@@ -1158,6 +1212,28 @@ class AppState: ObservableObject {
                 }
             }
 
+            c.onControlGranted = { [weak self] in
+                Task { @MainActor [weak self] in
+                    guard let self, self.connectionState == .viewing else { return }
+                    self.enterViewerControl()
+                }
+            }
+
+            c.onControlRevoked = { [weak self] reason in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    self.logger.log("Remote control revoked by sharer (\(reason))")
+                    let wasControlling = self.viewerControlState == .controlling
+                    self.exitViewerControl()
+                    if wasControlling {
+                        self.showAlertMessage(
+                            title: L("Remote Control Ended"),
+                            message: L("The sharer ended your remote-control session.")
+                        )
+                    }
+                }
+            }
+
             // Install the audio callback BEFORE connecting. HELLO_ACK can
             // arrive on the receive loop the moment connect() returns (or
             // even slightly before, if the loop is scheduled fast); a
@@ -1355,6 +1431,17 @@ class AppState: ObservableObject {
         ViewerCommands.shared.activeOverlay = overlayModel
         self.viewerOverlay = overlay
 
+        // Remote-control input-capture layer, above the annotation overlay.
+        // Hidden until this viewer holds a grant; while active it intercepts
+        // pointer/keyboard events and ships them as normalized InputEvents.
+        let controlInput = RemoteControlInputView(frame: host.bounds)
+        controlInput.onEvent = { [weak self] event in
+            Task { [weak self] in await self?.client?.sendInputEvent(event) }
+        }
+        host.addSubview(controlInput)
+        host.inputCaptureSubview = controlInput
+        self.viewerControlInput = controlInput
+
         // Keep the toolbar's tool segment in sync with the canvas model
         // so keyboard shortcuts (`1`–`6`, `⌘1`–`⌘6`) reflect on the
         // toolbar instead of only updating it on click.
@@ -1526,6 +1613,11 @@ class AppState: ObservableObject {
         connectionState = .idle
         connectedHostname = nil
         viewerAwaitingApproval = false
+        // End any remote-control session and stop capturing input.
+        if viewerControlState != .none {
+            viewerControlState = .none
+            setViewerControlCapturing(false)
+        }
         viewerRenderer?.clearPendingBuffer()
         // The window survives disconnect (process-lifetime); drop the
         // content zoom so the next session doesn't inherit a magnified
@@ -2194,6 +2286,96 @@ class AppState: ObservableObject {
         }
     }
 
+    // MARK: - Remote control (sharer side)
+
+    /// Sync the published control-request list and fire a "wants control"
+    /// notification for newly-arrived requests, whether or not the popover is
+    /// open — control is high-stakes, so the prompt shouldn't be missable.
+    private func handleControlRequestsChanged(_ requests: [ControlRequestInfo]) {
+        let previousIDs = Set(controlRequests.map(\.id))
+        let arrived = requests.filter { !previousIDs.contains($0.id) }
+        controlRequests = requests
+        for request in arrived {
+            ViewerJoinNotifier.shared.postControlRequested(label: request.displayName)
+        }
+    }
+
+    /// Grant remote control to the requesting viewer on `connectionID`. The
+    /// server refuses (and fires `onControlAccessibilityRequired`) if the app
+    /// lacks the Accessibility TCC grant, so this never installs a dead grant.
+    func grantRemoteControl(_ connectionID: UUID) {
+        server?.grantControl(toConnectionID: connectionID)
+    }
+
+    /// Deny a pending control request without granting.
+    func denyRemoteControl(_ connectionID: UUID) {
+        server?.declineControlRequest(connectionID: connectionID)
+    }
+
+    /// Revoke the live grant (menu item, SharingCard Stop button, or panic
+    /// hotkey). Safe when nobody holds control.
+    func revokeRemoteControl(reason: String = "sharer revoked") {
+        server?.revokeControl(reason: reason)
+    }
+
+    /// Alert + deep-link when a grant is refused for want of Accessibility
+    /// permission. Mirrors the Screen Recording settings deep-link.
+    private func presentAccessibilityRequiredAlert() {
+        let alert = NSAlert()
+        alert.messageText = L("Accessibility Permission Needed")
+        alert.informativeText = L(
+            "To let a viewer control your Mac, allow Tailscreen under System Settings → Privacy & Security → Accessibility, then grant control again."
+        )
+        alert.addButton(withTitle: L("Open Settings"))
+        alert.addButton(withTitle: L("Cancel"))
+        if alert.runModal() == .alertFirstButtonReturn {
+            let urlString = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+            if let url = URL(string: urlString) {
+                NSWorkspace.shared.open(url)
+            }
+        }
+    }
+
+    // MARK: - Remote control (viewer side)
+
+    /// Viewer clicks "Request Control" — ask the sharer and flip to the
+    /// requested state (the toolbar/menu reflect it). No-op unless viewing.
+    func requestRemoteControl() {
+        guard connectionState == .viewing, let client else { return }
+        viewerControlState = .requested
+        Task { await client.requestControl() }
+    }
+
+    /// Viewer leaves control mode locally (stops capturing + emitting input).
+    /// The sharer keeps the grant indicator until it revokes or the viewer
+    /// disconnects — there's no viewer→sharer "release" message today.
+    func stopViewerControl() {
+        guard viewerControlState != .none else { return }
+        viewerControlState = .none
+        setViewerControlCapturing(false)
+    }
+
+    /// Enter control mode after the sharer grants (`onControlGranted`).
+    private func enterViewerControl() {
+        viewerControlState = .controlling
+        setViewerControlCapturing(true)
+    }
+
+    /// Leave control mode after the sharer revokes (`onControlRevoked`) or on
+    /// disconnect.
+    private func exitViewerControl() {
+        viewerControlState = .none
+        setViewerControlCapturing(false)
+    }
+
+    /// Show/hide the input-capture layer and force the annotation overlay
+    /// passive while controlling (the two are mutually exclusive).
+    private func setViewerControlCapturing(_ capturing: Bool) {
+        viewerControlInput?.setCapturing(capturing)
+        // While controlling, pointer/keys drive input, not drawing.
+        viewerOverlay?.model.isInputEnabled = !capturing
+    }
+
     /// Admit a pending viewer — hands off to the live server which
     /// emits the deferred HELLO_ACK and forces a keyframe.
     func approvePendingViewer(_ id: String) {
@@ -2373,6 +2555,9 @@ private final class ViewerWindowDelegate: NSObject, NSWindowDelegate {
 private final class AspectFitHostView: NSView {
     weak var metalLayer: CAMetalLayer?
     weak var contentSubview: NSView?
+    /// Remote-control input-capture layer, framed congruently with the video
+    /// rect so normalizing within its bounds yields `[0, 1]` video coordinates.
+    weak var inputCaptureSubview: NSView?
     var videoSize: CGSize = .zero {
         didSet {
             guard videoSize != oldValue else { return }
@@ -2408,6 +2593,7 @@ private final class AspectFitHostView: NSView {
         metalLayer?.frame = rect
         CATransaction.commit()
         contentSubview?.frame = rect
+        inputCaptureSubview?.frame = rect
     }
 
     // MARK: - Content zoom gestures

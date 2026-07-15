@@ -294,3 +294,29 @@
 "Tailscreen: sharing your screen" = "Tailscreen: delar din skärm";
 "Tailscreen: viewing a shared screen" = "Tailscreen: visar en delad skärm";
 "Tailscreen: someone wants you to share" = "Tailscreen: någon vill att du delar";
+
+/* Remote control */
+"Viewer Wants Control" = "Tittare vill styra";
+"%@ is asking to control your Mac. Open Tailscreen to Grant or Deny." = "%@ vill styra din Mac. Öppna Tailscreen för att bevilja eller neka.";
+"Accessibility Permission Needed" = "Tillgänglighetsbehörighet krävs";
+"To let a viewer control your Mac, allow Tailscreen under System Settings → Privacy & Security → Accessibility, then grant control again." = "För att låta en tittare styra din Mac, tillåt Tailscreen under Systeminställningar → Integritet och säkerhet → Tillgänglighet och bevilja sedan styrning igen.";
+"Open Settings" = "Öppna Inställningar";
+"Cancel" = "Avbryt";
+"Remote Control Ended" = "Fjärrstyrning avslutad";
+"The sharer ended your remote-control session." = "Delaren avslutade din fjärrstyrningssession.";
+"%@ wants control" = "%@ vill styra";
+"Grant" = "Bevilja";
+"Deny control for %@" = "Neka styrning för %@";
+"Grant control to %@" = "Bevilja styrning till %@";
+"%@ is controlling your Mac" = "%@ styr din Mac";
+"Stop" = "Stoppa";
+"Stop remote control" = "Stoppa fjärrstyrning";
+"Immediately revokes the viewer's control of your Mac (⌃⌥.)" = "Återkallar omedelbart tittarens styrning av din Mac (⌃⌥.)";
+"Request Control" = "Begär styrning";
+"Ask the sharer to let you control their Mac" = "Be delaren att låta dig styra deras Mac";
+"The sharer must grant control before your input is injected" = "Delaren måste bevilja styrning innan dina indata skickas";
+"Requesting control…" = "Begär styrning…";
+"Waiting for the sharer to grant control" = "Väntar på att delaren beviljar styrning";
+"You are controlling this Mac" = "Du styr denna Mac";
+"Stop controlling" = "Sluta styra";
+"Stop Remote Control" = "Stoppa fjärrstyrning";
