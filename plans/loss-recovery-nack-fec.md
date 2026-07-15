@@ -116,7 +116,10 @@ the code that actually merged, or scoped to bound compile risk):
 - **Control-byte values.** Plan wrote NACK=0x08 / RR=0x09 / PING=0x0A against a
   stale enum; since color/HDR (#79) took 0x09 (PROFILE_NO) and consent (#74)
   took 0x08 (HELLO_DENY), the loss-recovery bytes land at **NACK=0x0A,
-  RECEIVER_REPORT=0x0B, PING=0x0C** (all still ≤ 0x7F).
+  RECEIVER_REPORT=0x0B, PING=0x0C** (all still ≤ 0x7F). The Phase-2 helper-wire
+  `setFrameInterval` command was likewise bumped from the planned `InType 0x04`
+  to **0x05** after system-audio (#73) merged and took `InType 0x04` for
+  `setAudioEnabled` (folded in during the main merge).
 - **Caps stored in a side map, not on `Viewer`.** `viewerCaps: [addr: ScreenShareCaps]`
   keyed by addr survives the pending→approve promotion without threading caps
   through that path. RR feedback + retransmit budget + NACK-served counter *do*
