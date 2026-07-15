@@ -290,7 +290,13 @@ final class RemoteControlInjector: @unchecked Sendable {
     private func postKey(keyCode: UInt16, modifiers: UInt64, keyDown: Bool) {
         let masked = Self.maskedFlags(modifiers)
         if let hook = onInjectForTesting {
-            hook(keyDown ? .keyDown(keyCode: keyCode, flags: masked) : .keyUp(keyCode: keyCode, flags: masked))
+            let action: InjectedAction
+            if keyDown {
+                action = .keyDown(keyCode: keyCode, flags: masked)
+            } else {
+                action = .keyUp(keyCode: keyCode, flags: masked)
+            }
+            hook(action)
             return
         }
         guard let event = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: keyDown) else {
