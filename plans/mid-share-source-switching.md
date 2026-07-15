@@ -1,6 +1,6 @@
 # Change what you're sharing mid-share (re-pick source without dropping viewers)
 
-> Status: proposed — this PR contains only the plan; implementation is a follow-up iteration.
+> Status: implemented in this PR.
 
 ## Problem & motivation
 
@@ -265,6 +265,43 @@ per-viewer `requestKeyframe` on join/PLI covers stragglers.
   (`Sources/TailscreenMetadata.swift:91-101`) — pre-existing inaccuracy for window shares;
   do not "fix" it in this PR beyond re-calling `updateMetadata` (real dims reach the
   server via `onEncoderResolution`, `Sources/HelperScreenCapture.swift:199-206`).
+
+## Deviations
+
+Where the implementation departs from the letter of this plan (all line numbers above
+have drifted — symbols were trusted over positions):
+
+- **`changeSource` body.** Implemented as `lastFilterData = filterData` followed by
+  `try await restartCapture()` rather than inlining the `scheduleHelperRestart` call —
+  identical semantics (tracked restart, `resetCrashBudget: true`), one fewer copy of the
+  guard.
+- **`changeShareSource` re-entry checks.** Beyond the sketched `sharingState == .active`
+  re-check after the picker returns, the implementation also identity-checks
+  `self.server === server` so a stale selection can't retarget a share that was torn
+  down and restarted while the picker was up. The `isChangingSource` flag additionally
+  gates entry into the function itself (not just the UI button).
+- **Share-name helper.** Current code duplicated the hostname computation twice and the
+  share-name string once (not three times as the plan's stale line refs said); both were
+  factored into `AppState.localHostname()` / `localShareName()`.
+- **Local E2E assertions.** `ScreenShareCaptureHelperTests.
+  testChangeSourceRestartsCaptureWithoutDroppingViewer` asserts (1) the viewer decodes
+  again after the switch — the post-switch expectation is installed only after
+  `changeSource` returns, when the old helper is provably dead — and (2)
+  `onCaptureStopped` never fired. The planned "assert a new helper PID via the spawn
+  log" was dropped: the spawn log line isn't programmatically observable from the test
+  process, and decode-after-switch with the old helper stopped is equivalent evidence.
+- **Overlay rebuild.** When the sharer wasn't drawing at switch time, the overlay is
+  left nil instead of eagerly rebuilt — `ensureSharerOverlay()` lazily rebuilds (with
+  the new mode from the updated `currentSelection`) on the next viewer op or Draw
+  toggle, matching the existing lazy-creation contract.
+- **Localized strings.** Keys added to both `en.lproj` and `sv.lproj` (the plan predates
+  the Swedish catalog).
+
+The full mid-share flow is local-E2E-only; the covering local suite is
+**`ScreenShareCaptureHelperTests`** (`testChangeSourceRestartsCaptureWithoutDroppingViewer`),
+with the viewer-side param-reinstall path covered CI-eligibly by
+`ScreenShareSyntheticFramesTests.testClientAdaptsToMidStreamResolutionChange` and the
+selection→overlay-mode decision by `OverlayModeDecisionTests`.
 
 ## Estimated scope
 
