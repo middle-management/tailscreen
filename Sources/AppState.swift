@@ -84,8 +84,10 @@ class AppState: ObservableObject {
 
     /// User preference: park new viewers in a pending state and require
     /// explicit Accept/Deny before they see video. Persisted to
-    /// UserDefaults under `requireViewerApproval`. Defaults off so the
-    /// out-of-box experience matches the existing open-door behavior.
+    /// UserDefaults under `requireViewerApproval`. Defaults **on** for
+    /// installs that never touched the toggle (tri-state migration in
+    /// `ViewerApprovalDefaults.load`); an explicit opt-out sticks, and
+    /// `TAILSCREEN_OPEN_DOOR=1` forces it off for the scripted harnesses.
     /// SwiftUI views bind to this via `appState.requireViewerApproval`;
     /// the setter syncs the live server too so the toggle takes effect
     /// mid-share.
@@ -95,6 +97,13 @@ class AppState: ObservableObject {
             server?.setRequireApproval(requireViewerApproval)
         }
     }
+
+    /// Persistent per-peer allow/deny store behind "Always Allow" /
+    /// "Deny & Block" and the Settings "Remembered viewers" list. Keyed by
+    /// Tailscale StableNodeID. The live server never touches this store —
+    /// it gets a value snapshot via `setAccessPolicies` at share start and
+    /// on every change (see the `$entries` subscription in `init`).
+    let viewerAccessPolicies = ViewerAccessPolicyStore()
 
     /// Viewer IDs we've already fired a "joined" notification for this
     /// session. Keyed by the server's internal `"ip:port"` ID so a viewer
@@ -255,6 +264,17 @@ class AppState: ObservableObject {
         // lands.
         metadataService.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
+        }.store(in: &cancellables)
+
+        // Mirror the remembered-viewers store: repaint the Settings list on
+        // change and push a fresh value snapshot to the live server so
+        // "Always allow" / "Deny & block" / removal take effect mid-share.
+        // `$entries` delivers the *new* array (before the property write),
+        // so the snapshot is computed from the payload, not the store.
+        viewerAccessPolicies.$entries.sink { [weak self] entries in
+            guard let self else { return }
+            self.objectWillChange.send()
+            self.server?.setAccessPolicies(ViewerAccessPolicyStore.policiesByStableID(entries))
         }.store(in: &cancellables)
 
         // Try to restore a previous session silently. If on-disk Tailscale
@@ -587,8 +607,10 @@ class AppState: ObservableObject {
                 }
 
                 // Sync the toggle state to the server before `start()` so a
-                // viewer racing to HELLO during bring-up is caught.
+                // viewer racing to HELLO during bring-up is caught. Same
+                // for the remembered allow/deny snapshot.
                 srv.setRequireApproval(requireViewerApproval)
+                srv.setAccessPolicies(viewerAccessPolicies.policiesByStableID)
 
                 // Sharer's audio SSRC is fixed at 0. Build the channel up
                 // front so HELLO_ACK assignment for viewers can route
@@ -864,6 +886,21 @@ class AppState: ObservableObject {
             c.onAwaitingApproval = { [weak self] in
                 Task { @MainActor [weak self] in
                     self?.viewerAwaitingApproval = true
+                }
+            }
+
+            // HELLO_DENY: the sharer clicked Deny (or has us blocked). Tear
+            // the session down first, then explain — the alert is modal, so
+            // running it before disconnect would leave a dead session on
+            // screen behind it.
+            c.onDeniedBySharer = { [weak self] in
+                Task { @MainActor [weak self] in
+                    guard let self = self, self.connectionState == .viewing else { return }
+                    await self.disconnect()
+                    self.showAlertMessage(
+                        title: L("Connection Declined"),
+                        message: L("The sharer declined your request to view their screen.")
+                    )
                 }
             }
 
@@ -1579,9 +1616,9 @@ class AppState: ObservableObject {
     private func ensureControlListener(node: TailscaleNode) async throws {
         if controlListener != nil { return }
         let l = TailscreenControlListener()
-        l.onRequestToShare = { [weak self] fromHostname in
+        l.onRequestToShare = { [weak self] fromHostname, connectionID in
             Task { @MainActor [weak self] in
-                self?.handleIncomingRequestToShare(from: fromHostname)
+                self?.handleIncomingRequestToShare(from: fromHostname, connectionID: connectionID)
             }
         }
         try await l.start(node: node)
@@ -1589,10 +1626,28 @@ class AppState: ObservableObject {
         logger.log("Control listener bound on TCP/\(NetworkConfig.tailscreenPort)")
     }
 
-    private func handleIncomingRequestToShare(from hostname: String) {
+    private func handleIncomingRequestToShare(from hostname: String, connectionID: UUID) {
         logger.log("Incoming request-to-share from \(hostname)")
-        metadataService.handleRequestToShare(from: hostname)
+        metadataService.handleRequestToShare(from: hostname, connectionID: connectionID)
         TailscreenUserNotifications.shared.postRequestToShareNotification(fromHostname: hostname)
+    }
+
+    /// Answer an incoming request-to-share banner. Sends the accept /
+    /// decline response back on the TCP connection the request arrived on
+    /// (best-effort — the requester may have timed out and closed it, and
+    /// `TailscreenControlListener.send` silently no-ops on a dead
+    /// connection), clears the banner row, and on accept drops into the
+    /// normal picker flow.
+    func respondToShareRequest(_ request: TailscreenMetadataService.PendingRequest, accepted: Bool) {
+        metadataService.clearRequest(request)
+        if let connectionID = request.connectionID, let listener = controlListener {
+            Task {
+                await listener.send(.shareResponse(accepted: accepted), to: connectionID)
+            }
+        }
+        if accepted {
+            Task { await presentNativePicker() }
+        }
     }
 
     /// Spin up an IPN-bus watcher whose only job is to open the
@@ -1710,16 +1765,38 @@ class AppState: ObservableObject {
         logger.log("TAILSCREEN_AUTOCONNECT_TO=\(prefix): gave up; peer never appeared")
     }
 
+    /// Send a request-to-share to `peer` and surface the round-trip outcome.
+    /// The await can run for up to two minutes (the peer's banner may sit
+    /// unanswered for a while); the calling Task just parks — no UI blocks.
     func requestToShare(from peer: TailscreenPeer) async {
         let hostname = Host.current().localizedName ?? "Unknown"
         do {
             let node = try await getOrCreateNode()
-            try await metadataService.sendRequestToShare(
+            let outcome = try await metadataService.sendRequestToShareAwaitingResponse(
                 toIP: peer.tailscaleIP,
                 port: NetworkConfig.tailscreenPort,
                 from: hostname,
                 via: node
             )
+            switch outcome {
+            case .accepted:
+                showAlertMessage(
+                    title: L("Request Accepted"),
+                    message: L("\(peer.hostname) accepted your request and is choosing what to share.")
+                )
+            case .declined:
+                showAlertMessage(
+                    title: L("Request Declined"),
+                    message: L("\(peer.hostname) declined your request to share their screen.")
+                )
+            case .noAnswer:
+                showAlertMessage(
+                    title: L("No Response"),
+                    message: L(
+                        "\(peer.hostname) hasn't responded to your request. They may be away or running an older Tailscreen."
+                    )
+                )
+            }
         } catch {
             presentError(.requestToShareFailed(peer: peer.hostname, underlying: error))
         }
@@ -1811,6 +1888,7 @@ class AppState: ObservableObject {
         let newIDs = Set(viewers.map { $0.id })
         let joinedIDs = newIDs.subtracting(previousIDs)
         currentViewers = viewers
+        refreshRememberedDisplayNames(stableIDHostnamePairs: viewers.map { ($0.stableID, $0.hostname) })
         // Forget IDs that have left so a reconnect from the same
         // address fires a new notification.
         notifiedViewerIDs.formIntersection(newIDs)
@@ -1831,6 +1909,7 @@ class AppState: ObservableObject {
         let newIDs = Set(pending.map { $0.id })
         let arrivedIDs = newIDs.subtracting(previousIDs)
         pendingViewers = pending
+        refreshRememberedDisplayNames(stableIDHostnamePairs: pending.map { ($0.stableID, $0.hostname) })
         for id in arrivedIDs {
             guard let viewer = pending.first(where: { $0.id == id }) else { continue }
             let label = viewer.hostname ?? viewer.tailscaleIP
@@ -1844,10 +1923,51 @@ class AppState: ObservableObject {
         server?.approveViewer(addr: id)
     }
 
-    /// Reject a pending viewer — server sends SERVER_BYE so the viewer
-    /// tears their session down immediately.
+    /// Reject a pending viewer — server sends HELLO_DENY + SERVER_BYE so
+    /// the viewer tears their session down immediately.
     func denyPendingViewer(_ id: String) {
         server?.denyViewer(addr: id)
+    }
+
+    /// "Always Allow": remember the peer as allowed (so future HELLOs skip
+    /// the prompt), then admit them now. If the StableNodeID hasn't
+    /// resolved yet, nothing can be remembered — fall back to a one-time
+    /// approve.
+    func approvePendingViewerAlways(_ id: String) {
+        rememberPendingViewer(id, policy: .allow)
+        server?.approveViewer(addr: id)
+    }
+
+    /// "Deny & Block": remember the peer as denied (future HELLOs are
+    /// silently rejected), then deny them now. Same one-time fallback as
+    /// `approvePendingViewerAlways` when the StableNodeID is unresolved.
+    func denyPendingViewerAndBlock(_ id: String) {
+        rememberPendingViewer(id, policy: .deny)
+        server?.denyViewer(addr: id)
+    }
+
+    /// Keep the remembered-viewers list readable across machine renames:
+    /// whenever a roster snapshot carries a resolved hostname for a peer
+    /// we've remembered, refresh its cosmetic display name. No-ops (no
+    /// persist, no publish) when nothing changed.
+    private func refreshRememberedDisplayNames(stableIDHostnamePairs: [(String?, String?)]) {
+        for (stableID, hostname) in stableIDHostnamePairs {
+            guard let stableID, let hostname else { continue }
+            viewerAccessPolicies.refreshDisplayName(stableID: stableID, displayName: hostname)
+        }
+    }
+
+    private func rememberPendingViewer(_ id: String, policy: PeerPolicy) {
+        guard let viewer = pendingViewers.first(where: { $0.id == id }) else { return }
+        guard let stableID = viewer.stableID else {
+            logger.log("Can't remember viewer \(id): StableNodeID unresolved — one-time decision only")
+            return
+        }
+        viewerAccessPolicies.upsert(
+            stableID: stableID,
+            displayName: viewer.hostname ?? viewer.tailscaleIP,
+            policy: policy
+        )
     }
 
     /// Vibrancy-backed centered placard reading "Waiting for sharer to

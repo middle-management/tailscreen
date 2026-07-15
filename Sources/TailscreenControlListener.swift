@@ -33,9 +33,18 @@ final class TailscreenControlListener: @unchecked Sendable {
     /// echoing the op back to its origin).
     var onAnnotation: ((AnnotationOp, UUID) -> Void)?
 
-    /// Fires for every `.requestToShare` message. Argument is the
-    /// requesting peer's friendly hostname (as sent in the payload).
-    var onRequestToShare: ((String) -> Void)?
+    /// Fires for every `.requestToShare` message. Arguments are the
+    /// requesting peer's friendly hostname (as sent in the payload) and the
+    /// `UUID` of the TCP connection it arrived on, so the handler can send
+    /// the eventual `.shareResponse` back on the *same* connection — no
+    /// dial-back, so the answer provably reaches the actual requester.
+    var onRequestToShare: ((String, UUID) -> Void)?
+
+    /// Fires for every `.shareResponse` message. Arguments are the accept
+    /// flag and the connection UUID. Unused on the listener side in
+    /// production (responses ride the requester's own outgoing connection,
+    /// which reads them inline); present for symmetry and tests.
+    var onShareResponse: ((Bool, UUID) -> Void)?
 
     /// Fires when an accepted TCP connection closes. Argument is the
     /// connection's stable `UUID`. Used by the share server to retire
@@ -163,7 +172,9 @@ final class TailscreenControlListener: @unchecked Sendable {
         case .annotation(let op):
             onAnnotation?(op, connectionID)
         case .requestToShare(let from):
-            onRequestToShare?(from)
+            onRequestToShare?(from, connectionID)
+        case .shareResponse(let accepted):
+            onShareResponse?(accepted, connectionID)
         }
     }
 }

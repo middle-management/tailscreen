@@ -23,10 +23,37 @@ struct SettingsView: View {
                     L("Require approval for new viewers"),
                     isOn: $appState.requireViewerApproval)
                 Text(
-                    L("New viewers wait on a Connecting prompt until you Accept or Deny them.")
+                    L(
+                        "New viewers wait on a Connecting prompt until you Accept or Deny them. On by default — turn off to let anyone on your tailnet connect instantly."
+                    )
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            }
+
+            Section(L("Remembered viewers")) {
+                if appState.viewerAccessPolicies.entries.isEmpty {
+                    Text(L("Viewers you Always Allow or Deny & Block will appear here."))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(appState.viewerAccessPolicies.entries) { entry in
+                        HStack(spacing: 8) {
+                            Text(entry.displayName)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Spacer(minLength: 4)
+                            Text(entry.policy == .allow ? L("Allowed") : L("Blocked"))
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(entry.policy == .allow ? Color.green : Color.red)
+                            Button(L("Remove")) {
+                                appState.viewerAccessPolicies.remove(stableID: entry.stableID)
+                            }
+                            .controlSize(.small)
+                            .accessibilityLabel(L("Remove \(entry.displayName)"))
+                        }
+                    }
+                }
             }
 
             Section(L("Audio")) {
@@ -62,7 +89,7 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 440, height: 380)
+        .frame(width: 440, height: 460)
         .onAppear { appState.refreshAudioDevices() }
     }
 

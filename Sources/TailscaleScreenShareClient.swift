@@ -63,6 +63,12 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     /// disconnect.
     var onAwaitingApproval: (() -> Void)?
 
+    /// Fires when the sharer declines (or has blocked) this viewer
+    /// (HELLO_DENY). AppState surfaces an alert and disconnects. When
+    /// unset, the receive loop falls back to the generic peer-closed
+    /// teardown — same as the SERVER_BYE that follows on the wire.
+    var onDeniedBySharer: (() -> Void)?
+
     /// Fires on every inbound audio RTP packet (PT=98). AppState pipes
     /// this into VoiceChannel.receive(_:).
     var onAudioReceived: ((Data) -> Void)?
@@ -435,6 +441,15 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                         }
                     case .helloPending:
                         onAwaitingApproval?()
+                    case .helloDenied:
+                        logger.log("Receive: HELLO_DENY — the sharer declined this viewer")
+                        if let onDeniedBySharer {
+                            onDeniedBySharer()
+                        } else {
+                            NotificationCenter.default.post(
+                                name: .tailscreenViewerPeerClosed, object: nil)
+                        }
+                        return
                     default:
                         break
                     }

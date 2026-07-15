@@ -197,13 +197,12 @@ private struct PendingRequestsBanner: View {
                         }
                         Spacer(minLength: 4)
                         Button(L("Decline")) {
-                            appState.metadataService.clearRequest(req)
+                            appState.respondToShareRequest(req, accepted: false)
                         }
                         .controlSize(.small)
                         .buttonStyle(.bordered)
                         Button(L("Share")) {
-                            appState.metadataService.clearRequest(req)
-                            Task { await appState.presentNativePicker() }
+                            appState.respondToShareRequest(req, accepted: true)
                         }
                         .controlSize(.small)
                         .buttonStyle(.borderedProminent)
@@ -557,11 +556,16 @@ private struct ViewersList: View {
     }
 }
 
-/// One row per pending viewer with inline Accept / Deny buttons. Shown
-/// in the SharingCard whenever `requireViewerApproval` is on and at
-/// least one viewer is waiting for a decision. Hostnames may take a
-/// moment to resolve via the netmap lookup; the row falls back to the
-/// raw Tailscale IP in the gap.
+/// One row per pending viewer with inline Accept / Deny split buttons.
+/// The primary click acts once; each button's attached menu adds the
+/// remembered variant — "Always Allow" / "Deny & Block" — which persists
+/// the decision under the peer's StableNodeID so future HELLOs skip the
+/// prompt (or are silently rejected). Shown in the SharingCard whenever
+/// `requireViewerApproval` is on and at least one viewer is waiting for a
+/// decision. Hostnames (and the StableNodeID the remembered variants
+/// need) may take a moment to resolve via the netmap lookup; the row
+/// falls back to the raw Tailscale IP in the gap, and a remembered-allow
+/// peer may flash here briefly before auto-admission kicks in.
 private struct PendingViewersList: View {
     @EnvironmentObject var appState: AppState
     let viewers: [PendingViewerInfo]
@@ -578,21 +582,35 @@ private struct PendingViewersList: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Spacer(minLength: 4)
-                    Button {
-                        appState.denyPendingViewer(viewer.id)
+                    Menu {
+                        Button(L("Deny & Block")) {
+                            appState.denyPendingViewerAndBlock(viewer.id)
+                        }
+                        .disabled(viewer.stableID == nil)
                     } label: {
                         Text(L("Deny")).font(.caption)
+                    } primaryAction: {
+                        appState.denyPendingViewer(viewer.id)
                     }
+                    .menuStyle(.button)
                     .buttonStyle(.bordered)
                     .controlSize(.mini)
+                    .fixedSize()
                     .accessibilityLabel(L("Deny \(viewer.hostname ?? viewer.tailscaleIP)"))
-                    Button {
-                        appState.approvePendingViewer(viewer.id)
+                    Menu {
+                        Button(L("Always Allow")) {
+                            appState.approvePendingViewerAlways(viewer.id)
+                        }
+                        .disabled(viewer.stableID == nil)
                     } label: {
                         Text(L("Accept")).font(.caption)
+                    } primaryAction: {
+                        appState.approvePendingViewer(viewer.id)
                     }
+                    .menuStyle(.button)
                     .buttonStyle(.borderedProminent)
                     .controlSize(.mini)
+                    .fixedSize()
                     .accessibilityLabel(L("Accept \(viewer.hostname ?? viewer.tailscaleIP)"))
                 }
             }

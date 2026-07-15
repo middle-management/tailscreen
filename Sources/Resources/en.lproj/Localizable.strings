@@ -77,8 +77,10 @@
 /* MARK: - Viewer approval rows (MenuBarView.swift) */
 "Deny" = "Deny";
 "Deny %@" = "Deny %@";
+"Deny & Block" = "Deny & Block";
 "Accept" = "Accept";
 "Accept %@" = "Accept %@";
+"Always Allow" = "Always Allow";
 "New viewers will see a Connecting prompt until you Accept or Deny" = "New viewers will see a Connecting prompt until you Accept or Deny";
 
 /* MARK: - Viewing card (MenuBarView.swift) */
@@ -125,7 +127,13 @@
 /* MARK: - Settings window (SettingsView.swift) */
 "Viewers" = "Viewers";
 "Require approval for new viewers" = "Require approval for new viewers";
-"New viewers wait on a Connecting prompt until you Accept or Deny them." = "New viewers wait on a Connecting prompt until you Accept or Deny them.";
+"New viewers wait on a Connecting prompt until you Accept or Deny them. On by default — turn off to let anyone on your tailnet connect instantly." = "New viewers wait on a Connecting prompt until you Accept or Deny them. On by default — turn off to let anyone on your tailnet connect instantly.";
+"Remembered viewers" = "Remembered viewers";
+"Viewers you Always Allow or Deny & Block will appear here." = "Viewers you Always Allow or Deny & Block will appear here.";
+"Allowed" = "Allowed";
+"Blocked" = "Blocked";
+"Remove" = "Remove";
+"Remove %@" = "Remove %@";
 "Audio" = "Audio";
 "Speaker" = "Speaker";
 "About" = "About";
@@ -134,6 +142,16 @@
 
 /* MARK: - Window titles (AppState.swift) */
 "Tailscreen Settings" = "Tailscreen Settings";
+
+/* MARK: - Viewer consent + request-to-share outcomes (AppState.swift) */
+"Connection Declined" = "Connection Declined";
+"The sharer declined your request to view their screen." = "The sharer declined your request to view their screen.";
+"Request Accepted" = "Request Accepted";
+"%@ accepted your request and is choosing what to share." = "%@ accepted your request and is choosing what to share.";
+"Request Declined" = "Request Declined";
+"%@ declined your request to share their screen." = "%@ declined your request to share their screen.";
+"No Response" = "No Response";
+"%@ hasn't responded to your request. They may be away or running an older Tailscreen." = "%@ hasn't responded to your request. They may be away or running an older Tailscreen.";
 
 /* MARK: - Error alerts (AppError.swift / AppState.swift) */
 "%@\n\nError code: %@" = "%@\n\nError code: %@";
