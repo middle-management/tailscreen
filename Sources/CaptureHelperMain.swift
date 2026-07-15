@@ -391,9 +391,9 @@ private final class CaptureHelperRunner {
                 // universally-decodable codec.
                 let forceH264 = ProcessInfo.processInfo.environment["TAILSCREEN_FORCE_H264"] == "1"
                 let preferred = quality.preferredVideoCodec(forceH264: forceH264)
+                newEncoder.encoderQuality = quality.encoderQuality
                 try newEncoder.setup(
-                    width: width, height: height, fps: Int32(quality.fpsCap), preferredCodec: preferred,
-                    quality: quality.encoderQuality)
+                    width: width, height: height, fps: Int32(quality.fpsCap), preferredCodec: preferred)
                 let codec = newEncoder.codec
                 // If the user capped bandwidth, tighten the encoder's
                 // DataRateLimits ceiling below the bits-per-pixel formula

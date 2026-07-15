@@ -110,7 +110,7 @@ struct QualitySettings: Codable, Equatable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         fpsCap = (try? container.decode(Int.self, forKey: .fpsCap)) ?? 60
         codecPreference = (try? container.decode(CodecPreference.self, forKey: .codecPreference)) ?? .auto
-        maxBitrateBps = (try? container.decodeIfPresent(Int.self, forKey: .maxBitrateBps)) ?? nil
+        maxBitrateBps = try? container.decode(Int.self, forKey: .maxBitrateBps)
         encoderQuality = (try? container.decode(Double.self, forKey: .encoderQuality)) ?? EncoderTuning.quality
     }
 
