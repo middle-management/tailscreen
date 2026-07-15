@@ -138,7 +138,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// sweep as connected viewers, using a longer timeout so the sharer
     /// has plausibly enough time to react. Matches the typical macOS
     /// notification banner dwell + a few seconds of user attention.
-    private let pendingApprovalTimeoutNs: UInt64 = 60_000_000_000
+    private let pendingApprovalTimeoutNs = TransportTuning.pendingApprovalTimeoutNs
 
     /// IP → hostname cache. Filled lazily by `resolveHostname` from the
     /// LocalAPI backend status. Avoids re-querying tsnet on every
@@ -172,7 +172,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// Drop a viewer's frame once this many are already queued behind a stalled
     /// send, so a viewer that can't keep up sheds frames (UDP video tolerates
     /// loss; a PLI recovers) rather than accumulating unbounded latency/memory.
-    private static let maxQueuedVideoFramesPerViewer = 4
+    private static let maxQueuedVideoFramesPerViewer = TransportTuning.maxQueuedVideoFramesPerViewer
 
     /// A single shared tail for audio fan-out (sharer mic out plus
     /// viewer-to-viewer relay): every audio send chains through here so we
@@ -192,8 +192,9 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// "no video" disconnect and tore the whole call down. Clients send
     /// KEEPALIVE every 500 ms, so 15 s tolerates ~30 consecutive misses
     /// while still collecting a truly crashed viewer well before any
-    /// HELLO retry would.
-    private let viewerIdleTimeoutNs: UInt64 = 15_000_000_000
+    /// HELLO retry would. Must stay equal to the client's idle disconnect
+    /// — both are defined in `TransportTuning` to keep them coupled.
+    private let viewerIdleTimeoutNs = TransportTuning.viewerIdleTimeoutNs
 
     var onCaptureStopped: ((Error?) -> Void)?
     var onPreviewImage: ((NSImage) -> Void)?
@@ -255,7 +256,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// heartbeats ~1 Hz off *any* delivered SCStream sample, including the
     /// `.idle` frames a static screen still produces, so a healthy idle share
     /// never trips it.
-    private let helperLivenessTimeoutNs: UInt64 = 15_000_000_000
+    private let helperLivenessTimeoutNs = TransportTuning.helperLivenessTimeoutNs
     /// On by default; `TAILSCREEN_DISABLE_HELPER_WATCHDOG=1` is an escape hatch
     /// in case some hardware delivers idle frames too sparsely to keep the
     /// heartbeat alive and would otherwise trip false restarts.
@@ -456,7 +457,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
 
     /// Crash budget: give up after this many helper exits inside the sliding
     /// window (see `slidingWindowCrashCount`).
-    static let maxHelperCrashesPerWindow = 3
+    static let maxHelperCrashesPerWindow = TransportTuning.maxHelperCrashesPerWindow
 
     /// Pure sliding-window crash accounting: prune timestamps older than
     /// `windowNs`, record `nowNs`, and return how many crashes the window now
@@ -466,7 +467,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     static func slidingWindowCrashCount(
         _ stamps: inout [UInt64],
         appending nowNs: UInt64,
-        windowNs: UInt64 = 30_000_000_000
+        windowNs: UInt64 = TransportTuning.helperCrashWindowNs
     ) -> Int {
         stamps.removeAll { nowNs &- $0 > windowNs }
         stamps.append(nowNs)
@@ -1380,7 +1381,6 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             let current = currentBitrate.withLock { $0 }
             let lastChange = lastBitrateChangeNs.withLock { $0 }
             guard baseline > 0 else { continue }
-            let floor = max(baseline * 3 / 10, 500_000)  // 30 % of baseline, never below 500 kbps
             let now = DispatchTime.now().uptimeNanoseconds
 
             let worstPLIs = viewers.withLock { state -> Int in
@@ -1432,7 +1432,8 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         upHysteresisNs: UInt64 = 10_000_000_000
     ) -> Int? {
         guard baseline > 0 else { return nil }
-        let floor = max(baseline * 3 / 10, 500_000)  // 30 % of baseline, never below 500 kbps
+        // 30 % of baseline, never below 500 kbps (see TransportTuning).
+        let floor = TransportTuning.adaptiveBitrateFloor(baseline: baseline)
         if worstPLIs > lossThreshold && elapsedSinceChangeNs >= downHysteresisNs && current > floor {
             return max(floor, current * 3 / 4)  // -25 %
         } else if worstPLIs == 0 && elapsedSinceChangeNs >= upHysteresisNs && current < baseline {

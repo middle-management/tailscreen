@@ -19,6 +19,34 @@ enum CodecParameterSets: Sendable, Equatable {
     case hevc(vps: Data, sps: Data, pps: Data)
 }
 
+/// Internal encoder rate-control tuning, centralized (like
+/// `TransportTuning`) so the constants are documented in one place and
+/// pinned by `QualitySettingsTests`. Deliberately not user-facing — the
+/// user-visible knobs (fps cap, codec preference, bandwidth ceiling) live
+/// in `QualitySettings`.
+enum EncoderTuning {
+    /// Perceptual-quality target for `kVTCompressionPropertyKey_Quality`.
+    /// Rate control runs primarily off this; `DataRateLimits` is only the
+    /// ceiling (see `VideoEncoder.createSession` / `applyBitrate`).
+    static let quality = 0.7
+
+    /// Max frames handed to VT that haven't come back through the output
+    /// callback yet (see `VideoEncoder.inFlight`).
+    static let maxInFlight = 2
+
+    /// Safety-net keyframe interval, in multiples of fps. IDRs are
+    /// triggered on demand; this is a backstop, not a cadence.
+    static let keyframeIntervalMultiplier: Int32 = 10
+
+    /// `DataRateLimits`: burst allowance over the window, as a multiple of
+    /// the per-second budget. Generous enough for a single IDR burst,
+    /// tight enough to prevent burst tail latency.
+    static let dataRateBurstFactor = 1.75
+
+    /// `DataRateLimits`: window length in seconds.
+    static let dataRateWindowSeconds = 0.5
+}
+
 private func compressionOutputCallback(
     outputCallbackRefCon: UnsafeMutableRawPointer?,
     sourceFrameRefCon: UnsafeMutableRawPointer?,
@@ -53,7 +81,7 @@ final class VideoEncoder: @unchecked Sendable {
     /// can encode Retina frames, which otherwise manifests as live-stream lag).
     private var inFlight: Int = 0
     private var droppedAtInput: Int = 0
-    private let maxInFlight = 2
+    private let maxInFlight = EncoderTuning.maxInFlight
 
     /// Codec the encoder is currently configured for. `.h264` until the
     /// first successful `setup`.
@@ -180,7 +208,7 @@ final class VideoEncoder: @unchecked Sendable {
         // near-zero bits while busy frames spend up to the ceiling — the
         // right shape for screen sharing. If the encoder ignores Quality,
         // the ceiling alone still bounds bandwidth.
-        VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_Quality, value: 0.7 as CFNumber)
+        VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_Quality, value: EncoderTuning.quality as CFNumber)
 
         let bitrate = Self.computeBitrate(width: width, height: height, fps: Int(fps), bitsPerPixel: bitsPerPixel)
         Self.applyBitrate(bitrate, to: newSession)
@@ -192,7 +220,8 @@ final class VideoEncoder: @unchecked Sendable {
         // IDRs are triggered on demand (new viewer, explicit refresh). This
         // interval is a safety net, not a cadence.
         VTSessionSetProperty(
-            newSession, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: (fps * 10) as CFNumber)
+            newSession, key: kVTCompressionPropertyKey_MaxKeyFrameInterval,
+            value: (fps * EncoderTuning.keyframeIntervalMultiplier) as CFNumber)
 
         VTCompressionSessionPrepareToEncodeFrames(newSession)
 
@@ -219,8 +248,8 @@ final class VideoEncoder: @unchecked Sendable {
     /// tight enough to prevent burst tail latency.
     private static func applyBitrate(_ bitrate: Int, to session: VTCompressionSession) {
         let perSecondBytes = bitrate / 8
-        let windowBytes = Int(Double(perSecondBytes) * 1.75 / 2.0)
-        let windowSeconds = 0.5
+        let windowSeconds = EncoderTuning.dataRateWindowSeconds
+        let windowBytes = Int(Double(perSecondBytes) * EncoderTuning.dataRateBurstFactor * windowSeconds)
         let dataRateLimits = [windowBytes, windowSeconds] as CFArray
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_DataRateLimits, value: dataRateLimits)
     }
