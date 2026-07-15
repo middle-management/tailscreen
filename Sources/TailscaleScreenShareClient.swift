@@ -526,12 +526,15 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                     }
                     continue
                 }
-                // Audio RTP (PT=98): route to VoiceChannel, skip video path.
-                if let (header, _) = RTPHeader.decode(from: datagram),
-                    header.payloadType == RTPHeader.aacPayloadType
-                {
-                    onAudioReceived?(datagram)
-                    continue
+                // Audio RTP (PT 98 voice, PT 99 system audio): route to
+                // VoiceChannel, skip the video path. VoiceChannel demuxes the
+                // two by payload type.
+                if let (header, _) = RTPHeader.decode(from: datagram) {
+                    let pt = header.payloadType
+                    if pt == RTPHeader.aacPayloadType || pt == RTPHeader.systemAudioPayloadType {
+                        onAudioReceived?(datagram)
+                        continue
+                    }
                 }
 
                 // Video RTP: bookkeeping for the stats overlay. Account for

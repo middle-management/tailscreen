@@ -10,11 +10,21 @@ import Foundation
 /// every call to its internal serial queue.
 final class AudioRTPPacketizer {
     let ssrc: UInt32
+    /// RTP payload type stamped on every packet. Defaults to
+    /// `aacPayloadType` (98) so voice call sites are untouched; the server's
+    /// system-audio path passes `systemAudioPayloadType` (99).
+    let payloadType: UInt8
     private var sequence: UInt16
     private var timestamp: UInt32
 
-    init(ssrc: UInt32, startSequence: UInt16 = 0, startTimestamp: UInt32 = 0) {
+    init(
+        ssrc: UInt32,
+        payloadType: UInt8 = RTPHeader.aacPayloadType,
+        startSequence: UInt16 = 0,
+        startTimestamp: UInt32 = 0
+    ) {
         self.ssrc = ssrc
+        self.payloadType = payloadType
         self.sequence = startSequence
         self.timestamp = startTimestamp
     }
@@ -23,7 +33,7 @@ final class AudioRTPPacketizer {
         var packet = Data(capacity: RTPHeader.size + au.count)
         let header = RTPHeader(
             marker: true,
-            payloadType: RTPHeader.aacPayloadType,
+            payloadType: payloadType,
             sequenceNumber: sequence,
             timestamp: timestamp,
             ssrc: ssrc
@@ -49,7 +59,9 @@ struct AudioRTPDepacketizer {
 
     func unpack(_ packet: Data) -> Parsed? {
         guard let (header, payloadOffset) = RTPHeader.decode(from: packet) else { return nil }
-        guard header.payloadType == RTPHeader.aacPayloadType else { return nil }
+        let pt = header.payloadType
+        let isAudioPT = pt == RTPHeader.aacPayloadType || pt == RTPHeader.systemAudioPayloadType
+        guard isAudioPT else { return nil }
         let payload = packet[packet.index(packet.startIndex, offsetBy: payloadOffset)..<packet.endIndex]
         guard !payload.isEmpty else { return nil }
         return Parsed(
