@@ -11,6 +11,7 @@ import ImageIO
 // actor — but the framework hasn't been audited for Sendable yet.
 @preconcurrency import ScreenCaptureKit
 import UniformTypeIdentifiers
+import os
 
 /// Entry point for `Tailscreen --capture-helper`. Owns the SCStream
 /// + VideoEncoder pipeline; pipes encoded access units back to the
@@ -100,6 +101,9 @@ enum CaptureHelperMain {
                 case .setBitrate:
                     let bps = payload.readBE32() ?? 0
                     Task { await runner.setBitrate(Int(bps)) }
+                case .setAudioEnabled:
+                    let on = (payload.first ?? 0) != 0
+                    Task { await runner.setAudioEnabled(on) }
                 case .contentFilter:
                     // Decode the JSON `PickerSelection`, fetch the
                     // shareable content (allowed in the helper —
@@ -115,7 +119,8 @@ enum CaptureHelperMain {
                             let selection = try JSONDecoder().decode(
                                 PickerSelection.self, from: payloadCopy)
                             let filter = try await Self.buildFilter(from: selection)
-                            await runner.startWithFilter(filter)
+                            await runner.startWithFilter(
+                                filter, captureAudio: selection.captureAudio)
                         } catch {
                             // `permanent:` prefix tells the server's
                             // onUnexpectedExit handler not to burn the
@@ -215,6 +220,14 @@ private final class CaptureHelperRunner {
     private let writer: HelperFrameWriter
     private let captureWrapper = ScreenCapture()
     private var encoder: VideoEncoder?
+    /// System-audio pipeline (CMSampleBuffer → AAC AU). Created in
+    /// `startWithFilter` only when the selection asked for audio capture.
+    private var systemAudioTap: SystemAudioTap?
+    /// Live enable/disable latch for system-audio *emission*, toggled by the
+    /// `setAudioEnabled` wire message. Locked because the tap's encode callback
+    /// (SCStream audio queue) reads it while the stdin reader writes it. The
+    /// server re-sends the desired value after every (re)spawn.
+    private let audioEnabled = OSAllocatedUnfairLock<Bool>(initialState: false)
     /// Spawn-time quality knobs (fps cap, codec preference, bandwidth
     /// ceiling) the parent delivered via environment variables — see
     /// `QualitySettings.helperEnvironment()`. Read once: the parent
@@ -252,7 +265,7 @@ private final class CaptureHelperRunner {
     /// system services it acquired in the picker subprocess; calling
     /// any other `SCContentFilter`/`SCShareableContent` API in this
     /// process before this point would invalidate them.
-    func startWithFilter(_ filter: SCContentFilter) async {
+    func startWithFilter(_ filter: SCContentFilter, captureAudio: Bool) async {
         if hasStarted {
             // A second start request is a parent-side bug. Refuse it
             // rather than racing two SCStreams against the same
@@ -261,6 +274,27 @@ private final class CaptureHelperRunner {
             return
         }
         hasStarted = true
+        if captureAudio {
+            // Build the tap and its audio-output hookup before the SCStream
+            // comes up. The encode callback runs on the SCStream audio queue;
+            // capture the writer + latch directly (both `Sendable`) so it never
+            // hops to the MainActor — the same no-hop rationale as the heartbeat.
+            let writer = self.writer
+            let latch = self.audioEnabled
+            do {
+                let tap = try SystemAudioTap { au in
+                    guard latch.withLock({ $0 }) else { return }
+                    writer.writeAudioAccessUnit(au)
+                }
+                self.systemAudioTap = tap
+                captureWrapper.capturesAudio = true
+                captureWrapper.onAudioSampleBuffer = { [tap] sampleBuffer in
+                    tap.handle(sampleBuffer)
+                }
+            } catch {
+                writer.writeLog("capture-helper: system-audio tap init failed: \(error) — video only")
+            }
+        }
         captureWrapper.onFrameCaptured = { [weak self] pixelBuffer in
             Task { @MainActor [weak self] in self?.handleFrame(pixelBuffer) }
         }
@@ -302,7 +336,15 @@ private final class CaptureHelperRunner {
         pendingResizeRect = nil
         encoder?.shutdown()
         encoder = nil
+        systemAudioTap = nil
         await captureWrapper.stop()
+    }
+
+    /// Toggle system-audio emission. The audio SCStream output stays up; this
+    /// just flips whether the tap forwards encoded AUs, so mute/unmute is
+    /// instant. No-op when the share started without audio capture.
+    func setAudioEnabled(_ on: Bool) async {
+        audioEnabled.withLock { $0 = on }
     }
 
     /// Coalesce per-frame contentRect updates from SCStream into one
