@@ -395,6 +395,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         // silent for >15 s, at which point both ends time out together.
         let idleDisconnectAfterNs: UInt64 = 15_000_000_000
         var lastDataNs = DispatchTime.now().uptimeNanoseconds
+        var consecutiveErrors = 0
 
         while isConnected {
             do {
@@ -403,6 +404,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                 // from the HELLO source); ignore datagrams from anywhere
                 // else as a precaution.
                 let (datagram, from) = try await pl.recv(timeout: 1_000)
+                consecutiveErrors = 0
                 if datagram.isEmpty { continue }
                 if from != serverAddr {
                     // Don't pollute the depacketizer with packets from
@@ -491,6 +493,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                 }
             } catch TailscaleError.readFailed {
                 if !isConnected { break }
+                consecutiveErrors = 0
                 let nowNs = DispatchTime.now().uptimeNanoseconds
                 if nowNs &- lastDataNs > idleDisconnectAfterNs {
                     let idleMs = (nowNs &- lastDataNs) / 1_000_000
@@ -500,8 +503,24 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                 }
                 continue
             } catch {
-                if isConnected { logger.log("Receive error: \(error)") }
-                break
+                // A one-off receive error used to kill this loop permanently
+                // — and, unlike the idle-timeout path, without posting
+                // `.tailscreenViewerPeerClosed`, so the window froze on a
+                // stale frame with a live-looking UI. Retry with a capped
+                // backoff instead, and if the socket is genuinely dead
+                // (`maxConsecutiveErrors` in a row) tear down through the
+                // same notification the idle path uses.
+                guard isConnected else { break }
+                consecutiveErrors += 1
+                logger.log("Receive error #\(consecutiveErrors): \(error)")
+                if consecutiveErrors >= ReceiveLoopPolicy.maxConsecutiveErrors {
+                    logger.log(
+                        "Receive loop dead after \(consecutiveErrors) consecutive errors — disconnecting")
+                    NotificationCenter.default.post(name: .tailscreenViewerPeerClosed, object: nil)
+                    break
+                }
+                try? await Task.sleep(
+                    nanoseconds: ReceiveLoopPolicy.retryDelayNs(consecutiveErrors: consecutiveErrors))
             }
         }
     }
