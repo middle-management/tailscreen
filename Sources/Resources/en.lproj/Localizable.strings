@@ -69,6 +69,12 @@
 "Mute Mic (⌃⌥M)" = "Mute Mic (⌃⌥M)";
 "Unmute Mic (⌃⌥M)" = "Unmute Mic (⌃⌥M)";
 "Toggles voice chat with viewers" = "Toggles voice chat with viewers";
+"Share System Audio" = "Share System Audio";
+"Mute System Audio" = "Mute System Audio";
+"Share system audio" = "Share system audio";
+"Mute system audio" = "Mute system audio";
+"Shares your computer's audio with viewers" = "Shares your computer's audio with viewers";
+"Share system audio when sharing starts" = "Share system audio when sharing starts";
 "Stop Sharing" = "Stop Sharing";
 "Disconnects all viewers and ends the screen share" = "Disconnects all viewers and ends the screen share";
 "Change Source…" = "Change Source…";

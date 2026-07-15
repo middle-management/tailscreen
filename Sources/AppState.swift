@@ -48,6 +48,17 @@ class AppState: ObservableObject {
     @Published var isSharerOverlayVisible = false
     @Published var isMicOn = false
 
+    /// Whether the current share is sending system/computer audio to viewers.
+    /// Live latch, flipped by `toggleSystemAudio()`; reset on `stopSharing`.
+    @Published var isSystemAudioOn = false
+
+    /// User preference: turn system audio on automatically when a share
+    /// starts. Persisted under `shareSystemAudio` (defaults off). SwiftUI binds
+    /// the Settings toggle to this; the setter persists on every change.
+    @Published var shareSystemAudioByDefault: Bool = SystemAudioDefaults.load() {
+        didSet { SystemAudioDefaults.save(shareSystemAudioByDefault) }
+    }
+
     /// Audio devices available on the system. Refreshed every time
     /// the popover opens (and before any picker rendering) — calling
     /// `AudioDevices.all()` is cheap.
@@ -708,6 +719,18 @@ class AppState: ObservableObject {
         // whole display. A decode failure isn't fatal — we just fall
         // back to the legacy full-display overlay.
         currentSelection = try? JSONDecoder().decode(PickerSelection.self, from: filterData)
+        // Turn on the capture-helper's system-audio output (emission is gated
+        // separately by the latch). Re-encode the selection so the helper adds
+        // its `.audio` SCStream output; a decode/encode failure just falls back
+        // to the original video-only bytes.
+        var effectiveFilterData = filterData
+        if let selection = currentSelection {
+            let withAudio = selection.settingCaptureAudio(true)
+            if let reencoded = try? JSONEncoder().encode(withAudio) {
+                effectiveFilterData = reencoded
+                currentSelection = withAudio
+            }
+        }
         sharingState = .starting
         // Cleanup contract: any path out of this function (success,
         // failure, cancellation) leaves `sharingState` consistent.
@@ -823,6 +846,10 @@ class AppState: ObservableObject {
                 // for the remembered allow/deny snapshot.
                 srv.setRequireApproval(requireViewerApproval)
                 srv.setAccessPolicies(viewerAccessPolicies.policiesByStableID)
+                // System audio: apply the persisted default before the helper
+                // (re)spawns so the latch is in place when it comes up.
+                isSystemAudioOn = shareSystemAudioByDefault
+                srv.setShareSystemAudio(shareSystemAudioByDefault)
                 // Carry over any request-to-share pre-approvals so an
                 // accepted requester's HELLO auto-admits on this fresh server.
                 for ip in pendingPreApprovedIPs {
@@ -856,7 +883,7 @@ class AppState: ObservableObject {
                     let sharedNode = try await getOrCreateNode()
                     try await srv.start(
                         hostname: hostname,
-                        filterData: filterData,
+                        filterData: effectiveFilterData,
                         quality: qualitySettings,
                         existingNode: sharedNode,
                         controlListener: controlListener
@@ -932,6 +959,7 @@ class AppState: ObservableObject {
         micCapture = nil
         voiceChannel = nil
         isMicOn = false
+        isSystemAudioOn = false
         previewImage = nil
         currentViewers = []
         pendingViewers = []
@@ -1092,6 +1120,15 @@ class AppState: ObservableObject {
             presentError(.microphoneUnavailable(error))
             isMicOn = false
         }
+    }
+
+    /// Flip whether the current share sends system audio to viewers. Instant —
+    /// the helper always has the audio output configured, so this just toggles
+    /// the emission latch. No permission dance: Screen Recording TCC already
+    /// covers SCK audio. No-op when not sharing.
+    func toggleSystemAudio() {
+        isSystemAudioOn.toggle()
+        server?.setShareSystemAudio(isSystemAudioOn)
     }
 
     func connect(to host: String) async {

@@ -64,6 +64,12 @@
 "Mute Mic (⌃⌥M)" = "Stäng av mik (⌃⌥M)";
 "Unmute Mic (⌃⌥M)" = "Slå på mik (⌃⌥M)";
 "Toggles voice chat with viewers" = "Växlar röstchatt med tittare";
+"Share System Audio" = "Dela systemljud";
+"Mute System Audio" = "Stäng av systemljud";
+"Share system audio" = "Dela systemljud";
+"Mute system audio" = "Stäng av systemljud";
+"Shares your computer's audio with viewers" = "Delar datorns ljud med tittarna";
+"Share system audio when sharing starts" = "Dela systemljud när delning startar";
 "Stop Sharing" = "Sluta dela";
 "Disconnects all viewers and ends the screen share" = "Kopplar från alla tittare och avslutar skärmdelningen";
 "Change Source…" = "Byt källa…";
