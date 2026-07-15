@@ -1,6 +1,6 @@
 # Voice-path resilience: retryable decoder failures, adaptive jitter buffer, loss handling
 
-> Status: proposed — this PR contains only the plan; implementation is a follow-up iteration.
+> Status: implemented in this PR.
 
 ## Problem & motivation
 
@@ -173,28 +173,28 @@ visible without 50 Hz spam.
 
 ## Implementation steps (ordered checklist)
 
-1. [ ] `Sources/VoiceChannel.swift`: add `DecoderFailureRecord`, `BlacklistAction`, and
+1. [x] `Sources/VoiceChannel.swift`: add `DecoderFailureRecord`, `BlacklistAction`, and
    `static func blacklistAction(...)` (internal, not private — test seam convention per CLAUDE.md).
-2. [ ] Replace `brokenSSRCs: Set<UInt32>` (`:45`) with `decoderFailures: [UInt32: DecoderFailureRecord]`;
+2. [x] Replace `brokenSSRCs: Set<UInt32>` (`:45`) with `decoderFailures: [UInt32: DecoderFailureRecord]`;
    rewrite the gate at `:77` to call `blacklistAction`; on init-failure (`:91-97`) upsert the record
    (increment + timestamp) and log once per transition; clear the record after the first successful
    decode for that SSRC. Update `reset()` (`:109-114`).
-3. [ ] Add `GapAction` + `static func gapAction(lastSeq:newSeq:maxConcealFrames:)`; add per-SSRC
+3. [x] Add `GapAction` + `static func gapAction(lastSeq:newSeq:maxConcealFrames:)`; add per-SSRC
    `lastSequence` and last-64-samples tail storage; wire into `receive` before `ensureDecoder`:
    `.dropStale` returns early, `.concealThenDecode` emits fade-masked silence via `onMixedPCM`,
    `.discontinuity` resyncs and counts.
-4. [ ] Add RFC 3550 jitter estimator (per-SSRC, on the queue) + `static func jitterBufferTarget(...)`;
+4. [x] Add RFC 3550 jitter estimator (per-SSRC, on the queue) + `static func jitterBufferTarget(...)`;
    publish `currentJitterTargetDepth` and `VoiceStats` via `OSAllocatedUnfairLock`.
-5. [ ] `MicCapture`: convert `jitterBufferThreshold` (`:708`) / `maxPendingBuffers` (`:718`) to
+5. [x] `MicCapture`: convert `jitterBufferThreshold` (`:708`) / `maxPendingBuffers` (`:718`) to
    adaptive `targetDepth` read in `scheduleSamples`; add `overrunDrops` increment at `:727` and
    `underruns` detection in the completion handler (`:744-746`).
-6. [ ] Clamp instrumentation in `receive` (`:81-89`) + `shouldLogClamp`; fold counters into
+6. [x] Clamp instrumentation in `receive` (`:81-89`) + `shouldLogClamp`; fold counters into
    `VoiceStats`; add a 60 s stats log line (guarded so it only logs when any counter moved).
-7. [ ] New test file `Tests/TailscreenTests/VoiceResilienceDecisionTests.swift` (see Testing).
-8. [ ] Extend `Tests/TailscreenTests/VoiceChannelTests.swift` with a `LossyChannel`-driven
+7. [x] New test file `Tests/TailscreenTests/VoiceResilienceDecisionTests.swift` (see Testing).
+8. [x] Extend `Tests/TailscreenTests/VoiceChannelTests.swift` with a `LossyChannel`-driven
    end-to-end case (packetize → seeded loss/reorder/dup → `receive`), asserting concealment counters
    and that audio keeps flowing.
-9. [ ] Update CLAUDE.md's pure-decision-test list ("When you extract a new pure decision … add it to
+9. [x] Update CLAUDE.md's pure-decision-test list ("When you extract a new pure decision … add it to
    this list") with the new suite, same commit.
 
 ## Files to change / add
@@ -266,3 +266,33 @@ visible without 50 Hz spam.
 **M.** ~220-280 LOC in `Sources/VoiceChannel.swift` (blacklist ~40, gap/conceal ~80, jitter ~60,
 counters/logging ~40, MicCapture depth plumbing ~30), ~0-10 LOC in `AACCodec.swift`, ~250 LOC of
 tests. No wire, protocol, or UI changes.
+
+## Deviations
+
+Recorded while implementing; all are minor adaptations to the actual code, none change the design.
+
+- **`gapAction` delta semantics clarified.** The design text said "delta 0 or in the behind
+  half-space → `.dropStale`" with `delta = newSeq &- expected`, which contradicts its own enum
+  comment (`.decode // in order`). As implemented: `delta == 0` (== expected) → `.decode`;
+  `delta > 0x8000` (duplicate or reordered-late) → `.dropStale`; `1...maxConcealFrames` →
+  `.concealThenDecode`; otherwise `.discontinuity`. The pure-decision tests pin all four regions
+  plus wraparound.
+- **Target-depth refresh is rate-limited on the channel queue.** `jitterBufferTarget` is
+  one-step-per-call; calling it per packet (~50 Hz) would make the step bound meaningless, so the
+  live path re-derives and publishes the target at most once per second (from the worst per-SSRC
+  smoothed jitter). The pure function is unchanged from the plan.
+- **`AACCodec.swift` untouched.** The optional `isRetryableInit` hint on `AACCodecError` was not
+  needed — the cooldown blacklist retries every init failure uniformly, which subsumes the hint.
+  `RTPAudio.swift` is also untouched (the seq-delta helper landed as `VoiceChannel.gapAction`, as
+  the plan's file list anticipated).
+- **"Success clears" is tested via an injection seam, not a forced init failure.** A real
+  `AACDecoder()` init failure can't be provoked in-process (the shared magic cookie is cached
+  process-wide), so DEBUG-only seams (`injectDecoderFailureForTesting`,
+  `decoderFailuresForTesting`) let `VoiceChannelTests` cover both the elapsed-cooldown retry+clear
+  path and the inside-cooldown drop path with the real decode pipeline.
+- **Jitter update skips discontinuities.** A resync's huge RTP-timestamp jump would poison
+  `J += (|D| - J) / 16` with a one-off multi-second |D|, so the estimator only folds in packets
+  classified `.decode` / `.concealThenDecode` (and resyncs its clocks on `.discontinuity`).
+- **Stats logging is opportunistic.** `VoiceChannel` has no timer; the once-per-minute stats line
+  is emitted from the inbound path (first packet past the 60 s mark), guarded to log only when a
+  counter moved — dead-idle channels stay silent, matching the plan's intent.
