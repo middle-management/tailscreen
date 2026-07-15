@@ -162,6 +162,12 @@
 "Sign Out Failed" = "Sign Out Failed";
 "Error" = "Error";
 "Failed to start sharing: %@" = "Failed to start sharing: %@";
+"Can't decode the video" = "Can't decode the video";
+"This Mac can't decode the %@ video stream from the sharer (it likely lacks %@ hardware decode). Asking the sharer to switch to H.264 — the screen should appear in a moment." = "This Mac can't decode the %@ video stream from the sharer (it likely lacks %@ hardware decode). Asking the sharer to switch to H.264 — the screen should appear in a moment.";
+"Video Has Stalled" = "Video Has Stalled";
+"Decoding has been failing for several seconds and automatic recovery hasn't helped. Check the connection on both ends, or disconnect and reconnect." = "Decoding has been failing for several seconds and automatic recovery hasn't helped. Check the connection on both ends, or disconnect and reconnect.";
+"Sharing Stopped" = "Sharing Stopped";
+"The connection to your viewers was lost and couldn't be re-established, so the share was stopped. Check the network and start sharing again." = "The connection to your viewers was lost and couldn't be re-established, so the share was stopped. Check the network and start sharing again.";
 
 /* MARK: - Notifications (TailscreenUserNotifications.swift / ViewerApproval.swift) */
 "Tailscreen request" = "Tailscreen request";
@@ -179,9 +185,21 @@
 "Latency" = "Latency";
 "FPS" = "FPS";
 "Dropped" = "Dropped";
+"Decode errs" = "Decode errs";
+"PLIs sent" = "PLIs sent";
 "Bitrate" = "Bitrate";
 "Codec" = "Codec";
 "Connection" = "Connection";
+"Connection degraded" = "Connection degraded";
+"Stream stats: " = "Stream stats: ";
+"Stream stats, connection degraded: " = "Stream stats, connection degraded: ";
+"latency %lld milliseconds" = "latency %lld milliseconds";
+"%lld frames per second" = "%lld frames per second";
+"%@ percent dropped" = "%@ percent dropped";
+"%lld decode errors" = "%lld decode errors";
+"%lld keyframe requests sent" = "%lld keyframe requests sent";
+"%@ kilobits per second" = "%@ kilobits per second";
+"codec %@" = "codec %@";
 
 /* MARK: - Shortcuts overlay (ViewerShortcutsOverlay.swift) */
 "Tools" = "Tools";
@@ -218,6 +236,7 @@
 "Toggle microphone (⌃⌥M)" = "Toggle microphone (⌃⌥M)";
 "Stats" = "Stats";
 "Toggle stream stats overlay" = "Toggle stream stats overlay";
+"Connection degraded — click for stats" = "Connection degraded — click for stats";
 "Shortcuts" = "Shortcuts";
 "Show keyboard shortcuts" = "Show keyboard shortcuts";
 "Keyboard shortcuts (⇧⌘/)" = "Keyboard shortcuts (⇧⌘/)";

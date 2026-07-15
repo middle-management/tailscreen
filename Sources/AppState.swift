@@ -312,11 +312,32 @@ class AppState: ObservableObject {
                 Task { @MainActor [weak self] in
                     guard let self = self, self.connectionState == .viewing else { return }
                     self.showAlertMessage(
-                        title: "Can't decode the video",
-                        message:
-                            "This Mac can't decode the \(codec) video stream from the sharer "
-                            + "(it likely lacks \(codec) hardware decode). Asking the sharer to "
-                            + "switch to H.264 — the screen should appear in a moment.")
+                        title: L("Can't decode the video"),
+                        message: L(
+                            "This Mac can't decode the \(codec) video stream from the sharer (it likely lacks \(codec) hardware decode). Asking the sharer to switch to H.264 — the screen should appear in a moment."
+                        ))
+                }
+            }
+        )
+
+        // The decode-failure escalation ladder's last rung: frames are
+        // arriving but decoding has been failing for several seconds despite
+        // a keyframe request and a decoder-session rebuild. Tell the user
+        // the video has stalled rather than letting a frozen frame
+        // masquerade as a live stream.
+        notificationObservers.append(
+            NotificationCenter.default.addObserver(
+                forName: .tailscreenViewerVideoStalled,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self = self, self.connectionState == .viewing else { return }
+                    self.showAlertMessage(
+                        title: L("Video Has Stalled"),
+                        message: L(
+                            "Decoding has been failing for several seconds and automatic recovery hasn't helped. Check the connection on both ends, or disconnect and reconnect."
+                        ))
                 }
             }
         )
@@ -539,6 +560,22 @@ class AppState: ObservableObject {
                                 reason: "SCStream userStopped: \(error?.localizedDescription ?? "nil")")
                             return
                         }
+                        let receiveLoopDomain = TailscaleScreenShareServer.receiveLoopErrorDomain
+                        if let error, (error as NSError).domain == receiveLoopDomain {
+                            // The share's UDP control loop is dead — that's
+                            // not something a fresh capture helper can fix,
+                            // so skip the restart path and tear down. Tell
+                            // the user: the share ending on its own must
+                            // not be a silent mystery.
+                            self.logger.log("Share receive loop dead (\(error)); tearing sharing down.")
+                            await self.stopSharing(reason: "receive loop dead: \(error.localizedDescription)")
+                            self.showAlertMessage(
+                                title: L("Sharing Stopped"),
+                                message: L(
+                                    "The connection to your viewers was lost and couldn't be re-established, so the share was stopped. Check the network and start sharing again."
+                                ))
+                            return
+                        }
                         guard let server = self.server else { return }
                         do {
                             try await server.restartCapture()
@@ -666,7 +703,20 @@ class AppState: ObservableObject {
         }
     }
 
+    /// Reentrancy guard for `stopSharing`. The give-up paths (receive-loop
+    /// death, exhausted helper crash budget) can fire `onCaptureStopped`
+    /// concurrently with a user-initiated Stop Sharing; both land on the
+    /// MainActor but interleave across `stopSharing`'s await points, which
+    /// double-ran `server.stop()` and `shareLock.release()`.
+    private var isStoppingShare = false
+
     func stopSharing(reason: String = "<unknown>", caller: String = #function) async {
+        if isStoppingShare {
+            logger.log("stopSharing: already in progress — ignoring reentrant call by \(caller) (reason=\(reason))")
+            return
+        }
+        isStoppingShare = true
+        defer { isStoppingShare = false }
         logger.log("stopSharing: called by \(caller) (reason=\(reason))")
         // Unblock any startSharing still waiting on the first preview, so
         // a fast start→stop doesn't strand its continuation.
@@ -1085,6 +1135,9 @@ class AppState: ObservableObject {
         statsHost.layout(in: host)
         self.viewerStatsHost = statsHost
         ViewerCommands.shared.statsModel = r.statsModel
+        // Degraded-connection badge on the toolbar's stats button — the
+        // overlay above may be hidden, the toolbar never is.
+        toolbar.bind(statsModel: r.statsModel)
 
         // Shortcut cheat-sheet overlay (toggled by toolbar "?" /
         // Help → Keyboard Shortcuts / ⇧⌘/). Added last so it draws
