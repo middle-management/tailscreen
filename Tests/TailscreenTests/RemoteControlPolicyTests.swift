@@ -199,10 +199,10 @@ final class RemoteControlPolicyTests: XCTestCase {
                 defer { lock.unlock() }
                 snapshots.append(snapshot)
             }
-            var last: [ControlRequestInfo]? {
+            var last: [ControlRequestInfo] {
                 lock.lock()
                 defer { lock.unlock() }
-                return snapshots.last
+                return snapshots.last ?? []
             }
             var count: Int {
                 lock.lock()
@@ -216,10 +216,10 @@ final class RemoteControlPolicyTests: XCTestCase {
 
         server.recordControlRequestForTesting(connectionID: UUID(), ip: "100.64.0.7")
         server.recordControlRequestForTesting(connectionID: UUID(), ip: "100.64.0.9")
-        XCTAssertEqual(box.last?.count, 2, "both requests should be parked")
+        XCTAssertEqual(box.last.count, 2, "both requests should be parked")
 
         server.setAllowControlRequests(false)
-        XCTAssertEqual(box.last?.count, 0, "toggle-off must drain every pending request")
+        XCTAssertEqual(box.last.count, 0, "toggle-off must drain every pending request")
 
         // And with the gate off, nothing new piles up via the drain path;
         // flipping back on doesn't resurrect the drained requests either.
