@@ -2,6 +2,37 @@ import AVFoundation
 import CoreAudio
 import Foundation
 import TailscaleKit
+import os
+
+/// Cumulative voice-path resilience counters. Published under a lock so the
+/// MainActor playback side (`MicCapture`) and the VoiceChannel queue can both
+/// write, and any thread can snapshot via `VoiceChannel.currentStats`.
+struct VoiceStats: Equatable, Sendable {
+    /// Inbound buffers dropped because the playback queue was at its cap.
+    var overrunDrops = 0
+    /// Times the playback queue drained to zero while the player was
+    /// running — the audible starve.
+    var underruns = 0
+    /// Silence frames emitted to cover sequence gaps.
+    var concealedFrames = 0
+    /// Gaps too large to conceal; we resync instead of filling.
+    var discontinuities = 0
+    /// Decoded buffers that contained at least one out-of-[-1, 1] sample.
+    var clampedBuffers = 0
+    /// RFC 3550 smoothed inter-arrival jitter of the worst SSRC, in ms.
+    var smoothedJitterMs = 0.0
+
+    /// True when any *counter* differs from `other`. `smoothedJitterMs` is
+    /// excluded — it moves constantly and would defeat the "only log when
+    /// something happened" guard.
+    func countersDiffer(from other: VoiceStats) -> Bool {
+        overrunDrops != other.overrunDrops
+            || underruns != other.underruns
+            || concealedFrames != other.concealedFrames
+            || discontinuities != other.discontinuities
+            || clampedBuffers != other.clampedBuffers
+    }
+}
 
 /// Process-side voice pipeline: PCM in → AAC enc → RTP out, and RTP in →
 /// AAC dec (per SSRC) → mixed PCM out. Hardware capture/playback glue is
@@ -13,8 +44,12 @@ import TailscaleKit
 /// the queue.
 ///
 /// Marked `@unchecked Sendable`: all stored mutable state (`_isMuted`,
-/// `decoders`, `brokenSSRCs`) is touched only from `queue`. `onMixedPCM`
-/// is the documented exception — set it once before any `receive(_:)`.
+/// `decoders`, `decoderFailures`, `receiveStates`, `lastTargetRefreshNs`,
+/// `lastStatsLogNs`, `lastLoggedStats`) is touched only from `queue`.
+/// `statsLock` and `jitterTargetDepth` are the cross-thread values —
+/// lock-published because `MicCapture` reads/writes them from the
+/// MainActor. `onMixedPCM` is the documented exception — set it once
+/// before any `receive(_:)`.
 final class VoiceChannel: @unchecked Sendable {
     let localSSRC: UInt32
     var isMuted: Bool {
@@ -42,8 +77,68 @@ final class VoiceChannel: @unchecked Sendable {
     private let packetizer: AudioRTPPacketizer
     private let depacketizer = AudioRTPDepacketizer()
     private var decoders: [UInt32: AACDecoder] = [:]
-    private var brokenSSRCs: Set<UInt32> = []
+    private var decoderFailures: [UInt32: DecoderFailureRecord] = [:]
+    private var receiveStates: [UInt32: ReceiveState] = [:]
+    private var lastTargetRefreshNs: UInt64 = 0
+    private var lastStatsLogNs: UInt64 = 0
+    private var lastLoggedStats = VoiceStats()
+    private let statsLock = OSAllocatedUnfairLock<VoiceStats>(initialState: VoiceStats())
+    private let jitterTargetDepth = OSAllocatedUnfairLock<Int>(
+        initialState: VoiceChannel.initialJitterTargetDepth)
     private let logger = TSLogger()
+
+    /// One AAC AU's worth of samples at 48 kHz ≈ 21.33 ms.
+    private static let samplesPerFrame = 1024
+    /// Samples faded at a concealment boundary to mask the MDCT
+    /// overlap-add discontinuity click.
+    private static let fadeSampleCount = 64
+    /// Startup playback queue depth, in `samplesPerFrame` buffers.
+    static let initialJitterTargetDepth = 3
+    /// Live-path values for `blacklistAction`'s cooldown/permanent knobs —
+    /// also the function's defaults; kept as named constants so the gate
+    /// and the failure logging agree on when we've given up.
+    static let decoderInitRetryCooldownNs: UInt64 = 5_000_000_000
+    static let decoderInitFailureLimit = 5
+
+    /// Bookkeeping for one SSRC whose decoder failed to initialize.
+    struct DecoderFailureRecord: Equatable, Sendable {
+        var consecutiveInitFailures: Int
+        var lastFailureNs: UInt64
+    }
+
+    /// Verdict of `blacklistAction(record:nowNs:)` for one inbound packet.
+    enum BlacklistAction: Equatable {
+        case allow
+        case drop
+    }
+
+    /// Verdict of `gapAction(lastSeq:newSeq:maxConcealFrames:)`.
+    enum GapAction: Equatable {
+        /// In order — decode normally.
+        case decode
+        /// Duplicate or reordered-late packet — do not decode (the gap it
+        /// once left has already been concealed or resynced past).
+        case dropStale
+        /// Small forward gap — emit `missing` silence frames, then decode.
+        case concealThenDecode(missing: Int)
+        /// Gap too large to fill — resync the sequence clock, count it,
+        /// and decode without concealment.
+        case discontinuity
+    }
+
+    /// Per-SSRC inbound bookkeeping. Queue-confined like `decoders`.
+    private struct ReceiveState {
+        var lastSequence: UInt16
+        var lastArrivalNs: UInt64
+        var lastRTPTimestamp: UInt32
+        /// RFC 3550 smoothed inter-arrival jitter, in ms.
+        var smoothedJitterMs = 0.0
+        /// Last `fadeSampleCount` emitted samples — faded out at the
+        /// leading edge of a concealment gap.
+        var tail: [Float] = []
+        /// Fade in the next decoded frame (set after conceal/resync).
+        var needsFadeIn = false
+    }
 
     init(localSSRC: UInt32, onSend: @escaping (Data) -> Void) throws {
         self.localSSRC = localSSRC
@@ -68,49 +163,327 @@ final class VoiceChannel: @unchecked Sendable {
     }
 
     /// Ingest one inbound RTP audio packet. Decodes per SSRC and emits
-    /// PCM via `onMixedPCM`.
+    /// PCM via `onMixedPCM`, concealing small sequence gaps with
+    /// fade-masked silence.
     func receive(_ packet: Data) {
         queue.async {
-            guard let parsed = self.depacketizer.unpack(packet) else { return }
-            // Drop our own loopback if the network somehow returned it.
-            guard parsed.ssrc != self.localSSRC else { return }
-            guard !self.brokenSSRCs.contains(parsed.ssrc) else { return }
-            do {
-                let decoder = try self.ensureDecoder(for: parsed.ssrc)
-                let raw = try decoder.decode(au: parsed.au)
-                if !raw.isEmpty {
-                    // AudioToolbox AAC decoder occasionally emits
-                    // out-of-range Float32 (peaks ~6.0 observed) on
-                    // priming-adjacent frames or after a network
-                    // glitch. Anything beyond [-1, 1] would clip the
-                    // speakers into painful clicks, so clamp here.
-                    let samples = raw.map { max(-1.0, min(1.0, $0)) }
-                    self.onMixedPCM?(samples)
-                }
-            } catch {
-                if self.decoders[parsed.ssrc] == nil {
-                    // Decoder init failed for this SSRC — blacklist so we
-                    // don't spam stderr at 50 Hz.
-                    self.brokenSSRCs.insert(parsed.ssrc)
-                    self.logger.log(
-                        "VoiceChannel: decoder init failed for ssrc=\(parsed.ssrc): \(error). Dropping further packets from this SSRC."
-                    )
-                } else {
-                    // Decode (not init) failed — log once per packet but
-                    // keep the decoder; transient corruption is normal.
-                    self.logger.log("VoiceChannel: decode failed for ssrc=\(parsed.ssrc): \(error)")
-                }
-            }
+            self.processInbound(packet)
         }
     }
 
-    /// Forget all per-SSRC decoders. Called when the share session ends
-    /// so a future session starts fresh.
+    /// Forget all per-SSRC decoders, failure records, sequence/jitter
+    /// state, and counters. Called when the share session ends so a
+    /// future session starts fresh.
     func reset() {
         queue.async {
             self.decoders.removeAll()
-            self.brokenSSRCs.removeAll()
+            self.decoderFailures.removeAll()
+            self.receiveStates.removeAll()
+            self.lastTargetRefreshNs = 0
+            self.lastStatsLogNs = 0
+            self.lastLoggedStats = VoiceStats()
+            self.jitterTargetDepth.withLock { $0 = Self.initialJitterTargetDepth }
+            self.statsLock.withLock { $0 = VoiceStats() }
         }
+    }
+
+    // MARK: - Cross-thread published values
+
+    /// Playback queue depth (in 21.33 ms buffers) the jitter estimator
+    /// currently recommends. Read by `MicCapture.scheduleSamples` on the
+    /// MainActor; refreshed on `queue` — hence the lock.
+    var currentJitterTargetDepth: Int {
+        jitterTargetDepth.withLock { $0 }
+    }
+
+    /// Snapshot of the cumulative resilience counters. Safe from any thread.
+    var currentStats: VoiceStats {
+        statsLock.withLock { $0 }
+    }
+
+    /// Record a playback-side drop of an incoming buffer at the queue cap.
+    /// Called from the MainActor (`MicCapture`).
+    func noteOverrunDrop() {
+        statsLock.withLock { $0.overrunDrops += 1 }
+    }
+
+    /// Record an audible playback starve (pending queue hit zero while the
+    /// player was running). Called from the MainActor (`MicCapture`).
+    func noteUnderrun() {
+        statsLock.withLock { $0.underruns += 1 }
+    }
+
+    // MARK: - Pure decision functions (CI-able test seams)
+
+    /// Pure retry-with-cooldown blacklist decision. `nil` record → allow.
+    /// After `permanentAfter` consecutive init failures → drop for the
+    /// session (matches the old permanent-blacklist behavior after ~25 s of
+    /// trying). Otherwise drop until `cooldownNs` has elapsed since the last
+    /// failure, then allow one retry — a failure re-arms the cooldown, so
+    /// failure logging stays ≤ 1 line per cooldown window.
+    static func blacklistAction(
+        record: DecoderFailureRecord?,
+        nowNs: UInt64,
+        cooldownNs: UInt64 = VoiceChannel.decoderInitRetryCooldownNs,
+        permanentAfter: Int = VoiceChannel.decoderInitFailureLimit
+    ) -> BlacklistAction {
+        guard let record else { return .allow }
+        guard record.consecutiveInitFailures < permanentAfter else { return .drop }
+        return nowNs &- record.lastFailureNs > cooldownNs ? .allow : .drop
+    }
+
+    /// Pure wrap-aware sequence-gap decision, via `UInt16` two's-complement
+    /// delta against the expected next sequence number. Delta 0 → in order;
+    /// behind half-space (duplicate or reordered-late) → drop stale; a
+    /// forward gap of `1...maxConcealFrames` → conceal then decode; larger →
+    /// discontinuity (resync, no fill). First packet per SSRC (`lastSeq ==
+    /// nil`) always decodes — priming's short/empty decoder output never
+    /// enters the gap math because gaps are keyed on sequence numbers.
+    static func gapAction(lastSeq: UInt16?, newSeq: UInt16, maxConcealFrames: Int = 5) -> GapAction {
+        guard let lastSeq else { return .decode }
+        let delta = newSeq &- (lastSeq &+ 1)
+        if delta == 0 { return .decode }
+        if delta > 0x8000 { return .dropStale }
+        if Int(delta) <= maxConcealFrames { return .concealThenDecode(missing: Int(delta)) }
+        return .discontinuity
+    }
+
+    /// Pure jitter-buffer sizing: target queue depth in 21.33 ms buffers.
+    /// One buffer of slack per frame-duration of smoothed jitter, +1 base;
+    /// clamped to `[minDepth, maxDepth]`; moves at most one step per call
+    /// (bounded growth, no oscillation — equal ideal holds steady).
+    static func jitterBufferTarget(
+        smoothedJitterMs: Double,
+        currentTarget: Int,
+        minDepth: Int = 2,
+        maxDepth: Int = 12
+    ) -> Int {
+        let frameMs = 1024.0 / 48.0
+        let slack = Int((max(0, smoothedJitterMs) / frameMs).rounded(.up))
+        let ideal = min(max(1 + slack, minDepth), maxDepth)
+        if ideal > currentTarget { return min(currentTarget + 1, maxDepth) }
+        if ideal < currentTarget { return max(currentTarget - 1, minDepth) }
+        return currentTarget
+    }
+
+    /// Pure clamp-log throttle: log at the first crossing of `threshold`
+    /// and then once every `every` clamped buffers, so a persistent
+    /// clipping regression stays visible without 50 Hz spam.
+    static func shouldLogClamp(count: Int, threshold: Int = 50, every: Int = 1000) -> Bool {
+        if count == threshold { return true }
+        return count > threshold && count % every == 0
+    }
+
+    /// Single-pass clamp of decoded PCM to [-1, 1]. Returns whether any
+    /// sample was out of range. The AudioToolbox AAC decoder occasionally
+    /// emits out-of-range Float32 (peaks ~6.0 observed) on priming-adjacent
+    /// frames or after a network glitch; anything beyond [-1, 1] would clip
+    /// the speakers into painful clicks. Internal (not private) — test seam.
+    static func clampToUnitRange(_ samples: inout [Float]) -> Bool {
+        var clamped = false
+        for i in samples.indices where samples[i] < -1.0 || samples[i] > 1.0 {
+            samples[i] = max(-1.0, min(1.0, samples[i]))
+            clamped = true
+        }
+        return clamped
+    }
+
+    // MARK: - Inbound pipeline (queue-confined)
+
+    private func processInbound(_ packet: Data) {
+        guard let parsed = depacketizer.unpack(packet) else { return }
+        // Drop our own loopback if the network somehow returned it.
+        guard parsed.ssrc != localSSRC else { return }
+        let now = DispatchTime.now().uptimeNanoseconds
+        guard case .allow = Self.blacklistAction(record: decoderFailures[parsed.ssrc], nowNs: now) else {
+            return
+        }
+
+        let action = Self.gapAction(
+            lastSeq: receiveStates[parsed.ssrc]?.lastSequence,
+            newSeq: parsed.sequenceNumber
+        )
+        switch action {
+        case .dropStale:
+            // Late arrival of a packet whose gap was already concealed —
+            // decoding it now would play those 21 ms twice.
+            return
+        case .decode:
+            break
+        case .concealThenDecode(let missing):
+            statsLock.withLock { $0.concealedFrames += missing }
+            emitConcealment(frames: missing, ssrc: parsed.ssrc)
+        case .discontinuity:
+            statsLock.withLock { $0.discontinuities += 1 }
+        }
+        trackArrival(parsed, arrivalNs: now, action: action)
+        refreshJitterTarget(nowNs: now)
+        decodeAndEmit(parsed, nowNs: now)
+        maybeLogStats(nowNs: now)
+    }
+
+    /// Advance the per-SSRC sequence/timestamp clocks and fold this
+    /// packet into the RFC 3550 smoothed inter-arrival jitter:
+    /// `J += (|D| - J) / 16`, where `D` compares the arrival-time delta
+    /// against the RTP-timestamp delta (48 kHz units → ms). Skipped on a
+    /// discontinuity — a resync's huge timestamp jump isn't jitter.
+    private func trackArrival(
+        _ parsed: AudioRTPDepacketizer.Parsed, arrivalNs: UInt64, action: GapAction
+    ) {
+        guard var state = receiveStates[parsed.ssrc] else {
+            receiveStates[parsed.ssrc] = ReceiveState(
+                lastSequence: parsed.sequenceNumber,
+                lastArrivalNs: arrivalNs,
+                lastRTPTimestamp: parsed.timestamp
+            )
+            return
+        }
+        switch action {
+        case .discontinuity:
+            state.needsFadeIn = true
+        case .concealThenDecode, .decode, .dropStale:
+            if case .concealThenDecode = action { state.needsFadeIn = true }
+            let rtpDeltaMs = Double(parsed.timestamp &- state.lastRTPTimestamp) / 48.0
+            let arrivalDeltaMs = Double(arrivalNs &- state.lastArrivalNs) / 1_000_000.0
+            let deviation = abs(arrivalDeltaMs - rtpDeltaMs)
+            state.smoothedJitterMs += (deviation - state.smoothedJitterMs) / 16.0
+        }
+        state.lastSequence = parsed.sequenceNumber
+        state.lastRTPTimestamp = parsed.timestamp
+        state.lastArrivalNs = arrivalNs
+        receiveStates[parsed.ssrc] = state
+    }
+
+    /// Once a second, re-derive the target playback depth from the worst
+    /// per-SSRC smoothed jitter and publish it for `MicCapture`.
+    private func refreshJitterTarget(nowNs: UInt64) {
+        if lastTargetRefreshNs == 0 {
+            lastTargetRefreshNs = nowNs
+            return
+        }
+        guard nowNs &- lastTargetRefreshNs >= 1_000_000_000 else { return }
+        lastTargetRefreshNs = nowNs
+        let worstJitterMs = receiveStates.values.map(\.smoothedJitterMs).max() ?? 0
+        statsLock.withLock { $0.smoothedJitterMs = worstJitterMs }
+        let current = jitterTargetDepth.withLock { $0 }
+        let next = Self.jitterBufferTarget(smoothedJitterMs: worstJitterMs, currentTarget: current)
+        guard next != current else { return }
+        jitterTargetDepth.withLock { $0 = next }
+        logger.log(
+            "VoiceChannel: jitter buffer target \(current) → \(next) buffers "
+                + "(smoothed jitter \(String(format: "%.1f", worstJitterMs)) ms)")
+    }
+
+    /// Emit `frames` frames of silence to cover a sequence gap, fading the
+    /// previously emitted frame's tail into the first silence frame so the
+    /// MDCT discontinuity doesn't land as a hard click. AudioToolbox
+    /// exposes no codec-level concealment input, so the decoder is never
+    /// fed anything for the lost AUs — only its next real one.
+    private func emitConcealment(frames: Int, ssrc: UInt32) {
+        guard let emit = onMixedPCM else { return }
+        let tail = receiveStates[ssrc]?.tail ?? []
+        for frameIndex in 0..<frames {
+            var silence = [Float](repeating: 0, count: Self.samplesPerFrame)
+            if frameIndex == 0 && !tail.isEmpty {
+                let span = min(Self.fadeSampleCount, tail.count)
+                for i in 0..<span {
+                    let gain = 1.0 - Float(i + 1) / Float(span)
+                    silence[i] = tail[i] * gain
+                }
+            }
+            emit(silence)
+        }
+    }
+
+    private func decodeAndEmit(_ parsed: AudioRTPDepacketizer.Parsed, nowNs: UInt64) {
+        do {
+            let decoder = try ensureDecoder(for: parsed.ssrc)
+            let raw = try decoder.decode(au: parsed.au)
+            // Successful init + non-throwing decode: the SSRC is healthy,
+            // forget any failure history.
+            decoderFailures.removeValue(forKey: parsed.ssrc)
+            guard !raw.isEmpty else { return }
+            var samples = raw
+            if Self.clampToUnitRange(&samples) {
+                let count = statsLock.withLock { stats -> Int in
+                    stats.clampedBuffers += 1
+                    return stats.clampedBuffers
+                }
+                if Self.shouldLogClamp(count: count) {
+                    logger.log(
+                        "VoiceChannel: clamped \(count) out-of-range PCM buffers so far "
+                            + "(latest ssrc=\(parsed.ssrc)) — possible codec regression")
+                }
+            }
+            if var state = receiveStates[parsed.ssrc] {
+                if state.needsFadeIn {
+                    Self.applyFadeIn(&samples)
+                    state.needsFadeIn = false
+                }
+                state.tail = Array(samples.suffix(Self.fadeSampleCount))
+                receiveStates[parsed.ssrc] = state
+            }
+            onMixedPCM?(samples)
+        } catch {
+            recordDecodeFailure(for: parsed.ssrc, error: error, nowNs: nowNs)
+        }
+    }
+
+    /// Failure bookkeeping. Init failures (no decoder cached yet) upsert
+    /// the cooldown record — the blacklist gate then swallows packets until
+    /// the cooldown elapses, so this logs at most once per window. Decode
+    /// (not init) failures keep the decoder; transient corruption is normal.
+    private func recordDecodeFailure(for ssrc: UInt32, error: Error, nowNs: UInt64) {
+        guard decoders[ssrc] == nil else {
+            logger.log("VoiceChannel: decode failed for ssrc=\(ssrc): \(error)")
+            return
+        }
+        var record =
+            decoderFailures[ssrc]
+            ?? DecoderFailureRecord(consecutiveInitFailures: 0, lastFailureNs: 0)
+        record.consecutiveInitFailures += 1
+        record.lastFailureNs = nowNs
+        decoderFailures[ssrc] = record
+        if record.consecutiveInitFailures >= Self.decoderInitFailureLimit {
+            logger.log(
+                "VoiceChannel: decoder init failed for ssrc=\(ssrc) "
+                    + "(attempt \(record.consecutiveInitFailures)): \(error). "
+                    + "Giving up on this SSRC for the session.")
+        } else {
+            logger.log(
+                "VoiceChannel: decoder init failed for ssrc=\(ssrc) "
+                    + "(attempt \(record.consecutiveInitFailures)): \(error). "
+                    + "Will retry after cooldown.")
+        }
+    }
+
+    /// Ramp the first `fadeSampleCount` samples up from zero to mask the
+    /// decode restart after a concealment gap or resync.
+    private static func applyFadeIn(_ samples: inout [Float]) {
+        let span = min(fadeSampleCount, samples.count)
+        guard span > 0 else { return }
+        for i in 0..<span {
+            samples[i] *= Float(i + 1) / Float(span)
+        }
+    }
+
+    /// Log the counters at most once a minute, and only when something
+    /// actually moved since the previous line.
+    private func maybeLogStats(nowNs: UInt64) {
+        if lastStatsLogNs == 0 {
+            lastStatsLogNs = nowNs
+            return
+        }
+        guard nowNs &- lastStatsLogNs >= 60_000_000_000 else { return }
+        lastStatsLogNs = nowNs
+        let snapshot = statsLock.withLock { $0 }
+        guard snapshot.countersDiffer(from: lastLoggedStats) else { return }
+        lastLoggedStats = snapshot
+        logger.log(
+            "VoiceChannel: stats concealed=\(snapshot.concealedFrames) "
+                + "discontinuities=\(snapshot.discontinuities) overruns=\(snapshot.overrunDrops) "
+                + "underruns=\(snapshot.underruns) clamped=\(snapshot.clampedBuffers) "
+                + "jitter=\(String(format: "%.1f", snapshot.smoothedJitterMs))ms")
     }
 
     private func ensureDecoder(for ssrc: UInt32) throws -> AACDecoder {
@@ -125,6 +498,17 @@ final class VoiceChannel: @unchecked Sendable {
     /// after enqueuing outbound/inbound work.
     internal func flushForTesting() {
         queue.sync {}
+    }
+
+    /// Test-only: snapshot the per-SSRC decoder-failure records.
+    internal var decoderFailuresForTesting: [UInt32: DecoderFailureRecord] {
+        queue.sync { decoderFailures }
+    }
+
+    /// Test-only: inject a failure record so the cooldown/clear paths can
+    /// be exercised without forcing a real `AACDecoder` init failure.
+    internal func injectDecoderFailureForTesting(ssrc: UInt32, record: DecoderFailureRecord) {
+        queue.sync { decoderFailures[ssrc] = record }
     }
     #endif
 }
@@ -445,9 +829,9 @@ final class MicCapture {
         applyOutputDevice()
         try engine.start()
         // Don't call player.play() yet. scheduleSamples kicks
-        // playback off only after `jitterBufferThreshold` buffers
-        // are queued, so the player has runway and doesn't underrun
-        // on the first arrival hiccup.
+        // playback off only after the channel's adaptive target
+        // depth is queued, so the player has runway and doesn't
+        // underrun on the first arrival hiccup.
         isPlaying = true
         logger.log("MicCapture: playback engine started (output-only, no mic, awaiting jitter buffer).")
     }
@@ -698,24 +1082,18 @@ final class MicCapture {
 
     /// Counts scheduled buffers since last `startPlayback()`. Used by the
     /// jitter-buffer kick: we don't call `player.play()` until at least
-    /// `jitterBufferThreshold` buffers have been queued ahead.
+    /// the channel's adaptive target depth has been queued ahead.
     private var scheduledCount: Int = 0
 
-    /// Number of buffers to queue ahead before kicking playback off.
-    /// Each buffer is 1024 samples ≈ 21.33 ms at 48 kHz, so 3 buffers
-    /// = ~64 ms of headroom — enough to absorb startup jitter without
-    /// an audible delay.
-    private let jitterBufferThreshold = 3
-
-    /// Hard cap on the player's pending-buffer queue. The sender's
+    /// Headroom above the adaptive target depth before we drop the
+    /// incoming buffer instead of scheduling it. The sender's
     /// `DispatchSourceTimer` drifts a hair faster than the receiver's
-    /// audio clock, so over time the queue grows unbounded → seconds
+    /// audio clock, so without a cap the queue grows unbounded → seconds
     /// of playback latency that you hear when muting (queue keeps
-    /// draining after the sender stops). When the queue would exceed
-    /// this cap, we drop the incoming buffer instead of scheduling
-    /// it, which eats one frame (~21 ms) at most and keeps end-to-end
-    /// latency bounded near `jitterBufferThreshold * 21 ms`.
-    private let maxPendingBuffers = 6
+    /// draining after the sender stops). Dropping at the cap eats one
+    /// frame (~21 ms) at most and keeps end-to-end latency bounded near
+    /// `(targetDepth + slack) * 21 ms` — the clock-drift backstop.
+    private static let pendingSlackBuffers = 3
 
     /// Pending-buffer counter. AVAudioPlayerNode doesn't expose its
     /// queue depth, so we increment on schedule and decrement in the
@@ -724,7 +1102,14 @@ final class MicCapture {
 
     private func scheduleSamples(_ samples: [Float]) {
         guard isPlaying, let player = playerNodes.first else { return }
-        if pendingBuffers >= maxPendingBuffers { return }
+        // Adaptive jitter-buffer depth: 21.33 ms buffers, sized by the
+        // channel from RFC 3550 inter-arrival jitter (initially 3 ≈ 64 ms,
+        // bounded at 12 ≈ 256 ms of added latency).
+        let targetDepth = channel.currentJitterTargetDepth
+        if pendingBuffers >= targetDepth + Self.pendingSlackBuffers {
+            channel.noteOverrunDrop()
+            return
+        }
         guard
             let buffer = AVAudioPCMBuffer(
                 pcmFormat: outputFormat,
@@ -742,11 +1127,18 @@ final class MicCapture {
             // Completion fires on AVAudioPlayer's render thread.
             // Hop to MainActor before mutating @MainActor state.
             Task { @MainActor [weak self] in
-                self?.pendingBuffers -= 1
+                guard let self else { return }
+                self.pendingBuffers -= 1
+                // Queue drained while the player is still running — the
+                // audible starve. Re-read the player from self rather than
+                // capturing the non-Sendable node in this closure.
+                if self.pendingBuffers == 0, self.playerNodes.first?.isPlaying == true {
+                    self.channel.noteUnderrun()
+                }
             }
         }
         // Defer the first play() until we have a small queue ahead.
-        if !player.isPlaying && scheduledCount >= jitterBufferThreshold {
+        if !player.isPlaying && scheduledCount >= targetDepth {
             player.play()
         }
     }
