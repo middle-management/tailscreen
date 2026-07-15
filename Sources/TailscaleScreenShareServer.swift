@@ -335,6 +335,21 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// cooperative pool, written from the control-receive loop.
     private let forceH264 = OSAllocatedUnfairLock<Bool>(initialState: false)
 
+    /// Whether the sharer is sharing system/computer audio to viewers. Gates
+    /// *emission* in the helper (the audio SCStream output is always configured
+    /// when the share starts with audio available). Locked: written from the
+    /// MainActor via `setShareSystemAudio`, read in `startHelperCapture` to
+    /// re-send the latch after each (re)spawn — mirrors the `forceH264` pattern
+    /// so helper restarts preserve the toggle.
+    private let shareSystemAudio = OSAllocatedUnfairLock<Bool>(initialState: false)
+
+    /// Packetizes helper-produced system-audio AUs into RTP with the reserved
+    /// system SSRC + PT 99. Not thread-safe; the helper's reader thread is the
+    /// only caller (via `broadcastSystemAudio`), satisfying the serialization
+    /// contract the same way `VoiceChannel` confines its own packetizer.
+    private let systemAudioPacketizer = AudioRTPPacketizer(
+        ssrc: RTPHeader.systemAudioSSRC, payloadType: RTPHeader.systemAudioPayloadType)
+
     /// Stateful per-codec packetizers. Held across `broadcast()` calls so
     /// each call can recycle the previous batch's buffer storage instead
     /// of allocating a fresh `Data` per packet. See `RTPPacketBufferPool`
@@ -607,6 +622,9 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         helper.onAccessUnit = { [weak self] avcc, isKeyframe in
             self?.handleHelperAccessUnit(avcc, isKeyframe: isKeyframe)
         }
+        helper.onAudioAccessUnit = { [weak self] au in
+            self?.broadcastSystemAudio(au: au)
+        }
         helper.onParameterSets = { [weak self] params in
             self?.parameterSets.withLock { $0 = params }
             switch params {
@@ -737,6 +755,9 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         try helper.start(
             filterData: filterData, forceH264: forceH264.withLock { $0 }, qualityEnv: qualityEnv)
         helperCapture = helper
+        // Re-send the system-audio emission latch after every (re)spawn so a
+        // helper restart preserves the toggle (mirrors the forceH264 handling).
+        helper.setAudioEnabled(shareSystemAudio.withLock { $0 })
         logger.log("HelperScreenCapture started (filter=\(filterData.count)B)")
     }
 
@@ -1404,7 +1425,8 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
                 }
                 var ssrc: UInt32
                 repeat {
-                    ssrc = UInt32.random(in: 1...UInt32.max)
+                    // Start at 2: sharer voice owns 0, system audio owns 1.
+                    ssrc = UInt32.random(in: 2...UInt32.max)
                 } while state.values.contains(where: { $0.audioSSRC == ssrc })
                 state[addr] = PendingViewer(addr: addr, audioSSRC: ssrc, lastSeenNs: now)
                 return true
@@ -1444,11 +1466,12 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             }
             var newAudioSSRC: UInt32
             repeat {
-                newAudioSSRC = UInt32.random(in: 1...UInt32.max)
+                // Start at 2: sharer voice owns 0, system audio owns 1.
+                newAudioSSRC = UInt32.random(in: 2...UInt32.max)
             } while state.values.contains(where: { $0.audioSSRC == newAudioSSRC })
             let v = Viewer(
                 addr: addr,
-                ssrc: UInt32.random(in: 1...UInt32.max),
+                ssrc: UInt32.random(in: 2...UInt32.max),
                 audioSSRC: newAudioSSRC,
                 nextSequence: UInt16.random(in: 0...UInt16.max),
                 lastSeenNs: now
@@ -1609,7 +1632,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             if state[addr] != nil { return (false, state.count) }
             let v = Viewer(
                 addr: pending.addr,
-                ssrc: UInt32.random(in: 1...UInt32.max),
+                ssrc: UInt32.random(in: 2...UInt32.max),
                 audioSSRC: pending.audioSSRC,
                 nextSequence: UInt16.random(in: 0...UInt16.max),
                 lastSeenNs: now
@@ -2330,6 +2353,23 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         audioBroadcastTail.withLock { $0 = job }
     }
 
+    /// Enable/disable sharing system audio to viewers. Stores the latch (so a
+    /// helper (re)spawn re-sends it) and forwards to the live helper for an
+    /// instant mute/unmute. Called from the MainActor by `AppState`.
+    func setShareSystemAudio(_ on: Bool) {
+        shareSystemAudio.withLock { $0 = on }
+        helperCapture?.setAudioEnabled(on)
+    }
+
+    /// Packetize one helper-produced system-audio AU as RTP (PT 99, reserved
+    /// SSRC) and fan it out to viewers through the shared audio tail. Called on
+    /// the helper's reader thread — the only caller, so the packetizer's
+    /// single-thread contract holds.
+    private func broadcastSystemAudio(au: Data) {
+        guard isRunning else { return }
+        sendAudioRTP(systemAudioPacketizer.packetize(au: au))
+    }
+
     func getIPAddresses() async throws -> (ip4: String?, ip6: String?) {
         guard let node = node else { throw TailscaleError.badInterfaceHandle }
         return try await node.addrs()
@@ -2468,6 +2508,13 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// route production frames take.
     func broadcastForTesting(avccData: Data, isKeyframe: Bool) {
         broadcast(avccData: avccData, isKeyframe: isKeyframe)
+    }
+
+    /// Inject a system-audio AU as if the capture-helper had produced it:
+    /// packetize as RTP PT 99 and fan out through the exact production path.
+    /// Sibling of `broadcastForTesting` for the audio side.
+    func broadcastSystemAudioForTesting(au: Data) {
+        broadcastSystemAudio(au: au)
     }
 }
 

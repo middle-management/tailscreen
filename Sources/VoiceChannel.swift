@@ -73,6 +73,13 @@ final class VoiceChannel: @unchecked Sendable {
     /// without synchronization.
     var onMixedPCM: (([Float]) -> Void)?
 
+    /// Invoked on the internal queue with decoded PCM for one inbound
+    /// *system-audio* packet (RTP PT 99). Kept separate from `onMixedPCM` so
+    /// `MicCapture` can schedule it into a dedicated `AVAudioPlayerNode` —
+    /// funnelling two 50 Hz streams into one node time-multiplexes them instead
+    /// of mixing. Set once before the first `receive(_:)` call.
+    var onSystemAudioPCM: (([Float]) -> Void)?
+
     private let queue = DispatchQueue(label: "VoiceChannel")
     private var _isMuted: Bool = true
     private let encoder: AACEncoder
@@ -238,7 +245,27 @@ final class VoiceChannel: @unchecked Sendable {
         statsLock.withLock { $0.underruns += 1 }
     }
 
+    /// Where an inbound audio packet's payload type routes.
+    enum AudioRoute: Equatable {
+        /// PT 98 — voice; the full jitter/concealment pipeline + `onMixedPCM`.
+        case voice
+        /// PT 99 — shared system audio; decode-and-emit via `onSystemAudioPCM`.
+        case systemAudio
+        /// Anything else (e.g. a stray video PT) — ignore.
+        case drop
+    }
+
     // MARK: - Pure decision functions (CI-able test seams)
+
+    /// Pure payload-type → route decision. Extracted so CI can pin the demux
+    /// without building packets.
+    static func audioRoute(payloadType: UInt8) -> AudioRoute {
+        switch payloadType {
+        case RTPHeader.aacPayloadType: return .voice
+        case RTPHeader.systemAudioPayloadType: return .systemAudio
+        default: return .drop
+        }
+    }
 
     /// Pure retry-with-cooldown gate decision. `nil` record → allow.
     /// After `permanentAfter` consecutive init failures → drop for the
@@ -387,6 +414,15 @@ final class VoiceChannel: @unchecked Sendable {
 
     private func processInbound(_ packet: Data) {
         guard let parsed = depacketizer.unpack(packet) else { return }
+        switch Self.audioRoute(payloadType: parsed.payloadType) {
+        case .drop:
+            return
+        case .systemAudio:
+            processSystemAudioInbound(parsed)
+            return
+        case .voice:
+            break
+        }
         // Drop our own loopback if the network somehow returned it.
         guard parsed.ssrc != localSSRC else { return }
         let now = DispatchTime.now().uptimeNanoseconds
@@ -427,6 +463,30 @@ final class VoiceChannel: @unchecked Sendable {
         receiveStates[parsed.ssrc] = state
         refreshJitterTarget(nowNs: now)
         maybeLogStats(nowNs: now)
+    }
+
+    /// Decode one system-audio packet (PT 99, reserved SSRC 1) and emit via
+    /// `onSystemAudioPCM`. Reuses the per-SSRC decoder + failure-cooldown
+    /// machinery but skips the voice jitter/concealment pipeline — playback is
+    /// queue-paced in `MicCapture`, and the system-audio SSRC is disjoint from
+    /// every voice SSRC (0 sharer, ≥2 viewers) so the shared dictionaries never
+    /// collide.
+    private func processSystemAudioInbound(_ parsed: AudioRTPDepacketizer.Parsed) {
+        guard let emit = onSystemAudioPCM else { return }
+        let now = DispatchTime.now().uptimeNanoseconds
+        guard case .allow = Self.decoderGateAction(record: decoderFailures[parsed.ssrc], nowNs: now) else {
+            return
+        }
+        do {
+            let decoder = try ensureDecoder(for: parsed.ssrc)
+            var samples = try decoder.decode(au: parsed.au)
+            decoderFailures.removeValue(forKey: parsed.ssrc)
+            guard !samples.isEmpty else { return }
+            _ = Self.clampToUnitRange(&samples)
+            emit(samples)
+        } catch {
+            recordDecodeFailure(for: parsed.ssrc, error: error, nowNs: now)
+        }
     }
 
     /// Advance the per-SSRC sequence/timestamp clocks and fold this
@@ -838,6 +898,13 @@ final class MicCapture {
     private let channel: VoiceChannel
     private let engine = AVAudioEngine()
     private var playerNodes: [AVAudioPlayerNode] = []
+    /// Dedicated player node for shared system audio, summed with the voice
+    /// player(s) by `mainMixerNode`. Load-bearing: two concurrent 50 Hz PCM
+    /// streams serialized into one node time-multiplex instead of mixing.
+    private var systemAudioPlayer: AVAudioPlayerNode?
+    /// Pending-buffer counter for the system-audio node (AVAudioPlayerNode
+    /// exposes no queue depth). Touched only on @MainActor.
+    private var systemAudioPendingBuffers: Int = 0
     private let mixer: AVAudioMixerNode
     private let outputFormat: AVAudioFormat
     private var tapBuffer: TapBuffer?
@@ -950,6 +1017,12 @@ final class MicCapture {
             Task { @MainActor [weak self] in self?.scheduleSamples(samples) }
         }
 
+        // System audio decoded by the channel goes to its own player node so
+        // it mixes with (rather than time-multiplexes against) voice.
+        channel.onSystemAudioPCM = { [weak self] samples in
+            Task { @MainActor [weak self] in self?.scheduleSystemAudioSamples(samples) }
+        }
+
         // AVAudioEngine reconfigures itself on route/format change (mic
         // hot-plug, sample-rate negotiation when VPIO engages, default-
         // device flip). Reconfigure tears down node connections, so an
@@ -982,6 +1055,12 @@ final class MicCapture {
         engine.attach(player)
         engine.connect(player, to: mixer, format: outputFormat)
         playerNodes.append(player)
+        // Dedicated system-audio node, summed by mainMixerNode.
+        let sysPlayer = AVAudioPlayerNode()
+        engine.attach(sysPlayer)
+        engine.connect(sysPlayer, to: mixer, format: outputFormat)
+        systemAudioPlayer = sysPlayer
+        systemAudioPendingBuffers = 0
         applyOutputDevice()
         try engine.start()
         // Don't call player.play() yet. scheduleSamples kicks
@@ -1067,6 +1146,7 @@ final class MicCapture {
         applyOutputDevice()
         try engine.start()
         for player in playerNodes { player.play() }
+        systemAudioPlayer?.play()
         logger.log("MicCapture: capture started (engineRunning=\(engine.isRunning)).")
 
         isCapturing = true
@@ -1105,6 +1185,9 @@ final class MicCapture {
             playbackGeneration += 1
             drainedAtNs = 0
             for node in playerNodes { node.stop() }
+            systemAudioPlayer?.stop()
+            systemAudioPlayer = nil
+            systemAudioPendingBuffers = 0
             engine.stop()
             playerNodes.removeAll()
             isPlaying = false
@@ -1129,6 +1212,7 @@ final class MicCapture {
             do {
                 try engine.start()
                 for player in playerNodes { player.play() }
+                systemAudioPlayer?.play()
             } catch {
                 logger.log("MicCapture: configuration change — engine restart failed: \(error)")
                 return
@@ -1323,6 +1407,42 @@ final class MicCapture {
         }
         // Defer the first play() until we have a small queue ahead.
         if !player.isPlaying && scheduledCount >= targetDepth {
+            player.play()
+        }
+    }
+
+    /// Schedule one decoded system-audio block into the dedicated node. A twin
+    /// of `scheduleSamples` but simpler: fixed jitter target, no underrun
+    /// bookkeeping (the sharer's voice players already drive the jitter
+    /// estimate). Drops at a fixed cap so clock drift can't grow the queue.
+    private func scheduleSystemAudioSamples(_ samples: [Float]) {
+        guard isPlaying, let player = systemAudioPlayer else { return }
+        let cap = VoiceChannel.initialJitterTargetDepth + VoiceChannel.playbackSlackBuffers
+        if systemAudioPendingBuffers >= cap {
+            channel.noteOverrunDrop()
+            return
+        }
+        guard
+            let buffer = AVAudioPCMBuffer(
+                pcmFormat: outputFormat,
+                frameCapacity: AVAudioFrameCount(samples.count)
+            )
+        else { return }
+        buffer.frameLength = AVAudioFrameCount(samples.count)
+        guard let dst = buffer.floatChannelData?[0] else { return }
+        for (i, sample) in samples.enumerated() {
+            dst[i] = sample
+        }
+        systemAudioPendingBuffers += 1
+        let generation = playbackGeneration
+        player.scheduleBuffer(buffer) { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self, self.playbackGeneration == generation else { return }
+                self.systemAudioPendingBuffers -= 1
+            }
+        }
+        // Defer the first play() until a small queue is buffered ahead.
+        if !player.isPlaying && systemAudioPendingBuffers >= VoiceChannel.initialJitterTargetDepth {
             player.play()
         }
     }
