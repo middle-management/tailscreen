@@ -20,6 +20,10 @@ final class HelperScreenCapture: @unchecked Sendable {
     /// Mirrors `VideoEncoder.onEncodedData` so the server can broadcast
     /// without an in-process encoder.
     var onAccessUnit: ((Data, Bool) -> Void)?
+    /// Helper produced an encoded system-audio access unit (raw AAC AU
+    /// bytes). The server packetizes these as RTP PT 99 and fans them out on
+    /// the UDP audio path. Fires on the reader thread.
+    var onAudioAccessUnit: ((Data) -> Void)?
     /// Codec parameter sets, sent once per encoder configuration.
     var onParameterSets: ((CodecParameterSets) -> Void)?
     /// Encoded resolution, surfaced once per parameter-sets emit so
@@ -180,6 +184,13 @@ final class HelperScreenCapture: @unchecked Sendable {
         HelperControlWriter(handle: stdin).sendBitrate(bps)
     }
 
+    /// Enable/disable system-audio emission in the live helper. No-op if the
+    /// helper isn't up yet — the server re-sends the latch after every spawn.
+    func setAudioEnabled(_ on: Bool) {
+        guard let stdin = stdinHandle else { return }
+        HelperControlWriter(handle: stdin).sendAudioEnabled(on)
+    }
+
     /// Retune the capture frame-rate tier (fps ladder, second congestion
     /// lever). The helper reconfigures the SCStream's `minimumFrameInterval`.
     func setFrameInterval(_ fps: Int) {
@@ -211,6 +222,9 @@ final class HelperScreenCapture: @unchecked Sendable {
                         "HelperScreenCapture: AU#\(debugAUCount) kf=\(isKeyframe) \(avcc.count)B first8=[\(first)]")
                 }
                 onAccessUnit?(avcc, isKeyframe)
+            case .audioAccessUnit:
+                guard !payload.isEmpty else { continue }
+                onAudioAccessUnit?(payload)
             case .parameterSets:
                 // Ordering invariant: fire `onParameterSets` BEFORE
                 // `onEncoderResolution`. The server's params handler caches

@@ -132,4 +132,94 @@ final class ScreenShareFanoutTests: XCTestCase {
         await viewer2.disconnect()
         await server.stop()
     }
+
+    /// System audio (RTP PT 99, reserved SSRC 1) injected via the
+    /// `broadcastSystemAudioForTesting` seam reaches BOTH viewers, tagged with
+    /// the system-audio payload type so a viewer can tell it apart from voice.
+    /// No capture-helper: the AU is a real `AACEncoder` output. Local-only —
+    /// skipped without `TAILSCREEN_TS_AUTHKEY`.
+    func testSystemAudioReachesBothViewers() async throws {
+        let env = try TailscreenE2E.loadEnvOrSkip()
+        let dirs = try TailscreenE2E.makeStateDirs(
+            testCase: self, label: "sysaudio", names: ["server", "viewer1", "viewer2"])
+        let serverDir = try XCTUnwrap(dirs["server"])
+        let viewer1Dir = try XCTUnwrap(dirs["viewer1"])
+        let viewer2Dir = try XCTUnwrap(dirs["viewer2"])
+
+        let server = TailscaleScreenShareServer()
+        let twoViewers = expectation(description: "server sees two viewers")
+        twoViewers.assertForOverFulfill = false
+        server.onViewersChanged = { infos in
+            if infos.count >= 2 { twoViewers.fulfill() }
+        }
+        try await server.start(
+            hostname: TailscreenE2E.makeHostname("sysaudio-server"),
+            authKey: env.authKey,
+            path: serverDir,
+            controlURL: env.controlURL,
+            filterData: nil
+        )
+        addTeardownBlock { Task { await server.stop() } }
+
+        let ips = try await server.getIPAddresses()
+        guard let serverIP = ips.ip4 ?? ips.ip6 else {
+            XCTFail("server has no tailnet IP")
+            return
+        }
+
+        let renderer1 = await MainActor.run { MetalViewerRenderer() }
+        let renderer2 = await MainActor.run { MetalViewerRenderer() }
+        let viewer1 = TailscaleScreenShareClient(renderer: renderer1)
+        let viewer2 = TailscaleScreenShareClient(renderer: renderer2)
+
+        let ssrc1 = expectation(description: "viewer1 assigned audio SSRC")
+        let ssrc2 = expectation(description: "viewer2 assigned audio SSRC")
+        viewer1.onAudioSSRCAssigned = { _ in ssrc1.fulfill() }
+        viewer2.onAudioSSRCAssigned = { _ in ssrc2.fulfill() }
+
+        let v1Sys = expectation(description: "viewer1 got PT99 system audio")
+        v1Sys.assertForOverFulfill = false
+        let v2Sys = expectation(description: "viewer2 got PT99 system audio")
+        v2Sys.assertForOverFulfill = false
+        viewer1.onAudioReceived = { data in
+            if RTPHeader.decode(from: data)?.header.payloadType == RTPHeader.systemAudioPayloadType {
+                v1Sys.fulfill()
+            }
+        }
+        viewer2.onAudioReceived = { data in
+            if RTPHeader.decode(from: data)?.header.payloadType == RTPHeader.systemAudioPayloadType {
+                v2Sys.fulfill()
+            }
+        }
+
+        try await viewer1.connect(
+            to: serverIP, port: NetworkConfig.tailscreenPort,
+            authKey: env.authKey, path: viewer1Dir, controlURL: env.controlURL)
+        addTeardownBlock { Task { await viewer1.disconnect() } }
+        try await viewer2.connect(
+            to: serverIP, port: NetworkConfig.tailscreenPort,
+            authKey: env.authKey, path: viewer2Dir, controlURL: env.controlURL)
+        addTeardownBlock { Task { await viewer2.disconnect() } }
+
+        await fulfillment(of: [ssrc1, ssrc2, twoViewers], timeout: 30)
+
+        // A real AAC AU; AAC priming can swallow the first frame, so encode a few.
+        let encoder = try AACEncoder()
+        var au: Data?
+        for _ in 0..<4 {
+            if let a = try encoder.encode(pcm: [Float](repeating: 0.2, count: 1024)) { au = a }
+        }
+        let auData = try XCTUnwrap(au)
+
+        // UDP: resend a few times so one dropped datagram doesn't fail the test.
+        for _ in 0..<10 {
+            server.broadcastSystemAudioForTesting(au: auData)
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        await fulfillment(of: [v1Sys, v2Sys], timeout: 10)
+
+        await viewer1.disconnect()
+        await viewer2.disconnect()
+        await server.stop()
+    }
 }

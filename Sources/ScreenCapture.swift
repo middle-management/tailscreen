@@ -8,6 +8,21 @@ import os
 class ScreenCapture: NSObject, @unchecked Sendable {
     private var stream: SCStream?
     private var streamOutput: StreamOutput?
+    /// Separate output object for the `.audio` stream type, on its own serial
+    /// queue. Kept distinct from `streamOutput` so the video output's
+    /// queue-confined counters (`lastSampleNotifyNs`, etc.) are never touched
+    /// from a second thread. Nil unless `capturesAudio` was set before start.
+    private var audioStreamOutput: AudioStreamOutput?
+    /// When set before `start(...)`, the SCStream is configured to also
+    /// capture 48 kHz mono system audio (`excludesCurrentProcessAudio` on, so
+    /// Tailscreen's own output — including played-back viewer voices — is
+    /// never re-captured). Consumed in `startStream`; the capture-helper sets
+    /// it from `PickerSelection.captureAudio`.
+    var capturesAudio: Bool = false
+    /// Forwards each audio `CMSampleBuffer` the SCStream delivers. Fires on the
+    /// dedicated audio-output queue — the helper feeds it straight into a
+    /// `SystemAudioTap` with no MainActor hop.
+    var onAudioSampleBuffer: ((CMSampleBuffer) -> Void)?
     /// Live SCStreamConfiguration so `updateConfiguration` can preserve
     /// frame-interval / pixel-format / queueDepth across resize-driven
     /// updates and only change width / height.
@@ -280,6 +295,17 @@ class ScreenCapture: NSObject, @unchecked Sendable {
         }
         config.showsCursor = true
         config.queueDepth = 5
+        if capturesAudio {
+            // Match the voice codec format so the helper's AACEncoder and the
+            // viewer's AACDecoder (both hardwired mono 48 kHz) round-trip
+            // unchanged. `excludesCurrentProcessAudio` drops Tailscreen's own
+            // output — i.e. viewer voices `MicCapture` plays — from the mix, so
+            // viewer speech is never re-broadcast as system audio (no loop).
+            config.capturesAudio = true
+            config.sampleRate = 48_000
+            config.channelCount = 1
+            config.excludesCurrentProcessAudio = true
+        }
         self.streamConfig = config
         let fmt = colorInfo.bitDepth >= 10 ? "x420" : "420f"
         logEvent(
@@ -316,6 +342,24 @@ class ScreenCapture: NSObject, @unchecked Sendable {
             } catch {
                 logEvent("start.addStreamOutput.fail", extra: "err=\(error)")
                 throw error
+            }
+        }
+
+        // System-audio output on its own serial queue. Non-fatal on failure:
+        // a share that can't add the audio output still delivers video.
+        if capturesAudio, let stream = stream {
+            let audioOut = AudioStreamOutput()
+            audioOut.onAudioSampleBuffer = { [weak self] sampleBuffer in
+                self?.onAudioSampleBuffer?(sampleBuffer)
+            }
+            audioStreamOutput = audioOut
+            let audioQueue = DispatchQueue(label: "ScreenCapture.audio.\(sessionID)", qos: .userInitiated)
+            do {
+                try stream.addStreamOutput(audioOut, type: .audio, sampleHandlerQueue: audioQueue)
+                logEvent("start.addAudioOutput.ok")
+            } catch {
+                logEvent("start.addAudioOutput.fail", extra: "err=\(error)")
+                audioStreamOutput = nil
             }
         }
 
@@ -420,6 +464,7 @@ class ScreenCapture: NSObject, @unchecked Sendable {
         // late delegate fire is a no-op.
         onFrameCaptured = nil
         onStreamStopped = nil
+        onAudioSampleBuffer = nil
         if let stream = stream {
             // Explicitly remove the stream output BEFORE stopCapture.
             // Without this, replayd may keep the bundle's screen-
@@ -439,12 +484,21 @@ class ScreenCapture: NSObject, @unchecked Sendable {
             } else {
                 logEvent("stop.removeStreamOutput.skip", extra: "streamOutput=nil")
             }
+            if let audioOut = audioStreamOutput {
+                do {
+                    try stream.removeStreamOutput(audioOut, type: .audio)
+                    logEvent("stop.removeAudioOutput.ok")
+                } catch {
+                    logEvent("stop.removeAudioOutput.fail", extra: "err=\(error)")
+                }
+            }
             await Self.stopCaptureWatchdogged(stream: stream, sessionID: sessionID)
         } else {
             logEvent("stop.skip", extra: "stream=nil")
         }
         stream = nil
         streamOutput = nil
+        audioStreamOutput = nil
         streamConfig = nil
         Self.lastStopAtNs.withLock { $0 = DispatchTime.now().uptimeNanoseconds }
         logEvent("stop.end")
@@ -656,6 +710,19 @@ private class StreamOutput: NSObject, SCStreamOutput {
         case .stopped: return "stopped"
         @unknown default: return "raw(\(status.rawValue))"
         }
+    }
+}
+
+/// Minimal `SCStreamOutput` for the `.audio` stream type. Kept separate from
+/// `StreamOutput` (video) so each runs on its own serial queue without sharing
+/// unlocked counters. Forwards the raw audio sample buffer up to
+/// `ScreenCapture.onAudioSampleBuffer`.
+private final class AudioStreamOutput: NSObject, SCStreamOutput {
+    var onAudioSampleBuffer: ((CMSampleBuffer) -> Void)?
+
+    func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
+        guard type == .audio else { return }
+        onAudioSampleBuffer?(sampleBuffer)
     }
 }
 
