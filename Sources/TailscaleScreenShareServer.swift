@@ -113,6 +113,15 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         var nextSequence: UInt16
         var lastSeenNs: UInt64
         var pliTimestampsNs: [UInt64] = []
+        /// Latest RR "fraction lost" (Q8) and RTT this viewer reported, fed to
+        /// `nextCongestionDecision`. Legacy (non-RR) viewers leave these at 0.
+        var lossFractionQ8: Int = 0
+        var rttNs: UInt64 = 0
+        /// Retransmits served to this viewer in the current sweep window, reset
+        /// each window. NACK-recovered loss softens the congestion cut.
+        var nackServedThisWindow: Int = 0
+        /// Per-viewer token bucket for the retransmit rate limit.
+        var retransmitBudget = RetransmitBuffer.BudgetState(tokens: 0, lastRefillNs: 0)
         /// While `DispatchTime.now() < throttledUntilNs`, this viewer is in
         /// keyframe-only mode: `broadcast` sends it only IDR frames and skips
         /// inter frames *without* reserving their sequence numbers, so its
@@ -387,6 +396,27 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     private let h264Packetizer = H264Packetizer()
     private let h265Packetizer = H265Packetizer()
 
+    /// Send-side ring of recently broadcast packets, for answering viewer
+    /// NACKs with byte-identical retransmits. Shared across viewers (payloads
+    /// are identical — only the header bytes `rewriteRTPHeader` rewrites
+    /// differ); each NACK-capable viewer's reserved seq range is registered per
+    /// broadcast. Reset on `stop()`.
+    private let retransmitBuffer = RetransmitBuffer()
+
+    /// Capabilities each viewer advertised in its (extended) HELLO, keyed by
+    /// addr so it survives the pending→approve promotion. Governs whether the
+    /// server sends an extended HELLO_ACK, records retransmit ranges for it,
+    /// and pings it for RTT. Empty (legacy 1-byte HELLO) keeps the PLI path.
+    private let viewerCaps = OSAllocatedUnfairLock<[String: ScreenShareCaps]>(initialState: [:])
+
+    /// What the server supports and advertises back to cap-aware viewers.
+    private static let serverCaps: ScreenShareCaps = [.nack, .receiverReport]
+
+    /// Current capture frame-rate tier (60 / 30 / 15), the second congestion
+    /// lever below the bitrate floor. Seeded from the session fps cap at
+    /// `start()`; stepped by the adaptive sweep's `nextCongestionDecision`.
+    private let currentFpsTier = OSAllocatedUnfairLock<Int>(initialState: 60)
+
     /// Total non-timeout receive-loop errors survived this session. Feeds
     /// the give-up log line and `stop()`'s summary. Locked: bumped from the
     /// receive task, read from `stop()`.
@@ -456,6 +486,12 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// the viewer→server PLI path without an encoder attached.
     var onPLIRecordedForTesting: ((String) -> Void)?
 
+    /// Test-only: fires with the viewer's address and the number of packets
+    /// served each time a NACK is honored from the retransmit ring. Mirrors
+    /// `onPLIRecordedForTesting`; lets an E2E test assert the viewer→server
+    /// NACK path without a capture-helper attached.
+    var onNACKServedForTesting: ((String, Int) -> Void)?
+
     /// Invoked once the underlying `TailscaleNode` has been instantiated but
     /// **before** `node.up()` is called. AppState uses this hook to subscribe
     /// an IPN-bus watcher that opens the interactive-login URL in the user's
@@ -488,7 +524,9 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     ) async throws {
         guard !isRunning else { return }
 
-        sessionQuality.withLock { $0 = quality.normalized() }
+        let normalizedQuality = quality.normalized()
+        sessionQuality.withLock { $0 = normalizedQuality }
+        currentFpsTier.withLock { $0 = normalizedQuality.fpsCap }
 
         let node: TailscaleNode
         if let existing = existingNode {
@@ -1188,11 +1226,15 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             // Pending viewers never get an ack — the sharer hasn't said
             // yes yet, and silence keeps the viewer parked at "Connecting…"
             // until `approveViewer` or `denyViewer` resolves them.
+            // Record the viewer's advertised capabilities (extended HELLO);
+            // a legacy 1-byte HELLO decodes to `[]` and stays on the PLI path.
+            let caps = ScreenShareControlMessage.decodeHelloCaps(data)
+            viewerCaps.withLock { $0[addr] = caps }
             registerOrRefresh(addr: addr, isNew: true)
             if let assignedSSRC = (viewers.withLock { $0[addr]?.audioSSRC }) {
+                let ack = helloAckDatagram(for: addr, ssrc: assignedSSRC)
                 Task { [weak self] in
                     guard let pl = self?.packetListener else { return }
-                    let ack = ScreenShareControlMessage.encodeHelloAck(ssrc: assignedSSRC)
                     try? await pl.send(ack, to: addr)
                 }
             } else if (pendingViewers.withLock { $0[addr] != nil }) {
@@ -1234,6 +1276,115 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         case .profileUnsupported:
             registerOrRefresh(addr: addr, isNew: false)
             handleProfileUnsupported(from: addr)
+        case .nack:
+            registerOrRefresh(addr: addr, isNew: false)
+            handleNACK(data: data, from: addr)
+        case .receiverReport:
+            registerOrRefresh(addr: addr, isNew: false)
+            handleReceiverReport(data: data, from: addr)
+        case .ping:
+            // PING is server→viewer only. Ignore from viewers.
+            return
+        }
+    }
+
+    /// Build the HELLO_ACK for `addr`: the 6-byte extended form (carrying the
+    /// server's caps) when the viewer advertised any capability, else the
+    /// legacy 5-byte ack a pre-NACK viewer's strict decoder expects.
+    private func helloAckDatagram(for addr: String, ssrc: UInt32) -> Data {
+        let caps = viewerCaps.withLock { $0[addr] } ?? []
+        if caps.isEmpty {
+            return ScreenShareControlMessage.encodeHelloAck(ssrc: ssrc)
+        }
+        return ScreenShareControlMessage.encodeHelloAck(ssrc: ssrc, caps: Self.serverCaps)
+    }
+
+    /// Serve a viewer NACK from the retransmit ring, subject to the per-viewer
+    /// token budget. Sequence numbers still in the ring and within budget are
+    /// resent byte-identically (header rewritten to the requested seq + the
+    /// viewer's SSRC); anything evicted or over budget converts to the existing
+    /// PLI path so recovery is never worse than today's keyframe.
+    private func handleNACK(data: Data, from addr: String) {
+        guard isRunning else { return }
+        let entries = ScreenShareControlMessage.decodeNACK(data)
+        guard !entries.isEmpty else { return }
+
+        var requested: [UInt16] = []
+        for entry in entries {
+            requested.append(entry.pid)
+            var blp = entry.blp
+            var bit: UInt16 = 1
+            while blp != 0 {
+                if blp & 1 != 0 { requested.append(entry.pid &+ bit) }
+                blp >>= 1
+                bit &+= 1
+            }
+        }
+        guard !requested.isEmpty else { return }
+
+        let now = DispatchTime.now().uptimeNanoseconds
+        let snapshot = viewers.withLock { state -> (RetransmitBuffer.BudgetState, UInt32)? in
+            guard let viewer = state[addr] else { return nil }
+            return (viewer.retransmitBudget, viewer.ssrc)
+        }
+        guard let (budget0, ssrc) = snapshot else { return }
+        var budget = budget0
+        let current = currentBitrate.withLock { $0 }
+        // Budget: 25 % of the current bitrate, expressed in packets/sec.
+        let bytesPerSec = Double(max(current, TransportTuning.adaptiveFloorMinBps)) / 8.0 * 0.25
+        let tokensPerSecond = max(10.0, bytesPerSec / Double(H264Packetizer.maxPayloadBytes))
+        let config = RetransmitBuffer.BudgetConfig(
+            tokensPerSecond: tokensPerSecond, maxTokens: max(20.0, tokensPerSecond / 2))
+        let decision = RetransmitBuffer.retransmitDecision(
+            requested: requested,
+            ringHas: { self.retransmitBuffer.has(addr: addr, seq: $0) },
+            state: &budget,
+            config: config,
+            nowNs: now)
+
+        viewers.withLock { state in
+            guard var viewer = state[addr] else { return }
+            viewer.retransmitBudget = budget
+            viewer.nackServedThisWindow += decision.serve.count
+            state[addr] = viewer
+        }
+
+        if !decision.serve.isEmpty, let pl = packetListener {
+            let served = decision.serve
+            Task { [weak self] in
+                guard let self else { return }
+                for seq in served {
+                    guard var pkt = self.retransmitBuffer.template(addr: addr, seq: seq) else { continue }
+                    Self.rewriteRTPHeader(&pkt, sequence: seq, ssrc: ssrc)
+                    try? await pl.send(pkt, to: addr)
+                }
+                self.onNACKServedForTesting?(addr, served.count)
+            }
+        }
+        if decision.fallbackPLI {
+            // Gap too old for the ring or over budget — recover via a keyframe.
+            recordPLI(from: addr)
+            helperCapture?.requestKeyframe()
+        }
+    }
+
+    /// Fold a viewer's receiver report into its congestion inputs: record the
+    /// RR loss fraction and derive RTT from the echoed ping (RTT = now −
+    /// lastPingTs − the viewer's own reporting delay).
+    private func handleReceiverReport(data: Data, from addr: String) {
+        guard let report = ScreenShareControlMessage.decodeReceiverReport(data) else { return }
+        let now = DispatchTime.now().uptimeNanoseconds
+        var rttNs: UInt64 = 0
+        if report.lastPingTs != 0, now > report.lastPingTs {
+            let raw = now &- report.lastPingTs
+            let delayNs = UInt64(report.delaySincePingMs) &* 1_000_000
+            rttNs = raw > delayNs ? raw &- delayNs : raw
+        }
+        viewers.withLock { state in
+            guard var viewer = state[addr] else { return }
+            viewer.lossFractionQ8 = Int(report.fracLostQ8)
+            if rttNs > 0 { viewer.rttNs = rttNs }
+            state[addr] = viewer
         }
     }
 
@@ -1651,10 +1802,10 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             // drops its mic audio until a full reconnect. A normal HELLO join
             // also gets the .hello case's ACK; the duplicate is idempotent
             // (the viewer ignores an ACK that matches its current SSRC).
-            let ssrc = audioSSRC
+            let ack = helloAckDatagram(for: addr, ssrc: audioSSRC)
             Task { [weak self] in
                 guard let pl = self?.packetListener else { return }
-                try? await pl.send(ScreenShareControlMessage.encodeHelloAck(ssrc: ssrc), to: addr)
+                try? await pl.send(ack, to: addr)
             }
             publishAddedViewer(addr: addr)
         }
@@ -1808,7 +1959,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         logger.log("Viewer approved \(addr) (total=\(viewerCount))")
         // Send the deferred HELLO_ACK and request a keyframe so video
         // starts flowing on the next encoded AU.
-        let ack = ScreenShareControlMessage.encodeHelloAck(ssrc: pending.audioSSRC)
+        let ack = helloAckDatagram(for: addr, ssrc: pending.audioSSRC)
         Task { [weak self] in
             guard let pl = self?.packetListener else { return }
             try? await pl.send(ack, to: addr)
@@ -1849,6 +2000,8 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         // fire onConnectionClosed, which retires the peer's tracked strokes.
         videoSendTails.withLock { _ = $0.removeValue(forKey: addr) }
         audioSendTails.withLock { _ = $0.removeValue(forKey: addr) }
+        viewerCaps.withLock { _ = $0.removeValue(forKey: addr) }
+        retransmitBuffer.removeViewer(addr: addr)
         closeAnnotationChannels(forIP: ipFromAddr(addr))
         notifyViewersChanged()
         logger.log("Viewer expelled (remembered deny) \(addr)")
@@ -1906,6 +2059,8 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             // Prune the departed viewer's audio send chain (video chains
             // self-prune on the next broadcast's rebuild).
             audioSendTails.withLock { _ = $0.removeValue(forKey: addr) }
+            viewerCaps.withLock { _ = $0.removeValue(forKey: addr) }
+            retransmitBuffer.removeViewer(addr: addr)
             notifyViewersChanged()
             logger.log("Viewer disconnected \(addr)")
         }
@@ -2173,6 +2328,10 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
                 audioSendTails.withLock { state in
                     for entry in dropped { state.removeValue(forKey: entry.addr) }
                 }
+                viewerCaps.withLock { state in
+                    for entry in dropped { state.removeValue(forKey: entry.addr) }
+                }
+                for entry in dropped { retransmitBuffer.removeViewer(addr: entry.addr) }
                 notifyViewersChanged()
             }
             for entry in dropped {
@@ -2220,6 +2379,21 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
                     // restart settles (the fresh helper re-seeds it too).
                     lastHelperActivityNs.withLock { $0 = now }
                     Task { [weak self] in try? await self?.restartCapture() }
+                }
+            }
+
+            // ~1 Hz RTT ping to RR-capable viewers, piggybacked on this sweep.
+            // Each carries the server's monotonic uptime; the viewer echoes it
+            // in its next receiver report so the sharer can measure RTT.
+            let pingAddrs = viewerCaps.withLock { caps in
+                caps.compactMap { $0.value.contains(.receiverReport) ? $0.key : nil }
+            }
+            let liveAddrs = viewers.withLock { Set($0.keys) }
+            let pingTargets = pingAddrs.filter { liveAddrs.contains($0) }
+            if let pl = packetListener, !pingTargets.isEmpty {
+                let ping = ScreenShareControlMessage.encodePing(serverUptimeNs: now)
+                Task {
+                    for addr in pingTargets { try? await pl.send(ping, to: addr) }
                 }
             }
         }
@@ -2303,20 +2477,66 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             publishViewerHealth(healthByAddr)
             logViewerStats(pliCounts: pliCounts, healthByAddr: healthByAddr)
 
+            // Gather receiver-report feedback over the NON-throttled viewers
+            // (throttled viewers are deliberately frame-skipped, so their loss
+            // is expected) and drain the per-window NACK-served counters.
+            let (worstLossQ8, nackServed) = viewers.withLock { state -> (Int, Int) in
+                var loss = 0
+                var nacks = 0
+                for key in Array(state.keys) {
+                    guard var viewer = state[key] else { continue }
+                    if !throttleSet.contains(key) { loss = max(loss, viewer.lossFractionQ8) }
+                    nacks += viewer.nackServedThisWindow
+                    viewer.nackServedThisWindow = 0
+                    state[key] = viewer
+                }
+                return (loss, nacks)
+            }
+
             let elapsedSinceChange = now &- lastChange
-            if let next = Self.nextAdaptiveBitrate(
-                worstPLIs: fairness.globalBitrateInput,
-                current: current,
-                baseline: baseline,
-                elapsedSinceChangeNs: elapsedSinceChange,
+            let fpsTier = currentFpsTier.withLock { $0 }
+            let decision = Self.nextCongestionDecision(
+                CongestionInputs(
+                    lossFractionQ8: worstLossQ8,
+                    pliCount: fairness.globalBitrateInput,
+                    nackServed: nackServed,
+                    current: current,
+                    baseline: baseline,
+                    fpsTier: fpsTier,
+                    elapsedSinceChangeNs: elapsedSinceChange),
                 lossThreshold: lossThreshold,
                 downHysteresisNs: downHysteresisNs,
-                upHysteresisNs: upHysteresisNs
-            ) {
-                let reason = next < current ? "loss (\(fairness.globalBitrateInput) PLIs/5s)" : "clean window"
-                applyAdaptiveBitrate(next, reason: reason)
+                upHysteresisNs: upHysteresisNs)
+            if let nextBitrate = decision.bitrate {
+                var reason = "clean window"
+                if nextBitrate < current {
+                    reason =
+                        "loss (\(fairness.globalBitrateInput) PLIs, \(worstLossQ8)/256 frac, "
+                        + "\(nackServed) NACKs/5s)"
+                }
+                applyAdaptiveBitrate(nextBitrate, reason: reason)
+            }
+            if let nextFps = decision.fpsTier {
+                applyFpsTier(nextFps)
             }
         }
+    }
+
+    /// Apply an fps-ladder step: retune the helper's capture frame interval and
+    /// force a keyframe so viewers resync at the new rate. Resets the
+    /// hysteresis clock so the bitrate arm doesn't immediately fight the fps
+    /// change. No-op if the tier is unchanged.
+    private func applyFpsTier(_ fps: Int) {
+        let changed = currentFpsTier.withLock { existing -> Bool in
+            guard existing != fps else { return false }
+            existing = fps
+            return true
+        }
+        guard changed else { return }
+        lastBitrateChangeNs.withLock { $0 = DispatchTime.now().uptimeNanoseconds }
+        helperCapture?.setFrameInterval(fps)
+        helperCapture?.requestKeyframe()
+        logger.log("Adaptive fps: → \(fps) fps")
     }
 
     /// Update each connected viewer's `health` in the public `viewerInfos`
@@ -2634,6 +2854,23 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             return out
         }
 
+        // Record this broadcast in the retransmit ring for NACK-capable
+        // viewers. The batch templates (seq=0/ssrc=0) are shared across
+        // viewers; each viewer's reserved seq range indexes back into them. A
+        // frame the send-chain cap sheds below is still registered, so a NACK
+        // can recover an intentionally dropped frame (subject to budget).
+        let nackAddrs = viewerCaps.withLock { caps in
+            plans.compactMap { caps[$0.addr]?.contains(.nack) == true ? $0.addr : nil }
+        }
+        if !nackAddrs.isEmpty {
+            let batchID = retransmitBuffer.record(templates: templates, nowNs: nowNs)
+            let nackSet = Set(nackAddrs)
+            for plan in plans where nackSet.contains(plan.addr) {
+                retransmitBuffer.recordViewerRange(
+                    addr: plan.addr, startSeq: plan.startSeq, count: packetCount, batchID: batchID)
+            }
+        }
+
         // Fan out to each viewer on its OWN send chain. A viewer's frame N+1
         // awaits only its own frame N (preserving that viewer's packet order),
         // so a slow viewer whose `pl.send` blocks throttles only its own stream
@@ -2770,6 +3007,8 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         // own (its pl.send just fails once the listener closes below).
         videoSendTails.withLock { $0.removeAll() }
         audioSendTails.withLock { $0.removeAll() }
+        viewerCaps.withLock { $0.removeAll() }
+        retransmitBuffer.reset()
         notifyViewersChanged()
         notifyPendingViewersChanged()
 

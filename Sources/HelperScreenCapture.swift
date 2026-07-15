@@ -180,6 +180,13 @@ final class HelperScreenCapture: @unchecked Sendable {
         HelperControlWriter(handle: stdin).sendBitrate(bps)
     }
 
+    /// Retune the capture frame-rate tier (fps ladder, second congestion
+    /// lever). The helper reconfigures the SCStream's `minimumFrameInterval`.
+    func setFrameInterval(_ fps: Int) {
+        guard let stdin = stdinHandle else { return }
+        HelperControlWriter(handle: stdin).sendFrameInterval(fps)
+    }
+
     private func readLoop() {
         guard let handle = stdoutHandle else { return }
         let reader = HelperFrameReader(handle: handle)

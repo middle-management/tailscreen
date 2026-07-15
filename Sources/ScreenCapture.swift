@@ -226,6 +226,28 @@ class ScreenCapture: NSObject, @unchecked Sendable {
         }
     }
 
+    /// Live-retune the capture frame rate (fps ladder) by rewriting the base
+    /// configuration's `minimumFrameInterval` and pushing it through
+    /// `stream.updateConfiguration` — the same supported live-reconfig path
+    /// `updateConfiguration(pixelWidth:pixelHeight:)` uses, so it never tears
+    /// the SCStream down. No-op if the stream isn't up or fps is unchanged.
+    func updateFrameInterval(fps: Int) async {
+        guard let stream, let baseConfig = streamConfig else {
+            logEvent("updateFrameInterval.skip", extra: "stream=nil-or-no-baseConfig fps=\(fps)")
+            return
+        }
+        let interval = CMTime(value: 1, timescale: CMTimeScale(max(1, fps)))
+        if CMTimeCompare(baseConfig.minimumFrameInterval, interval) == 0 { return }
+        baseConfig.minimumFrameInterval = interval
+        logEvent("updateFrameInterval.apply", extra: "fps=\(fps)")
+        do {
+            try await stream.updateConfiguration(baseConfig)
+            logEvent("updateFrameInterval.ok", extra: "fps=\(fps)")
+        } catch {
+            logEvent("updateFrameInterval.fail", extra: "err=\(error) fps=\(fps)")
+        }
+    }
+
     /// Shared SCStream bring-up. `filter` is passed in from
     /// `start(filter:)` (the picker subprocess produces it). The rest
     /// of the lifecycle — addStreamOutput, startCapture watchdog,

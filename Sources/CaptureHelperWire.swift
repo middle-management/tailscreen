@@ -70,6 +70,11 @@ enum CaptureHelperWire {
         /// The helper resolves the IDs to live SC* objects via
         /// `SCShareableContent` and rebuilds the filter on its side.
         case contentFilter = 0x03
+        /// `[4 bytes fps BE]` — fps-ladder downshift/upshift (60 / 30 / 15).
+        /// The helper reconfigures the SCStream's `minimumFrameInterval` (the
+        /// second congestion lever, applied once bitrate bottoms out). Runs in
+        /// the capture helper, never the main process, per CLAUDE.md.
+        case setFrameInterval = 0x04
         /// Helper drains its current frame, calls SCStream.stopCapture,
         /// exits. Payload empty.
         case shutdown = 0xFF
@@ -227,6 +232,12 @@ final class HelperControlWriter {
 
     func sendContentFilter(_ data: Data) {
         write(type: .contentFilter, payload: data)
+    }
+
+    func sendFrameInterval(_ fps: Int) {
+        var payload = Data()
+        payload.appendBE(UInt32(max(1, fps)))
+        write(type: .setFrameInterval, payload: payload)
     }
 
     func sendShutdown() { write(type: .shutdown, payload: Data()) }
