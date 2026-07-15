@@ -1363,10 +1363,14 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             config: config,
             nowNs: now)
 
+        // Copy the mutated budget into a `let` — the `withLock` closure is
+        // @Sendable and can't capture the outer `var budget`.
+        let updatedBudget = budget
+        let servedCount = decision.serve.count
         viewers.withLock { state in
             guard var viewer = state[addr] else { return }
-            viewer.retransmitBudget = budget
-            viewer.nackServedThisWindow += decision.serve.count
+            viewer.retransmitBudget = updatedBudget
+            viewer.nackServedThisWindow += servedCount
             state[addr] = viewer
         }
 
@@ -1395,15 +1399,19 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     private func handleReceiverReport(data: Data, from addr: String) {
         guard let report = ScreenShareControlMessage.decodeReceiverReport(data) else { return }
         let now = DispatchTime.now().uptimeNanoseconds
-        var rttNs: UInt64 = 0
+        var computedRTT: UInt64 = 0
         if report.lastPingTs != 0, now > report.lastPingTs {
             let raw = now &- report.lastPingTs
             let delayNs = UInt64(report.delaySincePingMs) &* 1_000_000
-            rttNs = raw > delayNs ? raw &- delayNs : raw
+            computedRTT = raw > delayNs ? raw &- delayNs : raw
         }
+        // `let` copies — the @Sendable `withLock` closure can't capture the
+        // outer mutable `computedRTT`.
+        let rttNs = computedRTT
+        let lossQ8 = Int(report.fracLostQ8)
         viewers.withLock { state in
             guard var viewer = state[addr] else { return }
-            viewer.lossFractionQ8 = Int(report.fracLostQ8)
+            viewer.lossFractionQ8 = lossQ8
             if rttNs > 0 { viewer.rttNs = rttNs }
             state[addr] = viewer
         }
