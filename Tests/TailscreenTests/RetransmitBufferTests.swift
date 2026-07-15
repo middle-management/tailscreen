@@ -75,6 +75,26 @@ final class RetransmitBufferTests: XCTestCase {
         XCTAssertNotNil(buf.template(addr: "v1", seq: 1))
     }
 
+    func testHasAgreesWithTemplateAfterEviction() {
+        // Regression: `has()` must verify the batch still exists AND the index
+        // is in bounds, exactly like `template()`. Per-viewer ranges outlive
+        // batches, so a range can point at an evicted batch — if `has()` said
+        // "yes" there, the budget would serve a seq that then fails to send
+        // with no PLI fallback.
+        let buf = RetransmitBuffer(windowNs: .max, byteCap: .max, maxBatches: 1)
+        let b0 = buf.record(templates: templates([0]), nowNs: 0)
+        buf.recordViewerRange(addr: "v1", startSeq: 0, count: 1, batchID: b0)
+        XCTAssertTrue(buf.has(addr: "v1", seq: 0))
+        XCTAssertNotNil(buf.template(addr: "v1", seq: 0))
+        // Second batch evicts b0 (maxBatches 1); v1's range for b0 lingers.
+        let b1 = buf.record(templates: templates([1]), nowNs: 0)
+        buf.recordViewerRange(addr: "v1", startSeq: 1, count: 1, batchID: b1)
+        XCTAssertNil(buf.template(addr: "v1", seq: 0))
+        XCTAssertFalse(buf.has(addr: "v1", seq: 0), "has() must not claim an evicted batch is live")
+        XCTAssertTrue(buf.has(addr: "v1", seq: 1))
+        XCTAssertNotNil(buf.template(addr: "v1", seq: 1))
+    }
+
     func testRemoveViewerDropsRanges() {
         let buf = RetransmitBuffer()
         let b0 = buf.record(templates: templates([0]), nowNs: 0)

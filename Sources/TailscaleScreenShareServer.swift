@@ -117,6 +117,11 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         /// `nextCongestionDecision`. Legacy (non-RR) viewers leave these at 0.
         var lossFractionQ8: Int = 0
         var rttNs: UInt64 = 0
+        /// Uptime-ns of the most recent receiver report. The sweep decays a
+        /// stale `lossFractionQ8` to 0 once older than one window, so a viewer
+        /// that reports high loss then goes silent doesn't pin the global loss
+        /// input up until it's swept out.
+        var lastRRAtNs: UInt64 = 0
         /// Retransmits served to this viewer in the current sweep window, reset
         /// each window. NACK-recovered loss softens the congestion cut.
         var nackServedThisWindow: Int = 0
@@ -1378,12 +1383,26 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             let served = decision.serve
             Task { [weak self] in
                 guard let self else { return }
+                var sent = 0
+                var evictedMidFlight = false
                 for seq in served {
-                    guard var pkt = self.retransmitBuffer.template(addr: addr, seq: seq) else { continue }
+                    // TOCTOU: `has()` said yes when we budgeted, but a batch can
+                    // be evicted between then and now. A missing template here
+                    // must fall back to the keyframe path — otherwise the viewer
+                    // gets neither the packet nor a PLI.
+                    guard var pkt = self.retransmitBuffer.template(addr: addr, seq: seq) else {
+                        evictedMidFlight = true
+                        continue
+                    }
                     Self.rewriteRTPHeader(&pkt, sequence: seq, ssrc: ssrc)
                     try? await pl.send(pkt, to: addr)
+                    sent += 1
                 }
-                self.onNACKServedForTesting?(addr, served.count)
+                if evictedMidFlight {
+                    self.recordPLI(from: addr)
+                    self.helperCapture?.requestKeyframe()
+                }
+                self.onNACKServedForTesting?(addr, sent)
             }
         }
         if decision.fallbackPLI {
@@ -1412,6 +1431,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         viewers.withLock { state in
             guard var viewer = state[addr] else { return }
             viewer.lossFractionQ8 = lossQ8
+            viewer.lastRRAtNs = now
             if rttNs > 0 { viewer.rttNs = rttNs }
             state[addr] = viewer
         }
@@ -2459,30 +2479,41 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             let now = DispatchTime.now().uptimeNanoseconds
 
             // Prune each viewer's PLI ring to this window and snapshot the
-            // per-viewer count plus who's currently in keyframe-only mode.
+            // per-viewer PLI count, its (freshness-decayed) RR loss, and who's
+            // currently in keyframe-only mode.
             let cutoff = now &- windowNs
-            let (pliCounts, currentlyThrottled): ([String: Int], Set<String>) =
-                viewers.withLock { state -> ([String: Int], Set<String>) in
+            let (pliCounts, lossQ8ByAddr, currentlyThrottled):
+                ([String: Int], [String: Int], Set<String>) =
+                viewers.withLock { state -> ([String: Int], [String: Int], Set<String>) in
                     var counts: [String: Int] = [:]
+                    var lossQ8: [String: Int] = [:]
                     var throttled = Set<String>()
                     for key in Array(state.keys) {
                         guard var viewer = state[key] else { continue }
                         viewer.pliTimestampsNs.removeAll { $0 < cutoff }
                         state[key] = viewer
                         counts[key] = viewer.pliTimestampsNs.count
+                        // Decay stale RR loss: a report older than one window is
+                        // treated as no-loss so a viewer that reported high loss
+                        // then went silent can't pin the global input up.
+                        let fresh = viewer.lastRRAtNs != 0 && now &- viewer.lastRRAtNs < windowNs
+                        lossQ8[key] = fresh ? viewer.lossFractionQ8 : 0
                         if now < viewer.throttledUntilNs { throttled.insert(key) }
                     }
-                    return (counts, throttled)
+                    return (counts, lossQ8, throttled)
                 }
 
-            // Attribute loss: throttle an isolated bad viewer (keyframe-only)
-            // instead of cutting the global rate; feed the worst NON-throttled
-            // PLI count to the unchanged global decision.
-            let fairness = Self.fairnessDecision(
+            // Attribute loss: throttle an isolated bad viewer (keyframe-only,
+            // whether its loss shows up as PLIs OR RR fraction) instead of
+            // cutting the global rate; feed only the worst NON-throttled PLI /
+            // RR-loss to the global decision, so one viewer can't tank the
+            // shared rate.
+            let gci = Self.congestionInputs(
                 pliCounts: pliCounts,
+                lossQ8ByAddr: lossQ8ByAddr,
                 currentlyThrottled: currentlyThrottled,
                 lossThreshold: lossThreshold)
-            let throttleSet = Set(fairness.throttle)
+            let throttleSet = Set(gci.throttle)
             let throttleDeadline = now &+ (2 &* windowNs)  // ~10 s; renewed while isolated
 
             // Apply/renew throttle windows and derive each viewer's health.
@@ -2508,32 +2539,31 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             publishViewerHealth(healthByAddr)
             logViewerStats(pliCounts: pliCounts, healthByAddr: healthByAddr)
 
-            // Gather receiver-report feedback over the NON-throttled viewers
-            // (throttled viewers are deliberately frame-skipped, so their loss
-            // is expected) and drain the per-window NACK-served counters.
-            let (worstLossQ8, nackServed) = viewers.withLock { state -> (Int, Int) in
-                var loss = 0
+            // Drain the per-window NACK-served counters (loss/PLI inputs already
+            // computed by `congestionInputs`, excluding throttled viewers).
+            let nackServed = viewers.withLock { state -> Int in
                 var nacks = 0
                 for key in Array(state.keys) {
                     guard var viewer = state[key] else { continue }
-                    if !throttleSet.contains(key) { loss = max(loss, viewer.lossFractionQ8) }
                     nacks += viewer.nackServedThisWindow
                     viewer.nackServedThisWindow = 0
                     state[key] = viewer
                 }
-                return (loss, nacks)
+                return nacks
             }
 
             let elapsedSinceChange = now &- lastChange
             let fpsTier = currentFpsTier.withLock { $0 }
+            let sessionFpsCap = sessionQuality.withLock { $0 }.fpsCap
             let decision = Self.nextCongestionDecision(
                 CongestionInputs(
-                    lossFractionQ8: worstLossQ8,
-                    pliCount: fairness.globalBitrateInput,
+                    lossFractionQ8: gci.lossQ8Input,
+                    pliCount: gci.pliInput,
                     nackServed: nackServed,
                     current: current,
                     baseline: baseline,
                     fpsTier: fpsTier,
+                    fpsCap: sessionFpsCap,
                     elapsedSinceChangeNs: elapsedSinceChange),
                 lossThreshold: lossThreshold,
                 downHysteresisNs: downHysteresisNs,
@@ -2541,7 +2571,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             if let nextBitrate = decision.bitrate {
                 var reason = "clean window"
                 if nextBitrate < current {
-                    reason = "loss \(fairness.globalBitrateInput)plis/\(worstLossQ8)frac/\(nackServed)nack"
+                    reason = "loss \(gci.pliInput)plis/\(gci.lossQ8Input)frac/\(nackServed)nack"
                 }
                 applyAdaptiveBitrate(nextBitrate, reason: reason)
             }
@@ -2657,6 +2687,10 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         var baseline: Int
         /// Current capture frame-rate tier (60 / 30 / 15).
         var fpsTier: Int
+        /// Session fps cap (from `QualitySettings.fpsCap`). The fps-recovery
+        /// ladder must never raise above this — a `.low`-preset 30 fps session
+        /// must not be pushed to 60.
+        var fpsCap: Int = 60
         var elapsedSinceChangeNs: UInt64
     }
 
@@ -2676,10 +2710,62 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         if tier > 15 { return 15 }
         return nil
     }
-    static func raiseFpsTier(_ tier: Int) -> Int? {
-        if tier < 30 { return 30 }
-        if tier < 60 { return 60 }
-        return nil
+    /// Next tier up, clamped to the session `cap` — a capped (e.g. 30 fps
+    /// `.low`) session must never be raised above its cap. `nil` when already
+    /// at the top rung or the cap.
+    static func raiseFpsTier(_ tier: Int, cap: Int) -> Int? {
+        let next: Int
+        if tier < 30 {
+            next = 30
+        } else if tier < 60 {
+            next = 60
+        } else {
+            return nil
+        }
+        let clamped = min(next, cap)
+        return clamped > tier ? clamped : nil
+    }
+
+    /// Convert an RR "fraction lost" (Q8, 0…255) into a PLI-equivalent loss
+    /// count so RR loss flows through the SAME per-viewer fairness/isolation
+    /// gate as PLIs. ~10 % loss (highLossQ8 = 26) maps to just over the 2-PLI
+    /// threshold, so a viewer reporting high RR loss with no PLIs is still
+    /// eligible for keyframe-only isolation instead of dragging the global rate.
+    static func rrLossPLIEquivalent(fracLostQ8: Int) -> Int {
+        max(0, fracLostQ8) / 8
+    }
+
+    /// Global congestion inputs derived from per-viewer signals, folding RR
+    /// loss into the same isolation gate as PLI. Returns the viewers to throttle
+    /// (keyframe-only) and the worst PLI / RR-loss over ONLY the non-throttled
+    /// viewers — so one viewer's (possibly fabricated) RR loss gets it isolated
+    /// first and can't set the shared rate for everyone.
+    struct GlobalCongestionInputs: Equatable {
+        var throttle: [String]
+        var pliInput: Int
+        var lossQ8Input: Int
+    }
+    static func congestionInputs(
+        pliCounts: [String: Int],
+        lossQ8ByAddr: [String: Int],
+        currentlyThrottled: Set<String>,
+        lossThreshold: Int = 2
+    ) -> GlobalCongestionInputs {
+        // Combined per-viewer loss folds RR into PLI-equivalent units so the
+        // fairness gate can isolate an RR-lossy-but-PLI-quiet viewer.
+        var combined: [String: Int] = [:]
+        for key in Set(pliCounts.keys).union(lossQ8ByAddr.keys) {
+            let pli = pliCounts[key] ?? 0
+            let rr = rrLossPLIEquivalent(fracLostQ8: lossQ8ByAddr[key] ?? 0)
+            combined[key] = max(pli, rr)
+        }
+        let fairness = fairnessDecision(
+            pliCounts: combined, currentlyThrottled: currentlyThrottled, lossThreshold: lossThreshold)
+        let throttleSet = Set(fairness.throttle)
+        let pliInput = pliCounts.filter { !throttleSet.contains($0.key) }.values.max() ?? 0
+        let lossQ8Input = lossQ8ByAddr.filter { !throttleSet.contains($0.key) }.values.max() ?? 0
+        return GlobalCongestionInputs(
+            throttle: fairness.throttle, pliInput: pliInput, lossQ8Input: lossQ8Input)
     }
 
     /// Receiver-feedback congestion control. Bitrate is the primary lever (cut
@@ -2712,8 +2798,11 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         // cheaply, so it shouldn't drive a full-rate cut on its own.
         let effectivePLIs = inputs.pliCount - min(inputs.pliCount, inputs.nackServed / 2)
         let heavyLoss = inputs.lossFractionQ8 > highLossQ8 || effectivePLIs > lossThreshold
-        let clean =
-            inputs.lossFractionQ8 <= lowLossQ8 && inputs.pliCount == 0 && inputs.nackServed == 0
+        // Recovery is NOT gated on `nackServed == 0`: on a real WAN a NACK is
+        // served most windows, and the retransmit already repaired that loss,
+        // so requiring literally zero NACKs would suppress recovery exactly on
+        // the lossy links NACK targets. Low RR loss + no PLIs is "clean enough".
+        let clean = inputs.lossFractionQ8 <= lowLossQ8 && inputs.pliCount == 0
 
         let downReady = inputs.elapsedSinceChangeNs >= downHysteresisNs
         let upReady = inputs.elapsedSinceChangeNs >= upHysteresisNs
@@ -2734,7 +2823,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         // of baseline; otherwise raise bitrate.
         if clean && upReady {
             let sixtyPct = inputs.baseline * 6 / 10
-            if inputs.current >= sixtyPct, let higher = raiseFpsTier(inputs.fpsTier) {
+            if inputs.current >= sixtyPct, let higher = raiseFpsTier(inputs.fpsTier, cap: inputs.fpsCap) {
                 return CongestionDecision(bitrate: nil, fpsTier: higher)
             }
             if inputs.current < inputs.baseline {

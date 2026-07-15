@@ -86,11 +86,10 @@ struct NACKScheduler: Sendable {
         self.rttNs = initialRTTNs
     }
 
-    /// Update the RTT estimate (from a receiver-report round trip). Clamped to a
-    /// sane band so a bogus sample can't push the re-NACK cadence absurd.
-    mutating func updateRTT(_ ns: UInt64) {
-        rttNs = min(2_000_000_000, max(1_000_000, ns))
-    }
+    /// Current RTT estimate in nanoseconds (test/introspection aid). Starts at
+    /// `initialRTTNs`; adapts via `updateRTTSample` on each NACK→retransmit
+    /// round trip.
+    var rttEstimateNs: UInt64 { rttNs }
 
     /// Feed one received video packet's sequence number. Updates gap tracking
     /// (new gaps opened ahead of `highestSeq`, this seq removed if it filled a
@@ -104,25 +103,36 @@ struct NACKScheduler: Sendable {
         let forward = seq &- highest
         if forward == 0 || forward > UInt16(1 << 15) {
             // Duplicate or an old straggler (possibly a served retransmit) —
-            // if it fills a tracked gap, clear it; otherwise ignore.
-            gaps.removeValue(forKey: seq)
+            // if it fills a tracked gap, clear it; otherwise ignore. A gap we
+            // NACKed that's now filled gives an RTT sample (NACK → retransmit
+            // round trip) that tunes the re-NACK cadence.
+            if let filled = gaps.removeValue(forKey: seq), filled.attempts > 0, filled.lastNackNs != 0 {
+                updateRTTSample(nowNs &- filled.lastNackNs)
+            }
             return evaluate(nowNs: nowNs)
+        }
+
+        // A jump wider than `maxGaps` is a stream discontinuity (long stall /
+        // burst loss / resync), not selectively repairable. In NACK mode the
+        // depacketizer's own loss-PLI is suppressed, so we must emit the PLI
+        // here — otherwise a >256-packet gap yields neither NACK nor keyframe
+        // and the viewer can freeze until a natural IDR. Abandon tracked gaps
+        // and fall back to the keyframe path.
+        if Int(forward) > maxGaps {
+            gaps.removeAll()
+            highestSeq = seq
+            return [.sendPLI]
         }
 
         // Newer packet: open a gap for every sequence number skipped between
         // the old highest and this one, bump the newer-seen count on existing
-        // gaps, and clear this seq if it was itself a tracked gap. A jump wider
-        // than `maxGaps` is a stream discontinuity (long stall / resync), not
-        // recoverable loss — don't enumerate thousands of gaps; let the
-        // keyframe path resync instead.
-        if Int(forward) <= maxGaps {
-            var missing = highest &+ 1
-            while missing != seq {
-                if gaps[missing] == nil, gaps.count < maxGaps {
-                    gaps[missing] = Gap(firstSeenNs: nowNs)
-                }
-                missing &+= 1
+        // gaps, and clear this seq if it was itself a tracked gap.
+        var missing = highest &+ 1
+        while missing != seq {
+            if gaps[missing] == nil, gaps.count < maxGaps {
+                gaps[missing] = Gap(firstSeenNs: nowNs)
             }
+            missing &+= 1
         }
         for key in Array(gaps.keys) {
             gaps[key]?.newerSeen += 1
@@ -130,6 +140,14 @@ struct NACKScheduler: Sendable {
         gaps.removeValue(forKey: seq)
         highestSeq = seq
         return evaluate(nowNs: nowNs)
+    }
+
+    /// Blend a NACK→retransmit round-trip sample into the RTT estimate (EMA,
+    /// 7/8 old + 1/8 new), clamped to a sane band. Drives `reNackInterval`, so
+    /// the re-NACK cadence adapts to the real path instead of the init default.
+    private mutating func updateRTTSample(_ sampleNs: UInt64) {
+        let clamped = min(2_000_000_000, max(1_000_000, sampleNs))
+        rttNs = (rttNs &* 7 &+ clamped) / 8
     }
 
     /// Time-driven re-evaluation with no new packet (call periodically so a gap
@@ -169,18 +187,47 @@ struct NACKScheduler: Sendable {
 
         var actions: [NACKAction] = []
         if !toNack.isEmpty, rateAllows(nowNs: nowNs) {
-            toNack.sort()
-            for seq in toNack {
+            // Only the seqs that actually fit in one capped NACK datagram
+            // (≤16 FCI entries) go on the wire — and only those count as
+            // attempted. Otherwise the tail beyond 16 groups would silently
+            // burn all 3 attempts without ever being sent → premature PLI.
+            let onWire = Self.fciCappedSeqs(toNack)
+            for seq in onWire {
                 gaps[seq]?.attempts += 1
                 gaps[seq]?.lastNackNs = nowNs
             }
             nackStampsNs.append(nowNs)
-            actions.append(.sendNACK(toNack))
+            actions.append(.sendNACK(onWire))
         }
         if abandon {
             actions.append(.sendPLI)
         }
         return actions
+    }
+
+    /// The subset of `seqs` that fits in `maxEntries` generic-NACK FCI groups —
+    /// exactly what one capped NACK datagram (see `encodeNACK`) carries. Greedy
+    /// over sorted seqs, mirroring `packFCI`, so the scheduler counts only
+    /// on-the-wire seqs as attempted.
+    static func fciCappedSeqs(_ seqs: [UInt16], maxEntries: Int = 16) -> [UInt16] {
+        let sorted = seqs.sorted()
+        var covered: [UInt16] = []
+        var i = 0
+        var entries = 0
+        while i < sorted.count && entries < maxEntries {
+            let pid = sorted[i]
+            covered.append(pid)
+            var j = i + 1
+            while j < sorted.count {
+                let delta = sorted[j] &- pid
+                guard delta >= 1, delta <= 16 else { break }
+                covered.append(sorted[j])
+                j += 1
+            }
+            i = j
+            entries += 1
+        }
+        return covered
     }
 
     /// Per-second NACK-datagram rate cap. Prunes stamps older than 1 s and

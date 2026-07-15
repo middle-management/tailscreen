@@ -109,9 +109,18 @@ final class RetransmitBuffer: @unchecked Sendable {
 
     /// True when `seq` (in `addr`'s sequence space) still resolves to a live
     /// batch template. The NACK budget consults this to convert
-    /// no-longer-in-ring requests to PLI.
+    /// no-longer-in-ring requests to PLI. Verifies the batch still exists AND
+    /// the index is in bounds — mirroring `template()` exactly — because
+    /// per-viewer ranges (evict at 128) outlive batches (evict by 1 s age /
+    /// bytes / count), so a range can point at an already-evicted batch. Any
+    /// disagreement with `template()` would let the budget serve a seq that
+    /// then fails to send with no PLI fallback.
     func has(addr: String, seq: UInt16) -> Bool {
-        lock.withLock { state in Self.resolve(state, addr: addr, seq: seq) != nil }
+        lock.withLock { state in
+            guard let (batchID, index) = Self.resolve(state, addr: addr, seq: seq) else { return false }
+            guard let batch = state.batches[batchID], index < batch.templates.count else { return false }
+            return true
+        }
     }
 
     /// Resolve one requested sequence number to its shared template (seq=0 /

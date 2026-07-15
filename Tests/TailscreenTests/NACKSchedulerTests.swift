@@ -90,6 +90,59 @@ final class NACKSchedulerTests: XCTestCase {
         XCTAssertEqual(slow.tick(nowNs: 640 * ms), [.sendNACK([1])])
     }
 
+    func testFCICappedSeqsBoundsToSixteenGroups() {
+        // 20 isolated (20-apart) missing seqs → 20 FCI groups; capped to 16.
+        let seqs = (0..<20).map { UInt16($0 * 20) }
+        let capped = NACKScheduler.fciCappedSeqs(seqs)
+        XCTAssertEqual(capped.count, 16)
+        XCTAssertEqual(capped, Array(seqs.prefix(16)))
+    }
+
+    func testFCICappedSeqsKeepsContiguousRun() {
+        // A dense contiguous run packs 17 seqs/group, so 30 seqs fit in 2
+        // groups — well under the cap; none dropped.
+        let seqs = (0..<30).map { UInt16($0) }
+        XCTAssertEqual(NACKScheduler.fciCappedSeqs(seqs).sorted(), seqs)
+    }
+
+    func testContiguousGapRunFullyNACKed() {
+        // A 50-packet contiguous loss (< 16 FCI groups) must be NACKed in full,
+        // not truncated by the FCI cap.
+        var sched = NACKScheduler()
+        _ = sched.observe(seq: 0, nowNs: 0)
+        _ = sched.observe(seq: 51, nowNs: 0)  // gaps 1…50
+        let actions = sched.tick(nowNs: 20 * ms)
+        guard let first = actions.first, case .sendNACK(let seqs) = first else {
+            XCTFail("expected a NACK")
+            return
+        }
+        XCTAssertEqual(seqs.sorted(), (1...50).map { UInt16($0) })
+        XCTAssertFalse(actions.contains(.sendPLI), "a repairable run must not PLI")
+    }
+
+    func testLargeSeqJumpFallsBackToPLI() {
+        // A jump beyond maxGaps (256) is a discontinuity: neither NACK nor gap
+        // tracking, just a keyframe request (else the viewer freezes with the
+        // depacketizer PLI suppressed in NACK mode).
+        var sched = NACKScheduler()
+        _ = sched.observe(seq: 0, nowNs: 0)
+        let actions = sched.observe(seq: 300, nowNs: 1 * ms)
+        XCTAssertEqual(actions, [.sendPLI])
+        XCTAssertFalse(sched.hasOpenGaps)
+    }
+
+    func testRTTAdaptsFromRetransmitRoundTrip() {
+        var sched = NACKScheduler(initialRTTNs: 60_000_000)
+        XCTAssertEqual(sched.rttEstimateNs, 60_000_000)
+        _ = sched.observe(seq: 0, nowNs: 0)
+        _ = sched.observe(seq: 2, nowNs: 0)  // gap 1
+        XCTAssertEqual(sched.tick(nowNs: 20 * ms), [.sendNACK([1])])
+        // Retransmit of seq 1 lands 100 ms after the NACK → RTT sample 100 ms.
+        _ = sched.observe(seq: 1, nowNs: 120 * ms)
+        // EMA: (60·7 + 100) / 8 = 65 ms.
+        XCTAssertEqual(sched.rttEstimateNs, 65_000_000)
+    }
+
     func testFCIPacking() {
         // Contiguous run collapses into one entry with a bitmask.
         let single = NACKScheduler.packFCI([1, 2, 3, 4])

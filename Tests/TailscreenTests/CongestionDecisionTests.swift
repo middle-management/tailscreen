@@ -103,6 +103,69 @@ final class CongestionDecisionTests: XCTestCase {
         XCTAssertEqual(d.bitrate, baseline)
     }
 
+    // MARK: - Review fixes
+
+    func testRaiseFpsTierRespectsCap() {
+        XCTAssertEqual(TailscaleScreenShareServer.raiseFpsTier(30, cap: 60), 60)
+        XCTAssertEqual(TailscaleScreenShareServer.raiseFpsTier(15, cap: 30), 30)
+        XCTAssertNil(
+            TailscaleScreenShareServer.raiseFpsTier(30, cap: 30),
+            "a 30 fps-capped session must never be raised to 60")
+        XCTAssertNil(TailscaleScreenShareServer.raiseFpsTier(60, cap: 60))
+    }
+
+    func testCappedSessionNeverRaisesFpsAboveCap() {
+        // 30 fps-capped session at tier 30, clean & recovered — must NOT jump to 60.
+        let i = Inputs(
+            lossFractionQ8: 0, pliCount: 0, nackServed: 0, current: 6_000_000, baseline: baseline,
+            fpsTier: 30, fpsCap: 30, elapsedSinceChangeNs: 10 * s)
+        let d = TailscaleScreenShareServer.nextCongestionDecision(i)
+        XCTAssertNil(d.fpsTier, "must not raise fps above the session cap")
+    }
+
+    func testRRLossyViewerIsolatedNotGlobal() {
+        // v1 reports 100 % RR loss but 0 PLIs; v2/v3 healthy. v1 must be
+        // isolated (throttled) and the global inputs reflect only the healthy
+        // viewers — a single lying viewer can't tank the shared rate.
+        let gci = TailscaleScreenShareServer.congestionInputs(
+            pliCounts: ["v1": 0, "v2": 0, "v3": 0],
+            lossQ8ByAddr: ["v1": 255, "v2": 2, "v3": 0],
+            currentlyThrottled: [])
+        XCTAssertEqual(gci.throttle, ["v1"], "the RR-lossy viewer must be isolated")
+        XCTAssertEqual(gci.pliInput, 0)
+        XCTAssertLessThanOrEqual(gci.lossQ8Input, 2, "global RR loss must reflect only healthy viewers")
+
+        let d = decide(
+            Inputs(
+                lossFractionQ8: gci.lossQ8Input, pliCount: gci.pliInput, nackServed: 0,
+                current: baseline, baseline: baseline, fpsTier: 60, fpsCap: 60,
+                elapsedSinceChangeNs: 5 * s))
+        XCTAssertNil(d.bitrate, "one lying viewer must not cut the shared rate")
+        XCTAssertNil(d.fpsTier)
+    }
+
+    func testLegacyPLIOnlyStillReachesGlobal() {
+        // No RR at all: a truly widespread PLI loss still drives the global cut
+        // (regression: folding RR in must not swallow the PLI path).
+        let gci = TailscaleScreenShareServer.congestionInputs(
+            pliCounts: ["v1": 5, "v2": 4],
+            lossQ8ByAddr: [:],
+            currentlyThrottled: [])
+        XCTAssertTrue(gci.throttle.isEmpty, "widespread PLI loss isolates nobody")
+        XCTAssertEqual(gci.pliInput, 5)
+        XCTAssertEqual(gci.lossQ8Input, 0)
+    }
+
+    func testRecoveryAllowedWithNACKsServed() {
+        // Low RR loss, 0 PLIs, but NACKs served this window — recovery must
+        // still fire (the retransmits already repaired the loss).
+        let i = Inputs(
+            lossFractionQ8: 2, pliCount: 0, nackServed: 12, current: 5_000_000, baseline: baseline,
+            fpsTier: 60, fpsCap: 60, elapsedSinceChangeNs: 10 * s)
+        let d = TailscaleScreenShareServer.nextCongestionDecision(i)
+        XCTAssertEqual(d.bitrate, 5_500_000, "served NACKs must not block recovery")
+    }
+
     func testHoldsWhenNoBaseline() {
         let i = TailscaleScreenShareServer.CongestionInputs(
             lossFractionQ8: 99, pliCount: 9, nackServed: 0, current: 0, baseline: 0, fpsTier: 60,

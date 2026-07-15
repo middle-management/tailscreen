@@ -296,6 +296,11 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         // the stats overlay doesn't inherit a stale drop-rate or codec
         // label across reconnects.
         renderer.resetStats()
+        // Reset loss-recovery / receiver-report state too: these are instance
+        // fields, so a client reused across disconnect→reconnect would
+        // otherwise misclassify the new session's first packets (stale
+        // highest-seq, negotiated caps, gap tracker).
+        resetLossRecoveryState()
 
         let node: TailscaleNode
         if let existing = existingNode {
@@ -783,6 +788,24 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         lastPLISentNs.withLock { $0 = DispatchTime.now().uptimeNanoseconds }
         renderer.notePLISent()
         try? await pl.send(ScreenShareControlMessage.encode(.pli), to: addr)
+    }
+
+    /// Clear all NACK / receiver-report / depacketizer state for a fresh
+    /// session. Called from `connect()` so a reused client instance doesn't
+    /// carry a previous session's negotiated caps, sequence baseline, or gap
+    /// tracker into the new one.
+    private func resetLossRecoveryState() {
+        negotiatedCaps = []
+        nackScheduler = NACKScheduler()
+        depacketizer = MultiCodecDepacketizer()
+        rrHighestSeq = nil
+        rrSeqCycles = 0
+        rrExpectedBaseSeq = 0
+        rrReceivedSinceReport = 0
+        rrHasBaseline = false
+        lastRRSentNs = 0
+        lastServerPingNs = 0
+        lastPingArrivalNs = 0
     }
 
     // MARK: - NACK / receiver-report feedback (receive-task-only)
