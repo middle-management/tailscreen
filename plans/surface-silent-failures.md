@@ -1,6 +1,6 @@
 # Stop swallowing pipeline errors — degraded-state signals + self-healing
 
-> Status: proposed — this PR contains only the plan; implementation is a follow-up iteration.
+> Status: implemented in this PR.
 
 ## Problem & motivation
 
@@ -156,3 +156,40 @@ In `VideoEncoder.createSession`/`applyBitrate`, replace bare `VTSessionSetProper
 ## Estimated scope
 
 **M** — ~450-550 LOC total: ~120 decoder, ~80 loops/policy, ~100 stats/overlay/toolbar, ~40 encoder logging, ~30 AppState, ~30 strings, ~150-200 tests. No wire or dependency changes.
+
+## Deviations
+
+Where the implementation diverges from the letter of the plan, and why:
+
+- **PLI throttle state is now lock-guarded.** The plan's "hoist the throttle
+  check into a small method" implied shared state, but `lastPLISentNs` was a
+  plain `var` only ever touched from the receive task. The ladder now sends
+  PLIs from decoder-escalation `Task`s too, so it became an
+  `OSAllocatedUnfairLock<UInt64>` inside `sendPLIThrottled()` rather than a
+  bare hoist.
+- **Per-failure stats plumbing uses a decoder callback, not polling.** The
+  plan named the renderer methods (`noteDecodeFailure()` etc.) but not how the
+  client learns of each failure; a `VideoDecoder.onFrameDecodeFailed`
+  callback (fired on the decoder queue alongside the ladder) was added for
+  that, and the counter hooks publish to the stats model immediately instead
+  of waiting for the display-link flush — during a stall there is no flush.
+- **Degraded row is a banner + toolbar badge only.** As designed in (c); the
+  overlay's accessibility summary also carries the degraded state and the two
+  new counters (unlocalized, matching the existing summary strings).
+- **Encoder helper signature.** `setProperty(_:key:value:failures:)` with an
+  `inout [String]` instead of the sketched `log: inout [String]` name, and
+  `applyBitrate` gained the same `failures:` parameter. Runtime `setBitrate`
+  refusals log once per session via a latch cleared on `createSession` (the
+  plan's "once per session" applied to the create path; the sweep calls
+  `setBitrate` every few seconds, so it needed its own latch).
+- **Local-only E2E extensions deferred.** The Testing strategy's extensions to
+  `ScreenShareSyntheticFramesTests` / `ScreenShareControlChannelTests` need a
+  live local-headscale tsnet bring-up, which neither CI nor this
+  implementation environment can run; the CI-able suites
+  (`DecodeRecoveryDecisionTests`, `ReceiveLoopPolicyTests`, and the new
+  garbage-AVCC ladder test in `VideoCodecTests`) were added instead. The
+  manual `net-impair.sh` verification stands as described.
+- **`.signalDegraded` does not send an extra PLI.** The two keyframe-shaped
+  rungs (`.requestKeyframe`, `.recreateSession`) do, through the shared
+  throttle; the degraded rung only flips the indication, exactly as listed in
+  design (a).
