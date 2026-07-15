@@ -317,6 +317,16 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         decoder.onDecodeFailure = { [weak self] codec in
             self?.handleDecodeFailure(codec)
         }
+        decoder.onFrameDecodeFailed = { [weak self] in
+            self?.renderer.noteDecodeFailure()
+        }
+        decoder.onRecoveryAction = { [weak self] action in
+            self?.handleDecodeRecoveryAction(action)
+        }
+        decoder.onRecovered = { [weak self] in
+            self?.logger.log("Client: decoding recovered — clearing degraded indication")
+            self?.renderer.setDegraded(false)
+        }
         self.decoder = decoder
 
         self.isConnected = true
@@ -382,6 +392,29 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
             object: nil,
             userInfo: ["codec": String(describing: codec)]
         )
+    }
+
+    /// One rung of the decoder's consecutive-failure escalation ladder (see
+    /// `DecodeRecoveryAction`). Fires on the decoder's serial queue, so the
+    /// PLI sends hop into a Task; both keyframe-shaped rungs go through the
+    /// shared throttle — the ladder must not bypass the loss-amplification
+    /// guard in `sendPLIThrottled`.
+    private func handleDecodeRecoveryAction(_ action: DecodeRecoveryAction) {
+        logger.log("Client: decode-recovery action \(action)")
+        switch action {
+        case .requestKeyframe, .recreateSession:
+            // The decoder handles the session rebuild itself; either way a
+            // fresh IDR is what un-wedges decoding, so ask the sharer for
+            // one. This also feeds the server's adaptive-bitrate PLI window,
+            // so a genuinely lossy link steps its rate down.
+            Task { [weak self] in
+                await self?.sendPLIThrottled()
+            }
+        case .signalDegraded:
+            renderer.setDegraded(true)
+        case .surfaceError:
+            NotificationCenter.default.post(name: .tailscreenViewerVideoStalled, object: nil)
+        }
     }
 
     private func receiveLoop() async {
@@ -470,18 +503,10 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
 
                 if let au = depacketizer.ingest(datagram) {
                     framesDelivered += 1
-                    if au.lostBeforeThisAU, let addr = serverAddr {
-                        // Rate-limit PLIs. Each one forces the encoder to emit
-                        // a (large) keyframe, which fragments into more packets
-                        // and, on a lossy link, can lose *more* — so a PLI per
-                        // dropped frame is a loss-amplification loop. One per
-                        // pliMinIntervalNs is plenty: the keyframe it triggers
-                        // covers all loss up to its arrival.
-                        let nowNs = DispatchTime.now().uptimeNanoseconds
-                        if nowNs &- lastPLISentNs >= pliMinIntervalNs {
-                            lastPLISentNs = nowNs
-                            try? await pl.send(ScreenShareControlMessage.encode(.pli), to: addr)
-                        }
+                    if au.lostBeforeThisAU {
+                        // Rate-limited — see `sendPLIThrottled` for the
+                        // loss-amplification hazard the throttle prevents.
+                        await sendPLIThrottled()
                     }
                     if framesDelivered == 1 || framesDelivered % 60 == 0 {
                         logger.log(
@@ -589,11 +614,33 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
 
     private var lastReceiveUptimeNs: UInt64 = 0
 
-    /// Throttle for loss-driven PLIs (see the send site in `receiveLoop`).
-    private var lastPLISentNs: UInt64 = 0
+    /// Throttle state for PLIs (see `sendPLIThrottled`). Locked because it's
+    /// written from the receive task *and* from decoder-escalation Tasks.
+    private let lastPLISentNs = OSAllocatedUnfairLock<UInt64>(initialState: 0)
     /// Minimum spacing between PLIs. ~100 ms caps keyframe requests at ~10/s
     /// instead of up to one per dropped frame (60/s), while staying responsive.
     private let pliMinIntervalNs: UInt64 = 100_000_000
+
+    /// Send a PLI to the server unless one went out within
+    /// `pliMinIntervalNs`. Both the loss-driven path (depacketizer gap in
+    /// `receiveLoop`) and the decode-failure escalation ladder route through
+    /// this shared throttle: each PLI forces the encoder to emit a (large)
+    /// keyframe, which fragments into more packets and, on a lossy link, can
+    /// lose *more* — unthrottled PLIs are a loss-amplification loop. One per
+    /// interval is plenty; the keyframe it triggers covers all loss up to
+    /// its arrival.
+    private func sendPLIThrottled() async {
+        guard isConnected, let pl = packetListener, let addr = serverAddr else { return }
+        let nowNs = DispatchTime.now().uptimeNanoseconds
+        let shouldSend = lastPLISentNs.withLock { last -> Bool in
+            guard nowNs &- last >= pliMinIntervalNs else { return false }
+            last = nowNs
+            return true
+        }
+        guard shouldSend else { return }
+        renderer.notePLISent()
+        try? await pl.send(ScreenShareControlMessage.encode(.pli), to: addr)
+    }
 
     private func handleDecodedFrame(_ buffer: CVPixelBuffer) {
         guard isConnected, !isDisconnecting else { return }
@@ -647,6 +694,9 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
 
         if let decoder = decoder {
             decoder.onDecodedFrame = nil
+            decoder.onFrameDecodeFailed = nil
+            decoder.onRecoveryAction = nil
+            decoder.onRecovered = nil
             decoder.shutdown()
             self.decoder = nil
         }
@@ -686,6 +736,12 @@ extension Notification.Name {
     /// alert; the client has already asked the sharer to fall back to H.264.
     /// `userInfo["codec"]` carries the codec name as a String.
     static let tailscreenViewerDecodeFailed = Notification.Name("tailscreen.viewer.decodeFailed")
+
+    /// Posted from the decode-failure escalation ladder's last rung: frames
+    /// are arriving but decoding has been failing for several seconds
+    /// despite a keyframe request and a decoder-session rebuild. AppState
+    /// surfaces an alert so a frozen frame isn't a silent mystery.
+    static let tailscreenViewerVideoStalled = Notification.Name("tailscreen.viewer.videoStalled")
 }
 
 /// Serializes `send(_:)` calls on an `OutgoingConnection`. Two concurrent

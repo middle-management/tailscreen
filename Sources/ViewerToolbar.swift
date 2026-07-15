@@ -31,6 +31,9 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
     private weak var toolGroupItem: NSToolbarItemGroup?
     private var toolCancellable: AnyCancellable?
     private weak var canvasModel: AnnotationCanvasModel?
+    private weak var statsToolbarItem: NSToolbarItem?
+    private var statsCancellable: AnyCancellable?
+    private weak var statsModel: ViewerStatsModel?
 
     /// Tool order — must match `ViewerCommands.toolbarSelectedTool` and
     /// the `makeToolGroup` subitem order.
@@ -77,6 +80,30 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
     private func updateToolSelection(_ tool: AnnotationTool) {
         guard let idx = Self.toolOrder.firstIndex(of: tool) else { return }
         toolGroupItem?.selectedIndex = idx
+    }
+
+    /// Subscribe to the viewer stats model so the stats toolbar button
+    /// doubles as an always-visible degraded-connection badge — the stats
+    /// overlay itself may be hidden when the decode ladder trips, but the
+    /// toolbar is always on screen.
+    func bind(statsModel: ViewerStatsModel) {
+        self.statsModel = statsModel
+        statsCancellable = statsModel.$stats
+            .map(\.isDegraded)
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] isDegraded in
+                self?.updateStatsIcon(degraded: isDegraded)
+            }
+        updateStatsIcon(degraded: statsModel.stats.isDegraded)
+    }
+
+    private func updateStatsIcon(degraded: Bool) {
+        let symbol = degraded ? "exclamationmark.triangle" : "chart.bar.xaxis"
+        statsToolbarItem?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+        statsToolbarItem?.toolTip = degraded
+            ? L("Connection degraded — click for stats")
+            : L("Toggle stream stats overlay")
     }
 
     // MARK: - NSToolbarDelegate
@@ -135,13 +162,20 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
             micToolbarItem = item
             return item
         case Self.stats:
-            return makeButton(
+            let item = makeButton(
                 id: itemIdentifier,
                 label: L("Stats"),
                 symbol: "chart.bar.xaxis",
                 action: #selector(ViewerCommands.toggleStatsOverlay(_:)),
                 accessibilityLabel: L("Toggle stream stats overlay")
             )
+            statsToolbarItem = item
+            // Reflect a degraded state that predates AppKit asking the
+            // delegate for this item (mirrors the tool-group's late bind).
+            if let model = statsModel, model.stats.isDegraded {
+                updateStatsIcon(degraded: true)
+            }
+            return item
         case Self.shortcuts:
             return makeButton(
                 id: itemIdentifier,

@@ -35,6 +35,15 @@ struct ViewerStats: Sendable, Equatable {
     var framesPresented: Int
     /// Total frames dropped (overwritten before render) since reset.
     var framesDropped: Int
+    /// Per-frame decode failures reported by the viewer's decoder since
+    /// reset (see `VideoDecoder.onFrameDecodeFailed`).
+    var decodeFailures: Int
+    /// PLIs (keyframe requests) sent to the sharer since reset — both
+    /// loss-driven and decode-ladder-driven, post-throttle.
+    var plisSent: Int
+    /// True while the decode-failure escalation ladder considers the
+    /// connection degraded; cleared when decoding recovers.
+    var isDegraded: Bool
 
     static let empty = ViewerStats(
         latencyMs: nil,
@@ -43,7 +52,10 @@ struct ViewerStats: Sendable, Equatable {
         bitrateBps: nil,
         codec: nil,
         framesPresented: 0,
-        framesDropped: 0
+        framesDropped: 0,
+        decodeFailures: 0,
+        plisSent: 0,
+        isDegraded: false
     )
 }
 
@@ -166,6 +178,13 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
     /// RTP payload type. Pure metadata — the renderer doesn't act on it.
     private var observedCodec: VideoCodec?
 
+    /// Decode failures reported via `noteDecodeFailure`. Reset on `resetStats`.
+    private var decodeFailuresTotal: Int = 0
+    /// PLIs reported via `notePLISent`. Reset on `resetStats`.
+    private var plisSentTotal: Int = 0
+    /// Degraded indication driven via `setDegraded`. Reset on `resetStats`.
+    private var degraded: Bool = false
+
     /// Traps if the machine has no Metal device (very old Macs) or the
     /// shader library fails to compile — both indicate a misconfigured
     /// install rather than anything a caller could recover from.
@@ -282,6 +301,52 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
         }
     }
 
+    /// Client hook: one per-frame decode failure reported by the decoder.
+    /// Safe to call from any thread. Published immediately — a stalled
+    /// stream stops rendering (so the display-link flush stops firing), and
+    /// these counters are exactly what the user needs to see then.
+    func noteDecodeFailure() {
+        lock.lock()
+        decodeFailuresTotal &+= 1
+        let total = decodeFailuresTotal
+        lock.unlock()
+        publishCounterUpdate { $0.decodeFailures = total }
+    }
+
+    /// Client hook: one PLI (keyframe request) actually sent to the sharer
+    /// (post-throttle). Safe to call from any thread.
+    func notePLISent() {
+        lock.lock()
+        plisSentTotal &+= 1
+        let total = plisSentTotal
+        lock.unlock()
+        publishCounterUpdate { $0.plisSent = total }
+    }
+
+    /// Client hook: flip the degraded-connection indication driven by the
+    /// decoder's escalation ladder. Safe to call from any thread; no-ops
+    /// when the flag hasn't changed.
+    func setDegraded(_ isDegraded: Bool) {
+        lock.lock()
+        let changed = degraded != isDegraded
+        degraded = isDegraded
+        lock.unlock()
+        guard changed else { return }
+        publishCounterUpdate { $0.isDegraded = isDegraded }
+    }
+
+    /// Push a small mutation of the current stats snapshot to the model on
+    /// the main thread. Used by the counter hooks above, which can't wait
+    /// for the next display-link flush — during a stall there isn't one.
+    private func publishCounterUpdate(_ mutate: @escaping @Sendable (inout ViewerStats) -> Void) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            var snap = self.statsModel.stats
+            mutate(&snap)
+            self.statsModel.update(snap)
+        }
+    }
+
     /// Reset the stats counters. Call on connect so the new session
     /// doesn't inherit a 30 % drop rate from a previous flaky connection.
     func resetStats() {
@@ -292,6 +357,9 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
         bucketBytesReceived = 0
         bucketStartNs = 0
         observedCodec = nil
+        decodeFailuresTotal = 0
+        plisSentTotal = 0
+        degraded = false
         lock.unlock()
         DispatchQueue.main.async { [weak self] in
             self?.statsModel.reset()
@@ -432,6 +500,9 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
         let totalPresented = framesPresented
         let totalDropped = framesDroppedTotal
         let codecSnap = observedCodec
+        let decodeFailuresSnap = decodeFailuresTotal
+        let plisSentSnap = plisSentTotal
+        let degradedSnap = degraded
         let bucketPresentedSnap = bucketFramesPresented
         let bucketDroppedSnap = bucketFramesDropped
         let bucketBytesSnap = bucketBytesReceived
@@ -485,7 +556,10 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
             bitrateBps: bitrate,
             codec: codecSnap,
             framesPresented: totalPresented,
-            framesDropped: totalDropped
+            framesDropped: totalDropped,
+            decodeFailures: decodeFailuresSnap,
+            plisSent: plisSentSnap,
+            isDegraded: degradedSnap
         )
         let historySample = HistorySample(
             latencyMs: latencyForSnapshot,

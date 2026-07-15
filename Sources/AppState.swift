@@ -306,11 +306,32 @@ class AppState: ObservableObject {
                 Task { @MainActor [weak self] in
                     guard let self = self, self.connectionState == .viewing else { return }
                     self.showAlertMessage(
-                        title: "Can't decode the video",
-                        message:
-                            "This Mac can't decode the \(codec) video stream from the sharer "
-                            + "(it likely lacks \(codec) hardware decode). Asking the sharer to "
-                            + "switch to H.264 — the screen should appear in a moment.")
+                        title: L("Can't decode the video"),
+                        message: L(
+                            "This Mac can't decode the \(codec) video stream from the sharer (it likely lacks \(codec) hardware decode). Asking the sharer to switch to H.264 — the screen should appear in a moment."
+                        ))
+                }
+            }
+        )
+
+        // The decode-failure escalation ladder's last rung: frames are
+        // arriving but decoding has been failing for several seconds despite
+        // a keyframe request and a decoder-session rebuild. Tell the user
+        // the video has stalled rather than letting a frozen frame
+        // masquerade as a live stream.
+        notificationObservers.append(
+            NotificationCenter.default.addObserver(
+                forName: .tailscreenViewerVideoStalled,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self = self, self.connectionState == .viewing else { return }
+                    self.showAlertMessage(
+                        title: L("Video Has Stalled"),
+                        message: L(
+                            "Decoding has been failing for several seconds and automatic recovery hasn't helped. Check the connection on both ends, or disconnect and reconnect."
+                        ))
                 }
             }
         )
@@ -1077,6 +1098,9 @@ class AppState: ObservableObject {
         statsHost.layout(in: host)
         self.viewerStatsHost = statsHost
         ViewerCommands.shared.statsModel = r.statsModel
+        // Degraded-connection badge on the toolbar's stats button — the
+        // overlay above may be hidden, the toolbar never is.
+        toolbar.bind(statsModel: r.statsModel)
 
         // Shortcut cheat-sheet overlay (toggled by toolbar "?" /
         // Help → Keyboard Shortcuts / ⇧⌘/). Added last so it draws
