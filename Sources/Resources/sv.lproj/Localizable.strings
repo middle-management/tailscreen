@@ -226,6 +226,7 @@
 "Dropped" = "Tappade";
 "Decode errs" = "Avkodningsfel";
 "PLIs sent" = "Skickade PLI:er";
+"FEC recovered" = "FEC-återställda";
 "Bitrate" = "Bithastighet";
 "Codec" = "Codec";
 "Connection" = "Anslutning";
@@ -237,6 +238,7 @@
 "%@ percent dropped" = "%@ procent tappade";
 "%lld decode errors" = "%lld avkodningsfel";
 "%lld keyframe requests sent" = "%lld skickade nyckelbildsbegäranden";
+"%lld packets repaired" = "%lld reparerade paket";
 "%@ kilobits per second" = "%@ kilobit per sekund";
 "codec %@" = "codec %@";
 

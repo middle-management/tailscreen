@@ -97,6 +97,22 @@ enum ScreenShareControlMessage: UInt8 {
     /// delaySincePingMs. Server→viewer only; ignored if a viewer sends it.
     case ping = 0x0C
 
+    /// Sharer→viewer XOR parity datagram (single-parity FEC, one per group of
+    /// ≤ N media packets):
+    ///     `[0x0D][baseSeq:2 BE][count:1][xor body:variable]`
+    /// `baseSeq` is the group's first sequence number in *that viewer's*
+    /// sequence space (per-viewer rewrite, same trick as retransmits); `count`
+    /// is the group size k (2…16, contiguous by construction — no mask
+    /// needed). The body is the XOR over each covered packet of
+    /// `[len:2 BE][byte1][timestamp:4][payload…]`, zero-padded to the longest
+    /// member (see `FECCodec`), so the viewer can reconstruct any *one* lost
+    /// packet — including the marker packet — with zero additional RTT.
+    /// Parity rides the control plane (not an RTP PT) so losing parity opens
+    /// no media-seq gap: no NACK, no RR loss, just an uncovered group.
+    /// Capability-negotiated (`ScreenShareCaps.fec`); old viewers drop the
+    /// unknown byte, old servers never receive it (server→viewer only).
+    case fec = 0x0D
+
     static func encode(_ kind: ScreenShareControlMessage) -> Data {
         Data([kind.rawValue])
     }
@@ -203,28 +219,44 @@ enum ScreenShareControlMessage: UInt8 {
         return out
     }
 
-    /// Encode a receiver report. See `receiverReport` for the layout.
-    static func encodeReceiverReport(_ report: ReceiverReport) -> Data {
-        var data = Data(capacity: 20)
+    /// Encode a receiver report. See `receiverReport` for the layout. Pass
+    /// `includeFECRecovered: true` (FEC negotiated) to append the trailing
+    /// `[fecRecovered:2 BE]` — the 22-byte extended form. The default emits
+    /// the legacy 20-byte layout so pre-FEC servers see exactly the bytes
+    /// they already parse (their decode is length-tolerant either way).
+    static func encodeReceiverReport(_ report: ReceiverReport, includeFECRecovered: Bool = false) -> Data {
+        var data = Data(capacity: includeFECRecovered ? 22 : 20)
         data.append(receiverReport.rawValue)
         data.append(report.fracLostQ8)
         data.appendBE(report.extHighestSeq)
         data.appendBE(report.jitterTicks)
         data.appendBE(report.lastPingTs)
         data.appendBE(report.delaySincePingMs)
+        if includeFECRecovered {
+            data.appendBE(report.fecRecovered)
+        }
         return data
     }
 
-    /// Parse a receiver report; nil if malformed (needs exactly 20 bytes).
+    /// Parse a receiver report; nil if malformed (needs at least the 20-byte
+    /// legacy layout). The optional trailing `[fecRecovered:2 BE]` (22-byte
+    /// extended form, FEC-negotiated viewers) decodes when present and reads
+    /// as 0 for the legacy layout — the same both-forms tolerance as
+    /// `decodeHelloAckCaps`.
     static func decodeReceiverReport(_ data: Data) -> ReceiverReport? {
         guard data.count >= 20, data[data.startIndex] == receiverReport.rawValue else { return nil }
         let base = data.startIndex
+        let fecRecovered: UInt16 =
+            data.count >= 22
+            ? data.readBE(UInt16.self, at: data.index(base, offsetBy: 20))
+            : 0
         return ReceiverReport(
             fracLostQ8: data[data.index(base, offsetBy: 1)],
             extHighestSeq: data.readBE(UInt32.self, at: data.index(base, offsetBy: 2)),
             jitterTicks: data.readBE(UInt32.self, at: data.index(base, offsetBy: 6)),
             lastPingTs: data.readBE(UInt64.self, at: data.index(base, offsetBy: 10)),
-            delaySincePingMs: data.readBE(UInt16.self, at: data.index(base, offsetBy: 18))
+            delaySincePingMs: data.readBE(UInt16.self, at: data.index(base, offsetBy: 18)),
+            fecRecovered: fecRecovered
         )
     }
 
@@ -241,6 +273,34 @@ enum ScreenShareControlMessage: UInt8 {
         guard data.count >= 9, data[data.startIndex] == ping.rawValue else { return nil }
         return data.readBE(UInt64.self, at: data.startIndex + 1)
     }
+
+    // MARK: - FEC codec (see `fec`)
+
+    /// Encode one XOR-parity datagram: `[0x0D][baseSeq:2 BE][count:1][body]`.
+    /// `count` must be in `FECCodec.minGroupSize...FECCodec.maxGroupSize`;
+    /// the caller (group packing via `FECCodec.groupRanges`) guarantees it.
+    static func encodeFEC(baseSeq: UInt16, count: Int, body: Data) -> Data {
+        var data = Data(capacity: 4 + body.count)
+        data.append(fec.rawValue)
+        data.appendBE(baseSeq)
+        data.append(UInt8(truncatingIfNeeded: count))
+        data.append(body)
+        return data
+    }
+
+    /// Parse an FEC datagram. This is untrusted UDP input, so every field is
+    /// bounds-checked: nil on a short buffer, an out-of-range group count, or
+    /// a body too short to carry the XORed `[len:2][byte1][ts:4]` prefix —
+    /// truncated/garbage datagrams reject cleanly instead of feeding the
+    /// recovery solve.
+    static func decodeFEC(_ data: Data) -> (baseSeq: UInt16, count: Int, body: Data)? {
+        guard data.count >= 4 + FECCodec.minBodyBytes, data[data.startIndex] == fec.rawValue else { return nil }
+        let baseSeq = data.readBE(UInt16.self, at: data.startIndex + 1)
+        let count = Int(data[data.startIndex + 3])
+        guard count >= FECCodec.minGroupSize, count <= FECCodec.maxGroupSize else { return nil }
+        let body = Data(data[data.index(data.startIndex, offsetBy: 4)..<data.endIndex])
+        return (baseSeq, count, body)
+    }
 }
 
 /// Capability bits negotiated in the extended HELLO / HELLO_ACK. A viewer
@@ -255,6 +315,12 @@ struct ScreenShareCaps: OptionSet, Sendable, Hashable {
     static let nack = ScreenShareCaps(rawValue: 1 << 0)
     /// Viewer sends periodic receiver reports; server pings for RTT.
     static let receiverReport = ScreenShareCaps(rawValue: 1 << 1)
+    /// Viewer can consume XOR-parity datagrams (`fec` / 0x0D) and reports
+    /// FEC-recovered packets in the extended receiver report; server emits
+    /// adaptive single-parity FEC to gated viewers. Like `.nack`, each side
+    /// enables the feature only when both advertised it — an old peer sees
+    /// an unknown OptionSet bit and ignores it.
+    static let fec = ScreenShareCaps(rawValue: 1 << 2)
 }
 
 /// RTCP-RR-style receiver report payload (see `ScreenShareControlMessage`
@@ -274,6 +340,14 @@ struct ReceiverReport: Sendable, Equatable {
     /// Milliseconds the viewer held `lastPingTs` before sending this report,
     /// so the server subtracts its own processing delay from the RTT.
     var delaySincePingMs: UInt16
+    /// Packets this viewer recovered via FEC since its previous report.
+    /// Rides the optional 22-byte extended layout (FEC negotiated only);
+    /// reads as 0 from the legacy 20-byte form. Recovered packets count as
+    /// *received* in `fracLostQ8` (residual loss drives the bitrate arm), so
+    /// this field is what lets the server's FEC arm still see raw link loss —
+    /// the anti-oscillation term (FEC hiding all loss must not switch FEC
+    /// off, which would re-trigger the loss it was hiding).
+    var fecRecovered: UInt16 = 0
 }
 
 /// 12-byte fixed RTP header (no CSRC list, no extension).

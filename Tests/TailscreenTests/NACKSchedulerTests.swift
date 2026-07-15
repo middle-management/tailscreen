@@ -143,6 +143,68 @@ final class NACKSchedulerTests: XCTestCase {
         XCTAssertEqual(sched.rttEstimateNs, 65_000_000)
     }
 
+    func testCancelGapClearsWithoutRTTSampleOrPLI() {
+        // FEC recovered the packet after a NACK already went out: the gap
+        // must clear with NO RTT sample (the straggler path would inject FEC
+        // latency into the RTT EMA) and no PLI.
+        var sched = NACKScheduler(initialRTTNs: 60_000_000)
+        _ = sched.observe(seq: 0, nowNs: 0)
+        _ = sched.observe(seq: 2, nowNs: 0)  // gap 1
+        XCTAssertEqual(sched.tick(nowNs: 20 * ms), [.sendNACK([1])])
+        sched.cancelGap(seq: 1)
+        XCTAssertFalse(sched.hasOpenGaps)
+        XCTAssertEqual(sched.rttEstimateNs, 60_000_000, "cancelGap must not feed the RTT estimate")
+        XCTAssertTrue(sched.tick(nowNs: 2 * s).isEmpty, "no re-NACK and no PLI after cancel")
+    }
+
+    func testCancelGapBeforeAnyNACKSuppressesIt() {
+        // FEC recovery lands inside the reorder tolerance: the gap is
+        // cancelled before it ever becomes NACK-eligible.
+        var sched = NACKScheduler()
+        _ = sched.observe(seq: 0, nowNs: 0)
+        _ = sched.observe(seq: 2, nowNs: 1 * ms)
+        sched.cancelGap(seq: 1)
+        XCTAssertTrue(sched.tick(nowNs: 500 * ms).isEmpty)
+        XCTAssertFalse(sched.hasOpenGaps)
+    }
+
+    func testCancelGapUntrackedSeqIsANoOp() {
+        var sched = NACKScheduler()
+        _ = sched.observe(seq: 0, nowNs: 0)
+        sched.cancelGap(seq: 42)
+        XCTAssertFalse(sched.hasOpenGaps)
+    }
+
+    func testFECModeTolerancesDelayNACKUntilBeyondGroupSpan() {
+        // FEC-mode construction (N+2 packets / 25 ms): a gap must NOT become
+        // NACK-eligible while a recovery could still be in flight — up to
+        // N−1 trailing group members plus the parity — and must fire once
+        // the newer-packet count exceeds the tolerance.
+        var sched = NACKScheduler(
+            reorderToleranceNs: TransportTuning.fecSchedulerToleranceNs,
+            reorderPacketTolerance: TransportTuning.fecSchedulerPacketTolerance)
+        _ = sched.observe(seq: 0, nowNs: 0)
+        _ = sched.observe(seq: 2, nowNs: 0)  // gap 1, newerSeen 1
+        // 11 more newer packets → newerSeen 12 = tolerance → eligible; the
+        // one before (newerSeen 11) must produce nothing.
+        var actions: [NACKAction] = []
+        for i in 0..<11 {
+            XCTAssertTrue(actions.isEmpty, "NACK fired early at newerSeen \(i + 1)")
+            actions = sched.observe(seq: UInt16(3 + i), nowNs: UInt64(i) * ms)
+        }
+        XCTAssertEqual(actions, [.sendNACK([1])], "gap must go out once past the FEC-mode tolerance")
+    }
+
+    func testFECModeTimeToleranceIs25ms() {
+        var sched = NACKScheduler(
+            reorderToleranceNs: TransportTuning.fecSchedulerToleranceNs,
+            reorderPacketTolerance: TransportTuning.fecSchedulerPacketTolerance)
+        _ = sched.observe(seq: 0, nowNs: 0)
+        _ = sched.observe(seq: 2, nowNs: 0)
+        XCTAssertTrue(sched.tick(nowNs: 24 * ms).isEmpty, "under the 25 ms FEC slack")
+        XCTAssertEqual(sched.tick(nowNs: 25 * ms), [.sendNACK([1])])
+    }
+
     func testFCIPacking() {
         // Contiguous run collapses into one entry with a bitmask.
         let single = NACKScheduler.packFCI([1, 2, 3, 4])

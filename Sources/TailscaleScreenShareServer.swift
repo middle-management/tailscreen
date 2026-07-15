@@ -125,6 +125,11 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         /// Retransmits served to this viewer in the current sweep window, reset
         /// each window. NACK-recovered loss softens the congestion cut.
         var nackServedThisWindow: Int = 0
+        /// Packets this viewer reported recovering via FEC this sweep window
+        /// (summed from the extended receiver report's `fecRecovered` field,
+        /// reset each window). Recovered + residual reconstructs the raw link
+        /// loss the FEC arm decides on — residual alone would oscillate.
+        var fecRecoveredThisWindow: Int = 0
         /// Per-viewer token bucket for the retransmit rate limit.
         var retransmitBudget = RetransmitBuffer.BudgetState(tokens: 0, lastRefillNs: 0)
         /// While `DispatchTime.now() < throttledUntilNs`, this viewer is in
@@ -470,7 +475,25 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     private let viewerCaps = OSAllocatedUnfairLock<[String: ScreenShareCaps]>(initialState: [:])
 
     /// What the server supports and advertises back to cap-aware viewers.
-    private static let serverCaps: ScreenShareCaps = [.nack, .receiverReport]
+    private static let serverCaps: ScreenShareCaps = [.nack, .receiverReport, .fec]
+
+    /// Adaptive FEC state (group size + off-gate hysteresis), stepped once
+    /// per sweep window by `fecOverheadDecision`. `groupSize == 0` means FEC
+    /// is off (clean links pay zero overhead). Locked: written by the sweep,
+    /// read by `broadcast` and `applyAdaptiveBitrate`.
+    private let fecState = OSAllocatedUnfairLock<FECState>(initialState: FECState())
+
+    /// Viewers currently gated for parity delivery: `.fec`-negotiated AND
+    /// their own decayed loss/RTT pass the on-gate this window. Per-viewer so
+    /// a clean-link viewer pays zero overhead even mid-share with a lossy
+    /// peer — the same isolate-don't-globalize stance as `congestionInputs`.
+    /// Rebuilt by every sweep; read by `broadcast`.
+    private let fecGatedAddrs = OSAllocatedUnfairLock<Set<String>>(initialState: [])
+
+    /// Template packets broadcast this sweep window (per-viewer streams see
+    /// approximately this count). The FEC arm converts per-window recovered
+    /// counts to a Q8 loss fraction against it. Drained each sweep.
+    private let fecPacketsThisWindow = OSAllocatedUnfairLock<Int>(initialState: 0)
 
     /// Current capture frame-rate tier (60 / 30 / 15), the second congestion
     /// lever below the bitrate floor. Seeded from the session fps cap at
@@ -551,6 +574,12 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// `onPLIRecordedForTesting`; lets an E2E test assert the viewer→server
     /// NACK path without a capture-helper attached.
     var onNACKServedForTesting: ((String, Int) -> Void)?
+
+    /// Test-only: fires with the viewer's address and the number of parity
+    /// datagrams appended to its send chain each time a broadcast fans out
+    /// FEC. Mirrors `onNACKServedForTesting`; lets a test assert the
+    /// per-viewer parity gate without a capture-helper attached.
+    var onFECParitySentForTesting: ((String, Int) -> Void)?
 
     /// Invoked once the underlying `TailscaleNode` has been instantiated but
     /// **before** `node.up()` is called. AppState uses this hook to subscribe
@@ -1552,6 +1581,9 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         case .ping:
             // PING is server→viewer only. Ignore from viewers.
             return
+        case .fec:
+            // FEC parity is server→viewer only. Ignore from viewers.
+            return
         }
     }
 
@@ -1669,11 +1701,13 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         // outer mutable `computedRTT`.
         let rttNs = computedRTT
         let lossQ8 = Int(report.fracLostQ8)
+        let fecRecovered = Int(report.fecRecovered)
         viewers.withLock { state in
             guard var viewer = state[addr] else { return }
             viewer.lossFractionQ8 = lossQ8
             viewer.lastRRAtNs = now
             if rttNs > 0 { viewer.rttNs = rttNs }
+            viewer.fecRecoveredThisWindow += fecRecovered
             state[addr] = viewer
         }
     }
@@ -2294,6 +2328,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         audioSendTails.withLock { _ = $0.removeValue(forKey: addr) }
         viewerCaps.withLock { _ = $0.removeValue(forKey: addr) }
         retransmitBuffer.removeViewer(addr: addr)
+        fecGatedAddrs.withLock { _ = $0.remove(addr) }
         closeAnnotationChannels(forIP: ipFromAddr(addr))
         revokeControlIfHeld(byIP: ipFromAddr(addr), reason: "viewer blocked")
         notifyViewersChanged()
@@ -2354,6 +2389,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             audioSendTails.withLock { _ = $0.removeValue(forKey: addr) }
             viewerCaps.withLock { _ = $0.removeValue(forKey: addr) }
             retransmitBuffer.removeViewer(addr: addr)
+            fecGatedAddrs.withLock { _ = $0.remove(addr) }
             notifyViewersChanged()
             // A viewer that BYE'd/left surrenders any control grant. The TCP
             // close usually beats this via `revokeControlIfHeld(byConnection:)`;
@@ -2629,6 +2665,9 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
                     for entry in dropped { state.removeValue(forKey: entry.addr) }
                 }
                 for entry in dropped { retransmitBuffer.removeViewer(addr: entry.addr) }
+                fecGatedAddrs.withLock { gated in
+                    for entry in dropped { gated.remove(entry.addr) }
+                }
                 notifyViewersChanged()
             }
             for entry in dropped {
@@ -2825,7 +2864,57 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             if let nextFps = decision.fpsTier {
                 applyFpsTier(nextFps)
             }
+
+            sweepFECArm(now: now, windowNs: windowNs, throttleSet: throttleSet)
         }
+    }
+
+    /// The FEC arm of the sweep: snapshot per-viewer samples (draining the
+    /// per-window recovered counters and the window's template packet
+    /// count), fold the `.fec`-capable non-throttled ones into the pure
+    /// `fecOverheadDecision`, rebuild the per-viewer parity gate, and apply
+    /// the resulting state (encoder compensation rides `applyFECState`).
+    private func sweepFECArm(now: UInt64, windowNs: UInt64, throttleSet: Set<String>) {
+        let capsByAddr = viewerCaps.withLock { $0 }
+        let expectedPackets = fecPacketsThisWindow.withLock { count -> Int in
+            let drained = count
+            count = 0
+            return drained
+        }
+        let samples = viewers.withLock { state -> [String: FECViewerSample] in
+            var out: [String: FECViewerSample] = [:]
+            for key in Array(state.keys) {
+                guard var viewer = state[key] else { continue }
+                let recovered = viewer.fecRecoveredThisWindow
+                viewer.fecRecoveredThisWindow = 0
+                state[key] = viewer
+                let fresh = viewer.lastRRAtNs != 0 && now &- viewer.lastRRAtNs < windowNs
+                out[key] = FECViewerSample(
+                    rttNs: viewer.rttNs,
+                    residualLossQ8: fresh ? viewer.lossFractionQ8 : 0,
+                    recovered: recovered,
+                    fecCapable: capsByAddr[key]?.contains(.fec) ?? false,
+                    throttled: throttleSet.contains(key) || now < viewer.throttledUntilNs)
+            }
+            return out
+        }
+        let prior = fecState.withLock { $0 }
+        let next = Self.fecOverheadDecision(
+            Self.fecDecisionInputs(samples: samples, expectedPackets: expectedPackets, state: prior))
+        var gated: Set<String> = []
+        if next.groupSize > 0 {
+            for (addr, sample) in samples where sample.fecCapable {
+                let rawLossQ8 = min(
+                    255,
+                    sample.residualLossQ8
+                        + Self.fecRecoveredQ8(recovered: sample.recovered, expectedPackets: expectedPackets))
+                if Self.fecViewerGate(rttNs: sample.rttNs, rawLossQ8: rawLossQ8) {
+                    gated.insert(addr)
+                }
+            }
+        }
+        fecGatedAddrs.withLock { $0 = gated }
+        applyFECState(next)
     }
 
     /// Apply an fps-ladder step: retune the helper's capture frame interval and
@@ -3081,6 +3170,141 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         return .hold
     }
 
+    // MARK: - Adaptive FEC (pure decisions — see plans/fec-xor-recovery.md)
+
+    /// Adaptive-FEC state carried across sweep windows: the active group size
+    /// (0 = FEC off) and the consecutive-clean-window count driving the
+    /// off-gate hysteresis.
+    struct FECState: Equatable, Sendable {
+        var groupSize: Int = 0
+        var cleanWindows: Int = 0
+    }
+
+    /// Per-viewer measurements the sweep snapshots for the FEC arm.
+    struct FECViewerSample: Equatable, Sendable {
+        /// Latest RR-derived RTT (0 = unknown).
+        var rttNs: UInt64 = 0
+        /// Freshness-decayed residual (post-FEC) RR loss, Q8.
+        var residualLossQ8: Int = 0
+        /// FEC-recovered packets this viewer reported this window.
+        var recovered: Int = 0
+        /// Viewer advertised `.fec` in its HELLO.
+        var fecCapable: Bool = false
+        /// Viewer is in keyframe-only throttle this window. Excluded from the
+        /// global decision inputs (one outlier can't force overhead onto
+        /// everyone), but still eligible for the per-viewer send gate — its
+        /// keyframe-only stream is exactly where an unrecovered loss costs a
+        /// fresh keyframe.
+        var throttled: Bool = false
+    }
+
+    /// Inputs to `fecOverheadDecision`, assembled by `fecDecisionInputs`.
+    struct FECInputs: Equatable, Sendable {
+        /// Worst RTT over `.fec`-capable, non-throttled viewers.
+        var rttNs: UInt64 = 0
+        /// Worst residual (post-FEC) RR loss over the same set, Q8.
+        var residualLossQ8: Int = 0
+        /// FEC-recovered packets over the same set this window, Q8 against
+        /// the window's expected packet count.
+        var recoveredQ8: Int = 0
+        /// Prior window's state (group size + clean-window count).
+        var state = FECState()
+    }
+
+    /// Convert a per-window recovered-packet count to a Q8 loss fraction
+    /// against the window's expected packet count (same fixed point as the
+    /// RR `fracLostQ8`). Raw link loss ≈ residual + this.
+    static func fecRecoveredQ8(recovered: Int, expectedPackets: Int) -> Int {
+        guard expectedPackets > 0, recovered > 0 else { return 0 }
+        return min(255, recovered * 256 / expectedPackets)
+    }
+
+    /// Fold the per-viewer samples into the global FEC decision inputs:
+    /// worst RTT / worst residual loss / summed recoveries over the
+    /// `.fec`-capable, **non-throttled** viewers — reusing the
+    /// `congestionInputs` isolation stance so one throttled outlier can't
+    /// force parity overhead (and its bitrate compensation) onto everyone.
+    /// Legacy (non-`.fec`) viewers never contribute.
+    static func fecDecisionInputs(
+        samples: [String: FECViewerSample],
+        expectedPackets: Int,
+        state: FECState
+    ) -> FECInputs {
+        var worstRTT: UInt64 = 0
+        var worstResidual = 0
+        var recovered = 0
+        for sample in samples.values where sample.fecCapable && !sample.throttled {
+            worstRTT = max(worstRTT, sample.rttNs)
+            worstResidual = max(worstResidual, sample.residualLossQ8)
+            recovered += sample.recovered
+        }
+        return FECInputs(
+            rttNs: worstRTT,
+            residualLossQ8: worstResidual,
+            recoveredQ8: fecRecoveredQ8(recovered: recovered, expectedPackets: expectedPackets),
+            state: state)
+    }
+
+    /// The raw-loss → group-size ladder: 2–4 % → 10, 4–8 % → 7, > 8 % → 5.
+    private static func fecLadder(rawLossQ8: Int) -> Int {
+        if rawLossQ8 > TransportTuning.fecHighLossQ8 { return TransportTuning.fecGroupSizeHeavy }
+        if rawLossQ8 > TransportTuning.fecMidLossQ8 { return TransportTuning.fecGroupSizeMedium }
+        if rawLossQ8 > TransportTuning.fecOnGateLossQ8 { return TransportTuning.fecGroupSizeLight }
+        return 0
+    }
+
+    /// Pure adaptive-FEC decision, one step per sweep window. Raw loss is
+    /// residual + recovered — the recovered term is the anti-oscillation
+    /// input: FEC hiding all loss zeroes the residual, and without it the
+    /// decision would switch FEC off and re-trigger the loss it was hiding.
+    ///
+    /// - **On-gate** (FEC currently off): RTT > 150 ms AND raw loss > 2 %
+    ///   (the merged plan's deferral criteria, verbatim) → ladder group size.
+    /// - **While on:** re-ladder on the current raw loss; hold the current
+    ///   group through the 1–2 % gray zone (not clean, not ladder-worthy).
+    /// - **Off-gate:** two consecutive clean windows (raw loss < 1 %) step
+    ///   FEC off — asymmetric hysteresis, matching the sweep's style.
+    static func fecOverheadDecision(_ inputs: FECInputs) -> FECState {
+        let rawLossQ8 = min(255, inputs.residualLossQ8 + inputs.recoveredQ8)
+        if inputs.state.groupSize == 0 {
+            let gateOn =
+                inputs.rttNs > TransportTuning.fecOnGateRTTNs
+                && rawLossQ8 > TransportTuning.fecOnGateLossQ8
+            guard gateOn else { return FECState() }
+            return FECState(groupSize: fecLadder(rawLossQ8: rawLossQ8), cleanWindows: 0)
+        }
+        if rawLossQ8 < TransportTuning.fecCleanLossQ8 {
+            let clean = inputs.state.cleanWindows + 1
+            if clean >= TransportTuning.fecCleanWindowsToDisable {
+                return FECState()
+            }
+            return FECState(groupSize: inputs.state.groupSize, cleanWindows: clean)
+        }
+        let laddered = fecLadder(rawLossQ8: rawLossQ8)
+        let next = laddered > 0 ? laddered : inputs.state.groupSize
+        return FECState(groupSize: next, cleanWindows: 0)
+    }
+
+    /// Pure per-viewer parity send gate: this viewer receives parity only
+    /// when its **own** measured path passes the on-gate — RTT > 150 ms and
+    /// raw (residual + recovered) loss > 2 %. Clean-link viewers pay zero
+    /// overhead even mid-share with a lossy peer. Throttled viewers stay
+    /// eligible (their keyframe-only stream is where FEC pays most); legacy
+    /// / non-`.fec` viewers never pass (the caller keys the gate off the
+    /// caps map).
+    static func fecViewerGate(rttNs: UInt64, rawLossQ8: Int) -> Bool {
+        rttNs > TransportTuning.fecOnGateRTTNs && rawLossQ8 > TransportTuning.fecOnGateLossQ8
+    }
+
+    /// Encoder-rate compensation: with a group size of N, media + parity
+    /// together must stay at the congestion-controlled rate, so the encoder
+    /// runs at N/(N+1) of it. Skipping this would make FEC *add* 10–20 %
+    /// load precisely on lossy links. 0 (FEC off) passes through unchanged.
+    static func fecCompensatedBitrate(_ bitrate: Int, groupSize: Int) -> Int {
+        guard groupSize > 0 else { return bitrate }
+        return bitrate * groupSize / (groupSize + 1)
+    }
+
     /// Push a new bitrate to the live encoder and update the bookkeeping
     /// the sweep reads on the next tick. Forces a keyframe on a down-step
     /// so viewers don't have to wait for the next periodic IDR to recover
@@ -3092,13 +3316,39 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             return p
         }
         lastBitrateChangeNs.withLock { $0 = DispatchTime.now().uptimeNanoseconds }
-        helperCapture?.setBitrate(bitrate)
+        // Bookkeeping (`currentBitrate`, the congestion decision's input)
+        // stays at the unscaled congestion-controlled rate; the encoder gets
+        // N/(N+1) of it while FEC is on so media + parity together ride at
+        // that rate. The applier owns the scaling — the pure decisions never
+        // see it, so `CongestionDecisionTests` semantics are untouched.
+        let groupSize = fecState.withLock { $0.groupSize }
+        helperCapture?.setBitrate(Self.fecCompensatedBitrate(bitrate, groupSize: groupSize))
         if bitrate < prev {
             helperCapture?.requestKeyframe()
         }
         let kbps = Double(bitrate) / 1000.0
         let prevKbps = Double(prev) / 1000.0
         logger.log("Adaptive bitrate: \(Int(prevKbps)) → \(Int(kbps)) kbps (\(reason))")
+    }
+
+    /// Apply a sweep-decided FEC step: store the new state and, when the
+    /// group size changed, re-push the encoder rate with the new N/(N+1)
+    /// compensation and reset the hysteresis clock so the bitrate arm
+    /// doesn't immediately fight the overhead change (same discipline as
+    /// `applyFpsTier`). Clean-window bookkeeping updates are silent.
+    private func applyFECState(_ next: FECState) {
+        let previous = fecState.withLock { state -> Int in
+            let prev = state.groupSize
+            state = next
+            return prev
+        }
+        guard previous != next.groupSize else { return }
+        lastBitrateChangeNs.withLock { $0 = DispatchTime.now().uptimeNanoseconds }
+        let current = currentBitrate.withLock { $0 }
+        if current > 0 {
+            helperCapture?.setBitrate(Self.fecCompensatedBitrate(current, groupSize: next.groupSize))
+        }
+        logger.log("Adaptive FEC: group size \(previous) → \(next.groupSize)")
     }
 
     /// Live-apply a new user bandwidth ceiling mid-share (`nil` = back to
@@ -3232,6 +3482,38 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             }
         }
 
+        // FEC: compute the XOR parity bodies ONCE per batch (on the templates
+        // — identical for every viewer, only the datagram's baseSeq is
+        // per-viewer) when the sweep's decision has FEC on and at least one
+        // plan recipient passed the per-viewer gate. Groups never span
+        // batches: a throttled viewer's seq space is contiguous only within
+        // one (see the Plan loop above), and `groupRanges` operating on this
+        // batch's template array enforces that structurally. Computed
+        // synchronously from the live `templates` — no retention, so no COW
+        // pressure on the packetizer's buffer pool.
+        let templateCount = templates.count
+        fecPacketsThisWindow.withLock { $0 += templateCount }
+        let fecGroupSize = fecState.withLock { $0.groupSize }
+        let fecRecipients: Set<String>
+        if fecGroupSize > 0 {
+            let gatedSnapshot = fecGatedAddrs.withLock { $0 }
+            fecRecipients = gatedSnapshot.intersection(plans.map(\.addr))
+        } else {
+            fecRecipients = []
+        }
+        let parities: [(offset: Int, count: Int, body: Data)]
+        if fecRecipients.isEmpty {
+            parities = []
+        } else {
+            var groups: [(offset: Int, count: Int, body: Data)] = []
+            for range in FECCodec.groupRanges(templateCount: templates.count, groupSize: fecGroupSize) {
+                let body = FECCodec.parityBody(for: templates[range])
+                guard !body.isEmpty else { continue }
+                groups.append((offset: range.lowerBound, count: range.count, body: body))
+            }
+            parities = groups
+        }
+
         // Fan out to each viewer on its OWN send chain. A viewer's frame N+1
         // awaits only its own frame N (preserving that viewer's packet order),
         // so a slow viewer whose `pl.send` blocks throttles only its own stream
@@ -3255,6 +3537,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
                 let addr = plan.addr
                 let ssrc = plan.ssrc
                 let startSeq = plan.startSeq
+                let sendParity = !parities.isEmpty && fecRecipients.contains(plan.addr)
                 chain.queuedFrames += 1
                 let job = Task { [weak self] in
                     await prev?.value
@@ -3263,6 +3546,21 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
                         Self.rewriteRTPHeader(&pkt, sequence: startSeq &+ UInt16(i), ssrc: ssrc)
                         // UDP is allowed to fail; a viewer PLI recovers it.
                         try? await pl.send(pkt, to: addr)
+                    }
+                    if sendParity {
+                        // Parity trails its group's media inside the same
+                        // send-chain job, so ordering, the backlog cap, and
+                        // the drop policy all apply unchanged — a frame the
+                        // cap sheds for a viewer sheds its parity with it.
+                        // Only baseSeq is per-viewer; the body is shared.
+                        for group in parities {
+                            let datagram = ScreenShareControlMessage.encodeFEC(
+                                baseSeq: startSeq &+ UInt16(group.offset),
+                                count: group.count,
+                                body: group.body)
+                            try? await pl.send(datagram, to: addr)
+                        }
+                        self?.onFECParitySentForTesting?(addr, parities.count)
                     }
                     self?.videoSendTails.withLock { $0[addr]?.queuedFrames -= 1 }
                 }
@@ -3402,6 +3700,9 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         audioSendTails.withLock { $0.removeAll() }
         viewerCaps.withLock { $0.removeAll() }
         retransmitBuffer.reset()
+        fecState.withLock { $0 = FECState() }
+        fecGatedAddrs.withLock { $0.removeAll() }
+        fecPacketsThisWindow.withLock { $0 = 0 }
         notifyViewersChanged()
         notifyPendingViewersChanged()
 

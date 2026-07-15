@@ -231,6 +231,7 @@
 "Dropped" = "Dropped";
 "Decode errs" = "Decode errs";
 "PLIs sent" = "PLIs sent";
+"FEC recovered" = "FEC recovered";
 "Bitrate" = "Bitrate";
 "Codec" = "Codec";
 "Connection" = "Connection";
@@ -242,6 +243,7 @@
 "%@ percent dropped" = "%@ percent dropped";
 "%lld decode errors" = "%lld decode errors";
 "%lld keyframe requests sent" = "%lld keyframe requests sent";
+"%lld packets repaired" = "%lld packets repaired";
 "%@ kilobits per second" = "%@ kilobits per second";
 "codec %@" = "codec %@";
 

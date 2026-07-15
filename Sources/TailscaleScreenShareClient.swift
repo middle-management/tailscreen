@@ -57,8 +57,23 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     /// pairing degrades automatically.
     private var negotiatedCaps: ScreenShareCaps = []
     /// Gap tracker driving NACK-based selective retransmission. Consulted only
-    /// once the server advertised `.nack`.
+    /// once the server advertised `.nack`. Rebuilt with looser reorder
+    /// tolerances when `.fec` negotiates, so an FEC recovery already in
+    /// flight isn't raced by a NACK (see `TransportTuning`'s FEC scheduler
+    /// tolerances).
     private var nackScheduler = NACKScheduler()
+    /// FEC group buffer: retains recent video packets and solves XOR parity
+    /// datagrams into recovered packets. Consulted only once the server
+    /// advertised `.fec`.
+    private var fecBuffer = FECGroupBuffer()
+    /// Packets recovered via FEC since the last receiver report — carried in
+    /// the extended RR's `fecRecovered` field so the server's FEC arm sees
+    /// raw link loss even when parity is hiding all of it.
+    private var fecRecoveredSinceReport = 0
+    /// Video packets received this session (receive-task-only; log cadence).
+    private var packetsReceived = 0
+    /// Access units delivered this session (receive-task-only; log cadence).
+    private var framesDelivered = 0
     /// Receiver-report accounting (video packets only), reset each report.
     private var rrHighestSeq: UInt16?
     private var rrSeqCycles: UInt32 = 0
@@ -442,12 +457,13 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
 
         self.isConnected = true
 
-        // Advertise NACK + receiver-report support in the extended HELLO. Old
-        // servers read byte 0 only and reply with a legacy 5-byte ack (caps
-        // `[]`), so the viewer stays on the PLI path against them.
-        let hello = ScreenShareControlMessage.encodeHello(caps: [.nack, .receiverReport])
+        // Advertise NACK + receiver-report + FEC support in the extended
+        // HELLO. Old servers read byte 0 only and reply with a legacy 5-byte
+        // ack (caps `[]`), so the viewer stays on the PLI path against them;
+        // a NACK-era server's ack simply lacks `.fec` and no FEC state arms.
+        let hello = ScreenShareControlMessage.encodeHello(caps: [.nack, .receiverReport, .fec])
         try await pl.send(hello, to: addr)
-        logger.log("HELLO sent to \(addr) (caps=nack,rr)")
+        logger.log("HELLO sent to \(addr) (caps=nack,rr,fec)")
 
         receiveTask = Task { [weak self] in
             await self?.receiveLoop()
@@ -536,8 +552,6 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
 
     private func receiveLoop() async {
         guard let pl = packetListener else { return }
-        var packetsReceived = 0
-        var framesDelivered = 0
         // Match the sharer's 15 s idle sweep so a sharer that's just
         // pausing video (e.g. backgrounded SCStream while the user
         // switches Spaces) doesn't fully tear our session down. The
@@ -606,6 +620,19 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                                     depacketizer = MultiCodecDepacketizer(reorderDepth: 64)
                                     logger.log("Server advertised NACK — deep reorder window enabled")
                                 }
+                                // FEC mode: loosen the scheduler's reorder
+                                // tolerances so a parity recovery already in
+                                // flight (≤ N media packets + the trailing
+                                // parity away) isn't raced by a NACK — NACK
+                                // fires only for multi-loss groups FEC can't
+                                // solve. FEC-negotiated sessions only; plain
+                                // NACK sessions keep the tight defaults.
+                                if ack.caps.contains(.fec) {
+                                    nackScheduler = NACKScheduler(
+                                        reorderToleranceNs: TransportTuning.fecSchedulerToleranceNs,
+                                        reorderPacketTolerance: TransportTuning.fecSchedulerPacketTolerance)
+                                    logger.log("Server advertised FEC — parity recovery armed")
+                                }
                             }
                             if assignedAudioSSRC != ack.ssrc {
                                 assignedAudioSSRC = ack.ssrc
@@ -620,6 +647,25 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                         if let uptime = ScreenShareControlMessage.decodePing(datagram) {
                             lastServerPingNs = uptime
                             lastPingArrivalNs = DispatchTime.now().uptimeNanoseconds
+                        }
+                    case .fec:
+                        // XOR parity for a recent media group. Solvable only
+                        // when exactly one member is missing; the recovered
+                        // packet then enters the same ingest path as a
+                        // received one. Ignored unless `.fec` negotiated
+                        // (decodeFEC bounds-checks the untrusted payload).
+                        if negotiatedCaps.contains(.fec),
+                            let parity = ScreenShareControlMessage.decodeFEC(datagram)
+                        {
+                            let recovery = fecBuffer.noteParity(
+                                baseSeq: parity.baseSeq,
+                                count: parity.count,
+                                body: parity.body,
+                                nowNs: DispatchTime.now().uptimeNanoseconds)
+                            if let recovery {
+                                let deliveredAU = await processRecoveredPacket(recovery)
+                                if deliveredAU { awaitingApproval = false }
+                            }
                         }
                     case .helloDenied:
                         logger.log("Receive: HELLO_DENY — the sharer declined this viewer")
@@ -666,31 +712,24 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                         break
                     }
                     if isVideo {
-                        await handleVideoFeedback(
-                            seq: videoHeader.sequenceNumber,
-                            nowNs: DispatchTime.now().uptimeNanoseconds)
+                        let nowNs = DispatchTime.now().uptimeNanoseconds
+                        await handleVideoFeedback(seq: videoHeader.sequenceNumber, nowNs: nowNs)
+                        // FEC: retain the packet for parity solves and check
+                        // whether it completed a group whose parity arrived
+                        // first (parity can outrun a reordered member).
+                        if negotiatedCaps.contains(.fec),
+                            let recovery = fecBuffer.noteMedia(
+                                seq: videoHeader.sequenceNumber, packet: datagram, nowNs: nowNs)
+                        {
+                            let deliveredAU = await processRecoveredPacket(recovery)
+                            if deliveredAU { awaitingApproval = false }
+                        }
                     }
                 }
 
-                if let au = depacketizer.ingest(datagram) {
+                if await ingestVideoPacket(datagram) {
                     // Video is flowing — we're past the approval gate.
                     awaitingApproval = false
-                    framesDelivered += 1
-                    if au.lostBeforeThisAU && !negotiatedCaps.contains(.nack) {
-                        // In NACK mode the scheduler owns loss recovery
-                        // (retransmit, then a PLI fallback for gaps it abandons),
-                        // so the depacketizer's own loss signal must not
-                        // double-fire keyframes. Rate-limited otherwise — see
-                        // `sendPLIThrottled` for the loss-amplification hazard.
-                        await sendPLIThrottled()
-                    }
-                    if framesDelivered == 1 || framesDelivered % 60 == 0 {
-                        logger.log(
-                            "Client: AU #\(framesDelivered) (kf=\(au.containsIDR), \(au.avcc.count)B, packets=\(packetsReceived))"
-                        )
-                    }
-                    self.lastReceiveUptimeNs = DispatchTime.now().uptimeNanoseconds
-                    deliverAU(au)
                 }
             } catch {
                 guard isConnected else { break }
@@ -742,6 +781,51 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                     nanoseconds: ReceiveLoopPolicy.retryDelayNs(consecutiveErrors: consecutiveErrors))
             }
         }
+    }
+
+    /// Shared tail of the video path for wire AND FEC-recovered packets —
+    /// downstream of here a recovered packet must be indistinguishable from
+    /// a received one (depacketizer, AU completion, the NACK-mode PLI
+    /// gating). Returns true when an AU was delivered, so the receive loop
+    /// can clear its awaiting-approval flag.
+    private func ingestVideoPacket(_ packet: Data) async -> Bool {
+        guard let au = depacketizer.ingest(packet) else { return false }
+        framesDelivered += 1
+        if au.lostBeforeThisAU && !negotiatedCaps.contains(.nack) {
+            // In NACK mode the scheduler owns loss recovery
+            // (retransmit, then a PLI fallback for gaps it abandons),
+            // so the depacketizer's own loss signal must not
+            // double-fire keyframes. Rate-limited otherwise — see
+            // `sendPLIThrottled` for the loss-amplification hazard.
+            await sendPLIThrottled()
+        }
+        if framesDelivered == 1 || framesDelivered % 60 == 0 {
+            logger.log(
+                "Client: AU #\(framesDelivered) (kf=\(au.containsIDR), \(au.avcc.count)B, packets=\(packetsReceived))"
+            )
+        }
+        self.lastReceiveUptimeNs = DispatchTime.now().uptimeNanoseconds
+        deliverAU(au)
+        return true
+    }
+
+    /// Feed one FEC-recovered packet through the SAME path as a received
+    /// datagram, with exactly three accounting deltas: the overlay counts a
+    /// recovery instead of wire bytes (it wasn't on the wire); the receiver
+    /// report counts it as *received* (recovered ≠ lost — residual loss
+    /// drives the bitrate arm) while `fecRecoveredSinceReport` feeds the
+    /// extended-RR field (raw loss drives the FEC arm); and the pending NACK
+    /// gap is cancelled *without* an RTT sample (`cancelGap` — the straggler
+    /// path would inject FEC latency into the RTT EMA). Returns true when
+    /// the recovered packet completed an AU.
+    private func processRecoveredPacket(_ recovery: FECGroupBuffer.Recovery) async -> Bool {
+        renderer.noteFECRecovered()
+        fecRecoveredSinceReport += 1
+        if negotiatedCaps.contains(.receiverReport) {
+            recordRRPacket(seq: recovery.seq)
+        }
+        nackScheduler.cancelGap(seq: recovery.seq)
+        return await ingestVideoPacket(recovery.packet)
     }
 
     private func deliverAU(_ au: VideoAccessUnit) {
@@ -857,6 +941,10 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         negotiatedCaps = []
         nackScheduler = NACKScheduler()
         depacketizer = MultiCodecDepacketizer()
+        fecBuffer = FECGroupBuffer()
+        fecRecoveredSinceReport = 0
+        packetsReceived = 0
+        framesDelivered = 0
         rrHighestSeq = nil
         rrSeqCycles = 0
         rrExpectedBaseSeq = 0
@@ -944,15 +1032,24 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         if lastPingArrivalNs != 0 {
             delayMs = UInt16(min(65535, (now &- lastPingArrivalNs) / 1_000_000))
         }
+        // The extended 22-byte layout (trailing `fecRecovered`) goes out only
+        // when `.fec` negotiated; legacy/NACK-era servers keep receiving the
+        // exact 20-byte form they already parse (their decode is
+        // length-tolerant either way, but why poke it).
+        let fecNegotiated = negotiatedCaps.contains(.fec)
         let report = ReceiverReport(
             fracLostQ8: UInt8(fracQ8),
             extHighestSeq: extHighest,
             jitterTicks: 0,
             lastPingTs: lastServerPingNs,
-            delaySincePingMs: delayMs)
-        try? await pl.send(ScreenShareControlMessage.encodeReceiverReport(report), to: addr)
+            delaySincePingMs: delayMs,
+            fecRecovered: UInt16(clamping: fecRecoveredSinceReport))
+        try? await pl.send(
+            ScreenShareControlMessage.encodeReceiverReport(report, includeFECRecovered: fecNegotiated),
+            to: addr)
         rrExpectedBaseSeq = extHighest
         rrReceivedSinceReport = 0
+        fecRecoveredSinceReport = 0
         lastRRSentNs = now
     }
 

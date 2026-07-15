@@ -156,6 +156,15 @@ struct NACKScheduler: Sendable {
         evaluate(nowNs: nowNs)
     }
 
+    /// Remove a tracked gap *without* the straggler path's RTT-sample side
+    /// effect. Used when FEC reconstructs the missing packet: an FEC recovery
+    /// after a NACK went out would otherwise inject "time since NACK"
+    /// (actually FEC latency, not a network round trip) into the RTT EMA and
+    /// corrupt the re-NACK cadence. No-op for an untracked seq.
+    mutating func cancelGap(seq: UInt16) {
+        gaps.removeValue(forKey: seq)
+    }
+
     /// True once at least one gap is being tracked (test/introspection aid).
     var hasOpenGaps: Bool { !gaps.isEmpty }
 
