@@ -335,6 +335,15 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// cooperative pool, written from the control-receive loop.
     private let forceH264 = OSAllocatedUnfairLock<Bool>(initialState: false)
 
+    /// Latched on when a viewer reports (via PROFILE_NO) that it can decode
+    /// the codec but not its bit depth — a 10-bit HEVC Main 10 stream reaching
+    /// a viewer whose hardware only decodes 8-bit HEVC. Passes
+    /// `TAILSCREEN_FORCE_8BIT=1` to the helper on the next (re)spawn so the
+    /// capture-helper pins its `ColorInfo` to 8-bit (staying on HEVC). A
+    /// lighter fallback than `forceH264`: we keep HEVC's efficiency, just drop
+    /// the extra two bits. Locked for the same reason as `forceH264`.
+    private let force8bit = OSAllocatedUnfairLock<Bool>(initialState: false)
+
     /// Stateful per-codec packetizers. Held across `broadcast()` calls so
     /// each call can recycle the previous batch's buffer storage instead
     /// of allocating a fresh `Data` per packet. See `RTPPacketBufferPool`
@@ -733,7 +742,14 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         // payload stays schema-stable). Reading the session snapshot here
         // means crash-restart respawns reuse the same fps/codec — and the
         // latest live-applied bandwidth ceiling — automatically.
-        let qualityEnv = sessionQuality.withLock { $0 }.helperEnvironment()
+        var qualityEnv = sessionQuality.withLock { $0 }.helperEnvironment()
+        // A viewer's 8-bit fallback request (PROFILE_NO) rides the same
+        // env-var channel as the quality knobs so a crash-restart respawn
+        // inherits it. The helper's `captureColorInfo` reads it to pin the
+        // capture + encode to 8-bit.
+        if force8bit.withLock({ $0 }) {
+            qualityEnv["TAILSCREEN_FORCE_8BIT"] = "1"
+        }
         try helper.start(
             filterData: filterData, forceH264: forceH264.withLock { $0 }, qualityEnv: qualityEnv)
         helperCapture = helper
@@ -1180,6 +1196,9 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         case .codecUnsupported:
             registerOrRefresh(addr: addr, isNew: false)
             handleCodecUnsupported(from: addr)
+        case .profileUnsupported:
+            registerOrRefresh(addr: addr, isNew: false)
+            handleProfileUnsupported(from: addr)
         }
     }
 
@@ -1199,6 +1218,27 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         }
         guard shouldFallback else { return }
         logger.log("Viewer \(addr) can't decode the current stream — falling back to H.264")
+        Task { [weak self] in
+            try? await self?.restartCapture()
+        }
+    }
+
+    /// A viewer reported it can decode the codec but not its bit depth (a
+    /// 10-bit HEVC Main 10 stream on 8-bit-only decode hardware). Latch the
+    /// share to 8-bit and respawn the helper so the encoder drops to Main.
+    /// Idempotent via the `force8bit` latch, exactly like
+    /// `handleCodecUnsupported`: a storm of PROFILE_NO from a still-stuck
+    /// viewer triggers at most one restart. If we're already encoding 8-bit
+    /// the latch short-circuits the pointless respawn.
+    private func handleProfileUnsupported(from addr: String) {
+        guard isRunning else { return }
+        let shouldFallback = force8bit.withLock { flag -> Bool in
+            if flag { return false }
+            flag = true
+            return true
+        }
+        guard shouldFallback else { return }
+        logger.log("Viewer \(addr) can't decode the current bit depth — falling back to 8-bit")
         Task { [weak self] in
             try? await self?.restartCapture()
         }

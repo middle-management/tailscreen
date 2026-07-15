@@ -140,6 +140,12 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
     /// Fires (on the main thread) whenever `videoSize` changes.
     var onVideoSizeChanged: ((CGSize) -> Void)?
 
+    /// Last color-primaries attachment string applied to the layer's
+    /// colorspace, so `render` only re-tags the `CAMetalLayer` when the
+    /// stream's primaries actually change. Touched only from the display-link
+    /// tick (main thread), so it needs no lock. `nil` until the first frame.
+    private var lastColorPrimaries: String?
+
     private let device: MTLDevice
     private let commandQueue: MTLCommandQueue
     private let pipelineState: MTLRenderPipelineState
@@ -245,7 +251,10 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
         // Tag the layer with sRGB so the compositor doesn't fall back to
         // generic-RGB gamma assumptions on the captured BT.709 stream.
         // Without this tag the same pixels can render visibly different
-        // shades of red on Display P3 displays vs sRGB displays.
+        // shades of red on Display P3 displays vs sRGB displays. This is the
+        // initial default; `render` re-tags the layer from each decoded
+        // buffer's actual color primaries (Display P3 / BT.2020) so
+        // wide-gamut streams aren't clipped to sRGB.
         layer.colorspace = CGColorSpace(name: CGColorSpace.sRGB)
         self.metalLayer = layer
 
@@ -425,9 +434,30 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
         render(buffer: buffer, receiveUptimeNs: receiveNs)
     }
 
+    /// Read the decoded buffer's `kCVImageBufferColorPrimariesKey` attachment
+    /// and, when it differs from what's currently applied, re-tag the
+    /// `CAMetalLayer` colorspace to match (Display P3 / BT.2020, else sRGB).
+    /// Runs on the display-link tick (main thread); `lastColorPrimaries`
+    /// short-circuits the common case where the primaries never change.
+    private func applyColorSpaceIfNeeded(from buffer: CVPixelBuffer) {
+        let raw = CVBufferGetAttachment(buffer, kCVImageBufferColorPrimariesKey, nil)
+        let primaries = raw?.takeUnretainedValue() as? String
+        if primaries == lastColorPrimaries { return }
+        lastColorPrimaries = primaries
+        let name = ColorInfo.layerColorSpaceName(forPrimaries: primaries)
+        metalLayer.colorspace = CGColorSpace(name: name)
+    }
+
     private func render(buffer: CVPixelBuffer, receiveUptimeNs: UInt64) {
         let width = CVPixelBufferGetWidth(buffer)
         let height = CVPixelBufferGetHeight(buffer)
+
+        // Re-tag the layer's colorspace from the decoded buffer's color
+        // primaries (VideoToolbox populated them from the SPS VUI). Display P3
+        // and BT.2020 streams would otherwise be clipped to the sRGB tag set
+        // at init. Only touched when the primaries change (rare — once per
+        // stream), so it stays off the per-frame hot path.
+        applyColorSpaceIfNeeded(from: buffer)
 
         var cvTexture: CVMetalTexture?
         let textureStatus = CVMetalTextureCacheCreateTextureFromImage(

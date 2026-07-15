@@ -78,6 +78,13 @@ final class VideoEncoder: @unchecked Sendable {
     /// default; the capture-helper threads `QualitySettings.encoderQuality`
     /// through here.
     var encoderQuality: Double = EncoderTuning.quality
+    /// Color characteristics (primaries/transfer/matrix, bit depth, range)
+    /// the session is tagged with. Set before `setup` to override the shipped
+    /// BT.709 8-bit default; the capture-helper threads the display's
+    /// `ColorInfo` through here. Same set-a-property idiom as `encoderQuality`,
+    /// which keeps `setup` at ≤5 parameters. VideoToolbox writes these into
+    /// the SPS VUI so they reach the viewer in-band with no wire change.
+    var colorInfo: ColorInfo = .bt709FullRange8
     private var forceNextKeyframe = false
     private var lastParameterSets: CodecParameterSets?
     private var activeCodec: VideoCodec = .h264
@@ -127,24 +134,64 @@ final class VideoEncoder: @unchecked Sendable {
         preferredCodec: VideoCodec = .hevc,
         bitsPerPixel: Double? = nil
     ) throws {
-        let codecOrder: [VideoCodec] = preferredCodec == .hevc ? [.hevc, .h264] : [.h264]
+        let requested = colorInfo
+        let attempts = Self.sessionAttempts(preferredCodec: preferredCodec, colorInfo: requested)
         var lastError: OSStatus = noErr
-        for codec in codecOrder {
-            let bpp = bitsPerPixel ?? Self.defaultBitsPerPixel(for: codec)
+        for attempt in attempts {
+            let bpp = bitsPerPixel ?? Self.defaultBitsPerPixel(for: attempt.codec)
+            let attemptTag = "\(attempt.codec)/\(attempt.colorInfo.bitDepth)bit"
+            let config = SessionConfig(
+                width: width, height: height, fps: fps, codec: attempt.codec, bitsPerPixel: bpp,
+                colorInfo: attempt.colorInfo)
             do {
-                try createSession(
-                    width: width, height: height, fps: fps, codec: codec, bitsPerPixel: bpp)
-                if codec != preferredCodec {
-                    print("VideoEncoder: \(preferredCodec) not available, fell back to \(codec)")
+                try createSession(config)
+                let fellBack = attempt.codec != preferredCodec || attempt.colorInfo.bitDepth != requested.bitDepth
+                if fellBack {
+                    let want = "\(preferredCodec)/\(requested.bitDepth)bit"
+                    print("VideoEncoder: \(want) unavailable, using \(attemptTag)")
                 }
                 return
             } catch VideoEncoderError.sessionCreationFailed(let status) {
                 lastError = status
-                print("VideoEncoder: \(codec) session creation failed (\(status))")
+                print("VideoEncoder: \(attemptTag) session creation failed (\(status))")
                 continue
             }
         }
         throw VideoEncoderError.sessionCreationFailed(lastError)
+    }
+
+    /// Ordered (codec, colorInfo) attempts for the fallback ladder. HEVC
+    /// Main 10 falls back to HEVC 8-bit before H.264 (mirroring the shipped
+    /// HEVC→H.264 ladder), so a Mac that can't encode 10-bit still gets HEVC;
+    /// H.264 never carries 10-bit here. Pure and CI-tested.
+    static func sessionAttempts(
+        preferredCodec: VideoCodec, colorInfo: ColorInfo
+    ) -> [(codec: VideoCodec, colorInfo: ColorInfo)] {
+        guard preferredCodec == .hevc else {
+            let ci = colorInfo.bitDepth >= 10 ? colorInfo.downgradedTo8Bit() : colorInfo
+            return [(.h264, ci)]
+        }
+        var attempts: [(codec: VideoCodec, colorInfo: ColorInfo)] = []
+        if colorInfo.bitDepth >= 10 {
+            attempts.append((.hevc, colorInfo))
+            attempts.append((.hevc, colorInfo.downgradedTo8Bit()))
+        } else {
+            attempts.append((.hevc, colorInfo))
+        }
+        attempts.append((.h264, colorInfo.downgradedTo8Bit()))
+        return attempts
+    }
+
+    /// Bundle of per-session settings, kept as one value so `createSession`
+    /// stays within the 5-parameter lint ceiling as color characteristics
+    /// were threaded in.
+    private struct SessionConfig {
+        let width: Int
+        let height: Int
+        let fps: Int32
+        let codec: VideoCodec
+        let bitsPerPixel: Double
+        let colorInfo: ColorInfo
     }
 
     /// Default `bitsPerPixel` ceiling for the given codec. HEVC encodes
@@ -176,9 +223,13 @@ final class VideoEncoder: @unchecked Sendable {
         }
     }
 
-    private func createSession(
-        width: Int, height: Int, fps: Int32, codec: VideoCodec, bitsPerPixel: Double
-    ) throws {
+    private func createSession(_ config: SessionConfig) throws {
+        let width = config.width
+        let height = config.height
+        let fps = config.fps
+        let codec = config.codec
+        let bitsPerPixel = config.bitsPerPixel
+        let color = config.colorInfo
         var newSession: VTCompressionSession?
 
         let codecType: CMVideoCodecType = (codec == .hevc) ? kCMVideoCodecType_HEVC : kCMVideoCodecType_H264
@@ -209,10 +260,9 @@ final class VideoEncoder: @unchecked Sendable {
         Self.setProperty(
             newSession, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue,
             failures: &propertyFailures)
-        let profileLevel: CFString =
-            (codec == .hevc)
-            ? kVTProfileLevel_HEVC_Main_AutoLevel
-            : kVTProfileLevel_H264_High_AutoLevel
+        // Profile follows the codec + bit depth: HEVC Main 10 for 10-bit,
+        // Main for 8-bit HEVC, High for H.264 (never 10-bit here).
+        let profileLevel = color.profileLevel(for: codec)
         Self.setProperty(
             newSession, key: kVTCompressionPropertyKey_ProfileLevel, value: profileLevel,
             failures: &propertyFailures)
@@ -223,18 +273,21 @@ final class VideoEncoder: @unchecked Sendable {
             newSession, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: fps as CFNumber,
             failures: &propertyFailures)
 
-        // Tag the bitstream with BT.709 color so decoders don't have to
-        // guess. Without these, players have been observed picking BT.601
-        // on captured content and shifting reds noticeably.
+        // Tag the bitstream with the captured color so decoders don't have to
+        // guess. Without these, players have been observed picking BT.601 on
+        // captured content and shifting reds noticeably. These come from the
+        // capture-helper's `ColorInfo` (BT.709 by default, Display P3 on
+        // wide-gamut displays, BT.2020 PQ/HLG for HDR); VideoToolbox writes
+        // them into the SPS VUI so the viewer reads them back in-band.
         Self.setProperty(
             newSession, key: kVTCompressionPropertyKey_ColorPrimaries,
-            value: kCVImageBufferColorPrimaries_ITU_R_709_2, failures: &propertyFailures)
+            value: color.primaries.vtKey, failures: &propertyFailures)
         Self.setProperty(
             newSession, key: kVTCompressionPropertyKey_TransferFunction,
-            value: kCVImageBufferTransferFunction_ITU_R_709_2, failures: &propertyFailures)
+            value: color.transfer.vtKey, failures: &propertyFailures)
         Self.setProperty(
             newSession, key: kVTCompressionPropertyKey_YCbCrMatrix,
-            value: kCVImageBufferYCbCrMatrix_ITU_R_709_2, failures: &propertyFailures)
+            value: color.matrix.vtKey, failures: &propertyFailures)
 
         // Force the high-quality real-time path. RealTime=true alone leaves
         // VT free to pick a cheaper trade-off; these flip the explicit

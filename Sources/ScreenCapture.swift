@@ -167,7 +167,10 @@ class ScreenCapture: NSObject, @unchecked Sendable {
     /// `fps` caps the SCStream's delivery rate via `minimumFrameInterval`
     /// — the capture-helper threads the user's quality setting through
     /// here so the stream and the encoder agree on the frame rate.
-    func start(filter: SCContentFilter, fps: Int = 60) async throws {
+    /// `colorInfo` selects the capture pixel format (8- vs 10-bit) and the
+    /// requested `colorSpaceName` (Display P3 / BT.2020 for wide-gamut / HDR
+    /// displays); the shipped BT.709 8-bit default leaves both untouched.
+    func start(filter: SCContentFilter, fps: Int = 60, colorInfo: ColorInfo = .bt709FullRange8) async throws {
         try await applyStartCooldowns()
         // Pull resolution from the filter directly. `contentRect` is in
         // points (CG-coordinate space), so we multiply by the filter's
@@ -180,9 +183,9 @@ class ScreenCapture: NSObject, @unchecked Sendable {
         let pxHeight = max(2, Int((rect.height * CGFloat(scale)).rounded()))
         try await startStream(
             filter: filter,
-            pixelWidth: pxWidth,
-            pixelHeight: pxHeight,
+            pixelSize: CGSize(width: pxWidth, height: pxHeight),
             fps: fps,
+            colorInfo: colorInfo,
             sourceTag: "filter rect=\(Int(rect.width))x\(Int(rect.height))pt scale=\(scale)"
         )
     }
@@ -229,29 +232,37 @@ class ScreenCapture: NSObject, @unchecked Sendable {
     /// first-frame wait — runs uniformly here.
     private func startStream(
         filter: SCContentFilter,
-        pixelWidth: Int,
-        pixelHeight: Int,
+        pixelSize: CGSize,
         fps: Int,
+        colorInfo: ColorInfo,
         sourceTag: String
     ) async throws {
         let config = SCStreamConfiguration()
-        config.width = Self.evenFloor(pixelWidth)
-        config.height = Self.evenFloor(pixelHeight)
+        config.width = Self.evenFloor(Int(pixelSize.width))
+        config.height = Self.evenFloor(Int(pixelSize.height))
         config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(max(1, fps)))
-        // Full-range NV12 — matches what VideoToolbox wants natively, so the
-        // encoder skips an internal BGRA→YUV conversion (cheaper, and removes
-        // a 601/709 ambiguity that was crushing near-black UI surfaces under
-        // the limited-range default). The encoder tags the bitstream
-        // full-range so the decoder reads the right range from the VUI.
-        config.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+        // Full-range biplanar 4:2:0 — matches what VideoToolbox wants
+        // natively, so the encoder skips an internal BGRA→YUV conversion
+        // (cheaper, and removes a 601/709 ambiguity that was crushing
+        // near-black UI surfaces under the limited-range default). The encoder
+        // tags the bitstream full-range so the decoder reads the right range
+        // from the VUI. `ColorInfo` picks 8-bit (`420f`, shipped default) vs
+        // 10-bit (`x420`) for deep-color / HDR sources.
+        config.pixelFormat = colorInfo.capturePixelFormat
+        // Request the source's color space only for non-709 gamuts (Display
+        // P3 / BT.2020); BT.709 leaves SCStream at its default so the shipped
+        // capture path is untouched. SCStream converts captured content into
+        // this space; the encoder's matching VUI tags carry it to viewers.
+        if let colorSpaceName = colorInfo.captureColorSpaceName {
+            config.colorSpaceName = colorSpaceName
+        }
         config.showsCursor = true
         config.queueDepth = 5
         self.streamConfig = config
+        let fmt = colorInfo.bitDepth >= 10 ? "x420" : "420f"
         logEvent(
             "start.config",
-            extra:
-                "\(sourceTag) size=\(config.width)x\(config.height) fps=\(fps) pixelFormat=420f queueDepth=5"
-        )
+            extra: "\(sourceTag) size=\(config.width)x\(config.height) fps=\(fps) pixelFormat=\(fmt)")
 
         // Create stream
         stream = SCStream(filter: filter, configuration: config, delegate: self)
