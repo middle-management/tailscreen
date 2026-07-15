@@ -518,7 +518,6 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// Rebuilt by every sweep; read by `broadcast`.
     private let fecGatedAddrs = OSAllocatedUnfairLock<Set<String>>(initialState: [])
 
-
     /// Current capture frame-rate tier (60 / 30 / 15), the second congestion
     /// lever below the bitrate floor. Seeded from the session fps cap at
     /// `start()`; stepped by the adaptive sweep's `nextCongestionDecision`.
