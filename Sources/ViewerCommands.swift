@@ -77,6 +77,13 @@ final class ViewerCommands: NSObject {
         NotificationCenter.default.post(name: .tailscreenToggleMicrophone, object: nil)
     }
 
+    /// File → Stop Remote Control (⌃⌥.). Instantly revokes any live
+    /// remote-control grant the sharer has issued. Menu-validated to only
+    /// enable while a viewer holds control.
+    @objc func stopRemoteControl(_ sender: Any?) {
+        appState?.revokeRemoteControl(reason: "menu")
+    }
+
     /// Toolbar/menu → Show Stats. Flips the renderer's stats-overlay
     /// visibility. The hosting view subscribes to `model.$isVisible`
     /// with Combine, so the change propagates without an extra signal.
@@ -172,6 +179,9 @@ extension ViewerCommands: NSMenuItemValidation {
             return overlay?.canClearAll ?? false
         case #selector(disconnectViewer(_:)):
             return true
+        case #selector(stopRemoteControl(_:)):
+            // Sharer-side: enabled only while a viewer is actively controlling.
+            return appState?.controlGrantee != nil
         case #selector(toggleMicrophone(_:)):
             let isOn = appState?.isMicOn ?? false
             menuItem.state = isOn ? .on : .off

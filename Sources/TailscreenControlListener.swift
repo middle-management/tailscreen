@@ -47,6 +47,27 @@ final class TailscreenControlListener: @unchecked Sendable {
     /// the spoofable wire-claimed hostname.
     var onRequestToShare: ((String, UUID, String?) -> Void)?
 
+    /// Fires for every `.controlRequest` message (viewer→sharer "please grant
+    /// me remote control"). Arguments are the connection's stable `UUID` (the
+    /// handle the grant + input-event gate key on) and its remote tailnet
+    /// address (`ip:port`, nil if unreported) so the sharer can confirm the
+    /// requester is an admitted viewer and label the request row.
+    var onControlRequest: ((UUID, String?) -> Void)?
+
+    /// Fires for every `.inputEvent` message (viewer→sharer mouse/scroll/key).
+    /// Arguments are the event, the connection's `UUID` (checked against the
+    /// live grant — events from any non-grantee connection are dropped
+    /// server-side), and the remote address. Fires off the connection's
+    /// receive task, which is single-threaded per connection so per-connection
+    /// event order is preserved.
+    var onInputEvent: ((InputEvent, UUID, String?) -> Void)?
+
+    /// Fires for a `.controlReleased` message (grantee viewer→sharer "I'm
+    /// done controlling"). Argument is the connection's `UUID`; the sharer
+    /// revokes the grant if this connection holds it, so the sharer UI and
+    /// the gate release in lockstep with the viewer leaving control mode.
+    var onControlReleased: ((UUID) -> Void)?
+
     /// Fires when an accepted TCP connection closes. Argument is the
     /// connection's stable `UUID`. Used by the share server to retire
     /// per-viewer annotation state.
@@ -174,6 +195,12 @@ final class TailscreenControlListener: @unchecked Sendable {
                 while let message = parser.next() {
                     dispatch(message, connectionID: id, peerAddress: peerAddress)
                 }
+                // A peer that framed an oversized (bogus) length poisons the
+                // parser; the stream can't resync, so drop the connection.
+                if parser.isCorrupt {
+                    logger.log("Control connection sent an oversized frame — closing")
+                    return
+                }
             } catch TailscaleError.readFailed {
                 if !isRunning { return }
                 continue  // poll timeout — keep reading
@@ -189,10 +216,17 @@ final class TailscreenControlListener: @unchecked Sendable {
             onAnnotation?(op, connectionID, peerAddress)
         case .requestToShare(let from):
             onRequestToShare?(from, connectionID, peerAddress)
-        case .shareResponse:
-            // Responses ride the requester's own outgoing connection, which
-            // reads them inline (see `TailscreenMetadataService.awaitShareResponse`),
-            // so there's nothing to dispatch on the listener side.
+        case .controlRequest:
+            onControlRequest?(connectionID, peerAddress)
+        case .inputEvent(let event):
+            onInputEvent?(event, connectionID, peerAddress)
+        case .controlReleased:
+            onControlReleased?(connectionID)
+        case .shareResponse, .controlGranted, .controlRevoked:
+            // `.shareResponse` rides the requester's own outgoing connection,
+            // read inline (see `TailscreenMetadataService.awaitShareResponse`).
+            // `.controlGranted` / `.controlRevoked` are sharer→viewer only —
+            // a viewer sending them to us is confused or malicious; drop.
             break
         }
     }

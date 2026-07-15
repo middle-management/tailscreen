@@ -158,6 +158,18 @@ enum AppMenu {
         micItem.target = ViewerCommands.shared
         fileMenu.addItem(micItem)
 
+        fileMenu.addItem(.separator())
+
+        // Sharer-side panic revoke, mirroring the ⌃⌥. global hotkey. Disabled
+        // (via ViewerCommands validation) unless a viewer holds control.
+        let stopControl = NSMenuItem(
+            title: L("Stop Remote Control"),
+            action: #selector(ViewerCommands.stopRemoteControl(_:)),
+            keyEquivalent: ".")
+        stopControl.keyEquivalentModifierMask = [.control, .option]
+        stopControl.target = ViewerCommands.shared
+        fileMenu.addItem(stopControl)
+
         // ── Edit ──
         let editItem = NSMenuItem(title: "Edit", action: nil, keyEquivalent: "")
         let editMenu = NSMenu(title: "Edit")

@@ -90,6 +90,21 @@ final class ViewerJoinNotifier {
         UNUserNotificationCenter.current().add(req, withCompletionHandler: nil)
     }
 
+    func postControlRequested(label: String) {
+        guard isBundled else { return }
+        ensureAuthorization()
+        let content = UNMutableNotificationContent()
+        content.title = L("Viewer Wants Control")
+        content.body = L("\(label) is asking to control your Mac. Open Tailscreen to Grant or Deny.")
+        content.sound = .default
+        let req = UNNotificationRequest(
+            identifier: "tailscreen.control.requested.\(UUID().uuidString)",
+            content: content,
+            trigger: nil
+        )
+        UNUserNotificationCenter.current().add(req, withCompletionHandler: nil)
+    }
+
     private func ensureAuthorization() {
         guard !didRequestAuthorization else { return }
         didRequestAuthorization = true
