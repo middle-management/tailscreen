@@ -2641,18 +2641,14 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
 
     /// The fps downshift ladder: 60 → 30 → 15 (and back). `nil` at the ends.
     static func lowerFpsTier(_ tier: Int) -> Int? {
-        switch tier {
-        case let t where t > 30: return 30
-        case let t where t > 15: return 15
-        default: return nil
-        }
+        if tier > 30 { return 30 }
+        if tier > 15 { return 15 }
+        return nil
     }
     static func raiseFpsTier(_ tier: Int) -> Int? {
-        switch tier {
-        case let t where t < 30: return 30
-        case let t where t < 60: return 60
-        default: return nil
-        }
+        if tier < 30 { return 30 }
+        if tier < 60 { return 60 }
+        return nil
     }
 
     /// Receiver-feedback congestion control. Bitrate is the primary lever (cut

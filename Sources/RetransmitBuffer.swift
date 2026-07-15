@@ -161,32 +161,29 @@ final class RetransmitBuffer: @unchecked Sendable {
     private static func evict(
         _ state: inout State, nowNs: UInt64, windowNs: UInt64, byteCap: Int, maxBatches: Int
     ) {
-        func dropOldest() {
-            guard let id = state.order.first else { return }
+        // Age first: drop the oldest batch while it's past the window.
+        while let id = state.order.first, let peek = state.batches[id],
+            nowNs &- peek.insertedNs > windowNs
+        {
             state.order.removeFirst()
-            if let batch = state.batches.removeValue(forKey: id) {
-                state.totalBytes -= batch.byteCount
-            }
+            if let batch = state.batches.removeValue(forKey: id) { state.totalBytes -= batch.byteCount }
         }
-        func oldestIsStale() -> Bool {
-            guard let id = state.order.first, let batch = state.batches[id] else { return false }
-            return nowNs &- batch.insertedNs > windowNs
+        // Byte cap.
+        while state.totalBytes > byteCap, let id = state.order.first {
+            state.order.removeFirst()
+            if let batch = state.batches.removeValue(forKey: id) { state.totalBytes -= batch.byteCount }
         }
-        while oldestIsStale() {
-            dropOldest()
-        }
-        while state.totalBytes > byteCap, !state.order.isEmpty {
-            dropOldest()
-        }
-        while state.order.count > maxBatches {
-            dropOldest()
+        // Batch count.
+        while state.order.count > maxBatches, let id = state.order.first {
+            state.order.removeFirst()
+            if let batch = state.batches.removeValue(forKey: id) { state.totalBytes -= batch.byteCount }
         }
     }
 
     // MARK: - Retransmit budget (pure)
 
     /// Token-bucket state for the retransmit rate limiter. `tokens` is in
-    /// packets; refilled at `RetransmitBudgetConfig.tokensPerSecond`.
+    /// packets; refilled at `BudgetConfig.tokensPerSecond`.
     struct BudgetState: Equatable {
         var tokens: Double
         var lastRefillNs: UInt64

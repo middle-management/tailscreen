@@ -111,13 +111,18 @@ struct NACKScheduler: Sendable {
 
         // Newer packet: open a gap for every sequence number skipped between
         // the old highest and this one, bump the newer-seen count on existing
-        // gaps, and clear this seq if it was itself a tracked gap.
-        var missing = highest &+ 1
-        while missing != seq {
-            if gaps[missing] == nil, gaps.count < maxGaps {
-                gaps[missing] = Gap(firstSeenNs: nowNs)
+        // gaps, and clear this seq if it was itself a tracked gap. A jump wider
+        // than `maxGaps` is a stream discontinuity (long stall / resync), not
+        // recoverable loss — don't enumerate thousands of gaps; let the
+        // keyframe path resync instead.
+        if Int(forward) <= maxGaps {
+            var missing = highest &+ 1
+            while missing != seq {
+                if gaps[missing] == nil, gaps.count < maxGaps {
+                    gaps[missing] = Gap(firstSeenNs: nowNs)
+                }
+                missing &+= 1
             }
-            missing &+= 1
         }
         for key in Array(gaps.keys) {
             gaps[key]?.newerSeen += 1
