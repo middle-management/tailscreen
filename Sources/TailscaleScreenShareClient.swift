@@ -437,7 +437,8 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         // switches Spaces) doesn't fully tear our session down. The
         // sharer's own watchdog will still notice if we've truly gone
         // silent for >15 s, at which point both ends time out together.
-        let idleDisconnectAfterNs: UInt64 = 15_000_000_000
+        // Both constants live in TransportTuning to keep them coupled.
+        let idleDisconnectAfterNs = TransportTuning.clientIdleDisconnectNs
         var lastDataNs = DispatchTime.now().uptimeNanoseconds
         // Suppresses the idle-disconnect while the sharer has us parked
         // behind their approval gate (HELLO_PENDING, then silence — the
@@ -660,7 +661,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         // scheduling stall) doesn't push us past the server's 15 s idle
         // sweep. Two missed sends in a row still leaves ~14 s of slack.
         while isConnected {
-            try? await Task.sleep(nanoseconds: 500_000_000)
+            try? await Task.sleep(nanoseconds: TransportTuning.keepaliveIntervalNs)
             guard isConnected, let pl = packetListener, let addr = serverAddr else { return }
             try? await pl.send(ScreenShareControlMessage.encode(.keepalive), to: addr)
         }

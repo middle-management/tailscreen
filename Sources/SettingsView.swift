@@ -55,6 +55,82 @@ struct SettingsView: View {
                     }
                 }
             }
+            Section(L("Quality")) {
+                Picker(
+                    L("Preset"),
+                    selection: Binding(
+                        get: { appState.qualitySettings.preset },
+                        set: { newPreset in
+                            appState.qualitySettings = QualitySettings.applying(
+                                preset: newPreset, to: appState.qualitySettings)
+                        }
+                    )
+                ) {
+                    Text(L("Low")).tag(QualitySettings.Preset.low)
+                    Text(L("Balanced")).tag(QualitySettings.Preset.balanced)
+                    Text(L("High")).tag(QualitySettings.Preset.high)
+                    Text(L("Custom")).tag(QualitySettings.Preset.custom)
+                }
+                .pickerStyle(.segmented)
+                Picker(
+                    L("Frame rate"),
+                    selection: Binding(
+                        get: { appState.qualitySettings.fpsCap },
+                        set: { appState.qualitySettings = appState.qualitySettings.updating(fpsCap: $0) }
+                    )
+                ) {
+                    ForEach(QualitySettings.allowedFPSCaps, id: \.self) { fps in
+                        Text(L("\(fps) fps")).tag(fps)
+                    }
+                }
+                Picker(
+                    L("Codec"),
+                    selection: Binding(
+                        get: { appState.qualitySettings.codecPreference },
+                        set: { newCodec in
+                            appState.qualitySettings =
+                                appState.qualitySettings.updating(codecPreference: newCodec)
+                        }
+                    )
+                ) {
+                    // Codec names are brand nouns — deliberately unlocalized
+                    // (see CLAUDE.md's Localization section). No HEVC row:
+                    // Automatic already prefers HEVC (with H.264 fallback),
+                    // so a dedicated HEVC choice would behave identically.
+                    Text(L("Automatic")).tag(QualitySettings.CodecPreference.auto)
+                    Text(verbatim: "H.264").tag(QualitySettings.CodecPreference.h264)
+                }
+                Toggle(
+                    L("Limit bandwidth"),
+                    isOn: Binding(
+                        get: { appState.qualitySettings.maxBitrateBps != nil },
+                        set: { enabled in
+                            let ceiling = enabled ? QualitySettings.initialCeilingBps : nil
+                            appState.qualitySettings =
+                                appState.qualitySettings.updating(maxBitrateBps: ceiling)
+                        }
+                    ))
+                if let ceilingBps = appState.qualitySettings.maxBitrateBps {
+                    // `normalized()` keeps the ceiling clamped to the
+                    // bounds and rounded to a whole Mbps, so the integer
+                    // division here is always exact — no display fudging.
+                    Stepper(
+                        value: Binding(
+                            get: { ceilingBps / 1_000_000 },
+                            set: { mbps in
+                                appState.qualitySettings =
+                                    appState.qualitySettings.updating(maxBitrateBps: mbps * 1_000_000)
+                            }
+                        ),
+                        in: (QualitySettings.minCeilingBps / 1_000_000)...(QualitySettings.maxCeilingBps / 1_000_000)
+                    ) {
+                        Text(L("\(ceilingBps / 1_000_000) Mbps"))
+                    }
+                }
+                Text(L("Frame rate and codec changes apply the next time you start sharing."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
             Section(L("Audio")) {
                 Picker(
@@ -89,7 +165,7 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 440, height: 460)
+        .frame(width: 440, height: 600)
         .onAppear { appState.refreshAudioDevices() }
     }
 

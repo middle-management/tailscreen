@@ -66,23 +66,31 @@ final class HelperScreenCapture: @unchecked Sendable {
         queueLabel = "HelperScreenCapture-\(UUID().uuidString.prefix(8))"
     }
 
-    /// - Parameter forceH264: when true, the spawned helper is told (via
-    ///   `TAILSCREEN_FORCE_H264=1`) to encode H.264 instead of the default
-    ///   HEVC. Used by the codec-fallback path when a viewer can't decode HEVC.
-    func start(filterData: Data, forceH264: Bool = false) throws {
+    /// - Parameters:
+    ///   - forceH264: when true, the spawned helper is told (via
+    ///     `TAILSCREEN_FORCE_H264=1`) to encode H.264 instead of the preferred
+    ///     codec. Used by the codec-fallback path when a viewer can't decode
+    ///     HEVC — it wins over any `qualityEnv` codec preference.
+    ///   - qualityEnv: spawn-time quality knobs from
+    ///     `QualitySettings.helperEnvironment()` (fps cap, codec preference,
+    ///     bandwidth ceiling), merged into the child's environment.
+    func start(filterData: Data, forceH264: Bool = false, qualityEnv: [String: String] = [:]) throws {
         guard let exe = resolveHelperExecutable() else {
             throw HelperScreenCaptureError.executableNotFound
         }
         let proc = Process()
         proc.executableURL = exe
         proc.arguments = ["--capture-helper"]
-        if forceH264 {
+        if forceH264 || !qualityEnv.isEmpty {
             // Setting `environment` replaces (doesn't merge with) the child's
-            // env, so seed it from ours before adding the override — the
+            // env, so seed it from ours before adding the overrides — the
             // helper relies on inherited vars (TAILSCREEN_INSTANCE, the TS
             // auth/control-URL keys, TAILSCREEN_HELPER_EXE under xctest, etc.).
             var env = ProcessInfo.processInfo.environment
-            env["TAILSCREEN_FORCE_H264"] = "1"
+            env.merge(qualityEnv) { _, override in override }
+            if forceH264 {
+                env["TAILSCREEN_FORCE_H264"] = "1"
+            }
             proc.environment = env
         }
 
@@ -197,13 +205,14 @@ final class HelperScreenCapture: @unchecked Sendable {
                 }
                 onAccessUnit?(avcc, isKeyframe)
             case .parameterSets:
-                if payload.count >= 9 {
-                    let w = Int(readBE32(payload, offset: 1))
-                    let h = Int(readBE32(payload, offset: 5))
-                    if w > 0 && h > 0 {
-                        onEncoderResolution?(w, h)
-                    }
-                }
+                // Ordering invariant: fire `onParameterSets` BEFORE
+                // `onEncoderResolution`. The server's params handler caches
+                // the codec (`helperCodec`); its resolution handler reads
+                // that codec to pick the bits-per-pixel figure for the
+                // adaptive-bitrate anchor. Resolution-first would compute
+                // the session's first anchor with `helperCodec == nil`
+                // (HEVC's bpp) even for an H.264 session. Both handlers are
+                // otherwise independent, so the swap is side-effect-free.
                 if let params = decodeParameterSets(payload) {
                     if !debugParamsLogged {
                         debugParamsLogged = true
@@ -217,6 +226,13 @@ final class HelperScreenCapture: @unchecked Sendable {
                         }
                     }
                     onParameterSets?(params)
+                }
+                if payload.count >= 9 {
+                    let w = Int(readBE32(payload, offset: 1))
+                    let h = Int(readBE32(payload, offset: 5))
+                    if w > 0 && h > 0 {
+                        onEncoderResolution?(w, h)
+                    }
                 }
             case .firstFrame:
                 onFirstFrame?()
