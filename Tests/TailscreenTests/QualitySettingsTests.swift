@@ -39,6 +39,7 @@ final class QualitySettingsTests: XCTestCase {
         XCTAssertEqual(TransportTuning.pendingApprovalTimeoutNs, 60_000_000_000)
         XCTAssertEqual(TransportTuning.helperLivenessTimeoutNs, 15_000_000_000)
         XCTAssertEqual(TransportTuning.maxQueuedVideoFramesPerViewer, 4)
+        XCTAssertEqual(TransportTuning.maxQueuedAudioPacketsPerViewer, 24)
         XCTAssertEqual(TransportTuning.helperCrashWindowNs, 30_000_000_000)
         XCTAssertEqual(TransportTuning.maxHelperCrashesPerWindow, 3)
         XCTAssertEqual(TransportTuning.adaptiveFloorMinBps, 500_000)

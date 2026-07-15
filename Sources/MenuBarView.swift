@@ -549,32 +549,64 @@ private struct AudioDevicePickers: View {
     }
 }
 
-/// Single-line viewer roster shown inside the SharingCard. Hostnames come
-/// from the netmap lookup in `TailscaleScreenShareServer.resolveHostname`;
-/// rows that haven't resolved yet (or whose peer isn't in the netmap) fall
-/// back to the raw Tailscale IP. Truncates to keep the SharingCard
-/// vertical layout stable as viewers come and go.
+/// Viewer roster shown inside the SharingCard — one row per connected viewer
+/// with a leading health dot (green / yellow / orange) that reflects the
+/// server's per-viewer loss attribution: `good`, `degraded` (packet loss this
+/// window), or `throttled` (keyframe-only mode because that viewer's link was
+/// isolating the session). Hostnames come from the netmap lookup in
+/// `TailscaleScreenShareServer`; rows that haven't resolved yet (or whose peer
+/// isn't in the netmap) fall back to the raw Tailscale IP, truncated to keep
+/// the layout stable. Falls back to a single "No viewers yet" line when empty.
 private struct ViewersList: View {
     let viewers: [ViewerInfo]
 
     var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: viewers.isEmpty ? "person" : "person.2.fill")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-            Text(label)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-            Spacer(minLength: 0)
+        if viewers.isEmpty {
+            HStack(spacing: 6) {
+                Image(systemName: "person")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Text(L("No viewers yet"))
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Spacer(minLength: 0)
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(viewers) { viewer in
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(Self.dotColor(for: viewer.health))
+                            .frame(width: 8, height: 8)
+                            .help(Self.tooltip(for: viewer.health))
+                        Text(viewer.hostname ?? viewer.tailscaleIP)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        Spacer(minLength: 0)
+                    }
+                }
+            }
         }
     }
 
-    private var label: String {
-        if viewers.isEmpty { return L("No viewers yet") }
-        let names = viewers.map { $0.hostname ?? $0.tailscaleIP }
-        return L("\(viewers.count) watching: \(names.joined(separator: ", "))")
+    private static func dotColor(for health: ViewerHealth) -> Color {
+        switch health {
+        case .good: return .green
+        case .degraded: return .yellow
+        case .throttled: return .orange
+        }
+    }
+
+    private static func tooltip(for health: ViewerHealth) -> String {
+        switch health {
+        case .good: return L("Connection healthy")
+        case .degraded: return L("Connection degraded — packet loss")
+        case .throttled: return L("Limited to keyframes — poor connection")
+        }
     }
 }
 
