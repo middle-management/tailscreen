@@ -134,6 +134,12 @@ class AppState: ObservableObject {
     private var settingsWindow: NSWindow?
     private var viewerRenderer: MetalViewerRenderer?
     private var viewerOverlay: AnnotationOverlayHostView?
+    /// The viewer window's aspect-fit host — the view that owns the
+    /// continuous content zoom/pan state. Weak: the window's contentView
+    /// holds it for the process lifetime. Used to reset the zoom on
+    /// preset selection / video-size change / disconnect, and to route
+    /// the View-menu Zoom In / Zoom Out steps.
+    private weak var viewerHost: AspectFitHostView?
     /// Hosts the stats overlay subview pinned to the top-left of the
     /// viewer's content view. Held strongly so the visibility-toggle
     /// Combine subscription it owns lives for the lifetime of the
@@ -892,6 +898,11 @@ class AppState: ObservableObject {
         }
         viewerAwaitingApproval = false
         let renderer = ensureViewer()
+        // Belt-and-braces zoom reset at session entry: disconnect()
+        // already resets, and `videoSize.didSet` resets on a resolution
+        // change — but a new sharer streaming at the *same* resolution
+        // fires neither, and must not inherit the previous session's zoom.
+        viewerHost?.zoomState = ViewerZoomState()
         do {
             let c = TailscaleScreenShareClient(renderer: renderer)
             client = c
@@ -1048,8 +1059,12 @@ class AppState: ObservableObject {
         host.wantsLayer = true
         host.layer = CALayer()
         host.layer?.backgroundColor = NSColor.black.cgColor
+        // Clip at the host's edges: while content-zoomed the video rect
+        // (and the metal layer with it) extends past the window bounds.
+        host.layer?.masksToBounds = true
         host.metalLayer = r.metalLayer
         host.layer?.addSublayer(r.metalLayer)
+        self.viewerHost = host
         // Mirror any video-size changes onto the host so it relays out the
         // overlay to the new aspect rect, and (unless the user has
         // dragged the viewer to a custom size) snap the window to the
@@ -1058,6 +1073,9 @@ class AppState: ObservableObject {
         // skipped once the user has manually resized; the View menu's
         // Actual Size / 50% / 200% items reset that opt-out.
         r.onVideoSizeChanged = { [weak self, weak host, weak win] size in
+            // A resolution change also resets the content zoom — that
+            // lives in `AspectFitHostView.videoSize.didSet` so it holds
+            // for every producer of the property.
             host?.videoSize = size
             guard let self, let win else { return }
             MainActor.assumeIsolated {
@@ -1175,6 +1193,10 @@ class AppState: ObservableObject {
     /// `videoSize × factor` clamped to the current screen.
     @MainActor
     func setViewerZoom(_ factor: CGFloat) {
+        // The presets also mean "give me a predictable view" — drop any
+        // content zoom/pan before the decoded-frame guard so ⌘0 and the
+        // presets clear a stray zoom even before the first frame lands.
+        viewerHost?.zoomState = ViewerZoomState()
         guard let win = viewerWindow, let r = viewerRenderer,
             r.videoSize.width > 0, r.videoSize.height > 0
         else { return }
@@ -1183,6 +1205,17 @@ class AppState: ObservableObject {
             width: r.videoSize.width * factor,
             height: r.videoSize.height * factor)
         programmaticSnap(win, toVideoPixelSize: target)
+    }
+
+    /// View → Zoom In / Zoom Out (⌥⌘+ / ⌥⌘-). Steps the continuous
+    /// content zoom by a multiplicative `delta`, anchored at the viewport
+    /// center — unlike the window-sizing presets above, this magnifies a
+    /// region of the received video inside the current window. Pinch and
+    /// ⌥-scroll on the viewer do the same anchored at the cursor (see
+    /// `AspectFitHostView`).
+    @MainActor
+    func zoomViewerContent(by delta: CGFloat) {
+        viewerHost?.zoomContent(by: delta)
     }
 
     /// Wraps `snapViewerWindow` with the suppress-flag dance so the
@@ -1259,6 +1292,10 @@ class AppState: ObservableObject {
         connectedHostname = nil
         viewerAwaitingApproval = false
         viewerRenderer?.clearPendingBuffer()
+        // The window survives disconnect (process-lifetime); drop the
+        // content zoom so the next session doesn't inherit a magnified
+        // view of a screen that's gone.
+        viewerHost?.zoomState = ViewerZoomState()
         viewerWindow?.orderOut(nil)
         // Next connect should snap to the new sharer's dims even if the
         // user dragged the previous session's window to a custom size.
@@ -1942,29 +1979,130 @@ private final class ViewerWindowDelegate: NSObject, NSWindowDelegate {
 
 /// Container for the viewer window's video + annotation overlay. Lays
 /// both out at the aspect-fit rect of the source video inside the host
-/// bounds, so a click on the overlay maps 1:1 to a pixel on the sharer's
-/// captured screen no matter how the user resizes the window.
+/// bounds — optionally magnified/panned by `zoomState` — so a click on
+/// the overlay maps 1:1 to a pixel on the sharer's captured screen no
+/// matter how the user resizes the window or zooms the content.
 private final class AspectFitHostView: NSView {
     weak var metalLayer: CAMetalLayer?
     weak var contentSubview: NSView?
     var videoSize: CGSize = .zero {
         didSet {
             guard videoSize != oldValue else { return }
+            // A sharer-side resolution change invalidates the content
+            // zoom's pan space — reset to fit rather than keep magnifying
+            // a stale region of the old frame.
+            zoomState = ViewerZoomState()
+            needsLayout = true
+        }
+    }
+
+    /// Continuous content zoom/pan applied on top of the aspect-fit rect.
+    /// All geometry lives in `ViewerZoomMath`; this view only feeds it
+    /// gesture deltas and lays out both the metal layer and the annotation
+    /// overlay from the single rect it returns — keeping the two congruent
+    /// is the invariant that keeps strokes pixel-correct at any zoom.
+    var zoomState = ViewerZoomState() {
+        didSet {
+            guard zoomState != oldValue else { return }
             needsLayout = true
         }
     }
 
     override func layout() {
         super.layout()
-        let rect = aspectFitRect()
+        let rect = ViewerZoomMath.videoRect(fit: aspectFitRect(), state: zoomState)
         // CALayer frame changes go through an implicit animation by
         // default — disable it so the layer snaps to the new aspect rect
-        // in lockstep with the overlay subview.
+        // in lockstep with the overlay subview (and so pinch-zoom doesn't
+        // rubber-band through implicit animations).
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         metalLayer?.frame = rect
         CATransaction.commit()
         contentSubview?.frame = rect
+    }
+
+    // MARK: - Content zoom gestures
+    //
+    // Events land on the annotation overlay first (it's the subview under
+    // the cursor) but bubble up the responder chain to this host — the
+    // overlay doesn't override any of these.
+
+    /// The texture-safe zoom ceiling for the given fit rect: keeps the
+    /// zoomed rect (which frames the layer-backed annotation overlay)
+    /// under Core Animation's per-axis texture limit at this window's
+    /// backing scale.
+    private func effectiveMaxScale(fit: CGRect) -> CGFloat {
+        ViewerZoomMath.effectiveMaxScale(fit: fit, backingScale: window?.backingScaleFactor ?? 2)
+    }
+
+    /// Pinch zoom, anchored under the cursor.
+    override func magnify(with event: NSEvent) {
+        let fit = aspectFitRect()
+        let anchor = convert(event.locationInWindow, from: nil)
+        zoomState = ViewerZoomMath.zoomed(
+            state: zoomState, by: 1 + event.magnification, anchor: anchor, fit: fit,
+            maxScale: effectiveMaxScale(fit: fit))
+    }
+
+    /// Two-finger double-tap: toggle fit ↔ 2× at the tap point.
+    override func smartMagnify(with event: NSEvent) {
+        let fit = aspectFitRect()
+        let anchor = convert(event.locationInWindow, from: nil)
+        zoomState = ViewerZoomMath.smartMagnifyToggled(
+            state: zoomState, anchor: anchor, fit: fit,
+            maxScale: effectiveMaxScale(fit: fit))
+    }
+
+    /// ⌥-scroll zooms at the cursor; plain scroll pans while zoomed in.
+    /// At fit (scale 1) an unmodified scroll falls through to the
+    /// responder chain — nothing scrolls there today, so behavior at fit
+    /// is unchanged.
+    override func scrollWheel(with event: NSEvent) {
+        // Non-precise devices (classic mouse wheels) report deltas in
+        // line units, not points — scale up so one wheel notch moves or
+        // zooms a useful amount.
+        let unit: CGFloat = event.hasPreciseScrollingDeltas ? 1 : 16
+        if event.modifierFlags.contains(.option) {
+            let fit = aspectFitRect()
+            let anchor = convert(event.locationInWindow, from: nil)
+            // Normalize so scrolling up (device-up) always zooms in,
+            // regardless of the natural-scrolling preference — zoom has
+            // no "content to drag", so direction shouldn't flip with it.
+            // ~100 points of scroll doubles (or halves) the zoom.
+            let dy = event.scrollingDeltaY * unit
+            let zoomDelta = event.isDirectionInvertedFromDevice ? -dy : dy
+            let delta = CGFloat(pow(2.0, Double(zoomDelta) / 100.0))
+            zoomState = ViewerZoomMath.zoomed(
+                state: zoomState, by: delta, anchor: anchor, fit: fit,
+                maxScale: effectiveMaxScale(fit: fit))
+            return
+        }
+        if zoomState.isZoomedIn {
+            let fit = aspectFitRect()
+            // scrollingDelta is expressed for a flipped (y-down)
+            // coordinate space; this view is non-flipped, so negate Y to
+            // keep the content tracking the fingers. Unlike the ⌥-zoom
+            // above, panning deliberately follows the natural-scrolling
+            // preference — it *is* dragging content.
+            zoomState = ViewerZoomMath.panned(
+                state: zoomState,
+                by: CGSize(
+                    width: event.scrollingDeltaX * unit,
+                    height: -event.scrollingDeltaY * unit),
+                fit: fit)
+            return
+        }
+        super.scrollWheel(with: event)
+    }
+
+    /// Center-anchored continuous zoom step for the View-menu items
+    /// (⌥⌘+ / ⌥⌘-), which have no cursor position to anchor at.
+    func zoomContent(by delta: CGFloat) {
+        let fit = aspectFitRect()
+        zoomState = ViewerZoomMath.zoomed(
+            state: zoomState, by: delta, anchor: CGPoint(x: fit.midX, y: fit.midY), fit: fit,
+            maxScale: effectiveMaxScale(fit: fit))
     }
 
     override func resizeSubviews(withOldSize oldSize: NSSize) {

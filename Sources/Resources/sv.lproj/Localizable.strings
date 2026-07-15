@@ -20,6 +20,8 @@
 "Actual Size" = "Verklig storlek";
 "Zoom to 50%" = "Zooma till 50 %";
 "Zoom to 200%" = "Zooma till 200 %";
+"Zoom In" = "Zooma in";
+"Zoom Out" = "Zooma ut";
 "Minimize" = "Minimera";
 "Zoom" = "Zooma";
 "Bring All to Front" = "Lägg alla överst";
@@ -198,6 +200,15 @@
 "Tools" = "Verktyg";
 "Annotation" = "Anteckning";
 "Window" = "Fönster";
+"Pinch" = "Nyp";
+"⌥ Scroll" = "⌥ Skrolla";
+"Scroll" = "Skrolla";
+"Double-tap" = "Dubbeltryck";
+"Zoom in or out at the cursor" = "Zooma in eller ut vid markören";
+"Pan while zoomed in" = "Panorera medan du är inzoomad";
+"Toggle 2× zoom" = "Växla 2× zoom";
+"Zoom in / out" = "Zooma in / ut";
+"Reset zoom and window size" = "Återställ zoom och fönsterstorlek";
 "Pointer / Click" = "Pekare / Klick";
 "Cancel current drag" = "Avbryt aktuell dragning";
 "Toggle microphone (system-wide)" = "Växla mikrofon (systemomfattande)";
