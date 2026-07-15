@@ -51,9 +51,9 @@ final class RTPPacketTests: XCTestCase {
         let profileNo = ScreenShareControlMessage.encode(.profileUnsupported)
         XCTAssertTrue(ScreenShareControlMessage.looksLikeControl(profileNo))
         XCTAssertEqual(ScreenShareControlMessage.decode(profileNo), .profileUnsupported)
-        // Old parsers (no 0x08 case) get nil from decode and ignore it — the
+        // Old parsers (no 0x09 case) get nil from decode and ignore it — the
         // backward-compatibility contract for the new byte.
-        XCTAssertEqual(profileNo, Data([0x08]))
+        XCTAssertEqual(profileNo, Data([0x09]))
 
         // A real RTP packet's first byte is 0x80; must not look like control.
         var rtp = Data()

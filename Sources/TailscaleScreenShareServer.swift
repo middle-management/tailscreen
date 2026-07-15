@@ -32,6 +32,12 @@ struct ViewerInfo: Sendable, Identifiable, Hashable {
     let id: String  // matches the server's internal viewer key ("ip:port")
     let tailscaleIP: String
     var hostname: String?
+    /// Tailscale StableNodeID (LocalAPI `PeerStatus.ID`) resolved from the
+    /// same netmap lookup that fills `hostname`. nil until resolution
+    /// completes (or if the peer isn't in the netmap). This is the key the
+    /// persistent allow/deny store uses — never key policy on hostname or
+    /// any other wire-supplied claim.
+    var stableID: String?
     let connectedAt: Date
 }
 
@@ -45,6 +51,10 @@ struct PendingViewerInfo: Sendable, Identifiable, Hashable {
     let id: String  // "ip:port"
     let tailscaleIP: String
     var hostname: String?
+    /// Tailscale StableNodeID — see `ViewerInfo.stableID`. Carried here so
+    /// "Always Allow" / "Deny & Block" on a pending row can persist the
+    /// decision under the spoof-resistant key.
+    var stableID: String?
     let arrivedAt: Date
 }
 
@@ -106,6 +116,16 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// clean up.
     private let annotationsByConnection = OSAllocatedUnfairLock<[UUID: Set<UUID>]>(initialState: [:])
 
+    /// Maps a TCP annotation connection's `UUID` to the peer IP it dialed
+    /// from (stripped of the ephemeral port). Populated on the first
+    /// annotation seen on a connection and cleared when it closes. Lets the
+    /// inbound-annotation gate check the connection's peer against the
+    /// admitted-viewer set (the video path's admission gate covers only
+    /// UDP, so without this a pending/denied/blocked peer could still inject
+    /// annotations over TCP), and lets `expelViewer` sever a blocked peer's
+    /// back-channel by IP.
+    private let annotationConnectionIP = OSAllocatedUnfairLock<[UUID: String]>(initialState: [:])
+
     /// Public projection of `viewers` that the UI can read without touching
     /// the internal RTP bookkeeping. Kept in lockstep with `viewers` from
     /// the same lifecycle hooks (`registerOrRefresh`, `removeViewer`,
@@ -125,6 +145,22 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         var lastSeenNs: UInt64
     }
     private let pendingViewers = OSAllocatedUnfairLock<[String: PendingViewer]>(initialState: [:])
+    /// Hard cap on the pending-approval set. A peer that HELLOs while the
+    /// gate is on pins server state (and a LocalAPI resolver) until the
+    /// sharer answers or the 60 s sweep collects it; without a cap a flood
+    /// of spoofed HELLO source addresses could exhaust memory and amplify
+    /// LocalAPI traffic. New HELLOs past the cap are dropped (logged once).
+    static let maxPendingViewers = 32
+    /// One-shot latch so the "pending set full" line logs at most once per
+    /// saturation episode instead of on every dropped HELLO.
+    private let pendingCapLogged = OSAllocatedUnfairLock<Bool>(initialState: false)
+
+    /// Pure pending-cap gate: a HELLO is admitted to the pending set when it
+    /// refreshes an existing slot, or when the set is below `cap`. Extracted
+    /// so the DoS bound is unit testable.
+    static func canAcceptPending(currentCount: Int, isExisting: Bool, cap: Int = maxPendingViewers) -> Bool {
+        isExisting || currentCount < cap
+    }
     /// Public projection of `pendingViewers` — built alongside it in the
     /// same critical sections, surfaced via `onPendingViewersChanged`.
     private let pendingViewerInfos = OSAllocatedUnfairLock<[String: PendingViewerInfo]>(initialState: [:])
@@ -142,10 +178,39 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// notification banner dwell + a few seconds of user attention.
     private let pendingApprovalTimeoutNs = TransportTuning.pendingApprovalTimeoutNs
 
-    /// IP → hostname cache. Filled lazily by `resolveHostname` from the
+    /// IP → hostname cache. Filled lazily by the resolve tasks from the
     /// LocalAPI backend status. Avoids re-querying tsnet on every
     /// reconnect / KEEPALIVE storm. Cleared in `stop()`.
     private let peerNameCache = OSAllocatedUnfairLock<[String: String]>(initialState: [:])
+    /// IP → StableNodeID cache, filled alongside `peerNameCache`. A cached
+    /// ID lets `registerOrRefresh` apply the remembered allow/deny policy
+    /// synchronously on a re-HELLO instead of re-parking the peer behind
+    /// the async LocalAPI lookup. Cleared in `stop()`.
+    ///
+    /// KNOWN LIMITATION: this cache freezes the IP→StableNodeID binding for
+    /// the lifetime of the share. If an ephemeral tailnet IP is reclaimed
+    /// and reassigned to a *different* node mid-share, that new node would
+    /// inherit the previous occupant's remembered allow/deny decision — a
+    /// rare consent-bypass. Accepted for now (ephemeral-IP churn on a live
+    /// share is uncommon and the share is short-lived); a short TTL on cache
+    /// entries would close it if it ever bites.
+    private let peerStableIDCache = OSAllocatedUnfairLock<[String: String]>(initialState: [:])
+
+    /// Remembered per-peer policies, keyed by StableNodeID. The server is
+    /// `@unchecked Sendable` and must never reach into `UserDefaults` or
+    /// `@MainActor` state, so AppState pushes value snapshots through
+    /// `setAccessPolicies` — at share start and on every store change.
+    /// Empty when no policies exist (tests, standalone callers), in which
+    /// case every path below degrades to the pre-policy behavior.
+    private let accessPolicies = OSAllocatedUnfairLock<[String: PeerPolicy]>(initialState: [:])
+
+    /// One-time admit list keyed by peer IP. After the sharer accepts a
+    /// named request-to-share (explicit per-peer consent), AppState
+    /// pre-approves the requester's IP here so their imminent HELLO joins
+    /// immediately instead of parking behind a second approval prompt.
+    /// Consumed on first matching HELLO. A remembered `deny` still outranks
+    /// it — a pre-approval never un-blocks a blocked peer.
+    private let preApprovedIPs = OSAllocatedUnfairLock<Set<String>>(initialState: [])
 
     /// Quality knobs snapshotted at `start()` and reused for **every**
     /// helper respawn, so a crash-restart mid-share can't silently pick up
@@ -835,6 +900,38 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         }
     }
 
+    /// True when some admitted viewer's UDP source shares `ip` (the viewer
+    /// keys are `ip:port`; the TCP annotation channel dials from the same
+    /// tailnet IP but a different ephemeral port, so we match on IP). This
+    /// is the trust anchor for the inbound-annotation gate.
+    private func isAdmittedViewerIP(_ ip: String) -> Bool {
+        viewers.withLock { state in state.keys.contains { ipFromAddr($0) == ip } }
+    }
+
+    /// Log a dropped (ungated) annotation at most once per share so a peer
+    /// spamming the back-channel can't flood the log.
+    private let droppedAnnotationLogged = OSAllocatedUnfairLock<Bool>(initialState: false)
+    private func logDroppedAnnotation(peerAddress: String?) {
+        let firstTime = droppedAnnotationLogged.withLock { logged -> Bool in
+            if logged { return false }
+            logged = true
+            return true
+        }
+        guard firstTime else { return }
+        logger.log("Dropped annotation from non-admitted peer \(peerAddress ?? "unknown")")
+    }
+
+    /// Log the "pending set full" drop at most once per saturation episode.
+    private func logPendingCapReached(addr: String) {
+        let firstTime = pendingCapLogged.withLock { logged -> Bool in
+            if logged { return false }
+            logged = true
+            return true
+        }
+        guard firstTime else { return }
+        logger.log("Pending-approval set full (\(Self.maxPendingViewers)) — dropping HELLO from \(addr)")
+    }
+
     /// Wire annotation + connection-close callbacks onto the
     /// `TailscreenControlListener`. The listener handles the framed-TCP
     /// accept loop and dispatch; we only see decoded
@@ -842,8 +939,22 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// notifications here.
     private func installControlHandlers() {
         guard let listener = controlListener else { return }
-        listener.onAnnotation = { [weak self] op, connectionID in
+        listener.onAnnotation = { [weak self] op, connectionID, peerAddress in
             guard let self else { return }
+            // Gate: the TCP back-channel accepts a connection from any peer
+            // that can dial port 7447, so an annotation op is only honoured
+            // when its connection's peer IP belongs to an ADMITTED viewer
+            // (present in `viewers`). A pending/denied/blocked/expelled peer
+            // is not in that set, so its ops are dropped — never applied to
+            // the sharer's overlay and never fanned out.
+            let peerIP = peerAddress.map { self.ipFromAddr($0) }
+            guard let peerIP, self.isAdmittedViewerIP(peerIP) else {
+                self.logDroppedAnnotation(peerAddress: peerAddress)
+                return
+            }
+            // Remember this connection's peer IP so `expelViewer` can sever
+            // the back-channel by IP when the peer turns out to be blocked.
+            self.annotationConnectionIP.withLock { $0[connectionID] = peerIP }
             // Lazily seed the per-connection tracking set on the first
             // annotation from a viewer so we have somewhere to retire
             // stroke UUIDs on disconnect.
@@ -861,6 +972,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         }
         listener.onConnectionClosed = { [weak self] connectionID in
             guard let self else { return }
+            self.annotationConnectionIP.withLock { _ = $0.removeValue(forKey: connectionID) }
             let outstanding = self.annotationsByConnection.withLock {
                 $0.removeValue(forKey: connectionID) ?? []
             }
@@ -1078,6 +1190,9 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         case .helloPending:
             // HELLO_PENDING is server→viewer only. Ignore from viewers.
             return
+        case .helloDenied:
+            // HELLO_DENY is server→viewer only. Ignore from viewers.
+            return
         case .codecUnsupported:
             registerOrRefresh(addr: addr, isNew: false)
             handleCodecUnsupported(from: addr)
@@ -1202,6 +1317,72 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         if recorded { onPLIRecordedForTesting?(addr) }
     }
 
+    /// What to do with a not-yet-connected viewer's HELLO.
+    enum Admission: Equatable {
+        /// Join the fan-out set immediately (remembered allow, or gate off).
+        case admit
+        /// Park in `pendingViewers` awaiting the sharer's Accept / Deny.
+        case park
+        /// Reject outright (remembered deny) — HELLO_DENY + SERVER_BYE.
+        case reject
+    }
+
+    /// Pure admission gate: remembered `deny` always rejects (a blocked
+    /// peer stays blocked even in open-door mode), remembered `allow`
+    /// always admits, and an unremembered peer parks behind the approval
+    /// gate when it's on. Extracted so the precedence
+    /// (blocklist > allowlist > gate) is unit testable — same pattern as
+    /// `audioRelayDecision`.
+    static func admissionDecision(policy: PeerPolicy?, requireApproval: Bool) -> Admission {
+        switch policy {
+        case .deny:
+            return .reject
+        case .allow:
+            return .admit
+        case nil:
+            return requireApproval ? .park : .admit
+        }
+    }
+
+    /// Pure drain decision for `setRequireApproval(false)`: everyone parked
+    /// pending gets admitted *except* remembered-deny peers, who are denied
+    /// instead. Peers whose StableNodeID never resolved (`nil`) can't match
+    /// a policy and are admitted — the post-resolution deny check in
+    /// `applyResolvedIdentity` still expels them if they turn out to be
+    /// blocked. Results are sorted for determinism.
+    static func drainDecision(
+        pendingStableIDs: [String: String?],
+        policies: [String: PeerPolicy]
+    ) -> (approve: [String], deny: [String]) {
+        var approve: [String] = []
+        var deny: [String] = []
+        for (addr, stableID) in pendingStableIDs {
+            let policy = stableID.flatMap { policies[$0] }
+            if policy == .deny {
+                deny.append(addr)
+            } else {
+                approve.append(addr)
+            }
+        }
+        return (approve.sorted(), deny.sorted())
+    }
+
+    /// Pure connected-roster deny sweep: which currently-connected
+    /// addresses now resolve to a remembered `deny`? Used by
+    /// `setAccessPolicies` so a "Deny & Block" applied to an
+    /// already-connected peer expels it instead of only blocking future
+    /// HELLOs. Unresolved (`nil`) StableNodeIDs can't match a policy and
+    /// are left alone. Sorted for determinism.
+    static func connectedDenyList(
+        viewerStableIDs: [String: String?],
+        policies: [String: PeerPolicy]
+    ) -> [String] {
+        viewerStableIDs.compactMap { (addr, stableID) -> String? in
+            guard let stableID, policies[stableID] == .deny else { return nil }
+            return addr
+        }.sorted()
+    }
+
     private func registerOrRefresh(addr: String, isNew: Bool) {
         let now = DispatchTime.now().uptimeNanoseconds
 
@@ -1218,40 +1399,79 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
 
         let approvalRequired = requireApproval.withLock { $0 }
         let alreadyKnown = viewers.withLock { $0[addr] != nil }
+        let ip = ipFromAddr(addr)
 
-        // Brand new addr while approval is required: park in pending and
-        // surface to the UI. We allocate the audio SSRC up front so the
+        // Consult the remembered allow/deny policy when this IP's
+        // StableNodeID is already cached (a re-HELLO from a peer we've
+        // resolved before). A fresh peer has no cached ID yet — it goes
+        // through the async LocalAPI resolution below, and the policy is
+        // applied post-resolution instead. Note remembered `deny` rejects
+        // even in open-door mode: "Deny & block" outranks the gate.
+        // One code path through the unit-tested gate: a fresh peer with a
+        // cached StableNodeID applies its remembered policy synchronously;
+        // an unknown/uncached peer passes `nil` policy, so `admissionDecision`
+        // degrades to the plain approval gate. An already-known viewer isn't
+        // subject to admission — it just refreshes below.
+        let cachedStableID = alreadyKnown ? nil : peerStableIDCache.withLock({ $0[ip] })
+        let cachedPolicy = cachedStableID.flatMap { id in accessPolicies.withLock { $0[id] } }
+        var admission = Self.admissionDecision(policy: cachedPolicy, requireApproval: approvalRequired)
+        // A one-time pre-approval (from accepting this peer's request-to-share)
+        // admits it straight away — but never overrides a remembered deny.
+        if !alreadyKnown && admission != .reject {
+            let preApproved = preApprovedIPs.withLock { $0.remove(ip) != nil }
+            if preApproved { admission = .admit }
+        }
+        if !alreadyKnown && admission == .reject {
+            logger.log("Viewer \(addr) rejected (remembered deny)")
+            sendDenialDatagrams(to: addr)
+            return
+        }
+
+        // Brand new addr that has to wait for the sharer: park in pending
+        // and surface to the UI. We allocate the audio SSRC up front so the
         // eventual HELLO_ACK (after Accept) can reuse it without an extra
         // hop. The collision check only spans other pending viewers —
         // the connected set's SSRC space is 2^32, so a cross-set clash
         // is astronomically unlikely, and the audio-validation check is
         // keyed by source address anyway.
-        if approvalRequired && !alreadyKnown {
-            pendingViewers.withLock { state in
+        if admission == .park && !alreadyKnown {
+            // Cap the pending set so a flood of spoofed HELLO source
+            // addresses can't exhaust memory or amplify LocalAPI resolves.
+            // Drop the HELLO (logged once) when full and this addr is new.
+            let accepted = pendingViewers.withLock { state -> Bool in
+                guard Self.canAcceptPending(currentCount: state.count, isExisting: state[addr] != nil) else {
+                    return false
+                }
                 var ssrc: UInt32
                 repeat {
                     ssrc = UInt32.random(in: 1...UInt32.max)
                 } while state.values.contains(where: { $0.audioSSRC == ssrc })
                 state[addr] = PendingViewer(addr: addr, audioSSRC: ssrc, lastSeenNs: now)
+                return true
             }
-            let ip = ipFromAddr(addr)
-            let cached = peerNameCache.withLock { $0[ip] }
-            let info = PendingViewerInfo(id: addr, tailscaleIP: ip, hostname: cached, arrivedAt: Date())
+            guard accepted else {
+                logPendingCapReached(addr: addr)
+                return
+            }
+            let cachedName = peerNameCache.withLock { $0[ip] }
+            let cachedStableID = peerStableIDCache.withLock { $0[ip] }
+            let info = PendingViewerInfo(
+                id: addr, tailscaleIP: ip, hostname: cachedName, stableID: cachedStableID,
+                arrivedAt: Date())
             pendingViewerInfos.withLock { $0[addr] = info }
             logger.log("Viewer pending approval \(addr)")
             notifyPendingViewersChanged()
-            if cached == nil {
-                Task { [weak self] in
-                    await self?.resolvePendingHostnameAndUpdate(for: addr, ip: ip)
-                }
+            if cachedName == nil || cachedStableID == nil {
+                scheduleIdentityResolve()
             }
             // Close the toggle-off race: if `setRequireApproval(false)`
             // ran and drained the pending queue between our gate read and
             // this insert, the toggle's drain didn't see us. Re-read and
-            // self-promote so the new viewer isn't stranded waiting on
+            // self-promote (via the same admission gate, so a remembered
+            // deny still wins) so the new viewer isn't stranded waiting on
             // a sharer who already opted into open-door mode.
             if !requireApproval.withLock({ $0 }) {
-                approveViewer(addr: addr)
+                applyRememberedPolicyToPending(addr: addr, stableID: cachedStableID)
             }
             return
         }
@@ -1291,22 +1511,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
                 guard let pl = self?.packetListener else { return }
                 try? await pl.send(ScreenShareControlMessage.encodeHelloAck(ssrc: ssrc), to: addr)
             }
-
-            let ip = ipFromAddr(addr)
-            let cached = peerNameCache.withLock { $0[ip] }
-            let info = ViewerInfo(
-                id: addr,
-                tailscaleIP: ip,
-                hostname: cached,
-                connectedAt: Date()
-            )
-            viewerInfos.withLock { $0[addr] = info }
-            notifyViewersChanged()
-            if cached == nil {
-                Task { [weak self] in
-                    await self?.resolveHostnameAndUpdate(for: addr, ip: ip)
-                }
-            }
+            publishAddedViewer(addr: addr)
         }
 
         if added || isNew {
@@ -1333,11 +1538,97 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         logger.log("requireApproval \(prev ? "on" : "off") → \(enabled ? "on" : "off")")
         if !enabled {
             // Drain whatever's been parked — the sharer just opted into
-            // open-door mode, so admit everyone in the pending queue.
-            let pending = pendingViewers.withLock { Array($0.keys) }
-            for addr in pending {
+            // open-door mode, so admit everyone in the pending queue —
+            // except remembered-deny peers, who get denied instead
+            // ("Deny & block" outranks the gate).
+            let pendingStableIDs = pendingViewerInfos.withLock { state in
+                state.mapValues { $0.stableID }
+            }
+            let policies = accessPolicies.withLock { $0 }
+            let decision = Self.drainDecision(pendingStableIDs: pendingStableIDs, policies: policies)
+            for addr in decision.deny {
+                denyViewer(addr: addr)
+            }
+            for addr in decision.approve {
                 approveViewer(addr: addr)
             }
+        }
+    }
+
+    /// Replace the remembered per-peer policy snapshot. Called by AppState
+    /// at share start and whenever the persistent store changes. Safe on
+    /// any thread. Re-evaluates viewers already parked pending whose
+    /// StableNodeID has resolved, so an "Always allow" / "Deny & block"
+    /// issued while someone is waiting acts on them immediately.
+    func setAccessPolicies(_ policies: [String: PeerPolicy]) {
+        accessPolicies.withLock { $0 = policies }
+        let resolved = pendingViewerInfos.withLock { state in
+            state.compactMap { (addr, info) in info.stableID.map { (addr, $0) } }
+        }
+        for (addr, stableID) in resolved {
+            applyRememberedPolicyToPending(addr: addr, stableID: stableID)
+        }
+        // Sweep the CONNECTED roster too: a "Deny & Block" applied to an
+        // already-connected peer must expel it here, not merely block its
+        // future HELLOs (which never come — it's already in the fan-out).
+        let connectedStableIDs = viewerInfos.withLock { state in
+            state.mapValues { $0.stableID }
+        }
+        for addr in Self.connectedDenyList(viewerStableIDs: connectedStableIDs, policies: policies) {
+            logger.log("Expelling connected viewer \(addr): policy changed to deny")
+            expelViewer(addr: addr)
+        }
+    }
+
+    /// One-time pre-approve a peer by IP so its next HELLO joins the
+    /// fan-out immediately, bypassing the approval gate — but NOT a
+    /// remembered `deny` (a blocked peer stays blocked). Called after the
+    /// sharer accepts that peer's request-to-share, so their connect doesn't
+    /// hit a second consent prompt.
+    func preApproveViewer(ip: String) {
+        preApprovedIPs.withLock { _ = $0.insert(ip) }
+    }
+
+    /// Run the admission gate for a viewer currently parked in
+    /// `pendingViewers` and act on the outcome. `.park` leaves them
+    /// waiting on the sharer's manual Accept / Deny. No-op for addresses
+    /// that are no longer pending (`approveViewer` / `denyViewer` both
+    /// tolerate unknown addrs).
+    private func applyRememberedPolicyToPending(addr: String, stableID: String?) {
+        let policy = stableID.flatMap { id in accessPolicies.withLock { $0[id] } }
+        let gate = requireApproval.withLock { $0 }
+        switch Self.admissionDecision(policy: policy, requireApproval: gate) {
+        case .admit:
+            logger.log("Pending viewer \(addr) auto-admitted (remembered allow or gate off)")
+            approveViewer(addr: addr)
+        case .reject:
+            logger.log("Pending viewer \(addr) rejected (remembered deny)")
+            denyViewer(addr: addr)
+        case .park:
+            break
+        }
+    }
+
+    /// Seed, insert, and publish a freshly-added connected viewer's
+    /// `ViewerInfo` from the identity caches, then kick the shared resolver
+    /// if either the hostname or StableNodeID is still uncached. Shared by
+    /// `registerOrRefresh`'s add path and `approveViewer` so the
+    /// build → insert → notify → resolve-if-uncached shape lives once.
+    private func publishAddedViewer(addr: String) {
+        let ip = ipFromAddr(addr)
+        let cachedName = peerNameCache.withLock { $0[ip] }
+        let cachedStableID = peerStableIDCache.withLock { $0[ip] }
+        let info = ViewerInfo(
+            id: addr,
+            tailscaleIP: ip,
+            hostname: cachedName,
+            stableID: cachedStableID,
+            connectedAt: Date()
+        )
+        viewerInfos.withLock { $0[addr] = info }
+        notifyViewersChanged()
+        if cachedName == nil || cachedStableID == nil {
+            scheduleIdentityResolve()
         }
     }
 
@@ -1367,21 +1658,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             return (true, state.count)
         }
         if added {
-            let ip = ipFromAddr(addr)
-            let cached = peerNameCache.withLock { $0[ip] }
-            let info = ViewerInfo(
-                id: addr,
-                tailscaleIP: ip,
-                hostname: cached,
-                connectedAt: Date()
-            )
-            viewerInfos.withLock { $0[addr] = info }
-            notifyViewersChanged()
-            if cached == nil {
-                Task { [weak self] in
-                    await self?.resolveHostnameAndUpdate(for: addr, ip: ip)
-                }
-            }
+            publishAddedViewer(addr: addr)
         }
         logger.log("Viewer approved \(addr) (total=\(viewerCount))")
         // Send the deferred HELLO_ACK and request a keyframe so video
@@ -1394,9 +1671,10 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         helperCapture?.requestKeyframe()
     }
 
-    /// Reject a pending viewer: send SERVER_BYE so they tear down
-    /// immediately and drop them from the pending set. Safe to call for
-    /// an unknown addr (no-op).
+    /// Reject a pending viewer: send HELLO_DENY + SERVER_BYE so they tear
+    /// down immediately (and can tell "declined" from "sharer stopped"),
+    /// and drop them from the pending set. Safe to call for an unknown
+    /// addr (no-op).
     func denyViewer(addr: String) {
         let existed = pendingViewers.withLock { state -> Bool in
             state.removeValue(forKey: addr) != nil
@@ -1405,13 +1683,59 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         pendingViewerInfos.withLock { _ = $0.removeValue(forKey: addr) }
         notifyPendingViewersChanged()
         logger.log("Viewer denied \(addr)")
-        // Three redundant SERVER_BYE datagrams mitigate single-packet UDP
-        // loss — same template as `stop()`'s teardown path.
-        let payload = ScreenShareControlMessage.encode(.serverBye)
+        sendDenialDatagrams(to: addr)
+    }
+
+    /// Kick an already-connected viewer that turned out to be blocked —
+    /// open-door mode admits on HELLO before the async StableNodeID
+    /// resolution completes, so a remembered-deny peer can briefly join
+    /// before this pulls them back out. No-op for unknown addrs.
+    private func expelViewer(addr: String) {
+        let removed = viewers.withLock { state -> Bool in
+            state.removeValue(forKey: addr) != nil
+        }
+        guard removed else { return }
+        viewerInfos.withLock { _ = $0.removeValue(forKey: addr) }
+        // Symmetric teardown: drop the per-viewer video send chain (a
+        // lingering chain would keep addressing the kicked peer) and sever
+        // the TCP annotation back-channel keyed by IP, so a blocked peer
+        // loses annotation access along with its video (composes with the
+        // inbound-annotation gate). Closing the connection makes the listener
+        // fire onConnectionClosed, which retires the peer's tracked strokes.
+        videoSendTails.withLock { _ = $0.removeValue(forKey: addr) }
+        closeAnnotationChannels(forIP: ipFromAddr(addr))
+        notifyViewersChanged()
+        logger.log("Viewer expelled (remembered deny) \(addr)")
+        sendDenialDatagrams(to: addr)
+    }
+
+    /// Close every TCP annotation connection whose peer dialed from `ip`.
+    /// The listener's close path fires `onConnectionClosed`, which clears the
+    /// per-connection tracking maps and emits the `.undo`s that make the
+    /// peer's strokes vanish from every overlay.
+    private func closeAnnotationChannels(forIP ip: String) {
+        let connectionIDs = annotationConnectionIP.withLock { state in
+            state.filter { $0.value == ip }.map { $0.key }
+        }
+        guard !connectionIDs.isEmpty, let listener = controlListener else { return }
+        Task {
+            for id in connectionIDs { await listener.close(connectionID: id) }
+        }
+    }
+
+    /// One HELLO_DENY (so the viewer can show "the sharer declined your
+    /// request" instead of the generic peer-closed teardown; old viewers
+    /// ignore the unknown control byte) followed by three redundant
+    /// SERVER_BYE datagrams to mitigate single-packet UDP loss — same
+    /// template as `stop()`'s teardown path.
+    private func sendDenialDatagrams(to addr: String) {
+        let denied = ScreenShareControlMessage.encode(.helloDenied)
+        let bye = ScreenShareControlMessage.encode(.serverBye)
         Task { [weak self] in
             guard let pl = self?.packetListener else { return }
+            try? await pl.send(denied, to: addr)
             for _ in 0..<3 {
-                try? await pl.send(payload, to: addr)
+                try? await pl.send(bye, to: addr)
             }
         }
     }
@@ -1472,59 +1796,189 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         return ip
     }
 
-    /// Same as `resolveHostnameAndUpdate` but for an entry in
-    /// `pendingViewerInfos`. Kept separate because the two dictionaries
-    /// have different value types and we don't want one update to mutate
-    /// both — once a viewer transitions pending → approved, the pending
-    /// entry is already gone.
-    private func resolvePendingHostnameAndUpdate(for addr: String, ip: String) async {
-        guard let node = self.node else { return }
-        let client = LocalAPIClient(localNode: node, logger: logger)
-        guard let status = try? await client.backendStatus() else { return }
-        var resolved: String?
-        for (_, peer) in status.Peer ?? [:] {
-            if let ips = peer.TailscaleIPs, ips.contains(ip) {
-                resolved = peer.HostName
-                break
-            }
+    /// How many times the shared resolver re-queries LocalAPI before giving
+    /// up, one second apart. A freshly-joined (e.g. ephemeral) peer can
+    /// HELLO before its entry lands in our netmap snapshot; a couple of
+    /// retries turn that race from "row stays IP-only and the remembered
+    /// policy never applies" into a short delay.
+    private static let peerResolveAttempts = 5
+
+    /// Coordinates the single shared identity resolver. Every park/join with
+    /// an uncached identity coalesces onto ONE in-flight loop that resolves
+    /// all outstanding addrs from a single `backendStatus` snapshot per tick,
+    /// instead of N independent LocalAPI fetches × 5 retries — the amplifier
+    /// a HELLO flood could otherwise drive against the local API. `requested`
+    /// is bumped on every schedule call so a park that lands mid-pass can't be
+    /// missed: the runner re-loops whenever the generation advanced during a
+    /// pass (a genuinely-unresolvable peer doesn't bump it, so it can't spin).
+    private let resolveGeneration =
+        OSAllocatedUnfairLock<(running: Bool, requested: UInt64)>(initialState: (false, 0))
+
+    private func cachePeer(ip: String, hostname: String?, stableID: String?) {
+        if let hostname, !hostname.isEmpty {
+            peerNameCache.withLock { $0[ip] = hostname }
         }
-        guard let hostname = resolved, !hostname.isEmpty else { return }
-        peerNameCache.withLock { $0[ip] = hostname }
-        let changed = pendingViewerInfos.withLock { state -> Bool in
-            guard var info = state[addr] else { return false }
-            guard info.hostname != hostname else { return false }
-            info.hostname = hostname
-            state[addr] = info
-            return true
+        if let stableID, !stableID.isEmpty {
+            peerStableIDCache.withLock { $0[ip] = stableID }
         }
-        if changed { notifyPendingViewersChanged() }
     }
 
-    /// Look the viewer's IP up in the tsnet netmap and patch its hostname
-    /// in `viewerInfos` if found. Best-effort — failures leave the row as
-    /// "ip only" and the UI falls back to showing the IP. Cached so
-    /// repeated reconnects from the same peer don't re-query LocalAPI.
-    private func resolveHostnameAndUpdate(for addr: String, ip: String) async {
-        guard let node = self.node else { return }
-        let client = LocalAPIClient(localNode: node, logger: logger)
-        guard let status = try? await client.backendStatus() else { return }
-        var resolved: String?
-        for (_, peer) in status.Peer ?? [:] {
-            if let ips = peer.TailscaleIPs, ips.contains(ip) {
-                resolved = peer.HostName
-                break
-            }
-        }
-        guard let hostname = resolved, !hostname.isEmpty else { return }
-        peerNameCache.withLock { $0[ip] = hostname }
-        let changed = viewerInfos.withLock { state -> Bool in
-            guard var info = state[addr] else { return false }
-            guard info.hostname != hostname else { return false }
-            info.hostname = hostname
-            state[addr] = info
+    /// Kick the shared identity resolver. Bumps the generation so a park that
+    /// lands mid-pass is picked up; starts the runner only if one isn't
+    /// already draining.
+    private func scheduleIdentityResolve() {
+        let shouldStart = resolveGeneration.withLock { state -> Bool in
+            state.requested &+= 1
+            if state.running { return false }
+            state.running = true
             return true
         }
-        if changed { notifyViewersChanged() }
+        guard shouldStart else { return }
+        Task { [weak self] in await self?.runResolverUntilQuiescent() }
+    }
+
+    /// Run resolve passes until no new schedule request arrived during a pass.
+    /// Each pass caps its own retries (`resolveIdentitiesLoop`), so an
+    /// unresolvable peer can't spin the runner — only fresh `scheduleIdentityResolve`
+    /// calls (new parks/joins) advance the generation and keep it looping.
+    private func runResolverUntilQuiescent() async {
+        while true {
+            let startGen = resolveGeneration.withLock { $0.requested }
+            await resolveIdentitiesLoop()
+            let done = resolveGeneration.withLock { state -> Bool in
+                if state.requested == startGen {
+                    state.running = false
+                    return true
+                }
+                return false
+            }
+            if done { return }
+        }
+    }
+
+    /// One shared resolve loop. Each tick, snapshot every addr still missing
+    /// a hostname or StableNodeID (pending + connected), fetch ONE
+    /// `backendStatus`, and apply the results to all of them — so a burst of
+    /// joins costs one LocalAPI call, not one per viewer. Retries up to
+    /// `peerResolveAttempts` times (1 s apart) only for addrs not yet in the
+    /// netmap snapshot; returns as soon as every outstanding addr was found.
+    private func resolveIdentitiesLoop() async {
+        for attempt in 0..<Self.peerResolveAttempts {
+            if attempt > 0 {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+            let outstanding = outstandingResolveTargets()
+            guard !outstanding.isEmpty else { return }
+            let byIP = await backendStatusByIP()
+            var anyMissing = false
+            for (addr, ip) in outstanding {
+                guard let identity = byIP[ip] else {
+                    anyMissing = true
+                    continue
+                }
+                cachePeer(ip: ip, hostname: identity.hostname, stableID: identity.stableID)
+                applyResolvedIdentity(
+                    addr: addr, hostname: identity.hostname, stableID: identity.stableID)
+            }
+            if !anyMissing { return }
+        }
+    }
+
+    /// Addrs (pending + connected) still awaiting a hostname or StableNodeID,
+    /// mapped to the tailnet IP the resolver should look them up by. An addr
+    /// is never in both sets at once (approve moves it), so a plain merge is
+    /// safe.
+    private func outstandingResolveTargets() -> [String: String] {
+        // Each `withLock` closure is `@Sendable`, so it can't mutate a
+        // captured outer var — collect inside and merge the returned maps.
+        let pending = pendingViewerInfos.withLock { state -> [String: String] in
+            var m: [String: String] = [:]
+            for (addr, info) in state where info.hostname == nil || info.stableID == nil {
+                m[addr] = info.tailscaleIP
+            }
+            return m
+        }
+        let connected = viewerInfos.withLock { state -> [String: String] in
+            var m: [String: String] = [:]
+            for (addr, info) in state where info.hostname == nil || info.stableID == nil {
+                m[addr] = info.tailscaleIP
+            }
+            return m
+        }
+        var out = pending
+        out.merge(connected) { _, new in new }
+        return out
+    }
+
+    /// One LocalAPI netmap fetch → IP → (hostname, StableNodeID) for every
+    /// peer address in the snapshot. `PeerStatus.ID` is the string
+    /// StableNodeID — distinct from the netmap's numeric node ID, see the
+    /// note at `TailscalePeerDiscovery.mergeKey`. nil on LocalAPI failure so
+    /// the caller retries.
+    /// An empty map means "couldn't fetch" — the caller treats that the same
+    /// as "no outstanding addr resolved this tick" and retries, so there's no
+    /// need to distinguish it from a genuinely peerless netmap with an
+    /// optional.
+    private func backendStatusByIP() async -> [String: (hostname: String?, stableID: String)] {
+        guard let node = self.node else { return [:] }
+        let client = LocalAPIClient(localNode: node, logger: logger)
+        guard let status = try? await client.backendStatus() else { return [:] }
+        var byIP: [String: (hostname: String?, stableID: String)] = [:]
+        for (_, peer) in status.Peer ?? [:] {
+            guard let ips = peer.TailscaleIPs else { continue }
+            let identity = (hostname: peer.HostName, stableID: String(peer.ID))
+            for ip in ips { byIP[ip] = identity }
+        }
+        return byIP
+    }
+
+    /// Patch a resolved (hostname, StableNodeID) into whichever collection
+    /// holds `addr` — pending or connected — notify the UI on change, and
+    /// apply the remembered policy: a parked viewer runs the admission gate
+    /// (remembered-allow auto-admits, remembered-deny is denied), a connected
+    /// viewer that turns out to be remembered-deny is expelled (open-door
+    /// mode admits before resolution completes).
+    private func applyResolvedIdentity(addr: String, hostname: String?, stableID: String?) {
+        let hostnameUsable = hostname.map { !$0.isEmpty } ?? false
+
+        let pendingPresent = pendingViewerInfos.withLock { state -> (present: Bool, changed: Bool) in
+            guard var info = state[addr] else { return (false, false) }
+            var changed = false
+            if let hostname, hostnameUsable, info.hostname != hostname {
+                info.hostname = hostname
+                changed = true
+            }
+            if let stableID, info.stableID != stableID {
+                info.stableID = stableID
+                changed = true
+            }
+            state[addr] = info
+            return (true, changed)
+        }
+        if pendingPresent.present {
+            if pendingPresent.changed { notifyPendingViewersChanged() }
+            if let stableID { applyRememberedPolicyToPending(addr: addr, stableID: stableID) }
+            return
+        }
+
+        let connectedPresent = viewerInfos.withLock { state -> (present: Bool, changed: Bool) in
+            guard var info = state[addr] else { return (false, false) }
+            var changed = false
+            if let hostname, hostnameUsable, info.hostname != hostname {
+                info.hostname = hostname
+                changed = true
+            }
+            if let stableID, info.stableID != stableID {
+                info.stableID = stableID
+                changed = true
+            }
+            state[addr] = info
+            return (true, changed)
+        }
+        guard connectedPresent.present else { return }
+        if connectedPresent.changed { notifyViewersChanged() }
+        let policy = stableID.flatMap { id in accessPolicies.withLock { $0[id] } }
+        if policy == .deny { expelViewer(addr: addr) }
     }
 
     /// Pure staleness computation: which addresses have been silent longer
@@ -1973,6 +2427,8 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         pendingViewers.withLock { $0.removeAll() }
         pendingViewerInfos.withLock { $0.removeAll() }
         peerNameCache.withLock { $0.removeAll() }
+        peerStableIDCache.withLock { $0.removeAll() }
+        preApprovedIPs.withLock { $0.removeAll() }
         // Drop per-viewer send chains. Any in-flight send job completes on its
         // own (its pl.send just fails once the listener closes below).
         videoSendTails.withLock { $0.removeAll() }
@@ -1997,6 +2453,9 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         // fire stale `.undo` ops back through `onAnnotationReceived` after
         // AppState has already torn the overlay down.
         annotationsByConnection.withLock { $0.removeAll() }
+        annotationConnectionIP.withLock { $0.removeAll() }
+        droppedAnnotationLogged.withLock { $0 = false }
+        pendingCapLogged.withLock { $0 = false }
         uninstallControlHandlers()
 
         // Only tear down the listener if we created it ourselves. When

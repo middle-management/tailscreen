@@ -99,7 +99,13 @@ MALLOC_FILL_SPACE=1 \
 MALLOC_STRICT_SIZE=1"
     fi
 
-    env TAILSCREEN_INSTANCE="$id" $debug_env stdbuf -oL -eL "$BIN" 2>&1 \
+    # Viewer approval now defaults ON; open-door mode keeps the classic
+    # click-Connect-and-watch loop friction-free. Export
+    # TAILSCREEN_OPEN_DOOR=0 before running this script to exercise the
+    # approval prompt / allow-deny flows manually.
+    env TAILSCREEN_INSTANCE="$id" \
+        TAILSCREEN_OPEN_DOOR="${TAILSCREEN_OPEN_DOOR:-1}" \
+        $debug_env stdbuf -oL -eL "$BIN" 2>&1 \
         | stdbuf -oL sed "s/^/[$id] /" >> "$LOG" &
     # `$!` is the PID of the last stage (sed); its pgid is shared with Tailscreen
     # because we're in job-control mode.

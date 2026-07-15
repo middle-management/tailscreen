@@ -19,15 +19,24 @@ import Foundation
 ///         payload = JSON-encoded ``AnnotationOp``
 ///     .requestToShare (0x04)  — peer→peer
 ///         payload = JSON-encoded ``RequestToSharePayload``
+///     .shareResponse  (0x05)  — request-to-share receiver→requester,
+///         sent back on the SAME TCP connection the request arrived on
+///         (no dial-back, so the answer provably reaches the actual
+///         requester). payload = JSON-encoded ``TailscreenRequest``
+///         (`.acceptShare` / `.declineShare`). Old peers' parsers drop
+///         unknown type bytes, so this is backward compatible — a legacy
+///         requester just never sees an answer.
 enum ScreenShareMessage {
     case annotation(AnnotationOp)
     case requestToShare(fromHostname: String)
+    case shareResponse(accepted: Bool)
 
     static let headerSize = 5
 
     enum MessageType: UInt8 {
         case annotation = 0x03
         case requestToShare = 0x04
+        case shareResponse = 0x05
     }
 
     /// Serialize this message as a wire-format packet (header + payload).
@@ -41,6 +50,10 @@ enum ScreenShareMessage {
                 (try? JSONEncoder().encode(RequestToSharePayload(fromHostname: fromHostname)))
                 ?? Data()
             return Self.frame(type: .requestToShare, payload: payload)
+        case .shareResponse(let accepted):
+            let request: TailscreenRequest = accepted ? .acceptShare : .declineShare
+            let payload = (try? JSONEncoder().encode(request)) ?? Data()
+            return Self.frame(type: .shareResponse, payload: payload)
         }
     }
 
@@ -86,6 +99,8 @@ struct ScreenShareMessageParser {
             return decodeAnnotation(payload)
         case .requestToShare:
             return decodeRequestToShare(payload)
+        case .shareResponse:
+            return decodeShareResponse(payload)
         }
     }
 
@@ -105,6 +120,20 @@ struct ScreenShareMessageParser {
         // hostile peer can't bloat the popover banner with a 10 KB string.
         let clamped = String(request.fromHostname.prefix(RequestToSharePayload.maxHostnameLength))
         return .requestToShare(fromHostname: clamped)
+    }
+
+    private func decodeShareResponse(_ payload: Data) -> ScreenShareMessage? {
+        guard let request = try? JSONDecoder().decode(TailscreenRequest.self, from: Data(payload))
+        else { return nil }
+        switch request {
+        case .acceptShare:
+            return .shareResponse(accepted: true)
+        case .declineShare:
+            return .shareResponse(accepted: false)
+        case .requestToShare:
+            // A request payload inside a response frame is malformed; drop it.
+            return nil
+        }
     }
 }
 

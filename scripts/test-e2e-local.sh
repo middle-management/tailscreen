@@ -52,8 +52,12 @@ eval "$("$REPO_ROOT/scripts/e2e-up.sh")"
 launch() {
     local id="$1"
     shift
+    # TAILSCREEN_OPEN_DOOR=1: viewer approval defaults ON, but this harness
+    # has no human to click Accept — without open-door the auto-connected
+    # viewer parks pending for 60 s and the firstFrame marker never appears.
     env \
         TAILSCREEN_INSTANCE="$id" \
+        TAILSCREEN_OPEN_DOOR=1 \
         TAILSCREEN_TS_AUTHKEY="$TAILSCREEN_TS_AUTHKEY" \
         TAILSCREEN_TS_CONTROL_URL="$TAILSCREEN_TS_CONTROL_URL" \
         "$@" \
