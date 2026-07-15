@@ -468,6 +468,26 @@ private struct SharingCard: View {
                 .accessibilityHint(L("Toggles voice chat with viewers"))
 
                 Button {
+                    appState.toggleSystemAudio()
+                } label: {
+                    Image(systemName: appState.isSystemAudioOn ? "speaker.wave.2.fill" : "speaker.slash")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help(
+                    appState.isSystemAudioOn
+                        ? L("Mute System Audio")
+                        : L("Share System Audio")
+                )
+                .accessibilityLabel(
+                    appState.isSystemAudioOn
+                        ? L("Mute system audio")
+                        : L("Share system audio")
+                )
+                .accessibilityHint(L("Shares your computer's audio with viewers"))
+
+                Button {
                     Task { await appState.stopSharing(reason: "StopSharingButton") }
                 } label: {
                     Text(L("Stop Sharing")).frame(maxWidth: .infinity)

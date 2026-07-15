@@ -43,6 +43,45 @@ final class RTPAudioTests: XCTestCase {
         XCTAssertEqual(RTPHeader.decode(from: p2)?.header.sequenceNumber, 0x0000)
     }
 
+    func testSystemAudioPacketizerStampsPT99AndSSRC1() throws {
+        let pack = AudioRTPPacketizer(
+            ssrc: RTPHeader.systemAudioSSRC, payloadType: RTPHeader.systemAudioPayloadType)
+        let au = Data([0x11, 0x22, 0x33])
+        let parsed = AudioRTPDepacketizer().unpack(pack.packetize(au: au))
+        XCTAssertEqual(parsed?.ssrc, 1)
+        XCTAssertEqual(parsed?.payloadType, 99)
+        XCTAssertEqual(parsed?.au, au)
+    }
+
+    func testDefaultPacketizerStampsVoicePT98() {
+        let pack = AudioRTPPacketizer(ssrc: 7)
+        let parsed = AudioRTPDepacketizer().unpack(pack.packetize(au: Data([0x01])))
+        XCTAssertEqual(parsed?.payloadType, 98)
+    }
+
+    func testDepackAcceptsBothAudioPayloadTypes() {
+        for pt in [RTPHeader.aacPayloadType, RTPHeader.systemAudioPayloadType] {
+            var data = Data()
+            let header = RTPHeader(
+                marker: true, payloadType: pt, sequenceNumber: 1, timestamp: 0, ssrc: 3)
+            header.encode(into: &data)
+            data.append(contentsOf: [0xAA, 0xBB])
+            let parsed = AudioRTPDepacketizer().unpack(data)
+            XCTAssertEqual(parsed?.payloadType, pt)
+        }
+    }
+
+    func testDepackStillRejectsVideoPayloadTypes() {
+        for pt in [RTPHeader.h264PayloadType, RTPHeader.hevcPayloadType] {
+            var data = Data()
+            let header = RTPHeader(
+                marker: false, payloadType: pt, sequenceNumber: 0, timestamp: 0, ssrc: 1)
+            header.encode(into: &data)
+            data.append(0xCC)
+            XCTAssertNil(AudioRTPDepacketizer().unpack(data))
+        }
+    }
+
     func testDepackRejectsNonAudioPayloadType() {
         // Build an RTP packet with PT=96 (H.264), feed to audio depack.
         var data = Data()

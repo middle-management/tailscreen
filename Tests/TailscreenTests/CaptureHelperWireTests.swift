@@ -133,7 +133,85 @@ final class CaptureHelperWireTests: XCTestCase {
         XCTAssertEqual(CaptureHelperWire.InType.requestKeyframe.rawValue, 0x01)
         XCTAssertEqual(CaptureHelperWire.InType.setBitrate.rawValue, 0x02)
         XCTAssertEqual(CaptureHelperWire.InType.contentFilter.rawValue, 0x03)
+        XCTAssertEqual(CaptureHelperWire.InType.setAudioEnabled.rawValue, 0x04)
         XCTAssertEqual(CaptureHelperWire.InType.shutdown.rawValue, 0xFF)
+    }
+
+    /// System-audio wire raw values are part of the contract too.
+    func testSystemAudioWireRawValuesAreStable() {
+        XCTAssertEqual(CaptureHelperWire.OutType.audioAccessUnit.rawValue, 0x07)
+    }
+
+    // MARK: - System-audio frame round-trips
+
+    /// `writeAudioAccessUnit` (helper → main) round-trips the raw AAC AU
+    /// bytes through `HelperFrameReader`.
+    func testAudioAccessUnitFrameRoundTrip() throws {
+        let pipe = Pipe()
+        let writer = HelperFrameWriter(handle: pipe.fileHandleForWriting)
+        let reader = HelperFrameReader(handle: pipe.fileHandleForReading)
+
+        let au = Data([0x21, 0x00, 0x03, 0xFF, 0xAB])
+        writer.writeAudioAccessUnit(au)
+        try pipe.fileHandleForWriting.close()
+
+        guard let frame = reader.readNext() else {
+            XCTFail("expected one frame")
+            return
+        }
+        XCTAssertEqual(frame.type, CaptureHelperWire.OutType.audioAccessUnit.rawValue)
+        XCTAssertEqual(frame.payload, au)
+    }
+
+    /// `sendAudioEnabled` (main → helper) round-trips the 1-byte flag.
+    func testSetAudioEnabledFrameRoundTrip() throws {
+        let pipe = Pipe()
+        let writer = HelperControlWriter(handle: pipe.fileHandleForWriting)
+        let reader = HelperControlReader(handle: pipe.fileHandleForReading)
+
+        writer.sendAudioEnabled(true)
+        writer.sendAudioEnabled(false)
+        try pipe.fileHandleForWriting.close()
+
+        guard let f1 = reader.readNext() else {
+            XCTFail("frame 1")
+            return
+        }
+        XCTAssertEqual(f1.type, CaptureHelperWire.InType.setAudioEnabled.rawValue)
+        XCTAssertEqual(f1.payload, Data([1]))
+
+        guard let f2 = reader.readNext() else {
+            XCTFail("frame 2")
+            return
+        }
+        XCTAssertEqual(f2.type, CaptureHelperWire.InType.setAudioEnabled.rawValue)
+        XCTAssertEqual(f2.payload, Data([0]))
+    }
+
+    // MARK: - PickerSelection captureAudio field
+
+    /// The new `captureAudio` field round-trips and is backward compatible:
+    /// JSON produced by an older picker-helper (no such key) still decodes,
+    /// defaulting `captureAudio` to `false`.
+    func testPickerSelectionCaptureAudioRoundTrip() throws {
+        let original = PickerSelection(
+            kind: .display, displayID: 1, windowID: nil, bundleIDs: [], captureAudio: true)
+        let decoded = try JSONDecoder().decode(
+            PickerSelection.self, from: JSONEncoder().encode(original))
+        XCTAssertEqual(decoded, original)
+        XCTAssertTrue(decoded.captureAudio)
+    }
+
+    func testPickerSelectionDefaultsCaptureAudioFalse() throws {
+        let selection = PickerSelection(kind: .display, displayID: 1, windowID: nil, bundleIDs: [])
+        XCTAssertFalse(selection.captureAudio)
+    }
+
+    func testPickerSelectionOldJSONDecodesCaptureAudioFalse() throws {
+        let json = Data(#"{"kind":"display","displayID":1,"bundleIDs":[]}"#.utf8)
+        let decoded = try JSONDecoder().decode(PickerSelection.self, from: json)
+        XCTAssertFalse(decoded.captureAudio)
+        XCTAssertTrue(decoded.settingCaptureAudio(true).captureAudio)
     }
 
     // MARK: - PickerSelection JSON contract

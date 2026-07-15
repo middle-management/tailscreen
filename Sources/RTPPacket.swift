@@ -111,6 +111,17 @@ struct RTPHeader {
     /// Dynamic payload type for AAC-LC voice. RFC 3640 reserves no fixed
     /// number for AAC; 98 follows H.264 (96) + HEVC (97).
     static let aacPayloadType: UInt8 = 98
+    /// Dynamic payload type for shared system/computer audio (AAC-LC),
+    /// distinct from voice (98) so viewers demux the two without any
+    /// negotiation — the same auto-detect philosophy as video's 96/97.
+    /// Viewers that predate the feature reject PT 99 in
+    /// `AudioRTPDepacketizer.unpack` / `MultiCodecDepacketizer.ingest`, so
+    /// they silently drop it (no torn video/audio).
+    static let systemAudioPayloadType: UInt8 = 99
+    /// Reserved SSRC for the sharer's system-audio stream. SSRC spaces are
+    /// kept disjoint on purpose: sharer voice owns 0, system audio owns 1,
+    /// and viewer-assigned SSRCs start at 2 (see the server's allocation).
+    static let systemAudioSSRC: UInt32 = 1
     /// RTP clock rate for AAC audio at 48 kHz.
     static let audioClockHz: UInt32 = 48_000
     static let clockHz: UInt32 = 90_000

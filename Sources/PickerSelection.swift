@@ -22,4 +22,49 @@ struct PickerSelection: Codable, Sendable, Equatable {
     /// For `.application`: bundle IDs of the apps to share. One entry
     /// for single-app, multiple for multi-app.
     let bundleIDs: [String]
+    /// Whether the capture-helper should also configure system-audio capture
+    /// (an `.audio` SCStream output). Non-optional with a custom decoder that
+    /// defaults a *missing* key to `false`, so JSON produced by an older
+    /// picker-helper (which never wrote the field) still decodes. Emission is
+    /// separately gated by the `setAudioEnabled` latch, so this only controls
+    /// whether the output exists.
+    let captureAudio: Bool
+
+    init(
+        kind: Kind,
+        displayID: UInt32?,
+        windowID: UInt32?,
+        bundleIDs: [String],
+        captureAudio: Bool = false
+    ) {
+        self.kind = kind
+        self.displayID = displayID
+        self.windowID = windowID
+        self.bundleIDs = bundleIDs
+        self.captureAudio = captureAudio
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case kind, displayID, windowID, bundleIDs, captureAudio
+    }
+
+    /// Custom decode so a missing `captureAudio` key (old picker-helper JSON)
+    /// falls back to `false` instead of failing. `encode(to:)` stays
+    /// synthesized — the field always serializes.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try container.decode(Kind.self, forKey: .kind)
+        displayID = try container.decodeIfPresent(UInt32.self, forKey: .displayID)
+        windowID = try container.decodeIfPresent(UInt32.self, forKey: .windowID)
+        bundleIDs = try container.decode([String].self, forKey: .bundleIDs)
+        captureAudio = try container.decodeIfPresent(Bool.self, forKey: .captureAudio) ?? false
+    }
+
+    /// A copy with `captureAudio` set — used by the sharer to turn on the
+    /// helper's audio output without mutating the picker-produced value.
+    func settingCaptureAudio(_ on: Bool) -> PickerSelection {
+        PickerSelection(
+            kind: kind, displayID: displayID, windowID: windowID,
+            bundleIDs: bundleIDs, captureAudio: on)
+    }
 }

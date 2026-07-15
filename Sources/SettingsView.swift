@@ -133,6 +133,9 @@ struct SettingsView: View {
             }
 
             Section(L("Audio")) {
+                Toggle(
+                    L("Share system audio when sharing starts"),
+                    isOn: $appState.shareSystemAudioByDefault)
                 Picker(
                     L("Microphone"),
                     selection: Binding(
