@@ -15,7 +15,11 @@ final class ViewerAccessPolicyTests: XCTestCase {
     private func makeScratchDefaults() throws -> UserDefaults {
         let name = "viewer-access-policy-tests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
-        addTeardownBlock { defaults.removePersistentDomain(forName: name) }
+        // Capture only the Sendable suite name — capturing `defaults` (a
+        // non-Sendable value the caller also uses) in the teardown closure
+        // trips Swift 6's sending-risks-data-race check. `removePersistentDomain`
+        // clears the named domain from any instance.
+        addTeardownBlock { UserDefaults.standard.removePersistentDomain(forName: name) }
         return defaults
     }
 
