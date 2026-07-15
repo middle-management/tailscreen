@@ -91,8 +91,18 @@ final class RemoteControlInjector: @unchecked Sendable {
         switch event {
         case .mouseMove(let nx, let ny):
             guard let point = globalPoint(nx: nx, ny: ny, selection: selection) else { return }
-            let type: CGEventType = leftDown ? .leftMouseDragged : (rightDown ? .rightMouseDragged : .mouseMoved)
-            let button: CGMouseButton = rightDown ? .right : .left
+            let type: CGEventType
+            let button: CGMouseButton
+            if leftDown {
+                type = .leftMouseDragged
+                button = .left
+            } else if rightDown {
+                type = .rightMouseDragged
+                button = .right
+            } else {
+                type = .mouseMoved
+                button = .left
+            }
             postMouse(type: type, at: point, button: button)
         case .mouseDown(let nx, let ny, let mouseButton):
             guard let point = globalPoint(nx: nx, ny: ny, selection: selection) else { return }
