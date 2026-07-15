@@ -784,6 +784,96 @@ final class LossRecoveryWireTests: XCTestCase {
         XCTAssertEqual(ScreenShareControlMessage.decodeHelloCaps(Data([0x00])), [])
     }
 
+    // MARK: - FEC (0x0D) wire codec + extended receiver report
+
+    func testFECControlByteIsDistinctAndInControlRange() {
+        XCTAssertEqual(ScreenShareControlMessage.fec.rawValue, 0x0D)
+        let minimalBody = Data(count: FECCodec.minBodyBytes)
+        let data = ScreenShareControlMessage.encodeFEC(baseSeq: 1, count: 2, body: minimalBody)
+        XCTAssertTrue(ScreenShareControlMessage.looksLikeControl(data))
+        XCTAssertLessThanOrEqual(ScreenShareControlMessage.fec.rawValue, 0x7F)
+        XCTAssertEqual(ScreenShareControlMessage.decode(data), .fec)
+        // Legacy-peer proof: an old peer's decode of the raw byte is what the
+        // unknown-byte → nil contract covers (0x0D was exactly such a byte to
+        // pre-FEC peers, as 0x0E is to us today); pin that contract, and that
+        // the caps bit is the advertised one.
+        XCTAssertNil(ScreenShareControlMessage.decode(Data([0x0E])), "unknown control bytes decode to nil")
+        XCTAssertEqual(ScreenShareCaps.fec.rawValue, 1 << 2)
+    }
+
+    func testFECRoundTrip() {
+        var body = Data([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11])
+        body.append(contentsOf: (0..<64).map { UInt8($0) })
+        let data = ScreenShareControlMessage.encodeFEC(baseSeq: 0xFFFE, count: 10, body: body)
+        XCTAssertEqual(data.count, 4 + body.count)
+        let decoded = ScreenShareControlMessage.decodeFEC(data)
+        XCTAssertEqual(decoded?.baseSeq, 0xFFFE)
+        XCTAssertEqual(decoded?.count, 10)
+        XCTAssertEqual(decoded?.body, body)
+    }
+
+    func testFECRoundTripMaxSizeBody() {
+        // Max envelope: 7-byte XOR prefix + a full 1100-byte payload region —
+        // same MTU reasoning as a media packet.
+        let body = Data((0..<(7 + H264Packetizer.maxPayloadBytes)).map { UInt8($0 & 0xFF) })
+        let data = ScreenShareControlMessage.encodeFEC(baseSeq: 42, count: 16, body: body)
+        let decoded = ScreenShareControlMessage.decodeFEC(data)
+        XCTAssertEqual(decoded?.baseSeq, 42)
+        XCTAssertEqual(decoded?.count, 16)
+        XCTAssertEqual(decoded?.body, body)
+    }
+
+    func testFECDecodeRejectsTruncatedAndGarbage() {
+        XCTAssertNil(ScreenShareControlMessage.decodeFEC(Data([0x0D])), "no header")
+        XCTAssertNil(ScreenShareControlMessage.decodeFEC(Data([0x0D, 0x00, 0x01, 0x02])), "no body")
+        XCTAssertNil(
+            ScreenShareControlMessage.decodeFEC(Data([0x0D, 0x00, 0x01, 0x02, 0xAA, 0xBB])),
+            "body shorter than the XOR prefix")
+        let okBody = Data(count: FECCodec.minBodyBytes)
+        XCTAssertNil(
+            ScreenShareControlMessage.decodeFEC(
+                ScreenShareControlMessage.encodeFEC(baseSeq: 0, count: 1, body: okBody)),
+            "count below minGroupSize")
+        XCTAssertNil(
+            ScreenShareControlMessage.decodeFEC(
+                ScreenShareControlMessage.encodeFEC(baseSeq: 0, count: 17, body: okBody)),
+            "count above maxGroupSize")
+        var wrongTag = ScreenShareControlMessage.encodeFEC(baseSeq: 0, count: 2, body: okBody)
+        wrongTag[wrongTag.startIndex] = 0x0C
+        XCTAssertNil(ScreenShareControlMessage.decodeFEC(wrongTag), "wrong control byte")
+        // Body-length sanity cap: nothing legitimate exceeds the XOR prefix
+        // plus one full MTU payload region.
+        let oversized = Data(count: FECCodec.maxBodyBytes + 1)
+        XCTAssertNil(
+            ScreenShareControlMessage.decodeFEC(
+                ScreenShareControlMessage.encodeFEC(baseSeq: 0, count: 2, body: oversized)),
+            "oversized body must reject")
+        let maxOK = Data(count: FECCodec.maxBodyBytes)
+        XCTAssertNotNil(
+            ScreenShareControlMessage.decodeFEC(
+                ScreenShareControlMessage.encodeFEC(baseSeq: 0, count: 2, body: maxOK)),
+            "exactly max-sized body must decode")
+    }
+
+    func testExtendedReceiverReportBothLengths() {
+        let report = ReceiverReport(
+            fracLostQ8: 3, extHighestSeq: 0x0002_0001, jitterTicks: 0,
+            lastPingTs: 77, delaySincePingMs: 9, fecRecovered: 1234)
+        // Default encode stays the exact legacy 20-byte layout.
+        let legacy = ScreenShareControlMessage.encodeReceiverReport(report)
+        XCTAssertEqual(legacy.count, 20)
+        let legacyDecoded = ScreenShareControlMessage.decodeReceiverReport(legacy)
+        XCTAssertEqual(legacyDecoded?.fecRecovered, 0, "20-byte form reads fecRecovered as 0")
+        XCTAssertEqual(legacyDecoded?.fracLostQ8, 3)
+        // Extended 22-byte form round-trips the field.
+        let extended = ScreenShareControlMessage.encodeReceiverReport(report, includeFECRecovered: true)
+        XCTAssertEqual(extended.count, 22)
+        XCTAssertEqual(ScreenShareControlMessage.decodeReceiverReport(extended), report)
+        // And the extended form is still one tolerant decode away for a
+        // NACK-era server (its `>= 20` guard reads the first 20 bytes).
+        XCTAssertEqual(ScreenShareControlMessage.decodeReceiverReport(extended)?.fracLostQ8, 3)
+    }
+
     func testExtendedHelloAckBackCompat() {
         let extended = ScreenShareControlMessage.encodeHelloAck(ssrc: 0xAABB_CCDD, caps: [.nack])
         XCTAssertEqual(extended.count, 6)

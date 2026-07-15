@@ -38,12 +38,18 @@ struct NACKScheduler: Sendable {
 
     // MARK: Tunables (see the plan's NACKScheduler design)
 
+    /// Phase-1 defaults for the reorder tolerances, named so the client can
+    /// restore them after FEC parity stops flowing (`setReorderTolerances`).
+    static let defaultReorderToleranceNs: UInt64 = 15_000_000
+    static let defaultReorderPacketTolerance = 3
+
     /// A gap is NACK-eligible only once it's older than this OR at least
     /// `reorderPacketTolerance` newer packets have piled up behind it. Below
     /// this, a late (reordered) packet still fills the gap with no NACK.
-    let reorderToleranceNs: UInt64
+    /// Mutable only via `setReorderTolerances` (FEC arming/disarming).
+    private(set) var reorderToleranceNs: UInt64
     /// Newer-packet count that makes a gap eligible before the time tolerance.
-    let reorderPacketTolerance: Int
+    private(set) var reorderPacketTolerance: Int
     /// Maximum NACK attempts per gap before abandoning it to a PLI.
     let maxAttempts: Int
     /// Floor on the re-NACK interval; the effective interval is
@@ -67,8 +73,8 @@ struct NACKScheduler: Sendable {
     private var nackStampsNs: [UInt64] = []
 
     init(
-        reorderToleranceNs: UInt64 = 15_000_000,
-        reorderPacketTolerance: Int = 3,
+        reorderToleranceNs: UInt64 = NACKScheduler.defaultReorderToleranceNs,
+        reorderPacketTolerance: Int = NACKScheduler.defaultReorderPacketTolerance,
         maxAttempts: Int = 3,
         reNackFloorNs: UInt64 = 40_000_000,
         ringWindowNs: UInt64 = 1_000_000_000,
@@ -154,6 +160,56 @@ struct NACKScheduler: Sendable {
     /// that stops seeing newer packets still ages out to its re-NACK / PLI).
     mutating func tick(nowNs: UInt64) -> [NACKAction] {
         evaluate(nowNs: nowNs)
+    }
+
+    /// Remove a tracked gap *without* the straggler path's RTT-sample side
+    /// effect. Used when FEC reconstructs the missing packet: an FEC recovery
+    /// after a NACK went out would otherwise inject "time since NACK"
+    /// (actually FEC latency, not a network round trip) into the RTT EMA and
+    /// corrupt the re-NACK cadence. No-op for an untracked seq.
+    mutating func cancelGap(seq: UInt16) {
+        gaps.removeValue(forKey: seq)
+    }
+
+    /// Account for one FEC-recovered packet: clear its gap (no RTT sample,
+    /// like `cancelGap`) and, when the recovered seq is AHEAD of the highest
+    /// wire packet, advance `highestSeq` past it — the tail-of-batch (marker)
+    /// case, where no wire packet ever carries that seq. Without the advance,
+    /// the NEXT batch's first packet would re-open a gap for the
+    /// already-recovered seq and burn a spurious NACK (possibly escalating
+    /// toward PLI on a lossy link). Any seqs genuinely skipped between the
+    /// old highest and the recovery still open gaps, and existing gaps see it
+    /// as a newer packet — exactly `observe`'s bookkeeping minus the RTT
+    /// sample and minus tracking the recovered seq itself.
+    mutating func noteRecovered(seq: UInt16, nowNs: UInt64) {
+        gaps.removeValue(forKey: seq)
+        guard let highest = highestSeq else { return }
+        let forward = seq &- highest
+        guard forward != 0, forward <= UInt16(1 << 15) else { return }  // behind/duplicate — done
+        // A recovery is always adjacent to received members, so a jump wider
+        // than the gap budget can't be a real recovery — leave it to
+        // `observe`'s discontinuity path rather than mass-opening gaps.
+        guard Int(forward) <= maxGaps else { return }
+        var missing = highest &+ 1
+        while missing != seq {
+            if gaps[missing] == nil, gaps.count < maxGaps {
+                gaps[missing] = Gap(firstSeenNs: nowNs)
+            }
+            missing &+= 1
+        }
+        for key in Array(gaps.keys) {
+            gaps[key]?.newerSeen += 1
+        }
+        highestSeq = seq
+    }
+
+    /// Switch the reorder tolerances in place — FEC arming (relaxed N+2/25 ms
+    /// so parity gets first shot at every gap) and disarming (phase-1
+    /// defaults once parity stops flowing) — WITHOUT dropping tracked gaps or
+    /// the adapted RTT estimate, which a scheduler rebuild would.
+    mutating func setReorderTolerances(toleranceNs: UInt64, packetTolerance: Int) {
+        reorderToleranceNs = toleranceNs
+        reorderPacketTolerance = packetTolerance
     }
 
     /// True once at least one gap is being tracked (test/introspection aid).

@@ -407,4 +407,347 @@ final class RTPLossyChannelTests: XCTestCase {
         XCTAssertEqual(outcome.plis, 0, "small reordering must not PLI")
         assertIntactAndOrdered(outcome.delivered, expected: expected)
     }
+
+    // MARK: - FEC + NACK closed loop
+
+    private struct RecoveryLoopOutcome {
+        var delivered: [VideoAccessUnit]
+        var nacks: Int
+        var plis: Int
+        var fecRecovered: Int
+    }
+
+    /// Impairment knobs for `runRecoveryLoop`. `singleLossPerGroupRate`
+    /// drops at most one member per FEC group (the FEC-solvable regime);
+    /// `dropLastInGroup` pins that victim to the group's LAST packet — for
+    /// the final group that's the AU's marker packet, the tail-of-batch
+    /// recovery case that must not leave a phantom scheduler gap;
+    /// `mediaLossRate` is unconstrained per-packet loss (multi-loss groups
+    /// hand off to NACK); `parityLossRate` drops parity datagrams
+    /// (parity loss must be silent and free); `lateOriginalSteps` re-delivers
+    /// each dropped original that many steps later (the late-original dedup
+    /// case).
+    private struct RecoveryLoopConfig {
+        var lossSeed: UInt64
+        var singleLossPerGroupRate: Double = 0
+        var dropLastInGroup = false
+        var mediaLossRate: Double = 0
+        var parityLossRate: Double = 0
+        var groupSize: Int = 10
+        var rttSteps: Int = 4
+        var lateOriginalSteps: Int?
+    }
+
+    /// The FEC leg of the recovery loop: the "server" side groups each
+    /// frame's packets with `groupRanges` + `parityBody`, emitting each
+    /// group's parity IMMEDIATELY after that group's last member — genuinely
+    /// mirroring the broadcast send chain's interleaved ordering (batch-
+    /// trailing parity would defeat the viewer's bounded buffer on
+    /// multi-group keyframes); the "viewer" side runs the production
+    /// composition — FEC-mode `NACKScheduler` tolerances (parity flowing),
+    /// `FECGroupBuffer` in front of the depacketizer, recovered packets
+    /// ingested through the same path as received ones with `noteRecovered`
+    /// — with NACKed seqs re-injected byte-identically `rttSteps` later.
+    private func runRecoveryLoop(
+        packets: [Data],
+        config: RecoveryLoopConfig,
+        ingest: (Data) -> VideoAccessUnit?,
+        drain: () -> [VideoAccessUnit]
+    ) -> RecoveryLoopOutcome {
+        // Regroup the flat stream into frames (one AU each, contiguous seqs).
+        var frames: [[Data]] = []
+        var lastTs: UInt32?
+        for packet in packets {
+            let ts = RTPHeader.decode(from: packet)?.header.timestamp ?? 0
+            if ts == lastTs {
+                frames[frames.count - 1].append(packet)
+            } else {
+                frames.append([packet])
+                lastTs = ts
+            }
+        }
+        var wire: [UInt16: Data] = [:]
+        for packet in packets { wire[Self.seqOf(packet)] = packet }
+
+        // Server side: schedule = each frame's packets with every group's
+        // parity interleaved right after that group's last member; decide
+        // the dropped set up front for the single-loss-per-group regime
+        // (victims only inside covered ranges, never the stream's first
+        // packet, so every drop is FEC-solvable).
+        enum Event {
+            case media(Data)
+            case parity(base: UInt16, count: Int, body: Data)
+        }
+        var rng = SeededRNG(seed: config.lossSeed)
+        var schedule: [Event] = []
+        var droppedSeqs: Set<UInt16> = []
+        let firstSeq = Self.seqOf(packets[0])
+        for frame in frames {
+            var parityAfter: [Int: Event] = [:]
+            for range in FECCodec.groupRanges(templateCount: frame.count, groupSize: config.groupSize) {
+                let dropOne =
+                    config.singleLossPerGroupRate > 0
+                    && Double.random(in: 0..<1, using: &rng) < config.singleLossPerGroupRate
+                if dropOne {
+                    let victim =
+                        config.dropLastInGroup
+                        ? range.upperBound - 1
+                        : range.lowerBound + Int(rng.next() % UInt64(range.count))
+                    let seq = Self.seqOf(frame[victim])
+                    if seq != firstSeq { droppedSeqs.insert(seq) }
+                }
+                let body = FECCodec.parityBody(for: frame[range])
+                parityAfter[range.upperBound - 1] = .parity(
+                    base: Self.seqOf(frame[range.lowerBound]), count: range.count, body: body)
+            }
+            for (index, packet) in frame.enumerated() {
+                schedule.append(.media(packet))
+                if let parity = parityAfter[index] { schedule.append(parity) }
+            }
+        }
+
+        // Viewer side.
+        var scheduler = NACKScheduler(
+            reorderToleranceNs: TransportTuning.fecSchedulerToleranceNs,
+            reorderPacketTolerance: TransportTuning.fecSchedulerPacketTolerance)
+        var fec = FECGroupBuffer()
+        var delivered: [VideoAccessUnit] = []
+        var pending: [Int: [Data]] = [:]
+        var nacks = 0
+        var plis = 0
+        var recovered = 0
+        var step = 0
+        let stepNs: UInt64 = 1_000_000
+
+        func handleActions(_ actions: [NACKAction], atStep step: Int) {
+            for action in actions {
+                switch action {
+                case .sendNACK(let seqs):
+                    nacks += 1
+                    for seq in seqs {
+                        if let packet = wire[seq] {
+                            pending[step + config.rttSteps, default: []].append(packet)
+                        }
+                    }
+                case .sendPLI:
+                    plis += 1
+                }
+            }
+        }
+
+        func processRecovered(_ recovery: FECGroupBuffer.Recovery, atStep step: Int) {
+            recovered += 1
+            scheduler.noteRecovered(seq: recovery.seq, nowNs: UInt64(step) &* stepNs)
+            if let au = ingest(recovery.packet) { delivered.append(au) }
+        }
+
+        func deliverMedia(_ packet: Data, atStep step: Int) {
+            let now = UInt64(step) &* stepNs
+            handleActions(scheduler.observe(seq: Self.seqOf(packet), nowNs: now), atStep: step)
+            if let recovery = fec.noteMedia(seq: Self.seqOf(packet), packet: packet, nowNs: now) {
+                processRecovered(recovery, atStep: step)
+            }
+            if let au = ingest(packet) { delivered.append(au) }
+        }
+
+        for event in schedule {
+            step += 1
+            let now = UInt64(step) &* stepNs
+            if let arrivals = pending.removeValue(forKey: step) {
+                for retransmit in arrivals { deliverMedia(retransmit, atStep: step) }
+            }
+            switch event {
+            case .media(let packet):
+                let seq = Self.seqOf(packet)
+                var lost = droppedSeqs.contains(seq)
+                if !lost, config.mediaLossRate > 0, seq != firstSeq {
+                    lost = Double.random(in: 0..<1, using: &rng) < config.mediaLossRate
+                }
+                if lost {
+                    if let late = config.lateOriginalSteps {
+                        pending[step + late, default: []].append(packet)
+                    }
+                } else {
+                    deliverMedia(packet, atStep: step)
+                }
+            case .parity(let base, let count, let body):
+                let lost =
+                    config.parityLossRate > 0
+                    && Double.random(in: 0..<1, using: &rng) < config.parityLossRate
+                if !lost, let recovery = fec.noteParity(baseSeq: base, count: count, body: body, nowNs: now) {
+                    processRecovered(recovery, atStep: step)
+                }
+            }
+            handleActions(scheduler.tick(nowNs: now), atStep: step)
+        }
+        // Drain scheduled retransmits / late originals and age out gaps.
+        let maxStep = (pending.keys.max() ?? step) + config.rttSteps + 2500
+        while step <= maxStep {
+            step += 1
+            let now = UInt64(step) &* stepNs
+            if let arrivals = pending.removeValue(forKey: step) {
+                for retransmit in arrivals { deliverMedia(retransmit, atStep: step) }
+            }
+            handleActions(scheduler.tick(nowNs: now), atStep: step)
+            if pending.isEmpty && !scheduler.hasOpenGaps { break }
+        }
+        delivered.append(contentsOf: drain())
+        return RecoveryLoopOutcome(delivered: delivered, nacks: nacks, plis: plis, fecRecovered: recovered)
+    }
+
+    func testSingleLossPerGroupRecoveredByFECWithZeroNACKs() {
+        // At most one loss per FEC group: every gap is reconstructed from the
+        // parity already in flight — zero NACKs, zero PLIs, zero RTT cost,
+        // no frame ever flagged as lost.
+        let (packets, expected) = Self.buildH264Stream(
+            frameCount: 60, bytesPerFrame: 12_000, ssrc: 0xFEC1)
+        let dp = H264Depacketizer(reorderDepth: 64)
+        let outcome = runRecoveryLoop(
+            packets: packets,
+            config: RecoveryLoopConfig(lossSeed: 31337, singleLossPerGroupRate: 0.5),
+            ingest: dp.ingest, drain: dp.drainReady)
+
+        XCTAssertGreaterThan(outcome.fecRecovered, 0, "seeded losses should have exercised recovery")
+        XCTAssertEqual(outcome.nacks, 0, "FEC-solvable loss must never NACK")
+        XCTAssertEqual(outcome.plis, 0, "FEC-solvable loss must never PLI")
+        XCTAssertFalse(
+            outcome.delivered.contains { $0.lostBeforeThisAU },
+            "recovered loss must not surface as a loss signal")
+        XCTAssertEqual(outcome.delivered.count, expected.count, "every frame must arrive")
+        assertIntactAndOrdered(outcome.delivered, expected: expected)
+    }
+
+    func testHEVCSingleLossPerGroupRecoveredByFEC() {
+        let (packets, expected) = Self.buildHEVCStream(
+            frameCount: 50, bytesPerFrame: 12_000, ssrc: 0xFEC2)
+        let dp = H265Depacketizer(reorderDepth: 64)
+        let outcome = runRecoveryLoop(
+            packets: packets,
+            config: RecoveryLoopConfig(lossSeed: 90210, singleLossPerGroupRate: 0.5),
+            ingest: dp.ingest, drain: dp.drainReady)
+
+        XCTAssertGreaterThan(outcome.fecRecovered, 0)
+        XCTAssertEqual(outcome.nacks, 0)
+        XCTAssertEqual(outcome.plis, 0)
+        XCTAssertFalse(outcome.delivered.contains { $0.lostBeforeThisAU })
+        XCTAssertEqual(outcome.delivered.count, expected.count)
+        assertIntactAndOrdered(outcome.delivered, expected: expected)
+    }
+
+    func testHeavyLossFallsBackToNACKBeyondFEC() {
+        // ~10 % unconstrained loss: FEC closes the single-loss groups
+        // (recovered > 0) while multi-loss groups hand off to NACK
+        // (nacks > 0) — the layered handoff — and no frame is ever torn.
+        let (packets, expected) = Self.buildH264Stream(
+            frameCount: 90, bytesPerFrame: 12_000, ssrc: 0xFEC3)
+        let dp = H264Depacketizer(reorderDepth: 64)
+        let outcome = runRecoveryLoop(
+            packets: packets,
+            config: RecoveryLoopConfig(lossSeed: 424242, mediaLossRate: 0.10, parityLossRate: 0.10),
+            ingest: dp.ingest, drain: dp.drainReady)
+
+        XCTAssertGreaterThan(outcome.fecRecovered, 0, "single-loss groups should solve via FEC")
+        XCTAssertGreaterThan(outcome.nacks, 0, "multi-loss groups must hand off to NACK")
+        assertIntactAndOrdered(outcome.delivered, expected: expected)
+        XCTAssertGreaterThanOrEqual(
+            outcome.delivered.count, expected.count - 1,
+            "layered FEC+NACK recovery should deliver essentially every frame")
+    }
+
+    func testParityLossIsHarmless() {
+        // Drop EVERY parity datagram, 3 % media loss: outcome must be
+        // exactly today's NACK behavior — parity rides the control plane,
+        // so losing it opens no gap, costs no NACK, pollutes no RR.
+        let (packets, expected) = Self.buildH264Stream(
+            frameCount: 90, bytesPerFrame: 1500, ssrc: 0xFEC4)
+        let dp = H264Depacketizer(reorderDepth: 64)
+        let outcome = runRecoveryLoop(
+            packets: packets,
+            config: RecoveryLoopConfig(lossSeed: 12345, mediaLossRate: 0.03, parityLossRate: 1.0),
+            ingest: dp.ingest, drain: dp.drainReady)
+
+        XCTAssertEqual(outcome.fecRecovered, 0, "no parity, no recoveries")
+        XCTAssertGreaterThan(outcome.nacks, 0, "loss should have driven NACKs")
+        XCTAssertEqual(outcome.plis, 0, "NACK still recovers everything at 3% loss")
+        XCTAssertFalse(outcome.delivered.contains { $0.lostBeforeThisAU })
+        assertIntactAndOrdered(outcome.delivered, expected: expected)
+        XCTAssertGreaterThanOrEqual(outcome.delivered.count, expected.count - 1)
+    }
+
+    func testLateOriginalAfterFECRecoveryIsHarmless() {
+        // Each "lost" packet was merely reordered: it arrives 12 steps later,
+        // AFTER its FEC recovery. The duplicate must change nothing — no
+        // duplicate AU (strict timestamp ordering catches one), no NACK, no
+        // PLI, no scheduler regression.
+        let (packets, expected) = Self.buildH264Stream(
+            frameCount: 60, bytesPerFrame: 12_000, ssrc: 0xFEC5)
+        let dp = H264Depacketizer(reorderDepth: 64)
+        let outcome = runRecoveryLoop(
+            packets: packets,
+            config: RecoveryLoopConfig(
+                lossSeed: 777, singleLossPerGroupRate: 0.5, lateOriginalSteps: 12),
+            ingest: dp.ingest, drain: dp.drainReady)
+
+        XCTAssertGreaterThan(outcome.fecRecovered, 0)
+        XCTAssertEqual(outcome.nacks, 0, "the late original must not provoke a NACK")
+        XCTAssertEqual(outcome.plis, 0)
+        XCTAssertEqual(outcome.delivered.count, expected.count, "no duplicate or missing AUs")
+        assertIntactAndOrdered(outcome.delivered, expected: expected)
+    }
+
+    func testEarlyGroupLossInMultiGroupFrameRecoveredByFEC() {
+        // Keyframe-sized frames of 26 packets → three balanced groups per
+        // frame. With every group losing one member, the FIRST group's
+        // victim is recovered by its own interleaved parity — which arrives
+        // right after the group, NOT after the whole batch. Batch-trailing
+        // parity would leave that early gap NACK-eligible ~16 media packets
+        // before recovery data even hit the wire (and, on real keyframes,
+        // let the bounded FECGroupBuffer evict the group's members first).
+        // Zero NACKs is therefore the interleaving proof.
+        let (packets, expected) = Self.buildH264Stream(
+            frameCount: 40, bytesPerFrame: 28_000, ssrc: 0xFEC6)
+        let perFrame = packets.count / 40
+        XCTAssertGreaterThanOrEqual(perFrame, 25, "fixture: frames must span several FEC groups")
+        let dp = H264Depacketizer(reorderDepth: 64)
+        let outcome = runRecoveryLoop(
+            packets: packets,
+            config: RecoveryLoopConfig(lossSeed: 5150, singleLossPerGroupRate: 1.0),
+            ingest: dp.ingest, drain: dp.drainReady)
+
+        XCTAssertGreaterThanOrEqual(
+            outcome.fecRecovered, 40 * 2, "every group in every frame lost one packet")
+        XCTAssertEqual(outcome.nacks, 0, "interleaved parity must beat NACK eligibility for early groups")
+        XCTAssertEqual(outcome.plis, 0)
+        XCTAssertFalse(outcome.delivered.contains { $0.lostBeforeThisAU })
+        XCTAssertEqual(outcome.delivered.count, expected.count)
+        assertIntactAndOrdered(outcome.delivered, expected: expected)
+    }
+
+    func testCoveredMarkerLossRecoveredWithoutPhantomGap() {
+        // The AU's FINAL packet (marker) is lost in every selected frame and
+        // recovered from parity — the tail-of-batch case: no wire packet
+        // ever carries that seq, so the scheduler must advance past the
+        // recovery (`noteRecovered`) or the NEXT frame's first packet
+        // re-opens a phantom gap for the already-recovered seq and burns a
+        // spurious NACK. Zero NACKs pins the fix; balanced `groupRanges`
+        // guarantees the marker sits inside a covered group (12 packets →
+        // 6+6).
+        let (packets, expected) = Self.buildH264Stream(
+            frameCount: 60, bytesPerFrame: 13_000, ssrc: 0xFEC7)
+        let perFrame = packets.count / 60
+        XCTAssertGreaterThanOrEqual(perFrame, 12, "fixture: marker must be parity-covered")
+        let dp = H264Depacketizer(reorderDepth: 64)
+        let outcome = runRecoveryLoop(
+            packets: packets,
+            config: RecoveryLoopConfig(
+                lossSeed: 8086, singleLossPerGroupRate: 0.7, dropLastInGroup: true),
+            ingest: dp.ingest, drain: dp.drainReady)
+
+        XCTAssertGreaterThan(outcome.fecRecovered, 0, "marker losses should have exercised recovery")
+        XCTAssertEqual(outcome.nacks, 0, "a recovered marker must not leave a phantom gap → NACK")
+        XCTAssertEqual(outcome.plis, 0)
+        XCTAssertFalse(outcome.delivered.contains { $0.lostBeforeThisAU })
+        XCTAssertEqual(outcome.delivered.count, expected.count, "every frame incl. marker-loss ones arrives")
+        assertIntactAndOrdered(outcome.delivered, expected: expected)
+    }
 }

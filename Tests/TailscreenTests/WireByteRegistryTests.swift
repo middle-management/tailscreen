@@ -159,7 +159,8 @@ final class WireByteRegistryTests: XCTestCase {
                 WireRow("profileUnsupported", 0x09),
                 WireRow("nack", 0x0A),
                 WireRow("receiverReport", 0x0B),
-                WireRow("ping", 0x0C)
+                WireRow("ping", 0x0C),
+                WireRow("fec", 0x0D)
             ])
     }
 
@@ -188,14 +189,14 @@ final class WireByteRegistryTests: XCTestCase {
     func testChannelBCapabilityBits() {
         // ScreenShareCaps rides the extended HELLO/HELLO_ACK as bit flags —
         // uniqueness here means bit-disjointness, not byte-distinctness.
-        // NOTE: the XOR-FEC plan reserves the next cap bit; coordinate before
-        // taking 1 << 2.
         let pinned: [(name: String, value: ScreenShareCaps)] = [
             ("nack", .nack),
-            ("receiverReport", .receiverReport)
+            ("receiverReport", .receiverReport),
+            ("fec", .fec)
         ]
         XCTAssertEqual(ScreenShareCaps.nack.rawValue, 1 << 0)
         XCTAssertEqual(ScreenShareCaps.receiverReport.rawValue, 1 << 1)
+        XCTAssertEqual(ScreenShareCaps.fec.rawValue, 1 << 2)
         // Exhaustiveness teeth (as much as Swift allows for an OptionSet):
         // the production-side `allKnown` list must match this registry table
         // exactly. A new cap MUST be appended to `allKnown` when defined —

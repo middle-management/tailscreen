@@ -77,4 +77,54 @@ enum TransportTuning {
     static func adaptiveBitrateFloor(baseline: Int) -> Int {
         max(baseline * adaptiveFloorNumerator / adaptiveFloorDenominator, adaptiveFloorMinBps)
     }
+
+    // MARK: - FEC (XOR single-parity) tuning — see `plans/fec-xor-recovery.md`
+
+    /// FEC on-gate: RR-measured RTT must exceed this before parity is worth
+    /// its overhead — below it a NACK round trip already beats rendering
+    /// the gap, so FEC stays off on fast/direct paths.
+    static let fecOnGateRTTNs: UInt64 = 150_000_000
+
+    /// FEC on-gate: raw link loss (residual RR loss + FEC-recovered,
+    /// converted to Q8) must exceed this (~2 %).
+    static let fecOnGateLossQ8 = 5
+
+    /// FEC off-gate: a sweep window counts as clean when raw loss is below
+    /// this (~1 % — residual *and* recovered both near zero).
+    static let fecCleanLossQ8 = 3
+
+    /// FEC off-gate: consecutive clean windows before parity switches off
+    /// (the anti-oscillation hysteresis).
+    static let fecCleanWindowsToDisable = 2
+
+    /// Loss-ladder band edges, Q8: raw loss above ~4 % steps the group size
+    /// down to `fecGroupSizeMedium`; above ~8 % to `fecGroupSizeHeavy`.
+    static let fecMidLossQ8 = 10
+    static let fecHighLossQ8 = 20
+
+    /// The group-size ladder: 2–4 % raw loss → 10 (10 % overhead), 4–8 % →
+    /// 7 (~14 %), > 8 % → 5 (20 %). Never below 5 — past ~20 % overhead the
+    /// link needs the bitrate/fps arms, not more parity.
+    static let fecGroupSizeLight = 10
+    static let fecGroupSizeMedium = 7
+    static let fecGroupSizeHeavy = 5
+
+    /// Client: NACK-scheduler reorder tolerances while FEC parity is
+    /// actually FLOWING (armed on the first 0x0D received, not at bare
+    /// negotiation — the server always advertises `.fec`, and a clean link
+    /// that never sees parity must keep phase-1 NACK timing). A packet lost
+    /// first-in-group sees up to N−1 newer media packets plus the trailing
+    /// parity before recovery, so the gap becomes NACK-eligible only after
+    /// N+2 newer packets (N = the largest ladder group) or 25 ms (one
+    /// 60 fps frame interval + parity slack) — FEC gets first shot at every
+    /// gap; NACK fires only for the multi-loss groups FEC can't solve.
+    static let fecSchedulerPacketTolerance = fecGroupSizeLight + 2
+    static let fecSchedulerToleranceNs: UInt64 = 25_000_000
+
+    /// Client: how long without any parity datagram before the FEC receive
+    /// machinery disarms — scheduler tolerances back to phase-1, media
+    /// buffering off. Comfortably longer than a sweep window's worth of
+    /// parity cadence, short enough that a server that gated parity off
+    /// doesn't leave the viewer's NACK timing relaxed for long.
+    static let fecParityIdleNs: UInt64 = 3_000_000_000
 }

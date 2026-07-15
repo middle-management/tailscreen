@@ -26,6 +26,7 @@ struct ViewerStatsOverlay: View {
                 color: dropColor(stats.droppedPct))
             row(L("Decode errs"), "\(stats.decodeFailures)", color: countColor(stats.decodeFailures))
             row(L("PLIs sent"), "\(stats.plisSent)")
+            row(L("FEC recovered"), "\(stats.fecRecovered)")
             row(L("Bitrate"), formatBitrate(stats.bitrateBps))
             row(L("Codec"), stats.codec.map(formatCodec) ?? "—")
             row(L("Connection"), "Tailscale")
@@ -184,6 +185,7 @@ struct ViewerStatsOverlay: View {
         }
         if stats.decodeFailures > 0 { parts.append(L("\(stats.decodeFailures) decode errors")) }
         if stats.plisSent > 0 { parts.append(L("\(stats.plisSent) keyframe requests sent")) }
+        if stats.fecRecovered > 0 { parts.append(L("\(stats.fecRecovered) packets repaired")) }
         if let bps = stats.bitrateBps {
             let kbpsText = String(format: "%.0f", bps / 1000)
             parts.append(L("\(kbpsText) kilobits per second"))

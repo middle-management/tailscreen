@@ -366,19 +366,23 @@ struct ParserFuzzHarness {
         _ = ScreenShareControlMessage.decodeNACK(data)
         _ = ScreenShareControlMessage.decodeReceiverReport(data)
         _ = ScreenShareControlMessage.decodePing(data)
+        _ = ScreenShareControlMessage.decodeFEC(data)
     }
 
     private func fuzzUDPControlTruncationsAndRoundTrips() {
         let report = ReceiverReport(
             fracLostQ8: 42, extHighestSeq: 0x0001_FFFE, jitterTicks: 7,
-            lastPingTs: 0x1122_3344_5566_7788, delaySincePingMs: 250)
+            lastPingTs: 0x1122_3344_5566_7788, delaySincePingMs: 250, fecRecovered: 321)
+        let fecBody = Data((0..<40).map { UInt8($0 ^ 0x5A) })
         let encodes: [Data] = [
             ScreenShareControlMessage.encodeHelloAck(ssrc: 0xCAFE_F00D),
             ScreenShareControlMessage.encodeHelloAck(ssrc: 0xCAFE_F00D, caps: [.nack]),
             ScreenShareControlMessage.encodeHello(caps: [.nack, .receiverReport]),
             ScreenShareControlMessage.encodeNACK([(pid: 100, blp: 0x8001), (pid: 65535, blp: 1)]),
             ScreenShareControlMessage.encodeReceiverReport(report),
-            ScreenShareControlMessage.encodePing(serverUptimeNs: 0xDEAD_BEEF_0000_0001)
+            ScreenShareControlMessage.encodeReceiverReport(report, includeFECRecovered: true),
+            ScreenShareControlMessage.encodePing(serverUptimeNs: 0xDEAD_BEEF_0000_0001),
+            ScreenShareControlMessage.encodeFEC(baseSeq: 0xFFFE, count: 10, body: fecBody)
         ]
         for encoded in encodes {
             for cut in 0..<encoded.count {
@@ -395,8 +399,17 @@ struct ParserFuzzHarness {
         XCTAssertEqual(nackEntries.count, 2)
         XCTAssertEqual(nackEntries.first?.pid, 100)
         XCTAssertEqual(nackEntries.first?.blp, 0x8001)
-        XCTAssertEqual(ScreenShareControlMessage.decodeReceiverReport(encodes[4]), report)
-        XCTAssertEqual(ScreenShareControlMessage.decodePing(encodes[5]), 0xDEAD_BEEF_0000_0001)
+        // The legacy 20-byte RR reads fecRecovered as 0; the extended form
+        // round-trips the field exactly.
+        var legacyReport = report
+        legacyReport.fecRecovered = 0
+        XCTAssertEqual(ScreenShareControlMessage.decodeReceiverReport(encodes[4]), legacyReport)
+        XCTAssertEqual(ScreenShareControlMessage.decodeReceiverReport(encodes[5]), report)
+        XCTAssertEqual(ScreenShareControlMessage.decodePing(encodes[6]), 0xDEAD_BEEF_0000_0001)
+        let fec = ScreenShareControlMessage.decodeFEC(encodes[7])
+        XCTAssertEqual(fec?.baseSeq, 0xFFFE)
+        XCTAssertEqual(fec?.count, 10)
+        XCTAssertEqual(fec?.body, fecBody)
     }
 
     // MARK: - Target: AudioRTPDepacketizer
