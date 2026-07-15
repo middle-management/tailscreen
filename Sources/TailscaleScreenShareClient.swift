@@ -238,6 +238,22 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         try? await pl.send(ScreenShareControlMessage.encode(.pli), to: addr)
     }
 
+    /// Ask the sharer to fall back to 8-bit (PROFILE_NO) — the lighter cousin
+    /// of the `codecUnsupported` H.264 fallback, for a viewer that decodes
+    /// HEVC but not its 10-bit Main 10 profile. Sent a few times since it
+    /// rides best-effort UDP. Reserved for the opt-in 10-bit/HDR path: the
+    /// production decoder can't cheaply tell "profile unsupported" from
+    /// "codec unsupported" pre-decode, so today's 8-bit-only streams never
+    /// trigger it; exposed so a test (and a future 10-bit capability probe)
+    /// can drive the server's `force8bit` latch.
+    func sendBitDepthFallbackRequest() async {
+        guard isConnected, let pl = packetListener, let addr = serverAddr else { return }
+        for _ in 0..<3 {
+            try? await pl.send(ScreenShareControlMessage.encode(.profileUnsupported), to: addr)
+            try? await Task.sleep(for: .milliseconds(200))
+        }
+    }
+
     func connect(
         to hostname: String,
         port: UInt16 = NetworkConfig.tailscreenPort,
