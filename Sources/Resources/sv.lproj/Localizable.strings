@@ -75,8 +75,10 @@
 /* MARK: - Viewer approval rows (MenuBarView.swift) */
 "Deny" = "Neka";
 "Deny %@" = "Neka %@";
+"Deny & Block" = "Neka och blockera";
 "Accept" = "Acceptera";
 "Accept %@" = "Acceptera %@";
+"Always Allow" = "Tillåt alltid";
 "New viewers will see a Connecting prompt until you Accept or Deny" = "Nya tittare ser en Ansluter-prompt tills du accepterar eller nekar";
 
 /* MARK: - Viewing card (MenuBarView.swift) */
@@ -123,7 +125,13 @@
 /* MARK: - Settings window (SettingsView.swift) */
 "Viewers" = "Tittare";
 "Require approval for new viewers" = "Kräv godkännande för nya tittare";
-"New viewers wait on a Connecting prompt until you Accept or Deny them." = "Nya tittare väntar på en Ansluter-prompt tills du accepterar eller nekar dem.";
+"New viewers wait on a Connecting prompt until you Accept or Deny them. On by default — turn off to let anyone on your tailnet connect instantly." = "Nya tittare väntar på en Ansluter-prompt tills du accepterar eller nekar dem. På som standard — stäng av för att låta vem som helst på ditt tailnet ansluta direkt.";
+"Remembered viewers" = "Ihågkomna tittare";
+"Viewers you Always Allow or Deny & Block will appear here." = "Tittare du väljer Tillåt alltid eller Neka och blockera för visas här.";
+"Allowed" = "Tillåten";
+"Blocked" = "Blockerad";
+"Remove" = "Ta bort";
+"Remove %@" = "Ta bort %@";
 "Quality" = "Kvalitet";
 "Preset" = "Förval";
 "Low" = "Låg";
@@ -144,6 +152,16 @@
 
 /* MARK: - Window titles (AppState.swift) */
 "Tailscreen Settings" = "Tailscreen-inställningar";
+
+/* MARK: - Viewer consent + request-to-share outcomes (AppState.swift) */
+"Connection Declined" = "Anslutning nekad";
+"The sharer declined your request to view their screen." = "Delaren nekade din begäran om att se deras skärm.";
+"Request Accepted" = "Begäran accepterad";
+"%@ accepted your request and is choosing what to share." = "%@ accepterade din begäran och väljer vad som ska delas.";
+"Request Declined" = "Begäran nekad";
+"%@ declined your request to share their screen." = "%@ nekade din begäran om att dela sin skärm.";
+"No Response" = "Inget svar";
+"%@ hasn't responded to your request. They may be away or running an older Tailscreen." = "%@ har inte svarat på din begäran. De kan vara borta eller köra en äldre Tailscreen.";
 
 /* MARK: - Error alerts (AppError.swift / AppState.swift) */
 "%@\n\nError code: %@" = "%@\n\nFelkod: %@";
