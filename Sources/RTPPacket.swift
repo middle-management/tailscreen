@@ -249,7 +249,6 @@ enum ScreenShareControlMessage: UInt8 {
 /// HELLO / 5-byte ack) means `[]` — the PLI-only path, unchanged.
 struct ScreenShareCaps: OptionSet, Sendable, Hashable {
     let rawValue: UInt8
-    init(rawValue: UInt8) { self.rawValue = rawValue }
 
     /// Viewer detects sequence gaps and requests selective retransmission;
     /// server retransmits from its send-side ring.

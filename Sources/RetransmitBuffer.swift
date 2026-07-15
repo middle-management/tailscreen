@@ -162,9 +162,7 @@ final class RetransmitBuffer: @unchecked Sendable {
         _ state: inout State, nowNs: UInt64, windowNs: UInt64, byteCap: Int, maxBatches: Int
     ) {
         // Age first: drop the oldest batch while it's past the window.
-        while let id = state.order.first, let peek = state.batches[id],
-            nowNs &- peek.insertedNs > windowNs
-        {
+        while let id = state.order.first, let peek = state.batches[id], nowNs &- peek.insertedNs > windowNs {
             state.order.removeFirst()
             if let batch = state.batches.removeValue(forKey: id) { state.totalBytes -= batch.byteCount }
         }

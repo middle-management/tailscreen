@@ -247,6 +247,15 @@ final class RTPLossyChannelTests: XCTestCase {
         var plis: Int
     }
 
+    /// Impairment + retransmit knobs for `runNACKLoop`, bundled to keep the
+    /// helper's parameter list small.
+    private struct NACKLoopConfig {
+        var lossSeed: UInt64
+        var lossRate: Double
+        var rttSteps: Int
+        var retransmitReliable: Bool
+    }
+
     /// Drive packetize → loss → (`NACKScheduler` + depacketizer) → retransmit
     /// re-injection, in discrete 1 ms steps (one per arriving packet). NACKed
     /// sequence numbers are looked up in the byte-identical wire map and
@@ -257,18 +266,18 @@ final class RTPLossyChannelTests: XCTestCase {
     /// recoverable.
     private func runNACKLoop(
         packets: [Data],
-        lossSeed: UInt64,
-        lossRate: Double,
-        rttSteps: Int,
-        retransmitReliable: Bool,
+        config: NACKLoopConfig,
         ingest: (Data) -> VideoAccessUnit?,
         drain: () -> [VideoAccessUnit]
     ) -> NACKLoopOutcome {
+        let lossRate = config.lossRate
+        let rttSteps = config.rttSteps
+        let retransmitReliable = config.retransmitReliable
         var wire: [UInt16: Data] = [:]
         for packet in packets { wire[Self.seqOf(packet)] = packet }
 
         var scheduler = NACKScheduler()
-        var rng = SeededRNG(seed: lossSeed)
+        var rng = SeededRNG(seed: config.lossSeed)
         var delivered: [VideoAccessUnit] = []
         var pending: [Int: [Data]] = [:]
         var nacks = 0
@@ -332,8 +341,9 @@ final class RTPLossyChannelTests: XCTestCase {
             frameCount: 90, bytesPerFrame: 1500, ssrc: 0x77)
         let dp = H264Depacketizer(reorderDepth: 64)
         let outcome = runNACKLoop(
-            packets: packets, lossSeed: 12345, lossRate: 0.03, rttSteps: 4,
-            retransmitReliable: true, ingest: dp.ingest, drain: dp.drainReady)
+            packets: packets,
+            config: NACKLoopConfig(lossSeed: 12345, lossRate: 0.03, rttSteps: 4, retransmitReliable: true),
+            ingest: dp.ingest, drain: dp.drainReady)
 
         XCTAssertGreaterThan(outcome.nacks, 0, "loss should have driven NACKs")
         XCTAssertEqual(outcome.plis, 0, "NACK recovery must not fall back to PLI at 3% loss")
@@ -351,8 +361,9 @@ final class RTPLossyChannelTests: XCTestCase {
             frameCount: 70, bytesPerFrame: 1500, ssrc: 0x99)
         let dp = H265Depacketizer(reorderDepth: 64)
         let outcome = runNACKLoop(
-            packets: packets, lossSeed: 555, lossRate: 0.03, rttSteps: 4,
-            retransmitReliable: true, ingest: dp.ingest, drain: dp.drainReady)
+            packets: packets,
+            config: NACKLoopConfig(lossSeed: 555, lossRate: 0.03, rttSteps: 4, retransmitReliable: true),
+            ingest: dp.ingest, drain: dp.drainReady)
 
         XCTAssertGreaterThan(outcome.nacks, 0)
         XCTAssertEqual(outcome.plis, 0)
@@ -367,8 +378,9 @@ final class RTPLossyChannelTests: XCTestCase {
             frameCount: 90, bytesPerFrame: 1500, ssrc: 0x33)
         let dp = H264Depacketizer(reorderDepth: 64)
         let outcome = runNACKLoop(
-            packets: packets, lossSeed: 777, lossRate: 0.04, rttSteps: 4,
-            retransmitReliable: false, ingest: dp.ingest, drain: dp.drainReady)
+            packets: packets,
+            config: NACKLoopConfig(lossSeed: 777, lossRate: 0.04, rttSteps: 4, retransmitReliable: false),
+            ingest: dp.ingest, drain: dp.drainReady)
 
         XCTAssertGreaterThan(outcome.plis, 0, "unrecoverable loss must fall back to PLI")
         XCTAssertGreaterThan(
@@ -387,8 +399,9 @@ final class RTPLossyChannelTests: XCTestCase {
         let received = channel.transmit(packets)
         let dp = H264Depacketizer(reorderDepth: 64)
         let outcome = runNACKLoop(
-            packets: received, lossSeed: 1, lossRate: 0, rttSteps: 4,
-            retransmitReliable: true, ingest: dp.ingest, drain: dp.drainReady)
+            packets: received,
+            config: NACKLoopConfig(lossSeed: 1, lossRate: 0, rttSteps: 4, retransmitReliable: true),
+            ingest: dp.ingest, drain: dp.drainReady)
 
         XCTAssertEqual(outcome.nacks, 0, "small reordering must not NACK")
         XCTAssertEqual(outcome.plis, 0, "small reordering must not PLI")
