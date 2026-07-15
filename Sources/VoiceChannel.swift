@@ -94,7 +94,7 @@ final class VoiceChannel: @unchecked Sendable {
     private static let fadeSampleCount = 64
     /// Startup playback queue depth, in `samplesPerFrame` buffers.
     static let initialJitterTargetDepth = 3
-    /// Live-path values for `blacklistAction`'s cooldown/permanent knobs —
+    /// Live-path values for `decoderGateAction`'s cooldown/permanent knobs —
     /// also the function's defaults; kept as named constants so the gate
     /// and the failure logging agree on when we've given up.
     static let decoderInitRetryCooldownNs: UInt64 = 5_000_000_000
@@ -106,8 +106,8 @@ final class VoiceChannel: @unchecked Sendable {
         var lastFailureNs: UInt64
     }
 
-    /// Verdict of `blacklistAction(record:nowNs:)` for one inbound packet.
-    enum BlacklistAction: Equatable {
+    /// Verdict of `decoderGateAction(record:nowNs:)` for one inbound packet.
+    enum DecoderGateAction: Equatable {
         case allow
         case drop
     }
@@ -215,18 +215,18 @@ final class VoiceChannel: @unchecked Sendable {
 
     // MARK: - Pure decision functions (CI-able test seams)
 
-    /// Pure retry-with-cooldown blacklist decision. `nil` record → allow.
+    /// Pure retry-with-cooldown gate decision. `nil` record → allow.
     /// After `permanentAfter` consecutive init failures → drop for the
-    /// session (matches the old permanent-blacklist behavior after ~25 s of
+    /// session (matches the old permanent-block behavior after ~25 s of
     /// trying). Otherwise drop until `cooldownNs` has elapsed since the last
     /// failure, then allow one retry — a failure re-arms the cooldown, so
     /// failure logging stays ≤ 1 line per cooldown window.
-    static func blacklistAction(
+    static func decoderGateAction(
         record: DecoderFailureRecord?,
         nowNs: UInt64,
         cooldownNs: UInt64 = VoiceChannel.decoderInitRetryCooldownNs,
         permanentAfter: Int = VoiceChannel.decoderInitFailureLimit
-    ) -> BlacklistAction {
+    ) -> DecoderGateAction {
         guard let record else { return .allow }
         guard record.consecutiveInitFailures < permanentAfter else { return .drop }
         return nowNs &- record.lastFailureNs > cooldownNs ? .allow : .drop
@@ -295,7 +295,7 @@ final class VoiceChannel: @unchecked Sendable {
         // Drop our own loopback if the network somehow returned it.
         guard parsed.ssrc != localSSRC else { return }
         let now = DispatchTime.now().uptimeNanoseconds
-        guard case .allow = Self.blacklistAction(record: decoderFailures[parsed.ssrc], nowNs: now) else {
+        guard case .allow = Self.decoderGateAction(record: decoderFailures[parsed.ssrc], nowNs: now) else {
             return
         }
 
@@ -430,7 +430,7 @@ final class VoiceChannel: @unchecked Sendable {
     }
 
     /// Failure bookkeeping. Init failures (no decoder cached yet) upsert
-    /// the cooldown record — the blacklist gate then swallows packets until
+    /// the cooldown record — the gate then swallows packets until
     /// the cooldown elapses, so this logs at most once per window. Decode
     /// (not init) failures keep the decoder; transient corruption is normal.
     private func recordDecodeFailure(for ssrc: UInt32, error: Error, nowNs: UInt64) {

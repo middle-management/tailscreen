@@ -4,48 +4,48 @@ import XCTest
 
 /// Unit tests for the voice-path resilience decisions. Pure functions, no
 /// tsnet, no audio hardware — the extract-the-decision pattern from
-/// `AdaptiveBitrateTests`. Covers the decoder-failure cooldown blacklist,
+/// `AdaptiveBitrateTests`. Covers the decoder-failure cooldown gate,
 /// wrap-aware sequence-gap concealment, adaptive jitter-buffer sizing, the
 /// clamp-log throttle, and the single-pass clamp helper.
 final class VoiceResilienceDecisionTests: XCTestCase {
     private let s: UInt64 = 1_000_000_000
 
-    // MARK: - blacklistAction
+    // MARK: - decoderGateAction
 
     private func record(failures: Int, lastNs: UInt64) -> VoiceChannel.DecoderFailureRecord {
         VoiceChannel.DecoderFailureRecord(consecutiveInitFailures: failures, lastFailureNs: lastNs)
     }
 
     func testAllowsWhenNoRecord() {
-        XCTAssertEqual(VoiceChannel.blacklistAction(record: nil, nowNs: 100 * s), .allow)
+        XCTAssertEqual(VoiceChannel.decoderGateAction(record: nil, nowNs: 100 * s), .allow)
     }
 
     func testDropsInsideCooldown() {
         let rec = record(failures: 1, lastNs: 100 * s)
-        XCTAssertEqual(VoiceChannel.blacklistAction(record: rec, nowNs: 101 * s), .drop)
+        XCTAssertEqual(VoiceChannel.decoderGateAction(record: rec, nowNs: 101 * s), .drop)
     }
 
     func testDropsExactlyAtCooldownBoundary() {
         // Cooldown must strictly elapse: `now - last > cooldown`.
         let rec = record(failures: 1, lastNs: 100 * s)
-        XCTAssertEqual(VoiceChannel.blacklistAction(record: rec, nowNs: 105 * s), .drop)
+        XCTAssertEqual(VoiceChannel.decoderGateAction(record: rec, nowNs: 105 * s), .drop)
     }
 
     func testAllowsRetryAfterCooldown() {
         let rec = record(failures: 1, lastNs: 100 * s)
         XCTAssertEqual(
-            VoiceChannel.blacklistAction(record: rec, nowNs: 105 * s + 1), .allow)
+            VoiceChannel.decoderGateAction(record: rec, nowNs: 105 * s + 1), .allow)
     }
 
     func testDropsPermanentlyAfterFailureLimit() {
         let rec = record(failures: VoiceChannel.decoderInitFailureLimit, lastNs: 100 * s)
         // Even long after the cooldown, permanent means permanent.
-        XCTAssertEqual(VoiceChannel.blacklistAction(record: rec, nowNs: 10_000 * s), .drop)
+        XCTAssertEqual(VoiceChannel.decoderGateAction(record: rec, nowNs: 10_000 * s), .drop)
     }
 
     func testOneBelowLimitStillRetries() {
         let rec = record(failures: VoiceChannel.decoderInitFailureLimit - 1, lastNs: 100 * s)
-        XCTAssertEqual(VoiceChannel.blacklistAction(record: rec, nowNs: 200 * s), .allow)
+        XCTAssertEqual(VoiceChannel.decoderGateAction(record: rec, nowNs: 200 * s), .allow)
     }
 
     // MARK: - gapAction

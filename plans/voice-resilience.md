@@ -88,16 +88,16 @@ struct DecoderFailureRecord: Equatable {
     var lastFailureNs: UInt64
 }
 
-enum BlacklistAction: Equatable { case allow, drop }
+enum DecoderGateAction: Equatable { case allow, drop }
 
 /// Pure: drop while inside the cooldown window; allow a retry once it
 /// elapses; drop forever after `permanentAfter` consecutive failures.
-static func blacklistAction(
+static func decoderGateAction(
     record: DecoderFailureRecord?,
     nowNs: UInt64,
     cooldownNs: UInt64 = 5_000_000_000,     // 5 s between retries
     permanentAfter: Int = 5                 // then give up for the session
-) -> BlacklistAction
+) -> DecoderGateAction
 ```
 
 Semantics: `nil` record → `.allow`. `consecutiveInitFailures >= permanentAfter` → `.drop` (permanent,
@@ -173,10 +173,10 @@ visible without 50 Hz spam.
 
 ## Implementation steps (ordered checklist)
 
-1. [x] `Sources/VoiceChannel.swift`: add `DecoderFailureRecord`, `BlacklistAction`, and
-   `static func blacklistAction(...)` (internal, not private — test seam convention per CLAUDE.md).
+1. [x] `Sources/VoiceChannel.swift`: add `DecoderFailureRecord`, `DecoderGateAction`, and
+   `static func decoderGateAction(...)` (internal, not private — test seam convention per CLAUDE.md).
 2. [x] Replace `brokenSSRCs: Set<UInt32>` (`:45`) with `decoderFailures: [UInt32: DecoderFailureRecord]`;
-   rewrite the gate at `:77` to call `blacklistAction`; on init-failure (`:91-97`) upsert the record
+   rewrite the gate at `:77` to call `decoderGateAction`; on init-failure (`:91-97`) upsert the record
    (increment + timestamp) and log once per transition; clear the record after the first successful
    decode for that SSRC. Update `reset()` (`:109-114`).
 3. [x] Add `GapAction` + `static func gapAction(lastSeq:newSeq:maxConcealFrames:)`; add per-SSRC
@@ -212,7 +212,7 @@ visible without 50 Hz spam.
 ## Testing strategy
 
 **CI-able pure-decision tests** (pattern: `AdaptiveBitrateTests` / `ViewerLifecycleDecisionTests`):
-- `blacklistAction`: allow when no record; drop inside cooldown; allow exactly after cooldown;
+- `decoderGateAction`: allow when no record; drop inside cooldown; allow exactly after cooldown;
   permanent after N consecutive failures; success clears (tested via VoiceChannel integration case).
 - `gapAction`: in-order; dup (`delta 0`); reordered-late; gap of 1..5 → conceal; gap of 6 →
   discontinuity; wraparound at 0xFFFF→0x0000 (mirror `RTPAudioTests.testSequenceWraparound`,
