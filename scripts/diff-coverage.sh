@@ -12,6 +12,16 @@
 #   base-ref       diff base (default origin/main); requires a full-history
 #                  checkout (fetch-depth: 0 on CI)
 #   threshold-pct  minimum covered % of changed executable lines (default 70)
+#
+# KNOWN SILENT-PASS PATHS (fine while the gate is warn-only; MUST become hard
+# failures when the CI step's flip-to-required TODO lands):
+#   1. `git diff … 2>/dev/null` below swallows errors (e.g. an unknown
+#      base-ref on a shallow checkout) and reads as "no changed lines" →
+#      exit 0. Required-mode should drop the 2>/dev/null and fail on git
+#      errors instead.
+#   2. The CI step exits 0 with a ::warning when the profdata/xctest bundle
+#      can't be located — a coverage-collection regression would silently
+#      disable the gate. Required-mode should fail there too.
 set -euo pipefail
 
 LCOV_FILE="${1:?usage: diff-coverage.sh <lcov-file> [base-ref] [threshold-pct]}"

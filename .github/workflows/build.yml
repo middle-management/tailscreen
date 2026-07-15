@@ -110,7 +110,10 @@ jobs:
         # informational (continue-on-error: true), same convention as the
         # `format` job: observe it across a few real PRs first, then flip
         # to required.
-        # TODO: drop `continue-on-error` once the gate is observed stable.
+        # TODO: drop `continue-on-error` once the gate is observed stable —
+        # and when flipping, also harden the silent exit-0 paths: the
+        # missing-profdata branch below warns-and-passes, and the script
+        # swallows git-diff errors (see scripts/diff-coverage.sh header).
         if: github.event_name == 'pull_request'
         continue-on-error: true
         env:

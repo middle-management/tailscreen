@@ -255,6 +255,13 @@ struct ScreenShareCaps: OptionSet, Sendable, Hashable {
     static let nack = ScreenShareCaps(rawValue: 1 << 0)
     /// Viewer sends periodic receiver reports; server pings for RTT.
     static let receiverReport = ScreenShareCaps(rawValue: 1 << 1)
+
+    /// Every defined capability bit, in one production-side list so
+    /// `WireByteRegistryTests` can assert its registry matches this exactly
+    /// (single-bit-ness + pairwise disjointness + count). A **new cap MUST be
+    /// appended here** in the same change that defines it — a cap that never
+    /// joins this list is invisible to the registry's teeth.
+    static let allKnown: [ScreenShareCaps] = [.nack, .receiverReport]
 }
 
 /// RTCP-RR-style receiver report payload (see `ScreenShareControlMessage`
@@ -294,9 +301,20 @@ struct RTPHeader {
     /// `AudioRTPDepacketizer.unpack` / `MultiCodecDepacketizer.ingest`, so
     /// they silently drop it (no torn video/audio).
     static let systemAudioPayloadType: UInt8 = 99
-    /// Reserved SSRC for the sharer's system-audio stream. SSRC spaces are
+    /// Every RTP payload type Tailscreen emits, in one production-side list
+    /// so `WireByteRegistryTests` can assert its registry table matches this
+    /// exactly (count + values + uniqueness). A **new payload type MUST be
+    /// appended here** in the same change that defines it — a PT constant
+    /// that never joins this list is invisible to the registry's teeth.
+    static let allPayloadTypes: [UInt8] = [
+        h264PayloadType, hevcPayloadType, aacPayloadType, systemAudioPayloadType
+    ]
+    /// Reserved SSRC for the sharer's voice (mic) stream. SSRC spaces are
     /// kept disjoint on purpose: sharer voice owns 0, system audio owns 1,
-    /// and viewer-assigned SSRCs start at 2 (see the server's allocation).
+    /// and viewer-assigned SSRCs start at `firstViewerSSRC` (see the
+    /// server's allocation). Pinned by `WireByteRegistryTests`.
+    static let sharerVoiceSSRC: UInt32 = 0
+    /// Reserved SSRC for the sharer's system-audio stream (see above).
     static let systemAudioSSRC: UInt32 = 1
     /// Lowest SSRC the server may assign to a viewer. SSRCs below it are
     /// reserved (sharer voice owns 0, system audio owns `systemAudioSSRC`);

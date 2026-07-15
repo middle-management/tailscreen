@@ -130,12 +130,31 @@ class AppState: ObservableObject {
         }
     }
 
-    /// Viewer IPs whose control request already fired an OS notification this
-    /// share. Keyed by IP (not TCP connectionID) so a reconnect-and-request
-    /// loop can't spam notifications — every reconnect is a fresh UUID, but
-    /// the source IP is the same non-spoofable anchor the admission gate
-    /// trusts. Cleared on `stopSharing`.
+    /// Viewer IPs whose *currently pending* control request already fired an
+    /// OS notification. Keyed by IP (not TCP connectionID) so parallel
+    /// connections and refreshes of a still-pending request collapse to one
+    /// notification — the source IP is the same non-spoofable anchor the
+    /// admission gate trusts. IPs are pruned when their request leaves the
+    /// pending snapshot (deny/grant/release/disconnect), so a genuine
+    /// re-request notifies again; see `controlRequestNotificationDecision`.
+    /// Cleared on `stopSharing`.
     private var notifiedControlRequestIPs: Set<String> = []
+
+    /// Highest grant-change generation applied so far (see the server's
+    /// `onControlGrantChanged` doc). Reset when a new server is wired up and
+    /// on `stopSharing`.
+    private var lastControlGrantGeneration: UInt64 = 0
+
+    /// True when a grant-change notification carries a generation older than
+    /// one already applied — the MainActor hop can reorder deliveries, and a
+    /// stale nil snapshot applied last would unregister the ⌃⌥. panic hotkey
+    /// while a grant is live. Equal generations are NOT stale: two racing
+    /// notifies can legitimately observe the same (generation, snapshot)
+    /// pair, and re-applying it is idempotent. Pure, for
+    /// `RemoteControlPolicyTests`.
+    nonisolated static func isStaleGrantNotification(generation: UInt64, lastApplied: UInt64) -> Bool {
+        generation < lastApplied
+    }
 
     /// User preference: park new viewers in a pending state and require
     /// explicit Accept/Deny before they see video. Persisted to
@@ -897,14 +916,26 @@ class AppState: ObservableObject {
                     }
                 }
 
-                srv.onControlGrantChanged = { [weak self] grant in
+                lastControlGrantGeneration = 0  // fresh server, fresh counter
+                srv.onControlGrantChanged = { [weak self] generation, grant in
                     Task { @MainActor [weak self] in
-                        self?.controlGrantee = grant
+                        guard let self else { return }
+                        // The Task hop can reorder deliveries; a stale nil
+                        // snapshot landing after a fresh grant would strand
+                        // the panic hotkey unregistered. Apply only
+                        // monotonically newer generations.
+                        guard
+                            !Self.isStaleGrantNotification(
+                                generation: generation,
+                                lastApplied: self.lastControlGrantGeneration)
+                        else { return }
+                        self.lastControlGrantGeneration = generation
+                        self.controlGrantee = grant
                         // Grant-scoped ⌃⌥. panic hotkey: register while a
                         // grant is live, unregister the moment it clears.
                         // Revoke/stop/disconnect all funnel through this
                         // callback, so no extra unregister sites are needed.
-                        self?.syncRevokeControlHotkey(grantActive: grant != nil)
+                        self.syncRevokeControlHotkey(grantActive: grant != nil)
                     }
                 }
 
@@ -938,7 +969,7 @@ class AppState: ObservableObject {
                 // Start playback engine immediately so the sharer can hear
                 // viewers without first toggling their own mic on.
                 do {
-                    let voice = try VoiceChannel(localSSRC: 0) { [weak srv] packet in
+                    let voice = try VoiceChannel(localSSRC: RTPHeader.sharerVoiceSSRC) { [weak srv] packet in
                         srv?.sendAudioRTP(packet)
                     }
                     self.voiceChannel = voice
@@ -1042,6 +1073,7 @@ class AppState: ObservableObject {
         controlRequests = []
         controlGrantee = nil
         revokeControlHotkey = nil
+        lastControlGrantGeneration = 0
         notifiedControlRequestIPs.removeAll()
         notifiedViewerIDs.removeAll()
         pendingPreApprovedIPs.removeAll()
@@ -2360,16 +2392,25 @@ class AppState: ObservableObject {
     // MARK: - Remote control (sharer side)
 
     /// Pure notification-dedupe decision: which of `requests` should fire an
-    /// OS notification, given the IPs already notified this share. One
-    /// notification per viewer **IP** per share — connectionID-keyed dedupe
-    /// was spammable, because every reconnect mints a fresh UUID. The pending
-    /// row in the popover still shows every live request; only the
-    /// notification is deduped. Extracted for `RemoteControlPolicyTests`.
+    /// OS notification, given the IPs already notified. One notification per
+    /// viewer **IP** per *pending episode* — connectionID-keyed dedupe was
+    /// spammable, because every reconnect mints a fresh UUID; keying by IP
+    /// collapses parallel connections and refreshes of a still-pending
+    /// request into a single notification. An IP whose request has left the
+    /// pending snapshot (denied, granted, released, or disconnected) is
+    /// pruned, so a *genuine* re-request notifies again — the same
+    /// forget-on-leave semantics as `notifiedViewerIDs` in
+    /// `handleViewersChanged`. The residual reconnect-loop exposure (drop
+    /// connection, re-request, repeat) is accepted; the hard stop for that
+    /// is the "Allow control requests" toggle. The pending row in the
+    /// popover still shows every live request; only the notification is
+    /// deduped. Extracted for `RemoteControlPolicyTests`.
     nonisolated static func controlRequestNotificationDecision(
         requests: [ControlRequestInfo],
         previouslyNotifiedIPs: Set<String>
     ) -> (notify: [ControlRequestInfo], notifiedIPs: Set<String>) {
-        var notifiedIPs = previouslyNotifiedIPs
+        // Forget IPs with no live request so their next ask re-notifies.
+        var notifiedIPs = previouslyNotifiedIPs.intersection(requests.map(\.viewerIP))
         var notify: [ControlRequestInfo] = []
         for request in requests where !notifiedIPs.contains(request.viewerIP) {
             notifiedIPs.insert(request.viewerIP)

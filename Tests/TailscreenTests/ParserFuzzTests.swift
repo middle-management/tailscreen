@@ -248,8 +248,13 @@ struct ParserFuzzHarness {
             var rng = SeededRNG(seed: caseSeed)
             let depacketizer = MultiCodecDepacketizer()
             var emitted: [VideoAccessUnit] = []
-            for _ in 0..<20 {
-                let packet = randomData(count: Int.random(in: 0...1500, using: &rng), using: &rng)
+            for j in 0..<20 {
+                var packet = randomData(count: Int.random(in: 0...1500, using: &rng), using: &rng)
+                if j % 2 == 1 {
+                    // Re-based slice (non-zero startIndex): ingest must be
+                    // slice-safe, same as the header decoders.
+                    packet = (Data([0xEE]) + packet).dropFirst()
+                }
                 if let au = depacketizer.ingest(packet) { emitted.append(au) }
             }
             assertAUsSane(emitted, context: "random-bytes seed=\(caseSeed)")
@@ -273,7 +278,10 @@ struct ParserFuzzHarness {
             let h264 = H264Depacketizer()
             let h265 = H265Depacketizer()
             var emitted: [VideoAccessUnit] = []
-            for packet in packets {
+            for (j, original) in packets.enumerated() {
+                // Alternate zero-based and re-based-slice forms so both
+                // codec ingest paths get exercised with non-zero startIndex.
+                let packet = j % 2 == 1 ? (Data([0xEE]) + original).dropFirst() : original
                 if let au = h264.ingest(packet) { emitted.append(au) }
                 if let au = h265.ingest(packet) { emitted.append(au) }
             }
@@ -288,10 +296,12 @@ struct ParserFuzzHarness {
         let depacketizer = MultiCodecDepacketizer()
         var emitted: [VideoAccessUnit] = []
         for (i, packet) in packets.enumerated() {
-            // Every 3rd packet arrives truncated at a rotating cut point.
+            // Every 3rd packet arrives truncated at a rotating cut point —
+            // as a re-based slice, so truncation and slice-safety compound.
             if i % 3 == 0 {
                 let cut = (i / 3) % max(1, packet.count)
-                if let au = depacketizer.ingest(Data(packet.prefix(cut))) { emitted.append(au) }
+                let truncatedSlice = (Data([0xEE]) + packet.prefix(cut)).dropFirst()
+                if let au = depacketizer.ingest(truncatedSlice) { emitted.append(au) }
             }
             if let au = depacketizer.ingest(packet) { emitted.append(au) }
         }

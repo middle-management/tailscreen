@@ -80,7 +80,7 @@ final class ScreenShareRemoteControlTests: XCTestCase {
         server.onControlRequestsChanged = { requests in
             if let first = requests.first { box.setRequestID(first.id) }
         }
-        server.onControlGrantChanged = { grant in box.setGrantActive(grant != nil) }
+        server.onControlGrantChanged = { _, grant in box.setGrantActive(grant != nil) }
         server.onInputEventForTesting = { _ in box.bumpInput() }
 
         try await server.start(

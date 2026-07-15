@@ -18,9 +18,9 @@ import Foundation
 /// - **Duplicate inflation.** Duplicates (and re-deliveries of already
 ///   counted seqs) incremented `received` every time, masking further loss
 ///   exactly when the congestion controller most needs truth. Arrivals are
-///   now deduplicated against a sliding 1024-bit window over the extended
-///   sequence space (matching the reorder window's scale): only the *first*
-///   arrival of a seq counts. A served NACK retransmit **is** the first
+///   now deduplicated against a sliding bit-window over the extended
+///   sequence space (`dedupeWindowBits`, sized to the server's retransmit
+///   horizon): only the *first* arrival of a seq counts. A served NACK retransmit **is** the first
 ///   arrival of its seq and still counts as received — precisely RFC 3550's
 ///   intent, and what lets `nextCongestionDecision` see NACK-recovered loss
 ///   as recovered.
@@ -28,8 +28,14 @@ import Foundation
 /// The 20-byte wire layout (`ScreenShareControlMessage.encodeReceiverReport`)
 /// is untouched; only the reported values become truthful.
 struct RRAccounting: Sendable {
-    /// Sliding dedupe window, in packets, over the extended-seq space.
-    static let dedupeWindowBits = 1024
+    /// Sliding dedupe window, in packets, over the extended-seq space. Sized
+    /// to comfortably cover the retransmit horizon: the server's ring keeps
+    /// ~1 s of packets and the re-NACK tick is ~1 Hz, so a served retransmit
+    /// can legitimately land thousands of packets behind `highestExt` at high
+    /// bitrates (1024 was ≈ 310 ms at 32 Mbps — late fills fell off the
+    /// window, were ignored, and biased fracLostQ8 UP, triggering needless
+    /// bitrate cuts). 4096 packets ≈ 1.2 s at that rate; 64 UInt64 words.
+    static let dedupeWindowBits = 4096
     private static let wordCount = dedupeWindowBits / 64
 
     /// Extended sequence number (monotone across 16-bit wraps) of the highest
@@ -51,6 +57,14 @@ struct RRAccounting: Sendable {
     /// Map a 16-bit sequence number into the extended space, choosing the
     /// cycle that lands nearest `near` (wrap-aware). Pure; may return a
     /// negative value for a straggler that precedes the session start.
+    ///
+    /// Limitation (accepted): a *forward* jump of more than 32768 packets is
+    /// indistinguishable from a backward straggler in 16-bit space, so it
+    /// extends backward and the arrival is ignored; the accounting self-heals
+    /// on the next in-range packet. RFC 3550's MAX_DROPOUT pattern (treat a
+    /// huge jump as a stream restart and re-baseline) is the future fix if
+    /// real streams ever hit this — ours can't today (the server never skips
+    /// that far within one session).
     static func extend(seq: UInt16, near: Int64) -> Int64 {
         let cycleBase = (near >> 16) << 16
         var best = cycleBase + Int64(seq)

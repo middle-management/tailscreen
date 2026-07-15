@@ -116,9 +116,9 @@ final class RRAccountingTests: XCTestCase {
     func testStragglerOlderThanWindowIsIgnored() throws {
         var acc = RRAccounting()
         acc.observe(seq: 5000)
-        // 2000 is far outside the 1024-packet dedupe window behind 5000; its
+        // 500 is outside the 4096-packet dedupe window behind 5000; its
         // window slot belongs to a newer seq, so it must not count.
-        acc.observe(seq: 2000)
+        acc.observe(seq: 500)
         let report = try XCTUnwrap(acc.makeReport())
         XCTAssertEqual(report.extHighestSeq, 5000)
         XCTAssertEqual(report.fracLostQ8, 0, "expected = received = 1 (baseline only)")
@@ -146,14 +146,38 @@ final class RRAccountingTests: XCTestCase {
         var acc = RRAccounting()
         acc.observe(seq: 0)
         _ = acc.makeReport()
-        // Jump forward exactly one window: seq 1024 maps to slot 0 (same as
+        // Jump forward exactly one window: seq 4096 maps to slot 0 (same as
         // seq 0). Without the range-clear it would read as "already seen".
-        acc.observe(seq: 1024)
+        acc.observe(seq: UInt16(RRAccounting.dedupeWindowBits))
         let report = try XCTUnwrap(acc.makeReport())
-        // expected = 1024 (1…1024), received = 1 → heavy loss, but the key
+        // expected = 4096 (1…4096), received = 1 → heavy loss, but the key
         // point is the arrival was COUNTED (received = 1, not 0):
-        // lost = 1023 → 1023 × 256 / 1024 = 255.
+        // lost = 4095 → 4095 × 256 / 4096 = 255.
         XCTAssertEqual(report.fracLostQ8, 255)
-        XCTAssertEqual(report.extHighestSeq, 1024)
+        XCTAssertEqual(report.extHighestSeq, UInt32(RRAccounting.dedupeWindowBits))
+    }
+
+    func testLateFillBeyondOldWindowStillCounts() throws {
+        // The dedupe window must cover the server's retransmit horizon: a
+        // served NACK fill can land far behind `highest` at high bitrates.
+        // Here 20 packets go missing, the stream runs ~1900 packets past
+        // them, and the retransmits then arrive >1024 behind highest — under
+        // the old 1024-packet window they were ignored (counted as lost);
+        // under the 4096 window they count and the interval reports clean.
+        var acc = RRAccounting()
+        for seq in 0..<100 {
+            acc.observe(seq: UInt16(seq))
+        }
+        for seq in 120..<2048 {  // 100…119 lost in transit
+            acc.observe(seq: UInt16(seq))
+        }
+        for seq in 100..<120 {  // …and served by retransmission, late
+            acc.observe(seq: UInt16(seq))
+        }
+        let report = try XCTUnwrap(acc.makeReport())
+        // expected = 2048, received = 2048 → no loss. With the fills dropped
+        // (old window) this reported 20 lost → fracLostQ8 = 2, not 0.
+        XCTAssertEqual(report.fracLostQ8, 0, "late fills within the window must count as received")
+        XCTAssertEqual(report.extHighestSeq, 2047)
     }
 }

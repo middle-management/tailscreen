@@ -232,6 +232,12 @@ final class ScreenShareProtocolTests: XCTestCase {
     /// or delta fields must all reject to nil. Without this, a NaN coordinate
     /// would reach `RemoteControlMapping.globalPoint` (which now defends
     /// itself too — belt and braces, see `RemoteControlMappingTests`).
+    ///
+    /// The quoted-string variants (`"NaN"`, `"Infinity"`, `"-Infinity"`) are
+    /// the rows that actually pin the *strategy*: the bare-token forms are
+    /// invalid JSON and reject under ANY strategy, but the quoted forms would
+    /// start decoding the moment someone "improves" the decoder with
+    /// `.convertFromString(...)` — so those rows are what turn red.
     func testInputEventNonConformingFloatsRejectToNil() throws {
         let hostilePayloads = [
             #"{"mouseMove":{"x":NaN,"y":0.5}}"#,
@@ -239,9 +245,14 @@ final class ScreenShareProtocolTests: XCTestCase {
             #"{"mouseMove":{"x":Infinity,"y":0.5}}"#,
             #"{"mouseMove":{"x":-Infinity,"y":0.5}}"#,
             #"{"mouseMove":{"x":1e999,"y":0.5}}"#,
+            #"{"mouseMove":{"x":"NaN","y":0.5}}"#,
+            #"{"mouseMove":{"x":"Infinity","y":0.5}}"#,
+            #"{"mouseMove":{"x":0.5,"y":"-Infinity"}}"#,
             #"{"mouseDown":{"x":NaN,"y":0.5,"button":"left"}}"#,
+            #"{"mouseDown":{"x":"NaN","y":0.5,"button":"left"}}"#,
             #"{"mouseUp":{"x":0.5,"y":Infinity,"button":"right"}}"#,
             #"{"scroll":{"x":0.5,"y":0.5,"deltaX":NaN,"deltaY":0}}"#,
+            #"{"scroll":{"x":0.5,"y":0.5,"deltaX":"NaN","deltaY":0}}"#,
             #"{"scroll":{"x":0.5,"y":0.5,"deltaX":0,"deltaY":1e999}}"#
         ]
         for hostile in hostilePayloads {

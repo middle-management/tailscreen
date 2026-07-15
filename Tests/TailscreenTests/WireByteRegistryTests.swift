@@ -22,6 +22,14 @@ import XCTest
 /// pipes (both use 0x01–0x05 and 0xFF). Asserting cross-channel uniqueness
 /// would institutionalize a false invariant — see
 /// `testTCPAndUDPSpacesAreDisjointOnPurpose`.
+///
+/// Known limit: enum-backed channels get real exhaustiveness via
+/// `CaseIterable`, but non-enum constants (payload types, caps bits, SSRCs)
+/// can only be as exhaustive as the production-side `allPayloadTypes` /
+/// `ScreenShareCaps.allKnown` lists this test cross-checks — a new constant
+/// that never joins its production list, or a raw byte literal written
+/// straight into wire code, bypasses the registry entirely. Reviews should
+/// treat any new wire literal without a registry row as a defect.
 final class WireByteRegistryTests: XCTestCase {
     /// One pinned row: the constant's source-level case name and its wire value.
     private struct WireRow {
@@ -182,20 +190,32 @@ final class WireByteRegistryTests: XCTestCase {
         // uniqueness here means bit-disjointness, not byte-distinctness.
         // NOTE: the XOR-FEC plan reserves the next cap bit; coordinate before
         // taking 1 << 2.
-        let caps: [(name: String, value: ScreenShareCaps)] = [
+        let pinned: [(name: String, value: ScreenShareCaps)] = [
             ("nack", .nack),
             ("receiverReport", .receiverReport)
         ]
         XCTAssertEqual(ScreenShareCaps.nack.rawValue, 1 << 0)
         XCTAssertEqual(ScreenShareCaps.receiverReport.rawValue, 1 << 1)
-        for (i, a) in caps.enumerated() {
+        // Exhaustiveness teeth (as much as Swift allows for an OptionSet):
+        // the production-side `allKnown` list must match this registry table
+        // exactly. A new cap MUST be appended to `allKnown` when defined —
+        // then this count/mask check fails until it gets a registry row.
+        XCTAssertEqual(
+            ScreenShareCaps.allKnown.count, pinned.count,
+            "ScreenShareCaps.allKnown and the registry table disagree — "
+                + "add the new cap a registry row (and never renumber a shipped bit).")
+        XCTAssertEqual(
+            ScreenShareCaps.allKnown.reduce(ScreenShareCaps()) { $0.union($1) }.rawValue,
+            pinned.reduce(UInt8(0)) { $0 | $1.value.rawValue },
+            "combined cap mask drifted from the registry table")
+        for (i, a) in ScreenShareCaps.allKnown.enumerated() {
             XCTAssertEqual(
-                a.value.rawValue.nonzeroBitCount, 1,
-                "cap \(a.name) must be a single bit")
-            for b in caps.dropFirst(i + 1) {
+                a.rawValue.nonzeroBitCount, 1,
+                "cap #\(i) in allKnown must be a single bit")
+            for b in ScreenShareCaps.allKnown.dropFirst(i + 1) {
                 XCTAssertEqual(
-                    a.value.rawValue & b.value.rawValue, 0,
-                    "caps \(a.name) and \(b.name) share a bit — a new cap must not shadow an old one")
+                    a.rawValue & b.rawValue, 0,
+                    "two caps in allKnown share a bit — a new cap must not shadow an old one")
             }
         }
     }
@@ -272,37 +292,44 @@ final class WireByteRegistryTests: XCTestCase {
     // MARK: - Channel E: RTP payload types + reserved SSRCs
 
     func testChannelERTPPayloadTypes() {
-        let pts: [(name: String, value: UInt8)] = [
-            ("h264PayloadType", RTPHeader.h264PayloadType),
-            ("hevcPayloadType", RTPHeader.hevcPayloadType),
-            ("aacPayloadType", RTPHeader.aacPayloadType),
-            ("systemAudioPayloadType", RTPHeader.systemAudioPayloadType)
+        let pinned: [(name: String, value: UInt8)] = [
+            ("h264PayloadType", 96),
+            ("hevcPayloadType", 97),
+            ("aacPayloadType", 98),
+            ("systemAudioPayloadType", 99)
         ]
         XCTAssertEqual(RTPHeader.h264PayloadType, 96)
         XCTAssertEqual(RTPHeader.hevcPayloadType, 97)
         XCTAssertEqual(RTPHeader.aacPayloadType, 98)
         XCTAssertEqual(RTPHeader.systemAudioPayloadType, 99)
+        // Exhaustiveness teeth: the production-side `allPayloadTypes` list
+        // must match this registry table exactly (a new PT MUST be appended
+        // to that list when defined — then this fails until it's pinned).
+        XCTAssertEqual(
+            RTPHeader.allPayloadTypes, pinned.map(\.value),
+            "RTPHeader.allPayloadTypes and the registry table disagree — pin the new PT "
+                + "here (and never renumber a shipped one).")
         var claimants: [UInt8: String] = [:]
-        for pt in pts {
+        for (index, pt) in RTPHeader.allPayloadTypes.enumerated() {
+            let name = index < pinned.count ? pinned[index].name : "allPayloadTypes[\(index)]"
             XCTAssertTrue(
-                (96...127).contains(pt.value),
-                "\(pt.name) = \(pt.value) is outside the RTP dynamic payload-type range 96...127")
-            if let existing = claimants[pt.value] {
-                XCTFail("\(existing) and \(pt.name) both claim PT \(pt.value) — pick the next free value")
+                (96...127).contains(pt),
+                "\(name) = \(pt) is outside the RTP dynamic payload-type range 96...127")
+            if let existing = claimants[pt] {
+                XCTFail("\(existing) and \(name) both claim PT \(pt) — pick the next free value")
             }
-            claimants[pt.value] = pt.name
+            claimants[pt] = name
         }
     }
 
     func testChannelEReservedSSRCOrdering() {
-        // Sharer voice owns SSRC 0 (the server builds its VoiceChannel with
-        // localSSRC: 0), system audio owns the reserved SSRC 1, and viewer
-        // SSRCs are allocated from firstViewerSSRC up. The ordering invariant
-        // is what keeps the three spaces disjoint.
-        let sharerVoiceSSRC: UInt32 = 0
+        // Sharer voice owns SSRC 0, system audio owns 1, and viewer SSRCs
+        // are allocated from firstViewerSSRC up. The ordering invariant is
+        // what keeps the three spaces disjoint.
+        XCTAssertEqual(RTPHeader.sharerVoiceSSRC, 0)
         XCTAssertEqual(RTPHeader.systemAudioSSRC, 1)
         XCTAssertEqual(RTPHeader.firstViewerSSRC, 2)
-        XCTAssertLessThan(sharerVoiceSSRC, RTPHeader.systemAudioSSRC)
+        XCTAssertLessThan(RTPHeader.sharerVoiceSSRC, RTPHeader.systemAudioSSRC)
         XCTAssertLessThan(RTPHeader.systemAudioSSRC, RTPHeader.firstViewerSSRC)
     }
 
