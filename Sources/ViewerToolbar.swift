@@ -101,9 +101,8 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
     private func updateStatsIcon(degraded: Bool) {
         let symbol = degraded ? "exclamationmark.triangle" : "chart.bar.xaxis"
         statsToolbarItem?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
-        statsToolbarItem?.toolTip = degraded
-            ? L("Connection degraded — click for stats")
-            : L("Toggle stream stats overlay")
+        let tip = degraded ? L("Connection degraded — click for stats") : L("Toggle stream stats overlay")
+        statsToolbarItem?.toolTip = tip
     }
 
     // MARK: - NSToolbarDelegate
