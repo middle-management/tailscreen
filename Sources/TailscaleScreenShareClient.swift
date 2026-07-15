@@ -652,20 +652,9 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                         // XOR parity for a recent media group. Solvable only
                         // when exactly one member is missing; the recovered
                         // packet then enters the same ingest path as a
-                        // received one. Ignored unless `.fec` negotiated
-                        // (decodeFEC bounds-checks the untrusted payload).
-                        if negotiatedCaps.contains(.fec),
-                            let parity = ScreenShareControlMessage.decodeFEC(datagram)
-                        {
-                            let recovery = fecBuffer.noteParity(
-                                baseSeq: parity.baseSeq,
-                                count: parity.count,
-                                body: parity.body,
-                                nowNs: DispatchTime.now().uptimeNanoseconds)
-                            if let recovery {
-                                let deliveredAU = await processRecoveredPacket(recovery)
-                                if deliveredAU { awaitingApproval = false }
-                            }
+                        // received one.
+                        if await handleFECParityDatagram(datagram) {
+                            awaitingApproval = false
                         }
                     case .helloDenied:
                         logger.log("Receive: HELLO_DENY — the sharer declined this viewer")
@@ -717,12 +706,12 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                         // FEC: retain the packet for parity solves and check
                         // whether it completed a group whose parity arrived
                         // first (parity can outrun a reordered member).
-                        if negotiatedCaps.contains(.fec),
+                        if negotiatedCaps.contains(.fec) {
                             let recovery = fecBuffer.noteMedia(
                                 seq: videoHeader.sequenceNumber, packet: datagram, nowNs: nowNs)
-                        {
-                            let deliveredAU = await processRecoveredPacket(recovery)
-                            if deliveredAU { awaitingApproval = false }
+                            if let recovery, await processRecoveredPacket(recovery) {
+                                awaitingApproval = false
+                            }
                         }
                     }
                 }
@@ -826,6 +815,22 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         }
         nackScheduler.cancelGap(seq: recovery.seq)
         return await ingestVideoPacket(recovery.packet)
+    }
+
+    /// Handle one inbound FEC parity datagram (0x0D): bounds-checked decode
+    /// (untrusted UDP — truncated/garbage rejects cleanly), group solve, and
+    /// the recovered-packet flow. Returns true when a recovery completed an
+    /// AU. No-op unless `.fec` was negotiated.
+    private func handleFECParityDatagram(_ datagram: Data) async -> Bool {
+        guard negotiatedCaps.contains(.fec) else { return false }
+        guard let parity = ScreenShareControlMessage.decodeFEC(datagram) else { return false }
+        let recovery = fecBuffer.noteParity(
+            baseSeq: parity.baseSeq,
+            count: parity.count,
+            body: parity.body,
+            nowNs: DispatchTime.now().uptimeNanoseconds)
+        guard let recovery else { return false }
+        return await processRecoveredPacket(recovery)
     }
 
     private func deliverAU(_ au: VideoAccessUnit) {

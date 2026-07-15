@@ -477,9 +477,10 @@ final class RTPLossyChannelTests: XCTestCase {
         for frame in frames {
             for packet in frame { schedule.append(.media(packet)) }
             for range in FECCodec.groupRanges(templateCount: frame.count, groupSize: config.groupSize) {
-                if config.singleLossPerGroupRate > 0,
-                    Double.random(in: 0..<1, using: &rng) < config.singleLossPerGroupRate
-                {
+                let dropOne =
+                    config.singleLossPerGroupRate > 0
+                    && Double.random(in: 0..<1, using: &rng) < config.singleLossPerGroupRate
+                if dropOne {
                     let victim = range.lowerBound + Int(rng.next() % UInt64(range.count))
                     let seq = Self.seqOf(frame[victim])
                     if seq != firstSeq { droppedSeqs.insert(seq) }

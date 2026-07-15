@@ -113,7 +113,7 @@ final class FECOverheadDecisionTests: XCTestCase {
             "good": Sample(rttNs: 60 * ms, residualLossQ8: 0, recovered: 0, fecCapable: true),
             "throttled": Sample(
                 rttNs: 400 * ms, residualLossQ8: 60, recovered: 40, fecCapable: true, throttled: true),
-            "legacy": Sample(rttNs: 500 * ms, residualLossQ8: 80, recovered: 0, fecCapable: false),
+            "legacy": Sample(rttNs: 500 * ms, residualLossQ8: 80, recovered: 0, fecCapable: false)
         ]
         let inputs = Server.fecDecisionInputs(samples: samples, expectedPackets: 1000, state: State())
         XCTAssertEqual(inputs.rttNs, 60 * ms, "throttled/legacy RTT must not leak into the decision")
@@ -125,7 +125,7 @@ final class FECOverheadDecisionTests: XCTestCase {
     func testWorstOfEligibleViewersFeedsDecision() {
         let samples: [String: Sample] = [
             "ok": Sample(rttNs: 80 * ms, residualLossQ8: 1, recovered: 0, fecCapable: true),
-            "bad": Sample(rttNs: 250 * ms, residualLossQ8: 9, recovered: 25, fecCapable: true),
+            "bad": Sample(rttNs: 250 * ms, residualLossQ8: 9, recovered: 25, fecCapable: true)
         ]
         let inputs = Server.fecDecisionInputs(samples: samples, expectedPackets: 800, state: State())
         XCTAssertEqual(inputs.rttNs, 250 * ms)

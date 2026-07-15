@@ -17,7 +17,7 @@ final class FECCodecTests: XCTestCase {
             Data([0x65] + (0..<400).map { UInt8($0 & 0xFF) }),
             Data([0x41] + (0..<900).map { UInt8(($0 &* 7) & 0xFF) }),
             Data([0x41] + (0..<2500).map { UInt8(($0 &* 13) & 0xFF) }),  // FU-A fragments
-            Data([0x41, 0x01, 0x02]),
+            Data([0x41, 0x01, 0x02])
         ]
         return packetizer.packetize(nals: nals, timestamp: ts, ssrc: ssrc, startSequence: startSeq)
     }
@@ -27,7 +27,7 @@ final class FECCodecTests: XCTestCase {
         let nals = [
             Data([19 << 1, 0x01] + (0..<300).map { UInt8($0 & 0xFF) }),
             Data([1 << 1, 0x01] + (0..<2000).map { UInt8(($0 &* 3) & 0xFF) }),
-            Data([1 << 1, 0x01] + (0..<50).map { UInt8(($0 &* 11) & 0xFF) }),
+            Data([1 << 1, 0x01] + (0..<50).map { UInt8(($0 &* 11) & 0xFF) })
         ]
         return packetizer.packetize(nals: nals, timestamp: ts, ssrc: ssrc, startSequence: startSeq)
     }

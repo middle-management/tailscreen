@@ -15,7 +15,7 @@ final class FECGroupBufferTests: XCTestCase {
         let nals = [
             Data([0x65] + (0..<600).map { UInt8($0 & 0xFF) }),
             Data([0x41] + (0..<2400).map { UInt8(($0 &* 3) & 0xFF) }),
-            Data([0x41] + (0..<200).map { UInt8(($0 &* 9) & 0xFF) }),
+            Data([0x41] + (0..<200).map { UInt8(($0 &* 9) & 0xFF) })
         ]
         return packetizer.packetize(nals: nals, timestamp: ts, ssrc: ssrc, startSequence: startSeq)
     }
