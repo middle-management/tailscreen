@@ -554,8 +554,8 @@ class AppState: ObservableObject {
                                 reason: "SCStream userStopped: \(error?.localizedDescription ?? "nil")")
                             return
                         }
-                        if let error,
-                            (error as NSError).domain == TailscaleScreenShareServer.receiveLoopErrorDomain {
+                        let receiveLoopDomain = TailscaleScreenShareServer.receiveLoopErrorDomain
+                        if let error, (error as NSError).domain == receiveLoopDomain {
                             // The share's UDP control loop is dead — that's
                             // not something a fresh capture helper can fix,
                             // so skip the restart path and tear down.
