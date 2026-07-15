@@ -69,4 +69,26 @@ final class AdaptiveBitrateTests: XCTestCase {
     func testNoRecoveryAtBaseline() {
         XCTAssertNil(decide(plis: 0, current: baseline, elapsed: 30 * s))
     }
+
+    func testCeilingClampedBaselineDrivesFloorAndCut() {
+        // A 30 fps session with a 2 Mbps user ceiling: the server anchors
+        // baseline = min(w×h×bpp×fpsCap, ceiling). 1920×1080 × 0.08 bpp ×
+        // 30 fps ≈ 4.98 Mbps, clamped to the 2 Mbps ceiling.
+        let anchor = Int(Double(1920 * 1080) * 0.08 * 30.0)
+        XCTAssertGreaterThan(anchor, 2_000_000)
+        let clamped = min(anchor, 2_000_000)
+        // The floor derives from the clamped baseline, not the raw anchor:
+        // max(30 % of 2 Mbps, 500 kbps) = 600 kbps.
+        XCTAssertEqual(TransportTuning.adaptiveBitrateFloor(baseline: clamped), 600_000)
+        // Sustained loss cuts 25 % from the clamped ceiling.
+        XCTAssertEqual(
+            TailscaleScreenShareServer.nextAdaptiveBitrate(
+                worstPLIs: 3, current: clamped, baseline: clamped, elapsedSinceChangeNs: 5 * s),
+            1_500_000)
+        // And recovery caps at the clamped baseline, never the raw anchor.
+        XCTAssertEqual(
+            TailscaleScreenShareServer.nextAdaptiveBitrate(
+                worstPLIs: 0, current: 1_900_000, baseline: clamped, elapsedSinceChangeNs: 12 * s),
+            2_000_000)
+    }
 }

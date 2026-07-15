@@ -1,6 +1,6 @@
 # Quality settings pane — promote hardcoded encoder/transport constants to user-configurable
 
-> Status: proposed — this PR contains only the plan; implementation is a follow-up iteration.
+> Status: implemented in this PR.
 
 ## Problem & motivation
 
@@ -155,3 +155,17 @@ New `Section(L("Quality"))` in `SettingsView` between Viewers and Audio (:30-32)
 ## Estimated scope
 
 **M** — ~500-600 LOC: ~140 `QualitySettings` + store + env mapping, ~60 `TransportTuning`/`EncoderTuning` refactor, ~80 helper/spawn plumbing, ~40 server snapshot + ceiling, ~90 SettingsView + AppState, ~40 strings, ~150 tests. Two-commit structure recommended: (1) pure constants centralization (zero behavior change), (2) settings type + UI + plumbing.
+
+## Deviations
+
+The plan was written against an older `main`; three PRs (viewer zoom/pan, voice resilience, and assorted server/client work) landed since, so every `file:line` reference above has drifted — the implementation trusted symbol names over line numbers. Substantive deviations from the letter of the plan:
+
+- **Session snapshot is a lock, and the live ceiling is folded into it.** `sessionQuality` is an `OSAllocatedUnfairLock<QualitySettings>` (not a plain `let`) because `updateQualityCeiling` mutates its `maxBitrateBps` mid-share: the ceiling live-applies, so a helper *crash-restart* respawns with the ceiling the user last set (fps/codec remain frozen at share start, exactly as planned). A plain immutable snapshot would have respawned the helper with a stale ceiling after a mid-share Settings edit.
+- **Raw anchor stored separately.** The server keeps `anchoredBaselineBitrate` (the un-clamped `w×h×bpp×fpsCap` formula value) alongside the effective `baselineBitrate = min(anchor, ceiling)`, so *raising or removing* the ceiling mid-share can recompute the baseline without waiting for the next encoder reinit. The plan's sketch only described the min(); it needs the raw anchor retained to be reversible.
+- **`updateQualityCeiling` reuses `applyAdaptiveBitrate`** for the down-push (same bookkeeping + forced keyframe as an adaptive down-step) instead of hand-rolling the `setBitrate` push. A raised ceiling is not pushed immediately — the adaptive sweep recovers toward the new baseline at its usual +10 %/clean-window pace.
+- **`fromEnvironment` semantics**: unparseable values (garbage) leave the field at its default, as planned; values that parse but are out of range are `normalized()` (fps snaps *down* to the nearest of {15, 30, 60}; ceiling clamps to 500 kbps…50 Mbps) rather than discarded.
+- **The dead `floor` local** in `adaptiveBitrateSweep` (leftover from the `nextAdaptiveBitrate` extraction, one of the two duplicated floor sites the plan flagged) was deleted rather than centralized; the surviving site inside `nextAdaptiveBitrate` uses `TransportTuning.adaptiveBitrateFloor(baseline:)`.
+- **`sv.lproj` updated too.** The plan predates the Swedish catalog; per the repo's Localization rule, all new keys were added byte-for-byte to both `en.lproj` and `sv.lproj` (values translated). `"Codec"` already existed in both catalogs and was not duplicated.
+- **Naming**: the ceiling bounds live on `QualitySettings` as `minCeilingBps` / `maxCeilingBps` (a static named `maxBitrateBps` would collide with the instance property), plus `initialCeilingBps` (10 Mbps) installed when the user first enables "Limit bandwidth". `QualitySettings` also grew `preferredVideoCodec(forceH264:)` — the pure codec-resolution decision the helper uses, unit-tested for the forceH264-wins invariant.
+- **Store API** takes an injectable `UserDefaults` (`load(from:)` / `save(_:to:)`, defaulting to `.standard`) so the persistence round-trip is testable against a scratch suite, per the testing strategy.
+- **`ScreenCapture.start(filter:fps:)`** defaults `fps` to 60 so the picker-helper-side and any legacy callers are untouched; the capture-helper is the only caller that passes a non-default value.

@@ -208,7 +208,8 @@ final class VideoEncoder: @unchecked Sendable {
         // near-zero bits while busy frames spend up to the ceiling — the
         // right shape for screen sharing. If the encoder ignores Quality,
         // the ceiling alone still bounds bandwidth.
-        VTSessionSetProperty(newSession, key: kVTCompressionPropertyKey_Quality, value: EncoderTuning.quality as CFNumber)
+        VTSessionSetProperty(
+            newSession, key: kVTCompressionPropertyKey_Quality, value: EncoderTuning.quality as CFNumber)
 
         let bitrate = Self.computeBitrate(width: width, height: height, fps: Int(fps), bitsPerPixel: bitsPerPixel)
         Self.applyBitrate(bitrate, to: newSession)
