@@ -467,7 +467,8 @@ private struct SharingCard: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .help(appState.isSystemAudioOn ? L("Mute System Audio") : L("Share System Audio"))
+                .help(
+                    appState.isSystemAudioOn ? L("Mute System Audio") : L("Share System Audio"))
                 .accessibilityLabel(
                     appState.isSystemAudioOn ? L("Mute system audio") : L("Share system audio"))
                 .accessibilityHint(L("Shares your computer's audio with viewers"))

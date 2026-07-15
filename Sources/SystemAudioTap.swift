@@ -54,7 +54,8 @@ final class SystemAudioTap: @unchecked Sendable {
     /// the SCStream audio-output queue; stays off the MainActor so a busy main
     /// thread can never stall audio.
     func handle(_ sampleBuffer: CMSampleBuffer) {
-        guard let samples = Self.extractMonoFloat(sampleBuffer) else { return }
+        let samples = Self.extractMonoFloat(sampleBuffer)
+        guard !samples.isEmpty else { return }
         for frame in framer.append(samples) {
             do {
                 if let au = try encoder.encode(pcm: frame) {
@@ -70,8 +71,8 @@ final class SystemAudioTap: @unchecked Sendable {
     /// sample buffer. SCK is configured with `channelCount = 1`, so the buffer
     /// list carries a single mono Float32 buffer; we copy it into a Swift
     /// array before the retained block buffer goes out of scope.
-    static func extractMonoFloat(_ sb: CMSampleBuffer) -> [Float]? {
-        guard CMSampleBufferGetNumSamples(sb) > 0 else { return nil }
+    static func extractMonoFloat(_ sb: CMSampleBuffer) -> [Float] {
+        guard CMSampleBufferGetNumSamples(sb) > 0 else { return [] }
         var blockBuffer: CMBlockBuffer?
         // channelCount == 1 ⇒ a single mono buffer; access `mBuffers` directly
         // (the same pattern `AACCodec` uses) rather than the buffer-list
@@ -89,10 +90,10 @@ final class SystemAudioTap: @unchecked Sendable {
             flags: kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment,
             blockBufferOut: &blockBuffer
         )
-        guard status == noErr, blockBuffer != nil else { return nil }
-        guard let data = abl.mBuffers.mData else { return nil }
+        guard status == noErr, blockBuffer != nil else { return [] }
+        guard let data = abl.mBuffers.mData else { return [] }
         let frameCount = Int(abl.mBuffers.mDataByteSize) / MemoryLayout<Float>.size
-        guard frameCount > 0 else { return nil }
+        guard frameCount > 0 else { return [] }
         let ptr = data.assumingMemoryBound(to: Float.self)
         return Array(UnsafeBufferPointer(start: ptr, count: frameCount))
     }
