@@ -15,8 +15,11 @@ import Foundation
 /// stray byte in the stream easy to resync from (we just discard
 /// until the next valid type).
 enum CaptureHelperWire {
-    /// Helper → main message types.
-    enum OutType: UInt8 {
+    /// Helper → main message types. `CaseIterable` for the wire-byte
+    /// registry's exhaustiveness check (`WireByteRegistryTests`). This type
+    /// space is independent from `InType`'s — the two ride different pipes,
+    /// so values may legitimately overlap between the two enums.
+    enum OutType: UInt8, CaseIterable {
         /// Encoded H.264/HEVC access unit. Payload is AVCC-framed.
         case accessUnit = 0x01
         /// `[1 byte codec:0=H264 1=HEVC][4 bytes width BE][4 bytes height BE]
@@ -62,8 +65,10 @@ enum CaptureHelperWire {
         case fatal = 0xFF
     }
 
-    /// Main → helper message types.
-    enum InType: UInt8 {
+    /// Main → helper message types. `CaseIterable` for the wire-byte
+    /// registry (see `OutType`); overlap with `OutType` values is fine, the
+    /// spaces are disjoint by pipe direction.
+    enum InType: UInt8, CaseIterable {
         /// Force the next encoded frame to be a keyframe (PLI).
         case requestKeyframe = 0x01
         /// `[4 bytes bitrate BE]` — adaptive-bitrate sweep nudge.

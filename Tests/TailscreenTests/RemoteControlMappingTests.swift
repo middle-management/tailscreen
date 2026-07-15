@@ -44,6 +44,25 @@ final class RemoteControlMappingTests: XCTestCase {
         assertPoint(RemoteControlMapping.globalPoint(nx: -0.5, ny: -3.0, captureRect: rect), 10, 20)
     }
 
+    func testNonFiniteInputsMapAsZero() {
+        // Swift's min/max PROPAGATE NaN, so a plain clamp would emit a NaN
+        // CGPoint. globalPoint must not rely on the JSON decoder's
+        // non-conforming-float rejection two layers away: non-finite input
+        // maps as 0 (the captureRect origin), same policy as clampToInt32.
+        let rect = CGRect(x: 100, y: 200, width: 800, height: 600)
+        assertPoint(RemoteControlMapping.globalPoint(nx: .nan, ny: 0.5, captureRect: rect), 100, 500)
+        assertPoint(RemoteControlMapping.globalPoint(nx: 0.5, ny: .nan, captureRect: rect), 500, 200)
+        assertPoint(RemoteControlMapping.globalPoint(nx: .nan, ny: .nan, captureRect: rect), 100, 200)
+        assertPoint(
+            RemoteControlMapping.globalPoint(nx: .infinity, ny: -.infinity, captureRect: rect),
+            100, 200)
+        // And the results are always finite, whatever the input.
+        let point = RemoteControlMapping.globalPoint(
+            nx: .signalingNaN, ny: .infinity, captureRect: rect)
+        XCTAssertTrue(point.x.isFinite)
+        XCTAssertTrue(point.y.isFinite)
+    }
+
     // MARK: - boundingRect union (app-share scoping)
 
     func testBoundingRectUnionsWindowRects() {

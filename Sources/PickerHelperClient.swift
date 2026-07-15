@@ -99,9 +99,10 @@ enum PickerHelperClient {
     /// Read one framed payload (`[len:4 BE][bytes:len]`) off the pipe.
     /// Returns `nil` for `len == 0` (user cancelled) and for any read
     /// error / EOF — the caller treats both as "no selection". Matches
-    /// the picker helper's wire format exactly; if you change one
-    /// side, change the other.
-    private static func readFramed(_ handle: FileHandle) -> Data? {
+    /// the picker helper's wire format (`PickerHelperFraming`) exactly; if
+    /// you change one side, change the other. Internal (not private) so
+    /// `WireByteRegistryTests` can round-trip writer → reader.
+    static func readFramed(_ handle: FileHandle) -> Data? {
         guard let header = readExactly(handle, count: 4), header.count == 4 else {
             return nil
         }

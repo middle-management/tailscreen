@@ -31,6 +31,19 @@ struct SettingsView: View {
                 .foregroundStyle(.secondary)
             }
 
+            Section(L("Remote control")) {
+                Toggle(
+                    L("Allow control requests"),
+                    isOn: $appState.allowControlRequests)
+                Text(
+                    L(
+                        "Viewers can ask to control your Mac while you share; you still approve each request. Turn off to decline requests automatically and silence their notifications."
+                    )
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+
             Section(L("Remembered viewers")) {
                 if appState.viewerAccessPolicies.entries.isEmpty {
                     Text(L("Viewers you Always Allow or Deny & Block will appear here."))

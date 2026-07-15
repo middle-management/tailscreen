@@ -1,0 +1,49 @@
+name: Soak
+
+# Nightly long-run soak tier: the ParserFuzzTests harness at ~50× the PR
+# iteration budget plus the seeded LossyChannel impairment matrix (see
+# Tests/TailscreenTests/SoakTests.swift). Everything is deterministic — every
+# case derives its seed from its matrix coordinates, so a red nightly names
+# the exact reproducing configuration. `workflow_dispatch` for on-demand runs
+# (used once to validate the workflow itself).
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+jobs:
+  soak:
+    runs-on: macos-latest
+    # Budget guard: the run is tens of minutes; the runner default of 360
+    # minutes on a 10×-billed macOS runner would be an expensive hang.
+    timeout-minutes: 60
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+          cache-dependency-path: TailscaleKitPackage/upstream/libtailscale/go.sum
+      - name: Build libtailscale
+        run: make tailscale
+      - name: Run soak tests
+        # SoakTests self-skip without TAILSCREEN_SOAK=1, so PR CI and local
+        # `make test` never pay for the long run. Tee the console so a red
+        # nightly's reproducing seed/config survives as an artifact.
+        run: |
+          set -o pipefail
+          TAILSCREEN_SOAK=1 PKG_CONFIG_PATH="$PWD/TailscaleKitPackage" \
+            swift test --filter SoakTests 2>&1 | tee soak.log
+      - name: Upload soak log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soak-log
+          path: |
+            soak.log
+            .build/**/*.xcresult
+          if-no-files-found: warn
+          retention-days: 14

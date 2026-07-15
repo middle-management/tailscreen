@@ -112,10 +112,49 @@ class AppState: ObservableObject {
     /// capture live). Reset on disconnect.
     @Published var viewerControlState: ViewerControlState = .none
 
-    /// Second global hotkey (⌃⌥. by default) — an always-available panic
-    /// revoke of any live remote-control grant while sharing. Created in
-    /// `init` alongside the mic hotkey.
+    /// Second global hotkey (⌃⌥. by default) — a panic revoke of the live
+    /// remote-control grant. Grant-scoped: created when a grant appears and
+    /// destroyed when it clears (see `syncRevokeControlHotkey`), so idle
+    /// sessions and pure viewers don't swallow ⌃⌥. system-wide. Keeps hotkey
+    /// `id: 2` so it coexists with the mic toggle (see `GlobalHotkey`).
     private var revokeControlHotkey: GlobalHotkey?
+
+    /// User preference: whether viewers may ask for remote control at all.
+    /// Persisted via `RemoteControlDefaults` (defaults on); synced to the
+    /// live server so the toggle takes effect mid-share — when off, the
+    /// server declines `.controlRequest`s immediately with `.controlRevoked`.
+    @Published var allowControlRequests: Bool = RemoteControlDefaults.load() {
+        didSet {
+            RemoteControlDefaults.save(allowControlRequests)
+            server?.setAllowControlRequests(allowControlRequests)
+        }
+    }
+
+    /// Viewer IPs whose *currently pending* control request already fired an
+    /// OS notification. Keyed by IP (not TCP connectionID) so parallel
+    /// connections and refreshes of a still-pending request collapse to one
+    /// notification — the source IP is the same non-spoofable anchor the
+    /// admission gate trusts. IPs are pruned when their request leaves the
+    /// pending snapshot (deny/grant/release/disconnect), so a genuine
+    /// re-request notifies again; see `controlRequestNotificationDecision`.
+    /// Cleared on `stopSharing`.
+    private var notifiedControlRequestIPs: Set<String> = []
+
+    /// Highest grant-change generation applied so far (see the server's
+    /// `onControlGrantChanged` doc). Reset when a new server is wired up and
+    /// on `stopSharing`.
+    private var lastControlGrantGeneration: UInt64 = 0
+
+    /// True when a grant-change notification carries a generation older than
+    /// one already applied — the MainActor hop can reorder deliveries, and a
+    /// stale nil snapshot applied last would unregister the ⌃⌥. panic hotkey
+    /// while a grant is live. Equal generations are NOT stale: two racing
+    /// notifies can legitimately observe the same (generation, snapshot)
+    /// pair, and re-applying it is idempotent. Pure, for
+    /// `RemoteControlPolicyTests`.
+    nonisolated static func isStaleGrantNotification(generation: UInt64, lastApplied: UInt64) -> Bool {
+        generation < lastApplied
+    }
 
     /// User preference: park new viewers in a pending state and require
     /// explicit Accept/Deny before they see video. Persisted to
@@ -517,16 +556,12 @@ class AppState: ObservableObject {
             }
         }
 
-        // ⌃⌥. — panic revoke of any live remote-control grant, from anywhere.
-        // Distinct hotkey `id` (see GlobalHotkey) so it coexists with the mic
-        // toggle. A no-op when nobody holds control.
-        revokeControlHotkey = GlobalHotkey(
-            keyCode: UInt32(kVK_ANSI_Period),
-            modifiers: .controlOptionMask,
-            id: 2
-        ) { [weak self] in
-            self?.revokeRemoteControl(reason: "panic hotkey")
-        }
+        // NOTE: the ⌃⌥. panic-revoke hotkey is deliberately NOT registered
+        // here. It's grant-scoped — created when a remote-control grant
+        // appears and destroyed when it clears (`syncRevokeControlHotkey`,
+        // driven by `onControlGrantChanged`) — so an idle menubar session or
+        // a pure viewer doesn't swallow ⌃⌥. system-wide for a handler that
+        // would just no-op.
 
         ViewerCommands.shared.appState = self
 
@@ -881,9 +916,26 @@ class AppState: ObservableObject {
                     }
                 }
 
-                srv.onControlGrantChanged = { [weak self] grant in
+                lastControlGrantGeneration = 0  // fresh server, fresh counter
+                srv.onControlGrantChanged = { [weak self] generation, grant in
                     Task { @MainActor [weak self] in
-                        self?.controlGrantee = grant
+                        guard let self else { return }
+                        // The Task hop can reorder deliveries; a stale nil
+                        // snapshot landing after a fresh grant would strand
+                        // the panic hotkey unregistered. Apply only
+                        // monotonically newer generations.
+                        guard
+                            !Self.isStaleGrantNotification(
+                                generation: generation,
+                                lastApplied: self.lastControlGrantGeneration)
+                        else { return }
+                        self.lastControlGrantGeneration = generation
+                        self.controlGrantee = grant
+                        // Grant-scoped ⌃⌥. panic hotkey: register while a
+                        // grant is live, unregister the moment it clears.
+                        // Revoke/stop/disconnect all funnel through this
+                        // callback, so no extra unregister sites are needed.
+                        self.syncRevokeControlHotkey(grantActive: grant != nil)
                     }
                 }
 
@@ -898,6 +950,9 @@ class AppState: ObservableObject {
                 // for the remembered allow/deny snapshot.
                 srv.setRequireApproval(requireViewerApproval)
                 srv.setAccessPolicies(viewerAccessPolicies.policiesByStableID)
+                // Same pattern for the control-request gate: latch before
+                // start so a viewer racing to request control is caught.
+                srv.setAllowControlRequests(allowControlRequests)
                 // System audio: apply the persisted default before the helper
                 // (re)spawns so the latch is in place when it comes up.
                 isSystemAudioOn = shareSystemAudioByDefault
@@ -914,7 +969,7 @@ class AppState: ObservableObject {
                 // Start playback engine immediately so the sharer can hear
                 // viewers without first toggling their own mic on.
                 do {
-                    let voice = try VoiceChannel(localSSRC: 0) { [weak srv] packet in
+                    let voice = try VoiceChannel(localSSRC: RTPHeader.sharerVoiceSSRC) { [weak srv] packet in
                         srv?.sendAudioRTP(packet)
                     }
                     self.voiceChannel = voice
@@ -1017,6 +1072,9 @@ class AppState: ObservableObject {
         pendingViewers = []
         controlRequests = []
         controlGrantee = nil
+        revokeControlHotkey = nil
+        lastControlGrantGeneration = 0
+        notifiedControlRequestIPs.removeAll()
         notifiedViewerIDs.removeAll()
         pendingPreApprovedIPs.removeAll()
         queuedPolicyIntents.removeAll()
@@ -2333,14 +2391,45 @@ class AppState: ObservableObject {
 
     // MARK: - Remote control (sharer side)
 
+    /// Pure notification-dedupe decision: which of `requests` should fire an
+    /// OS notification, given the IPs already notified. One notification per
+    /// viewer **IP** per *pending episode* — connectionID-keyed dedupe was
+    /// spammable, because every reconnect mints a fresh UUID; keying by IP
+    /// collapses parallel connections and refreshes of a still-pending
+    /// request into a single notification. An IP whose request has left the
+    /// pending snapshot (denied, granted, released, or disconnected) is
+    /// pruned, so a *genuine* re-request notifies again — the same
+    /// forget-on-leave semantics as `notifiedViewerIDs` in
+    /// `handleViewersChanged`. The residual reconnect-loop exposure (drop
+    /// connection, re-request, repeat) is accepted; the hard stop for that
+    /// is the "Allow control requests" toggle. The pending row in the
+    /// popover still shows every live request; only the notification is
+    /// deduped. Extracted for `RemoteControlPolicyTests`.
+    nonisolated static func controlRequestNotificationDecision(
+        requests: [ControlRequestInfo],
+        previouslyNotifiedIPs: Set<String>
+    ) -> (notify: [ControlRequestInfo], notifiedIPs: Set<String>) {
+        // Forget IPs with no live request so their next ask re-notifies.
+        var notifiedIPs = previouslyNotifiedIPs.intersection(requests.map(\.viewerIP))
+        var notify: [ControlRequestInfo] = []
+        for request in requests where !notifiedIPs.contains(request.viewerIP) {
+            notifiedIPs.insert(request.viewerIP)
+            notify.append(request)
+        }
+        return (notify, notifiedIPs)
+    }
+
     /// Sync the published control-request list and fire a "wants control"
     /// notification for newly-arrived requests, whether or not the popover is
     /// open — control is high-stakes, so the prompt shouldn't be missable.
+    /// Notifications are deduped per viewer IP per share (see
+    /// `controlRequestNotificationDecision`).
     private func handleControlRequestsChanged(_ requests: [ControlRequestInfo]) {
-        let previousIDs = Set(controlRequests.map(\.id))
-        let arrived = requests.filter { !previousIDs.contains($0.id) }
         controlRequests = requests
-        for request in arrived {
+        let decision = Self.controlRequestNotificationDecision(
+            requests: requests, previouslyNotifiedIPs: notifiedControlRequestIPs)
+        notifiedControlRequestIPs = decision.notifiedIPs
+        for request in decision.notify {
             ViewerJoinNotifier.shared.postControlRequested(label: request.displayName)
         }
     }
@@ -2361,6 +2450,27 @@ class AppState: ObservableObject {
     /// hotkey). Safe when nobody holds control.
     func revokeRemoteControl(reason: String = "sharer revoked") {
         server?.revokeControl(reason: reason)
+    }
+
+    /// Register / unregister the ⌃⌥. panic-revoke hotkey to track the live
+    /// grant. Registration is cheap (Carbon), and scoping it to the grant
+    /// means Tailscreen only claims the system-wide chord while a viewer can
+    /// actually control this Mac. Keeps `id: 2` — the mic hotkey (`id: 1`)
+    /// may be live at the same time, and `GlobalHotkey.handlerShouldFire`'s
+    /// id filter is what keeps the two from swallowing each other's events.
+    private func syncRevokeControlHotkey(grantActive: Bool) {
+        if grantActive {
+            guard revokeControlHotkey == nil else { return }
+            revokeControlHotkey = GlobalHotkey(
+                keyCode: UInt32(kVK_ANSI_Period),
+                modifiers: .controlOptionMask,
+                id: 2
+            ) { [weak self] in
+                self?.revokeRemoteControl(reason: "panic hotkey")
+            }
+        } else {
+            revokeControlHotkey = nil  // deinit unregisters
+        }
     }
 
     /// Alert + deep-link when a grant is refused for want of Accessibility

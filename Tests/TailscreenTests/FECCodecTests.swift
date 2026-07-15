@@ -162,11 +162,17 @@ final class FECCodecTests: XCTestCase {
 
     func testRecoverRejectsMemberLongerThanParityRegion() {
         // A member whose payload exceeds the parity's padded region can't
-        // have been covered by that parity — mis-matched parity must reject.
-        let group = h264Group()
-        let smallGroup = [group[3], group[3]]  // tiny packets
-        let body = FECCodec.parityBody(for: smallGroup[...])
-        XCTAssertNil(FECCodec.recover(missingSeq: 1, ssrc: 1, members: [group[2]], body: body))
+        // have been covered by that parity — mis-matched parity must reject,
+        // never mis-solve. Parity from two genuinely tiny packets vs a
+        // full-MTU FU-A fragment as the claimed member.
+        let packetizer = H264Packetizer()
+        let small = packetizer.packetize(
+            nals: [Data([0x41, 0x01]), Data([0x41, 0x02, 0x03])],
+            timestamp: 90, ssrc: 9, startSequence: 0)
+        let body = FECCodec.parityBody(for: small[...])
+        let big = h264Group()[2]  // a full-MTU FU-A fragment
+        XCTAssertGreaterThan(big.count - 12, body.count - 7, "fixture: member must exceed the parity region")
+        XCTAssertNil(FECCodec.recover(missingSeq: 1, ssrc: 9, members: [big], body: body))
     }
 
     func testRecoverRejectsTruncatedMember() {

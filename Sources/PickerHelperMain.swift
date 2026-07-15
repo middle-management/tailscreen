@@ -232,33 +232,44 @@ private final class PickerObserver: NSObject, SCContentSharingPickerObserver {
     }
 }
 
-/// Wire-format writer shared between `PickerObserver.writeFrame` (the
-/// production picker → parent path) and `PickerHelperMain.run` (the
-/// `TAILSCREEN_AUTOSHARE_DISPLAY=1` test short-circuit). One canonical
-/// implementation guarantees the two paths emit identical bytes; the
-/// parent reads either with the same logic.
-private func writeFramedPayload(_ payload: Data, to fd: Int32) {
-    var header = Data(count: 4)
-    let len = UInt32(payload.count)
-    header[0] = UInt8((len >> 24) & 0xFF)
-    header[1] = UInt8((len >> 16) & 0xFF)
-    header[2] = UInt8((len >> 8) & 0xFF)
-    header[3] = UInt8(len & 0xFF)
-    writeAllToFD(header, fd: fd)
-    if !payload.isEmpty {
-        writeAllToFD(payload, fd: fd)
+/// Picker-helper wire framing: `[length:4 BE][JSON bytes:N]`, `length == 0`
+/// = user cancelled. The writer is shared between `PickerObserver.writeFrame`
+/// (the production picker → parent path) and `PickerHelperMain.run` (the
+/// `TAILSCREEN_AUTOSHARE_DISPLAY=1` test short-circuit) — one canonical
+/// implementation guarantees the two paths emit identical bytes; the parent
+/// (`PickerHelperClient.readFramed`) reads either with the same logic.
+/// Internal (not a private free func) so `WireByteRegistryTests` can pin the
+/// framing by a production writer → production reader round-trip.
+enum PickerHelperFraming {
+    static func writeFramedPayload(_ payload: Data, to fd: Int32) {
+        var header = Data(count: 4)
+        let len = UInt32(payload.count)
+        header[0] = UInt8((len >> 24) & 0xFF)
+        header[1] = UInt8((len >> 16) & 0xFF)
+        header[2] = UInt8((len >> 8) & 0xFF)
+        header[3] = UInt8(len & 0xFF)
+        writeAllToFD(header, fd: fd)
+        if !payload.isEmpty {
+            writeAllToFD(payload, fd: fd)
+        }
+    }
+
+    private static func writeAllToFD(_ data: Data, fd: Int32) {
+        data.withUnsafeBytes { raw in
+            guard var ptr = raw.baseAddress else { return }
+            var remaining = raw.count
+            while remaining > 0 {
+                let n = Darwin.write(fd, ptr, remaining)
+                if n <= 0 { return }
+                ptr = ptr.advanced(by: n)
+                remaining -= n
+            }
+        }
     }
 }
 
-private func writeAllToFD(_ data: Data, fd: Int32) {
-    data.withUnsafeBytes { raw in
-        guard var ptr = raw.baseAddress else { return }
-        var remaining = raw.count
-        while remaining > 0 {
-            let n = Darwin.write(fd, ptr, remaining)
-            if n <= 0 { return }
-            ptr = ptr.advanced(by: n)
-            remaining -= n
-        }
-    }
+/// Free-function shim so the existing call sites in this file keep reading
+/// naturally; the canonical implementation lives on `PickerHelperFraming`.
+private func writeFramedPayload(_ payload: Data, to fd: Int32) {
+    PickerHelperFraming.writeFramedPayload(payload, to: fd)
 }

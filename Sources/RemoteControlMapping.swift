@@ -14,9 +14,19 @@ enum RemoteControlMapping {
     /// coordinates use — so no Cocoa flip is needed. The normalized inputs are
     /// clamped to `[0, 1]` so a malformed or out-of-range event can't inject
     /// outside the shared region.
+    ///
+    /// Non-finite input (NaN / ±infinity) maps as 0 — Swift's `min`/`max`
+    /// *propagate* NaN (they return the NaN operand when the comparison is
+    /// false), so a plain clamp would produce a NaN `CGPoint`. The JSON
+    /// decoder two layers away already rejects non-conforming floats (see
+    /// `decodeInputEvent`), but the clamp must not depend on a decoder
+    /// default it can't see. Same policy as `RemoteControlInjector`'s
+    /// `clampToInt32`.
     static func globalPoint(nx: Double, ny: Double, captureRect: CGRect) -> CGPoint {
-        let cx = min(max(nx, 0), 1)
-        let cy = min(max(ny, 0), 1)
+        let fx = nx.isFinite ? nx : 0
+        let fy = ny.isFinite ? ny : 0
+        let cx = min(max(fx, 0), 1)
+        let cy = min(max(fy, 0), 1)
         return CGPoint(
             x: captureRect.origin.x + cx * captureRect.width,
             y: captureRect.origin.y + cy * captureRect.height

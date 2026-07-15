@@ -336,3 +336,8 @@
 "Grants full keyboard and mouse control of your entire Mac" = "Beviljar full styrning av hela din Macs tangentbord och mus";
 "Gives full keyboard and mouse control of your entire Mac, not just the shared window" = "Ger full styrning av hela din Macs tangentbord och mus, inte bara det delade fönstret";
 "Granting gives full keyboard and mouse control of your entire Mac — not just the shared window." = "Att bevilja ger full styrning av hela din Macs tangentbord och mus — inte bara det delade fönstret.";
+
+/* Remote control — Settings "Allow control requests" toggle */
+"Remote control" = "Fjärrstyrning";
+"Allow control requests" = "Tillåt styrningsförfrågningar";
+"Viewers can ask to control your Mac while you share; you still approve each request. Turn off to decline requests automatically and silence their notifications." = "Tittare kan be om att styra din Mac medan du delar; du godkänner fortfarande varje förfrågan. Stäng av för att avböja förfrågningar automatiskt och tysta deras notiser.";

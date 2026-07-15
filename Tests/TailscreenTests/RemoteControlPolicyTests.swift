@@ -103,4 +103,143 @@ final class RemoteControlPolicyTests: XCTestCase {
         XCTAssertFalse(limiter.allow(nowNs: 999_000_000))
         XCTAssertTrue(limiter.allow(nowNs: 1_000_000_001))
     }
+
+    // MARK: - Control-request notification dedupe (per viewer IP per share)
+
+    private func request(_ ip: String, id: UUID = UUID()) -> ControlRequestInfo {
+        ControlRequestInfo(id: id, viewerIP: ip, hostname: nil, arrivedAt: Date())
+    }
+
+    func testNotificationDedupeFiresOncePerPendingEpisode() {
+        let first = request("100.64.0.7")
+        let initial = AppState.controlRequestNotificationDecision(
+            requests: [first], previouslyNotifiedIPs: [])
+        XCTAssertEqual(initial.notify.map(\.id), [first.id])
+        XCTAssertEqual(initial.notifiedIPs, ["100.64.0.7"])
+
+        // A refresh/reconnect while the IP still has a live pending request
+        // (fresh connection UUID, same IP) must not re-notify. The
+        // connectionID-keyed dedupe this replaces notified on every one.
+        let respam = request("100.64.0.7")
+        let second = AppState.controlRequestNotificationDecision(
+            requests: [respam], previouslyNotifiedIPs: initial.notifiedIPs)
+        XCTAssertTrue(second.notify.isEmpty, "a still-pending IP must not re-notify")
+        XCTAssertEqual(second.notifiedIPs, ["100.64.0.7"])
+    }
+
+    func testNotificationDedupeReNotifiesAfterRequestLeavesPending() {
+        // Deny / grant / release / disconnect all remove the request from
+        // the pending snapshot; the notified-IP set must forget the IP then,
+        // so a genuine re-request fires a fresh notification (same
+        // forget-on-leave semantics as the viewer-join notifications).
+        let first = request("100.64.0.7")
+        let initial = AppState.controlRequestNotificationDecision(
+            requests: [first], previouslyNotifiedIPs: [])
+        XCTAssertEqual(initial.notify.count, 1)
+
+        // The request is denied → snapshot no longer contains the IP.
+        let afterDeny = AppState.controlRequestNotificationDecision(
+            requests: [], previouslyNotifiedIPs: initial.notifiedIPs)
+        XCTAssertTrue(afterDeny.notify.isEmpty)
+        XCTAssertTrue(afterDeny.notifiedIPs.isEmpty, "an IP with no live request must be forgotten")
+
+        // A genuine re-request from the same viewer notifies again.
+        let again = request("100.64.0.7")
+        let third = AppState.controlRequestNotificationDecision(
+            requests: [again], previouslyNotifiedIPs: afterDeny.notifiedIPs)
+        XCTAssertEqual(third.notify.map(\.id), [again.id], "a re-request after deny must notify")
+    }
+
+    func testNotificationDedupeStillNotifiesNewIPs() {
+        let known = request("100.64.0.7")
+        let newcomer = request("100.64.0.9")
+        let decision = AppState.controlRequestNotificationDecision(
+            requests: [known, newcomer], previouslyNotifiedIPs: ["100.64.0.7"])
+        XCTAssertEqual(decision.notify.map(\.viewerIP), ["100.64.0.9"])
+        XCTAssertEqual(decision.notifiedIPs, ["100.64.0.7", "100.64.0.9"])
+    }
+
+    func testNotificationDedupeNotifiesOneIPOncePerBatch() {
+        // Two live requests from the same IP in one snapshot (parallel
+        // connections): a single notification.
+        let a = request("100.64.0.7")
+        let b = request("100.64.0.7")
+        let decision = AppState.controlRequestNotificationDecision(
+            requests: [a, b], previouslyNotifiedIPs: [])
+        XCTAssertEqual(decision.notify.count, 1)
+        XCTAssertEqual(decision.notifiedIPs, ["100.64.0.7"])
+    }
+
+    // MARK: - Grant-change generation ordering
+
+    func testStaleGrantNotificationIsDropped() {
+        // The MainActor hop can reorder grant-change deliveries; only
+        // notifications with a generation >= the last applied one may apply.
+        XCTAssertTrue(AppState.isStaleGrantNotification(generation: 1, lastApplied: 2))
+        XCTAssertFalse(
+            AppState.isStaleGrantNotification(generation: 2, lastApplied: 2),
+            "equal generations re-apply idempotently — two notifies can read the same state")
+        XCTAssertFalse(AppState.isStaleGrantNotification(generation: 3, lastApplied: 2))
+        XCTAssertFalse(AppState.isStaleGrantNotification(generation: 1, lastApplied: 0))
+    }
+
+    // MARK: - Toggle-off drains pending requests
+
+    func testDisablingControlRequestsDrainsPendingRequests() {
+        // "Turn off to decline requests automatically" (Settings caption):
+        // flipping the gate off must clear every parked request so the
+        // sharer's pending rows empty and each requester is declined.
+        // Snapshots arrive synchronously via onControlRequestsChanged; no
+        // live listener needed (the .controlRevoked reply no-ops headless).
+        final class SnapshotBox: @unchecked Sendable {
+            private let lock = NSLock()
+            private var snapshots: [[ControlRequestInfo]] = []
+            func append(_ snapshot: [ControlRequestInfo]) {
+                lock.lock()
+                defer { lock.unlock() }
+                snapshots.append(snapshot)
+            }
+            var last: [ControlRequestInfo] {
+                lock.lock()
+                defer { lock.unlock() }
+                return snapshots.last ?? []
+            }
+            var count: Int {
+                lock.lock()
+                defer { lock.unlock() }
+                return snapshots.count
+            }
+        }
+        let box = SnapshotBox()
+        let server = TailscaleScreenShareServer()
+        server.onControlRequestsChanged = { box.append($0) }
+
+        server.recordControlRequestForTesting(connectionID: UUID(), ip: "100.64.0.7")
+        server.recordControlRequestForTesting(connectionID: UUID(), ip: "100.64.0.9")
+        XCTAssertEqual(box.last.count, 2, "both requests should be parked")
+
+        server.setAllowControlRequests(false)
+        XCTAssertEqual(box.last.count, 0, "toggle-off must drain every pending request")
+
+        // And with the gate off, nothing new piles up via the drain path;
+        // flipping back on doesn't resurrect the drained requests either.
+        let snapshotsAfterDrain = box.count
+        server.setAllowControlRequests(true)
+        XCTAssertEqual(box.count, snapshotsAfterDrain, "re-enabling must not emit a new snapshot")
+    }
+
+    // MARK: - RemoteControlDefaults persistence
+
+    func testRemoteControlDefaultsDefaultOnAndRoundTrip() throws {
+        let suiteName = "RemoteControlDefaultsTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        XCTAssertTrue(
+            RemoteControlDefaults.load(defaults: defaults),
+            "allowControlRequests must default on for untouched installs")
+        RemoteControlDefaults.save(false, defaults: defaults)
+        XCTAssertFalse(RemoteControlDefaults.load(defaults: defaults), "explicit opt-out sticks")
+        RemoteControlDefaults.save(true, defaults: defaults)
+        XCTAssertTrue(RemoteControlDefaults.load(defaults: defaults))
+    }
 }

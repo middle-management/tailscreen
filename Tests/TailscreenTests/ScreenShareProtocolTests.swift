@@ -226,6 +226,63 @@ final class ScreenShareProtocolTests: XCTestCase {
         }
     }
 
+    /// Pins the load-bearing default `nonConformingFloatDecodingStrategy =
+    /// .throw` on `decodeInputEvent`'s JSONDecoder: `NaN` / `Infinity` /
+    /// `-Infinity` tokens and the out-of-range literal `1e999` in coordinate
+    /// or delta fields must all reject to nil. Without this, a NaN coordinate
+    /// would reach `RemoteControlMapping.globalPoint` (which now defends
+    /// itself too — belt and braces, see `RemoteControlMappingTests`).
+    ///
+    /// The quoted-string variants (`"NaN"`, `"Infinity"`, `"-Infinity"`) are
+    /// the rows that actually pin the *strategy*: the bare-token forms are
+    /// invalid JSON and reject under ANY strategy, but the quoted forms would
+    /// start decoding the moment someone "improves" the decoder with
+    /// `.convertFromString(...)` — so those rows are what turn red.
+    func testInputEventNonConformingFloatsRejectToNil() throws {
+        let hostilePayloads = [
+            #"{"mouseMove":{"x":NaN,"y":0.5}}"#,
+            #"{"mouseMove":{"x":0.5,"y":NaN}}"#,
+            #"{"mouseMove":{"x":Infinity,"y":0.5}}"#,
+            #"{"mouseMove":{"x":-Infinity,"y":0.5}}"#,
+            #"{"mouseMove":{"x":1e999,"y":0.5}}"#,
+            #"{"mouseMove":{"x":"NaN","y":0.5}}"#,
+            #"{"mouseMove":{"x":"Infinity","y":0.5}}"#,
+            #"{"mouseMove":{"x":0.5,"y":"-Infinity"}}"#,
+            #"{"mouseDown":{"x":NaN,"y":0.5,"button":"left"}}"#,
+            #"{"mouseDown":{"x":"NaN","y":0.5,"button":"left"}}"#,
+            #"{"mouseUp":{"x":0.5,"y":Infinity,"button":"right"}}"#,
+            #"{"scroll":{"x":0.5,"y":0.5,"deltaX":NaN,"deltaY":0}}"#,
+            #"{"scroll":{"x":0.5,"y":0.5,"deltaX":"NaN","deltaY":0}}"#,
+            #"{"scroll":{"x":0.5,"y":0.5,"deltaX":0,"deltaY":1e999}}"#
+        ]
+        for hostile in hostilePayloads {
+            let payload = Data(hostile.utf8)
+            var frame = Data()
+            frame.append(ScreenShareMessage.MessageType.inputEvent.rawValue)
+            let len = UInt32(payload.count)
+            frame.append(UInt8((len >> 24) & 0xFF))
+            frame.append(UInt8((len >> 16) & 0xFF))
+            frame.append(UInt8((len >> 8) & 0xFF))
+            frame.append(UInt8(len & 0xFF))
+            frame.append(payload)
+
+            var parser = ScreenShareMessageParser()
+            parser.append(frame)
+            XCTAssertNil(parser.next(), "non-conforming float must reject: \(hostile)")
+            XCTAssertFalse(parser.isCorrupt, "a rejected payload is not a framing error")
+
+            // A valid frame after the rejected one still parses — the framing
+            // survived the hostile payload.
+            parser.append(ScreenShareMessage.inputEvent(.mouseMove(x: 0.5, y: 0.5)).encode())
+            let decoded = try XCTUnwrap(parser.next(), "valid frame after \(hostile) must parse")
+            guard case .inputEvent(.mouseMove(let x, let y)) = decoded else {
+                return XCTFail("expected the valid mouseMove after \(hostile), got \(decoded)")
+            }
+            XCTAssertEqual(x, 0.5)
+            XCTAssertEqual(y, 0.5)
+        }
+    }
+
     func testOversizedFrameLengthPoisonsParserAndBoundsBuffer() {
         // A hostile peer advertises a 4 GiB payload then slow-streams bytes.
         // The parser must reject at header-parse time, mark itself corrupt,
