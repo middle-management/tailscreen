@@ -179,7 +179,7 @@ final class ViewerLifecycleDecisionTests: XCTestCase {
         let throttledUntilNs: UInt64 = 10_000
         // Frame pattern over one throttle window: KF, then 4 inter, then KF…
         let frames: [(isKeyframe: Bool, nowNs: UInt64)] = [
-            (true, 0), (false, 1), (false, 2), (false, 3), (false, 4), (true, 5),
+            (true, 0), (false, 1), (false, 2), (false, 3), (false, 4), (true, 5)
         ]
         var nextSequence: UInt16 = 100
         var sentSeqs: [UInt16] = []
