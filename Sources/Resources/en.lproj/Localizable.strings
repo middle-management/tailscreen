@@ -71,6 +71,9 @@
 "Toggles voice chat with viewers" = "Toggles voice chat with viewers";
 "Stop Sharing" = "Stop Sharing";
 "Disconnects all viewers and ends the screen share" = "Disconnects all viewers and ends the screen share";
+"Change Source…" = "Change Source…";
+"Change what you're sharing" = "Change what you're sharing";
+"Reopens the picker without disconnecting viewers" = "Reopens the picker without disconnecting viewers";
 "No viewers yet" = "No viewers yet";
 "%lld watching: %@" = "%lld watching: %@";
 

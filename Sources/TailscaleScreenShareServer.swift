@@ -198,12 +198,14 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     var onCaptureStopped: ((Error?) -> Void)?
     var onPreviewImage: ((NSImage) -> Void)?
 
-    /// JSON-encoded `PickerSelection` describing what the user
-    /// picked. Cached so `restartCapture()` can rebuild the SCStream
-    /// against the same content (display / window / app / multi-app)
-    /// without forcing the caller to track that state. Carried as
-    /// raw `Data` so the main process never has to know the schema
-    /// — the helper decodes it.
+    /// JSON-encoded `PickerSelection` describing what the user picked —
+    /// set by `start()` and replaced by the most recent `changeSource`.
+    /// Cached so `restartCapture()` can rebuild the SCStream against the
+    /// same content (display / window / app / multi-app) without forcing
+    /// the caller to track that state. Carried as raw `Data` so the main
+    /// process never has to know the schema — the helper decodes it.
+    /// Written only from the `@MainActor` call sites (`start`,
+    /// `changeSource`) and read inside the tracked restart task.
     private var lastFilterData: Data?
 
     /// Helper-process wrapper. Owns the child Tailscreen process
@@ -611,6 +613,29 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         if let result = await scheduleHelperRestart(resetCrashBudget: true).value {
             throw result
         }
+    }
+
+    /// Retarget capture to a new `PickerSelection` without touching the
+    /// UDP/TCP listeners, the viewer roster, the approval state, or the
+    /// annotation back-channel. Swaps the cached selection, then rides the
+    /// same tracked-restart path as `restartCapture()` — never spawning a
+    /// helper directly — so it inherits both orphan-safety properties of
+    /// `scheduleHelperRestart` (the `stop()` drain and the post-spawn
+    /// `isRunning` re-check). The crash budget is reset: the new target
+    /// deserves a fresh run of auto-restarts.
+    ///
+    /// A crash-triggered auto-restart racing this call is benign in either
+    /// order: both funnel through `scheduleHelperRestart`, whichever runs
+    /// last wins, and `lastFilterData` already holds the new bytes by then.
+    ///
+    /// `forceH264` is deliberately left latched (viewer decode capability
+    /// didn't change with the source) and `parameterSets` / `helperCodec`
+    /// are left in place — the fresh helper overwrites them, in order,
+    /// before its first encoded AU broadcasts.
+    func changeSource(filterData: Data) async throws {
+        guard isRunning else { return }
+        lastFilterData = filterData
+        try await restartCapture()
     }
 
     /// Spawn a fresh helper against the cached filter, wrapped in a tracked

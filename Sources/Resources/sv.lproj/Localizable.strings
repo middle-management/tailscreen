@@ -66,6 +66,9 @@
 "Toggles voice chat with viewers" = "Växlar röstchatt med tittare";
 "Stop Sharing" = "Sluta dela";
 "Disconnects all viewers and ends the screen share" = "Kopplar från alla tittare och avslutar skärmdelningen";
+"Change Source…" = "Byt källa…";
+"Change what you're sharing" = "Ändra vad du delar";
+"Reopens the picker without disconnecting viewers" = "Öppnar väljaren igen utan att koppla från tittarna";
 "No viewers yet" = "Inga tittare än";
 "%lld watching: %@" = "%lld tittar: %@";
 

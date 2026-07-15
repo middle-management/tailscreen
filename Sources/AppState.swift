@@ -36,6 +36,11 @@ enum ConnectionState: Equatable {
 class AppState: ObservableObject {
     @Published var sharingState: SharingState = .idle
     @Published var connectionState: ConnectionState = .idle
+    /// True while a mid-share "Change Source…" flow is in flight (picker
+    /// up, or the retargeted helper respawning). The SharingCard disables
+    /// its Change Source button on this so a second picker can't be
+    /// spawned while the first is still on screen.
+    @Published var isChangingSource = false
     @Published var connectedHostname: String?
     @Published var statusMessage = ""
     /// Whether the sharer's drawing overlay panel is currently visible and
@@ -466,6 +471,94 @@ class AppState: ObservableObject {
         await startSharing(filterData: filterData)
     }
 
+    /// Tailnet-visible hostname for this instance. Shared by `startSharing`
+    /// (server bring-up + metadata) and `changeShareSource` (metadata
+    /// refresh) so the strings can't drift apart.
+    private static func localHostname() -> String {
+        "\(Host.current().localizedName ?? "tailscreen-share")\(TailscreenInstance.hostnameSuffix)"
+    }
+
+    /// Share name published to peers via the metadata service. Deliberately
+    /// not localized — it travels over the wire to viewers whose locale we
+    /// don't know, matching `TailscreenMetadataService.updateMetadata`'s own
+    /// default.
+    private static func localShareName() -> String {
+        "\(localHostname())'s Screen"
+    }
+
+    /// Mid-share "Change Source…": re-run the picker-helper and retarget
+    /// the live server at the new selection *without* disconnecting
+    /// viewers, dropping the tsnet listeners, or releasing the share lock
+    /// (we already hold it — re-acquiring would trip the guard). Picker
+    /// cancel or picker error leaves the current share untouched; a failed
+    /// retarget tears the share down (the old helper is already gone by
+    /// then, so there is nothing to keep sharing).
+    ///
+    /// Deliberately separate from `presentNativePicker()` — that path is
+    /// the share *entry point* (takes the lock, builds the server); this
+    /// one requires an already-active share.
+    func changeShareSource() async {
+        guard sharingState == .active, let server, !isChangingSource else { return }
+        isChangingSource = true
+        defer { isChangingSource = false }
+
+        let result: Data?
+        do {
+            result = try await PickerHelperClient.run()
+        } catch {
+            showAlertMessage(
+                title: "Couldn't Open Picker",
+                message: "macOS's screen-sharing picker failed to start: \(error.localizedDescription)"
+            )
+            return
+        }
+        guard let filterData = result else {
+            // User cancelled — keep the current share running unchanged.
+            return
+        }
+        // The user may have clicked Stop Sharing (or the helper may have
+        // died past its crash budget and torn the share down) while the
+        // picker was up. Identity-check the server so a stale selection
+        // can't retarget a share that already ended or restarted.
+        guard sharingState == .active, self.server === server else { return }
+
+        currentSelection = try? JSONDecoder().decode(PickerSelection.self, from: filterData)
+        do {
+            try await server.changeSource(filterData: filterData)
+        } catch {
+            logger.log("changeShareSource: retarget failed (\(error)); tearing sharing down")
+            await stopSharing(reason: "changeSource failed: \(error)")
+            presentError(.sharingGeneric(error))
+            return
+        }
+
+        // Annotations were scoped to the old surface — a window-relative
+        // stroke floating over an unrelated display share is noise. Clear
+        // every viewer's canvas; the sharer's own canvas is cleared by the
+        // overlay rebuild below.
+        await server.broadcastAnnotation(.clearAll)
+
+        // The overlay's mode is immutable, so it can't be retargeted —
+        // rebuild it for the new selection, preserving the sharer's draw
+        // toggle. When drawing is off, leave it nil: `ensureSharerOverlay`
+        // lazily rebuilds on the next viewer op or Draw toggle.
+        let wasDrawing = isSharerOverlayVisible
+        sharerOverlay?.hide()
+        sharerOverlay = nil
+        if wasDrawing {
+            ensureSharerOverlay().setInputEnabled(true)
+        }
+
+        // Refresh the metadata served to peers (share name / resolution)
+        // and drop the stale thumbnail — the fresh helper repopulates it
+        // with its first preview frame. Viewers need no signaling: the new
+        // helper's first AU is an IDR with in-band parameter sets, which
+        // rides the existing decoder-reconfigure → onVideoSizeChanged path.
+        metadataService.updateMetadata(isSharing: true, shareName: Self.localShareName())
+        previewImage = nil
+        logger.log("changeShareSource: retargeted capture (filter=\(filterData.count)B)")
+    }
+
     /// Start a share against the `PickerSelection` produced by the
     /// picker subprocess. The JSON-encoded selection is cached on
     /// the server so a mid-stream helper crash can rebuild the same
@@ -508,8 +601,7 @@ class AppState: ObservableObject {
             // If Tailscale is already initialized, just start sharing
             // Otherwise, initialize it first
             if server == nil {
-                let hostname =
-                    "\(Host.current().localizedName ?? "tailscreen-share")\(TailscreenInstance.hostnameSuffix)"
+                let hostname = Self.localHostname()
                 let srv = TailscaleScreenShareServer()
                 server = srv
 
@@ -650,10 +742,8 @@ class AppState: ObservableObject {
                 tailscaleIPs = [ips.ip4, ips.ip6].compactMap { $0 }
             }
 
-            let hostname = "\(Host.current().localizedName ?? "tailscreen-share")\(TailscreenInstance.hostnameSuffix)"
-
             // Update metadata
-            metadataService.updateMetadata(isSharing: true, shareName: "\(hostname)'s Screen")
+            metadataService.updateMetadata(isSharing: true, shareName: Self.localShareName())
 
             // Hold the UI on the picker until the first preview frame
             // arrives, so SharingCard skips its black "Capturing…"
@@ -749,8 +839,10 @@ class AppState: ObservableObject {
     /// Project a `PickerSelection` onto the overlay mode that matches it.
     /// Nil / empty selections (legacy entry points, decode failures) fall
     /// back to the full-display overlay so the feature degrades gracefully
-    /// rather than refusing to render annotations.
-    private static func overlayMode(for selection: PickerSelection?) -> SharerOverlayWindow.Mode {
+    /// rather than refusing to render annotations. Internal (not private)
+    /// so the pure selection→mode decision is unit testable
+    /// (`OverlayModeDecisionTests`).
+    static func overlayMode(for selection: PickerSelection?) -> SharerOverlayWindow.Mode {
         guard let selection else { return .display(nil) }
         switch selection.kind {
         case .display:
