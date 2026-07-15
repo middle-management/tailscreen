@@ -127,6 +127,69 @@ final class ScreenShareProtocolTests: XCTestCase {
         XCTAssertEqual(fromHostname.count, RequestToSharePayload.maxHostnameLength)
     }
 
+    // MARK: - Remote control
+
+    func testControlRequestRoundTrip() throws {
+        var parser = ScreenShareMessageParser()
+        parser.append(ScreenShareMessage.controlRequest.encode())
+        let decoded = try XCTUnwrap(parser.next())
+        guard case .controlRequest = decoded else {
+            return XCTFail("expected .controlRequest, got \(decoded)")
+        }
+        XCTAssertNil(parser.next())
+    }
+
+    func testControlGrantedRoundTrip() throws {
+        var parser = ScreenShareMessageParser()
+        parser.append(ScreenShareMessage.controlGranted.encode())
+        let decoded = try XCTUnwrap(parser.next())
+        guard case .controlGranted = decoded else {
+            return XCTFail("expected .controlGranted, got \(decoded)")
+        }
+    }
+
+    func testControlRevokedRoundTrip() throws {
+        var parser = ScreenShareMessageParser()
+        parser.append(ScreenShareMessage.controlRevoked(reason: "sharer revoked").encode())
+        let decoded = try XCTUnwrap(parser.next())
+        guard case .controlRevoked(let reason) = decoded else {
+            return XCTFail("expected .controlRevoked, got \(decoded)")
+        }
+        XCTAssertEqual(reason, "sharer revoked")
+    }
+
+    func testControlRevokedReasonClampedOnReceive() throws {
+        let huge = String(repeating: "x", count: 4096)
+        var parser = ScreenShareMessageParser()
+        parser.append(ScreenShareMessage.controlRevoked(reason: huge).encode())
+        let decoded = try XCTUnwrap(parser.next())
+        guard case .controlRevoked(let reason) = decoded else {
+            return XCTFail("expected .controlRevoked, got \(decoded)")
+        }
+        XCTAssertEqual(reason.count, ControlRevokedPayload.maxReasonLength)
+    }
+
+    func testInputEventRoundTripEveryCase() throws {
+        let events: [InputEvent] = [
+            .mouseMove(x: 0.25, y: 0.75),
+            .mouseDown(x: 0.1, y: 0.2, button: .left),
+            .mouseUp(x: 0.1, y: 0.2, button: .right),
+            .scroll(x: 0.5, y: 0.5, deltaX: -3, deltaY: 4),
+            .keyDown(keyCode: 0x24, modifiers: 0x0010_0000),
+            .keyUp(keyCode: 0x24, modifiers: 0)
+        ]
+        for event in events {
+            var parser = ScreenShareMessageParser()
+            parser.append(ScreenShareMessage.inputEvent(event).encode())
+            let decoded = try XCTUnwrap(parser.next())
+            guard case .inputEvent(let got) = decoded else {
+                return XCTFail("expected .inputEvent, got \(decoded)")
+            }
+            XCTAssertEqual(got, event)
+            XCTAssertNil(parser.next())
+        }
+    }
+
     func testUnknownMessageTypeIsSkipped() throws {
         // Hand-build a bogus message with type=0xFF, then a valid annotation.
         var bogus = Data()

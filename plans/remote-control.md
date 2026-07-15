@@ -1,4 +1,54 @@
 # Opt-in Remote Control (viewer input injected on the sharer's machine)
+> Status: implemented in this PR.
+
+## Deviations
+Adapting the plan to the merged codebase (viewer-consent #74 reworked the
+listener + server; 7 PRs shifted line numbers):
+
+- **Message-type bytes.** `.shareResponse` took `0x05` on `main`, so the
+  control messages are `.controlRequest = 0x06`, `.controlGranted = 0x07`,
+  `.controlRevoked = 0x08`, `.inputEvent = 0x09` (plan proposed `0x05–0x08`).
+  `.controlRevoked` carries a JSON `ControlRevokedPayload { reason }`; the
+  viewer shows its own localized message and treats `reason` as a log tag.
+- **`InputEvent.modifiers` is `UInt64`** (raw `CGEventFlags`), not the plan's
+  `UInt32` — `CGEventFlags.rawValue` is 64-bit and truncating would drop
+  high modifier bits.
+- **Grant gate keys on `connectionID` alone.** `RemoteControlPolicy.shouldInject`
+  matches the grantee's TCP connection UUID — authoritative and unspoofable,
+  and a NAT rebind yields a fresh connection (new UUID) so a grant can never be
+  inherited. `ControlGrant` still records the consent `stableID` + `viewerIP`
+  for UI/bookkeeping and the UDP-side revoke hooks, per the plan's identity
+  pinning, but the pure gate needs only the UUID (so no addr↔UUID map is
+  required for the gate, per §7). A control *request* is still admitted only
+  from an already-admitted viewer IP (same anchor as the annotation gate).
+- **The injector owns coordinate resolution; the server owns the injector.**
+  Rather than routing input up to `AppState` for injection, the server (main
+  process) holds the `RemoteControlInjector` and resolves the live capture rect
+  from its cached `PickerSelection` per event. This keeps event ordering on the
+  injector's serial queue (no MainActor Task-scheduling reorder) and keeps
+  `AppState` to grant/revoke UI + the Accessibility prompt. `AppState` gets a
+  `onControlAccessibilityRequired` callback for the prompt/deep-link.
+- **Window-rect resolver duplicated, not shared.** `SharerOverlayWindow.cgWindowFrame`
+  is `@MainActor`-isolated; the injector runs off-main, so the same
+  `CGWindowListCopyWindowInfo` primitive lives as a nonisolated
+  `RemoteControlMapping.windowQuartzBounds` instead of de-privatizing the
+  overlay's copy.
+- **Viewer input capture is a dedicated `RemoteControlInputView`** layered above
+  the annotation overlay and framed to the same aspect-fit video rect, rather
+  than repurposing the annotation host's responder. It's hidden/inert unless a
+  grant is live; while active the annotation model's `isInputEnabled` is forced
+  false (the two are mutually exclusive), matching the plan's intent with less
+  coupling. There is no separate toolbar "Control" toggle — the ViewingCard
+  gains a Request Control / Stop button that reflects `viewerControlState`.
+- **No viewer→sharer "release control" message.** A viewer's local "Stop
+  controlling" stops capture but the sharer keeps its grant indicator until it
+  revokes or the viewer disconnects (auto-revoke). A dedicated release message
+  wasn't added this iteration.
+- **`GlobalHotkey` gained an `id:` parameter** (default 1) so the mic toggle
+  (1) and the remote-control panic-revoke ⌃⌥. (2) can be registered
+  concurrently — `RegisterEventHotKey` needs a unique `(signature, id)`.
+
+## Original plan
 > Status: proposed — this PR contains only the plan; implementation is a follow-up iteration.
 
 ## Problem & motivation
