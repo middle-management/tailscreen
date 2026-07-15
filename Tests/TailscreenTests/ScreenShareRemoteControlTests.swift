@@ -62,13 +62,11 @@ final class ScreenShareRemoteControlTests: XCTestCase {
         let server = TailscaleScreenShareServer()
         server.grantBypassesAccessibilityForTesting = true
 
-        let requestSeen = expectation(description: "server surfaced a control request")
-        requestSeen.assertForOverFulfill = false
+        // Route the @Sendable roster callback through the box (never capture
+        // an XCTestExpectation in it — same discipline as the other E2E
+        // suites); the request is observed by polling below.
         server.onControlRequestsChanged = { requests in
-            if let first = requests.first {
-                box.setRequestID(first.id)
-                requestSeen.fulfill()
-            }
+            if let first = requests.first { box.setRequestID(first.id) }
         }
         server.onInputEventForTesting = { _ in box.bumpInput() }
 
@@ -113,14 +111,17 @@ final class ScreenShareRemoteControlTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(500))
         XCTAssertEqual(box.currentInputCount, 0, "input before a grant must be dropped")
 
-        // Request control (TCP; resend a couple of times for good measure).
-        for _ in 0..<3 {
+        // Request control (TCP; resend and poll for the server to surface it).
+        var observedID: UUID?
+        for _ in 0..<25 {
             await client.requestControl()
+            if let id = box.currentRequestID {
+                observedID = id
+                break
+            }
             try await Task.sleep(for: .milliseconds(200))
         }
-        await fulfillment(of: [requestSeen], timeout: 10)
-
-        let connectionID = try XCTUnwrap(box.currentRequestID)
+        let connectionID = try XCTUnwrap(observedID, "server never surfaced the control request")
         XCTAssertTrue(server.grantControl(toConnectionID: connectionID))
         await fulfillment(of: [granted], timeout: 10)
 
