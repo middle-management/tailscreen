@@ -106,7 +106,7 @@ final class FECCodecTests: XCTestCase {
         for packet in received {
             if let out = dp.ingest(packet) { au = out }
         }
-        XCTAssertEqual(au.map { AVCCParser.nalUnits(from: $0.avcc) }, [[nal]])
+        XCTAssertEqual(au.map { AVCCParser.nalUnits(from: $0.avcc) }, [nal])
         XCTAssertEqual(au?.lostBeforeThisAU, false)
     }
 
