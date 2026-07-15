@@ -24,6 +24,20 @@ final class SoakTests: XCTestCase {
         ParserFuzzHarness(multiplier: 50).runAll()
     }
 
+    /// One cell of the impairment matrix. The seed derives from the matrix
+    /// coordinates, so `description` names the exact reproducing config.
+    private struct MatrixCase {
+        let seed: UInt64
+        let loss: Double
+        let reorderWindow: Int
+        let dup: Double
+        let useHEVC: Bool
+
+        var description: String {
+            "seed=\(seed) loss=\(loss) reorder=\(reorderWindow) dup=\(dup) hevc=\(useHEVC)"
+        }
+    }
+
     func testLossyChannelSeededMatrix() throws {
         try skipUnlessSoak()
         let seedCount = 64
@@ -42,12 +56,10 @@ final class SoakTests: XCTestCase {
                             &+ UInt64(lossIndex) &* 10_000
                             &+ UInt64(reorderIndex) &* 100
                             &+ UInt64(dupIndex)
-                        let config =
-                            "seed=\(seed) loss=\(loss) reorder=\(reorder) dup=\(dup) "
-                            + "hevc=\(seedIndex % 2 == 1)"
                         runImpairedPipeline(
-                            seed: seed, loss: loss, reorderWindow: reorder, dup: dup,
-                            useHEVC: seedIndex % 2 == 1, config: config)
+                            MatrixCase(
+                                seed: seed, loss: loss, reorderWindow: reorder, dup: dup,
+                                useHEVC: seedIndex % 2 == 1))
                     }
                 }
             }
@@ -58,10 +70,11 @@ final class SoakTests: XCTestCase {
     /// real depacketizer, and assert the recovery invariants — every
     /// delivered AU is byte-intact (no torn frames), delivery is strictly
     /// ordered, and the pipeline never wedges (structurally: the loop ends).
-    private func runImpairedPipeline(
-        seed: UInt64, loss: Double, reorderWindow: Int, dup: Double,
-        useHEVC: Bool, config: String
-    ) {
+    private func runImpairedPipeline(_ matrixCase: MatrixCase) {
+        let seed = matrixCase.seed
+        let reorderWindow = matrixCase.reorderWindow
+        let useHEVC = matrixCase.useHEVC
+        let config = matrixCase.description
         let frameCount = 60
         let bytesPerFrame = 1400  // > 1100 forces FU fragmentation
         var expectedByTs: [UInt32: Data] = [:]
@@ -88,7 +101,8 @@ final class SoakTests: XCTestCase {
         }
 
         var channel = LossyChannel(
-            seed: seed, lossRate: loss, dupRate: dup, reorderWindow: reorderWindow)
+            seed: seed, lossRate: matrixCase.loss, dupRate: matrixCase.dup,
+            reorderWindow: reorderWindow)
         let received = channel.transmit(packets)
 
         var delivered: [VideoAccessUnit] = []

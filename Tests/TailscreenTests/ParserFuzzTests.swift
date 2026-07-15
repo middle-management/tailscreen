@@ -205,7 +205,7 @@ struct ParserFuzzHarness {
         var packets: [Data] = []
         let h264 = H264Packetizer()
         let h265 = H265Packetizer()
-        var seq: UInt16 = UInt16.random(in: 0...UInt16.max, using: &rng)
+        var seq = UInt16.random(in: 0...UInt16.max, using: &rng)
         for frame in 0..<6 {
             let big = frame % 2 == 0
             let size = big ? 3000 : 100
@@ -216,7 +216,7 @@ struct ParserFuzzHarness {
             seq &+= UInt16(out.count)
             packets.append(contentsOf: out)
         }
-        var seq265: UInt16 = UInt16.random(in: 0...UInt16.max, using: &rng)
+        var seq265 = UInt16.random(in: 0...UInt16.max, using: &rng)
         for frame in 0..<6 {
             let size = frame % 2 == 0 ? 3000 : 100
             var nal = Data([UInt8(frame % 3 == 0 ? 19 : 1) << 1, 0x01])
