@@ -1,6 +1,7 @@
 import Foundation
+import Synchronization
 import TailscaleKit
-import os
+import TailscreenProtocol
 
 /// Long-lived TCP listener on port 7447 that demultiplexes the framed
 /// control protocol (`ScreenShareMessage`) across multiple consumers.
@@ -21,12 +22,13 @@ import os
 /// detect connection close (the receive loop fires
 /// `onConnectionClosed` so the sharer can clean up per-viewer
 /// annotation state).
-final class TailscreenControlListener: @unchecked Sendable {
+public final class TailscreenControlListener: @unchecked Sendable {
     private let port: UInt16
     private let logger: TSLogger
     private var listener: Listener?
     private var isRunning = false
-    private let connections = OSAllocatedUnfairLock<[UUID: IncomingConnection]>(initialState: [:])
+    // `Mutex` (not `OSAllocatedUnfairLock`) keeps this file portable.
+    private let connections = Mutex<[UUID: IncomingConnection]>([:])
 
     /// Fires for every `.annotation` message. Arguments are the op, the
     /// `UUID` of the connection it arrived on (so the sharer can avoid
@@ -35,7 +37,7 @@ final class TailscreenControlListener: @unchecked Sendable {
     /// so the sharer can gate annotations to *admitted* viewers only — the
     /// TCP back-channel otherwise accepts ops from any peer that can dial
     /// port 7447, including pending/denied ones.
-    var onAnnotation: ((AnnotationOp, UUID, String?) -> Void)?
+    public var onAnnotation: ((AnnotationOp, UUID, String?) -> Void)?
 
     /// Fires for every `.requestToShare` message. Arguments are the
     /// requesting peer's friendly hostname (as sent in the payload), the
@@ -45,14 +47,14 @@ final class TailscreenControlListener: @unchecked Sendable {
     /// the connection's remote tailnet address (`ip:port`, nil if
     /// unreported) so the handler can dedupe by source identity rather than
     /// the spoofable wire-claimed hostname.
-    var onRequestToShare: ((String, UUID, String?) -> Void)?
+    public var onRequestToShare: ((String, UUID, String?) -> Void)?
 
     /// Fires for every `.controlRequest` message (viewer→sharer "please grant
     /// me remote control"). Arguments are the connection's stable `UUID` (the
     /// handle the grant + input-event gate key on) and its remote tailnet
     /// address (`ip:port`, nil if unreported) so the sharer can confirm the
     /// requester is an admitted viewer and label the request row.
-    var onControlRequest: ((UUID, String?) -> Void)?
+    public var onControlRequest: ((UUID, String?) -> Void)?
 
     /// Fires for every `.inputEvent` message (viewer→sharer mouse/scroll/key).
     /// Arguments are the event, the connection's `UUID` (checked against the
@@ -60,27 +62,27 @@ final class TailscreenControlListener: @unchecked Sendable {
     /// server-side), and the remote address. Fires off the connection's
     /// receive task, which is single-threaded per connection so per-connection
     /// event order is preserved.
-    var onInputEvent: ((InputEvent, UUID, String?) -> Void)?
+    public var onInputEvent: ((InputEvent, UUID, String?) -> Void)?
 
     /// Fires for a `.controlReleased` message (grantee viewer→sharer "I'm
     /// done controlling"). Argument is the connection's `UUID`; the sharer
     /// revokes the grant if this connection holds it, so the sharer UI and
     /// the gate release in lockstep with the viewer leaving control mode.
-    var onControlReleased: ((UUID) -> Void)?
+    public var onControlReleased: ((UUID) -> Void)?
 
     /// Fires when an accepted TCP connection closes. Argument is the
     /// connection's stable `UUID`. Used by the share server to retire
     /// per-viewer annotation state.
-    var onConnectionClosed: ((UUID) -> Void)?
+    public var onConnectionClosed: ((UUID) -> Void)?
 
-    init(port: UInt16 = NetworkConfig.tailscreenPort) {
+    public init(port: UInt16 = NetworkConfig.tailscreenPort) {
         self.port = port
         self.logger = TSLogger()
     }
 
     /// Bind the listener on `node`'s tailnet interface and start the accept
     /// loop. Idempotent — calling twice is a no-op.
-    func start(node: TailscaleNode) async throws {
+    public func start(node: TailscaleNode) async throws {
         guard !isRunning else { return }
         guard let tailscaleHandle = await node.tailscale else {
             throw TailscaleError.badInterfaceHandle
@@ -99,7 +101,7 @@ final class TailscreenControlListener: @unchecked Sendable {
 
     /// Close the listener and any in-flight connections. After `stop()`,
     /// `start(node:)` can be called again with a fresh node.
-    func stop() async {
+    public func stop() async {
         isRunning = false
         let conns = connections.withLock { state -> [IncomingConnection] in
             let values = Array(state.values)
@@ -118,7 +120,7 @@ final class TailscreenControlListener: @unchecked Sendable {
     /// an annotation to a viewer). Best-effort; errors are swallowed
     /// because the receive task on the same connection will tear down a
     /// dead socket on its own.
-    func send(_ message: ScreenShareMessage, to connectionID: UUID) async {
+    public func send(_ message: ScreenShareMessage, to connectionID: UUID) async {
         guard let conn = connections.withLock({ $0[connectionID] }) else { return }
         try? await conn.send(message.encode())
     }
@@ -128,7 +130,7 @@ final class TailscreenControlListener: @unchecked Sendable {
     /// a blocked peer loses it along with its video. The connection's own
     /// receive loop then unwinds and fires `onConnectionClosed`, retiring the
     /// peer's tracked strokes on every canvas.
-    func close(connectionID: UUID) async {
+    public func close(connectionID: UUID) async {
         guard let conn = connections.withLock({ $0.removeValue(forKey: connectionID) }) else { return }
         await conn.close()
     }
@@ -136,7 +138,7 @@ final class TailscreenControlListener: @unchecked Sendable {
     /// Send a framed message to every connection except (optionally) one.
     /// Used by the share server's annotation fan-out so viewer A's stroke
     /// reaches viewer B without bouncing back to A.
-    func broadcast(_ message: ScreenShareMessage, excluding: UUID? = nil) async {
+    public func broadcast(_ message: ScreenShareMessage, excluding: UUID? = nil) async {
         let data = message.encode()
         let conns = connections.withLock { state -> [IncomingConnection] in
             state.compactMap { (id, conn) in id == excluding ? nil : conn }
