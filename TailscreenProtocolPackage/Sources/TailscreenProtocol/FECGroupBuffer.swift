@@ -60,9 +60,9 @@ public struct FECGroupBuffer: Sendable {
     }
 
     /// One recovered packet, ready for the shared video-ingest path.
-    public struct Recovery: Equatable {
-        let seq: UInt16
-        let packet: Data
+    public struct Recovery: Equatable, Sendable {
+        public let seq: UInt16
+        public let packet: Data
     }
 
     /// Retain one received video packet and re-check any buffered parity

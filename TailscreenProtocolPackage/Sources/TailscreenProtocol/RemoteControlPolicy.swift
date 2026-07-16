@@ -39,7 +39,7 @@ public enum RemoteControlPolicy {
 /// server forwards to the injector per window — defense against a malicious
 /// granted viewer flooding the input path. Not thread-safe; the caller holds
 /// it behind a lock.
-public struct EventRateLimiter {
+public struct EventRateLimiter: Sendable {
     public let maxEventsPerWindow: Int
     public let windowNs: UInt64
     private var stampsNs: [UInt64] = []

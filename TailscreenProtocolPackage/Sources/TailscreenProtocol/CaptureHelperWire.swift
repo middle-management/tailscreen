@@ -222,6 +222,8 @@ public struct HelperFrameReader {
 public struct HelperControlReader {
     public let handle: FileHandle
 
+    public init(handle: FileHandle) { self.handle = handle }
+
     public func readNext() -> (type: UInt8, payload: Data)? {
         guard let header = readExactly(5) else { return nil }
         let type = header[0]

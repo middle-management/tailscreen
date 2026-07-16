@@ -374,7 +374,7 @@ public struct ReceiverReport: Sendable, Equatable {
 }
 
 /// 12-byte fixed RTP header (no CSRC list, no extension).
-public struct RTPHeader {
+public struct RTPHeader: Sendable {
     public static let size = 12
     /// Dynamic payload type for H.264 (RFC 6184 default).
     public static let h264PayloadType: UInt8 = 96

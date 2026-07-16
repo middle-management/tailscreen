@@ -193,7 +193,7 @@ public final class RetransmitBuffer: @unchecked Sendable {
 
     /// Token-bucket state for the retransmit rate limiter. `tokens` is in
     /// packets; refilled at `BudgetConfig.tokensPerSecond`.
-    public struct BudgetState: Equatable {
+    public struct BudgetState: Equatable, Sendable {
         public var tokens: Double
         public var lastRefillNs: UInt64
 
@@ -206,7 +206,7 @@ public final class RetransmitBuffer: @unchecked Sendable {
     /// Retransmit rate-limit configuration. `tokensPerSecond` is derived from
     /// 25 % of the current bitrate divided by a nominal packet size; `maxTokens`
     /// caps burst.
-    public struct BudgetConfig: Equatable {
+    public struct BudgetConfig: Equatable, Sendable {
         public var tokensPerSecond: Double
         public var maxTokens: Double
 
