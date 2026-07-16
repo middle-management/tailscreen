@@ -188,8 +188,9 @@ done.
 **Grant** and **Deny** buttons (plus a notification if the menubar is
 closed). Before you grant, read the caption:
 
-> Granting gives full keyboard and mouse control of your entire Mac — not
-> just the shared window.
+Granting gives full keyboard and mouse control of your entire Mac — not
+just the shared window.
+{: .warning }
 
 That's not boilerplate. The *pointer* is confined to the shared content
 (a shared window or app can't be used to click your menu bar or Dock),

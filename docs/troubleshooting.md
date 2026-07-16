@@ -67,11 +67,12 @@ instantly" switch.
 This is by far the most common cause of an empty peer list when testing
 locally:
 
-> Both instances are using the same Tailscale state directory at
-> `~/Library/Application Support/Tailscreen/tailscale`. They both end up
-> with the same machine key. The tailnet thinks they're the same device.
-> **Browse Shares** excludes the device it's running on, so each instance
-> sees an empty list.
+Both instances are using the same Tailscale state directory at
+`~/Library/Application Support/Tailscreen/tailscale`. They both end up
+with the same machine key. The tailnet thinks they're the same device.
+**Browse Shares** excludes the device it's running on, so each instance
+sees an empty list.
+{: .note }
 
 Fix: use `./test-local.sh` (which sets `TAILSCREEN_INSTANCE` per child),
 or set it manually:

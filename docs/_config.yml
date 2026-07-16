@@ -11,8 +11,38 @@ plugins:
   - jekyll-remote-theme
   - jekyll-seo-tag
 
+# Custom color schemes under _sass/color_schemes/; head_custom.html swaps
+# to tailscreen-dark when the OS prefers dark.
+color_scheme: tailscreen
+
 search_enabled: true
 heading_anchors: true
+enable_copy_code_button: true
+
+back_to_top: true
+back_to_top_text: "Back to top"
+
+gh_edit_link: true
+gh_edit_link_text: "Edit this page on GitHub"
+gh_edit_repository: "https://github.com/middle-management/tailscreen"
+gh_edit_branch: "main"
+gh_edit_source: docs
+gh_edit_view_mode: "tree"
+
+callouts_level: quiet
+callouts:
+  note:
+    title: Note
+    color: blue
+  tip:
+    title: Tip
+    color: green
+  warning:
+    title: Warning
+    color: yellow
+  danger:
+    title: Danger
+    color: red
 
 aux_links:
   "GitHub":
