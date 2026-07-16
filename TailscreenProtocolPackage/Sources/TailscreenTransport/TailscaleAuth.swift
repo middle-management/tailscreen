@@ -1,20 +1,33 @@
-import AppKit
 import Foundation
 import TailscaleKit
+import TailscreenProtocol
 
-/// Manages Tailscale authentication state and user profile
+/// Manages Tailscale authentication state and user profile.
+///
+/// Platform-portable (TailscreenTransport): the one host-specific step —
+/// opening the interactive-login URL in a browser — is delegated to
+/// ``onOpenAuthURL`` (the mac app wires it to `NSWorkspace`; a Linux host
+/// would use `xdg-open` or just display the URL).
 @MainActor
-class TailscaleAuth: ObservableObject {
-    @Published var isAuthenticated = false
-    @Published var userProfile: TailscaleUserProfile?
-    @Published var authURL: String?
-    @Published var isLoading = false
+public class TailscaleAuth: ObservableObject {
+    @Published public var isAuthenticated = false
+    @Published public var userProfile: TailscaleUserProfile?
+    @Published public var authURL: String?
+    @Published public var isLoading = false
+
+    /// Called with the interactive-login URL when the flow needs the user
+    /// to visit their identity provider. Host-app policy — same pattern as
+    /// `TailscaleIPNWatcher.onBrowseToURL`. When unset, the URL is still
+    /// published via ``authURL`` so a UI can render it.
+    public var onOpenAuthURL: ((URL) -> Void)?
+
+    public init() {}
 
     private var localAPIClient: LocalAPIClient?
     private let logger = TSLogger()
 
     /// Checks authentication status and fetches user profile
-    func checkAuthStatus(node: TailscaleNode) async {
+    public func checkAuthStatus(node: TailscaleNode) async {
         // Don't set isLoading here - it interferes with login flow UI
         // isLoading should only be true during active login attempts
 
@@ -49,7 +62,7 @@ class TailscaleAuth: ObservableObject {
     }
 
     /// Initiates interactive login flow
-    func login(node: TailscaleNode) async throws {
+    public func login(node: TailscaleNode) async throws {
         guard !isLoading else {
             logger.log("⚠️ Login already in progress")
             return
@@ -117,11 +130,11 @@ class TailscaleAuth: ObservableObject {
             self.authURL = authURL
             logger.log("🔗 Auth URL: \(authURL)")
 
-            // Open auth URL in browser
+            // Hand the URL to the host app to open (browser policy is
+            // host-specific — see onOpenAuthURL).
             if let url = URL(string: authURL) {
-                logger.log("✅ Opening URL in browser: \(url)")
-                let success = NSWorkspace.shared.open(url)
-                logger.log("🔧 Browser open result: \(success)")
+                logger.log("✅ Opening auth URL: \(url)")
+                onOpenAuthURL?(url)
             } else {
                 logger.log("❌ Failed to create URL from: \(authURL)")
             }
@@ -135,7 +148,7 @@ class TailscaleAuth: ObservableObject {
     }
 
     /// Signs out the current user
-    func signOut() async throws {
+    public func signOut() async throws {
         guard let client = localAPIClient else {
             throw TailscaleAuthError.notInitialized
         }
@@ -155,9 +168,7 @@ class TailscaleAuth: ObservableObject {
     /// Polls for authentication completion
     private func pollForAuth(
         client: LocalAPIClient, node: TailscaleNode, maxAttempts: Int = 30
-    )
-        async throws
-    {
+    ) async throws {
         for attempt in 1...maxAttempts {
             try await Task.sleep(for: .seconds(2))
 
@@ -186,17 +197,23 @@ class TailscaleAuth: ObservableObject {
 }
 
 /// User profile information from Tailscale
-struct TailscaleUserProfile: Sendable {
-    let displayName: String
-    let loginName: String
-    let profilePicURL: String?
+public struct TailscaleUserProfile: Sendable {
+    public let displayName: String
+    public let loginName: String
+    public let profilePicURL: String?
+
+    public init(displayName: String, loginName: String, profilePicURL: String?) {
+        self.displayName = displayName
+        self.loginName = loginName
+        self.profilePicURL = profilePicURL
+    }
 }
 
-enum TailscaleAuthError: Error, LocalizedError {
+public enum TailscaleAuthError: Error, LocalizedError {
     case notInitialized
     case authTimeout
 
-    var errorDescription: String? {
+    public var errorDescription: String? {
         switch self {
         case .notInitialized:
             return "Authentication client not initialized"

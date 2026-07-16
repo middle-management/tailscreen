@@ -67,7 +67,7 @@ First build downloads Go modules; **network access required**.
 
 `TailscaleKitPackage/upstream/libtailscale` is pinned in `.gitmodules` (`ignore = dirty`). After a fresh clone, run `git submodule update --init --recursive` (or clone with `--recurse-submodules`).
 
-Patches in `TailscaleKitPackage/Patches/*.patch` are applied on top of the upstream Swift sources. They add things like a `Foundation` import, glue imports for C-bridge types, `send`/`receive` on connections, public `logout`, listener poll-timeout handling, the `tsnet ListenPacket` / `PacketListener` Swift wrapper used by the UDP video path, and Linux portability gates (patch 022 — Combine→AsyncStream fallback, Glibc syscall shim, `FoundationNetworking` imports, SOCKS-free direct-loopback LocalAPI). **Do not edit `TailscaleKitPackage/Sources/`** — those are symlinks into the submodule. Add or modify a patch instead, then re-run `make tailscale`. A new patch must be a sequential diff against the fully-patched tree (see `Patches/README.md` — the Makefile hard-fails on rejected hunks; `|| true` used to hide them and let GNU patch double-apply).
+Patches in `TailscaleKitPackage/Patches/*.patch` are applied on top of the upstream Swift sources. They add things like a `Foundation` import, glue imports for C-bridge types, `send`/`receive` on connections, public `logout`, listener poll-timeout handling, the `tsnet ListenPacket` / `PacketListener` Swift wrapper used by the UDP video path, a short-write-safe `OutgoingConnection.send` loop (patch 023 — replaced the app-side reflection hack that reached the private fd), and Linux portability gates (patch 022 — Combine→AsyncStream fallback, Glibc syscall shim, `FoundationNetworking` imports, SOCKS-free direct-loopback LocalAPI). **Do not edit `TailscaleKitPackage/Sources/`** — those are symlinks into the submodule. Add or modify a patch instead, then re-run `make tailscale`. A new patch must be a sequential diff against the fully-patched tree (see `Patches/README.md` — the Makefile hard-fails on rejected hunks; `|| true` used to hide them and let GNU patch double-apply).
 
 **TailscaleKit builds and passes its tests on Linux** (Go c-archive + Swift wrapper; CI job `linux-tailscalekit`). The live two-node tsnet exchange (TCP + UDP `PacketListener` + LocalAPI over local headscale via `scripts/e2e-up-native.sh`, which is OS-aware) has been verified manually on a Linux host — see `docs/porting-plan.md` Phase 1.
 
@@ -209,7 +209,8 @@ test suite reaches them via `@testable import TailscreenProtocol` /
 enforces the boundary.
 
 The package has a second tier: target **`TailscreenTransport`**
-(`TailscalePeerDiscovery` + `TailscaleIPNWatcher`), which depends on
+(`TailscalePeerDiscovery` + `TailscaleIPNWatcher` + `TailscaleAuth`, whose
+browser-open step is host-supplied via `onOpenAuthURL`), which depends on
 `TailscreenProtocol` and the patched `TailscaleKit`. Compiling it needs the
 submodule + patches (header only, no Go build — `make test-protocol`
 handles this), and its Combine surface (`ObservableObject`/`@Published`,

@@ -45,6 +45,11 @@ lives in the patch's diff comments. The categories of patches we carry:
   macOS for SOCK_DGRAM unix-socket pairs, leaving the netstack port
   bound. The patch promotes a `closeOnce` and exports a dedicated close
   function that owns teardown of both ends.
+- A short-write-safe `OutgoingConnection.send` (`023`): upstream did a
+  single `write(2)` and threw `shortWrite` on partial writes (socketpair
+  buffers are a few KB, so large frames legitimately short-write);
+  the patch loops like `IncomingConnection.send` already did. Replaced
+  the app-side `Mirror`-over-private-fd extension that papered over it.
 - Linux portability (`022`): `#if canImport(...)` gates so the wrapper
   builds on Linux — Combine state publishers get an `AsyncStream`
   fallback, the `Darwin.`-qualified syscalls get a Glibc shim, URLSession
