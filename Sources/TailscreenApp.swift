@@ -6,9 +6,13 @@ import SwiftUI
 /// (`MenubarIconStateTests`): an active share or view always wins, and a
 /// pending request-to-share only surfaces while the app is fully idle —
 /// mirroring `PendingRequestsBanner`, which keeps requests queued but
-/// invisible while a share/connection is up or in flight.
+/// invisible while a share/connection is up or in flight. While sharing,
+/// a pending remote-control request badges the sharing glyph — control is
+/// high-stakes and the OS notification is bundled-app-only, so the menubar
+/// must carry the signal too.
 enum MenubarIconState: Equatable {
     case sharing
+    case sharingControlRequested
     case viewing
     case requestPending
     case idle
@@ -16,9 +20,15 @@ enum MenubarIconState: Equatable {
     static func from(
         sharing: SharingState,
         connection: ConnectionState,
-        hasPendingRequests: Bool
+        hasPendingRequests: Bool,
+        hasControlRequests: Bool
     ) -> MenubarIconState {
-        if sharing == .active { return .sharing }
+        if sharing == .active {
+            // Control requests only exist while a share is up (the server
+            // surfaces them and stopSharing clears them), so the badge is
+            // meaningful only on the sharing glyph.
+            return hasControlRequests ? .sharingControlRequested : .sharing
+        }
         if connection == .viewing { return .viewing }
         if hasPendingRequests && sharing == .idle && connection == .idle {
             return .requestPending
@@ -50,7 +60,8 @@ struct TailscreenApp: App {
         let state = MenubarIconState.from(
             sharing: appState.sharingState,
             connection: appState.connectionState,
-            hasPendingRequests: !appState.metadataService.pendingRequests.isEmpty
+            hasPendingRequests: !appState.metadataService.pendingRequests.isEmpty,
+            hasControlRequests: !appState.controlRequests.isEmpty
         )
         let image: NSImage?
         let label: String
@@ -58,6 +69,9 @@ struct TailscreenApp: App {
         case .sharing:
             image = Self.sharingImage
             label = L("Tailscreen: sharing your screen")
+        case .sharingControlRequested:
+            image = Self.controlRequestImage
+            label = L("Tailscreen: a viewer is asking to control your Mac")
         case .viewing:
             image = Self.viewingImage
             label = L("Tailscreen: viewing a shared screen")
@@ -96,6 +110,12 @@ struct TailscreenApp: App {
     /// can never drift from the base artwork. `nil` exactly when the base
     /// is missing — the SF Symbol fallback in `menubarIcon` covers that.
     private static let requestImage = idleImage.map(badgedWithAttentionDot)
+
+    /// Sharing glyph with the same attention dot, shown while a viewer's
+    /// remote-control request is awaiting Grant / Deny. Reuses the sharing
+    /// template so the "you are sharing" signal stays visible under the
+    /// badge.
+    private static let controlRequestImage = sharingImage.map(badgedWithAttentionDot)
 
     /// Draw `base` with a small filled dot in the top-right corner. A
     /// slightly larger circle is knocked out of the base first so the dot
