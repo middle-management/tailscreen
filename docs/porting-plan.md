@@ -121,9 +121,13 @@ address now, additively, while all peers are macOS.
    `TailscalePeerDiscovery` / `TailscaleIPNWatcher` are now unblocked to
    join the portable set.
 8. **The app-state layer is Combine/SwiftUI-shaped.** `ObservableObject`
-   / `@Published` don't exist off-Apple (this is why
-   `ViewerAccessPolicyStore` stayed out of the portable set). Ports need
-   their own thin state layer; keep the portable core free of Combine.
+   / `@Published` don't exist off-Apple. `PortabilityShims.swift` now
+   provides non-Apple stand-ins (including a `$prop.values`-compatible
+   stream) so state classes like the transport tier's can join the
+   portable set unchanged — but there's still no SwiftUI/objectWillChange
+   machinery: non-mac UIs observe state their own way, and heavily
+   SwiftUI-bound stores (`ViewerAccessPolicyStore`, `AppState`) stay
+   mac-side.
 9. **Localization.** `L(_:)` rides `String(localized:bundle:)`, which is
    Apple-Foundation. Non-mac UIs need their own catalog mechanism; don't
    pull `Localization.swift` into the portable set.
@@ -162,8 +166,11 @@ path uses), and served LocalAPI status over the direct loopback path
 (`backend=Running`, peer visible — peer discovery works). Notably the
 WireGuard handshake that GitHub's *macOS* runner sandbox blocks completed
 without issue on Linux, so promoting the live two-node exchange to a
-Linux CI job is a realistic follow-up. Remaining from this phase: move
-`TailscalePeerDiscovery` / `TailscaleIPNWatcher` into the portable set.
+Linux CI job is a realistic follow-up. `TailscalePeerDiscovery` /
+`TailscaleIPNWatcher` are in the portable set (the
+`TailscreenTransport` target, Linux-built in CI) — a non-macOS client
+gets tailnet bring-up, peer discovery, and IPN-bus watching from the
+same sources the mac app ships.
 
 **Phase 2 — Linux viewer.** Headless first: dial a macOS sharer, HELLO,
 depacketize, FFmpeg-decode, assert on decoded frames (the Linux twin of

@@ -2,7 +2,9 @@ import Foundation
 
 /// Shared timeout marker thrown by `withTimeout` (and peer-discovery's
 /// continuation helpers).
-struct TimeoutError: Error {}
+public struct TimeoutError: Error {
+    public init() {}
+}
 
 /// Run `operation` and return its result, but throw `TimeoutError` if it
 /// hasn't completed within `seconds`.

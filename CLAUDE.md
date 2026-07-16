@@ -195,12 +195,27 @@ the harness is the end-to-end complement, not a replacement.
 ## Portable protocol core (TailscreenProtocolPackage)
 
 The wire protocol + pure decision logic (RTP/framing/control codecs, NACK/
-retransmit/FEC/RR loss recovery, policy/tuning types — 26 files, Foundation +
+retransmit/FEC/RR loss recovery, policy/tuning types — 27 files, Foundation +
 `Synchronization` only) doubles as a standalone SwiftPM package that builds
 **on Linux**: `TailscreenProtocolPackage`, whose sources are symlinks into
 `Sources/`. The macOS target still compiles the real files directly — same
 code, two modules, zero mac-side change. CI's `linux-protocol` job (and
 `make test-protocol` locally, macOS or Linux) enforces the boundary.
+
+The package has a second tier: target **`TailscreenTransport`**
+(`TailscalePeerDiscovery` + `TailscaleIPNWatcher`), which depends on
+`TailscreenProtocol` and the patched `TailscaleKit`. Compiling it needs the
+submodule + patches (header only, no Go build — `make test-protocol`
+handles this), and its Combine surface (`ObservableObject`/`@Published`,
+which mac Foundation re-exports) compiles on Linux via
+`PortabilityShims.swift` — whose `Published` shim provides a
+`$prop.values`-compatible AsyncStream because `TailscalePeerDiscovery`
+consumes `watcher.$peers.values`. Cross-module needs made a handful of
+protocol-tier types `public` (`TailscreenMetadata`, `VideoCodec`,
+`TimeoutError`, `TailscreenInstance`) — invisible to the mac build (same
+module there). The two transport files carry a
+`#if canImport(TailscreenProtocol)` import for the package build that
+compiles away in the app build.
 
 Rules (details in `TailscreenProtocolPackage/README.md`):
 - A symlinked file must not import Apple frameworks — no `os`

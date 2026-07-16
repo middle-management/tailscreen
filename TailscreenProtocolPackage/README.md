@@ -1,16 +1,30 @@
 # TailscreenProtocol
 
-The platform-portable core of Tailscreen: the port-7447 wire protocol
-(RTP packetization, framed TCP messages, UDP control bytes, helper/picker
-IPC payload types) plus the pure decision logic extracted from the async
-loops (NACK scheduling, retransmit budgeting, FEC codec/buffering,
-receiver-report accounting, receive-loop retry policy, remote-control
-gate/coalescing, zoom math, tuning constants).
+The platform-portable core of Tailscreen, in two targets/tiers:
 
-It compiles with **no Apple frameworks** — Foundation (+ the stdlib
-`Synchronization` module) only — so it builds and runs on Linux, and is the
-library a future non-macOS Tailscreen viewer or sharer links against. See
-`docs/porting-plan.md` for that roadmap.
+- **`TailscreenProtocol`** — the port-7447 wire protocol (RTP
+  packetization, framed TCP messages, UDP control bytes, helper/picker IPC
+  payload types) plus the pure decision logic extracted from the async
+  loops (NACK scheduling, retransmit budgeting, FEC codec/buffering,
+  receiver-report accounting, receive-loop retry policy, remote-control
+  gate/coalescing, zoom math, tuning constants). **No Apple frameworks and
+  no dependencies** — Foundation (+ the stdlib `Synchronization` module)
+  only.
+- **`TailscreenTransport`** — the tsnet-facing layer
+  (`TailscalePeerDiscovery`, `TailscaleIPNWatcher`). Depends on
+  `TailscreenProtocol` and on `TailscaleKit` (the patched wrapper, which
+  itself builds on Linux — see `TailscaleKitPackage/Patches/022`).
+  *Compiling* it needs only the checked-out submodule with patches applied
+  (`make -C ../TailscaleKitPackage apply-patches`); the built
+  `libtailscale.a` is a link-time input that nothing in this package links.
+  Their Combine surface (`ObservableObject`/`@Published`, which mac
+  Foundation re-exports) compiles on Linux via the shims in
+  `PortabilityShims.swift` — including a `$prop.values`-compatible
+  projected value, which `TailscalePeerDiscovery` consumes.
+
+Both build and run on Linux; they're the libraries a future non-macOS
+Tailscreen viewer or sharer links against. See `docs/porting-plan.md` for
+that roadmap.
 
 ## How it's put together
 
@@ -31,9 +45,10 @@ library a future non-macOS Tailscreen viewer or sharer links against. See
 ## Build & test
 
 ```bash
-make test-protocol                                  # from the repo root
-# or directly:
-swift test --package-path TailscreenProtocolPackage # works on macOS and Linux
+make test-protocol   # from the repo root (applies TailscaleKit patches first)
+# or directly (after `make -C TailscaleKitPackage apply-patches`):
+PKG_CONFIG_PATH="$PWD/TailscaleKitPackage" \
+  swift test --package-path TailscreenProtocolPackage  # macOS and Linux
 ```
 
 CI's `linux-protocol` job (`.github/workflows/build.yml`) runs exactly this

@@ -9,7 +9,7 @@ import Foundation
 /// when the host's VideoToolbox HW encoder accepts it); the viewer learns
 /// it from the RTP payload type. Distinct payload types (96/97) let the
 /// receiver demux without negotiation.
-enum VideoCodec: String, Codable, Sendable {
+public enum VideoCodec: String, Codable, Sendable {
     case h264
     case hevc
 }

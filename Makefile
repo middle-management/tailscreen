@@ -26,11 +26,15 @@ run: tailscale ## Build + run the debug binary
 test: tailscale ## Run the unit test suite (swift test)
 	swift test
 
-# The platform-portable sub-package (wire protocol + pure decision logic,
-# symlinked from Sources/ — see TailscreenProtocolPackage/README.md). Needs
-# no libtailscale and no Apple framework, so it also runs on Linux; CI's
-# linux-protocol job runs exactly this.
+# The platform-portable sub-package (wire protocol + pure decision logic +
+# the tsnet-facing transport tier, symlinked from Sources/ — see
+# TailscreenProtocolPackage/README.md). Needs no built libtailscale.a and no
+# Apple framework, so it also runs on Linux; CI's linux-protocol job runs
+# exactly this. The TailscreenTransport target compiles against TailscaleKit,
+# which needs the submodule checked out with patches applied (header only —
+# no Go build), hence the apply-patches prerequisite.
 test-protocol: ## Build + smoke-test the portable TailscreenProtocol package
+	@$(MAKE) -C TailscaleKitPackage apply-patches
 	swift test --package-path TailscreenProtocolPackage
 
 # Thread sanitizer build of the test suite. Catches data races on locks,

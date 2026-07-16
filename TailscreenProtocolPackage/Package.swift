@@ -3,12 +3,20 @@ import PackageDescription
 
 // TailscreenProtocol — the platform-portable core of Tailscreen.
 //
-// This package compiles the wire-protocol and pure decision-logic sources
-// (symlinked from ../Sources) with NO Apple framework imports, so it builds
-// on Linux (and eventually Windows). It exists to (a) enforce the
-// portability boundary in CI and (b) give future non-macOS clients a
-// library to depend on. The macOS app does not depend on this package —
+// This package compiles portable sources (symlinked from ../Sources) so
+// they build on Linux (and eventually Windows). It exists to (a) enforce
+// the portability boundary in CI and (b) give future non-macOS clients
+// libraries to depend on. The macOS app does not depend on this package —
 // it compiles the same files directly as part of the Tailscreen target.
+//
+// Two portability tiers, two targets:
+//   - TailscreenProtocol: wire protocol + pure decision logic. NO Apple
+//     frameworks, NO dependencies — Foundation/Synchronization only.
+//   - TailscreenTransport: tsnet-facing peer discovery + IPN-bus watcher.
+//     Depends on TailscaleKit (and thus on the checked-out submodule with
+//     patches applied — `make -C ../TailscaleKitPackage apply-patches`);
+//     compiling it needs only the patched header, not the built
+//     libtailscale.a (that's a link-time input).
 let package = Package(
     name: "TailscreenProtocol",
     platforms: [
@@ -20,12 +28,27 @@ let package = Package(
         .library(
             name: "TailscreenProtocol",
             targets: ["TailscreenProtocol"]
+        ),
+        .library(
+            name: "TailscreenTransport",
+            targets: ["TailscreenTransport"]
         )
+    ],
+    dependencies: [
+        .package(path: "../TailscaleKitPackage")
     ],
     targets: [
         .target(
             name: "TailscreenProtocol",
             path: "Sources/TailscreenProtocol"
+        ),
+        .target(
+            name: "TailscreenTransport",
+            dependencies: [
+                "TailscreenProtocol",
+                .product(name: "TailscaleKit", package: "TailscaleKitPackage")
+            ],
+            path: "Sources/TailscreenTransport"
         ),
         .testTarget(
             name: "TailscreenProtocolTests",

@@ -160,20 +160,28 @@ jobs:
         run: PKG_CONFIG_PATH="$PWD/TailscaleKitPackage" swift build -c release
 
   # Portability gate: the TailscreenProtocol sub-package (wire protocol +
-  # pure decision logic, symlinked from Sources/ — see
-  # TailscreenProtocolPackage/README.md) must build and pass its smoke tests
-  # on Linux, where no Apple framework exists. This is what keeps the
-  # portable set portable: an AppKit/os/CoreGraphics/VideoToolbox import
-  # sneaking into a symlinked file fails here, not on someone's future
-  # non-macOS port. Cheap (Linux minutes, no submodules, no Go build) and
+  # pure decision logic + the tsnet-facing TailscreenTransport tier,
+  # symlinked from Sources/ — see TailscreenProtocolPackage/README.md) must
+  # build and pass its smoke tests on Linux, where no Apple framework
+  # exists. This is what keeps the portable set portable: an
+  # AppKit/os/CoreGraphics/VideoToolbox import sneaking into a symlinked
+  # file fails here, not on someone's future non-macOS port. Cheap (Linux
+  # minutes, no Go build — the transport tier compiles against the patched
+  # tailscale.h; only linking needs the .a, and nothing here links it) and
   # required — a break is always a real portability regression.
   linux-protocol:
     runs-on: ubuntu-latest
     container: swift:6.1-noble
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The TailscreenTransport target depends on TailscaleKit, whose
+          # sources are symlinks into the submodule.
+          submodules: recursive
+      - name: Apply TailscaleKit patches (header only, no Go build)
+        run: make -C TailscaleKitPackage apply-patches
       - name: Build + test TailscreenProtocol on Linux
-        run: swift test --package-path TailscreenProtocolPackage
+        run: PKG_CONFIG_PATH="$PWD/TailscaleKitPackage" swift test --package-path TailscreenProtocolPackage
 
   # Transport-portability gate: libtailscale (Go c-archive) + the patched
   # TailscaleKit Swift wrapper must build and pass their unit tests on

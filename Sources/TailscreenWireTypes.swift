@@ -7,23 +7,23 @@ import Foundation
 // framework.
 
 /// Metadata about a Tailscreen screen share
-struct TailscreenMetadata: Codable, Sendable, Equatable {
-    var version: String = "1.0"
-    let shareName: String
-    let hostname: String
-    let screenResolution: ScreenResolution
-    let isSharing: Bool
+public struct TailscreenMetadata: Codable, Sendable, Equatable {
+    public var version: String = "1.0"
+    public let shareName: String
+    public let hostname: String
+    public let screenResolution: ScreenResolution
+    public let isSharing: Bool
     let timestamp: Date
     /// Codec the sharer is currently encoding with. Optional for backward
     /// compat with older peers that omit the field — when missing, assume
     /// H.264 (the only codec older Tailscreen builds spoke). The viewer
     /// also auto-detects from the RTP payload type, so this is mainly
     /// informational for the UI.
-    var videoCodec: VideoCodec?
+    public var videoCodec: VideoCodec?
 
-    struct ScreenResolution: Codable, Sendable, Equatable {
-        let width: Int
-        let height: Int
+    public struct ScreenResolution: Codable, Sendable, Equatable {
+        public let width: Int
+        public let height: Int
     }
 }
 
