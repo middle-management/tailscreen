@@ -28,19 +28,20 @@ that roadmap.
 
 ## How it's put together
 
-- `Sources/TailscreenProtocol/*.swift` are **symlinks into `../Sources/`**
-  (the same convention TailscaleKitPackage uses for its upstream). The
-  macOS app compiles those files directly as part of the `Tailscreen`
-  target; this package compiles the identical bytes a second time as a
-  standalone module. There is exactly one copy of the code.
-- The macOS app does **not** depend on this package (yet — flipping the
-  app to consume it as a real dependency is a follow-up that needs a Mac,
-  because it turns on access-control across a module boundary; see the
-  porting plan).
+- The sources live **only here** — the macOS app consumes this package as
+  a real SwiftPM dependency (`Package.swift` at the repo root declares it;
+  `Sources/ProtocolReexports.swift` `@_exported import`s both products so
+  app code keeps using the types unqualified).
+- Because the app crosses a module boundary, everything the app touches is
+  `public` — including explicit memberwise initializers (Swift never
+  synthesizes those as public). Test-only seams stay `internal`: the test
+  suite uses `@testable import TailscreenProtocol` /
+  `@testable import TailscreenTransport`.
 - `Tests/TailscreenProtocolTests` is a deliberately shallow smoke suite
   proving the module *runs* (encode/decode/recover round trips) on Linux.
   The exhaustive wire-format, loss-recovery, and fuzz coverage lives in the
-  main repo's `Tests/TailscreenTests`, which exercises these same sources.
+  main repo's `Tests/TailscreenTests`, which exercises this package through
+  the app's dependency.
 
 ## Build & test
 
@@ -60,15 +61,17 @@ inside a `swift:6.1-noble` container on every PR — that job is what
 1. **No Apple-framework imports.** Foundation, `Synchronization`, and
    `#if canImport(CoreGraphics)` (the CG geometry value types come from
    swift-corelibs-foundation on Linux) are the whitelist. No `os` (use
-   `Synchronization.Mutex`, not `OSAllocatedUnfairLock`), no `Darwin`, no
-   AppKit/VideoToolbox/CoreMedia/Combine.
-2. **Adding a file to the set:** keep the real file in `Sources/`, add a
-   relative symlink here (`ln -s ../../../Sources/Foo.swift Foo.swift`),
-   and confirm `make test-protocol` still passes.
-3. **A portable file may only reference other portable files.** If a
-   declaration a portable file needs lives in a mac-bound file, move that
-   declaration into a portable file first (same module on the mac side, so
-   the move is invisible there) — that's how `VideoCodecTypes.swift`,
+   `Synchronization.Mutex`, not `OSAllocatedUnfairLock`), no `Darwin`
+   (use a Glibc shim behind `canImport`), no
+   AppKit/VideoToolbox/CoreMedia/Combine (`PortabilityShims.swift`
+   provides `ObservableObject`/`@Published` stand-ins off-Apple).
+2. **Adding a file to the set:** `git mv` it from `Sources/` into the
+   right target here, mark what the app uses `public` (explicit inits for
+   app-constructed structs — Swift never synthesizes memberwise inits as
+   public), and confirm `make test-protocol` and `make build` still pass.
+3. **A portable file may only reference portable files.** If a declaration
+   it needs lives in a mac-bound app file, move that declaration into this
+   package first — that's how `VideoCodecTypes.swift`,
    `TailscreenWireTypes.swift`, and `TimeoutError` (in `Timeout.swift`)
    came to be.
 4. **Wire changes still follow the registry rule:** a new wire byte means a

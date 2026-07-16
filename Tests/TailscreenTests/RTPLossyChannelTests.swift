@@ -1,6 +1,8 @@
 import XCTest
 
 @testable import Tailscreen
+@testable import TailscreenProtocol
+@testable import TailscreenTransport
 
 /// End-to-end packetize → impair → depacketize coverage of the WAN failure
 /// modes that loopback and local-headscale never produce (reorder / loss /

@@ -12,9 +12,10 @@ platform, and the specific protocol/architecture problems a port surfaces —
 several of which are worth fixing on macOS first, while there's only one
 implementation to migrate.
 
-**Status:** Phase 0 is done — the portable core builds and passes smoke
-tests on Linux (`TailscreenProtocolPackage`, enforced by the `linux-protocol`
-CI job). Everything below Phase 0 is proposal.
+**Status:** Phases 0 and 1 are done — the portable core (a real SwiftPM
+dependency of the app since the flip) builds and passes smoke tests on
+Linux, TailscaleKit builds and tests on Linux, and the live two-node tsnet
+exchange is verified (see Phase 1 below). Phases 2+ are proposal.
 
 ## What carries over as-is
 
@@ -194,10 +195,11 @@ libtailscale as a Windows c-archive/DLL plus Swift-on-Windows toolchain CI.
 `FECCodecTests`, `NACKSchedulerTests`, `ParserFuzzTests`, …) from the main
 package into `TailscreenProtocolPackage` so they run on Linux CI too — they
 test portable code but currently import the mac-only `Tailscreen` module.
-And eventually flip the macOS app to *depend on* the protocol package
-instead of symlink-sharing its sources; that's an access-control migration
-(internal → public across a module boundary) best driven by a compiler on
-a Mac, which is why Phase 0 used symlinks.
+The flip of the macOS app to *depend on* the protocol package (instead of
+the symlink-sharing Phase 0 started with) is done — the access-control
+migration (internal → public across the module boundary, explicit
+memberwise inits) was driven blind via macOS CI and converged in one
+fixup round.
 
 ## Explicit non-goals (for now)
 

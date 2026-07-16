@@ -1,6 +1,8 @@
 import XCTest
 
 @testable import Tailscreen
+@testable import TailscreenProtocol
+@testable import TailscreenTransport
 
 /// Unit tests for the viewer-consent machinery that runs without tsnet:
 /// the persistent per-peer allow/deny store (`ViewerAccessPolicyStore`),

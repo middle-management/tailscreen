@@ -4,6 +4,8 @@ import TailscaleKit
 import XCTest
 
 @testable import Tailscreen
+@testable import TailscreenProtocol
+@testable import TailscreenTransport
 
 /// End-to-end with TWO viewers on one server over real tsnet (local
 /// headscale). Covers two things that a single-viewer test can't:

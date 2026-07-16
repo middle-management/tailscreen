@@ -1,6 +1,8 @@
 import XCTest
 
 @testable import Tailscreen
+@testable import TailscreenProtocol
+@testable import TailscreenTransport
 
 /// Unit tests for the voice-path resilience decisions. Pure functions, no
 /// tsnet, no audio hardware — the extract-the-decision pattern from

@@ -3,11 +3,11 @@ import PackageDescription
 
 // TailscreenProtocol — the platform-portable core of Tailscreen.
 //
-// This package compiles portable sources (symlinked from ../Sources) so
-// they build on Linux (and eventually Windows). It exists to (a) enforce
-// the portability boundary in CI and (b) give future non-macOS clients
-// libraries to depend on. The macOS app does not depend on this package —
-// it compiles the same files directly as part of the Tailscreen target.
+// These sources live only here and build on Linux (and eventually
+// Windows). The macOS app consumes this package as a real SwiftPM
+// dependency (re-exported via Sources/ProtocolReexports.swift), so the
+// package's public API is the app's compile-time contract. CI enforces
+// the portability boundary (linux-protocol job).
 //
 // Two portability tiers, two targets:
 //   - TailscreenProtocol: wire protocol + pure decision logic. NO Apple

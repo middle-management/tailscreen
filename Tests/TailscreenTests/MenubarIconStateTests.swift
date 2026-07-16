@@ -1,6 +1,8 @@
 import XCTest
 
 @testable import Tailscreen
+@testable import TailscreenProtocol
+@testable import TailscreenTransport
 
 /// Pins the menubar glyph precedence: active share beats everything,
 /// active view beats requests, and a pending request-to-share only

@@ -1,6 +1,8 @@
 import XCTest
 
 @testable import Tailscreen
+@testable import TailscreenProtocol
+@testable import TailscreenTransport
 
 /// Pins the mac virtual-keycode ↔ USB HID usage table that carries key
 /// events across the platform-neutral wire (`InputEvent.keyDown/.keyUp`).

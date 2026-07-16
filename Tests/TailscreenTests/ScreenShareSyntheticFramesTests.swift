@@ -4,6 +4,8 @@ import TailscaleKit
 import XCTest
 
 @testable import Tailscreen
+@testable import TailscreenProtocol
+@testable import TailscreenTransport
 
 /// End-to-end: server (no capture-helper) → RTP → real tsnet transport → client
 /// → `VideoDecoder` → `MetalViewerRenderer`. Synthetic AVCC bytes generated in

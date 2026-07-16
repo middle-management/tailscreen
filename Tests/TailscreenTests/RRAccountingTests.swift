@@ -1,6 +1,8 @@
 import XCTest
 
 @testable import Tailscreen
+@testable import TailscreenProtocol
+@testable import TailscreenTransport
 
 /// Pure-decision tests for `RRAccounting` — the viewer's receiver-report
 /// bookkeeping, extracted from `TailscaleScreenShareClient` so the baseline

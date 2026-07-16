@@ -1,6 +1,8 @@
 import XCTest
 
 @testable import Tailscreen
+@testable import TailscreenProtocol
+@testable import TailscreenTransport
 
 final class TailscalePeerDiscoveryTests: XCTestCase {
     func testPreferIPv4PicksIPv4FromMixedList() {

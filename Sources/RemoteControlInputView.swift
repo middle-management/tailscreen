@@ -18,9 +18,6 @@ final class RemoteControlInputView: NSView {
     var onEvent: ((InputEvent) -> Void)?
 
     private var trackingArea: NSTrackingArea?
-    /// Latest neutral modifier state (from `flagsChanged`), folded into
-    /// key/button/scroll events so the sharer reproduces held modifiers.
-    private var currentModifiers: KeyModifiers = []
     /// ~90 Hz throttle on move emission. Down/up/scroll/key are never dropped.
     private var lastMoveEmitNs: UInt64 = 0
     private static let moveEmitMinIntervalNs: UInt64 = 11_000_000
@@ -114,10 +111,15 @@ final class RemoteControlInputView: NSView {
         let point = normalized(event)
         let x = Double(point.x)
         let y = Double(point.y)
+        // Each NSEvent carries the modifier state at event time — never a
+        // cached snapshot, which goes stale whenever a modifier is released
+        // while this view is hidden (revoke) or the app inactive (⌘-Tab)
+        // and would then inject a plain click as a modified one.
+        let modifiers = Self.keyModifiers(from: event.modifierFlags)
         if down {
-            onEvent?(.mouseDown(x: x, y: y, button: button, modifiers: currentModifiers))
+            onEvent?(.mouseDown(x: x, y: y, button: button, modifiers: modifiers))
         } else {
-            onEvent?(.mouseUp(x: x, y: y, button: button, modifiers: currentModifiers))
+            onEvent?(.mouseUp(x: x, y: y, button: button, modifiers: modifiers))
         }
     }
 
@@ -132,7 +134,7 @@ final class RemoteControlInputView: NSView {
                 y: Double(point.y),
                 deltaX: Double(event.scrollingDeltaX) * unit,
                 deltaY: Double(event.scrollingDeltaY) * unit,
-                modifiers: currentModifiers))
+                modifiers: Self.keyModifiers(from: event.modifierFlags)))
     }
 
     // MARK: - Keyboard
@@ -141,16 +143,12 @@ final class RemoteControlInputView: NSView {
         // Keys outside the HID table have no wire representation — drop
         // rather than guess (see MacKeyCodeMapping).
         guard let usage = MacKeyCodeMapping.hidUsage(forMacKeyCode: event.keyCode) else { return }
-        onEvent?(.keyDown(key: usage, modifiers: currentModifiers))
+        onEvent?(.keyDown(key: usage, modifiers: Self.keyModifiers(from: event.modifierFlags)))
     }
 
     override func keyUp(with event: NSEvent) {
         guard let usage = MacKeyCodeMapping.hidUsage(forMacKeyCode: event.keyCode) else { return }
-        onEvent?(.keyUp(key: usage, modifiers: currentModifiers))
-    }
-
-    override func flagsChanged(with event: NSEvent) {
-        currentModifiers = Self.keyModifiers(from: event.modifierFlags)
+        onEvent?(.keyUp(key: usage, modifiers: Self.keyModifiers(from: event.modifierFlags)))
     }
 
     /// Map AppKit modifier flags to the wire's neutral ``KeyModifiers`` set.

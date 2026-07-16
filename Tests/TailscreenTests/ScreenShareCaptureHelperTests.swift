@@ -5,6 +5,8 @@ import XCTest
 import os
 
 @testable import Tailscreen
+@testable import TailscreenProtocol
+@testable import TailscreenTransport
 
 /// Local-only end-to-end: spawns the real `--capture-helper` child against the
 /// main display, sends frames over real tsnet transport, and asserts the

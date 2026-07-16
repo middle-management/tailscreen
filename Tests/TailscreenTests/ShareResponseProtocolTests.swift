@@ -1,6 +1,8 @@
 import XCTest
 
 @testable import Tailscreen
+@testable import TailscreenProtocol
+@testable import TailscreenTransport
 
 /// Wire-format tests for the `.shareResponse` (0x05) control message that
 /// finishes the request-to-share round-trip. CI-able — pure parser, no

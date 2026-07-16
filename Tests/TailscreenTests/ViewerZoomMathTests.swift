@@ -1,6 +1,8 @@
 import XCTest
 
 @testable import Tailscreen
+@testable import TailscreenProtocol
+@testable import TailscreenTransport
 
 /// Unit tests for the viewer's content zoom/pan geometry. Pure functions,
 /// no AppKit windows — the CI-able core extracted from

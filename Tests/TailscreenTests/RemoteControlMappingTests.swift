@@ -2,6 +2,8 @@ import CoreGraphics
 import XCTest
 
 @testable import Tailscreen
+@testable import TailscreenProtocol
+@testable import TailscreenTransport
 
 /// Pure coordinate-mapping tests for the remote-control injector — the
 /// normalized `[0, 1]` video point → global-Quartz transform, per share kind

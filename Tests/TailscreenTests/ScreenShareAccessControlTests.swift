@@ -3,6 +3,8 @@ import TailscaleKit
 import XCTest
 
 @testable import Tailscreen
+@testable import TailscreenProtocol
+@testable import TailscreenTransport
 
 /// End-to-end for the viewer-consent gate over real tsnet transport
 /// (pattern of `ScreenShareSyntheticFramesTests` — headless `filterData:

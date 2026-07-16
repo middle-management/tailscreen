@@ -4,6 +4,8 @@ import VideoToolbox
 import XCTest
 
 @testable import Tailscreen
+@testable import TailscreenProtocol
+@testable import TailscreenTransport
 
 /// Pure-decision tests for the wide-gamut / 10-bit / HDR color pipeline.
 /// No GPU, display, VideoToolbox session, or tsnet node — just the

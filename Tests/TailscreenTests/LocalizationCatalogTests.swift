@@ -1,6 +1,8 @@
 import XCTest
 
 @testable import Tailscreen
+@testable import TailscreenProtocol
+@testable import TailscreenTransport
 
 /// Guards the CLAUDE.md invariant that every `L("…")` call-site key in
 /// `Sources/` exists byte-for-byte in the base catalog

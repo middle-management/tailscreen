@@ -4,6 +4,8 @@ import XCTest
 import os
 
 @testable import Tailscreen
+@testable import TailscreenProtocol
+@testable import TailscreenTransport
 
 /// End-to-end: two ephemeral Tailscale nodes in one process (server + client),
 /// client dials server's Tailscale IP and exchanges bytes over the real tsnet

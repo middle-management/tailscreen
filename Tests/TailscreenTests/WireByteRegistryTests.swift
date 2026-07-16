@@ -1,6 +1,8 @@
 import XCTest
 
 @testable import Tailscreen
+@testable import TailscreenProtocol
+@testable import TailscreenTransport
 
 /// Single source of truth for **every** wire byte Tailscreen puts on a pipe
 /// or socket, pinned per channel. Three legs per channel:
@@ -345,5 +347,36 @@ final class WireByteRegistryTests: XCTestCase {
         // renumber either side, and do not add cross-channel uniqueness here.
         XCTAssertEqual(ScreenShareMessage.MessageType.controlReleased.rawValue, 0x0A)
         XCTAssertEqual(ScreenShareControlMessage.nack.rawValue, 0x0A)
+    }
+
+    /// Registry: the neutral `KeyModifiers` wire bits carried in
+    /// `InputEvent` JSON (`modifiers`). Platform-neutral by design — each
+    /// endpoint translates to native flags — so renumbering a shipped bit
+    /// silently flips modifiers for deployed peers.
+    func testKeyModifierWireBits() {
+        let pinned: [(name: String, bit: KeyModifiers, raw: UInt16)] = [
+            ("shift", .shift, 1 << 0),
+            ("control", .control, 1 << 1),
+            ("alt", .alt, 1 << 2),
+            ("meta", .meta, 1 << 3),
+            ("capsLock", .capsLock, 1 << 4)
+        ]
+        for row in pinned {
+            XCTAssertEqual(
+                row.bit.rawValue, row.raw,
+                "KeyModifiers.\(row.name) drifted from its registry row")
+            XCTAssertEqual(
+                row.bit.rawValue.nonzeroBitCount, 1,
+                "KeyModifiers.\(row.name) must be a single bit")
+        }
+        // Exhaustiveness teeth: the production-side `allKnown` mask must
+        // equal the union of the registry rows — a new bit MUST be added to
+        // `allKnown` when defined, and then this check fails until it gets
+        // a registry row.
+        XCTAssertEqual(
+            KeyModifiers.allKnown.rawValue,
+            pinned.reduce(UInt16(0)) { $0 | $1.raw },
+            "KeyModifiers.allKnown and the registry table disagree — add the "
+                + "new bit a registry row (and never renumber a shipped one).")
     }
 }

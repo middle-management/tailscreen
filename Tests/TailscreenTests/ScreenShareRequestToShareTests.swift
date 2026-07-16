@@ -3,6 +3,8 @@ import TailscaleKit
 import XCTest
 
 @testable import Tailscreen
+@testable import TailscreenProtocol
+@testable import TailscreenTransport
 
 /// End-to-end for the peer-to-peer "request to share" prompt and its
 /// accept/decline round-trip. One node stands up a

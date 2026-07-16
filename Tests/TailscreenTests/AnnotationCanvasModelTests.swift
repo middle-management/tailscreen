@@ -1,6 +1,8 @@
 import XCTest
 
 @testable import Tailscreen
+@testable import TailscreenProtocol
+@testable import TailscreenTransport
 
 /// Unit tests for `AnnotationCanvasModel` — the pure canvas state machine
 /// shared by the sharer overlay and the viewer overlay. Pointer input, the

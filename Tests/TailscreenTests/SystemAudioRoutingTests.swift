@@ -1,6 +1,8 @@
 import XCTest
 
 @testable import Tailscreen
+@testable import TailscreenProtocol
+@testable import TailscreenTransport
 
 /// CI-able coverage of the viewer-side audio demux: the pure
 /// `VoiceChannel.audioRoute` decision plus an in-process `receive` that proves

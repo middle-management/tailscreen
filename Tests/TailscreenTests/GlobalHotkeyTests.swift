@@ -2,6 +2,8 @@ import Carbon.HIToolbox
 import XCTest
 
 @testable import Tailscreen
+@testable import TailscreenProtocol
+@testable import TailscreenTransport
 
 /// Pins the Carbon hotkey dispatch filter: each `GlobalHotkey` installs its
 /// own event handler on the shared application event target, and Carbon

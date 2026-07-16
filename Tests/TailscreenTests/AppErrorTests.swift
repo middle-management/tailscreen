@@ -1,6 +1,8 @@
 import XCTest
 
 @testable import Tailscreen
+@testable import TailscreenProtocol
+@testable import TailscreenTransport
 
 /// Unit tests for the `AppError` user-facing error model: identity-based
 /// equality, the Copy Details payload, and the stability of the `TS-…`

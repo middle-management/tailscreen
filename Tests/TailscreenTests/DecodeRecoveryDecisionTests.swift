@@ -1,6 +1,8 @@
 import XCTest
 
 @testable import Tailscreen
+@testable import TailscreenProtocol
+@testable import TailscreenTransport
 
 /// Unit tests for the viewer's consecutive-decode-failure escalation ladder
 /// (`VideoDecoder.decodeRecoveryAction`). Pure function, no VideoToolbox, no
