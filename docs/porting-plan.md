@@ -30,7 +30,7 @@ exchange is verified (see Phase 1 below). Phases 2+ are proposal.
   base profile — HELLO, RTP depacketize, PLI — interoperates with every
   shipped macOS sharer, then earns NACK/RR/FEC incrementally by
   advertising caps.
-- **The portable core (~7 k lines, 29 files + the 2-file transport tier).** RTP packetization, TCP
+- **The portable core (~7 k lines, 29 files + the 3-file transport tier incl. interactive auth).** RTP packetization, TCP
   framing, UDP control codecs, NACK/retransmit/FEC/RR loss recovery, the
   congestion/fairness decision functions, remote-control gate/coalescing
   policy, zoom math, tuning constants. This is `TailscreenProtocol` and it

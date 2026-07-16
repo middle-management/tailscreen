@@ -136,14 +136,15 @@ final class TailscaleConnectivityTests: XCTestCase {
         let received = try await incoming.receive(maximumLength: 4096, timeout: 10_000)
         XCTAssertEqual(received, payload, "Server should receive exactly what client sent")
 
-        // Server → client (round-trip). Need POSIX write via the project's extension.
+        // Server → client (round-trip) via TailscaleKit's own send (patch 006
+        // gave IncomingConnection a write-until-complete loop).
         let reply = Data("ack".utf8)
         try await incoming.send(reply)
 
-        // OutgoingConnection lacks a public receive; use raw fd via reflection,
-        // mirroring the technique in TailscaleConnectionExtension. For this test,
-        // just confirm the client can send without error after connect — full
-        // bidirectional check covered by the client→server leg above.
+        // Client-side send rides TailscaleKit too (patch 023 made
+        // OutgoingConnection.send short-write-safe). Just confirm the client
+        // can send without error after connect — the full bidirectional check
+        // is covered by the client→server leg above.
         try await client.send(Data("bye".utf8))
 
         // Cleanup.

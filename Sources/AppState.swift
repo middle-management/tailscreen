@@ -388,6 +388,10 @@ class AppState: ObservableObject {
             self?.objectWillChange.send()
         }.store(in: &cancellables)
 
+        // Browser-opening is host-app policy: TailscaleAuth is portable
+        // (TailscreenTransport) and never touches NSWorkspace itself.
+        tailscaleAuth.onOpenAuthURL = { NSWorkspace.shared.open($0) }
+
         // `@Published var metadataService` only fires when the *reference*
         // changes, not when its inner `@Published` properties (notably
         // `pendingRequests`) mutate. Mirror its `objectWillChange` through
