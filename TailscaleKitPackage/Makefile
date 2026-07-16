@@ -28,10 +28,21 @@ $(PATCH_MARKER):
 		exit 1; \
 	fi
 	@echo "🔧 Applying patches to upstream Swift sources..."
+	@# A rejected hunk is a hard error. The marker file already guarantees
+	@# this loop only runs against a pristine submodule, so "already
+	@# applied" can't legitimately happen — and the old `|| true` here
+	@# silently swallowed a stale hunk in patch 021 for months (GNU patch
+	@# fuzz-fitted it into duplicate Go functions; BSD patch rejected it
+	@# invisibly). If a patch fails: reset the submodule
+	@# (git -C upstream/libtailscale checkout -- . && git -C
+	@# upstream/libtailscale clean -fd), fix the patch, re-run.
 	@for patch in $(PATCHES_DIR)/*.patch; do \
 		if [ -f "$$patch" ]; then \
 			echo "   Applying $$(basename $$patch)..."; \
-			patch -p1 -N -r - --no-backup-if-mismatch < "$$patch" || true; \
+			patch -p1 -N -r - --no-backup-if-mismatch < "$$patch" || { \
+				echo "❌ $$(basename $$patch) failed to apply cleanly"; \
+				exit 1; \
+			}; \
 		fi; \
 	done
 	@touch $(PATCH_MARKER)

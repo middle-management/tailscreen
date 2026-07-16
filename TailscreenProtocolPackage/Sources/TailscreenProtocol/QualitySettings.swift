@@ -1,0 +1,1 @@
+../../../Sources/QualitySettings.swift

@@ -1,6 +1,14 @@
 import Foundation
 import TailscaleKit
 
+#if canImport(TailscreenProtocol)
+// In the portable package build these files live in their own module
+// (TailscreenTransport) and pull the wire/utility types from
+// TailscreenProtocol. In the macOS app build everything is one module and
+// this import compiles away.
+import TailscreenProtocol
+#endif
+
 /// One Tailscreen installation on the tailnet.
 ///
 /// Identified by hostname prefix (see `TailscreenInstance.isTailscreenServerHostname`)
@@ -270,7 +278,8 @@ class TailscalePeerDiscovery: ObservableObject {
     }
 }
 
-struct TimeoutError: Error {}
+// TimeoutError lives in Timeout.swift (platform-portable, part of
+// TailscreenProtocol).
 
 // MARK: - Continuation helpers
 

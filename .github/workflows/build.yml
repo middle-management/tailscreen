@@ -159,6 +159,65 @@ jobs:
       - name: Build (release)
         run: PKG_CONFIG_PATH="$PWD/TailscaleKitPackage" swift build -c release
 
+  # Portability gate: the TailscreenProtocol sub-package (wire protocol +
+  # pure decision logic + the tsnet-facing TailscreenTransport tier,
+  # symlinked from Sources/ — see TailscreenProtocolPackage/README.md) must
+  # build and pass its smoke tests on Linux, where no Apple framework
+  # exists. This is what keeps the portable set portable: an
+  # AppKit/os/CoreGraphics/VideoToolbox import sneaking into a symlinked
+  # file fails here, not on someone's future non-macOS port. Cheap (Linux
+  # minutes, no Go build — the transport tier compiles against the patched
+  # tailscale.h; only linking needs the .a, and nothing here links it) and
+  # required — a break is always a real portability regression.
+  linux-protocol:
+    runs-on: ubuntu-latest
+    container: swift:6.1-noble
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The TailscreenTransport target depends on TailscaleKit, whose
+          # sources are symlinks into the submodule.
+          submodules: recursive
+      - name: Install make
+        # The swift:*-noble images are slim — no make (or gcc). The patch
+        # loop lives in TailscaleKitPackage/Makefile, so make is required.
+        run: apt-get update && apt-get install -y --no-install-recommends make
+      - name: Apply TailscaleKit patches (header only, no Go build)
+        run: make -C TailscaleKitPackage apply-patches
+      - name: Build + test TailscreenProtocol on Linux
+        run: PKG_CONFIG_PATH="$PWD/TailscaleKitPackage" swift test --package-path TailscreenProtocolPackage
+
+  # Transport-portability gate: libtailscale (Go c-archive) + the patched
+  # TailscaleKit Swift wrapper must build and pass their unit tests on
+  # Linux. This is the compile-time half of the porting plan's Phase 1;
+  # the live two-node tsnet exchange (TCP + UDP PacketListener + LocalAPI
+  # over local headscale) was verified manually on Linux and stays
+  # local-only for now — Linux runners likely CAN run it (unlike the
+  # macOS-sandbox-blocked handshake), which is a candidate follow-up.
+  linux-tailscalekit:
+    runs-on: ubuntu-latest
+    container: swift:6.1-noble
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install build tools
+        # noble's golang-go is 1.22 — above the repo's 1.21 floor. Kept
+        # apt-simple because setup-go's tool cache doesn't apply inside
+        # this container. The swift:*-noble images are slim: make isn't
+        # present, and cgo wants gcc (the image only guarantees clang).
+        run: apt-get update && apt-get install -y --no-install-recommends golang-go make gcc libc6-dev
+      - name: Build libtailscale (patched) on Linux
+        env:
+          # The job runs as root in the container while the checkout is
+          # owned by the runner uid, so git inside the submodule reports
+          # "dubious ownership" and Go's VCS stamping dies with exit 128.
+          # The stamp is worthless for a c-archive — skip it.
+          GOFLAGS: -buildvcs=false
+        run: make -C TailscaleKitPackage
+      - name: Test TailscaleKit on Linux
+        run: PKG_CONFIG_PATH="$PWD/TailscaleKitPackage" swift test --package-path TailscaleKitPackage
+
   lint:
     runs-on: macos-latest
     steps:

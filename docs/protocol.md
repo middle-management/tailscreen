@@ -227,7 +227,7 @@ The message types on this channel:
 | `0x06` | `controlRequest`  | viewer → sharer | "Let me control your Mac."                       |
 | `0x07` | `controlGranted`  | sharer → viewer | You have control.                                |
 | `0x08` | `controlRevoked`  | sharer → viewer | Control ended (`{reason}`).                      |
-| `0x09` | `inputEvent`      | viewer → sharer | Mouse move/down/up/scroll, key down/up. Coordinates normalized `[0,1]` top-left, same convention as annotations. |
+| `0x09` | `inputEvent`      | viewer → sharer | Mouse move/down/up/scroll (left/right/middle), key down/up. Coordinates normalized `[0,1]` top-left, same convention as annotations. Keys are **USB HID keyboard-page usage IDs** and modifiers a five-bit platform-neutral set (shift/control/alt/meta/capsLock) — no platform's native keycodes or flag bits ever ride the wire; each endpoint translates (macOS: `MacKeyCodeMapping`). Button/scroll events carry the modifier snapshot too, so modified clicks work. |
 | `0x0A` | `controlReleased` | viewer → sharer | "I'm done controlling" — the sharer revokes so UI and gate clear in step. |
 
 `0x00`–`0x02` are historical and stay reserved. Types `0x0A`–`0x0C` also

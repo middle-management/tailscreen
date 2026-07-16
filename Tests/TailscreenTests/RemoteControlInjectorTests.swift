@@ -3,10 +3,12 @@ import XCTest
 
 @testable import Tailscreen
 
-/// Tests the injector's revoke gate, stuck-button release, and modifier
-/// masking via the `onInjectForTesting` seam (no real `CGEventPost`, so the
-/// CI cursor is never warped). The coordinate mapping itself is covered by
-/// `RemoteControlMappingTests`.
+/// Tests the injector's revoke gate, stuck-button release, and the
+/// wire-neutral → CGEvent translation (HID usage → mac keycode,
+/// `KeyModifiers` → `CGEventFlags`) via the `onInjectForTesting` seam (no
+/// real `CGEventPost`, so the CI cursor is never warped). The coordinate
+/// mapping itself is covered by `RemoteControlMappingTests`, and the
+/// kVK↔HID table by `MacKeyCodeMappingTests`.
 final class RemoteControlInjectorTests: XCTestCase {
     /// Serial-queue-safe recorder for the injected-action stream.
     private final class Recorder: @unchecked Sendable {
@@ -34,29 +36,60 @@ final class RemoteControlInjectorTests: XCTestCase {
     private let displaySelection = PickerSelection(
         kind: .display, displayID: nil, windowID: nil, bundleIDs: [])
 
-    // MARK: - Modifier masking (finding 6)
+    // MARK: - Neutral-wire → CGEvent translation (supersedes the old raw-flag
+    // masking: flags are now *constructed* from the neutral bits, so nothing
+    // wire-supplied can reach CGEventFlags unmasked)
 
-    func testMaskedFlagsDropsUnknownBits() {
-        // Every bit set on the wire must reduce to exactly the allowed set.
+    func testEventFlagsTranslatesEachNeutralBit() {
+        XCTAssertEqual(RemoteControlInjector.eventFlags([.shift]), [.maskShift])
+        XCTAssertEqual(RemoteControlInjector.eventFlags([.control]), [.maskControl])
+        XCTAssertEqual(RemoteControlInjector.eventFlags([.alt]), [.maskAlternate])
+        XCTAssertEqual(RemoteControlInjector.eventFlags([.meta]), [.maskCommand])
+        XCTAssertEqual(RemoteControlInjector.eventFlags([.capsLock]), [.maskAlphaShift])
         XCTAssertEqual(
-            RemoteControlInjector.maskedFlags(.max), RemoteControlInjector.allowedModifierMask)
+            RemoteControlInjector.eventFlags([.meta, .shift]), [.maskCommand, .maskShift])
     }
 
-    func testMaskedFlagsPreservesKnownCombo() {
-        let combo = RemoteControlInputView.cgFlags(from: [.command, .shift])
-        XCTAssertEqual(RemoteControlInjector.maskedFlags(combo), combo)
-        // A stray high bit outside the allowed set is stripped, the combo kept.
-        XCTAssertEqual(RemoteControlInjector.maskedFlags(combo | (UInt64(1) << 40)), combo)
+    func testEventFlagsIgnoresUnknownWireBits() {
+        // A hostile viewer setting every bit of the wire bitmask gets exactly
+        // the five known modifiers translated — nothing else.
+        let everything = KeyModifiers(rawValue: .max)
+        XCTAssertEqual(
+            RemoteControlInjector.eventFlags(everything),
+            RemoteControlInjector.eventFlags(KeyModifiers.allKnown))
     }
 
-    func testKeyEventFlagsAreMaskedBeforeInjection() {
+    func testViewerModifierCaptureRoundTripsThroughInjector() {
+        // NSEvent flags → neutral wire bits → CGEventFlags, end to end.
+        let wire = RemoteControlInputView.keyModifiers(from: [.command, .shift])
+        XCTAssertEqual(wire, [.meta, .shift])
+        XCTAssertEqual(RemoteControlInjector.eventFlags(wire), [.maskCommand, .maskShift])
+    }
+
+    func testKeyEventTranslatesHIDUsageToMacKeyCode() {
         let (injector, recorder) = makeInjector()
         injector.activate(selection: displaySelection)
-        injector.apply(.keyDown(keyCode: 0x24, modifiers: .max))
+        // HID 0x28 (Enter) with every wire bit set → kVK 0x24 (Return) with
+        // only the known modifiers translated.
+        injector.apply(.keyDown(key: 0x28, modifiers: KeyModifiers(rawValue: .max)))
         injector.drainSyncForTesting()
         XCTAssertEqual(
             recorder.all,
-            [.keyDown(keyCode: 0x24, flags: RemoteControlInjector.allowedModifierMask)])
+            [
+                .keyDown(
+                    keyCode: 0x24,
+                    flags: RemoteControlInjector.eventFlags(KeyModifiers.allKnown).rawValue)
+            ])
+    }
+
+    func testUnmappableHIDUsageIsDroppedNotGuessed() {
+        let (injector, recorder) = makeInjector()
+        injector.activate(selection: displaySelection)
+        // HID 0x49 (Insert) has no mac key; injecting a guess would type the
+        // wrong character, so the event must vanish.
+        injector.apply(.keyDown(key: 0x49, modifiers: []))
+        injector.drainSyncForTesting()
+        XCTAssertTrue(recorder.all.isEmpty)
     }
 
     // MARK: - Revoke gate (finding 3a)
@@ -76,7 +109,7 @@ final class RemoteControlInjectorTests: XCTestCase {
         injector.drainSyncForTesting()
         // Input arriving after revoke must never inject.
         injector.apply(.mouseMove(x: 0.4, y: 0.6))
-        injector.apply(.mouseDown(x: 0.4, y: 0.6, button: .left))
+        injector.apply(.mouseDown(x: 0.4, y: 0.6, button: .left, modifiers: []))
         injector.drainSyncForTesting()
         XCTAssertTrue(recorder.all.isEmpty, "no input may inject after deactivate")
     }
@@ -97,7 +130,7 @@ final class RemoteControlInjectorTests: XCTestCase {
     func testDeactivateSynthesizesButtonUpForHeldButton() {
         let (injector, recorder) = makeInjector()
         injector.activate(selection: displaySelection)
-        injector.apply(.mouseDown(x: 0.5, y: 0.5, button: .left))
+        injector.apply(.mouseDown(x: 0.5, y: 0.5, button: .left, modifiers: []))
         injector.drainSyncForTesting()
         XCTAssertEqual(recorder.all, [.mouseDown(.left)])
 
@@ -121,12 +154,29 @@ final class RemoteControlInjectorTests: XCTestCase {
     func testDragUsesDraggedEventWhileButtonHeld() {
         let (injector, recorder) = makeInjector()
         injector.activate(selection: displaySelection)
-        injector.apply(.mouseDown(x: 0.1, y: 0.1, button: .left))
+        injector.apply(.mouseDown(x: 0.1, y: 0.1, button: .left, modifiers: []))
         injector.drainSyncForTesting()
         injector.apply(.mouseMove(x: 0.2, y: 0.2))
         injector.drainSyncForTesting()
-        injector.apply(.mouseUp(x: 0.2, y: 0.2, button: .left))
+        injector.apply(.mouseUp(x: 0.2, y: 0.2, button: .left, modifiers: []))
         injector.drainSyncForTesting()
         XCTAssertEqual(recorder.all, [.mouseDown(.left), .drag(.left), .mouseUp(.left)])
+    }
+
+    func testMiddleButtonDragAndRevokeRelease() {
+        let (injector, recorder) = makeInjector()
+        injector.activate(selection: displaySelection)
+        injector.apply(.mouseDown(x: 0.1, y: 0.1, button: .middle, modifiers: []))
+        injector.drainSyncForTesting()
+        injector.apply(.mouseMove(x: 0.2, y: 0.2))
+        injector.drainSyncForTesting()
+        XCTAssertEqual(recorder.all, [.mouseDown(.middle), .drag(.middle)])
+
+        // Revoke while the middle button is held — same stuck-button
+        // guarantee as left/right.
+        injector.deactivate()
+        injector.drainSyncForTesting()
+        XCTAssertEqual(
+            recorder.all, [.mouseDown(.middle), .drag(.middle), .mouseUp(.middle)])
     }
 }

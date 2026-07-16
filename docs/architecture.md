@@ -231,9 +231,11 @@ time, identified by server-assigned connection ID, behind an event-rate
 ceiling. Admitted events go to `RemoteControlInjector`, which maps
 normalized coordinates onto the captured region's live global rect per
 share kind (display bounds, window bounds, or the union of a shared app's
-window rects — so an app share can't be used to click your Dock), masks
-modifier flags to a known-good set, and posts `CGEvent`s from a serial
-queue. Revocation is TOCTOU-safe: a sealed injector drops anything that
+window rects — so an app share can't be used to click your Dock),
+translates the wire's platform-neutral key model (USB HID usages + a
+five-bit modifier set) into mac keycodes and `CGEventFlags` — constructive
+translation, so a hostile viewer can't smuggle arbitrary flag bits — and
+posts `CGEvent`s from a serial queue. Revocation is TOCTOU-safe: a sealed injector drops anything that
 raced the revoke and synthesizes a button-up for any button held
 mid-drag, so revoke never leaves a stuck mouse button. Keyboard scope is
 whole-Mac by design (see [Security]({% link security.md %}) for why, and

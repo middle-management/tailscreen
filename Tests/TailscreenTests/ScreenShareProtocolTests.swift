@@ -172,11 +172,15 @@ final class ScreenShareProtocolTests: XCTestCase {
     func testInputEventRoundTripEveryCase() throws {
         let events: [InputEvent] = [
             .mouseMove(x: 0.25, y: 0.75),
-            .mouseDown(x: 0.1, y: 0.2, button: .left),
-            .mouseUp(x: 0.1, y: 0.2, button: .right),
-            .scroll(x: 0.5, y: 0.5, deltaX: -3, deltaY: 4),
-            .keyDown(keyCode: 0x24, modifiers: 0x0010_0000),
-            .keyUp(keyCode: 0x24, modifiers: 0)
+            .mouseDown(x: 0.1, y: 0.2, button: .left, modifiers: [.meta]),
+            .mouseUp(x: 0.1, y: 0.2, button: .right, modifiers: []),
+            .mouseDown(x: 0.9, y: 0.9, button: .middle, modifiers: [.shift, .alt]),
+            .scroll(x: 0.5, y: 0.5, deltaX: -3, deltaY: 4, modifiers: [.shift]),
+            .keyDown(key: 0x28, modifiers: [.meta, .control]),
+            .keyUp(key: 0x28, modifiers: []),
+            // Unknown future modifier bits must survive the round trip
+            // verbatim (they're ignored at injection, not at decode).
+            .keyDown(key: 0x04, modifiers: KeyModifiers(rawValue: 0x8000))
         ]
         for event in events {
             var parser = ScreenShareMessageParser()
@@ -248,12 +252,12 @@ final class ScreenShareProtocolTests: XCTestCase {
             #"{"mouseMove":{"x":"NaN","y":0.5}}"#,
             #"{"mouseMove":{"x":"Infinity","y":0.5}}"#,
             #"{"mouseMove":{"x":0.5,"y":"-Infinity"}}"#,
-            #"{"mouseDown":{"x":NaN,"y":0.5,"button":"left"}}"#,
-            #"{"mouseDown":{"x":"NaN","y":0.5,"button":"left"}}"#,
-            #"{"mouseUp":{"x":0.5,"y":Infinity,"button":"right"}}"#,
-            #"{"scroll":{"x":0.5,"y":0.5,"deltaX":NaN,"deltaY":0}}"#,
-            #"{"scroll":{"x":0.5,"y":0.5,"deltaX":"NaN","deltaY":0}}"#,
-            #"{"scroll":{"x":0.5,"y":0.5,"deltaX":0,"deltaY":1e999}}"#
+            #"{"mouseDown":{"x":NaN,"y":0.5,"button":"left","modifiers":0}}"#,
+            #"{"mouseDown":{"x":"NaN","y":0.5,"button":"left","modifiers":0}}"#,
+            #"{"mouseUp":{"x":0.5,"y":Infinity,"button":"right","modifiers":0}}"#,
+            #"{"scroll":{"x":0.5,"y":0.5,"deltaX":NaN,"deltaY":0,"modifiers":0}}"#,
+            #"{"scroll":{"x":0.5,"y":0.5,"deltaX":"NaN","deltaY":0,"modifiers":0}}"#,
+            #"{"scroll":{"x":0.5,"y":0.5,"deltaX":0,"deltaY":1e999,"modifiers":0}}"#
         ]
         for hostile in hostilePayloads {
             let payload = Data(hostile.utf8)

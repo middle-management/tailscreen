@@ -1,8 +1,13 @@
 import Foundation
 
-/// Run `operation` and return its result, but throw `TimeoutError` (the
-/// module's shared timeout marker, defined in `TailscalePeerDiscovery.swift`)
-/// if it hasn't completed within `seconds`.
+/// Shared timeout marker thrown by `withTimeout` (and peer-discovery's
+/// continuation helpers).
+public struct TimeoutError: Error {
+    public init() {}
+}
+
+/// Run `operation` and return its result, but throw `TimeoutError` if it
+/// hasn't completed within `seconds`.
 ///
 /// Caveat: the losing task is cancelled, but cancellation does not necessarily
 /// interrupt a blocking call that never checks `Task.isCancelled` — notably

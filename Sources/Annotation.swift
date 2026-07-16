@@ -1,5 +1,8 @@
-import CoreGraphics
 import Foundation
+
+#if canImport(CoreGraphics)
+import CoreGraphics
+#endif
 
 /// Drawing tool the user has selected.
 enum AnnotationTool: String, Codable, Sendable, CaseIterable {
