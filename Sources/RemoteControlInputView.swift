@@ -18,9 +18,9 @@ final class RemoteControlInputView: NSView {
     var onEvent: ((InputEvent) -> Void)?
 
     private var trackingArea: NSTrackingArea?
-    /// Latest raw `CGEventFlags` modifier bitmask (from `flagsChanged`),
-    /// folded into key events so the sharer reproduces held modifiers.
-    private var currentModifiers: UInt64 = 0
+    /// Latest neutral modifier state (from `flagsChanged`), folded into
+    /// key/button/scroll events so the sharer reproduces held modifiers.
+    private var currentModifiers: KeyModifiers = []
     /// ~90 Hz throttle on move emission. Down/up/scroll/key are never dropped.
     private var lastMoveEmitNs: UInt64 = 0
     private static let moveEmitMinIntervalNs: UInt64 = 11_000_000
@@ -72,6 +72,7 @@ final class RemoteControlInputView: NSView {
     override func mouseMoved(with event: NSEvent) { emitMove(event) }
     override func mouseDragged(with event: NSEvent) { emitMove(event) }
     override func rightMouseDragged(with event: NSEvent) { emitMove(event) }
+    override func otherMouseDragged(with event: NSEvent) { emitMove(event) }
 
     private func emitMove(_ event: NSEvent) {
         let nowNs = DispatchTime.now().uptimeNanoseconds
@@ -82,23 +83,42 @@ final class RemoteControlInputView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
-        let point = normalized(event)
-        onEvent?(.mouseDown(x: Double(point.x), y: Double(point.y), button: .left))
+        emitButton(event, down: true, button: .left)
     }
 
     override func mouseUp(with event: NSEvent) {
-        let point = normalized(event)
-        onEvent?(.mouseUp(x: Double(point.x), y: Double(point.y), button: .left))
+        emitButton(event, down: false, button: .left)
     }
 
     override func rightMouseDown(with event: NSEvent) {
-        let point = normalized(event)
-        onEvent?(.mouseDown(x: Double(point.x), y: Double(point.y), button: .right))
+        emitButton(event, down: true, button: .right)
     }
 
     override func rightMouseUp(with event: NSEvent) {
+        emitButton(event, down: false, button: .right)
+    }
+
+    override func otherMouseDown(with event: NSEvent) {
+        // buttonNumber 2 is the middle button; higher buttons (back/forward
+        // etc.) have no wire representation and are swallowed.
+        guard event.buttonNumber == 2 else { return }
+        emitButton(event, down: true, button: .middle)
+    }
+
+    override func otherMouseUp(with event: NSEvent) {
+        guard event.buttonNumber == 2 else { return }
+        emitButton(event, down: false, button: .middle)
+    }
+
+    private func emitButton(_ event: NSEvent, down: Bool, button: InputEvent.MouseButton) {
         let point = normalized(event)
-        onEvent?(.mouseUp(x: Double(point.x), y: Double(point.y), button: .right))
+        let x = Double(point.x)
+        let y = Double(point.y)
+        if down {
+            onEvent?(.mouseDown(x: x, y: y, button: button, modifiers: currentModifiers))
+        } else {
+            onEvent?(.mouseUp(x: x, y: y, button: button, modifiers: currentModifiers))
+        }
     }
 
     override func scrollWheel(with event: NSEvent) {
@@ -111,34 +131,39 @@ final class RemoteControlInputView: NSView {
                 x: Double(point.x),
                 y: Double(point.y),
                 deltaX: Double(event.scrollingDeltaX) * unit,
-                deltaY: Double(event.scrollingDeltaY) * unit))
+                deltaY: Double(event.scrollingDeltaY) * unit,
+                modifiers: currentModifiers))
     }
 
     // MARK: - Keyboard
 
     override func keyDown(with event: NSEvent) {
-        onEvent?(.keyDown(keyCode: event.keyCode, modifiers: currentModifiers))
+        // Keys outside the HID table have no wire representation — drop
+        // rather than guess (see MacKeyCodeMapping).
+        guard let usage = MacKeyCodeMapping.hidUsage(forMacKeyCode: event.keyCode) else { return }
+        onEvent?(.keyDown(key: usage, modifiers: currentModifiers))
     }
 
     override func keyUp(with event: NSEvent) {
-        onEvent?(.keyUp(keyCode: event.keyCode, modifiers: currentModifiers))
+        guard let usage = MacKeyCodeMapping.hidUsage(forMacKeyCode: event.keyCode) else { return }
+        onEvent?(.keyUp(key: usage, modifiers: currentModifiers))
     }
 
     override func flagsChanged(with event: NSEvent) {
-        currentModifiers = Self.cgFlags(from: event.modifierFlags)
+        currentModifiers = Self.keyModifiers(from: event.modifierFlags)
     }
 
-    /// Map AppKit modifier flags to a raw `CGEventFlags` bitmask for the wire.
+    /// Map AppKit modifier flags to the wire's neutral ``KeyModifiers`` set.
     /// Internal + `nonisolated` (pure — no main-actor state) so the mapping is
-    /// unit testable off the main actor.
-    nonisolated static func cgFlags(from flags: NSEvent.ModifierFlags) -> UInt64 {
-        var out: CGEventFlags = []
-        if flags.contains(.shift) { out.insert(.maskShift) }
-        if flags.contains(.control) { out.insert(.maskControl) }
-        if flags.contains(.option) { out.insert(.maskAlternate) }
-        if flags.contains(.command) { out.insert(.maskCommand) }
-        if flags.contains(.capsLock) { out.insert(.maskAlphaShift) }
-        if flags.contains(.function) { out.insert(.maskSecondaryFn) }
-        return out.rawValue
+    /// unit testable off the main actor. `.function` (fn) has no neutral bit —
+    /// see ``KeyModifiers``.
+    nonisolated static func keyModifiers(from flags: NSEvent.ModifierFlags) -> KeyModifiers {
+        var out: KeyModifiers = []
+        if flags.contains(.shift) { out.insert(.shift) }
+        if flags.contains(.control) { out.insert(.control) }
+        if flags.contains(.option) { out.insert(.alt) }
+        if flags.contains(.command) { out.insert(.meta) }
+        if flags.contains(.capsLock) { out.insert(.capsLock) }
+        return out
     }
 }

@@ -42,12 +42,12 @@ final class RemoteControlPolicyTests: XCTestCase {
         let events: [InputEvent] = [
             .mouseMove(x: 0.1, y: 0.1),
             .mouseMove(x: 0.2, y: 0.2),
-            .mouseDown(x: 0.2, y: 0.2, button: .left),
+            .mouseDown(x: 0.2, y: 0.2, button: .left, modifiers: []),
             .mouseMove(x: 0.3, y: 0.3),
-            .mouseUp(x: 0.3, y: 0.3, button: .left),
-            .scroll(x: 0.3, y: 0.3, deltaX: 0, deltaY: -2),
-            .keyDown(keyCode: 4, modifiers: 0),
-            .keyUp(keyCode: 4, modifiers: 0)
+            .mouseUp(x: 0.3, y: 0.3, button: .left, modifiers: []),
+            .scroll(x: 0.3, y: 0.3, deltaX: 0, deltaY: -2, modifiers: []),
+            .keyDown(key: 4, modifiers: []),
+            .keyUp(key: 4, modifiers: [])
         ]
         let coalesced = RemoteControlPolicy.coalesceMouseMoves(events)
         // The first move is superseded by the second; the move before the
@@ -56,19 +56,19 @@ final class RemoteControlPolicyTests: XCTestCase {
             coalesced,
             [
                 .mouseMove(x: 0.2, y: 0.2),
-                .mouseDown(x: 0.2, y: 0.2, button: .left),
+                .mouseDown(x: 0.2, y: 0.2, button: .left, modifiers: []),
                 .mouseMove(x: 0.3, y: 0.3),
-                .mouseUp(x: 0.3, y: 0.3, button: .left),
-                .scroll(x: 0.3, y: 0.3, deltaX: 0, deltaY: -2),
-                .keyDown(keyCode: 4, modifiers: 0),
-                .keyUp(keyCode: 4, modifiers: 0)
+                .mouseUp(x: 0.3, y: 0.3, button: .left, modifiers: []),
+                .scroll(x: 0.3, y: 0.3, deltaX: 0, deltaY: -2, modifiers: []),
+                .keyDown(key: 4, modifiers: []),
+                .keyUp(key: 4, modifiers: [])
             ])
     }
 
     func testCoalesceIsIdentityWithoutConsecutiveMoves() {
         let events: [InputEvent] = [
-            .mouseDown(x: 0, y: 0, button: .left),
-            .mouseUp(x: 0, y: 0, button: .left)
+            .mouseDown(x: 0, y: 0, button: .left, modifiers: []),
+            .mouseUp(x: 0, y: 0, button: .left, modifiers: [])
         ]
         XCTAssertEqual(RemoteControlPolicy.coalesceMouseMoves(events), events)
     }

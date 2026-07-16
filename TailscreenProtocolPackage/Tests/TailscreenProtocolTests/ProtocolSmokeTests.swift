@@ -92,6 +92,31 @@ final class ProtocolSmokeTests: XCTestCase {
         XCTAssertEqual(recovered, packets[1])
     }
 
+    func testInputEventJSONRoundTrip() throws {
+        let events: [InputEvent] = [
+            .mouseDown(x: 0.1, y: 0.9, button: .middle, modifiers: [.meta, .shift]),
+            .scroll(x: 0.5, y: 0.5, deltaX: -2, deltaY: 3, modifiers: [.shift]),
+            .keyDown(key: 0x28, modifiers: [.control]),
+            .keyUp(key: 0x28, modifiers: [])
+        ]
+        for event in events {
+            let data = try JSONEncoder().encode(event)
+            XCTAssertEqual(try JSONDecoder().decode(InputEvent.self, from: data), event)
+        }
+    }
+
+    func testMacKeyCodeTableIsBijective() {
+        let forward = MacKeyCodeMapping.hidUsageByMacKeyCode
+        XCTAssertEqual(Set(forward.values).count, forward.count)
+        for (mac, hid) in forward {
+            XCTAssertEqual(MacKeyCodeMapping.macKeyCode(forHIDUsage: hid), mac)
+        }
+        // Spot rows: Return→Enter, ⌘→GUI, A→A.
+        XCTAssertEqual(MacKeyCodeMapping.hidUsage(forMacKeyCode: 0x24), 0x28)
+        XCTAssertEqual(MacKeyCodeMapping.hidUsage(forMacKeyCode: 0x37), 0xE3)
+        XCTAssertEqual(MacKeyCodeMapping.hidUsage(forMacKeyCode: 0x00), 0x04)
+    }
+
     func testHelloAckCapsRoundTrip() {
         let caps: ScreenShareCaps = [.nack, .receiverReport, .fec]
         let wire = ScreenShareControlMessage.encodeHelloAck(ssrc: 0xDEAD_BEEF, caps: caps)

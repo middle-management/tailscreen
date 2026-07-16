@@ -1,5 +1,29 @@
 import Foundation
 
+/// Platform-neutral modifier-key state carried by ``InputEvent``. Encodes as
+/// its raw bitmask in JSON. Deliberately NOT `CGEventFlags`: the wire speaks
+/// a fixed five-bit vocabulary every platform can produce and consume, and
+/// each endpoint translates to/from its native flags (mac:
+/// `RemoteControlInputView` on capture, `RemoteControlInjector.eventFlags`
+/// on injection). Because injection *constructs* native flags from these
+/// bits — rather than trusting a raw native bitmask off the wire — a hostile
+/// viewer can never set flags outside this set.
+struct KeyModifiers: OptionSet, Codable, Sendable, Hashable {
+    let rawValue: UInt16
+
+    static let shift = KeyModifiers(rawValue: 1 << 0)
+    static let control = KeyModifiers(rawValue: 1 << 1)
+    /// Option on macOS, Alt elsewhere.
+    static let alt = KeyModifiers(rawValue: 1 << 2)
+    /// Command on macOS, Windows/Super key elsewhere.
+    static let meta = KeyModifiers(rawValue: 1 << 3)
+    static let capsLock = KeyModifiers(rawValue: 1 << 4)
+
+    /// Every bit the protocol defines. Injectors translate exactly these and
+    /// ignore unknown bits, so the wire value needs no separate masking step.
+    static let allKnown: KeyModifiers = [.shift, .control, .alt, .meta, .capsLock]
+}
+
 /// One viewer→sharer input event in the opt-in remote-control path. Rides
 /// the reliable, ordered TCP control channel (`ScreenShareMessage.inputEvent`)
 /// alongside annotations — never the lossy UDP video path — so a `mouseDown`
@@ -7,25 +31,36 @@ import Foundation
 ///
 /// Pointer coordinates are normalized to `[0, 1]` in the video frame's space
 /// with origin top-left, matching ``Annotation`` (`Annotation.swift`). The
-/// sharer maps them onto the captured region's live global-Quartz rect per
-/// share kind (see ``RemoteControlMapping``). Key events carry the hardware
-/// virtual keycode (`CGKeyCode`) plus a `CGEventFlags` modifier bitmask, so
-/// keyboard-layout interpretation stays on the sharer's machine.
+/// sharer maps them onto the captured region's live rect per share kind (see
+/// ``RemoteControlMapping``).
+///
+/// Key events are platform-neutral: `key` is a **USB HID keyboard-page
+/// (0x07) usage ID** — the one keycode vocabulary every platform ships
+/// translation tables for — and `modifiers` is a ``KeyModifiers`` snapshot
+/// of the held modifier state. Keyboard-layout interpretation stays on the
+/// sharer's machine (the sharer translates HID usage → its native keycode;
+/// see `MacKeyCodeMapping`). Modifier keys themselves are not sent as
+/// standalone key events; their state rides every key/button/scroll event,
+/// which keeps mid-stream joins and lost-connection recovery stateless.
+///
+/// `mouseDown`/`mouseUp`/`scroll` carry `modifiers` too, so modified clicks
+/// (⌘-click, shift-scroll) work; `mouseMove` doesn't (it's the coalescable
+/// high-frequency case, and a drag's modifiers land with its button events).
 enum InputEvent: Codable, Sendable, Equatable {
     case mouseMove(x: Double, y: Double)
-    case mouseDown(x: Double, y: Double, button: MouseButton)
-    case mouseUp(x: Double, y: Double, button: MouseButton)
-    /// Scroll deltas in line units (the injector converts to `CGEvent`
+    case mouseDown(x: Double, y: Double, button: MouseButton, modifiers: KeyModifiers)
+    case mouseUp(x: Double, y: Double, button: MouseButton, modifiers: KeyModifiers)
+    /// Scroll deltas in line units (each injector converts to its native
     /// scroll units). `x`/`y` locate the cursor at scroll time.
-    case scroll(x: Double, y: Double, deltaX: Double, deltaY: Double)
-    /// `keyCode` is a `CGKeyCode` (hardware virtual key); `modifiers` is a
-    /// raw `CGEventFlags` bitmask.
-    case keyDown(keyCode: UInt16, modifiers: UInt64)
-    case keyUp(keyCode: UInt16, modifiers: UInt64)
+    case scroll(x: Double, y: Double, deltaX: Double, deltaY: Double, modifiers: KeyModifiers)
+    /// `key` is a USB HID keyboard-page usage ID (see type doc).
+    case keyDown(key: UInt16, modifiers: KeyModifiers)
+    case keyUp(key: UInt16, modifiers: KeyModifiers)
 
     enum MouseButton: String, Codable, Sendable {
         case left
         case right
+        case middle
     }
 
     /// True for the high-frequency pointer-move case the coalescer and the

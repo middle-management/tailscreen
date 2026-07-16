@@ -191,7 +191,7 @@ struct ParserFuzzHarness {
             .controlGranted,
             .controlRevoked(reason: "fuzz"),
             .inputEvent(.mouseMove(x: 0.5, y: 0.5)),
-            .inputEvent(.keyDown(keyCode: 36, modifiers: 0)),
+            .inputEvent(.keyDown(key: 0x28, modifiers: [])),
             .controlReleased
         ]
     }

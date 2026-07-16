@@ -36,43 +36,46 @@ final class RemoteControlInjector: @unchecked Sendable {
     private let selection = OSAllocatedUnfairLock<PickerSelection?>(initialState: nil)
 
     // Queue-confined pressed-button state so a mouse-move during a drag posts
-    // the matching `.leftMouseDragged` / `.rightMouseDragged` instead of a
-    // bare `.mouseMoved` (apps track drags off the dragged events). Also lets
-    // `deactivate()` synthesize the matching button-up so a revoke mid-drag
-    // never leaves a button stuck pressed on the sharer's Mac.
+    // the matching `.leftMouseDragged` / `.rightMouseDragged` /
+    // `.otherMouseDragged` instead of a bare `.mouseMoved` (apps track drags
+    // off the dragged events). Also lets `deactivate()` synthesize the
+    // matching button-up so a revoke mid-drag never leaves a button stuck
+    // pressed on the sharer's Mac.
     private var leftDown = false
     private var rightDown = false
+    private var middleDown = false
     /// Last global point we posted a mouse event at — where a synthesized
     /// button-up lands on revoke. Queue-confined.
     private var lastPoint: CGPoint = .zero
 
-    /// Modifier bits the client is ever allowed to set (matches
-    /// `RemoteControlInputView.cgFlags`). A wire `modifiers` value is masked to
-    /// this before it reaches `CGEvent.flags`, so a hostile viewer can't set
-    /// arbitrary event flags.
-    static let allowedModifierMask: UInt64 = {
-        let flags: CGEventFlags = [
-            .maskShift, .maskControl, .maskAlternate, .maskCommand, .maskAlphaShift, .maskSecondaryFn
-        ]
-        return flags.rawValue
-    }()
-
-    /// Mask a wire-supplied modifier bitmask to the known-good flag set.
-    /// Internal (not private) so it's unit testable.
-    static func maskedFlags(_ raw: UInt64) -> UInt64 {
-        raw & allowedModifierMask
+    /// Translate the wire's neutral ``KeyModifiers`` into `CGEventFlags` for
+    /// injection. Constructive (only the five known bits produce flags, and
+    /// unknown wire bits produce nothing), so no separate masking step is
+    /// needed — a hostile viewer can't set flags outside this set by
+    /// construction. Internal (not private) so it's unit testable.
+    static func eventFlags(_ modifiers: KeyModifiers) -> CGEventFlags {
+        var out: CGEventFlags = []
+        if modifiers.contains(.shift) { out.insert(.maskShift) }
+        if modifiers.contains(.control) { out.insert(.maskControl) }
+        if modifiers.contains(.alt) { out.insert(.maskAlternate) }
+        if modifiers.contains(.meta) { out.insert(.maskCommand) }
+        if modifiers.contains(.capsLock) { out.insert(.maskAlphaShift) }
+        return out
     }
 
     /// What the injector *would* post, surfaced to tests. Lets a unit test
     /// assert the gate/coalescing/button-release behavior without a real
     /// `CGEventPost` (which needs Accessibility and would warp the CI cursor).
     enum InjectedAction: Equatable, Sendable {
-        enum Side: Sendable { case left, right }
+        enum Side: Sendable { case left, right, middle }
         case mouseDown(Side)
         case mouseUp(Side)
         case mouseMoved
         case drag(Side)
         case scroll
+        /// `keyCode` is the translated **mac virtual keycode** (post
+        /// HID-usage reverse-mapping); `flags` the translated
+        /// `CGEventFlags` raw value.
         case keyDown(keyCode: UInt16, flags: UInt64)
         case keyUp(keyCode: UInt16, flags: UInt64)
     }
@@ -180,6 +183,10 @@ final class RemoteControlInjector: @unchecked Sendable {
             rightDown = false
             postMouse(type: .rightMouseUp, at: lastPoint, button: .right)
         }
+        if middleDown {
+            middleDown = false
+            postMouse(type: .otherMouseUp, at: lastPoint, button: .center)
+        }
     }
 
     private func inject(_ event: InputEvent, selection: PickerSelection) {
@@ -194,35 +201,46 @@ final class RemoteControlInjector: @unchecked Sendable {
             } else if rightDown {
                 type = .rightMouseDragged
                 button = .right
+            } else if middleDown {
+                type = .otherMouseDragged
+                button = .center
             } else {
                 type = .mouseMoved
                 button = .left
             }
             postMouse(type: type, at: point, button: button)
-        case .mouseDown(let nx, let ny, let mouseButton):
+        case .mouseDown(let nx, let ny, let mouseButton, let modifiers):
             guard let point = globalPoint(nx: nx, ny: ny, selection: selection) else { return }
-            if mouseButton == .right {
-                rightDown = true
-                postMouse(type: .rightMouseDown, at: point, button: .right)
-            } else {
+            switch mouseButton {
+            case .left:
                 leftDown = true
-                postMouse(type: .leftMouseDown, at: point, button: .left)
+                postMouse(type: .leftMouseDown, at: point, button: .left, modifiers: modifiers)
+            case .right:
+                rightDown = true
+                postMouse(type: .rightMouseDown, at: point, button: .right, modifiers: modifiers)
+            case .middle:
+                middleDown = true
+                postMouse(type: .otherMouseDown, at: point, button: .center, modifiers: modifiers)
             }
-        case .mouseUp(let nx, let ny, let mouseButton):
+        case .mouseUp(let nx, let ny, let mouseButton, let modifiers):
             guard let point = globalPoint(nx: nx, ny: ny, selection: selection) else { return }
-            if mouseButton == .right {
-                rightDown = false
-                postMouse(type: .rightMouseUp, at: point, button: .right)
-            } else {
+            switch mouseButton {
+            case .left:
                 leftDown = false
-                postMouse(type: .leftMouseUp, at: point, button: .left)
+                postMouse(type: .leftMouseUp, at: point, button: .left, modifiers: modifiers)
+            case .right:
+                rightDown = false
+                postMouse(type: .rightMouseUp, at: point, button: .right, modifiers: modifiers)
+            case .middle:
+                middleDown = false
+                postMouse(type: .otherMouseUp, at: point, button: .center, modifiers: modifiers)
             }
-        case .scroll(_, _, let deltaX, let deltaY):
-            postScroll(deltaX: deltaX, deltaY: deltaY)
-        case .keyDown(let keyCode, let modifiers):
-            postKey(keyCode: keyCode, modifiers: modifiers, keyDown: true)
-        case .keyUp(let keyCode, let modifiers):
-            postKey(keyCode: keyCode, modifiers: modifiers, keyDown: false)
+        case .scroll(_, _, let deltaX, let deltaY, let modifiers):
+            postScroll(deltaX: deltaX, deltaY: deltaY, modifiers: modifiers)
+        case .keyDown(let key, let modifiers):
+            postKey(hidUsage: key, modifiers: modifiers, keyDown: true)
+        case .keyUp(let key, let modifiers):
+            postKey(hidUsage: key, modifiers: modifiers, keyDown: false)
         }
     }
 
@@ -231,11 +249,13 @@ final class RemoteControlInjector: @unchecked Sendable {
         return RemoteControlMapping.globalPoint(nx: nx, ny: ny, captureRect: rect)
     }
 
-    private func postMouse(type: CGEventType, at point: CGPoint, button: CGMouseButton) {
+    private func postMouse(
+        type: CGEventType, at point: CGPoint, button: CGMouseButton, modifiers: KeyModifiers = []
+    ) {
         // Remember where we posted so a revoke can synthesize a button-up here.
         lastPoint = point
         if let hook = onInjectForTesting {
-            hook(Self.testAction(for: type))
+            hook(Self.testAction(for: type, button: button))
             return
         }
         // Warp the hardware cursor so it visibly tracks the viewer, then post
@@ -245,22 +265,28 @@ final class RemoteControlInjector: @unchecked Sendable {
             let event = CGEvent(
                 mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: button)
         else { return }
+        // Modified clicks (⌘-click, shift-click) need the flags on the mouse
+        // event itself — apps read them off the event, not the keyboard.
+        event.flags = Self.eventFlags(modifiers)
         event.post(tap: .cghidEventTap)
     }
 
-    private static func testAction(for type: CGEventType) -> InjectedAction {
+    private static func testAction(for type: CGEventType, button: CGMouseButton) -> InjectedAction {
         switch type {
         case .leftMouseDown: return .mouseDown(.left)
         case .rightMouseDown: return .mouseDown(.right)
+        case .otherMouseDown: return .mouseDown(.middle)
         case .leftMouseUp: return .mouseUp(.left)
         case .rightMouseUp: return .mouseUp(.right)
+        case .otherMouseUp: return .mouseUp(.middle)
         case .leftMouseDragged: return .drag(.left)
         case .rightMouseDragged: return .drag(.right)
+        case .otherMouseDragged: return .drag(.middle)
         default: return .mouseMoved
         }
     }
 
-    private func postScroll(deltaX: Double, deltaY: Double) {
+    private func postScroll(deltaX: Double, deltaY: Double, modifiers: KeyModifiers) {
         if let hook = onInjectForTesting {
             hook(.scroll)
             return
@@ -274,6 +300,9 @@ final class RemoteControlInjector: @unchecked Sendable {
                 scrollWheelEvent2Source: nil, units: .line, wheelCount: 2, wheel1: wheel1, wheel2: wheel2,
                 wheel3: 0)
         else { return }
+        // Shift-scroll (horizontal-scroll convention) and friends are
+        // interpreted app-side from the event flags.
+        event.flags = Self.eventFlags(modifiers)
         event.post(tap: .cghidEventTap)
     }
 
@@ -287,14 +316,20 @@ final class RemoteControlInjector: @unchecked Sendable {
         return Int32(rounded)
     }
 
-    private func postKey(keyCode: UInt16, modifiers: UInt64, keyDown: Bool) {
-        let masked = Self.maskedFlags(modifiers)
+    private func postKey(hidUsage: UInt16, modifiers: KeyModifiers, keyDown: Bool) {
+        // The wire speaks USB HID usage IDs; translate to the mac virtual
+        // keycode CGEvent wants. Usages with no mac key (Insert, PrintScreen,
+        // …) are dropped rather than injected wrong.
+        guard let keyCode = MacKeyCodeMapping.macKeyCode(forHIDUsage: hidUsage) else { return }
+        // Constructive translation: only the five known neutral bits can
+        // produce CGEventFlags, so no wire value reaches the event unmasked.
+        let flags = Self.eventFlags(modifiers)
         if let hook = onInjectForTesting {
             let action: InjectedAction
             if keyDown {
-                action = .keyDown(keyCode: keyCode, flags: masked)
+                action = .keyDown(keyCode: keyCode, flags: flags.rawValue)
             } else {
-                action = .keyUp(keyCode: keyCode, flags: masked)
+                action = .keyUp(keyCode: keyCode, flags: flags.rawValue)
             }
             hook(action)
             return
@@ -302,9 +337,7 @@ final class RemoteControlInjector: @unchecked Sendable {
         guard let event = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: keyDown) else {
             return
         }
-        // Mask to the known-good flag set so a hostile viewer can't set
-        // arbitrary CGEventFlags via the raw wire value.
-        event.flags = CGEventFlags(rawValue: masked)
+        event.flags = flags
         event.post(tap: .cghidEventTap)
     }
 }

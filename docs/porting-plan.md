@@ -62,14 +62,17 @@ These are the concrete details worth knowing before committing to a sharer
 port. The first two have wire-protocol implications and are cheapest to
 address now, additively, while all peers are macOS.
 
-1. **`InputEvent` bakes the mac key model into the wire.** Keys travel as
-   `CGKeyCode` plus raw `CGEventFlags`. A Linux/Windows peer (either side
-   of remote control) needs a bidirectional mapping to evdev/virtual-key
-   codes — lossy for non-ANSI layouts. Proposal: add an optional,
-   additive `usbHID` usage-code field to the `InputEvent` JSON (old peers
-   ignore unknown JSON keys; the decoder already tolerates additions),
-   emit both from macOS, and prefer HID when present. Do this on macOS
-   *before* any port so shipped sharers already speak it.
+1. **~~`InputEvent` bakes the mac key model into the wire.~~ RESOLVED
+   (pre-1.0 breaking change).** The wire now carries USB HID keyboard-page
+   usage IDs plus a five-bit platform-neutral modifier set
+   (`KeyModifiers`: shift/control/alt/meta/capsLock) instead of
+   `CGKeyCode` + raw `CGEventFlags`; buttons grew `middle`, and
+   button/scroll events carry the modifier snapshot so modified clicks
+   work cross-platform. macOS endpoints translate through the bijective
+   `MacKeyCodeMapping` table (itself part of the portable package — a
+   non-mac peer needs the same table to interoperate with mac endpoints).
+   A Linux/Windows peer now only needs its own native↔HID table, which
+   every platform ships.
 2. **App-share pointer confinement may not be portable.** The security
    property that an application share clamps injected pointer events to
    the app's window-rect union (`RemoteControlMapping.captureRect`)
