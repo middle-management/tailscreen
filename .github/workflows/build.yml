@@ -208,6 +208,12 @@ jobs:
         # present, and cgo wants gcc (the image only guarantees clang).
         run: apt-get update && apt-get install -y --no-install-recommends golang-go make gcc libc6-dev
       - name: Build libtailscale (patched) on Linux
+        env:
+          # The job runs as root in the container while the checkout is
+          # owned by the runner uid, so git inside the submodule reports
+          # "dubious ownership" and Go's VCS stamping dies with exit 128.
+          # The stamp is worthless for a c-archive — skip it.
+          GOFLAGS: -buildvcs=false
         run: make -C TailscaleKitPackage
       - name: Test TailscaleKit on Linux
         run: PKG_CONFIG_PATH="$PWD/TailscaleKitPackage" swift test --package-path TailscaleKitPackage
