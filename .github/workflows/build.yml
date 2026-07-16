@@ -178,6 +178,10 @@ jobs:
           # The TailscreenTransport target depends on TailscaleKit, whose
           # sources are symlinks into the submodule.
           submodules: recursive
+      - name: Install make
+        # The swift:*-noble images are slim — no make (or gcc). The patch
+        # loop lives in TailscaleKitPackage/Makefile, so make is required.
+        run: apt-get update && apt-get install -y --no-install-recommends make
       - name: Apply TailscaleKit patches (header only, no Go build)
         run: make -C TailscaleKitPackage apply-patches
       - name: Build + test TailscreenProtocol on Linux
@@ -197,11 +201,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - name: Install Go
+      - name: Install build tools
         # noble's golang-go is 1.22 — above the repo's 1.21 floor. Kept
         # apt-simple because setup-go's tool cache doesn't apply inside
-        # this container.
-        run: apt-get update && apt-get install -y --no-install-recommends golang-go
+        # this container. The swift:*-noble images are slim: make isn't
+        # present, and cgo wants gcc (the image only guarantees clang).
+        run: apt-get update && apt-get install -y --no-install-recommends golang-go make gcc libc6-dev
       - name: Build libtailscale (patched) on Linux
         run: make -C TailscaleKitPackage
       - name: Test TailscaleKit on Linux
