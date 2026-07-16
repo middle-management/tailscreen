@@ -2,6 +2,7 @@ included:
   - Sources
   - Tests
   - Examples
+  - TailscreenProtocolPackage/Sources
 
 excluded:
   - .build
