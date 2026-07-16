@@ -24,10 +24,9 @@ below is happening inside an authenticated, encrypted pipe.
 | Metadata       | TCP/7447  | Share name, resolution, request-to-share prompts.                    |
 | Discovery      | TCP/7447  | Probe across the tailnet to find Tailscreen peers.                   |
 
-A note for anyone planning to make `7447` configurable: it's hardcoded
-across the discovery, server, client, and metadata paths. Search for
-`7447` and update everywhere it appears, or discovery will quietly fail to
-find anything.
+Planning to make `7447` configurable? It's hardcoded across the discovery,
+server, client, and metadata paths — search for `7447` and update every
+occurrence, or discovery quietly finds nothing.
 
 ## Video — UDP RTP
 
@@ -47,19 +46,16 @@ signalled on every packet by the payload type:
 The viewer demuxes from the payload type and configures the decoder on
 the fly. There's no SDP, no handshake, no separate "codec announce"
 message; the bytes on the wire are self-describing. HEVC is the default
-because for screen content (lots of flat regions, sharp edges, repeated
-text glyphs) it's roughly 30% more efficient than H.264 at the same
-visual quality, which matters when somebody's running it over a
-bandwidth-constrained Wi-Fi link.
+because on screen content (flat regions, sharp edges, repeated text
+glyphs) it's roughly 30% more efficient than H.264 at the same visual
+quality — which matters on a bandwidth-constrained Wi-Fi link.
 
 **Parameter sets go in-band, on every keyframe.** SPS+PPS for H.264;
-VPS+SPS+PPS for HEVC. Most RTP H.264 implementations shove parameter
-sets into out-of-band SDP — but we don't have an SDP. There's no
-signaling step, viewers can connect at any time, and we don't want them
-waiting for a control-plane handshake to get the decoder primed. So we
-just ship the parameter sets with each keyframe. The cost is a few
-hundred bytes per keyframe; the benefit is that "viewer connects, sees
-pixels in under a second" works even with no prior handshake.
+VPS+SPS+PPS for HEVC. Most RTP H.264 implementations put parameter sets
+in out-of-band SDP — we don't have one, and viewers can connect at any
+time, so the parameter sets ship with every keyframe instead. Cost: a
+few hundred bytes per keyframe. Benefit: a viewer that connects
+mid-stream sees pixels in under a second, no handshake.
 
 **Color rides in-band too.** The encoder writes the color primaries,
 transfer function, matrix, and bit depth into the SPS VUI, and the viewer
@@ -253,10 +249,9 @@ compared to the video.
 
 Why TCP for this and UDP for video? Because **dropping a stroke segment
 (or a mouse-up) is visible and confusing; dropping a video frame is
-invisible.** A user who sees their circle drawn as two disconnected arcs
-immediately concludes "this software is broken." A user who experiences a
-16ms frame stutter during a fast camera pan does not. The transport
-choice tracks the cost of loss.
+invisible.** A circle drawn as two disconnected arcs reads as broken
+software; a 16 ms frame stutter goes unnoticed. The transport choice
+tracks the cost of loss.
 
 ## Metadata — TCP request/response
 

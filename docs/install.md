@@ -10,8 +10,8 @@ permalink: /install/
 1. TOC
 {:toc}
 
-There are three ways in: install with Homebrew, grab a release, or build
-from source. All three end up with `Tailscreen.app`.
+Three ways in: Homebrew, a release download, or building from source. All
+end up with `Tailscreen.app`.
 
 ## Homebrew
 
@@ -19,11 +19,10 @@ from source. All three end up with `Tailscreen.app`.
 brew install middle-management/tap/tailscreen
 ```
 
-This is a cask, so it drops `Tailscreen.app` into `/Applications` and pulls
-the same signed, notarized universal binary that the release page hosts.
-The formula lives in
+The cask drops `Tailscreen.app` into `/Applications` — the same signed,
+notarized universal binary the release page hosts. The formula lives in
 [middle-management/homebrew-tap](https://github.com/middle-management/homebrew-tap)
-and gets bumped automatically when a new GitHub release is published.
+and is bumped automatically on each release.
 
 To upgrade later:
 
@@ -50,27 +49,26 @@ yell at you the first time you open it.
 
 ## From source
 
-The project is Swift Package Manager only. There is no Xcode project and
-there is no plan for one. Builds go through the top-level
-[`Makefile`](https://github.com/middle-management/tailscreen/blob/main/Makefile)
-because that's where `PKG_CONFIG_PATH` gets set so SwiftPM can find the C
-library it needs to link against.
+The project is Swift Package Manager only — no Xcode project, none
+planned. Builds go through the top-level
+[`Makefile`](https://github.com/middle-management/tailscreen/blob/main/Makefile),
+which sets `PKG_CONFIG_PATH` so SwiftPM can find the C library it links
+against.
 
 ### What you need installed
 
 - macOS 15.0 (Sequoia) or later.
 - Swift 6.0 toolchain. Xcode 16+ ships it; alternatively
   [swift.org](https://swift.org/download/) has standalone installers.
-- **Go 1.21 or newer.** This is a build-time dependency, not a runtime one.
-  The Go compiler turns Tailscale's source into `libtailscale.a`, which the
-  Swift code then links against. Once you've built, you can uninstall Go and
-  the app keeps working.
+- **Go 1.21 or newer.** Build-time only: Go compiles Tailscale's source
+  into `libtailscale.a` for the Swift code to link against. Uninstall it
+  afterwards and the app keeps working.
 
 ### Clone — with submodules
 
 Tailscale's C library lives in a submodule under
-`TailscaleKitPackage/upstream/libtailscale`. If you forget the recursive
-clone, the build will fail with a confusing missing-headers error. So:
+`TailscaleKitPackage/upstream/libtailscale`. Forget the recursive clone
+and the build fails with a confusing missing-headers error. So:
 
 ```bash
 git clone --recurse-submodules https://github.com/middle-management/tailscreen.git
@@ -115,17 +113,16 @@ make install           # release + copy to ~/bin/Tailscreen
 
 ## Always start with `make`
 
-The most common first-time build failure is running bare `swift build`. It
-fails to link because `libtailscale.a` doesn't exist yet — the Go toolchain
-hasn't been invoked. Run `make build` (or at least `make tailscale`) once
-first. After that, `swift build` works fine for the rest of the build tree.
+The most common first-time failure is bare `swift build`: it fails to link
+because `libtailscale.a` doesn't exist yet. Run `make build` (or at least
+`make tailscale`) once; after that, `swift build` works fine.
 
 ## Permissions
 
-The first time you hit "Start Sharing", macOS will pop up a Screen Recording
+The first time you hit "Start Sharing", macOS pops a Screen Recording
 prompt. Approve it in **System Settings → Privacy & Security → Screen
-Recording**, then quit Tailscreen and relaunch. macOS will not pick up the
-new permission until the process restarts.
+Recording**, then quit and relaunch — macOS only applies the new
+permission to a restarted process.
 
 ## Uninstall
 

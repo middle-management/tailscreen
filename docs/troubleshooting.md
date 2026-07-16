@@ -11,8 +11,7 @@ permalink: /troubleshooting/
 {:toc}
 
 If something's broken, it's almost certainly one of the things on this
-page. We'll start with the boring permission stuff and work up to the
-interesting failure modes.
+page — ordered from boring permission stuff to interesting failure modes.
 
 ## "Permission Denied" when capturing screen
 
@@ -40,8 +39,8 @@ Walk this checklist in order:
    everything" and will work fine. If you've tightened ACLs, double-check
    that 7447 is still allowed.
 4. Try `tailscale ping <viewer-hostname>` from the sharer's command line.
-   If that doesn't work, neither will Tailscreen — the issue is in the
-   underlying Tailscale connection, not Tailscreen.
+   If that fails, so will Tailscreen — the issue is in the underlying
+   Tailscale connection.
 
 ## Viewer stuck on the Connecting screen
 

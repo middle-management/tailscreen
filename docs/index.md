@@ -21,9 +21,8 @@ permalink: /
 Tailscreen is a tiny macOS menubar app that streams one Mac's screen to
 another Mac over [Tailscale](https://tailscale.com/). It uses ScreenCaptureKit
 to grab pixels, VideoToolbox to encode HEVC (with H.264 as a fallback for
-older hardware), and Tailscale's WireGuard tunnel to move bytes. There is no
-server. There is no account to make beyond Tailscale itself. There is no port
-to forward.
+older hardware), and Tailscale's WireGuard tunnel to move bytes. No server,
+no account beyond Tailscale itself, no port to forward.
 
 You hit "Start Sharing", the other person hits "Browse Shares", they click
 your machine, and a window opens. That's the whole thing.
@@ -86,10 +85,9 @@ bouncing for attention.
 ## What you need
 
 - macOS 15 (Sequoia) or later. Earlier macOS versions, iOS, and Linux aren't supported.
-- Swift 6 toolchain if you're building from source. Otherwise just grab a
-  release.
 - A Tailscale account. The free personal tier is fine.
-- Screen Recording permission. macOS will ask the first time you share.
+- A Swift 6 toolchain — but only if you're building from source.
+- Screen Recording permission. macOS asks the first time you share.
   (Accessibility too, but only if you ever grant a viewer remote control.)
 
 ## Where to go next

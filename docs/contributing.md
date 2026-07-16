@@ -10,9 +10,9 @@ permalink: /contributing/
 1. TOC
 {:toc}
 
-The codebase is small enough that you can hold most of it in your head
-after a couple of hours. This page is a tour through the layout, the
-build, and the rough edges that are worth knowing about up front.
+The codebase is small enough to hold most of it in your head after a
+couple of hours. This page tours the layout, the build, and the rough
+edges worth knowing up front.
 
 `CLAUDE.md` at the repo root has the same orientation in a denser form,
 aimed at AI assistants working in the tree.
@@ -63,10 +63,9 @@ target (`.DEFAULT_GOAL := help`). The highlights:
 on your `PATH`, `brew install swift-format` works as a fallback. The
 config lives at `.swift-format` in the repo root.
 
-A reminder we're going to repeat in every section because it's the most
-common build failure: **bare `swift build` will fail to link** until
-`make tailscale` (or `make build`) has produced `libtailscale.a`.
-Always start with `make`.
+The most common build failure, worth repeating: **bare `swift build`
+fails to link** until `make tailscale` (or `make build`) has produced
+`libtailscale.a`. Always start with `make`.
 
 ## TailscaleKit and the patches
 
@@ -174,12 +173,12 @@ deploys this docs site when anything under `docs/` changes.
 
 ## Where to start reading
 
-The codebase is small. The areas worth reading end-to-end are the video
-pipeline (capture → encode → RTP → decode → render), the capture-helper
-subprocess boundary (the helper owns `SCStream` and the encoder; the main
-process only spawns it and broadcasts what comes back), and the Tailscale
-integration (peer discovery, IPN bus, auth). Audio/voice and annotations
-are smaller, self-contained subsystems. Use `rg` to find specific files.
+The areas worth reading end-to-end: the video pipeline (capture → encode
+→ RTP → decode → render), the capture-helper subprocess boundary (the
+helper owns `SCStream` and the encoder; the main process only spawns it
+and broadcasts what comes back), and the Tailscale integration (peer
+discovery, IPN bus, auth). Audio/voice and annotations are smaller,
+self-contained subsystems. Use `rg` to find specific files.
 
 ## Editing the docs site
 

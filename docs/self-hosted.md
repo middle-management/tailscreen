@@ -13,19 +13,9 @@ permalink: /self-hosted/
 Tailscreen rides on Tailscale's tsnet, which speaks to a control plane to
 exchange WireGuard keys. By default that control plane is
 `controlplane.tailscale.com`. If you'd rather not depend on Tailscale Inc. —
-because your org already runs [headscale](https://github.com/juanfont/headscale),
-because you want a fully airgapped tailnet, or just because — Tailscreen
-can point at any tsnet-compatible control plane via two environment
-variables.
-
-## Why you might want this
-
-- You don't want to depend on a third-party SaaS for the key-exchange
-  hop, even though it can't decrypt your traffic.
-- Your organisation already operates headscale and you want Tailscreen to
-  join the same tailnet.
-- You're running on an isolated network where `controlplane.tailscale.com`
-  isn't reachable.
+your org already runs [headscale](https://github.com/juanfont/headscale),
+you want a fully airgapped tailnet, or just because — Tailscreen can point
+at any tsnet-compatible control plane via two environment variables.
 
 ## What's supported
 
@@ -47,8 +37,8 @@ is where the ephemeral tsnet node fetches its keys.
 | `TAILSCREEN_TS_CONTROL_URL`| Control-plane URL. Example: `http://headscale.internal:8080`. Unset → Tailscale.   |
 | `TAILSCREEN_TS_AUTHKEY`    | Pre-shared auth key for unattended sign-in. Unset → interactive browser login.     |
 
-Both fall back to the Tailscale defaults when unset, so if you don't set
-them, nothing changes.
+Both fall back to the Tailscale defaults — leave them unset and nothing
+changes.
 
 ### Setting env vars for a GUI app on macOS
 
@@ -77,9 +67,9 @@ care you'd treat a stored password.
 
 ## Walked example: headscale
 
-Anything below "your control plane is reachable from this Mac" is your
-infrastructure team's job, not Tailscreen's, but here's a minimum viable
-recipe to verify the Tailscreen side end-to-end.
+Getting a control plane reachable from your Mac is your infrastructure
+team's job, not Tailscreen's — but here's a minimum viable recipe to
+verify the Tailscreen side end-to-end.
 
 ### 1. A headscale instance
 
