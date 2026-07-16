@@ -168,9 +168,7 @@ public class TailscaleAuth: ObservableObject {
     /// Polls for authentication completion
     private func pollForAuth(
         client: LocalAPIClient, node: TailscaleNode, maxAttempts: Int = 30
-    )
-        async throws
-    {
+    ) async throws {
         for attempt in 1...maxAttempts {
             try await Task.sleep(for: .seconds(2))
 
