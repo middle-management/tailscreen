@@ -12,11 +12,11 @@ permalink: /usage/
 
 ## First-time setup
 
-You need a Tailscale account. The free personal tier is fine — it's not a
-trial, it doesn't expire. Sign up at [tailscale.com](https://tailscale.com/),
-install the Tailscale app on every Mac you want to share between, and let it
-add them to your tailnet. Then install Tailscreen on those Macs (see
-[Install]({% link install.md %})) and you're done.
+You need a Tailscale account — the free personal tier is fine, and it
+doesn't expire. Sign up at [tailscale.com](https://tailscale.com/),
+install the Tailscale app on every Mac you want to share between, and let
+it add them to your tailnet. Then install Tailscreen on those Macs (see
+[Install]({% link install.md %})).
 
 You do **not** need to register Tailscreen as a Tailscale device. It spins
 up its own ephemeral tsnet node when you start sharing or connecting, and
@@ -41,9 +41,9 @@ fully airgapped tailnet — see
 5. Pick **Show Tailscale Info** if you want to read off the hostname or
    100.x.x.x address to whoever's connecting.
 
-That's the whole sharing flow. There's no "create a meeting", no
-"copy link". The screen is up. People on your tailnet can connect — and by
-default each one waits for your approval before they see anything (see
+That's the whole flow — no meeting to create, no link to copy. The screen
+is up, people on your tailnet can connect, and by default each one waits
+for your approval before they see anything (see
 [Approving viewers](#approving-viewers)).
 
 ### Changing what you share mid-session
@@ -71,8 +71,7 @@ accept you.
 
 ### Connect to...
 
-For when you already know the hostname or IP and don't want to wait for
-discovery to finish.
+For when you already know the hostname or IP.
 
 1. Click the 📺 in the menubar.
 2. Pick **Connect to...**.
@@ -125,8 +124,8 @@ back-channel rides over TCP rather than the lossy UDP video stream — see
 [Network Protocol]({% link protocol.md %}) — so individual stroke segments
 won't drop even if you lose a video frame or two.
 
-Annotations are not persisted on either end. Quit the viewer or hit "Stop
-Sharing" and they're gone.
+Annotations aren't persisted on either end — quit the viewer or stop
+sharing and they're gone.
 
 ## Voice chat
 
@@ -188,8 +187,9 @@ done.
 **Grant** and **Deny** buttons (plus a notification if the menubar is
 closed). Before you grant, read the caption:
 
-> Granting gives full keyboard and mouse control of your entire Mac — not
-> just the shared window.
+Granting gives full keyboard and mouse control of your entire Mac — not
+just the shared window.
+{: .warning }
 
 That's not boilerplate. The *pointer* is confined to the shared content
 (a shared window or app can't be used to click your menu bar or Dock),
@@ -281,16 +281,12 @@ using the bundled launcher:
 ./test-local.sh 3      # N instances
 ```
 
-Each child gets `TAILSCREEN_INSTANCE=<i>`, which is a small but critical
-detail: it suffixes the Tailscale state directory and hostname (so you get
-`wisp-1`, `wisp-2`, etc.) and the processes register as different tailnet
-nodes.
-
-Without it, both processes share `~/Library/Application Support/Tailscreen/tailscale`,
-they reuse the same machine key, the tailnet treats them as the same
-device, and **Browse Shares** comes back empty — each instance is looking
-at its own node and excluding it. It's by far the most common cause of an
-empty peer list when testing locally.
+Each child gets `TAILSCREEN_INSTANCE=<i>`, which suffixes the Tailscale
+state directory and hostname (`wisp-1`, `wisp-2`, ...) so the processes
+register as different tailnet nodes. Without it they share one state
+directory and one machine key, the tailnet treats them as the same
+device, and **Browse Shares** comes back empty — the most common cause of
+an empty peer list when testing locally.
 
 The launcher also sets `TAILSCREEN_OPEN_DOOR=1` so the second instance
 isn't left parked on the viewer-approval prompt — see
@@ -306,16 +302,15 @@ For that, you need two actual machines.
 
 ## Performance: getting it to feel snappy
 
-Tailscale will try really hard to give you a direct WireGuard connection.
-When that works, latency is essentially the round-trip time between the two
-machines and not much more. When it doesn't work and falls back to a DERP
-relay, you'll feel it.
+Tailscale tries hard to get you a direct WireGuard connection. When that
+works, latency is essentially the round-trip time between the two
+machines. When it falls back to a DERP relay, you'll feel it.
 
 Things you can do:
 
 - **Wired Ethernet on at least one end.** Wi-Fi is the largest source of
-  jitter in any well-engineered video pipeline. Tailscreen is no exception.
-- **Disable Wi-Fi power saving.** macOS will happily park the radio between
+  jitter in any video pipeline; Tailscreen is no exception.
+- **Disable Wi-Fi power saving.** macOS happily parks the radio between
   packets to save battery, which murders interactive latency.
 - **Check `tailscale status`.** If it says `relay "..."`, you're going
   through DERP. Direct connections show as `direct`. If you're stuck on

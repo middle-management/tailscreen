@@ -1,0 +1,28 @@
+// Tailscreen dark color scheme.
+// Inherits just-the-docs' dark scheme, then swaps in the Tailscreen indigo
+// accent and deeper, less blue-grey surfaces. Keep in step with tailscreen.scss.
+
+@import "./color_schemes/dark";
+
+// Accent
+$link-color: #8b93f8; // indigo-300/400, readable on the dark surfaces below
+$btn-primary-color: #6366f1;
+
+// Text
+$body-heading-color: #f3f4f6;
+$body-text-color: #d1d5db;
+$nav-child-link-color: #9ca3af;
+$search-result-preview-color: #9ca3af;
+
+// Surfaces
+$body-background-color: #0f1117;
+$sidebar-color: #141721;
+$search-background-color: #141721;
+$table-background-color: #171a26;
+$code-background-color: #161b26;
+
+// Lines
+$border-color: #262b38;
+
+// Match the light scheme's corner radius.
+$border-radius: 6px;

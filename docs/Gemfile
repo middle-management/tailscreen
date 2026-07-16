@@ -2,7 +2,7 @@ source "https://rubygems.org"
 
 # Mirrors what GitHub Pages / `actions/jekyll-build-pages` use in CI,
 # so `bundle exec jekyll serve` reproduces the deployed build locally.
-gem "github-pages", group: :jekyll_plugins
+gem "github-pages", "~> 232", group: :jekyll_plugins
 gem "jekyll-remote-theme"
 gem "jekyll-seo-tag"
 

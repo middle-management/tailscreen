@@ -21,15 +21,14 @@ Tailscale's WireGuard tunnel. There is no plaintext fallback and there is
 no separate Tailscreen-level TLS layer. WireGuard is the security
 boundary; everything we send rides inside it.
 
-If you're wondering "what cipher" or "what key exchange", that's
-WireGuard's answer to give, not ours: ChaCha20-Poly1305 and Curve25519
-Noise IK. Those choices are Tailscale's; we benefit from them.
+Cipher and key exchange are WireGuard's department — ChaCha20-Poly1305
+and Curve25519 Noise IK. Those choices are Tailscale's; we inherit them.
 
-Worth being precise about the division of labor: **Tailscale provides
-encryption, peer authentication, and network reachability. Tailscreen
-provides the authorization layer on top** — who may view, who may
-control, and how much of anything a peer can make you buffer. The rest of
-this page is about that layer.
+The division of labor: **Tailscale provides encryption, peer
+authentication, and network reachability. Tailscreen provides the
+authorization layer on top** — who may view, who may control, and how
+much of anything a peer can make you buffer. The rest of this page is
+about that layer.
 
 ## We don't run a server
 
@@ -186,8 +185,8 @@ decide who can knock, the gate decides who gets in.
 
 ## Things we do not protect against
 
-We're not in the business of pretending Tailscreen is a defense against
-threats it cannot defend against. Things outside the threat model:
+No pretending Tailscreen defends against threats it can't. Outside the
+threat model:
 
 - **Local user compromise.** Anyone with an active session on the sharing
   Mac can already see the screen. We can't help you there.

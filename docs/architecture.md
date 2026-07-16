@@ -60,18 +60,15 @@ The app entry point owns the menubar lifecycle and very little else. The
 truth — are we sharing, are we connecting, who are the peers, which display
 — lives in a single `@MainActor` coordinator.
 
-There is *one* file holding every SwiftUI view in the app. We deliberately
-did not split it into one-file-per-view; the view code is short enough that
-the cognitive cost of jumping between files would outweigh the cost of
-scrolling.
+Every SwiftUI view lives in one file, deliberately: the view code is short
+enough that jumping between files would cost more than scrolling.
 
 The native `NSMenu` (File → Disconnect, etc.) is built by hand because some
 things SwiftUI's `MenuBarExtra` still doesn't do well in 2026.
 
-The viewer window is a regular `NSWindow` and we hold it for the entire
-process lifetime. That's not laziness — releasing it on disconnect raced
-with VideoToolbox/Metal teardown in autoreleasepool and crashed. Holding
-the window is the fix.
+The viewer window is a regular `NSWindow`, held for the entire process
+lifetime. That's not laziness — releasing it on disconnect raced with
+VideoToolbox/Metal teardown and crashed. Holding it is the fix.
 
 ## Capture
 

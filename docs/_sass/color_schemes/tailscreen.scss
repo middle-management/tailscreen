@@ -1,0 +1,24 @@
+// Tailscreen light color scheme.
+// Layers a refined indigo accent and softer neutrals over just-the-docs'
+// default light palette. Keep in step with tailscreen-dark.scss.
+
+// Accent
+$link-color: #4f46e5; // indigo-600
+$btn-primary-color: #4f46e5;
+
+// Text
+$body-heading-color: #111827; // near-black slate
+$body-text-color: #374151;
+
+// Surfaces
+$body-background-color: #ffffff;
+$sidebar-color: #f8f9fb;
+$search-background-color: #ffffff;
+$table-background-color: #ffffff;
+$code-background-color: #f6f8fa;
+
+// Lines
+$border-color: #e5e7eb;
+
+// Slightly rounder corners everywhere (buttons, code, search).
+$border-radius: 6px;

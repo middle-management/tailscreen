@@ -1,11 +1,13 @@
 <link rel="icon" type="image/svg+xml" href="{{ '/assets/favicon.svg' | relative_url }}">
 <link rel="mask-icon" href="{{ '/assets/favicon.svg' | relative_url }}" color="#000000">
+<meta name="theme-color" content="#0f1117" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
 <script>
   (function() {
     var media = window.matchMedia('(prefers-color-scheme: dark)');
     function sync() {
       if (typeof jtd === 'undefined' || !jtd.setTheme) return;
-      jtd.setTheme(media.matches ? 'dark' : 'light');
+      jtd.setTheme(media.matches ? 'tailscreen-dark' : 'tailscreen');
     }
     document.addEventListener('DOMContentLoaded', sync);
     media.addEventListener('change', sync);
