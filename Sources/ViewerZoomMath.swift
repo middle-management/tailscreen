@@ -1,4 +1,10 @@
+#if canImport(CoreGraphics)
 import CoreGraphics
+#else
+// On non-Apple platforms the CG geometry types (CGFloat/CGPoint/CGSize/
+// CGRect) come from swift-corelibs-foundation.
+import Foundation
+#endif
 
 /// Continuous content-zoom state for the viewer window. `scale == 1` means
 /// the video sits exactly at its aspect-fit rect; larger scales magnify the

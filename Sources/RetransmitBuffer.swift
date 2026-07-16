@@ -1,5 +1,5 @@
 import Foundation
-import os
+import Synchronization
 
 /// Send-side ring of recently broadcast RTP packets, so the server can answer
 /// a viewer NACK with a byte-identical retransmit at ~1 RTT for ~0.1 % of a
@@ -52,7 +52,9 @@ final class RetransmitBuffer: @unchecked Sendable {
     /// ever NACKs recent history; older ranges point at evicted batches).
     let maxRangesPerViewer: Int
 
-    private let lock = OSAllocatedUnfairLock<State>(initialState: State())
+    // `Mutex` (not `OSAllocatedUnfairLock`) so this file stays portable —
+    // it's part of the TailscreenProtocol Linux-buildable set.
+    private let lock = Mutex<State>(State())
     private struct State {
         var batches: [UInt64: Batch] = [:]
         /// Batch IDs in insertion order, for oldest-first eviction.

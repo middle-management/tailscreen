@@ -22,6 +22,8 @@ Runtime needs: Screen Recording permission, and either interactive Tailscale log
 tailscreen/
 ├── Sources/                    # Tailscreen executable (Swift)
 ├── Tests/TailscreenTests/      # Unit + connectivity tests
+├── TailscreenProtocolPackage/  # Portable (Linux-buildable) protocol core
+│   └── Sources/TailscreenProtocol/   # Symlinks into ../Sources (see its README)
 ├── TailscaleKitPackage/        # Local SwiftPM dep wrapping libtailscale
 │   ├── upstream/libtailscale/  # Git submodule (tailscale/libtailscale)
 │   ├── Sources/  lib/  include/   # Symlinks into upstream
@@ -49,6 +51,8 @@ make release       # swift build -c release   → .build/release/Tailscreen
 make install       # release + copy to ~/bin/Tailscreen
 make clean         # swift package clean + rm .build + clean TailscaleKitPackage
 make test          # swift test (after libtailscale)
+make test-protocol # build + smoke-test the portable TailscreenProtocol package
+                   #   (no libtailscale, no Apple frameworks — also runs on Linux)
 make e2e-up        # start local headscale (Docker)
 make e2e-down      # tear down headscale + volume
 make test-e2e      # one-shot: e2e-up → swift test --filter TailscaleConnectivityTests → e2e-down
@@ -186,6 +190,35 @@ end-to-end pipeline tests in `RTPLossyChannelTests` (via `LossyChannel`)
 instead —
 the harness is the end-to-end complement, not a replacement.
 
+## Portable protocol core (TailscreenProtocolPackage)
+
+The wire protocol + pure decision logic (RTP/framing/control codecs, NACK/
+retransmit/FEC/RR loss recovery, policy/tuning types — 25 files, Foundation +
+`Synchronization` only) doubles as a standalone SwiftPM package that builds
+**on Linux**: `TailscreenProtocolPackage`, whose sources are symlinks into
+`Sources/`. The macOS target still compiles the real files directly — same
+code, two modules, zero mac-side change. CI's `linux-protocol` job (and
+`make test-protocol` locally, macOS or Linux) enforces the boundary.
+
+Rules (details in `TailscreenProtocolPackage/README.md`):
+- A symlinked file must not import Apple frameworks — no `os`
+  (use `Synchronization.Mutex`, not `OSAllocatedUnfairLock`), no `Darwin`,
+  no AppKit/VideoToolbox/Combine. CG geometry types go behind
+  `#if canImport(CoreGraphics)` (Linux gets them from Foundation).
+- A portable file may only reference other portable files. If it needs a
+  declaration from a mac-bound file, move that declaration into a portable
+  file first (same module on macOS, so the move is invisible there) —
+  that's why `VideoCodec`/`CodecParameterSets`/`EncoderTuning` live in
+  `VideoCodecTypes.swift` (not `VideoEncoder.swift`),
+  `TailscreenMetadata`/`TailscreenRequest` in `TailscreenWireTypes.swift`
+  (not `TailscreenMetadata.swift`), and `TimeoutError` in `Timeout.swift`.
+- Adding a file to the set = add the symlink + keep `make test-protocol`
+  green. The package's own test target is a shallow smoke suite only; the
+  real coverage stays in `Tests/TailscreenTests`.
+
+The Linux/Windows roadmap this enables (viewer first, then sharer) lives in
+`docs/porting-plan.md`.
+
 ## Architecture & data flow
 
 Capture and encoding live in a separate **helper subprocess** (`Tailscreen --capture-helper`), spawned per share. Process death is the only reliable signal that clears `replayd`'s per-bundle slot, so isolating SCStream + VideoToolbox in a child means Stop Sharing always works — no stuck menubar recording badge.
@@ -293,13 +326,14 @@ User-facing strings are localized through SwiftPM resources. `Package.swift` set
 - **Don't present `SCContentSharingPicker` from the main process either.** Same family of APIs, same defensive isolation — spawn `--picker-helper` instead. The picker subprocess exits the moment the user picks, so its XPC handles never live alongside the long-running main process.
 - **Don't deserialize an `SCContentFilter` in the main process.** The decoded filter retains XPC handles to system services; the unarchive happens only inside the capture-helper.
 - **Don't add SCStream lifecycle to the main process.** All capture lives in the helper subprocess. The main-process screen-share server only spawns the helper and broadcasts what comes back.
+- **Linux CI (`linux-protocol`) fails after touching a `Sources/` file** — the file is part of the portable TailscreenProtocol set (symlinked from `TailscreenProtocolPackage/Sources/TailscreenProtocol/`) and you added an Apple-only dependency. Keep the file Foundation-only or move the mac-bound piece to a non-portable file. Reproduce with `make test-protocol` (works on macOS too).
 - **Stop Sharing badge stuck on** — usually means a helper subprocess was orphaned by a stop/restart race. The screen-share server has a restart lock for this; if you touch capture restart, preserve the await-pending-restart-then-teardown ordering. This includes the mid-share "Change Source…" path: `TailscaleScreenShareServer.changeSource(filterData:)` swaps the cached selection and rides the same tracked restart — never spawn a helper directly.
 
 ## CI/CD
 
 Three workflows under `.github/workflows/` (plus a docs-deploy workflow):
 
-- **Build** — runs `make build` + `make test` on every PR and push to `main`. Skips doc-only changes. Uses `concurrency.cancel-in-progress` to drop superseded runs. Also in this workflow: a **`build-release` job** (`swift build -c release` compile check, required — release-config breaks used to surface only on published releases) and a **diff-coverage gate** (`scripts/diff-coverage.sh`: lcov `DA:` records joined against `git diff -U0 origin/main...HEAD` changed lines in `Sources/*.swift`, fails under 70 % coverage of changed executable lines; currently `continue-on-error: true` with the same flip-to-required TODO convention as the `format` job).
+- **Build** — runs `make build` + `make test` on every PR and push to `main`. Skips doc-only changes. Uses `concurrency.cancel-in-progress` to drop superseded runs. Also in this workflow: a **`linux-protocol` job** (Ubuntu, `swift:6.1-noble` container: `swift test --package-path TailscreenProtocolPackage` — the required portability gate for the symlinked protocol core; no submodules, no Go build), a **`build-release` job** (`swift build -c release` compile check, required — release-config breaks used to surface only on published releases) and a **diff-coverage gate** (`scripts/diff-coverage.sh`: lcov `DA:` records joined against `git diff -U0 origin/main...HEAD` changed lines in `Sources/*.swift`, fails under 70 % coverage of changed executable lines; currently `continue-on-error: true` with the same flip-to-required TODO convention as the `format` job).
 - **Soak** — nightly (`cron: 17 3 * * *`) + `workflow_dispatch`: runs `SoakTests` with `TAILSCREEN_SOAK=1` (the `ParserFuzzHarness` at ~50× PR budget plus the seeded `LossyChannel` impairment matrix). Deterministic — a red nightly names its reproducing seed/configuration.
 - **Release** — fires when a GitHub release is **published**. Cross-builds `libtailscale.a` for `arm64` + `amd64`, lipo-merges, then `swift build -c release --arch arm64 --arch x86_64` for a universal Mach-O. Wraps it in `Tailscreen.app`, codesigns with a Developer ID identity, notarizes via `notarytool`, staples, and uploads the zipped `.app` + `checksums.txt` to the release. Signing + notarization run only when **all** of the Apple secrets (`APPLE_DEVELOPER_ID_CERT_P12`, `APPLE_DEVELOPER_ID_CERT_PASSWORD`, `APPLE_NOTARY_API_KEY_P8`, `APPLE_NOTARY_API_KEY_ID`, `APPLE_NOTARY_API_ISSUER_ID`) are set; otherwise an unsigned `.app` is uploaded with a warning. The Homebrew tap repo owns cask formatting.
 

@@ -159,6 +159,22 @@ jobs:
       - name: Build (release)
         run: PKG_CONFIG_PATH="$PWD/TailscaleKitPackage" swift build -c release
 
+  # Portability gate: the TailscreenProtocol sub-package (wire protocol +
+  # pure decision logic, symlinked from Sources/ — see
+  # TailscreenProtocolPackage/README.md) must build and pass its smoke tests
+  # on Linux, where no Apple framework exists. This is what keeps the
+  # portable set portable: an AppKit/os/CoreGraphics/VideoToolbox import
+  # sneaking into a symlinked file fails here, not on someone's future
+  # non-macOS port. Cheap (Linux minutes, no submodules, no Go build) and
+  # required — a break is always a real portability regression.
+  linux-protocol:
+    runs-on: ubuntu-latest
+    container: swift:6.1-noble
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build + test TailscreenProtocol on Linux
+        run: swift test --package-path TailscreenProtocolPackage
+
   lint:
     runs-on: macos-latest
     steps:

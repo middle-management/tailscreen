@@ -1,4 +1,4 @@
-.PHONY: help build run clean release install tailscale test test-tsan lint lint-baseline format format-check e2e-up e2e-down test-e2e test-e2e-local test-e2e-harness icon
+.PHONY: help build run clean release install tailscale test test-protocol test-tsan lint lint-baseline format format-check e2e-up e2e-down test-e2e test-e2e-local test-e2e-harness icon
 
 # Default target: print a one-line summary of every target. Targets are
 # self-documented via the `## description` suffix on each rule.
@@ -25,6 +25,13 @@ run: tailscale ## Build + run the debug binary
 
 test: tailscale ## Run the unit test suite (swift test)
 	swift test
+
+# The platform-portable sub-package (wire protocol + pure decision logic,
+# symlinked from Sources/ — see TailscreenProtocolPackage/README.md). Needs
+# no libtailscale and no Apple framework, so it also runs on Linux; CI's
+# linux-protocol job runs exactly this.
+test-protocol: ## Build + smoke-test the portable TailscreenProtocol package
+	swift test --package-path TailscreenProtocolPackage
 
 # Thread sanitizer build of the test suite. Catches data races on locks,
 # double-resumed continuations, callback ordering bugs that compile fine

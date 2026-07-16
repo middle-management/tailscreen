@@ -270,7 +270,8 @@ class TailscalePeerDiscovery: ObservableObject {
     }
 }
 
-struct TimeoutError: Error {}
+// TimeoutError lives in Timeout.swift (platform-portable, part of
+// TailscreenProtocol).
 
 // MARK: - Continuation helpers
 
