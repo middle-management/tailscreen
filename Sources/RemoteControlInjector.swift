@@ -68,11 +68,14 @@ final class RemoteControlInjector: @unchecked Sendable {
     /// `CGEventPost` (which needs Accessibility and would warp the CI cursor).
     enum InjectedAction: Equatable, Sendable {
         enum Side: Sendable { case left, right, middle }
-        case mouseDown(Side)
-        case mouseUp(Side)
+        /// Button events carry the translated `CGEventFlags` raw value so
+        /// tests can pin the modified-click path (⌘-click etc.) without a
+        /// real `CGEventPost`.
+        case mouseDown(Side, flags: UInt64)
+        case mouseUp(Side, flags: UInt64)
         case mouseMoved
         case drag(Side)
-        case scroll
+        case scroll(flags: UInt64)
         /// `keyCode` is the translated **mac virtual keycode** (post
         /// HID-usage reverse-mapping); `flags` the translated
         /// `CGEventFlags` raw value.
@@ -254,8 +257,9 @@ final class RemoteControlInjector: @unchecked Sendable {
     ) {
         // Remember where we posted so a revoke can synthesize a button-up here.
         lastPoint = point
+        let flags = Self.eventFlags(modifiers)
         if let hook = onInjectForTesting {
-            hook(Self.testAction(for: type, button: button))
+            hook(Self.testAction(for: type, button: button, flags: flags.rawValue))
             return
         }
         // Warp the hardware cursor so it visibly tracks the viewer, then post
@@ -267,28 +271,31 @@ final class RemoteControlInjector: @unchecked Sendable {
         else { return }
         // Modified clicks (⌘-click, shift-click) need the flags on the mouse
         // event itself — apps read them off the event, not the keyboard.
-        event.flags = Self.eventFlags(modifiers)
+        event.flags = flags
         event.post(tap: .cghidEventTap)
     }
 
-    private static func testAction(for type: CGEventType, button: CGMouseButton) -> InjectedAction {
+    private static func testAction(
+        for type: CGEventType, button: CGMouseButton, flags: UInt64
+    ) -> InjectedAction {
+        let side: InjectedAction.Side
+        switch button {
+        case .left: side = .left
+        case .right: side = .right
+        case .center: side = .middle
+        @unknown default: side = .middle
+        }
         switch type {
-        case .leftMouseDown: return .mouseDown(.left)
-        case .rightMouseDown: return .mouseDown(.right)
-        case .otherMouseDown: return .mouseDown(.middle)
-        case .leftMouseUp: return .mouseUp(.left)
-        case .rightMouseUp: return .mouseUp(.right)
-        case .otherMouseUp: return .mouseUp(.middle)
-        case .leftMouseDragged: return .drag(.left)
-        case .rightMouseDragged: return .drag(.right)
-        case .otherMouseDragged: return .drag(.middle)
+        case .leftMouseDown, .rightMouseDown, .otherMouseDown: return .mouseDown(side, flags: flags)
+        case .leftMouseUp, .rightMouseUp, .otherMouseUp: return .mouseUp(side, flags: flags)
+        case .leftMouseDragged, .rightMouseDragged, .otherMouseDragged: return .drag(side)
         default: return .mouseMoved
         }
     }
 
     private func postScroll(deltaX: Double, deltaY: Double, modifiers: KeyModifiers) {
         if let hook = onInjectForTesting {
-            hook(.scroll)
+            hook(.scroll(flags: Self.eventFlags(modifiers).rawValue))
             return
         }
         // Wire deltas are viewer-controlled: guard against NaN / infinity /

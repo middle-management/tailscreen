@@ -134,12 +134,12 @@ final class RemoteControlInjectorTests: XCTestCase {
         injector.activate(selection: displaySelection)
         injector.apply(.mouseDown(x: 0.5, y: 0.5, button: .left, modifiers: []))
         injector.drainSyncForTesting()
-        XCTAssertEqual(recorder.all, [.mouseDown(.left)])
+        XCTAssertEqual(recorder.all, [.mouseDown(.left, flags: 0)])
 
         // Revoke mid-drag: the injector must release the held button.
         injector.deactivate()
         injector.drainSyncForTesting()
-        XCTAssertEqual(recorder.all, [.mouseDown(.left), .mouseUp(.left)])
+        XCTAssertEqual(recorder.all, [.mouseDown(.left, flags: 0), .mouseUp(.left, flags: 0)])
     }
 
     func testDeactivateWithNoHeldButtonSynthesizesNothing() {
@@ -162,7 +162,25 @@ final class RemoteControlInjectorTests: XCTestCase {
         injector.drainSyncForTesting()
         injector.apply(.mouseUp(x: 0.2, y: 0.2, button: .left, modifiers: []))
         injector.drainSyncForTesting()
-        XCTAssertEqual(recorder.all, [.mouseDown(.left), .drag(.left), .mouseUp(.left)])
+        XCTAssertEqual(recorder.all, [.mouseDown(.left, flags: 0), .drag(.left), .mouseUp(.left, flags: 0)])
+    }
+
+    func testModifiedClickCarriesTranslatedFlagsToInjection() {
+        let (injector, recorder) = makeInjector()
+        injector.activate(selection: displaySelection)
+        // A ⌘-click must reach the injection layer with maskCommand set on
+        // the mouse event itself — apps read modifiers off the event.
+        injector.apply(.mouseDown(x: 0.5, y: 0.5, button: .left, modifiers: [.meta]))
+        injector.apply(.mouseUp(x: 0.5, y: 0.5, button: .left, modifiers: [.meta]))
+        injector.apply(.scroll(x: 0.5, y: 0.5, deltaX: 0, deltaY: -2, modifiers: [.shift]))
+        injector.drainSyncForTesting()
+        XCTAssertEqual(
+            recorder.all,
+            [
+                .mouseDown(.left, flags: CGEventFlags.maskCommand.rawValue),
+                .mouseUp(.left, flags: CGEventFlags.maskCommand.rawValue),
+                .scroll(flags: CGEventFlags.maskShift.rawValue)
+            ])
     }
 
     func testMiddleButtonDragAndRevokeRelease() {
@@ -172,13 +190,13 @@ final class RemoteControlInjectorTests: XCTestCase {
         injector.drainSyncForTesting()
         injector.apply(.mouseMove(x: 0.2, y: 0.2))
         injector.drainSyncForTesting()
-        XCTAssertEqual(recorder.all, [.mouseDown(.middle), .drag(.middle)])
+        XCTAssertEqual(recorder.all, [.mouseDown(.middle, flags: 0), .drag(.middle)])
 
         // Revoke while the middle button is held — same stuck-button
         // guarantee as left/right.
         injector.deactivate()
         injector.drainSyncForTesting()
         XCTAssertEqual(
-            recorder.all, [.mouseDown(.middle), .drag(.middle), .mouseUp(.middle)])
+            recorder.all, [.mouseDown(.middle, flags: 0), .drag(.middle), .mouseUp(.middle, flags: 0)])
     }
 }

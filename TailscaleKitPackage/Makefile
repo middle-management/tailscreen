@@ -28,19 +28,25 @@ $(PATCH_MARKER):
 		exit 1; \
 	fi
 	@echo "🔧 Applying patches to upstream Swift sources..."
-	@# A rejected hunk is a hard error. The marker file already guarantees
-	@# this loop only runs against a pristine submodule, so "already
-	@# applied" can't legitimately happen — and the old `|| true` here
-	@# silently swallowed a stale hunk in patch 021 for months (GNU patch
-	@# fuzz-fitted it into duplicate Go functions; BSD patch rejected it
-	@# invisibly). If a patch fails: reset the submodule
-	@# (git -C upstream/libtailscale checkout -- . && git -C
-	@# upstream/libtailscale clean -fd), fix the patch, re-run.
+	@# A rejected OR fuzz-fitted hunk is a hard error (-F0 forbids fuzz).
+	@# The marker file already guarantees this loop only runs against a
+	@# pristine submodule, so "already applied" can't legitimately happen —
+	@# and the old `|| true` here silently swallowed a stale hunk in patch
+	@# 021 for months (GNU patch fuzz-fitted it into duplicate Go
+	@# functions; BSD patch rejected it invisibly). Offsets are still fine;
+	@# fuzz means the context didn't match and the patch needs regenerating
+	@# against the fully-patched tree.
 	@for patch in $(PATCHES_DIR)/*.patch; do \
 		if [ -f "$$patch" ]; then \
 			echo "   Applying $$(basename $$patch)..."; \
-			patch -p1 -N -r - --no-backup-if-mismatch < "$$patch" || { \
-				echo "❌ $$(basename $$patch) failed to apply cleanly"; \
+			patch -p1 -N -F0 -r - --no-backup-if-mismatch < "$$patch" || { \
+				echo "❌ $$(basename $$patch) failed to apply cleanly."; \
+				echo "   Recover with:"; \
+				echo "     git -C upstream/libtailscale checkout -- ."; \
+				echo "     git -C upstream/libtailscale clean -fd"; \
+				echo "     rm -f .patches-applied"; \
+				echo "   then fix the patch (regenerate it against the"; \
+				echo "   fully-patched tree — see Patches/README.md) and re-run."; \
 				exit 1; \
 			}; \
 		fi; \
