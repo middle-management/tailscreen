@@ -29,7 +29,7 @@ CI job). Everything below Phase 0 is proposal.
   base profile — HELLO, RTP depacketize, PLI — interoperates with every
   shipped macOS sharer, then earns NACK/RR/FEC incrementally by
   advertising caps.
-- **The portable core (~6 k lines, 25 files).** RTP packetization, TCP
+- **The portable core (~7 k lines, 29 files + the 2-file transport tier).** RTP packetization, TCP
   framing, UDP control codecs, NACK/retransmit/FEC/RR loss recovery, the
   congestion/fairness decision functions, remote-control gate/coalescing
   policy, zoom math, tuning constants. This is `TailscreenProtocol` and it
@@ -126,8 +126,9 @@ address now, additively, while all peers are macOS.
    stream) so state classes like the transport tier's can join the
    portable set unchanged — but there's still no SwiftUI/objectWillChange
    machinery: non-mac UIs observe state their own way, and heavily
-   SwiftUI-bound stores (`ViewerAccessPolicyStore`, `AppState`) stay
-   mac-side.
+   SwiftUI-bound state (`AppState`) stays mac-side.
+   (`ViewerAccessPolicyStore` and the `ShareLock` advisory mutex compile
+   via the shims and are in the portable set.)
 9. **Localization.** `L(_:)` rides `String(localized:bundle:)`, which is
    Apple-Foundation. Non-mac UIs need their own catalog mechanism; don't
    pull `Localization.swift` into the portable set.

@@ -195,7 +195,7 @@ the harness is the end-to-end complement, not a replacement.
 ## Portable protocol core (TailscreenProtocolPackage)
 
 The wire protocol + pure decision logic (RTP/framing/control codecs, NACK/
-retransmit/FEC/RR loss recovery, policy/tuning types — 27 files, Foundation +
+retransmit/FEC/RR loss recovery, policy/tuning types — 29 files, Foundation +
 `Synchronization` only) doubles as a standalone SwiftPM package that builds
 **on Linux**: `TailscreenProtocolPackage`, whose sources are symlinks into
 `Sources/`. The macOS target still compiles the real files directly — same

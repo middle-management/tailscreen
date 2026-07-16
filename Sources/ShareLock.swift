@@ -1,5 +1,19 @@
-import Darwin
 import Foundation
+
+#if canImport(Darwin)
+import Darwin
+#else
+import Glibc
+
+/// Maps the `Darwin.`-qualified syscall this file uses onto Glibc so the
+/// same call site compiles on Linux (flock/open/close/ftruncate resolve
+/// unqualified on both platforms).
+private enum Darwin {
+    static func write(_ fd: Int32, _ buf: UnsafeRawPointer?, _ count: Int) -> Int {
+        Glibc.write(fd, buf, count)
+    }
+}
+#endif
 
 /// File-lock advisory mutex shared across Tailscreen instances on the
 /// same Mac. macOS's `replayd` enforces a per-bundle constraint that
