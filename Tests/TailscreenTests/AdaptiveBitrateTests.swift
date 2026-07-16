@@ -1,6 +1,8 @@
 import XCTest
 
 @testable import Tailscreen
+@testable import TailscreenProtocol
+@testable import TailscreenTransport
 
 /// Unit tests for the adaptive-bitrate decision. Pure function, no tsnet, no
 /// encoder — exercises the loss/recovery math and asymmetric hysteresis that

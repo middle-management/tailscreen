@@ -1,6 +1,8 @@
 import XCTest
 
 @testable import Tailscreen
+@testable import TailscreenProtocol
+@testable import TailscreenTransport
 
 /// Unit tests for `ShareLock` — the flock-based single-sharer mutex.
 /// flock(2) locks are per open-file-description, so two `ShareLock`

@@ -27,12 +27,13 @@ test: tailscale ## Run the unit test suite (swift test)
 	swift test
 
 # The platform-portable sub-package (wire protocol + pure decision logic +
-# the tsnet-facing transport tier, symlinked from Sources/ — see
-# TailscreenProtocolPackage/README.md). Needs no built libtailscale.a and no
-# Apple framework, so it also runs on Linux; CI's linux-protocol job runs
-# exactly this. The TailscreenTransport target compiles against TailscaleKit,
-# which needs the submodule checked out with patches applied (header only —
-# no Go build), hence the apply-patches prerequisite.
+# the tsnet-facing transport tier — see TailscreenProtocolPackage/README.md).
+# The app depends on it as a real SwiftPM dependency; the files live only in
+# the package. Needs no built libtailscale.a and no Apple framework, so it
+# also runs on Linux; CI's linux-protocol job runs exactly this. The
+# TailscreenTransport target compiles against TailscaleKit, which needs the
+# submodule checked out with patches applied (header only — no Go build),
+# hence the apply-patches prerequisite.
 test-protocol: ## Build + smoke-test the portable TailscreenProtocol package
 	@$(MAKE) -C TailscaleKitPackage apply-patches
 	swift test --package-path TailscreenProtocolPackage
@@ -61,11 +62,11 @@ lint-baseline: ## Regenerate the SwiftLint baseline from current state
 # used by CI. Config lives in `.swift-format` at the repo root.
 format: ## Run swift-format in-place over Sources/ and Tests/
 	@command -v swift-format >/dev/null 2>&1 || { echo "swift-format missing — install Xcode 16+ or run 'brew install swift-format'"; exit 1; }
-	@swift-format format --in-place --parallel --recursive Sources Tests
+	@swift-format format --in-place --parallel --recursive Sources Tests TailscreenProtocolPackage/Sources
 
 format-check: ## Run swift-format in lint mode (no changes); CI uses this
 	@command -v swift-format >/dev/null 2>&1 || { echo "swift-format missing — install Xcode 16+ or run 'brew install swift-format'"; exit 1; }
-	@swift-format lint --strict --parallel --recursive Sources Tests
+	@swift-format lint --strict --parallel --recursive Sources Tests TailscreenProtocolPackage/Sources
 
 release: tailscale ## Build the release binary (.build/release/Tailscreen)
 	swift build -c release

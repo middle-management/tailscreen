@@ -2,6 +2,8 @@ import AppKit
 import XCTest
 
 @testable import Tailscreen
+@testable import TailscreenProtocol
+@testable import TailscreenTransport
 
 /// Tests the injector's revoke gate, stuck-button release, and the
 /// wire-neutral → CGEvent translation (HID usage → mac keycode,

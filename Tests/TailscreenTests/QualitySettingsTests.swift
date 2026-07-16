@@ -1,6 +1,8 @@
 import XCTest
 
 @testable import Tailscreen
+@testable import TailscreenProtocol
+@testable import TailscreenTransport
 
 /// CI-able unit tests for the quality-settings model (no tsnet, no SCK):
 /// preset ↔ knob derivation, normalization clamps, helper-environment

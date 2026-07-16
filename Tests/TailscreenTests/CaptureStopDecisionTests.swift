@@ -2,6 +2,8 @@ import ScreenCaptureKit
 import XCTest
 
 @testable import Tailscreen
+@testable import TailscreenProtocol
+@testable import TailscreenTransport
 
 /// Unit coverage for `AppState.isUserInitiatedCaptureStop(_:)`. The
 /// actual `restartCapture` flow needs Screen Recording permission and

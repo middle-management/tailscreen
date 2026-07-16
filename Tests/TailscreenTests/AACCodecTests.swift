@@ -2,6 +2,8 @@ import AVFoundation
 import XCTest
 
 @testable import Tailscreen
+@testable import TailscreenProtocol
+@testable import TailscreenTransport
 
 final class AACCodecTests: XCTestCase {
     func testEncodeDecodeRoundtripWaveformShape() throws {

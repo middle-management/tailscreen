@@ -1,6 +1,8 @@
 import XCTest
 
 @testable import Tailscreen
+@testable import TailscreenProtocol
+@testable import TailscreenTransport
 
 /// Unit tests for the per-viewer fairness decisions extracted from
 /// `TailscaleScreenShareServer` — `lossAttribution` (is one viewer the

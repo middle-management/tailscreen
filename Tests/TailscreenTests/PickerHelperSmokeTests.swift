@@ -2,6 +2,8 @@ import Foundation
 import XCTest
 
 @testable import Tailscreen
+@testable import TailscreenProtocol
+@testable import TailscreenTransport
 
 /// Subprocess-lifecycle sanity check for `Tailscreen --picker-helper`. The
 /// picker UI itself is interactive and can't be meaningfully driven from a

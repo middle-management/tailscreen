@@ -1,6 +1,8 @@
 import XCTest
 
 @testable import Tailscreen
+@testable import TailscreenProtocol
+@testable import TailscreenTransport
 
 /// Nightly long-run soak tier (`.github/workflows/soak.yml`). Self-skips
 /// unless `TAILSCREEN_SOAK=1`, so `make test` and PR CI never pay for it.

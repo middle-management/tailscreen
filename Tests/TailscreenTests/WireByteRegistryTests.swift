@@ -1,6 +1,8 @@
 import XCTest
 
 @testable import Tailscreen
+@testable import TailscreenProtocol
+@testable import TailscreenTransport
 
 /// Single source of truth for **every** wire byte Tailscreen puts on a pipe
 /// or socket, pinned per channel. Three legs per channel:

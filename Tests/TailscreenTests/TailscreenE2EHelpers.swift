@@ -4,6 +4,8 @@ import TailscaleKit
 import XCTest
 
 @testable import Tailscreen
+@testable import TailscreenProtocol
+@testable import TailscreenTransport
 
 /// Shared bring-up for the screen-share E2E tests. Factors out the
 /// authKey / controlURL / temp-state-dir dance so each test file isn't

@@ -22,8 +22,9 @@ Runtime needs: Screen Recording permission, and either interactive Tailscale log
 tailscreen/
 ├── Sources/                    # Tailscreen executable (Swift)
 ├── Tests/TailscreenTests/      # Unit + connectivity tests
-├── TailscreenProtocolPackage/  # Portable (Linux-buildable) protocol core
-│   └── Sources/TailscreenProtocol/   # Symlinks into ../Sources (see its README)
+├── TailscreenProtocolPackage/  # Portable (Linux-buildable) protocol core —
+│   │                           #   a real dependency of the app (see its README)
+│   └── Sources/{TailscreenProtocol,TailscreenTransport}/
 ├── TailscaleKitPackage/        # Local SwiftPM dep wrapping libtailscale
 │   ├── upstream/libtailscale/  # Git submodule (tailscale/libtailscale)
 │   ├── Sources/  lib/  include/   # Symlinks into upstream
@@ -196,11 +197,16 @@ the harness is the end-to-end complement, not a replacement.
 
 The wire protocol + pure decision logic (RTP/framing/control codecs, NACK/
 retransmit/FEC/RR loss recovery, policy/tuning types — 29 files, Foundation +
-`Synchronization` only) doubles as a standalone SwiftPM package that builds
-**on Linux**: `TailscreenProtocolPackage`, whose sources are symlinks into
-`Sources/`. The macOS target still compiles the real files directly — same
-code, two modules, zero mac-side change. CI's `linux-protocol` job (and
-`make test-protocol` locally, macOS or Linux) enforces the boundary.
+`Synchronization` only) lives in a standalone SwiftPM package that builds
+**on Linux**: `TailscreenProtocolPackage`. The app consumes it as a real
+dependency — the files exist only in the package, and
+`Sources/ProtocolReexports.swift` `@_exported import`s both products so app
+code uses the types unqualified. Everything the app touches is `public`
+(incl. explicit memberwise inits); test-only seams stay `internal` and the
+test suite reaches them via `@testable import TailscreenProtocol` /
+`TailscreenTransport` (every test file imports all three modules). CI's
+`linux-protocol` job (and `make test-protocol` locally, macOS or Linux)
+enforces the boundary.
 
 The package has a second tier: target **`TailscreenTransport`**
 (`TailscalePeerDiscovery` + `TailscaleIPNWatcher`), which depends on
@@ -210,12 +216,7 @@ handles this), and its Combine surface (`ObservableObject`/`@Published`,
 which mac Foundation re-exports) compiles on Linux via
 `PortabilityShims.swift` — whose `Published` shim provides a
 `$prop.values`-compatible AsyncStream because `TailscalePeerDiscovery`
-consumes `watcher.$peers.values`. Cross-module needs made a handful of
-protocol-tier types `public` (`TailscreenMetadata`, `VideoCodec`,
-`TimeoutError`, `TailscreenInstance`) — invisible to the mac build (same
-module there). The two transport files carry a
-`#if canImport(TailscreenProtocol)` import for the package build that
-compiles away in the app build.
+consumes `watcher.$peers.values`.
 
 Rules (details in `TailscreenProtocolPackage/README.md`):
 - A symlinked file must not import Apple frameworks — no `os`
@@ -343,7 +344,8 @@ User-facing strings are localized through SwiftPM resources. `Package.swift` set
 - **Don't present `SCContentSharingPicker` from the main process either.** Same family of APIs, same defensive isolation — spawn `--picker-helper` instead. The picker subprocess exits the moment the user picks, so its XPC handles never live alongside the long-running main process.
 - **Don't deserialize an `SCContentFilter` in the main process.** The decoded filter retains XPC handles to system services; the unarchive happens only inside the capture-helper.
 - **Don't add SCStream lifecycle to the main process.** All capture lives in the helper subprocess. The main-process screen-share server only spawns the helper and broadcasts what comes back.
-- **Linux CI (`linux-protocol`) fails after touching a `Sources/` file** — the file is part of the portable TailscreenProtocol set (symlinked from `TailscreenProtocolPackage/Sources/TailscreenProtocol/`) and you added an Apple-only dependency. Keep the file Foundation-only or move the mac-bound piece to a non-portable file. Reproduce with `make test-protocol` (works on macOS too).
+- **Linux CI (`linux-protocol`) fails after touching a package file** — you added an Apple-only dependency to a file in `TailscreenProtocolPackage/Sources/`. Keep package files Foundation-only (see the package README's whitelist) or move the mac-bound piece into the app target. Reproduce with `make test-protocol` (works on macOS too).
+- **App fails to compile against a package type** ("initializer is inaccessible", "cannot find X in scope") — the declaration is `internal` in TailscreenProtocolPackage. Mark what the app needs `public` (structs the app constructs need explicit public inits — Swift never synthesizes memberwise inits as public). Test-only seams should stay internal; tests use `@testable import TailscreenProtocol`/`TailscreenTransport`.
 - **Stop Sharing badge stuck on** — usually means a helper subprocess was orphaned by a stop/restart race. The screen-share server has a restart lock for this; if you touch capture restart, preserve the await-pending-restart-then-teardown ordering. This includes the mid-share "Change Source…" path: `TailscaleScreenShareServer.changeSource(filterData:)` swaps the cached selection and rides the same tracked restart — never spawn a helper directly.
 
 ## CI/CD

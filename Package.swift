@@ -20,13 +20,19 @@ let package = Package(
     ],
     dependencies: [
         // TailscaleKit local package
-        .package(path: "./TailscaleKitPackage")
+        .package(path: "./TailscaleKitPackage"),
+        // The portable core: wire protocol + pure decision logic
+        // (TailscreenProtocol) and the tsnet-facing transport tier
+        // (TailscreenTransport). Also builds on Linux — see its README.
+        .package(path: "./TailscreenProtocolPackage")
     ],
     targets: [
         .executableTarget(
             name: "Tailscreen",
             dependencies: [
-                .product(name: "TailscaleKit", package: "TailscaleKitPackage")
+                .product(name: "TailscaleKit", package: "TailscaleKitPackage"),
+                .product(name: "TailscreenProtocol", package: "TailscreenProtocolPackage"),
+                .product(name: "TailscreenTransport", package: "TailscreenProtocolPackage")
             ],
             path: "Sources",
             resources: [

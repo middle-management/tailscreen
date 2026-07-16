@@ -1,6 +1,8 @@
 import XCTest
 
 @testable import Tailscreen
+@testable import TailscreenProtocol
+@testable import TailscreenTransport
 
 /// Unit tests for the two timeout wrappers: `withTimeout` (task-group race,
 /// used around tsnet bring-up) and `TailscalePeerDiscovery.withWatchdog`

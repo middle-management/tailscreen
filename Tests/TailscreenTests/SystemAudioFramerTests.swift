@@ -1,6 +1,8 @@
 import XCTest
 
 @testable import Tailscreen
+@testable import TailscreenProtocol
+@testable import TailscreenTransport
 
 /// Pure framing math for the helper-side system-audio tap. Mirrors
 /// `TapBuffer.appendAndDrain`'s 1024-sample boundary semantics without any

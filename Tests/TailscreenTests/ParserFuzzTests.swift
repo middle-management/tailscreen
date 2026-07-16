@@ -1,6 +1,8 @@
 import XCTest
 
 @testable import Tailscreen
+@testable import TailscreenProtocol
+@testable import TailscreenTransport
 
 /// Deterministic, seeded byte-level fuzz harness for every parser that faces
 /// hostile bytes: the framed TCP control parser, the RTP depacketizers, the
