@@ -107,13 +107,19 @@ address now, additively, while all peers are macOS.
    Consider negotiating **Opus** as an additional audio codec — a new
    payload type is a one-registry-row, capability-degrading change, and
    old viewers already drop unknown PTs silently.
-7. **TailscaleKit's Swift wrapper needs a portability audit.** The C
-   library is portable; the Swift wrapper + our patches (send/receive,
-   `ListenPacket`, poll timeouts) were only ever built against Apple
-   toolchains. Expect small fixes (no `os` logging, socket API
-   differences), not a rewrite. `TailscalePeerDiscovery` /
-   `TailscaleIPNWatcher` are Foundation + TailscaleKit only — they join
-   the portable set the moment TailscaleKit builds on Linux.
+7. **~~TailscaleKit's Swift wrapper needs a portability audit.~~ RESOLVED
+   — audited, patched (022), and verified live on Linux.** The fixes were
+   exactly the expected small ones: `canImport(Combine)` gates with an
+   `AsyncStream` fallback for the two state publishers, a Glibc shim for
+   the `Darwin.`-qualified syscalls, `FoundationNetworking` imports for
+   URLSession types, compiling out the Network.framework SOCKS extension,
+   and having `LocalAPIClient` talk to the tsnet loopback listener
+   directly (it already sent the auth headers; the SOCKS hop was
+   redundant for LocalAPI). The audit also surfaced and fixed a latent
+   patch-stack bug (021 carried a stale hunk that GNU patch fuzz-fitted
+   into duplicate Go exports — invisible on macOS's BSD patch).
+   `TailscalePeerDiscovery` / `TailscaleIPNWatcher` are now unblocked to
+   join the portable set.
 8. **The app-state layer is Combine/SwiftUI-shaped.** `ObservableObject`
    / `@Published` don't exist off-Apple (this is why
    `ViewerAccessPolicyStore` stayed out of the portable set). Ports need
@@ -144,14 +150,20 @@ address now, additively, while all peers are macOS.
 the wire protocol + decision logic on Linux with smoke tests; the
 `linux-protocol` CI job keeps it that way.
 
-**Phase 1 — transport spike (de-risks everything).** Build
-`libtailscale.a` on Linux, patch TailscaleKit until `swift build` links and
-a tsnet node comes up against a local headscale (native headscale on Linux
-is easy — no Docker needed). Exit criterion: two Linux processes exchange
-UDP datagrams over tsnet. This also unlocks moving `TailscalePeerDiscovery`
-into the portable set and running the connectivity tests on Linux CI —
-which GitHub's *Linux* runners may actually permit, unlike the macOS
-sandbox that blocks the WireGuard handshake today.
+**Phase 1 — transport spike (done).** Verified on a Linux host
+(Ubuntu 24.04, Swift 6.1.2, Go 1.24): `libtailscale.a` builds as a Linux
+c-archive, the patched TailscaleKit wrapper compiles warning-free and
+passes its unit tests (both now enforced by the `linux-tailscalekit` CI
+job), and — live against a native headscale (`scripts/e2e-up-native.sh`
+already runs on Linux) — two Swift tsnet nodes came up, exchanged TCP
+(listener/dial/send/receive), exchanged UDP datagrams through the patched
+`PacketListener` socketpair bridge (the exact transport the RTP video
+path uses), and served LocalAPI status over the direct loopback path
+(`backend=Running`, peer visible — peer discovery works). Notably the
+WireGuard handshake that GitHub's *macOS* runner sandbox blocks completed
+without issue on Linux, so promoting the live two-node exchange to a
+Linux CI job is a realistic follow-up. Remaining from this phase: move
+`TailscalePeerDiscovery` / `TailscaleIPNWatcher` into the portable set.
 
 **Phase 2 — Linux viewer.** Headless first: dial a macOS sharer, HELLO,
 depacketize, FFmpeg-decode, assert on decoded frames (the Linux twin of

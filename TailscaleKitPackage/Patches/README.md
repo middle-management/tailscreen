@@ -45,6 +45,26 @@ lives in the patch's diff comments. The categories of patches we carry:
   macOS for SOCK_DGRAM unix-socket pairs, leaving the netstack port
   bound. The patch promotes a `closeOnce` and exports a dedicated close
   function that owns teardown of both ends.
+- Linux portability (`022`): `#if canImport(...)` gates so the wrapper
+  builds on Linux — Combine state publishers get an `AsyncStream`
+  fallback, the `Darwin.`-qualified syscalls get a Glibc shim, URLSession
+  types import `FoundationNetworking`, the Network.framework SOCKS
+  `ProxyConfiguration` extension compiles out, and `LocalAPIClient` talks
+  to the tsnet loopback listener directly (plain HTTP + the same auth
+  headers) instead of through the SOCKS hop. Verified live on Linux:
+  two tsnet nodes over local headscale exchanging TCP, UDP
+  (`PacketListener`), and LocalAPI status.
+
+## Patch hygiene (learned the hard way)
+
+- **A patch must be a sequential diff against the stack before it**, never
+  against pristine upstream. Patch 021 originally carried a stale hunk
+  that re-added the whole `TsnetListenPacket` block 013/017 already
+  install: BSD `patch` (macOS) rejected the hunk invisibly behind the
+  loop's old `|| true`, while GNU `patch` (Linux) fuzz-fitted it and
+  produced duplicate Go functions that broke the c-archive build. The
+  Makefile now hard-fails on any reject — if your new patch trips it,
+  regenerate it from a fully-patched tree.
 
 ## Creating New Patches
 

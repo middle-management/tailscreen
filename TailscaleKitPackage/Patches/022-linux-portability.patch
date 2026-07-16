@@ -1,0 +1,280 @@
+--- a/upstream/libtailscale/swift/TailscaleKit/IncomingConnection.swift	2026-07-16 13:36:11.948914608 +0000
++++ b/upstream/libtailscale/swift/TailscaleKit/IncomingConnection.swift	2026-07-16 13:41:13.362186996 +0000
+@@ -1,10 +1,31 @@
+ // Copyright (c) Tailscale Inc & AUTHORS
+ // SPDX-License-Identifier: BSD-3-Clause
+ 
++#if canImport(Combine)
+ import Combine
++#endif
+ import Foundation
+ import libtailscale
+ 
++#if canImport(Darwin)
++import Darwin
++#else
++import Glibc
++
++/// Maps the `Darwin.`-qualified syscalls this file uses onto Glibc so the
++/// same call sites compile on Linux.
++private enum Darwin {
++    @discardableResult
++    static func close(_ fd: Int32) -> Int32 { Glibc.close(fd) }
++    static func read(_ fd: Int32, _ buf: UnsafeMutableRawPointer?, _ count: Int) -> Int {
++        Glibc.read(fd, buf, count)
++    }
++    static func write(_ fd: Int32, _ buf: UnsafeRawPointer?, _ count: Int) -> Int {
++        Glibc.write(fd, buf, count)
++    }
++}
++#endif
++
+ /// IncomingConnection is use to read incoming message from an inbound
+ /// connection.   IncomingConnections are not instantiated directly,
+ /// they are returned by Listener.accept
+@@ -15,6 +36,7 @@
+ 
+     public let remoteAddress: String?
+ 
++#if canImport(Combine)
+     @Published var _state: ConnectionState = .idle
+ 
+     public func state() -> any AsyncSequence<ConnectionState, Never>  {
+@@ -23,6 +45,24 @@
+             .eraseToAnyPublisher()
+             .values
+     }
++#else
++    // Combine is Apple-only; AsyncStream provides the same
++    // current-value-then-updates sequence on other platforms.
++    var _state: ConnectionState = .idle {
++        didSet {
++            guard _state != oldValue else { return }
++            for continuation in stateContinuations { continuation.yield(_state) }
++        }
++    }
++    private var stateContinuations: [AsyncStream<ConnectionState>.Continuation] = []
++
++    public func state() -> any AsyncSequence<ConnectionState, Never> {
++        AsyncStream { continuation in
++            continuation.yield(_state)
++            stateContinuations.append(continuation)
++        }
++    }
++#endif
+ 
+     init(conn: TailscaleConnection, remoteAddress: String?, logger: LogSink? = nil) async {
+         self.logger = logger
+--- a/upstream/libtailscale/swift/TailscaleKit/Listener.swift	2026-07-16 13:36:11.949292758 +0000
++++ b/upstream/libtailscale/swift/TailscaleKit/Listener.swift	2026-07-16 13:41:13.362433223 +0000
+@@ -1,10 +1,31 @@
+ // Copyright (c) Tailscale Inc & AUTHORS
+ // SPDX-License-Identifier: BSD-3-Clause
+ 
++#if canImport(Combine)
+ import Combine
++#endif
+ import Foundation
+ import libtailscale
+ 
++#if canImport(Darwin)
++import Darwin
++#else
++import Glibc
++
++/// Maps the `Darwin.`-qualified syscalls this file uses onto Glibc so the
++/// same call sites compile on Linux.
++private enum Darwin {
++    @discardableResult
++    static func close(_ fd: Int32) -> Int32 { Glibc.close(fd) }
++    static func read(_ fd: Int32, _ buf: UnsafeMutableRawPointer?, _ count: Int) -> Int {
++        Glibc.read(fd, buf, count)
++    }
++    static func write(_ fd: Int32, _ buf: UnsafeRawPointer?, _ count: Int) -> Int {
++        Glibc.write(fd, buf, count)
++    }
++}
++#endif
++
+ /// A Listener is used to await incoming connections from another
+ /// Tailnet node.
+ public actor Listener {
+@@ -15,6 +36,7 @@
+ 
+     private let logger: LogSink?
+ 
++#if canImport(Combine)
+     @Published var _state: ListenerState = .idle
+ 
+     public func state() -> any AsyncSequence<ListenerState, Never> {
+@@ -23,6 +45,24 @@
+             .eraseToAnyPublisher()
+             .values
+     }
++#else
++    // Combine is Apple-only; AsyncStream provides the same
++    // current-value-then-updates sequence on other platforms.
++    var _state: ListenerState = .idle {
++        didSet {
++            guard _state != oldValue else { return }
++            for continuation in stateContinuations { continuation.yield(_state) }
++        }
++    }
++    private var stateContinuations: [AsyncStream<ListenerState>.Continuation] = []
++
++    public func state() -> any AsyncSequence<ListenerState, Never> {
++        AsyncStream { continuation in
++            continuation.yield(_state)
++            stateContinuations.append(continuation)
++        }
++    }
++#endif
+ 
+     /// Initializes and readies a new listener
+     ///
+--- a/upstream/libtailscale/swift/TailscaleKit/LocalAPI/LocalAPIClient.swift	2026-07-16 13:36:11.949041040 +0000
++++ b/upstream/libtailscale/swift/TailscaleKit/LocalAPI/LocalAPIClient.swift	2026-07-16 13:39:28.361857400 +0000
+@@ -2,6 +2,9 @@
+ // SPDX-License-Identifier: BSD-3-Clause
+ 
+ import Foundation
++#if canImport(FoundationNetworking)
++import FoundationNetworking
++#endif
+ 
+ let kLocalAPIPath = "/localapi/v0/"
+ 
+@@ -246,7 +249,16 @@
+                                      headers: [String: String]? = nil,
+                                      params: [URLQueryItem]? = nil) async throws -> (URLRequest, URLSessionConfiguration) {
+ 
++#if canImport(Network)
+         let (sessionConfig, loopbackConfig) = try await URLSessionConfiguration.tailscaleSession(node)
++#else
++        // No Network.framework ProxyConfiguration off-Apple — and LocalAPI
++        // doesn't need the SOCKS hop: the tsnet loopback listener serves
++        // LocalAPI over plain HTTP at its own address, authenticated by the
++        // Authorization/Sec-Tailscale headers set below.
++        let sessionConfig = URLSessionConfiguration.default
++        let loopbackConfig = try await node.loopback()
++#endif
+ 
+         var endpointPath = endpoint.rawValue
+         if let path {
+--- a/upstream/libtailscale/swift/TailscaleKit/LocalAPI/MessageProcessor.swift	2026-07-16 13:36:11.949143952 +0000
++++ b/upstream/libtailscale/swift/TailscaleKit/LocalAPI/MessageProcessor.swift	2026-07-16 13:39:28.362152709 +0000
+@@ -2,6 +2,9 @@
+ // SPDX-License-Identifier: BSD-3-Clause
+ 
+ import Foundation
++#if canImport(FoundationNetworking)
++import FoundationNetworking
++#endif
+ 
+ let kJsonNewline = UInt8(ascii: "\n")
+ 
+--- a/upstream/libtailscale/swift/TailscaleKit/LocalAPI/MessageReader.swift	2026-07-16 13:36:11.949187247 +0000
++++ b/upstream/libtailscale/swift/TailscaleKit/LocalAPI/MessageReader.swift	2026-07-16 13:39:28.362374731 +0000
+@@ -2,6 +2,9 @@
+ // SPDX-License-Identifier: BSD-3-Clause
+ 
+ import Foundation
++#if canImport(FoundationNetworking)
++import FoundationNetworking
++#endif
+ 
+ enum MessageQueueError: Error {
+     case queueCongested
+--- a/upstream/libtailscale/swift/TailscaleKit/OutgoingConnection.swift	2026-07-16 13:36:11.949373104 +0000
++++ b/upstream/libtailscale/swift/TailscaleKit/OutgoingConnection.swift	2026-07-16 13:41:13.362561906 +0000
+@@ -2,11 +2,35 @@
+ // SPDX-License-Identifier: BSD-3-Clause
+ 
+ import Foundation
++#if canImport(FoundationNetworking)
++import FoundationNetworking
++#endif
++#if canImport(Combine)
+ import Combine
++#endif
+ import libtailscale
+ 
++#if canImport(Darwin)
++import Darwin
++#else
++import Glibc
++
++/// Maps the `Darwin.`-qualified syscalls this file uses onto Glibc so the
++/// same call sites compile on Linux.
++private enum Darwin {
++    @discardableResult
++    static func close(_ fd: Int32) -> Int32 { Glibc.close(fd) }
++    static func read(_ fd: Int32, _ buf: UnsafeMutableRawPointer?, _ count: Int) -> Int {
++        Glibc.read(fd, buf, count)
++    }
++    static func write(_ fd: Int32, _ buf: UnsafeRawPointer?, _ count: Int) -> Int {
++        Glibc.write(fd, buf, count)
++    }
++}
++#endif
++
+ /// ConnectionState indicates the state of individual TSConnection instances
+-public enum ConnectionState {
++public enum ConnectionState: Sendable {
+     case idle           ///< Reads and writes are not possible.  Connections will transition to connected automatically
+     case connected      ///< Connected and ready to read/write
+     case closed         ///< Closed and ready to be disposed of.  Closed connections cannot be reconnected.
+@@ -14,7 +38,7 @@
+ }
+ 
+ /// ListenerState indicates the state of individual TSListener instances
+-public enum ListenerState {
++public enum ListenerState: Sendable {
+     case idle           ///< Waiting.
+     case listening      ///< Listening
+     case closed         ///< Closed and ready to be disposed of.
+--- a/upstream/libtailscale/swift/TailscaleKit/PacketListener.swift	2026-07-16 13:36:11.949795371 +0000
++++ b/upstream/libtailscale/swift/TailscaleKit/PacketListener.swift	2026-07-16 13:41:13.362695781 +0000
+@@ -1,7 +1,24 @@
+ // Copyright (c) Tailscale Inc & AUTHORS
+ // SPDX-License-Identifier: BSD-3-Clause
+ 
++#if canImport(Darwin)
+ import Darwin
++#else
++import Glibc
++
++/// Maps the `Darwin.`-qualified syscalls this file uses onto Glibc so the
++/// same call sites compile on Linux.
++private enum Darwin {
++    @discardableResult
++    static func close(_ fd: Int32) -> Int32 { Glibc.close(fd) }
++    static func read(_ fd: Int32, _ buf: UnsafeMutableRawPointer?, _ count: Int) -> Int {
++        Glibc.read(fd, buf, count)
++    }
++    static func write(_ fd: Int32, _ buf: UnsafeRawPointer?, _ count: Int) -> Int {
++        Glibc.write(fd, buf, count)
++    }
++}
++#endif
+ import Foundation
+ import libtailscale
+ 
+--- a/upstream/libtailscale/swift/TailscaleKit/URLSession+Tailscale.swift	2026-07-16 13:36:11.949766277 +0000
++++ b/upstream/libtailscale/swift/TailscaleKit/URLSession+Tailscale.swift	2026-07-16 13:38:37.480648559 +0000
+@@ -1,6 +1,10 @@
+ // Copyright (c) Tailscale Inc & AUTHORS
+ // SPDX-License-Identifier: BSD-3-Clause
+ 
++// The SOCKS ProxyConfiguration below is Network.framework-only. On other
++// platforms LocalAPIClient talks to the loopback listener directly (plain
++// HTTP + header auth), so this whole extension is Apple-only.
++#if canImport(Network)
+ import Foundation
+ #if os(iOS)
+ import UIKit
+@@ -40,3 +44,4 @@
+         return (session, config)
+     }
+ }
++#endif  // canImport(Network)
