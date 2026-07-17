@@ -187,6 +187,22 @@ jobs:
       - name: Build + test TailscreenProtocol on Linux
         run: PKG_CONFIG_PATH="$PWD/TailscaleKitPackage" swift test --package-path TailscreenProtocolPackage
 
+  # Audio-codec-portability gate: OpusKit (a systemLibrary wrapper over
+  # libopus — see OpusKitPackage/README.md) must build and pass its
+  # encode/decode round-trip tests on Linux. This is the portable foundation
+  # for the Opus-only audio decision (docs/porting-plan.md #6); wiring it
+  # into the app's audio path is a later mac-side step. Cheap: one apt
+  # install, no submodules, no Go.
+  linux-opus:
+    runs-on: ubuntu-latest
+    container: swift:6.1-noble
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install libopus
+        run: apt-get update && apt-get install -y --no-install-recommends libopus-dev pkg-config
+      - name: Build + test OpusKit on Linux
+        run: swift test --package-path OpusKitPackage
+
   # Transport-portability gate: libtailscale (Go c-archive) + the patched
   # TailscaleKit Swift wrapper must build and pass their unit tests on
   # Linux. This is the compile-time half of the porting plan's Phase 1;
