@@ -146,7 +146,7 @@ final class CaptureHelperWireTests: XCTestCase {
 
     // MARK: - System-audio frame round-trips
 
-    /// `writeAudioAccessUnit` (helper → main) round-trips the raw AAC AU
+    /// `writeAudioAccessUnit` (helper → main) round-trips the raw Opus AU
     /// bytes through `HelperFrameReader`.
     func testAudioAccessUnitFrameRoundTrip() throws {
         let pipe = Pipe()

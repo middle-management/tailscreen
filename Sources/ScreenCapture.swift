@@ -296,11 +296,12 @@ class ScreenCapture: NSObject, @unchecked Sendable {
         config.showsCursor = true
         config.queueDepth = 5
         if capturesAudio {
-            // Match the voice codec format so the helper's AACEncoder and the
-            // viewer's AACDecoder (both hardwired mono 48 kHz) round-trip
-            // unchanged. `excludesCurrentProcessAudio` drops Tailscreen's own
-            // output — i.e. viewer voices `MicCapture` plays — from the mix, so
-            // viewer speech is never re-broadcast as system audio (no loop).
+            // Match the voice codec format so the helper's OpusVoiceEncoder
+            // and the viewer's OpusVoiceDecoder (both hardwired mono 48 kHz)
+            // round-trip unchanged. `excludesCurrentProcessAudio` drops
+            // Tailscreen's own output — i.e. viewer voices `MicCapture`
+            // plays — from the mix, so viewer speech is never re-broadcast as
+            // system audio (no loop).
             config.capturesAudio = true
             config.sampleRate = 48_000
             config.channelCount = 1

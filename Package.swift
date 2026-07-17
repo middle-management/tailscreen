@@ -24,7 +24,11 @@ let package = Package(
         // The portable core: wire protocol + pure decision logic
         // (TailscreenProtocol) and the tsnet-facing transport tier
         // (TailscreenTransport). Also builds on Linux — see its README.
-        .package(path: "./TailscreenProtocolPackage")
+        .package(path: "./TailscreenProtocolPackage"),
+        // Opus audio codec: a systemLibrary wrapper over libopus, the
+        // royalty-free software-only codec that replaced AudioToolbox AAC.
+        // Portable to Linux/Windows — see OpusKitPackage/README.md.
+        .package(path: "./OpusKitPackage")
     ],
     targets: [
         .executableTarget(
@@ -32,7 +36,8 @@ let package = Package(
             dependencies: [
                 .product(name: "TailscaleKit", package: "TailscaleKitPackage"),
                 .product(name: "TailscreenProtocol", package: "TailscreenProtocolPackage"),
-                .product(name: "TailscreenTransport", package: "TailscreenProtocolPackage")
+                .product(name: "TailscreenTransport", package: "TailscreenProtocolPackage"),
+                .product(name: "OpusKit", package: "OpusKitPackage")
             ],
             path: "Sources",
             resources: [
@@ -46,7 +51,10 @@ let package = Package(
         ),
         .testTarget(
             name: "TailscreenTests",
-            dependencies: ["Tailscreen"],
+            dependencies: [
+                "Tailscreen",
+                .product(name: "OpusKit", package: "OpusKitPackage")
+            ],
             path: "Tests/TailscreenTests",
             linkerSettings: [
                 .unsafeFlags(["-L", "TailscaleKitPackage/lib"])

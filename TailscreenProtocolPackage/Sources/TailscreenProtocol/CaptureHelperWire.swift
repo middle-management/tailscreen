@@ -50,8 +50,8 @@ public enum CaptureHelperWire {
         /// detection never catches) from a screen that simply isn't changing.
         /// Payload empty.
         case heartbeat = 0x06
-        /// Encoded system/computer-audio access unit (AAC-LC mono 48 kHz).
-        /// Payload is the raw AAC AU bytes — no keyframe flag, unlike video.
+        /// Encoded system/computer-audio access unit (Opus, mono 48 kHz).
+        /// Payload is the raw Opus packet bytes — no keyframe flag, unlike video.
         /// The parent packetizes these as RTP PT 99 and fans them out on the
         /// UDP audio path. Emitted only while the sharer has system audio on
         /// (gated in the helper by the `setAudioEnabled` latch).
@@ -122,7 +122,7 @@ public final class HelperFrameWriter: @unchecked Sendable {
     public func writeHeartbeat() { write(type: .heartbeat, payload: Data()) }
 
     /// Encoded system-audio AU; see `OutType.audioAccessUnit`. Payload is the
-    /// raw AAC AU bytes — no keyframe flag.
+    /// raw Opus packet bytes — no keyframe flag.
     public func writeAudioAccessUnit(_ au: Data) { write(type: .audioAccessUnit, payload: au) }
 
     public func writeAccessUnit(_ data: Data, containsKeyframe: Bool) {

@@ -1,3 +1,4 @@
+import OpusKit
 import XCTest
 
 @testable import Tailscreen
@@ -30,14 +31,14 @@ final class SystemAudioRoutingTests: XCTestCase {
 
     func testReceiveRoutesSystemAudioToSystemCallbackOnly() throws {
         let channel = try VoiceChannel(localSSRC: 5) { _ in }
-        let encoder = try AACEncoder()
+        let encoder = try OpusVoiceEncoder(application: .audio)
 
-        // A short run of encoded AUs; AAC priming can swallow the first frame.
+        // A short run of encoded system-audio frames (one packet per frame).
         let packetizer = AudioRTPPacketizer(
             ssrc: RTPHeader.systemAudioSSRC, payloadType: RTPHeader.systemAudioPayloadType)
         var packets: [Data] = []
         for _ in 0..<6 {
-            if let au = try encoder.encode(pcm: [Float](repeating: 0.15, count: 1024)) {
+            if let au = try encoder.encode(pcm: [Float](repeating: 0.15, count: 960)) {
                 packets.append(packetizer.packetize(au: au))
             }
         }

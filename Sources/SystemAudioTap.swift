@@ -2,18 +2,18 @@ import AudioToolbox
 import CoreMedia
 import Foundation
 
-/// Pure 1024-sample framer for system-audio PCM. Accumulates inbound Float
-/// samples and drains complete 1024-sample frames (one AAC AU's worth),
-/// carrying the remainder to the next call. Mirrors `TapBuffer.appendAndDrain`
-/// semantics but as a value type so CI can exercise the framing without any
-/// CoreMedia buffers.
+/// Pure 960-sample framer for system-audio PCM. Accumulates inbound Float
+/// samples and drains complete 960-sample frames (one Opus 20 ms frame's
+/// worth), carrying the remainder to the next call. Mirrors
+/// `TapBuffer.appendAndDrain` semantics but as a value type so CI can exercise
+/// the framing without any CoreMedia buffers.
 struct SystemAudioFramer {
-    /// Samples per AAC-LC access unit at 48 kHz.
-    static let frameSize = 1024
+    /// Samples per Opus 20 ms frame at 48 kHz.
+    static let frameSize = OpusVoiceEncoder.frameSamples
 
     private var accumulator: [Float] = []
 
-    /// Append `samples` and return every complete 1024-sample frame that can
+    /// Append `samples` and return every complete 960-sample frame that can
     /// now be drained, in order. The tail shorter than a full frame is kept.
     mutating func append(_ samples: [Float]) -> [[Float]] {
         accumulator.append(contentsOf: samples)
@@ -30,27 +30,29 @@ struct SystemAudioFramer {
 }
 
 /// Helper-side system-audio pipeline: an audio `CMSampleBuffer` from
-/// ScreenCaptureKit → mono `[Float]` → 1024-sample framing → `AACEncoder` →
-/// encoded-AU callback. Deliberately imports no ScreenCaptureKit; the SCStream
-/// lives in `ScreenCapture` and only hands us the already-delivered sample
-/// buffer, keeping all SCK coupling in one place.
+/// ScreenCaptureKit → mono `[Float]` → 960-sample framing → `OpusVoiceEncoder`
+/// (in `.audio` music mode) → encoded-AU callback. Deliberately imports no
+/// ScreenCaptureKit; the SCStream lives in `ScreenCapture` and only hands us
+/// the already-delivered sample buffer, keeping all SCK coupling in one place.
 ///
 /// Not thread-safe: `handle(_:)` mutates the framer, so the caller must confine
 /// every call to the SCStream audio-output serial queue (as `ScreenCapture`
 /// does). `@unchecked Sendable` records that contract so the value can be
 /// captured into the audio-output closure.
 final class SystemAudioTap: @unchecked Sendable {
-    private let encoder: AACEncoder
+    private let encoder: OpusVoiceEncoder
     private var framer = SystemAudioFramer()
     private let onEncodedAU: (Data) -> Void
 
     init(onEncodedAU: @escaping (Data) -> Void) throws {
-        self.encoder = try AACEncoder()
+        // System audio is music/computer output, not speech — encode it in
+        // Opus's `.audio` application mode rather than `.voip`.
+        self.encoder = try OpusVoiceEncoder(application: .audio)
         self.onEncodedAU = onEncodedAU
     }
 
     /// Extract mono Float PCM from one audio sample buffer, frame it into
-    /// 1024-sample AUs, AAC-encode each, and emit via `onEncodedAU`. Runs on
+    /// 960-sample frames, Opus-encode each, and emit via `onEncodedAU`. Runs on
     /// the SCStream audio-output queue; stays off the MainActor so a busy main
     /// thread can never stall audio.
     func handle(_ sampleBuffer: CMSampleBuffer) {
@@ -75,8 +77,7 @@ final class SystemAudioTap: @unchecked Sendable {
         guard CMSampleBufferGetNumSamples(sb) > 0 else { return [] }
         var blockBuffer: CMBlockBuffer?
         // channelCount == 1 ⇒ a single mono buffer; access `mBuffers` directly
-        // (the same pattern `AACCodec` uses) rather than the buffer-list
-        // pointer overlay.
+        // rather than the buffer-list pointer overlay.
         var abl = AudioBufferList(
             mNumberBuffers: 1,
             mBuffers: AudioBuffer(mNumberChannels: 1, mDataByteSize: 0, mData: nil))

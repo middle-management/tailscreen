@@ -1,14 +1,20 @@
 import Foundation
 
-/// Packs AAC-LC access units into RTP packets, one AU per packet, with a
-/// 48 kHz audio clock and a stable per-channel SSRC. The RTP timestamp
-/// advances by 1024 (the AU's frame count) per packet — this matches the
-/// AAC frame rate at 48 kHz.
+/// Packs audio access units (Opus packets) into RTP packets, one AU per
+/// packet, with a 48 kHz audio clock and a stable per-channel SSRC. The RTP
+/// timestamp advances by `samplesPerFrame` (960 — one Opus 20 ms frame at
+/// 48 kHz) per packet.
 ///
 /// Not thread-safe: the mutable sequence + timestamp counters require the
 /// caller to serialize `packetize(au:)` calls. `VoiceChannel` confines
 /// every call to its internal serial queue.
 public final class AudioRTPPacketizer {
+    /// RTP timestamp step per packet: samples in one Opus 20 ms frame at
+    /// 48 kHz. Kept here (not imported from OpusKit) so this stays a
+    /// Foundation-only, Linux-buildable protocol file; it must equal
+    /// `OpusVoiceEncoder.frameSamples`.
+    public static let samplesPerFrame: UInt32 = 960
+
     public let ssrc: UInt32
     /// RTP payload type stamped on every packet. Defaults to
     /// `aacPayloadType` (98) so voice call sites are untouched; the server's
@@ -41,7 +47,7 @@ public final class AudioRTPPacketizer {
         header.encode(into: &packet)
         packet.append(au)
         sequence &+= 1
-        timestamp &+= 1024
+        timestamp &+= Self.samplesPerFrame
         return packet
     }
 }

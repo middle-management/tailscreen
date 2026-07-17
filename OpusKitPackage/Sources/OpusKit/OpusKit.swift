@@ -27,6 +27,26 @@ public enum Opus {
         case ms60 = 2880
     }
 
+    /// Opus encoder application mode. A Swift-native mirror of the
+    /// `OPUS_APPLICATION_*` C macros so callers never have to import the
+    /// underlying `COpus` module to pick one.
+    public enum Application: Sendable {
+        /// Best for speech (default) — the voice path.
+        case voip
+        /// Best for music / general audio — the shared system-audio path.
+        case audio
+        /// Lowest algorithmic delay, disables some prediction.
+        case restrictedLowDelay
+
+        var rawValue: Int32 {
+            switch self {
+            case .voip: return OPUS_APPLICATION_VOIP
+            case .audio: return OPUS_APPLICATION_AUDIO
+            case .restrictedLowDelay: return OPUS_APPLICATION_RESTRICTED_LOWDELAY
+            }
+        }
+    }
+
     /// libopus error surfaced to Swift. `code` is the raw `OPUS_*` return
     /// value; `message` is `opus_strerror`.
     public struct CodecError: Error, Equatable {
@@ -47,12 +67,11 @@ public enum Opus {
         /// generous fixed ceiling so `encode` never reallocates.
         private var scratch = [UInt8](repeating: 0, count: 4000)
 
-        /// - Parameter application: `OPUS_APPLICATION_VOIP` (default, tuned
-        ///   for speech), `OPUS_APPLICATION_AUDIO`, or
-        ///   `OPUS_APPLICATION_RESTRICTED_LOWDELAY`.
-        public init(application: Int32 = OPUS_APPLICATION_VOIP) throws {
+        /// - Parameter application: `.voip` (default, tuned for speech),
+        ///   `.audio`, or `.restrictedLowDelay`.
+        public init(application: Application = .voip) throws {
             var error: Int32 = 0
-            guard let enc = opus_encoder_create(sampleRate, channels, application, &error),
+            guard let enc = opus_encoder_create(sampleRate, channels, application.rawValue, &error),
                 error == OPUS_OK
             else {
                 throw CodecError(error)

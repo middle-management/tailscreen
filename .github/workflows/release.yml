@@ -90,15 +90,70 @@ jobs:
 
           lipo -info libtailscale.a
 
+      - name: Build universal static libopus
+        # OpusKit links libopus. A Homebrew `libopus.dylib` is (a) host-arch
+        # only — it can't satisfy the x86_64 slice of the universal build —
+        # and (b) an absolute /opt/homebrew path that wouldn't exist on a
+        # user's Mac. So build a *static, universal* libopus from source and
+        # point pkg-config at it: the .a's right slice links into each arch
+        # and nothing dynamic ships in the .app. Cross-arch autotools uses
+        # `--host` so configure never executes a wrong-arch test binary.
+        run: |
+          set -euxo pipefail
+          OPUS_VERSION=1.5.2
+          curl -fsSL "https://downloads.xiph.org/releases/opus/opus-${OPUS_VERSION}.tar.gz" \
+            -o /tmp/opus.tar.gz
+          mkdir -p /tmp/opus-src
+          tar xzf /tmp/opus.tar.gz -C /tmp/opus-src --strip-components=1
+          cd /tmp/opus-src
+          build_arch() {
+            arch="$1"; host="$2"
+            make distclean >/dev/null 2>&1 || true
+            ./configure --host="$host" --disable-shared --enable-static \
+              --disable-doc --disable-extra-programs \
+              CFLAGS="-arch $arch -O2" LDFLAGS="-arch $arch"
+            make -j"$(sysctl -n hw.ncpu)"
+            cp .libs/libopus.a "/tmp/libopus-${arch}.a"
+          }
+          build_arch arm64 arm-apple-darwin
+          build_arch x86_64 x86_64-apple-darwin
+          PREFIX=/tmp/opus-universal
+          mkdir -p "$PREFIX/lib/pkgconfig" "$PREFIX/include/opus"
+          lipo -create /tmp/libopus-arm64.a /tmp/libopus-x86_64.a \
+            -output "$PREFIX/lib/libopus.a"
+          lipo -info "$PREFIX/lib/libopus.a"
+          cp include/*.h "$PREFIX/include/opus/"
+          cat > "$PREFIX/lib/pkgconfig/opus.pc" <<PC
+          prefix=$PREFIX
+          libdir=\${prefix}/lib
+          includedir=\${prefix}/include
+          Name: opus
+          Description: Opus codec (universal static, release build)
+          Version: ${OPUS_VERSION}
+          Libs: -L\${libdir} -lopus
+          Cflags: -I\${includedir}
+          PC
+
       - name: Build universal Tailscreen binary
         env:
-          PKG_CONFIG_PATH: ${{ github.workspace }}/TailscaleKitPackage
+          # Prepend the universal-static opus dir so COpus's `pkgConfig:
+          # "opus"` resolves it (not a Homebrew dylib); TailscaleKitPackage
+          # still supplies libtailscale.pc.
+          PKG_CONFIG_PATH: /tmp/opus-universal/lib/pkgconfig:${{ github.workspace }}/TailscaleKitPackage
         run: |
           set -euxo pipefail
           swift build -c release --arch arm64 --arch x86_64
           # With multiple --arch flags, SwiftPM emits the universal
           # binary under .build/apple/Products/Release/.
           lipo -info .build/apple/Products/Release/${APP_NAME}
+          # Guard: nothing dynamic from a non-system prefix should have crept
+          # into the link (a stray Homebrew opus dylib would break on users'
+          # Macs). Fail loudly if otool sees one.
+          if otool -L ".build/apple/Products/Release/${APP_NAME}" | grep -qi 'opus'; then
+            echo "error: Tailscreen dynamically links libopus — expected static" >&2
+            otool -L ".build/apple/Products/Release/${APP_NAME}" | grep -i opus >&2
+            exit 1
+          fi
 
       - name: Assemble Tailscreen.app
         run: |

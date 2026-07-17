@@ -381,10 +381,11 @@ public struct RTPHeader: Sendable {
     /// Dynamic payload type for HEVC. 96 is taken; 97 is the next dynamic
     /// PT and matches what most WebRTC stacks use for HEVC.
     public static let hevcPayloadType: UInt8 = 97
-    /// Dynamic payload type for AAC-LC voice. RFC 3640 reserves no fixed
-    /// number for AAC; 98 follows H.264 (96) + HEVC (97).
+    /// Dynamic payload type for Opus voice. 98 follows H.264 (96) + HEVC
+    /// (97). (The `aac` in the name is historical — the voice codec was
+    /// AAC-LC before the Opus-only switch; PT 98 is unchanged on the wire.)
     public static let aacPayloadType: UInt8 = 98
-    /// Dynamic payload type for shared system/computer audio (AAC-LC),
+    /// Dynamic payload type for shared system/computer audio (Opus),
     /// distinct from voice (98) so viewers demux the two without any
     /// negotiation — the same auto-detect philosophy as video's 96/97.
     /// Viewers that predate the feature reject PT 99 in
@@ -412,7 +413,7 @@ public struct RTPHeader: Sendable {
     /// Pinned by `WireByteRegistryTests` — renumbering breaks the disjoint
     /// SSRC spaces deployed peers rely on.
     public static let firstViewerSSRC: UInt32 = 2
-    /// RTP clock rate for AAC audio at 48 kHz.
+    /// RTP clock rate for the 48 kHz Opus audio path.
     public static let audioClockHz: UInt32 = 48_000
     public static let clockHz: UInt32 = 90_000
 

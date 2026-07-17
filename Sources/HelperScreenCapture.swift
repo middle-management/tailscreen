@@ -20,7 +20,7 @@ final class HelperScreenCapture: @unchecked Sendable {
     /// Mirrors `VideoEncoder.onEncodedData` so the server can broadcast
     /// without an in-process encoder.
     var onAccessUnit: ((Data, Bool) -> Void)?
-    /// Helper produced an encoded system-audio access unit (raw AAC AU
+    /// Helper produced an encoded system-audio access unit (raw Opus packet
     /// bytes). The server packetizes these as RTP PT 99 and fans them out on
     /// the UDP audio path. Fires on the reader thread.
     var onAudioAccessUnit: ((Data) -> Void)?

@@ -56,6 +56,9 @@ invalid-frame rejection.
 
 ## Status
 
-Portable codec foundation only. Wiring it into the app's audio path
-(`AACCodec` → OpusKit, payload-type reassignment, capture-helper + viewer
-mix) is a separate, mostly-mac-audio follow-up — see `docs/porting-plan.md`.
+Integrated. The app links OpusKit and uses it for the whole audio path:
+`Sources/OpusAudioCodec.swift` wraps it as `OpusVoiceEncoder` /
+`OpusVoiceDecoder` (the Float32↔Int16 boundary + 960-sample / 20 ms
+framing), which `VoiceChannel` (voice) and `SystemAudioTap` (system audio,
+`.audio` mode) drive. Opus fully replaced the AudioToolbox AAC-LC path; the
+RTP payload types (98 voice / 99 system) are unchanged on the wire.

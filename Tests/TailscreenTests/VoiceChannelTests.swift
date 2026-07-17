@@ -14,8 +14,8 @@ final class VoiceChannelTests: XCTestCase {
 
         channel.isMuted = false
 
-        // 1024 samples at 48 kHz = one AU.
-        let pcm = (0..<1024).map { Float(sin(2 * .pi * 440 * Double($0) / 48_000)) }
+        // 960 samples at 48 kHz = one 20 ms Opus frame.
+        let pcm = (0..<960).map { Float(sin(2 * .pi * 440 * Double($0) / 48_000)) }
         channel.processOutboundFrame(pcm)
         channel.flushForTesting()
 
@@ -35,8 +35,8 @@ final class VoiceChannelTests: XCTestCase {
             onSend: { sent.append($0) }
         )
         speaker.isMuted = false
-        let pcm = (0..<1024).map { Float(sin(2 * .pi * 440 * Double($0) / 48_000)) }
-        // Need a few frames because AAC encoder primer drops first AU.
+        let pcm = (0..<960).map { Float(sin(2 * .pi * 440 * Double($0) / 48_000)) }
+        // A short stream (the decoder is stateful; Opus has no priming drop).
         for _ in 0..<5 { speaker.processOutboundFrame(pcm) }
         speaker.flushForTesting()
         XCTAssertGreaterThanOrEqual(sent.count, 3)
@@ -64,7 +64,7 @@ final class VoiceChannelTests: XCTestCase {
         )
         channel.isMuted = true
 
-        let pcm = [Float](repeating: 0, count: 1024)
+        let pcm = [Float](repeating: 0, count: 960)
         channel.processOutboundFrame(pcm)
         channel.flushForTesting()
 
@@ -72,7 +72,7 @@ final class VoiceChannelTests: XCTestCase {
     }
 
     /// Encode `count` sine frames on a throwaway speaker channel and return
-    /// the RTP packets it emitted (the encoder primer usually eats one).
+    /// the RTP packets it emitted (one per frame — Opus has no priming drop).
     private func encodedPackets(count: Int, ssrc: UInt32) throws -> [Data] {
         var sent: [Data] = []
         let speaker = try VoiceChannel(
@@ -80,7 +80,7 @@ final class VoiceChannelTests: XCTestCase {
             onSend: { sent.append($0) }
         )
         speaker.isMuted = false
-        let pcm = (0..<1024).map { Float(sin(2 * .pi * 440 * Double($0) / 48_000)) }
+        let pcm = (0..<960).map { Float(sin(2 * .pi * 440 * Double($0) / 48_000)) }
         for _ in 0..<count { speaker.processOutboundFrame(pcm) }
         speaker.flushForTesting()
         return sent
@@ -91,10 +91,9 @@ final class VoiceChannelTests: XCTestCase {
     /// pipeline must keep flowing (never wedge).
     func testLossyChannelConcealsAndKeepsFlowing() throws {
         let sent = try encodedPackets(count: 100, ssrc: 0x11)
-        // Skip-if-no-output guard, mirroring ScreenShareSyntheticFramesTests'
-        // VideoToolbox policy, in case a virtualized runner lacks the AAC
-        // converter.
-        try XCTSkipIf(sent.count < 50, "AAC encoder produced no usable output on this host")
+        // Opus is software-only, so it always encodes; the skip guard is kept
+        // as a defensive mirror of the video path's runner-quirk policy.
+        try XCTSkipIf(sent.count < 50, "Opus encoder produced no usable output on this host")
 
         var impaired = LossyChannel(seed: 7, lossRate: 0.1, dupRate: 0.05, reorderWindow: 3)
         let received = impaired.transmit(sent)
@@ -115,14 +114,14 @@ final class VoiceChannelTests: XCTestCase {
         // late reordered packets are dropped as stale after their gap was
         // concealed).
         XCTAssertGreaterThanOrEqual(
-            totalSamples, sent.count * 1024 * 7 / 10, "audio flow wedged under impairment")
+            totalSamples, sent.count * 960 * 7 / 10, "audio flow wedged under impairment")
     }
 
     /// A decoder-init failure record whose cooldown has elapsed must not
     /// block the SSRC, and a successful decode must clear the record.
     func testFailureRecordClearsAfterSuccessfulDecode() throws {
         let sent = try encodedPackets(count: 5, ssrc: 0xBB)
-        try XCTSkipIf(sent.count < 3, "AAC encoder produced no usable output on this host")
+        try XCTSkipIf(sent.count < 3, "Opus encoder produced no usable output on this host")
 
         let listener = try VoiceChannel(localSSRC: 0xCC, onSend: { _ in })
         // Cooldown long elapsed: machine uptime is comfortably past 5 s by
@@ -148,7 +147,7 @@ final class VoiceChannelTests: XCTestCase {
     /// touching the decoder, and the record survives.
     func testFailureRecordDropsPacketsInsideCooldown() throws {
         let sent = try encodedPackets(count: 5, ssrc: 0xBB)
-        try XCTSkipIf(sent.count < 3, "AAC encoder produced no usable output on this host")
+        try XCTSkipIf(sent.count < 3, "Opus encoder produced no usable output on this host")
 
         let listener = try VoiceChannel(localSSRC: 0xCC, onSend: { _ in })
         let now = DispatchTime.now().uptimeNanoseconds
@@ -175,7 +174,7 @@ final class VoiceChannelTests: XCTestCase {
     /// is not misread as a gap (spurious discontinuity / concealment).
     func testGateDroppedPacketsKeepSequenceBaseline() throws {
         let sent = try encodedPackets(count: 12, ssrc: 0xBB)
-        try XCTSkipIf(sent.count < 10, "AAC encoder produced no usable output on this host")
+        try XCTSkipIf(sent.count < 10, "Opus encoder produced no usable output on this host")
 
         let listener = try VoiceChannel(localSSRC: 0xCC, onSend: { _ in })
         var receivedAnyPCM = false
@@ -215,7 +214,7 @@ final class VoiceChannelTests: XCTestCase {
     /// no PCM sink attached nothing is emitted, so nothing is counted.
     func testConcealedFramesCountsOnlyEmittedFrames() throws {
         let sent = try encodedPackets(count: 10, ssrc: 0xBB)
-        try XCTSkipIf(sent.count < 6, "AAC encoder produced no usable output on this host")
+        try XCTSkipIf(sent.count < 6, "Opus encoder produced no usable output on this host")
 
         let listener = try VoiceChannel(localSSRC: 0xCC, onSend: { _ in })
         // No onMixedPCM sink. Drop one packet mid-stream to force a gap.
@@ -233,7 +232,7 @@ final class VoiceChannelTests: XCTestCase {
     /// overrun-drop the gap's next real decoded frame.
     func testConcealmentEmissionIsCappedPerGap() throws {
         let sent = try encodedPackets(count: 12, ssrc: 0xBB)
-        try XCTSkipIf(sent.count < 10, "AAC encoder produced no usable output on this host")
+        try XCTSkipIf(sent.count < 10, "Opus encoder produced no usable output on this host")
 
         let listener = try VoiceChannel(localSSRC: 0xCC, onSend: { _ in })
         listener.onMixedPCM = { _ in }

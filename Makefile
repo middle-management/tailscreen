@@ -5,8 +5,12 @@
 .DEFAULT_GOAL := help
 
 # Lets SwiftPM's systemLibrary target find libtailscale.pc at build time,
-# which in turn resolves the `-L` flag for libtailscale.a.
-export PKG_CONFIG_PATH := $(CURDIR)/TailscaleKitPackage
+# which in turn resolves the `-L` flag for libtailscale.a. Appends any
+# inherited PKG_CONFIG_PATH so a custom libopus prefix (OpusKit's COpus
+# resolves `opus.pc` via pkg-config) still resolves; the system default
+# search path (Homebrew's on macOS) is always searched in addition, so a
+# `brew install opus` needs no extra config.
+export PKG_CONFIG_PATH := $(CURDIR)/TailscaleKitPackage:$(PKG_CONFIG_PATH)
 
 help: ## Show this help and exit
 	@awk 'BEGIN { FS = ":.*## "; printf "Tailscreen — Make targets\n\nUsage: make <target>\n\nTargets:\n" } \

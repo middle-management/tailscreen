@@ -36,8 +36,8 @@ struct VoiceStats: Equatable, Sendable {
     }
 }
 
-/// Process-side voice pipeline: PCM in → AAC enc → RTP out, and RTP in →
-/// AAC dec (per SSRC) → mixed PCM out. Hardware capture/playback glue is
+/// Process-side voice pipeline: PCM in → Opus enc → RTP out, and RTP in →
+/// Opus dec (per SSRC) → mixed PCM out. Hardware capture/playback glue is
 /// in `MicCapture` (added in Task 7) which feeds this class.
 ///
 /// Thread-safe via an internal serial queue: capture callbacks (audio
@@ -82,10 +82,10 @@ final class VoiceChannel: @unchecked Sendable {
 
     private let queue = DispatchQueue(label: "VoiceChannel")
     private var _isMuted: Bool = true
-    private let encoder: AACEncoder
+    private let encoder: OpusVoiceEncoder
     private let packetizer: AudioRTPPacketizer
     private let depacketizer = AudioRTPDepacketizer()
-    private var decoders: [UInt32: AACDecoder] = [:]
+    private var decoders: [UInt32: OpusVoiceDecoder] = [:]
     private var decoderFailures: [UInt32: DecoderFailureRecord] = [:]
     private var receiveStates: [UInt32: ReceiveState] = [:]
     private var lastTargetRefreshNs: UInt64 = 0
@@ -96,8 +96,8 @@ final class VoiceChannel: @unchecked Sendable {
         initialState: VoiceChannel.initialJitterTargetDepth)
     private let logger = TSLogger()
 
-    /// One AAC AU's worth of samples at 48 kHz ≈ 21.33 ms.
-    static let samplesPerFrame = 1024
+    /// One Opus frame's worth of samples at 48 kHz = 20 ms.
+    static let samplesPerFrame = OpusVoiceEncoder.frameSamples
     /// Samples faded at a concealment boundary to mask the MDCT
     /// overlap-add discontinuity click.
     static let fadeSampleCount = 64
@@ -174,12 +174,12 @@ final class VoiceChannel: @unchecked Sendable {
     init(localSSRC: UInt32, onSend: @escaping (Data) -> Void) throws {
         self.localSSRC = localSSRC
         self.onSend = onSend
-        self.encoder = try AACEncoder()
+        self.encoder = try OpusVoiceEncoder()
         self.packetizer = AudioRTPPacketizer(ssrc: localSSRC)
     }
 
-    /// Push exactly 1024 PCM samples (one AAC AU's worth) for outbound
-    /// transmission. No-op when muted.
+    /// Push exactly `samplesPerFrame` (960) PCM samples (one Opus frame's
+    /// worth) for outbound transmission. No-op when muted.
     func processOutboundFrame(_ pcm: [Float]) {
         queue.async {
             guard !self._isMuted else { return }
@@ -220,7 +220,7 @@ final class VoiceChannel: @unchecked Sendable {
 
     // MARK: - Cross-thread published values
 
-    /// Playback queue depth (in 21.33 ms buffers) the jitter estimator
+    /// Playback queue depth (in 20 ms buffers) the jitter estimator
     /// currently recommends. Read by `MicCapture.scheduleSamples` on the
     /// MainActor; refreshed on `queue` — hence the lock.
     var currentJitterTargetDepth: Int {
@@ -300,7 +300,7 @@ final class VoiceChannel: @unchecked Sendable {
         return .discontinuity
     }
 
-    /// Pure jitter-buffer sizing: target queue depth in 21.33 ms buffers.
+    /// Pure jitter-buffer sizing: target queue depth in 20 ms buffers.
     /// One buffer of slack per frame-duration of smoothed jitter, +1 base;
     /// clamped to `[minDepth, maxDepth]`; moves at most one step per call
     /// (bounded growth, no oscillation — equal ideal holds steady).
@@ -310,7 +310,7 @@ final class VoiceChannel: @unchecked Sendable {
         minDepth: Int = 2,
         maxDepth: Int = 12
     ) -> Int {
-        let frameMs = 1024.0 / 48.0
+        let frameMs = Double(VoiceChannel.samplesPerFrame) / 48.0
         let slack = Int((max(0, smoothedJitterMs) / frameMs).rounded(.up))
         let ideal = min(max(1 + slack, minDepth), maxDepth)
         if ideal > currentTarget { return min(currentTarget + 1, maxDepth) }
@@ -327,10 +327,12 @@ final class VoiceChannel: @unchecked Sendable {
     }
 
     /// Single-pass clamp of decoded PCM to [-1, 1]. Returns whether any
-    /// sample was out of range. The AudioToolbox AAC decoder occasionally
-    /// emits out-of-range Float32 (peaks ~6.0 observed) on priming-adjacent
-    /// frames or after a network glitch; anything beyond [-1, 1] would clip
-    /// the speakers into painful clicks. Internal (not private) — test seam.
+    /// sample was out of range. Opus decodes to Int16, so `int16ToFloat`
+    /// output is already within [-1, 1] but for the lone -32768 → -1.00003
+    /// case; the clamp stays as cheap defense-in-depth (it was load-bearing
+    /// under the old AudioToolbox AAC decoder, which emitted peaks ~6.0), so
+    /// nothing beyond [-1, 1] can ever clip the speakers into painful clicks.
+    /// Internal (not private) — test seam.
     static func clampToUnitRange(_ samples: inout [Float]) -> Bool {
         var clamped = false
         for i in samples.indices where samples[i] < -1.0 || samples[i] > 1.0 {
@@ -444,7 +446,7 @@ final class VoiceChannel: @unchecked Sendable {
         switch action {
         case .dropStale:
             // Late arrival of a packet whose gap was already concealed —
-            // decoding it now would play those 21 ms twice. State is
+            // decoding it now would play those 20 ms twice. State is
             // untouched, so nothing needs writing back.
             return
         case .decode:
@@ -582,9 +584,11 @@ final class VoiceChannel: @unchecked Sendable {
 
     /// Emit `frames` frames of silence to cover a sequence gap, ramping
     /// the last emitted sample down to zero at the leading edge so the
-    /// MDCT discontinuity doesn't land as a hard click. AudioToolbox
-    /// exposes no codec-level concealment input, so the decoder is never
-    /// fed anything for the lost AUs — only its next real one. `frames`
+    /// codec-restart discontinuity doesn't land as a hard click. We conceal
+    /// with faded silence rather than driving Opus's built-in PLC
+    /// (`decode(nil)`): the silence path is codec-agnostic and already the
+    /// well-tested behavior. (A future refinement could feed the decoder
+    /// `nil` for true Opus packet-loss concealment.) `frames`
     /// arrives pre-capped by `concealmentEmitCount`, so this fill can
     /// never occupy the playback-queue headroom the gap's next real frame
     /// needs. `concealedFrames` counts only what is actually emitted.
@@ -693,9 +697,9 @@ final class VoiceChannel: @unchecked Sendable {
                 + "jitter=\(String(format: "%.1f", snapshot.smoothedJitterMs))ms")
     }
 
-    private func ensureDecoder(for ssrc: UInt32) throws -> AACDecoder {
+    private func ensureDecoder(for ssrc: UInt32) throws -> OpusVoiceDecoder {
         if let existing = decoders[ssrc] { return existing }
-        let new = try AACDecoder()
+        let new = try OpusVoiceDecoder()
         decoders[ssrc] = new
         return new
     }
@@ -713,7 +717,7 @@ final class VoiceChannel: @unchecked Sendable {
     }
 
     /// Test-only: inject a failure record so the cooldown/clear paths can
-    /// be exercised without forcing a real `AACDecoder` init failure.
+    /// be exercised without forcing a real `OpusVoiceDecoder` init failure.
     internal func injectDecoderFailureForTesting(ssrc: UInt32, record: DecoderFailureRecord) {
         queue.sync { decoderFailures[ssrc] = record }
     }
@@ -725,7 +729,7 @@ final class VoiceChannel: @unchecked Sendable {
 /// reference signal). Feeds inbound PCM frames into the VoiceChannel
 /// and renders outbound PCM blocks the channel decoded from RTP.
 /// Drains the AVAudioEngine input tap on the audio render thread and feeds
-/// 1024-sample frames into the VoiceChannel. Lives outside `@MainActor`
+/// 960-sample frames into the VoiceChannel. Lives outside `@MainActor`
 /// because installTap fires on AVAudioEngine's serialized real-time queue;
 /// hopping every callback to `@MainActor` (a) drops Swift 6 isolation
 /// assertions, and (b) introduces unacceptable latency at 50 Hz.
@@ -884,10 +888,11 @@ private final class TapBuffer: @unchecked Sendable {
     }
 
     private func appendAndDrain(_ samples: [Float]) {
+        let frameSize = VoiceChannel.samplesPerFrame
         accumulator.append(contentsOf: samples)
-        while accumulator.count >= 1024 {
-            let frame = Array(accumulator.prefix(1024))
-            accumulator.removeFirst(1024)
+        while accumulator.count >= frameSize {
+            let frame = Array(accumulator.prefix(frameSize))
+            accumulator.removeFirst(frameSize)
             channel.processOutboundFrame(frame)
         }
     }
@@ -1079,8 +1084,8 @@ final class MicCapture {
         guard !isCapturing else { return }
 
         // Test-tone bypass: skip the mic entirely, feed a 440 Hz
-        // sine wave into VoiceChannel at the AAC frame cadence
-        // (1024 samples / 48 kHz ≈ 21.33 ms). Useful for testing
+        // sine wave into VoiceChannel at the Opus frame cadence
+        // (960 samples / 48 kHz = 20 ms). Useful for testing
         // codec + transport + playback in isolation without AEC
         // contention from running two instances on one Mac.
         if Self.isTestToneEnabled {
@@ -1230,8 +1235,8 @@ final class MicCapture {
     }
 
     /// Generate a 440 Hz sine wave and push it into `channel` as
-    /// 1024-sample frames at the AAC frame cadence. Each frame is
-    /// `1024 / 48000` ≈ 21.33 ms; we run a serial DispatchSource
+    /// 960-sample frames at the Opus frame cadence. Each frame is
+    /// `960 / 48000` = 20 ms; we run a serial DispatchSource
     /// timer at that interval. Phase accumulates across frames so
     /// the sine stays continuous (no clicks at frame boundaries).
     private func startTestTone() {
@@ -1245,7 +1250,8 @@ final class MicCapture {
 
     nonisolated private static func makeTestToneTimer(channel: VoiceChannel) -> DispatchSourceTimer {
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue(label: "MicCapture.testTone"))
-        let intervalNs = UInt64(1024.0 / 48_000.0 * 1_000_000_000)
+        let intervalNs = UInt64(
+            Double(VoiceChannel.samplesPerFrame) / 48_000.0 * 1_000_000_000)
         timer.schedule(deadline: .now(), repeating: .nanoseconds(Int(intervalNs)))
         let state = TestToneState()
         let handler: @Sendable () -> Void = {
@@ -1260,7 +1266,7 @@ final class MicCapture {
         let twoPi = Float(2.0 * .pi)
         let freq: Float = 440
         let sampleRate: Float = 48_000
-        let frameSize = 1024
+        let frameSize = VoiceChannel.samplesPerFrame
         let amplitude: Float = 0.3
         var samples = [Float](repeating: 0, count: frameSize)
         var phase = state.phase
@@ -1340,8 +1346,8 @@ final class MicCapture {
     /// audio clock, so without a cap the queue grows unbounded → seconds
     /// of playback latency that you hear when muting (queue keeps
     /// draining after the sender stops). Dropping at the cap eats one
-    /// frame (~21 ms) at most and keeps end-to-end latency bounded near
-    /// `(targetDepth + slack) * 21 ms` — the clock-drift backstop.
+    /// frame (~20 ms) at most and keeps end-to-end latency bounded near
+    /// `(targetDepth + slack) * 20 ms` — the clock-drift backstop.
     private var pendingBuffers: Int = 0
 
     /// Playback-session marker, bumped by `startPlayback()` and `stop()`.
@@ -1368,7 +1374,7 @@ final class MicCapture {
             }
             drainedAtNs = 0
         }
-        // Adaptive jitter-buffer depth: 21.33 ms buffers, sized by the
+        // Adaptive jitter-buffer depth: 20 ms buffers, sized by the
         // channel from RFC 3550 inter-arrival jitter (initially 3 ≈ 64 ms,
         // bounded at 12 ≈ 256 ms of added latency).
         let targetDepth = channel.currentJitterTargetDepth
