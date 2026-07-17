@@ -21,7 +21,7 @@ exchange is verified (see Phase 1 below). Phases 2+ are proposal.
 
 - **Transport.** `libtailscale` is Go; tsnet is fully cross-platform.
   `go build -buildmode=c-archive` works on Linux today (Windows needs a
-  spike — see Risks). Ephemeral-node identity, LocalAPI peer lookup, and
+  spike — see the effort/spike note under Phasing). Ephemeral-node identity, LocalAPI peer lookup, and
   the StableNodeID admission keying all carry over unchanged.
 - **The wire protocol.** Every byte on port 7447 is pinned by
   `WireByteRegistryTests` and the round-trip suites, and the protocol was
@@ -182,19 +182,86 @@ same sources the mac app ships.
 **Phase 2 — Linux viewer.** Headless first: dial a macOS sharer, HELLO,
 depacketize, FFmpeg-decode, assert on decoded frames (the Linux twin of
 `ScreenShareSyntheticFramesTests`). Then an SDL/Vulkan window, audio
-playback, PLI/NACK/RR/FEC (already in the portable core), annotations out,
-and remote-control input capture (needs problem #1 solved). A viewer-only
-Linux release is a shippable milestone on its own.
+playback, PLI/NACK/RR/FEC (already in the portable core), and annotations
+out. (Remote-control input capture is deprioritized — see the effort note
+below.) A viewer-only Linux release is a shippable milestone on its own.
 
 **Phase 3 — Linux sharer.** Portal capture → encoder adapter (#3, #4) →
 the existing broadcast/fan-out logic, which is already extracted into pure
-decision functions. Then admission UI, voice, system audio (#5, #6),
-remote-control injection via the RemoteDesktop portal (#2). Tray UI last.
+decision functions. Then admission UI, voice, system audio (#5, #6). Tray
+UI last. (Remote-control injection via the RemoteDesktop portal (#2) is
+deprioritized — the confinement question makes it the highest-risk piece,
+and it isn't on the near path; see the effort note below.)
 
 **Phase 4 — Windows.** Viewer first, reusing the Phase 2/3 adapter
 seams (capture/encode/decode/render/audio/input behind protocol-shaped
-interfaces is the real deliverable of Phases 2–3). Prerequisite spike:
-libtailscale as a Windows c-archive/DLL plus Swift-on-Windows toolchain CI.
+interfaces is the real deliverable of Phases 2–3). **Gated on a Windows
+transport spike** (below) — the equivalent of Phase 1, but unproven and
+therefore the schedule risk, so it must come first.
+
+## Effort: viewer vs sharer, Linux vs Windows
+
+The phases above are not equal-sized, and the asymmetry is worth stating
+so the sequencing decisions are on record.
+
+**A viewer is ~3× cheaper and lower-risk than a sharer, on either OS.**
+A viewer *consumes* streams: its receive-side loss recovery (NACK/RR/FEC
+depacketize), admission-as-viewer, annotation-send, and input-capture are
+already portable and CI-tested, so what's new is a decoder (FFmpeg —
+blessed path), a window (SDL/Vulkan or D3D11), and audio-out. Each has an
+obvious right answer, and the result **ships standalone** ("watch a Mac's
+screen from Linux/Windows"). A sharer *produces* streams: it adds three
+new OS-integration edges (capture in, encode, and — deprioritized —
+inject out) that each have no single blessed path, plus the interactive
+consent surfaces. What already exists and shrinks the sharer: the entire
+server **decision layer** (congestion, fairness, FEC sweep, admission,
+retransmit) is portable and tested, the **control-plane listener** is
+portable, and the **capture-helper wire protocol** is portable — the
+sharer's "brain" is done; only the I/O edges are new.
+
+**Linux sharer** — the schedule risks are (1) **capture**: PipeWire via
+`xdg-desktop-portal` ScreenCast has no FFmpeg-equivalent blessed path
+(portal negotiation, permission dialogs, DMABUF/SHM formats, compositor
+and Wayland-vs-X11 differences), and (2) **encoder rate-control
+calibration** (#4), which only proves out on a real impaired network.
+
+**Windows sharer** — counterintuitively, the *media* side is **easier
+than Linux**: Windows.Graphics.Capture is one well-documented WinRT API
+with a built-in `GraphicsCapturePicker` capturing to D3D11 textures (no
+portal/PipeWire/compositor zoo); WASAPI **loopback capture is
+first-class** and process-exclusion loopback (Win10 21H1+) solves the
+system-audio self-exclusion problem (#5) that needs filter-chain routing
+on PipeWire; and Media Foundation ships an **in-box AAC** encoder (no
+fdk-aac licensing, #6). Three of the six port problems are easier on
+Windows, one (AVCC↔Annex-B, #3) is identical, one (#4) is the same
+everywhere. The catch is the **substrate**, not the media: Swift-on-
+Windows is officially supported but rougher than Linux (fewer runners,
+less-complete `FoundationNetworking`); libtailscale as a Windows
+c-archive/DLL has never been exercised (CGO needs a mingw/MSVC C
+toolchain); and TailscaleKit needs a **third shim tier** beside patch 022
+— WinSDK/Winsock for the syscalls (`closesocket`, `WSAPoll`, `SOCKET`
+handles) whose semantics differ from POSIX. So the Windows risk is
+"does the Swift + tsnet base stack come up at all," front-loaded into the
+transport spike, rather than spread through the capture work like Linux.
+Net: comparable total effort to the Linux sharer, different risk shape.
+
+**Windows transport spike (Phase 4 gate).** Before any Windows capture
+work: build `libtailscale.a`/`.dll` on Windows (Go c-archive with a C
+toolchain), write the Windows shim tier for the TailscaleKit wrapper, get
+`swift build` linking, and bring a tsnet node up against a local
+headscale — the exact shape of Phase 1, but on the less-proven substrate.
+The Windows **viewer** doubles as this spike: it forces the whole base
+stack up before a line of capture code, and ships as a product if it
+works. (Swift-on-Windows maturity moves fast — re-check its current state
+when scheduling this, rather than trusting a dated assessment.)
+
+Note on remote control: it's **deprioritized**, which shifts the
+estimates. On Linux it was the *hardest* item — the app-share
+pointer-confinement security property (#2) depends on global coordinates
+Wayland hides, a design decision, not a compile-fix — so dropping it
+removes the worst Linux unknown. On Windows injection would've been one
+of the *easiest* items (`SendInput` is global and simple, no confinement
+problem), so deprioritizing it helps Linux more than Windows.
 
 **Continuous.** Migrate the pure test suites (`RTPPacketTests`,
 `FECCodecTests`, `NACKSchedulerTests`, `ParserFuzzTests`, …) from the main
