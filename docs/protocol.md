@@ -180,10 +180,13 @@ Candidates deliberately *not* yet spent:
 - **System-audio cap** (viewer→sharer "I play PT 99") would let the sharer
   skip system-audio fan-out to viewers that would drop it — a bandwidth
   optimization, not a UX one.
-- **Opus** — when added as an alternative audio codec (the Linux AAC
-  licensing fix), it *must* be negotiated: the viewer advertises Opus
-  support and the sharer prefers it when both do. This is the one future
-  cap that isn't optional.
+- **~~Opus~~ — no cap needed (decision: Opus-only).** Opus was the obvious
+  "must-negotiate" future codec, but the pre-1.0 decision is to *replace*
+  AAC with Opus rather than negotiate between them (see
+  `docs/porting-plan.md` #6). Opus has no support gap on any platform, so
+  with no deployed AAC-only peers there's nothing to negotiate — one
+  audio codec, distinguished on the wire by its payload type like the
+  existing 98/99, no capability bit.
 
 **Extending the caps field.** If the 8 bits ever fill, reserve the top bit
 as an "extended caps follow" flag: a peer that sets it appends a second

@@ -108,8 +108,8 @@ address now, additively, while all peers are macOS.
    worse, so rather than negotiate a second codec we replaced AAC outright
    with **Opus** (royalty-free, software-only, portable). It lives in the
    local `OpusKitPackage` (a `systemLibrary` wrapper over libopus, CI-gated
-   on Linux by `linux-opus`) and is wired into the app via
-   `Sources/OpusAudioCodec.swift` (`OpusVoiceEncoder`/`OpusVoiceDecoder`,
+   on Linux by `linux-opus`) and is wired into the app via the portable
+   `TailscreenAudio` tier (`OpusVoiceEncoder`/`OpusVoiceDecoder`,
    960-sample / 20 ms frames). The RTP payload types (98 voice / 99 system)
    are unchanged — pre-1.0 with no deployed AAC-only peers, so no
    negotiation was needed.
