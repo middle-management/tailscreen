@@ -1,6 +1,7 @@
 import CoreVideo
 import Foundation
 import TailscaleKit
+import TailscreenAudio
 import XCTest
 
 @testable import Tailscreen
@@ -106,7 +107,7 @@ final class ScreenShareFanoutTests: XCTestCase {
             return
         }
         // Synthetic AU payload — the relay path forwards bytes verbatim and
-        // neither side decodes, so a recognizable marker is enough. (AAC
+        // neither side decodes, so a recognizable marker is enough. (Opus
         // encode/decode itself is covered by VoiceChannelTests.)
         let marker = Data([0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03, 0x04])
         let packet = AudioRTPPacketizer(ssrc: v1SSRC).packetize(au: marker)
@@ -138,8 +139,8 @@ final class ScreenShareFanoutTests: XCTestCase {
     /// System audio (RTP PT 99, reserved SSRC 1) injected via the
     /// `broadcastSystemAudioForTesting` seam reaches BOTH viewers, tagged with
     /// the system-audio payload type so a viewer can tell it apart from voice.
-    /// No capture-helper: the AU is a real `AACEncoder` output. Local-only —
-    /// skipped without `TAILSCREEN_TS_AUTHKEY`.
+    /// No capture-helper: the AU is a real `OpusVoiceEncoder` output.
+    /// Local-only — skipped without `TAILSCREEN_TS_AUTHKEY`.
     func testSystemAudioReachesBothViewers() async throws {
         let env = try TailscreenE2E.loadEnvOrSkip()
         let dirs = try TailscreenE2E.makeStateDirs(
@@ -205,11 +206,11 @@ final class ScreenShareFanoutTests: XCTestCase {
 
         await fulfillment(of: [ssrc1, ssrc2, twoViewers], timeout: 30)
 
-        // A real AAC AU; AAC priming can swallow the first frame, so encode a few.
-        let encoder = try AACEncoder()
+        // A real Opus AU (system-audio / music mode).
+        let encoder = try OpusVoiceEncoder(application: .audio)
         var au: Data?
         for _ in 0..<4 {
-            if let a = try encoder.encode(pcm: [Float](repeating: 0.2, count: 1024)) { au = a }
+            if let a = try encoder.encode(pcm: [Float](repeating: 0.2, count: 960)) { au = a }
         }
         let auData = try XCTUnwrap(au)
 

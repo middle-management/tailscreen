@@ -9,7 +9,7 @@ import PackageDescription
 // package's public API is the app's compile-time contract. CI enforces
 // the portability boundary (linux-protocol job).
 //
-// Two portability tiers, two targets:
+// Three portability tiers, three targets:
 //   - TailscreenProtocol: wire protocol + pure decision logic. NO Apple
 //     frameworks, NO dependencies — Foundation/Synchronization only.
 //   - TailscreenTransport: tsnet-facing peer discovery + IPN-bus watcher.
@@ -17,6 +17,10 @@ import PackageDescription
 //     patches applied — `make -C ../TailscaleKitPackage apply-patches`);
 //     compiling it needs only the patched header, not the built
 //     libtailscale.a (that's a link-time input).
+//   - TailscreenAudio: the Opus voice/system-audio codec (Float32↔Int16 +
+//     960-sample framing over OpusKit/libopus). Foundation + OpusKit only —
+//     also builds on Linux (needs libopus-dev + pkg-config). Kept out of
+//     TailscreenProtocol so that tier stays dependency-free.
 let package = Package(
     name: "TailscreenProtocol",
     platforms: [
@@ -32,10 +36,15 @@ let package = Package(
         .library(
             name: "TailscreenTransport",
             targets: ["TailscreenTransport"]
+        ),
+        .library(
+            name: "TailscreenAudio",
+            targets: ["TailscreenAudio"]
         )
     ],
     dependencies: [
-        .package(path: "../TailscaleKitPackage")
+        .package(path: "../TailscaleKitPackage"),
+        .package(path: "../OpusKitPackage")
     ],
     targets: [
         .target(
@@ -50,9 +59,16 @@ let package = Package(
             ],
             path: "Sources/TailscreenTransport"
         ),
+        .target(
+            name: "TailscreenAudio",
+            dependencies: [
+                .product(name: "OpusKit", package: "OpusKitPackage")
+            ],
+            path: "Sources/TailscreenAudio"
+        ),
         .testTarget(
             name: "TailscreenProtocolTests",
-            dependencies: ["TailscreenProtocol"],
+            dependencies: ["TailscreenProtocol", "TailscreenAudio"],
             path: "Tests/TailscreenProtocolTests"
         )
     ]

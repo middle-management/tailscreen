@@ -22,8 +22,9 @@ let package = Package(
         // TailscaleKit local package
         .package(path: "./TailscaleKitPackage"),
         // The portable core: wire protocol + pure decision logic
-        // (TailscreenProtocol) and the tsnet-facing transport tier
-        // (TailscreenTransport). Also builds on Linux — see its README.
+        // (TailscreenProtocol), the tsnet-facing transport tier
+        // (TailscreenTransport), and the Opus codec tier (TailscreenAudio,
+        // which pulls in OpusKit/libopus). All build on Linux — see its README.
         .package(path: "./TailscreenProtocolPackage")
     ],
     targets: [
@@ -32,7 +33,8 @@ let package = Package(
             dependencies: [
                 .product(name: "TailscaleKit", package: "TailscaleKitPackage"),
                 .product(name: "TailscreenProtocol", package: "TailscreenProtocolPackage"),
-                .product(name: "TailscreenTransport", package: "TailscreenProtocolPackage")
+                .product(name: "TailscreenTransport", package: "TailscreenProtocolPackage"),
+                .product(name: "TailscreenAudio", package: "TailscreenProtocolPackage")
             ],
             path: "Sources",
             resources: [
@@ -46,7 +48,10 @@ let package = Package(
         ),
         .testTarget(
             name: "TailscreenTests",
-            dependencies: ["Tailscreen"],
+            dependencies: [
+                "Tailscreen",
+                .product(name: "TailscreenAudio", package: "TailscreenProtocolPackage")
+            ],
             path: "Tests/TailscreenTests",
             linkerSettings: [
                 .unsafeFlags(["-L", "TailscaleKitPackage/lib"])

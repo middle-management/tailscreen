@@ -26,6 +26,14 @@ concurrency:
 jobs:
   build:
     runs-on: macos-latest
+    # SwiftPM on Apple-silicon runners does NOT search Homebrew's
+    # /opt/homebrew/lib/pkgconfig by default, so OpusKit's `pkgConfig: "opus"`
+    # can't find opus.pc from `brew install opus` unless it's on
+    # PKG_CONFIG_PATH. Set it job-wide (alongside the TailscaleKit dir) so
+    # every build/test step resolves libopus. macos-latest is arm64, so the
+    # brew prefix is /opt/homebrew.
+    env:
+      PKG_CONFIG_PATH: ${{ github.workspace }}/TailscaleKitPackage:/opt/homebrew/lib/pkgconfig
 
     steps:
       - name: Checkout code
@@ -42,6 +50,12 @@ jobs:
           go-version: '1.21'
           cache-dependency-path: TailscaleKitPackage/upstream/libtailscale/go.sum
 
+      - name: Install libopus
+        # OpusKit's COpus systemLibrary resolves libopus via pkg-config; the
+        # app now links it (Opus replaced AudioToolbox AAC). The job-level
+        # PKG_CONFIG_PATH points SwiftPM at brew's opus.pc.
+        run: brew install opus
+
       - name: Build
         run: make build
 
@@ -49,9 +63,8 @@ jobs:
         # `--enable-code-coverage` writes an LLVM profdata bundle under
         # .build/<config>/codecov/. The subsequent step turns that into a
         # human-readable summary and uploads the raw profdata as an artifact.
-        run: |
-          PKG_CONFIG_PATH="$(pwd)/TailscaleKitPackage" \
-            swift test --enable-code-coverage
+        # PKG_CONFIG_PATH is set job-wide (libtailscale + libopus).
+        run: swift test --enable-code-coverage
 
       - name: Coverage summary
         # Surface a percentage in the job log + the workflow run summary.
@@ -60,12 +73,9 @@ jobs:
         # or binary path can't be located the step warns but doesn't fail
         # the build.
         if: always()
-        env:
-          # `swift build --show-bin-path` loads Package.swift, which has a
-          # systemLibrary target that resolves libtailscale via pkg-config.
-          # Without PKG_CONFIG_PATH set the manifest fails to load and
-          # BUILD_BIN_PATH ends up empty — silently dropping coverage.
-          PKG_CONFIG_PATH: ${{ github.workspace }}/TailscaleKitPackage
+        # PKG_CONFIG_PATH (libtailscale + libopus) is set job-wide, so
+        # `swift build --show-bin-path` can load the manifest's systemLibrary
+        # targets; without it BUILD_BIN_PATH ends up empty, dropping coverage.
         run: |
           set -u
           BUILD_BIN_PATH="$(swift build --show-bin-path 2>/dev/null || echo)"
@@ -116,8 +126,7 @@ jobs:
         # swallows git-diff errors (see scripts/diff-coverage.sh header).
         if: github.event_name == 'pull_request'
         continue-on-error: true
-        env:
-          PKG_CONFIG_PATH: ${{ github.workspace }}/TailscaleKitPackage
+        # PKG_CONFIG_PATH (libtailscale + libopus) is set job-wide.
         run: |
           set -u
           BUILD_BIN_PATH="$(swift build --show-bin-path 2>/dev/null || echo)"
@@ -144,6 +153,10 @@ jobs:
   # continue-on-error): a release-config compile break is always real.
   build-release:
     runs-on: macos-latest
+    # See the `build` job: SwiftPM on arm64 runners doesn't search brew's
+    # pkgconfig dir, so put libopus (and libtailscale) on PKG_CONFIG_PATH.
+    env:
+      PKG_CONFIG_PATH: ${{ github.workspace }}/TailscaleKitPackage:/opt/homebrew/lib/pkgconfig
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -154,10 +167,12 @@ jobs:
         with:
           go-version: '1.21'
           cache-dependency-path: TailscaleKitPackage/upstream/libtailscale/go.sum
+      - name: Install libopus
+        run: brew install opus
       - name: Build libtailscale
         run: make tailscale
       - name: Build (release)
-        run: PKG_CONFIG_PATH="$PWD/TailscaleKitPackage" swift build -c release
+        run: swift build -c release
 
   # Portability gate: the TailscreenProtocol package (wire protocol + pure
   # decision logic + the tsnet-facing TailscreenTransport tier — a real
@@ -178,14 +193,33 @@ jobs:
           # The TailscreenTransport target depends on TailscaleKit, whose
           # sources are symlinks into the submodule.
           submodules: recursive
-      - name: Install make
+      - name: Install make + libopus
         # The swift:*-noble images are slim — no make (or gcc). The patch
         # loop lives in TailscaleKitPackage/Makefile, so make is required.
-        run: apt-get update && apt-get install -y --no-install-recommends make
+        # libopus-dev + pkg-config are for the TailscreenAudio target's
+        # OpusKit dependency (opus.pc is on the Linux default search path,
+        # so no PKG_CONFIG_PATH entry is needed for it).
+        run: apt-get update && apt-get install -y --no-install-recommends make libopus-dev pkg-config
       - name: Apply TailscaleKit patches (header only, no Go build)
         run: make -C TailscaleKitPackage apply-patches
       - name: Build + test TailscreenProtocol on Linux
         run: PKG_CONFIG_PATH="$PWD/TailscaleKitPackage" swift test --package-path TailscreenProtocolPackage
+
+  # Audio-codec-portability gate: OpusKit (a systemLibrary wrapper over
+  # libopus — see OpusKitPackage/README.md) must build and pass its
+  # encode/decode round-trip tests on Linux. This is the portable foundation
+  # for the Opus-only audio decision (docs/porting-plan.md #6); wiring it
+  # into the app's audio path is a later mac-side step. Cheap: one apt
+  # install, no submodules, no Go.
+  linux-opus:
+    runs-on: ubuntu-latest
+    container: swift:6.1-noble
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install libopus
+        run: apt-get update && apt-get install -y --no-install-recommends libopus-dev pkg-config
+      - name: Build + test OpusKit on Linux
+        run: swift test --package-path OpusKitPackage
 
   # Transport-portability gate: libtailscale (Go c-archive) + the patched
   # TailscaleKit Swift wrapper must build and pass their unit tests on
@@ -267,6 +301,10 @@ jobs:
     # without first fixing the false positives would block every PR.
     runs-on: macos-latest
     continue-on-error: true
+    # See the `build` job: put libopus (+ libtailscale) on PKG_CONFIG_PATH so
+    # SwiftPM resolves them on arm64 runners. The Makefile appends this.
+    env:
+      PKG_CONFIG_PATH: ${{ github.workspace }}/TailscaleKitPackage:/opt/homebrew/lib/pkgconfig
     steps:
       - uses: actions/checkout@v4
         with:
@@ -275,6 +313,8 @@ jobs:
         with:
           go-version: '1.21'
           cache-dependency-path: TailscaleKitPackage/upstream/libtailscale/go.sum
+      - name: Install libopus
+        run: brew install opus
       - name: Build libtailscale
         run: make tailscale
       - name: Run tests under TSan

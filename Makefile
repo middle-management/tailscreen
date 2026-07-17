@@ -4,9 +4,16 @@
 # self-documented via the `## description` suffix on each rule.
 .DEFAULT_GOAL := help
 
-# Lets SwiftPM's systemLibrary target find libtailscale.pc at build time,
-# which in turn resolves the `-L` flag for libtailscale.a.
-export PKG_CONFIG_PATH := $(CURDIR)/TailscaleKitPackage
+# Lets SwiftPM's systemLibrary targets find their `.pc` files at build time:
+#   - libtailscale.pc (TailscaleKitPackage), which resolves the `-L` for
+#     libtailscale.a, and
+#   - opus.pc (OpusKit's COpus wrapper over libopus).
+# SwiftPM's own pkg-config resolver does NOT search Homebrew's prefix on
+# Apple Silicon, so add `$(brew --prefix)/lib/pkgconfig` explicitly (empty +
+# harmless when brew is absent, e.g. Linux, where opus.pc is on the default
+# path). Any inherited PKG_CONFIG_PATH is appended so a custom prefix wins.
+BREW_PKGCONFIG := $(shell brew --prefix 2>/dev/null)/lib/pkgconfig
+export PKG_CONFIG_PATH := $(CURDIR)/TailscaleKitPackage:$(BREW_PKGCONFIG):$(PKG_CONFIG_PATH)
 
 help: ## Show this help and exit
 	@awk 'BEGIN { FS = ":.*## "; printf "Tailscreen — Make targets\n\nUsage: make <target>\n\nTargets:\n" } \

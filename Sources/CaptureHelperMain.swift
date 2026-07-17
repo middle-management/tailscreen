@@ -271,7 +271,7 @@ private final class CaptureHelperRunner {
     private let writer: HelperFrameWriter
     private let captureWrapper = ScreenCapture()
     private var encoder: VideoEncoder?
-    /// System-audio pipeline (CMSampleBuffer → AAC AU). Created in
+    /// System-audio pipeline (CMSampleBuffer → Opus AU). Created in
     /// `startWithFilter` only when the selection asked for audio capture.
     private var systemAudioTap: SystemAudioTap?
     /// Live enable/disable latch for system-audio *emission*, toggled by the

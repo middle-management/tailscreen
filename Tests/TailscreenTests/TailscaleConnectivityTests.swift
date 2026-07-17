@@ -224,7 +224,7 @@ final class TailscaleConnectivityTests: XCTestCase {
             client.sendAudioRTP(packet)
         }
         voice.isMuted = false
-        let pcm = (0..<1024).map { Float(sin(2 * .pi * 440 * Double($0) / 48_000)) }
+        let pcm = (0..<960).map { Float(sin(2 * .pi * 440 * Double($0) / 48_000)) }
         for _ in 0..<10 { voice.processOutboundFrame(pcm) }
 
         // Wait for packets to flow through real tsnet transport.

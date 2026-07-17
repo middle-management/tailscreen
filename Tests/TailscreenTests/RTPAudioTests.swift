@@ -18,7 +18,7 @@ final class RTPAudioTests: XCTestCase {
         XCTAssertEqual(parsed?.payloadType, 98)
     }
 
-    func testTimestampIncrementsBy1024PerAU() {
+    func testTimestampIncrementsBy960PerAU() {
         let pack = AudioRTPPacketizer(ssrc: 1)
         let au = Data([0x00])
 
@@ -31,7 +31,9 @@ final class RTPAudioTests: XCTestCase {
             XCTFail("RTPHeader.decode returned nil")
             return
         }
-        XCTAssertEqual(ts2 &- ts1, 1024)
+        // One Opus 20 ms frame at 48 kHz = 960 samples.
+        XCTAssertEqual(ts2 &- ts1, 960)
+        XCTAssertEqual(ts2 &- ts1, AudioRTPPacketizer.samplesPerFrame)
     }
 
     func testSequenceWraparound() {

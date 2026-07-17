@@ -45,7 +45,7 @@ exchange is verified (see Phase 1 below). Phases 2+ are proposal.
 | Encode | VideoToolbox H.264/HEVC | VA-API / NVENC (via FFmpeg), x264/x265 software fallback | Media Foundation HW encoders, or FFmpeg (NVENC/AMF/QSV) |
 | Decode | VideoToolbox | FFmpeg (libavcodec) + VA-API hwaccel | Media Foundation / FFmpeg + D3D11VA |
 | Render | Metal (`CAMetalLayer`) | Vulkan or OpenGL; SDL as the pragmatic first cut | D3D11 swapchain; SDL again viable |
-| Voice + system audio | CoreAudio / AVFoundation / AudioToolbox AAC | PipeWire (capture + playback), codec: see AAC risk below | WASAPI (loopback capture is first-class), Media Foundation AAC |
+| Voice + system audio | CoreAudio / AVFoundation for I/O; **Opus** (OpusKit/libopus) codec — done | PipeWire (capture + playback); Opus already portable | WASAPI (loopback capture is first-class); Opus already portable |
 | Remote-control injection | `CGEvent` + Accessibility TCC | `org.freedesktop.portal.RemoteDesktop` (consent UX ≈ TCC) | `SendInput` |
 | Global hotkeys | Carbon | GlobalShortcuts portal (newer compositors only) | `RegisterHotKey` |
 | Tray/menubar UI | SwiftUI `MenuBarExtra` + AppKit | StatusNotifierItem + GTK4/libadwaita (or minimal custom) | `Shell_NotifyIcon` + Win32/WinUI shim |
@@ -103,11 +103,16 @@ address now, additively, while all peers are macOS.
    process-exclusion loopback (Win10 21H1+). PipeWire needs explicit
    routing (capture a sink the app doesn't play into, or a filter-chain) —
    design the Linux audio graph up front or ship system audio later.
-6. **AAC on Linux is awkward.** fdk-aac is license-encumbered for
-   distribution; FFmpeg's native AAC encoder is serviceable but worse.
-   Consider negotiating **Opus** as an additional audio codec — a new
-   payload type is a one-registry-row, capability-degrading change, and
-   old viewers already drop unknown PTs silently.
+6. **~~AAC on Linux is awkward.~~ RESOLVED — switched to Opus.** fdk-aac is
+   license-encumbered for distribution and FFmpeg's native AAC encoder is
+   worse, so rather than negotiate a second codec we replaced AAC outright
+   with **Opus** (royalty-free, software-only, portable). It lives in the
+   local `OpusKitPackage` (a `systemLibrary` wrapper over libopus, CI-gated
+   on Linux by `linux-opus`) and is wired into the app via
+   `Sources/OpusAudioCodec.swift` (`OpusVoiceEncoder`/`OpusVoiceDecoder`,
+   960-sample / 20 ms frames). The RTP payload types (98 voice / 99 system)
+   are unchanged — pre-1.0 with no deployed AAC-only peers, so no
+   negotiation was needed.
 7. **~~TailscaleKit's Swift wrapper needs a portability audit.~~ RESOLVED
    — audited, patched (022), and verified live on Linux.** The fixes were
    exactly the expected small ones: `canImport(Combine)` gates with an

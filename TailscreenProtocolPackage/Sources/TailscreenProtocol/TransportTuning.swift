@@ -45,8 +45,8 @@ public enum TransportTuning {
     public static let maxQueuedVideoFramesPerViewer = 4
 
     /// Server: drop a viewer's audio packet once this many are already
-    /// queued behind a stalled send. Audio access units arrive ~every
-    /// 21.3 ms (one AAC AU), so 24 ≈ 0.5 s — deep enough to ride out a
+    /// queued behind a stalled send. Audio access units arrive every
+    /// 20 ms (one Opus frame), so 24 ≈ 0.5 s — deep enough to ride out a
     /// DERP hiccup, shallow enough that a stalled viewer's audio latency
     /// stays bounded. Mirrors `maxQueuedVideoFramesPerViewer` for the
     /// per-viewer audio send chains (audio is loss-tolerant; the receiver

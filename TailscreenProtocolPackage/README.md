@@ -1,6 +1,6 @@
 # TailscreenProtocol
 
-The platform-portable core of Tailscreen, in two targets/tiers:
+The platform-portable core of Tailscreen, in three targets/tiers:
 
 - **`TailscreenProtocol`** — the port-7447 wire protocol (RTP
   packetization, framed TCP messages, UDP control bytes, helper/picker IPC
@@ -21,8 +21,19 @@ The platform-portable core of Tailscreen, in two targets/tiers:
   Foundation re-exports) compiles on Linux via the shims in
   `PortabilityShims.swift` — including a `$prop.values`-compatible
   projected value, which `TailscalePeerDiscovery` consumes.
+- **`TailscreenAudio`** — the Opus voice/system-audio codec
+  (`OpusVoiceEncoder`, `OpusVoiceDecoder`, `OpusPCM`): the Float32↔Int16
+  conversion + 960-sample (20 ms) framing over `OpusKit` (the local
+  `systemLibrary` wrapper around libopus). Foundation + OpusKit only, so it
+  builds on Linux/Windows too; a future non-macOS client reuses the exact
+  codec and supplies its own platform audio I/O (`VoiceChannel` /
+  `SystemAudioTap` are the mac-side consumers). It `@_exported`s OpusKit so
+  `Opus.Application` is visible to consumers. Kept out of
+  `TailscreenProtocol` so that tier stays dependency-free. Building/testing
+  it needs libopus present (`apt install libopus-dev pkg-config` on Linux,
+  `brew install opus` on macOS — resolved via pkg-config).
 
-Both build and run on Linux; they're the libraries a future non-macOS
+All three build and run on Linux; they're the libraries a future non-macOS
 Tailscreen viewer or sharer links against. See `docs/porting-plan.md` for
 that roadmap.
 
@@ -30,13 +41,13 @@ that roadmap.
 
 - The sources live **only here** — the macOS app consumes this package as
   a real SwiftPM dependency (`Package.swift` at the repo root declares it;
-  `Sources/ProtocolReexports.swift` `@_exported import`s both products so
-  app code keeps using the types unqualified).
+  `Sources/ProtocolReexports.swift` `@_exported import`s all three products
+  so app code keeps using the types unqualified).
 - Because the app crosses a module boundary, everything the app touches is
   `public` — including explicit memberwise initializers (Swift never
   synthesizes those as public). Test-only seams stay `internal`: the test
   suite uses `@testable import TailscreenProtocol` /
-  `@testable import TailscreenTransport`.
+  `@testable import TailscreenTransport` / `@testable import TailscreenAudio`.
 - `Tests/TailscreenProtocolTests` is a deliberately shallow smoke suite
   proving the module *runs* (encode/decode/recover round trips) on Linux.
   The exhaustive wire-format, loss-recovery, and fuzz coverage lives in the
