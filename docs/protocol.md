@@ -142,14 +142,51 @@ exactly the point: it never half-enters a mode it doesn't support. The
 whole recovery matrix degrades cleanly in both directions, ending at
 plain PLI.
 
-`serverCaps` carries one bit the viewer never sends back: **bit 3
-`remoteControl`**, the sharer telling the viewer "this build/platform can
-inject viewer input." The viewer offers its Request Control affordance
-only when the bit is set, so a sharer that can't do remote control (a
-future non-injection Linux/Windows build) never receives a
-`.controlRequest` it would silently drop. It's static capability — the
-sharer's runtime "Allow control requests" toggle and Accessibility grant
-still decline a live request with `controlRevoked`.
+`serverCaps` also carries two bits the viewer never sends back — sharer
+capabilities the viewer uses to gate its own UI so it never offers an
+interaction the sharer can't honour:
+
+- **bit 3 `remoteControl`** — this build/platform can inject viewer input.
+  The viewer offers Request Control only when set, so a non-injection
+  sharer (a future Linux/Windows build) never receives a `.controlRequest`
+  it would silently drop. Static capability: the sharer's runtime "Allow
+  control requests" toggle and Accessibility grant still decline a live
+  request with `controlRevoked`.
+- **bit 4 `annotations`** — this sharer renders viewer annotations on its
+  own overlay and relays them to other viewers. The viewer's annotation
+  toolbar is disabled when absent, so it never draws local-only strokes
+  that reach neither the sharer nor other viewers.
+
+Both follow the same rule the loss-recovery caps do: absence degrades to
+"feature off," and — pre-1.0 with no deployed peers — the bit is
+authoritative, so a set bit is the only thing that lights up the UI.
+
+**Reserved / future caps.** The `caps` byte is a single `UInt8` per
+direction; bits 0–4 are assigned, leaving room but not unlimited room.
+Candidates deliberately *not* yet spent:
+
+- **Video-codec caps** (viewer→sharer "I decode HEVC" / "I decode 10-bit")
+  would turn the reactive `CODEC_NO` / `PROFILE_NO` fallbacks into
+  proactive up-front selection, removing the mid-stream downgrade hiccup.
+  Weaker than it looks — the sharer encodes once and fans out, so the
+  first non-HEVC viewer downgrades everyone anyway; the win is only the
+  single-viewer round-trip, and the existing fallbacks already make it
+  *work*. Polish, not correctness.
+- **System-audio cap** (viewer→sharer "I play PT 99") would let the sharer
+  skip system-audio fan-out to viewers that would drop it — a bandwidth
+  optimization, not a UX one.
+- **Opus** — when added as an alternative audio codec (the Linux AAC
+  licensing fix), it *must* be negotiated: the viewer advertises Opus
+  support and the sharer prefers it when both do. This is the one future
+  cap that isn't optional.
+
+**Extending the caps field.** If the 8 bits ever fill, reserve the top bit
+as an "extended caps follow" flag: a peer that sets it appends a second
+caps byte, and a peer that understands the flag reads it. Old peers that
+don't set/understand the flag stay single-byte — the same
+ignore-unknown degradation, applied to the caps field itself. So the
+budget is a soft limit, not a hard one; we just haven't needed the second
+byte yet.
 
 ### NACK — selective retransmission (`0x0A`)
 

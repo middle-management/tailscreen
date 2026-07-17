@@ -336,13 +336,21 @@ public struct ScreenShareCaps: OptionSet, Sendable, Hashable {
     /// control requests" toggle and the Accessibility gate still answer a
     /// live request with an immediate `.controlRevoked` decline.
     public static let remoteControl = ScreenShareCaps(rawValue: 1 << 3)
+    /// **Sharer→viewer only**: this sharer renders and fans out viewer
+    /// annotations (draws them on its own overlay + relays to other viewers).
+    /// The viewer offers its annotation toolbar only when set — a sharer that
+    /// can't render annotations (a future minimal Linux/Windows sharer) would
+    /// otherwise leave the viewer drawing local-only scribbles that reach
+    /// nobody. Absent ⇒ the viewer hides the drawing tools. Like
+    /// `.remoteControl`, purely a sharer capability; a viewer never sets it.
+    public static let annotations = ScreenShareCaps(rawValue: 1 << 4)
 
     /// Every defined capability bit, in one production-side list so
     /// `WireByteRegistryTests` can assert its registry matches this exactly
     /// (single-bit-ness + pairwise disjointness + count). A **new cap MUST be
     /// appended here** in the same change that defines it — a cap that never
     /// joins this list is invisible to the registry's teeth.
-    public static let allKnown: [ScreenShareCaps] = [.nack, .receiverReport, .fec, .remoteControl]
+    public static let allKnown: [ScreenShareCaps] = [.nack, .receiverReport, .fec, .remoteControl, .annotations]
 }
 
 /// RTCP-RR-style receiver report payload (see `ScreenShareControlMessage`

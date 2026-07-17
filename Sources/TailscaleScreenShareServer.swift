@@ -509,7 +509,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// "Allow control requests" toggle, the Accessibility grant) still decline
     /// a live request with `.controlRevoked`; this bit is only the static
     /// "is the feature present here" signal.
-    private static let serverCaps: ScreenShareCaps = [.nack, .receiverReport, .fec, .remoteControl]
+    private static let serverCaps: ScreenShareCaps = [.nack, .receiverReport, .fec, .remoteControl, .annotations]
 
     /// Adaptive FEC state (group size + off-gate hysteresis), stepped once
     /// per sweep window by `fecSweepDecision`. `groupSize == 0` means FEC

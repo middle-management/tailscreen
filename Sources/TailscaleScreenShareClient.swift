@@ -174,6 +174,14 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     /// Accessibility gate.
     var onRemoteControlSupportChanged: ((Bool) -> Void)?
 
+    /// Fires when the sharer's advertised annotation support becomes known or
+    /// changes — `true` if the HELLO_ACK carried `ScreenShareCaps.annotations`.
+    /// AppState gates the viewer's annotation toolbar on this so the viewer
+    /// doesn't draw local-only strokes at a sharer that can't render/relay
+    /// them (they would reach neither the sharer nor other viewers). Sharer
+    /// capability only.
+    var onAnnotationSupportChanged: ((Bool) -> Void)?
+
     /// Fires when the sharer revokes (or declines) control (`.controlRevoked`).
     /// The argument is the sharer's short reason tag (English, for logs — the
     /// viewer UI shows its own localized message). AppState leaves control
@@ -635,6 +643,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                             if negotiatedCaps != ack.caps {
                                 negotiatedCaps = ack.caps
                                 onRemoteControlSupportChanged?(ack.caps.contains(.remoteControl))
+                                onAnnotationSupportChanged?(ack.caps.contains(.annotations))
                                 // Deepen the reorder window so retransmits land
                                 // before it overflows; the ack precedes video,
                                 // so recreating the depacketizer loses nothing.
@@ -982,6 +991,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     private func resetLossRecoveryState() {
         negotiatedCaps = []
         onRemoteControlSupportChanged?(false)
+        onAnnotationSupportChanged?(true)
         nackScheduler = NACKScheduler()
         depacketizer = MultiCodecDepacketizer()
         fecBuffer = FECGroupBuffer()

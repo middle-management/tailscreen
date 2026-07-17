@@ -118,7 +118,7 @@ final class ProtocolSmokeTests: XCTestCase {
     }
 
     func testHelloAckCapsRoundTrip() {
-        let caps: ScreenShareCaps = [.nack, .receiverReport, .fec, .remoteControl]
+        let caps: ScreenShareCaps = [.nack, .receiverReport, .fec, .remoteControl, .annotations]
         let wire = ScreenShareControlMessage.encodeHelloAck(ssrc: 0xDEAD_BEEF, caps: caps)
         guard let (ssrc, decodedCaps) = ScreenShareControlMessage.decodeHelloAckCaps(wire) else {
             XCTFail("decodeHelloAckCaps failed")

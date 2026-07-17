@@ -29,6 +29,12 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
     private weak var micToolbarItem: NSToolbarItem?
     private var micCancellable: AnyCancellable?
     private weak var toolGroupItem: NSToolbarItemGroup?
+    private weak var undoToolbarItem: NSToolbarItem?
+    private weak var clearAllToolbarItem: NSToolbarItem?
+    /// Whether the sharer renders/relays annotations (`ScreenShareCaps.annotations`).
+    /// Drives the drawing tools' + undo/clear items' enabled state so the
+    /// viewer doesn't offer annotation UI a non-supporting sharer would ignore.
+    private var annotationsEnabled = true
     private var toolCancellable: AnyCancellable?
     private weak var canvasModel: AnnotationCanvasModel?
     private weak var statsToolbarItem: NSToolbarItem?
@@ -109,6 +115,19 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
         statsToolbarItem?.toolTip = tip
     }
 
+    /// Enable/disable the annotation tools (drawing group + undo + clear) to
+    /// match the sharer's advertised annotation capability. Toggles any items
+    /// already vended by the delegate and remembers the state for items AppKit
+    /// binds later. The mac sharer always advertises annotations, so the
+    /// disabled branch is exercised only against a future non-annotation
+    /// (Linux/Windows) sharer.
+    func setAnnotationsEnabled(_ enabled: Bool) {
+        annotationsEnabled = enabled
+        toolGroupItem?.isEnabled = enabled
+        undoToolbarItem?.isEnabled = enabled
+        clearAllToolbarItem?.isEnabled = enabled
+    }
+
     // MARK: - NSToolbarDelegate
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -134,7 +153,7 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
         case Self.toolGroup:
             return makeToolGroup()
         case Self.undo:
-            return makeButton(
+            let item = makeButton(
                 id: itemIdentifier,
                 label: L("Undo"),
                 symbol: "arrow.uturn.backward",
@@ -142,8 +161,11 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
                 accessibilityLabel: L("Undo last annotation"),
                 toolTip: L("Undo last annotation (⌘Z)")
             )
+            item.isEnabled = annotationsEnabled
+            undoToolbarItem = item
+            return item
         case Self.clearAll:
-            return makeButton(
+            let item = makeButton(
                 id: itemIdentifier,
                 label: L("Clear"),
                 symbol: "trash",
@@ -151,6 +173,9 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
                 accessibilityLabel: L("Clear all annotations"),
                 toolTip: L("Clear all annotations (⇧⌘⌫ or right-click)")
             )
+            item.isEnabled = annotationsEnabled
+            clearAllToolbarItem = item
+            return item
         case Self.microphone:
             let item = makeButton(
                 id: itemIdentifier,
@@ -250,6 +275,7 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
             sub.toolTip = tips[i]
         }
         toolGroupItem = group
+        group.isEnabled = annotationsEnabled
         // Reflect the canvas model's current tool if `bind(canvasModel:)`
         // was called before AppKit asked the delegate for items.
         let initialTool = canvasModel?.currentTool ?? .pen
