@@ -142,6 +142,15 @@ exactly the point: it never half-enters a mode it doesn't support. The
 whole recovery matrix degrades cleanly in both directions, ending at
 plain PLI.
 
+`serverCaps` carries one bit the viewer never sends back: **bit 3
+`remoteControl`**, the sharer telling the viewer "this build/platform can
+inject viewer input." The viewer offers its Request Control affordance
+only when the bit is set, so a sharer that can't do remote control (a
+future non-injection Linux/Windows build) never receives a
+`.controlRequest` it would silently drop. It's static capability — the
+sharer's runtime "Allow control requests" toggle and Accessibility grant
+still decline a live request with `controlRevoked`.
+
 ### NACK — selective retransmission (`0x0A`)
 
 `[0x0A][count:1][(pid:2 BE, blp:2 BE) × count]`, ≤ 16 entries — RTCP

@@ -503,7 +503,13 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     private let viewerCaps = OSAllocatedUnfairLock<[String: ScreenShareCaps]>(initialState: [:])
 
     /// What the server supports and advertises back to cap-aware viewers.
-    private static let serverCaps: ScreenShareCaps = [.nack, .receiverReport, .fec]
+    // `.remoteControl` advertises that this build/platform can inject viewer
+    // input at all (always true on macOS — the CGEvent injector exists), so
+    // the viewer offers its Request Control affordance. Runtime gates (the
+    // "Allow control requests" toggle, the Accessibility grant) still decline
+    // a live request with `.controlRevoked`; this bit is only the static
+    // "is the feature present here" signal.
+    private static let serverCaps: ScreenShareCaps = [.nack, .receiverReport, .fec, .remoteControl]
 
     /// Adaptive FEC state (group size + off-gate hysteresis), stepped once
     /// per sweep window by `fecSweepDecision`. `groupSize == 0` means FEC

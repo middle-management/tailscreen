@@ -164,6 +164,16 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     /// starts capturing input.
     var onControlGranted: (() -> Void)?
 
+    /// Fires when the sharer's advertised remote-control support becomes known
+    /// or changes — `true` if the sharer's HELLO_ACK carried
+    /// `ScreenShareCaps.remoteControl`. AppState gates the viewer's "Request
+    /// Control" affordance on this so it isn't offered against a sharer whose
+    /// build/platform can't inject input at all (the request would otherwise
+    /// be silently dropped as an unknown TCP type). Static support only;
+    /// a live request is still subject to the sharer's runtime toggle +
+    /// Accessibility gate.
+    var onRemoteControlSupportChanged: ((Bool) -> Void)?
+
     /// Fires when the sharer revokes (or declines) control (`.controlRevoked`).
     /// The argument is the sharer's short reason tag (English, for logs — the
     /// viewer UI shows its own localized message). AppState leaves control
@@ -624,6 +634,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                         if let ack = ScreenShareControlMessage.decodeHelloAckCaps(datagram) {
                             if negotiatedCaps != ack.caps {
                                 negotiatedCaps = ack.caps
+                                onRemoteControlSupportChanged?(ack.caps.contains(.remoteControl))
                                 // Deepen the reorder window so retransmits land
                                 // before it overflows; the ack precedes video,
                                 // so recreating the depacketizer loses nothing.
@@ -970,6 +981,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     /// tracker into the new one.
     private func resetLossRecoveryState() {
         negotiatedCaps = []
+        onRemoteControlSupportChanged?(false)
         nackScheduler = NACKScheduler()
         depacketizer = MultiCodecDepacketizer()
         fecBuffer = FECGroupBuffer()

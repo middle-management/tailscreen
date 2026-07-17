@@ -112,6 +112,13 @@ class AppState: ObservableObject {
     /// capture live). Reset on disconnect.
     @Published var viewerControlState: ViewerControlState = .none
 
+    /// Whether the *current* sharer advertised remote-control support
+    /// (`ScreenShareCaps.remoteControl` in its HELLO_ACK). The viewer's
+    /// "Request Control" affordance is hidden when false, so the user never
+    /// clicks a button against a sharer that can't inject input. False until
+    /// the HELLO_ACK arrives and on disconnect.
+    @Published var sharerSupportsRemoteControl = false
+
     /// Second global hotkey (⌃⌥. by default) — a panic revoke of the live
     /// remote-control grant. Grant-scoped: created when a grant appears and
     /// destroyed when it clears (see `syncRevokeControlHotkey`), so idle
@@ -1311,6 +1318,12 @@ class AppState: ObservableObject {
                 }
             }
 
+            c.onRemoteControlSupportChanged = { [weak self] supported in
+                Task { @MainActor [weak self] in
+                    self?.sharerSupportsRemoteControl = supported
+                }
+            }
+
             c.onControlGranted = { [weak self] in
                 Task { @MainActor [weak self] in
                     guard let self, self.connectionState == .viewing else { return }
@@ -1720,6 +1733,7 @@ class AppState: ObservableObject {
         connectionState = .idle
         connectedHostname = nil
         viewerAwaitingApproval = false
+        sharerSupportsRemoteControl = false
         // End any remote-control session and stop capturing input.
         if viewerControlState != .none {
             viewerControlState = .none
