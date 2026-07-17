@@ -25,7 +25,7 @@ tailscreen/
 ├── Tests/TailscreenTests/      # Unit + connectivity tests
 ├── TailscreenProtocolPackage/  # Portable (Linux-buildable) protocol core —
 │   │                           #   a real dependency of the app (see its README)
-│   └── Sources/{TailscreenProtocol,TailscreenTransport}/
+│   └── Sources/{TailscreenProtocol,TailscreenTransport,TailscreenAudio}/
 ├── OpusKitPackage/            # Local SwiftPM dep: systemLibrary wrapper over
 │   │                           #   libopus — the app's audio codec (replaced
 │   │                           #   AudioToolbox AAC); see its README
@@ -208,9 +208,8 @@ dependency — the files exist only in the package, and
 code uses the types unqualified. Everything the app touches is `public`
 (incl. explicit memberwise inits); test-only seams stay `internal` and the
 test suite reaches them via `@testable import TailscreenProtocol` /
-`TailscreenTransport` (every test file imports all three modules). CI's
-`linux-protocol` job (and `make test-protocol` locally, macOS or Linux)
-enforces the boundary.
+`TailscreenTransport` / `TailscreenAudio`. CI's `linux-protocol` job (and
+`make test-protocol` locally, macOS or Linux) enforces the boundary.
 
 The package has a second tier: target **`TailscreenTransport`**
 (`TailscalePeerDiscovery` + `TailscaleIPNWatcher` + `TailscaleAuth`, whose
@@ -222,6 +221,16 @@ which mac Foundation re-exports) compiles on Linux via
 `PortabilityShims.swift` — whose `Published` shim provides a
 `$prop.values`-compatible AsyncStream because `TailscalePeerDiscovery`
 consumes `watcher.$peers.values`.
+
+And a third tier: target **`TailscreenAudio`** (`OpusVoiceEncoder` /
+`OpusVoiceDecoder` / `OpusPCM` — the Opus codec wrapper + Float32↔Int16 /
+960-sample framing over `OpusKit`/libopus, `@_exported`ing OpusKit so
+`Opus.Application` is visible). Foundation + OpusKit only — it also builds
+on Linux, so a future non-macOS client reuses the exact codec while
+supplying its own platform audio I/O (`VoiceChannel`/`SystemAudioTap` are
+the mac-side consumers). It's kept out of `TailscreenProtocol` so that tier
+stays dependency-free; the `linux-protocol` job installs `libopus-dev` +
+`pkg-config` for it (opus.pc is on Linux's default pkg-config path).
 
 The rules for package files (no Apple frameworks; how to move a file in;
 what must be `public`) live canonically in
@@ -347,7 +356,7 @@ User-facing strings are localized through SwiftPM resources. `Package.swift` set
 
 Three workflows under `.github/workflows/` (plus a docs-deploy workflow):
 
-- **Build** — runs `make build` + `make test` on every PR and push to `main`. Skips doc-only changes. Uses `concurrency.cancel-in-progress` to drop superseded runs. Also in this workflow: a **`linux-protocol` job** (Ubuntu, `swift:6.1-noble` container: `swift test --package-path TailscreenProtocolPackage` — the required portability gate for the protocol package; needs the submodule + patches for the transport tier's header, but no Go build), a **`linux-tailscalekit` job** (same container + apt Go: builds the patched libtailscale c-archive and runs the TailscaleKit unit tests on Linux — the transport-portability gate), a **`linux-opus` job** (same container + apt `libopus-dev`: builds `OpusKitPackage` and runs its encode/decode round-trip tests — the audio-codec-portability gate for the Opus-only decision, `docs/porting-plan.md` #6), a **`build-release` job** (`swift build -c release` compile check, required — release-config breaks used to surface only on published releases) and a **diff-coverage gate** (`scripts/diff-coverage.sh`: lcov `DA:` records joined against `git diff -U0 origin/main...HEAD` changed lines in `Sources/*.swift`, fails under 70 % coverage of changed executable lines; currently `continue-on-error: true` with the same flip-to-required TODO convention as the `format` job).
+- **Build** — runs `make build` + `make test` on every PR and push to `main`. Skips doc-only changes. Uses `concurrency.cancel-in-progress` to drop superseded runs. Also in this workflow: a **`linux-protocol` job** (Ubuntu, `swift:6.1-noble` container: `swift test --package-path TailscreenProtocolPackage` — the required portability gate for the protocol package; needs the submodule + patches for the transport tier's header and apt `libopus-dev`/`pkg-config` for the `TailscreenAudio` tier, but no Go build), a **`linux-tailscalekit` job** (same container + apt Go: builds the patched libtailscale c-archive and runs the TailscaleKit unit tests on Linux — the transport-portability gate), a **`linux-opus` job** (same container + apt `libopus-dev`: builds `OpusKitPackage` and runs its encode/decode round-trip tests — the audio-codec-portability gate for the Opus-only decision, `docs/porting-plan.md` #6), a **`build-release` job** (`swift build -c release` compile check, required — release-config breaks used to surface only on published releases) and a **diff-coverage gate** (`scripts/diff-coverage.sh`: lcov `DA:` records joined against `git diff -U0 origin/main...HEAD` changed lines in `Sources/*.swift`, fails under 70 % coverage of changed executable lines; currently `continue-on-error: true` with the same flip-to-required TODO convention as the `format` job).
 - **Soak** — nightly (`cron: 17 3 * * *`) + `workflow_dispatch`: runs `SoakTests` with `TAILSCREEN_SOAK=1` (the `ParserFuzzHarness` at ~50× PR budget plus the seeded `LossyChannel` impairment matrix). Deterministic — a red nightly names its reproducing seed/configuration.
 - **Release** — fires when a GitHub release is **published**. Cross-builds `libtailscale.a` for `arm64` + `amd64`, lipo-merges, then `swift build -c release --arch arm64 --arch x86_64` for a universal Mach-O. Wraps it in `Tailscreen.app`, codesigns with a Developer ID identity, notarizes via `notarytool`, staples, and uploads the zipped `.app` + `checksums.txt` to the release. Signing + notarization run only when **all** of the Apple secrets (`APPLE_DEVELOPER_ID_CERT_P12`, `APPLE_DEVELOPER_ID_CERT_PASSWORD`, `APPLE_NOTARY_API_KEY_P8`, `APPLE_NOTARY_API_KEY_ID`, `APPLE_NOTARY_API_ISSUER_ID`) are set; otherwise an unsigned `.app` is uploaded with a warning. The Homebrew tap repo owns cask formatting.
 

@@ -193,10 +193,13 @@ jobs:
           # The TailscreenTransport target depends on TailscaleKit, whose
           # sources are symlinks into the submodule.
           submodules: recursive
-      - name: Install make
+      - name: Install make + libopus
         # The swift:*-noble images are slim — no make (or gcc). The patch
         # loop lives in TailscaleKitPackage/Makefile, so make is required.
-        run: apt-get update && apt-get install -y --no-install-recommends make
+        # libopus-dev + pkg-config are for the TailscreenAudio target's
+        # OpusKit dependency (opus.pc is on the Linux default search path,
+        # so no PKG_CONFIG_PATH entry is needed for it).
+        run: apt-get update && apt-get install -y --no-install-recommends make libopus-dev pkg-config
       - name: Apply TailscaleKit patches (header only, no Go build)
         run: make -C TailscaleKitPackage apply-patches
       - name: Build + test TailscreenProtocol on Linux

@@ -56,9 +56,11 @@ invalid-frame rejection.
 
 ## Status
 
-Integrated. The app links OpusKit and uses it for the whole audio path:
-`Sources/OpusAudioCodec.swift` wraps it as `OpusVoiceEncoder` /
-`OpusVoiceDecoder` (the Float32↔Int16 boundary + 960-sample / 20 ms
-framing), which `VoiceChannel` (voice) and `SystemAudioTap` (system audio,
-`.audio` mode) drive. Opus fully replaced the AudioToolbox AAC-LC path; the
-RTP payload types (98 voice / 99 system) are unchanged on the wire.
+Integrated. OpusKit is wrapped by the **`TailscreenAudio`** target of
+`TailscreenProtocolPackage` (`OpusVoiceEncoder` / `OpusVoiceDecoder` /
+`OpusPCM` — the Float32↔Int16 boundary + 960-sample / 20 ms framing), which
+`VoiceChannel` (voice) and `SystemAudioTap` (system audio, `.audio` mode)
+drive. The app depends on `TailscreenAudio`, not OpusKit directly — keeping
+the codec wrapper in the portable package so a future non-macOS client
+reuses it. Opus fully replaced the AudioToolbox AAC-LC path; the RTP
+payload types (98 voice / 99 system) are unchanged on the wire.

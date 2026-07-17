@@ -4,3 +4,6 @@
 // to their types unqualified, exactly as when they compiled in-module.
 @_exported import TailscreenProtocol
 @_exported import TailscreenTransport
+// The Opus codec tier (OpusVoiceEncoder / OpusVoiceDecoder / OpusPCM). It
+// re-exports OpusKit, so `Opus.Application` is visible unqualified too.
+@_exported import TailscreenAudio

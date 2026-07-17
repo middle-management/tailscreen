@@ -1,7 +1,7 @@
 import CoreVideo
 import Foundation
-import OpusKit
 import TailscaleKit
+import TailscreenAudio
 import XCTest
 
 @testable import Tailscreen

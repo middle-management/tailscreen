@@ -1,4 +1,4 @@
-import OpusKit
+import TailscreenAudio
 import XCTest
 
 @testable import Tailscreen
