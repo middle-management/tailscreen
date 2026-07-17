@@ -165,13 +165,18 @@ authoritative, so a set bit is the only thing that lights up the UI.
 direction; bits 0–4 are assigned, leaving room but not unlimited room.
 Candidates deliberately *not* yet spent:
 
-- **Video-codec caps** (viewer→sharer "I decode HEVC" / "I decode 10-bit")
-  would turn the reactive `CODEC_NO` / `PROFILE_NO` fallbacks into
-  proactive up-front selection, removing the mid-stream downgrade hiccup.
-  Weaker than it looks — the sharer encodes once and fans out, so the
-  first non-HEVC viewer downgrades everyone anyway; the win is only the
-  single-viewer round-trip, and the existing fallbacks already make it
-  *work*. Polish, not correctness.
+- **Video-codec caps** (viewer→sharer "I decode HEVC" / "I decode 10-bit").
+  The weakest candidate, because codec is *already* negotiated — just not
+  in HELLO. It's self-describing on every packet (payload type 96/97),
+  the parameter sets ride every keyframe, and the `CODEC_NO` / `PROFILE_NO`
+  fallbacks are keyframe-latched: an incompatible viewer signals, the
+  sharer re-inits the encoder, and the switch lands at the next keyframe
+  (~1–2 s). A HELLO cap would only save the *initial* `CODEC_NO`
+  round-trip for a single incompatible viewer — a time-to-first-frame
+  delay at startup, not a mid-stream glitch — and even that is diluted by
+  the encode-once-fan-out rule (the first non-HEVC viewer latches everyone
+  to H.264 anyway). The existing keyframe-granular mechanism already
+  converges on its own; a cap is pure polish.
 - **System-audio cap** (viewer→sharer "I play PT 99") would let the sharer
   skip system-audio fan-out to viewers that would drop it — a bandwidth
   optimization, not a UX one.
