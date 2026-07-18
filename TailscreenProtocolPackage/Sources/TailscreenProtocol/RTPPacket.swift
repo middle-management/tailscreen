@@ -220,29 +220,31 @@ public enum ScreenShareControlMessage: UInt8, CaseIterable {
     }
 
     /// Encode a receiver report. See `receiverReport` for the layout. Pass
-    /// `includeFECRecovered: true` (FEC negotiated) to append the trailing
-    /// `[fecRecovered:2 BE]` — the 22-byte extended form. The default emits
-    /// the legacy 20-byte layout so pre-FEC servers see exactly the bytes
-    /// they already parse (their decode is length-tolerant either way).
-    public static func encodeReceiverReport(_ report: ReceiverReport, includeFECRecovered: Bool = false) -> Data {
-        var data = Data(capacity: includeFECRecovered ? 22 : 20)
+    /// `includeRecoveryFields: true` (FEC negotiated) to append the trailing
+    /// `[fecRecovered:2 BE][nackRecovered:2 BE]` — the 24-byte extended form.
+    /// The default emits the legacy 20-byte layout so pre-FEC servers see
+    /// exactly the bytes they already parse (all decoders are length-tolerant:
+    /// a 22-byte FEC-era decoder reads `fecRecovered` and ignores the trailing
+    /// two, a 20-byte decoder ignores both).
+    public static func encodeReceiverReport(_ report: ReceiverReport, includeRecoveryFields: Bool = false) -> Data {
+        var data = Data(capacity: includeRecoveryFields ? 24 : 20)
         data.append(receiverReport.rawValue)
         data.append(report.fracLostQ8)
         data.appendBE(report.extHighestSeq)
         data.appendBE(report.jitterTicks)
         data.appendBE(report.lastPingTs)
         data.appendBE(report.delaySincePingMs)
-        if includeFECRecovered {
+        if includeRecoveryFields {
             data.appendBE(report.fecRecovered)
+            data.appendBE(report.nackRecovered)
         }
         return data
     }
 
     /// Parse a receiver report; nil if malformed (needs at least the 20-byte
-    /// legacy layout). The optional trailing `[fecRecovered:2 BE]` (22-byte
-    /// extended form, FEC-negotiated viewers) decodes when present and reads
-    /// as 0 for the legacy layout — the same both-forms tolerance as
-    /// `decodeHelloAckCaps`.
+    /// legacy layout). The optional trailing `[fecRecovered:2 BE]` (≥22 bytes)
+    /// and `[nackRecovered:2 BE]` (≥24 bytes) decode when present and read as 0
+    /// otherwise — the same both-forms tolerance as `decodeHelloAckCaps`.
     public static func decodeReceiverReport(_ data: Data) -> ReceiverReport? {
         guard data.count >= 20, data[data.startIndex] == receiverReport.rawValue else { return nil }
         let base = data.startIndex
@@ -250,13 +252,18 @@ public enum ScreenShareControlMessage: UInt8, CaseIterable {
             data.count >= 22
             ? data.readBE(UInt16.self, at: data.index(base, offsetBy: 20))
             : 0
+        let nackRecovered: UInt16 =
+            data.count >= 24
+            ? data.readBE(UInt16.self, at: data.index(base, offsetBy: 22))
+            : 0
         return ReceiverReport(
             fracLostQ8: data[data.index(base, offsetBy: 1)],
             extHighestSeq: data.readBE(UInt32.self, at: data.index(base, offsetBy: 2)),
             jitterTicks: data.readBE(UInt32.self, at: data.index(base, offsetBy: 6)),
             lastPingTs: data.readBE(UInt64.self, at: data.index(base, offsetBy: 10)),
             delaySincePingMs: data.readBE(UInt16.self, at: data.index(base, offsetBy: 18)),
-            fecRecovered: fecRecovered
+            fecRecovered: fecRecovered,
+            nackRecovered: nackRecovered
         )
     }
 
@@ -371,17 +378,28 @@ public struct ReceiverReport: Sendable, Equatable {
     /// so the server subtracts its own processing delay from the RTT.
     public var delaySincePingMs: UInt16
     /// Packets this viewer recovered via FEC since its previous report.
-    /// Rides the optional 22-byte extended layout (FEC negotiated only);
-    /// reads as 0 from the legacy 20-byte form. Recovered packets count as
-    /// *received* in `fracLostQ8` (residual loss drives the bitrate arm), so
-    /// this field is what lets the server's FEC arm still see raw link loss —
-    /// the anti-oscillation term (FEC hiding all loss must not switch FEC
-    /// off, which would re-trigger the loss it was hiding).
+    /// Rides the optional 24-byte extended layout (FEC negotiated only);
+    /// reads as 0 from the legacy 20-byte (and FEC-era 22-byte) forms.
+    /// Recovered packets count as *received* in `fracLostQ8` (residual loss
+    /// drives the bitrate arm), so this field is what lets the server's FEC
+    /// arm still see raw link loss — the anti-oscillation term (FEC hiding all
+    /// loss must not switch FEC off, which would re-trigger the loss it was
+    /// hiding).
     public var fecRecovered: UInt16 = 0
+    /// Packets this viewer recovered via NACK retransmission since its previous
+    /// report. Same role as `fecRecovered` for the FEC arm's raw-loss
+    /// reconstruction: a served retransmit counts as *received* (so it drops
+    /// residual loss), so without this the arm can't tell a genuinely clean
+    /// link from a lossy one NACK is quietly repairing — and FEC would never
+    /// gate on a high-RTT link where NACK's per-loss round trip is exactly the
+    /// latency FEC's zero-RTT recovery removes. Rides the 24-byte extended
+    /// layout; reads as 0 from the 20/22-byte forms.
+    public var nackRecovered: UInt16 = 0
 
     public init(
         fracLostQ8: UInt8, extHighestSeq: UInt32, jitterTicks: UInt32,
-        lastPingTs: UInt64, delaySincePingMs: UInt16, fecRecovered: UInt16 = 0
+        lastPingTs: UInt64, delaySincePingMs: UInt16, fecRecovered: UInt16 = 0,
+        nackRecovered: UInt16 = 0
     ) {
         self.fracLostQ8 = fracLostQ8
         self.extHighestSeq = extHighestSeq
@@ -389,6 +407,7 @@ public struct ReceiverReport: Sendable, Equatable {
         self.lastPingTs = lastPingTs
         self.delaySincePingMs = delaySincePingMs
         self.fecRecovered = fecRecovered
+        self.nackRecovered = nackRecovered
     }
 }
 
@@ -706,28 +725,55 @@ public struct RTPReorderBuffer {
         let lostBefore: Bool
     }
 
-    /// How many out-of-order packets to hold while waiting for a gap to fill
-    /// before giving up and declaring the missing sequence(s) lost. ~16 is a
-    /// few frames' worth at typical packetization — enough to absorb realistic
-    /// WAN reordering without adding meaningful latency to the loss path.
+    /// Hard cap on out-of-order packets held while waiting for a gap to fill.
+    /// In count-based mode (`gapHoldNs == 0`) this doubles as the abandonment
+    /// trigger — ~16 is a few frames' worth, enough to absorb realistic WAN
+    /// reordering without adding latency. In time-based (NACK) mode it is a
+    /// generous memory bound only: a full keyframe (hundreds of packets) plus
+    /// a round-trip of trailing packets must fit, so the client sizes it well
+    /// above a keyframe's packet count.
     public let maxDepth: Int
+
+    /// How long to hold an open gap before declaring loss, in nanoseconds.
+    /// `0` (default) = pure count-based abandonment (`buffered.count > maxDepth`),
+    /// the loopback/reorder-only behavior. When positive (NACK mode), a gap is
+    /// held until this elapses so a retransmit arriving ~1 RTT later can still
+    /// fill it — the count-based window overflowed in tens of ms at video
+    /// bitrate, tearing keyframes long before their retransmits could land.
+    /// `maxDepth` remains a hard memory cap on top of the time bound.
+    public let gapHoldNs: UInt64
 
     /// Next sequence number we want to release. nil until the first packet.
     private var nextSeq: UInt16?
     /// Future packets held while waiting for a gap to fill, keyed by seq.
     private var buffered: [UInt16: Data] = [:]
+    /// `nowNs` when the current front-gap hold era began (first packet buffered
+    /// since `buffered` was last empty). nil while nothing is held. Drives the
+    /// `gapHoldNs` deadline; only meaningful when `gapHoldNs > 0`.
+    private var oldestGapNs: UInt64?
 
-    public init(maxDepth: Int = 16) {
+    public init(maxDepth: Int = 16, gapHoldNs: UInt64 = 0) {
         self.maxDepth = maxDepth
+        self.gapHoldNs = gapHoldNs
     }
 
     public mutating func reset() {
         nextSeq = nil
         buffered.removeAll(keepingCapacity: true)
+        oldestGapNs = nil
     }
 
-    /// Insert one received packet; return the packets now releasable, in order.
+    /// Count-based convenience: no clock, so time-based holding never applies
+    /// (only the `maxDepth` hard cap). Used by the reorder-only / test paths.
     public mutating func push(seq: UInt16, packet: Data) -> [Release] {
+        push(seq: seq, packet: packet, nowNs: 0)
+    }
+
+    /// Insert one received packet at time `nowNs`; return the packets now
+    /// releasable, in order. When `gapHoldNs > 0` an open gap is held until the
+    /// deadline elapses (so a NACK retransmit can fill it) or the `maxDepth`
+    /// hard cap is hit.
+    public mutating func push(seq: UInt16, packet: Data, nowNs: UInt64) -> [Release] {
         guard let want = nextSeq else {
             // First packet of the (re)synced session: release immediately.
             nextSeq = seq &+ 1
@@ -741,6 +787,7 @@ public struct RTPReorderBuffer {
             nextSeq = seq &+ 1
             var out = [Release(packet: packet, lostBefore: false)]
             drainContiguous(into: &out)
+            refreshGapClock(nowNs: nowNs)
             return out
         }
         if ahead > UInt16(1 << 15) {
@@ -751,12 +798,28 @@ public struct RTPReorderBuffer {
         }
         // A future packet: hold it until the gap fills.
         buffered[seq] = packet
+        if oldestGapNs == nil { oldestGapNs = nowNs }
+        // Hard memory cap always wins — a loss storm must never grow unbounded.
         if buffered.count > maxDepth {
-            // The gap isn't filling. Give up on the missing packet(s): jump to
-            // the lowest buffered sequence, flag the skip as loss, and drain.
-            return skipGap()
+            let out = skipGap()
+            refreshGapClock(nowNs: nowNs)
+            return out
+        }
+        // Time bound (NACK mode): give the retransmit its round trip, then
+        // give up on the missing packet(s) so genuine loss can't wedge forever.
+        if gapHoldNs > 0, let since = oldestGapNs, nowNs &- since >= gapHoldNs {
+            let out = skipGap()
+            refreshGapClock(nowNs: nowNs)
+            return out
         }
         return []
+    }
+
+    /// After a drain/skip, restart the hold era for whatever gap now sits at
+    /// the front (a different missing sequence than the one just resolved), or
+    /// clear it when nothing is held.
+    private mutating func refreshGapClock(nowNs: UInt64) {
+        oldestGapNs = buffered.isEmpty ? nil : nowNs
     }
 
     private mutating func drainContiguous(into out: inout [Release]) {
@@ -815,7 +878,7 @@ public final class H264Depacketizer {
     /// the `ingest(_:) -> VideoAccessUnit?` contract the caller relies on.
     private var readyQueue: [VideoAccessUnit] = []
 
-    public init(reorderDepth: Int = 16) {
+    public init(reorderDepth: Int = 16, gapHoldNs: UInt64 = 0) {
         var au = Data()
         au.reserveCapacity(Self.initialAUCapacity)
         self.currentAU = au
@@ -824,12 +887,19 @@ public final class H264Depacketizer {
         fu.reserveCapacity(Self.initialFUCapacity)
         self.fuBuffer = fu
 
-        self.reorder = RTPReorderBuffer(maxDepth: reorderDepth)
+        self.reorder = RTPReorderBuffer(maxDepth: reorderDepth, gapHoldNs: gapHoldNs)
     }
 
-    /// Feed one received RTP packet. Returns a completed AU once the marker
-    /// bit (or a timestamp change) signals end-of-frame; nil otherwise.
+    /// Feed one received RTP packet (no clock — count-based reorder only).
     public func ingest(_ packet: Data) -> VideoAccessUnit? {
+        ingest(packet, nowNs: 0)
+    }
+
+    /// Feed one received RTP packet at time `nowNs`. Returns a completed AU
+    /// once the marker bit (or a timestamp change) signals end-of-frame; nil
+    /// otherwise. `nowNs` drives the reorder buffer's time-based gap hold in
+    /// NACK mode so a retransmit arriving ~1 RTT later still fills the gap.
+    public func ingest(_ packet: Data, nowNs: UInt64) -> VideoAccessUnit? {
         guard let (header, _) = RTPHeader.decode(from: packet) else { return nil }
         guard header.payloadType == RTPHeader.h264PayloadType else { return nil }
 
@@ -844,7 +914,7 @@ public final class H264Depacketizer {
 
         // Route through the reorder buffer; assemble whatever it releases, in
         // order. In-order packets release immediately (no added latency).
-        for release in reorder.push(seq: header.sequenceNumber, packet: packet) {
+        for release in reorder.push(seq: header.sequenceNumber, packet: packet, nowNs: nowNs) {
             assemble(release.packet, lostBefore: release.lostBefore)
         }
         return readyQueue.isEmpty ? nil : readyQueue.removeFirst()
@@ -1150,7 +1220,7 @@ public final class H265Depacketizer {
     private var reorder: RTPReorderBuffer
     private var readyQueue: [VideoAccessUnit] = []
 
-    public init(reorderDepth: Int = 16) {
+    public init(reorderDepth: Int = 16, gapHoldNs: UInt64 = 0) {
         var au = Data()
         au.reserveCapacity(Self.initialAUCapacity)
         self.currentAU = au
@@ -1159,10 +1229,17 @@ public final class H265Depacketizer {
         fu.reserveCapacity(Self.initialFUCapacity)
         self.fuBuffer = fu
 
-        self.reorder = RTPReorderBuffer(maxDepth: reorderDepth)
+        self.reorder = RTPReorderBuffer(maxDepth: reorderDepth, gapHoldNs: gapHoldNs)
     }
 
+    /// Feed one received RTP packet (no clock — count-based reorder only).
     public func ingest(_ packet: Data) -> VideoAccessUnit? {
+        ingest(packet, nowNs: 0)
+    }
+
+    /// See `H264Depacketizer.ingest(_:nowNs:)` — `nowNs` drives the reorder
+    /// buffer's time-based gap hold in NACK mode.
+    public func ingest(_ packet: Data, nowNs: UInt64) -> VideoAccessUnit? {
         guard let (header, _) = RTPHeader.decode(from: packet) else { return nil }
         guard header.payloadType == RTPHeader.hevcPayloadType else { return nil }
 
@@ -1173,7 +1250,7 @@ public final class H265Depacketizer {
             ssrc = header.ssrc
         }
 
-        for release in reorder.push(seq: header.sequenceNumber, packet: packet) {
+        for release in reorder.push(seq: header.sequenceNumber, packet: packet, nowNs: nowNs) {
             assemble(release.packet, lostBefore: release.lostBefore)
         }
         return readyQueue.isEmpty ? nil : readyQueue.removeFirst()
@@ -1348,18 +1425,28 @@ public final class MultiCodecDepacketizer {
     /// have to land before the window overflows, and the default 16 packets is
     /// only a few frames (shallower than one WAN RTT). Defaults to the
     /// happy-path 16 for legacy / non-NACK sessions.
-    public init(reorderDepth: Int = 16) {
-        self.h264 = H264Depacketizer(reorderDepth: reorderDepth)
-        self.h265 = H265Depacketizer(reorderDepth: reorderDepth)
+    /// `gapHoldNs` (NACK mode) holds an open gap by time so a retransmit
+    /// arriving ~1 RTT later fills it before the AU is torn; `0` (default) is
+    /// the count-based happy path. See `RTPReorderBuffer.gapHoldNs`.
+    public init(reorderDepth: Int = 16, gapHoldNs: UInt64 = 0) {
+        self.h264 = H264Depacketizer(reorderDepth: reorderDepth, gapHoldNs: gapHoldNs)
+        self.h265 = H265Depacketizer(reorderDepth: reorderDepth, gapHoldNs: gapHoldNs)
     }
 
+    /// Feed one received RTP packet (no clock — count-based reorder only).
     public func ingest(_ packet: Data) -> VideoAccessUnit? {
+        ingest(packet, nowNs: 0)
+    }
+
+    /// Feed one received RTP packet at time `nowNs` — drives the reorder
+    /// buffer's time-based gap hold in NACK mode.
+    public func ingest(_ packet: Data, nowNs: UInt64) -> VideoAccessUnit? {
         guard let (header, _) = RTPHeader.decode(from: packet) else { return nil }
         switch header.payloadType {
         case RTPHeader.h264PayloadType:
-            return h264.ingest(packet)
+            return h264.ingest(packet, nowNs: nowNs)
         case RTPHeader.hevcPayloadType:
-            return h265.ingest(packet)
+            return h265.ingest(packet, nowNs: nowNs)
         default:
             return nil
         }

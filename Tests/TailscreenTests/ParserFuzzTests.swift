@@ -382,7 +382,7 @@ struct ParserFuzzHarness {
             ScreenShareControlMessage.encodeHello(caps: [.nack, .receiverReport]),
             ScreenShareControlMessage.encodeNACK([(pid: 100, blp: 0x8001), (pid: 65535, blp: 1)]),
             ScreenShareControlMessage.encodeReceiverReport(report),
-            ScreenShareControlMessage.encodeReceiverReport(report, includeFECRecovered: true),
+            ScreenShareControlMessage.encodeReceiverReport(report, includeRecoveryFields: true),
             ScreenShareControlMessage.encodePing(serverUptimeNs: 0xDEAD_BEEF_0000_0001),
             ScreenShareControlMessage.encodeFEC(baseSeq: 0xFFFE, count: 10, body: fecBody)
         ]

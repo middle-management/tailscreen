@@ -127,4 +127,25 @@ public enum TransportTuning {
     /// parity cadence, short enough that a server that gated parity off
     /// doesn't leave the viewer's NACK timing relaxed for long.
     public static let fecParityIdleNs: UInt64 = 3_000_000_000
+
+    /// Client: reorder-buffer depth (hard packet cap) in NACK mode. Unlike the
+    /// happy-path 16, this must comfortably exceed a full keyframe's packet
+    /// count (a 4K IDR is ~250 packets, higher at high bitrate) PLUS a
+    /// round-trip of trailing packets, so a single early loss in a big
+    /// keyframe doesn't overflow the window before its retransmit lands. Sized
+    /// as a generous memory bound (~1 MiB of ≤1100 B packets); the actual
+    /// abandonment trigger in NACK mode is `reorderGapHoldNs` (time), not this.
+    public static let nackReorderDepth = 1024
+
+    /// Client: how long the reorder buffer holds an open gap before declaring
+    /// loss, in NACK mode. The old count-based window overflowed in tens of ms
+    /// at video bitrate — long before a NACK retransmit could arrive one RTT
+    /// (~100–200 ms on a WAN) later — so any keyframe that lost a packet was
+    /// torn and never reassembled (the viewer never installed parameter sets →
+    /// permanent stall). A gap now survives ~this long so the retransmit fills
+    /// it. Bounds the withhold on GENUINELY lost packets too; the NACKScheduler
+    /// drives PLI independently, so this doesn't delay keyframe recovery. Fixed
+    /// for now — deriving it from `NACKScheduler.rttEstimateNs` (hold ≈ 3× RTT,
+    /// floored here) is a natural follow-up for very-high-RTT links.
+    public static let reorderGapHoldNs: UInt64 = 300_000_000
 }

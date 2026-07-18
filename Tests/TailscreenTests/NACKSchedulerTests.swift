@@ -69,6 +69,30 @@ final class NACKSchedulerTests: XCTestCase {
         XCTAssertTrue(sched.tick(nowNs: 500 * ms).isEmpty)
     }
 
+    func testServedRetransmitCountsAsRecovery() {
+        // A gap that we actually NACKed and then saw filled is a genuine link
+        // loss the retransmit repaired — the count the extended RR carries so
+        // the server's FEC arm can reconstruct raw link loss (NACK recoveries
+        // mask loss the same way FEC recoveries do). Read-and-reset per report.
+        var sched = NACKScheduler()
+        _ = sched.observe(seq: 0, nowNs: 0)
+        _ = sched.observe(seq: 2, nowNs: 0)  // gap 1 opens
+        XCTAssertEqual(sched.tick(nowNs: 20 * ms), [.sendNACK([1])])  // NACK sent → attempts=1
+        _ = sched.observe(seq: 1, nowNs: 200 * ms)  // retransmit fills it
+        XCTAssertEqual(sched.drainNackRecovered(), 1)
+        XCTAssertEqual(sched.drainNackRecovered(), 0, "read-and-reset")
+    }
+
+    func testReorderFillIsNotARecovery() {
+        // A gap that fills before any NACK fired (pure reordering) isn't a
+        // recovery — it was never a link loss, so it must not inflate raw loss.
+        var sched = NACKScheduler()
+        _ = sched.observe(seq: 0, nowNs: 0)
+        _ = sched.observe(seq: 2, nowNs: 0)
+        _ = sched.observe(seq: 1, nowNs: 5 * ms)  // fills before eligible; no NACK
+        XCTAssertEqual(sched.drainNackRecovered(), 0)
+    }
+
     func testPacketCountToleranceMakesGapEligibleEarly() {
         // Three newer packets (>= reorderPacketTolerance) make the gap eligible
         // even before the 15 ms time tolerance elapses.

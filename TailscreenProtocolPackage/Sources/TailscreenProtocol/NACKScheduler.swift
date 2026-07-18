@@ -71,6 +71,12 @@ public struct NACKScheduler: Sendable {
     private var rttNs: UInt64
     /// Timestamps of recent NACK datagrams, for the per-second rate cap.
     private var nackStampsNs: [UInt64] = []
+    /// Packets recovered by a served retransmit (a gap we NACKed that later
+    /// filled) since the last `drainNackRecovered()`. The client ships this in
+    /// the extended receiver report so the server's FEC arm counts NACK
+    /// recoveries as raw link loss — otherwise NACK's own success hides the
+    /// loss that would justify FEC on a high-RTT link.
+    private var nackRecoveredCount: Int = 0
 
     public init(
         reorderToleranceNs: UInt64 = NACKScheduler.defaultReorderToleranceNs,
@@ -97,6 +103,14 @@ public struct NACKScheduler: Sendable {
     /// round trip.
     public var rttEstimateNs: UInt64 { rttNs }
 
+    /// Read and reset the count of packets recovered by a served retransmit
+    /// since the last call. The client drains this once per receiver report.
+    public mutating func drainNackRecovered() -> Int {
+        let n = nackRecoveredCount
+        nackRecoveredCount = 0
+        return n
+    }
+
     /// Feed one received video packet's sequence number. Updates gap tracking
     /// (new gaps opened ahead of `highestSeq`, this seq removed if it filled a
     /// gap) and returns any actions now due.
@@ -114,6 +128,9 @@ public struct NACKScheduler: Sendable {
             // round trip) that tunes the re-NACK cadence.
             if let filled = gaps.removeValue(forKey: seq), filled.attempts > 0, filled.lastNackNs != 0 {
                 updateRTTSample(nowNs &- filled.lastNackNs)
+                // A gap we NACKed that's now filled = one link loss the
+                // retransmit repaired. Counts toward the FEC arm's raw loss.
+                nackRecoveredCount += 1
             }
             return evaluate(nowNs: nowNs)
         }
