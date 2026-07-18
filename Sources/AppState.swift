@@ -867,20 +867,18 @@ class AppState: ObservableObject {
                         // crash budget was exhausted.
                         guard let self else { return }
                         guard self.sharingState == .active || self.sharingState == .starting else { return }
+                        let desc = error?.localizedDescription ?? "nil"
                         switch Self.captureStopAction(error) {
                         case .userInitiated:
-                            await self.stopSharing(
-                                reason: "SCStream userStopped: \(error?.localizedDescription ?? "nil")")
+                            await self.stopSharing(reason: "SCStream userStopped: \(desc)")
                         case .connectionLost:
                             // The share's UDP control loop is dead — that's
                             // not something a fresh capture helper can fix,
                             // so skip the restart path and tear down. Tell
                             // the user: the share ending on its own must
                             // not be a silent mystery.
-                            self.logger.log(
-                                "Share receive loop dead (\(error?.localizedDescription ?? "nil")); tearing sharing down.")
-                            await self.stopSharing(
-                                reason: "receive loop dead: \(error?.localizedDescription ?? "nil")")
+                            self.logger.log("Share receive loop dead (\(desc)); tearing sharing down.")
+                            await self.stopSharing(reason: "receive loop dead: \(desc)")
                             self.showAlertMessage(
                                 title: L("Sharing Stopped"),
                                 message: L(
@@ -893,10 +891,8 @@ class AppState: ObservableObject {
                             // and say why — otherwise the menubar stays
                             // "sharing" with frozen capture and viewers are
                             // never released.
-                            self.logger.log(
-                                "Capture stopped unrecoverably (\(error?.localizedDescription ?? "nil")); tearing sharing down.")
-                            await self.stopSharing(
-                                reason: "helper unrecoverable: \(error?.localizedDescription ?? "nil")")
+                            self.logger.log("Capture stopped unrecoverably (\(desc)); tearing sharing down.")
+                            await self.stopSharing(reason: "helper unrecoverable: \(desc)")
                             self.showAlertMessage(
                                 title: L("Sharing Stopped"),
                                 message: L(
@@ -907,10 +903,8 @@ class AppState: ObservableObject {
                             // or app. Tear the share down (nothing left to
                             // capture) but report it as a gentle notice, not an
                             // error — this wasn't a failure.
-                            self.logger.log(
-                                "Shared source closed (\(error?.localizedDescription ?? "nil")); stopping share.")
-                            await self.stopSharing(
-                                reason: "shared source closed: \(error?.localizedDescription ?? "nil")")
+                            self.logger.log("Shared source closed (\(desc)); stopping share.")
+                            await self.stopSharing(reason: "shared source closed: \(desc)")
                             self.presentNotice(
                                 title: L("Sharing Stopped"),
                                 message: L(
