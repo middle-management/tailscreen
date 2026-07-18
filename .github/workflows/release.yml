@@ -134,7 +134,7 @@ jobs:
           Description: Opus codec (universal static, release build)
           Version: ${OPUS_VERSION}
           Libs: -L\${libdir} -lopus
-          Cflags: -I\${includedir}
+          Cflags: -I\${includedir}/opus
           PC
 
       - name: Build universal Tailscreen binary
