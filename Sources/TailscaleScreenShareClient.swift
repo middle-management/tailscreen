@@ -96,6 +96,12 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     /// echoed in the next report so the sharer can compute RTT.
     private var lastServerPingNs: UInt64 = 0
     private var lastPingArrivalNs: UInt64 = 0
+    /// `TAILSCREEN_DEBUG_FEC=1` — viewer side of the FEC/RTT arming diagnostic:
+    /// logs each receiver-report send (or its suppression) with the ping echo,
+    /// so a live run shows whether the sharer is getting the RTT feedback the
+    /// FEC gate needs. Pairs with the server's `debugFEC` sweep log.
+    private let debugFEC =
+        ProcessInfo.processInfo.environment["TAILSCREEN_DEBUG_FEC"] == "1"
 
     /// Audio SSRC the sharer assigned via HELLO_ACK. nil until the ack
     /// arrives; the VoiceChannel waits on this before sending mic audio.
@@ -644,12 +650,18 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                                 negotiatedCaps = ack.caps
                                 onRemoteControlSupportChanged?(ack.caps.contains(.remoteControl))
                                 onAnnotationSupportChanged?(ack.caps.contains(.annotations))
-                                // Deepen the reorder window so retransmits land
-                                // before it overflows; the ack precedes video,
-                                // so recreating the depacketizer loses nothing.
+                                // Deepen the reorder window AND hold open gaps
+                                // by time, not packet count, so retransmits land
+                                // ~1 RTT later before the window overflows (a
+                                // count-based window overflowed in tens of ms at
+                                // video bitrate, tearing every keyframe). The ack
+                                // precedes video, so recreating the depacketizer
+                                // loses nothing.
                                 if ack.caps.contains(.nack) {
-                                    depacketizer = MultiCodecDepacketizer(reorderDepth: 64)
-                                    logger.log("Server advertised NACK — deep reorder window enabled")
+                                    depacketizer = MultiCodecDepacketizer(
+                                        reorderDepth: TransportTuning.nackReorderDepth,
+                                        gapHoldNs: TransportTuning.reorderGapHoldNs)
+                                    logger.log("Server advertised NACK — deep time-held reorder window enabled")
                                 }
                                 // `.fec` in the ack only permits the 0x0D
                                 // path; the FEC receive machinery (relaxed
@@ -804,7 +816,10 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     /// gating). Returns true when an AU was delivered, so the receive loop
     /// can clear its awaiting-approval flag.
     private func ingestVideoPacket(_ packet: Data) async -> Bool {
-        guard let au = depacketizer.ingest(packet) else { return false }
+        // `nowNs` drives the reorder buffer's time-based gap hold in NACK mode
+        // (same monotonic clock the NACK scheduler observes on).
+        let au = depacketizer.ingest(packet, nowNs: DispatchTime.now().uptimeNanoseconds)
+        guard let au else { return false }
         framesDelivered += 1
         if au.lostBeforeThisAU && !negotiatedCaps.contains(.nack) {
             // In NACK mode the scheduler owns loss recovery
@@ -1065,6 +1080,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     private func sendReceiverReport(now: UInt64) async {
         guard isConnected, let pl = packetListener, let addr = serverAddr else { return }
         guard let (fracLostQ8, extHighestSeq) = rrAccounting.makeReport() else {
+            if debugFEC { logger.log("RR suppressed: no baseline yet (no packets observed this interval)") }
             lastRRSentNs = now
             return
         }
@@ -1087,6 +1103,11 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         try? await pl.send(
             ScreenShareControlMessage.encodeReceiverReport(report, includeFECRecovered: fecNegotiated),
             to: addr)
+        if debugFEC {
+            logger.log(
+                "RR sent: fracLostQ8=\(fracLostQ8) pingEcho=\(lastServerPingNs != 0 ? "yes" : "NONE") "
+                    + "delaySincePingMs=\(delayMs) fecRecovered=\(fecRecoveredSinceReport)")
+        }
         fecRecoveredSinceReport = 0
         lastRRSentNs = now
     }

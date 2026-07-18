@@ -258,6 +258,85 @@ final class RTPPacketTests: XCTestCase {
         XCTAssertEqual(AVCCParser.nalUnits(from: au.avcc), [nal1, nal2, nal3])
     }
 
+    func testDeepKeyframePileupTornByCountButHeldByTime() {
+        // Regression (WAN keyframe stall): a keyframe spans hundreds of RTP
+        // packets. A single early loss used to tear the whole AU because the
+        // count-based reorder window (64 in NACK mode) overflowed in tens of
+        // ms — long before a NACK retransmit could arrive ~1 RTT (~160 ms)
+        // later. The retransmit then landed "behind" the advanced cursor and
+        // was dropped as a straggler, so the keyframe never reassembled and
+        // the viewer never installed parameter sets. In NACK mode the buffer
+        // now holds a gap by TIME (`gapHoldNs`) under a generous hard cap, so
+        // the late retransmit fills it and the frame stays whole.
+        let t0: UInt64 = 1_000_000_000
+
+        // Old behavior: count window 64. Pile 100 packets behind an early gap
+        // (seq 101) → overflow → the gap is abandoned (torn) before any
+        // retransmit could land.
+        var countBased = RTPReorderBuffer(maxDepth: 64)
+        _ = countBased.push(seq: 100, packet: Data([0]))
+        var tornEarly = false
+        for seq in 102...201 {
+            let rel = countBased.push(seq: UInt16(seq), packet: Data([UInt8(seq & 0xff)]))
+            if rel.contains(where: { $0.lostBefore }) { tornEarly = true }
+        }
+        XCTAssertTrue(tornEarly, "count-based window tears the keyframe on a deep pileup")
+
+        // New behavior: hold the gap by time (250 ms) under a generous hard cap.
+        var timeBased = RTPReorderBuffer(maxDepth: 512, gapHoldNs: 250_000_000)
+        XCTAssertEqual(timeBased.push(seq: 100, packet: Data([0]), nowNs: t0).count, 1)
+        for (i, seq) in (102...201).enumerated() {
+            // ~0.3 ms apart — the whole 100-packet pileup lands within ~30 ms,
+            // far inside the 250 ms hold.
+            let rel = timeBased.push(
+                seq: UInt16(seq), packet: Data([UInt8(seq & 0xff)]),
+                nowNs: t0 &+ UInt64(i) &* 300_000)
+            XCTAssertTrue(rel.isEmpty, "gap held while waiting for the retransmit")
+        }
+        // The retransmit of seq 101 lands ~160 ms later — within the hold.
+        let filled = timeBased.push(seq: 101, packet: Data([101]), nowNs: t0 &+ 160_000_000)
+        XCTAssertEqual(filled.count, 101, "seq 101..201 drain in order once the gap fills")
+        XCTAssertFalse(
+            filled.contains(where: { $0.lostBefore }), "no loss — the frame stays whole")
+    }
+
+    func testGapHeldByTimeStillDeclaresLossAfterDeadline() {
+        // The hold is bounded: if the retransmit never comes, the gap must
+        // still be abandoned once `gapHoldNs` elapses so a genuinely lost
+        // packet can't wedge the stream forever.
+        let t0: UInt64 = 1_000_000_000
+        var buf = RTPReorderBuffer(maxDepth: 512, gapHoldNs: 200_000_000)
+        XCTAssertEqual(buf.push(seq: 10, packet: Data([10]), nowNs: t0).count, 1)
+        XCTAssertTrue(buf.push(seq: 12, packet: Data([12]), nowNs: t0).isEmpty)  // gap at 11 held
+        // A packet arriving past the deadline abandons the gap (loss declared).
+        let releases = buf.push(seq: 13, packet: Data([13]), nowNs: t0 &+ 250_000_000)
+        XCTAssertEqual(releases.first?.lostBefore, true, "gap abandoned after the hold expires")
+    }
+
+    func testNACKModeDepacketizerReassemblesDeepKeyframeWithLateRetransmit() throws {
+        // End-to-end at the depacketizer: a keyframe-sized AU (100 packets)
+        // loses an early packet; its retransmit arrives ~160 ms later. In NACK
+        // mode (deep window + time hold) the AU must reassemble whole, with no
+        // loss flag — the exact path that used to tear the keyframe (the
+        // count-based window overflowed in tens of ms) and wedge the viewer.
+        let t0: UInt64 = 1_000_000_000
+        let nals = (0..<100).map { Data([0x41, UInt8($0)]) }
+        let packets = H264Packetizer().packetize(
+            nals: nals, timestamp: 50, ssrc: 1, startSequence: 1000)
+        XCTAssertEqual(packets.count, 100)
+
+        let depacketizer = H264Depacketizer(reorderDepth: 512, gapHoldNs: 300_000_000)
+        // Deliver every packet except seq 1001 (index 1), spread over ~30 ms.
+        for (i, pkt) in packets.enumerated() where i != 1 {
+            let au = depacketizer.ingest(pkt, nowNs: t0 &+ UInt64(i) &* 300_000)
+            XCTAssertNil(au, "AU withheld while the early gap is open")
+        }
+        // The retransmit of seq 1001 lands ~160 ms later — inside the hold.
+        let au = try XCTUnwrap(depacketizer.ingest(packets[1], nowNs: t0 &+ 160_000_000))
+        XCTAssertFalse(au.lostBeforeThisAU, "keyframe reassembled intact")
+        XCTAssertEqual(AVCCParser.nalUnits(from: au.avcc), nals)
+    }
+
     func testDuplicatePacketIsIgnored() throws {
         // DERP can duplicate packets. A duplicate of an already-released
         // sequence number must be dropped silently, not treated as loss.

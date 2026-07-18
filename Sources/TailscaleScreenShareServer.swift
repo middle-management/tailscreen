@@ -562,6 +562,15 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     private let helperWatchdogEnabled =
         ProcessInfo.processInfo.environment["TAILSCREEN_DISABLE_HELPER_WATCHDOG"] != "1"
 
+    /// `TAILSCREEN_DEBUG_FEC=1` logs the per-viewer FEC sweep inputs (measured
+    /// RTT, residual loss, recovered/expected, RR freshness, `.fec` cap) and
+    /// the resulting arm decision every 5 s window. Off by default; a live
+    /// impaired run sets it to reveal why FEC did or didn't gate on (e.g. RTT
+    /// staying 0 means the viewer's receiver reports / ping echoes aren't
+    /// landing, so the RTT > 150 ms gate can never trip).
+    private let debugFEC =
+        ProcessInfo.processInfo.environment["TAILSCREEN_DEBUG_FEC"] == "1"
+
     /// In-flight `restartCapture()` work. `stop()` awaits this before
     /// tearing down `helperCapture`, otherwise a concurrent restart
     /// can finish spawning a new helper *after* `stop()` already
@@ -2958,7 +2967,22 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             return out
         }
         let prior = fecState.withLock { $0 }
-        applyFECState(Self.fecSweepDecision(samples: samples, state: prior))
+        let decision = Self.fecSweepDecision(samples: samples, state: prior)
+        if debugFEC {
+            let rows =
+                samples
+                .map { addr, s in
+                    let rec = Self.fecRecoveredQ8(recovered: s.recovered, expectedPackets: s.expectedPackets)
+                    return
+                        "\(addr) rtt=\(s.rttNs / 1_000_000)ms residLossQ8=\(s.residualLossQ8) "
+                        + "rawLossQ8=\(min(255, s.residualLossQ8 + rec)) rec=\(s.recovered)/\(s.expectedPackets) fec=\(s.fecCapable)"
+                }
+                .joined(separator: " | ")
+            logger.log(
+                "FEC sweep: [\(rows.isEmpty ? "no viewers" : rows)] → groupSize=\(decision.state.groupSize) gated=\(decision.gated.count)"
+            )
+        }
+        applyFECState(decision)
     }
 
     /// Apply an fps-ladder step: retune the helper's capture frame interval and
