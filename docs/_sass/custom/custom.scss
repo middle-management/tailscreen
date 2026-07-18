@@ -132,23 +132,284 @@ body {
 }
 
 // ---------------------------------------------------------------------------
+// Landing layout (homepage only, _layouts/landing.html)
+// ---------------------------------------------------------------------------
+// The homepage renders without the docs chrome: its own top nav, full-width
+// sections, and a footer. Docs pages keep the just-the-docs layout.
+
+.ts-container {
+  max-width: 66rem;
+  margin: 0 auto;
+  padding: 0 1.5rem;
+}
+
+.ts-container-narrow {
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: 0 1.5rem;
+}
+
+.ts-landing {
+  margin: 0;
+
+  .ts-nav {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    border-bottom: 1px solid $border-color;
+    background-color: rgba($body-background-color, 0.88);
+    -webkit-backdrop-filter: blur(10px);
+    backdrop-filter: blur(10px);
+  }
+
+  .ts-nav-inner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-top: 0.6rem;
+    padding-bottom: 0.6rem;
+  }
+
+  .ts-nav-brand {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    font-size: 1.05rem;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    color: $body-heading-color;
+    text-decoration: none;
+    background-image: none;
+
+    img {
+      width: 26px;
+      height: 26px;
+    }
+  }
+
+  .ts-nav-links {
+    display: flex;
+    align-items: center;
+    gap: 1.3rem;
+
+    a {
+      font-size: 0.9rem;
+      font-weight: 500;
+      color: rgba($body-text-color, 0.9);
+      text-decoration: none;
+      background-image: none;
+
+      &:hover {
+        color: $link-color;
+      }
+    }
+
+    .btn {
+      padding: 0.35rem 0.9rem;
+      font-size: 0.85rem;
+    }
+
+    // The link-color rule above outspecifies the theme's .btn-primary;
+    // restore its white label.
+    a.btn-primary,
+    a.btn-primary:hover {
+      color: #ffffff;
+    }
+  }
+
+  .ts-landing-main {
+    padding-bottom: 1rem;
+
+    // Markdown section headings become centered product-section titles.
+    h2 {
+      margin: 4.25rem 0 1.6rem;
+      text-align: center;
+      font-size: 1.9rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      color: $body-heading-color;
+    }
+  }
+
+  .ts-intro {
+    max-width: 44rem;
+    margin: 0 auto;
+    text-align: center;
+    font-size: 1rem;
+    line-height: 1.7;
+    color: rgba($body-text-color, 0.9);
+  }
+
+  // Scale the shared homepage components up to the wider canvas.
+  .ts-hero {
+    padding: 3.5rem 1.5rem 0;
+
+    h1 {
+      max-width: 52rem;
+      font-size: 3.3rem !important;
+    }
+
+    .ts-hero-tagline {
+      max-width: 40rem;
+      font-size: 1.15rem;
+    }
+  }
+
+  .ts-mock {
+    max-width: 46rem;
+  }
+
+  .ts-stats {
+    max-width: 60rem;
+    margin-left: auto;
+    margin-right: auto;
+    margin-bottom: 3rem;
+  }
+
+  .ts-feature-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+
+  .ts-cta {
+    margin-top: 4.5rem;
+    padding-top: 3rem;
+    padding-bottom: 3.1rem;
+  }
+
+  .ts-footer {
+    margin-top: 4rem;
+    padding: 2rem 0 2.4rem;
+    border-top: 1px solid $border-color;
+    text-align: center;
+    font-size: 0.85rem;
+    color: rgba($body-text-color, 0.8);
+
+    a {
+      color: rgba($body-text-color, 0.9);
+      text-decoration: none;
+      background-image: none;
+
+      &:hover {
+        color: $link-color;
+      }
+    }
+
+    .ts-footer-links {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 0.4rem 1.4rem;
+      margin: 0 0 0.8rem;
+    }
+
+    .ts-footer-license {
+      margin: 0;
+      color: rgba($body-text-color, 0.65);
+
+      a {
+        color: rgba($body-text-color, 0.8);
+        text-decoration: underline;
+      }
+    }
+  }
+}
+
+.ts-spotlight-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.875rem;
+
+  .ts-spotlight {
+    margin: 0;
+  }
+}
+
+@media (max-width: 60rem) {
+  .ts-landing .ts-feature-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .ts-spotlight-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 40rem) {
+  .ts-landing .ts-hero h1 {
+    font-size: 2.3rem !important;
+  }
+
+  .ts-landing .ts-nav-links {
+    gap: 0.9rem;
+  }
+
+  .ts-landing .ts-feature-grid {
+    grid-template-columns: 1fr;
+    gap: 1.4rem;
+  }
+
+  // On phones, features and steps become icon-left rows instead of tall
+  // stacked blocks - the page scans as a list, not a wall of cards.
+  .ts-landing .ts-card {
+    display: grid;
+    grid-template-columns: 2rem 1fr;
+    column-gap: 0.95rem;
+
+    .ts-card-icon {
+      grid-row: 1 / span 2;
+      margin-bottom: 0;
+    }
+
+    h3 {
+      margin: 0.2rem 0 0.3rem !important;
+    }
+  }
+
+  .ts-landing .ts-steps {
+    gap: 1.25rem;
+  }
+
+  .ts-landing .ts-step {
+    display: grid;
+    grid-template-columns: 1.7rem 1fr;
+    column-gap: 0.95rem;
+
+    .ts-step-n {
+      grid-row: 1 / span 2;
+      margin-bottom: 0;
+    }
+
+    h3 {
+      margin: 0.15rem 0 0.3rem !important;
+    }
+  }
+
+  .ts-spotlight {
+    padding: 1.15rem 1.15rem 1.2rem;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Homepage: shared bits
 // ---------------------------------------------------------------------------
 
 // Gradient accent text (hero headline span, stat numerals). Duplicated via
 // a mixin rather than @extend so it can live inside @supports under Ruby Sass.
 @mixin ts-gradient-text {
+  // Mixed against $link-color so the sweep stays readable in both schemes.
   background-image: linear-gradient(
-    110deg,
-    $link-color,
-    mix(#a855f7, $link-color, 55%)
+    100deg,
+    $link-color 5%,
+    mix(#a855f7, $link-color, 70%) 50%,
+    mix(#e879f9, $link-color, 70%) 95%
   );
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
 }
 
-.main-content kbd {
+.main-content kbd,
+.ts-landing kbd {
   display: inline-block;
   min-width: 1.4em;
   padding: 0.05em 0.4em;
@@ -183,6 +444,7 @@ body {
     font-weight: 800;
     letter-spacing: -0.03em;
     line-height: 1.1;
+    text-wrap: balance;
   }
 
   .ts-hero-tagline {
@@ -204,8 +466,8 @@ body {
 
   .ts-hero-note {
     margin: 0;
-    font-size: 0.78rem;
-    color: rgba($body-text-color, 0.6);
+    font-size: 0.8rem;
+    color: rgba($body-text-color, 0.78);
   }
 }
 
@@ -245,6 +507,60 @@ body {
 .ts-mock {
   max-width: 40rem;
   margin: 2.25rem auto 2rem;
+}
+
+// A slim fake macOS menubar above the viewer window: sells "the whole UI is
+// a menubar icon" with the Tailscreen glyph in its active state.
+.ts-mock-menubar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.8rem;
+  margin: 0 0.6rem 0.55rem;
+  padding: 0.28rem 0.75rem;
+  border: 1px solid $border-color;
+  border-radius: 8px;
+  background-color: $sidebar-color;
+  color: rgba($body-text-color, 0.65);
+
+  svg {
+    display: block;
+    width: 0.85rem;
+    height: 0.85rem;
+  }
+}
+
+.ts-mock-mb-menus {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  margin-right: auto;
+}
+
+.ts-mock-mb-menu {
+  display: block;
+  height: 6px;
+  border-radius: 3px;
+  background-color: rgba($body-text-color, 0.25);
+
+  &:first-child {
+    background-color: rgba($body-text-color, 0.45);
+  }
+}
+
+.ts-mock-mb-app {
+  display: flex;
+  align-items: center;
+  padding: 0.14rem 0.32rem;
+  border-radius: 5px;
+  background-color: rgba($link-color, 0.16);
+  color: $link-color;
+}
+
+.ts-mock-mb-time {
+  font-size: 0.68rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
 }
 
 .ts-mock-window {
@@ -406,7 +722,7 @@ body {
   margin: 0.75rem 0 0;
   text-align: center;
   font-size: 0.8rem;
-  color: rgba($body-text-color, 0.6);
+  color: rgba($body-text-color, 0.78);
 }
 
 // ---------------------------------------------------------------------------
@@ -446,7 +762,7 @@ body {
   margin-top: 0.25rem;
   font-size: 0.72rem;
   line-height: 1.4;
-  color: rgba($body-text-color, 0.75);
+  color: rgba($body-text-color, 0.85);
 }
 
 // ---------------------------------------------------------------------------
@@ -505,25 +821,17 @@ body {
 // Homepage: feature grid
 // ---------------------------------------------------------------------------
 
+// Deliberately not boxed: six bordered cards read as clutter (worst on
+// phones). Icon chips anchor each feature instead; boxes are reserved for
+// the mock, stats, spotlights, and CTA.
 .ts-feature-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
-  gap: 0.875rem;
-  margin: 1.5rem 0 2rem;
+  gap: 1.9rem 1.75rem;
+  margin: 1.75rem 0 2.25rem;
 }
 
 .ts-card {
-  border: 1px solid $border-color;
-  border-radius: 10px;
-  padding: 1.1rem 1.2rem 1rem;
-  background-color: $sidebar-color;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
-
-  &:hover {
-    border-color: rgba($link-color, 0.45);
-    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.06);
-  }
-
   h3 {
     margin: 0 0 0.4rem !important;
     font-size: 1rem !important;
@@ -562,16 +870,12 @@ body {
 
 .ts-steps {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
   gap: 0.875rem;
   margin: 1.5rem 0 2rem;
 }
 
 .ts-step {
-  padding: 1.1rem 1.2rem 1rem;
-  border: 1px solid $border-color;
-  border-radius: 10px;
-
   h3 {
     margin: 0 0 0.35rem !important;
     font-size: 0.95rem !important;
@@ -605,7 +909,8 @@ body {
 // Homepage: requirements checklist
 // ---------------------------------------------------------------------------
 
-.main-content ul.ts-checks {
+.main-content ul.ts-checks,
+.ts-landing ul.ts-checks {
   margin: 1rem 0 2rem;
   padding-left: 0;
   list-style: none;

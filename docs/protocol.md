@@ -17,7 +17,7 @@ below is happening inside an authenticated, encrypted pipe.
 | Channel        | Transport | Purpose                                                              |
 | :------------- | :-------- | :------------------------------------------------------------------- |
 | Video          | UDP/7447  | RTP — HEVC (RFC 7798) or H.264 (RFC 6184). Lossy on purpose.         |
-| Audio          | UDP/7447  | RTP — AAC-LC voice (PT 98) and system audio (PT 99).                 |
+| Audio          | UDP/7447  | RTP — Opus voice (PT 98) and system audio (PT 99).                   |
 | Control        | UDP/7447  | Small control datagrams: HELLO family, PLI, NACK, receiver reports, FEC parity. |
 | Annotations    | TCP/7447  | Length-framed JSON messages. Reliable on purpose.                    |
 | Remote control | TCP/7447  | Request/grant/revoke + input events, on the same framed channel.     |
@@ -79,7 +79,9 @@ keyframe at all.
 ## Audio — UDP RTP
 
 Same socket, same RTP framing, separate payload types and a separate SSRC
-space from video. AAC-LC, mono, 48 kHz, one access unit per packet:
+space from video. Opus (royalty-free, software-only — it replaced the
+original AAC-LC path), mono, 48 kHz, one 20 ms frame (960 samples) per
+packet:
 
 - `98` — voice (bidirectional; the sharer also relays each viewer's voice
   to the other viewers, byte-for-byte, after validating the packet's SSRC
