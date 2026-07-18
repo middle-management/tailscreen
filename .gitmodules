@@ -1,4 +1,4 @@
-[submodule "TailscaleKitPackage/upstream/libtailscale"]
-	path = TailscaleKitPackage/upstream/libtailscale
+[submodule "TailscaleKit/upstream/libtailscale"]
+	path = TailscaleKit/upstream/libtailscale
 	url = https://github.com/tailscale/libtailscale.git
 	ignore = dirty

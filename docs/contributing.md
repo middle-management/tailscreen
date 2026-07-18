@@ -24,7 +24,7 @@ tailscreen/
 ├── Sources/                    # Tailscreen executable (Swift)
 ├── Tests/TailscreenTests/      # Unit + connectivity tests
 ├── Examples/                   # Standalone API usage demo
-├── TailscaleKitPackage/        # Local SwiftPM dep wrapping libtailscale
+├── TailscaleKit/        # Local SwiftPM dep wrapping libtailscale
 │   ├── upstream/libtailscale/  # Git submodule
 │   ├── Sources/  lib/  include/   # Symlinks into upstream
 │   ├── Patches/                # .patch files applied on top of upstream Swift
@@ -69,14 +69,14 @@ fails to link** until `make tailscale` (or `make build`) has produced
 
 ## TailscaleKit and the patches
 
-`TailscaleKitPackage/upstream/libtailscale` is a submodule pinned in
+`TailscaleKit/upstream/libtailscale` is a submodule pinned in
 `.gitmodules` with `ignore = dirty`. After cloning, run:
 
 ```bash
 git submodule update --init --recursive
 ```
 
-The patches under `TailscaleKitPackage/Patches/` get applied on top of the
+The patches under `TailscaleKit/Patches/` get applied on top of the
 upstream Swift sources during `make tailscale`. They're all small. They
 add things like:
 
@@ -88,7 +88,7 @@ add things like:
 - The `tsnet ListenPacket` / `PacketListener` Swift wrapper for the UDP
   video path.
 
-**Don't edit `TailscaleKitPackage/Sources/` directly.** Those paths are
+**Don't edit `TailscaleKit/Sources/` directly.** Those paths are
 symlinks into the submodule. You'll lose your edits the next `make
 tailscale` run, plus the changes won't survive a fresh clone. Add or
 modify a `.patch` file instead and re-run `make tailscale`.

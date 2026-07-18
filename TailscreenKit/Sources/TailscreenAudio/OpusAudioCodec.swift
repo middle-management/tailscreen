@@ -15,7 +15,7 @@ import Foundation
 /// `VoiceChannel` / `SystemAudioTap` call sites are unchanged; the
 /// Float32↔Int16 conversion libopus needs is confined here.
 ///
-/// This is the portable audio tier of `TailscreenProtocolPackage`: it depends
+/// This is the portable audio tier of `TailscreenKit`: it depends
 /// only on Foundation + OpusKit (both build on Linux/Windows), so a future
 /// non-macOS client reuses the exact codec while supplying its own platform
 /// audio I/O. It is kept out of the `TailscreenProtocol` target so that tier

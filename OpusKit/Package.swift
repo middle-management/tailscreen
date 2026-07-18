@@ -7,7 +7,7 @@ import PackageDescription
 // Apple-only and bind to AVFoundation types (AVAudioPCMBuffer/AVAudioEngine),
 // which is exactly the platform coupling Tailscreen's Opus-only audio
 // decision (see docs/porting-plan.md #6) is trying to avoid. Instead this
-// wraps the plain C library the same way TailscaleKitPackage wraps
+// wraps the plain C library the same way TailscaleKit wraps
 // libtailscale — a `systemLibrary` target + a Foundation-only Swift wrapper —
 // so it builds on macOS, Linux, and Windows against a system libopus
 // (apt `libopus-dev`, brew `opus`, vcpkg `opus`).

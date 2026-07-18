@@ -20,21 +20,21 @@ let package = Package(
     ],
     dependencies: [
         // TailscaleKit local package
-        .package(path: "./TailscaleKitPackage"),
+        .package(path: "./TailscaleKit"),
         // The portable core: wire protocol + pure decision logic
         // (TailscreenProtocol), the tsnet-facing transport tier
         // (TailscreenTransport), and the Opus codec tier (TailscreenAudio,
         // which pulls in OpusKit/libopus). All build on Linux — see its README.
-        .package(path: "./TailscreenProtocolPackage")
+        .package(path: "./TailscreenKit")
     ],
     targets: [
         .executableTarget(
             name: "Tailscreen",
             dependencies: [
-                .product(name: "TailscaleKit", package: "TailscaleKitPackage"),
-                .product(name: "TailscreenProtocol", package: "TailscreenProtocolPackage"),
-                .product(name: "TailscreenTransport", package: "TailscreenProtocolPackage"),
-                .product(name: "TailscreenAudio", package: "TailscreenProtocolPackage")
+                .product(name: "TailscaleKit", package: "TailscaleKit"),
+                .product(name: "TailscreenProtocol", package: "TailscreenKit"),
+                .product(name: "TailscreenTransport", package: "TailscreenKit"),
+                .product(name: "TailscreenAudio", package: "TailscreenKit")
             ],
             path: "Sources",
             resources: [
@@ -43,18 +43,18 @@ let package = Package(
                 .process("Resources")
             ],
             linkerSettings: [
-                .unsafeFlags(["-L", "TailscaleKitPackage/lib"])
+                .unsafeFlags(["-L", "TailscaleKit/lib"])
             ]
         ),
         .testTarget(
             name: "TailscreenTests",
             dependencies: [
                 "Tailscreen",
-                .product(name: "TailscreenAudio", package: "TailscreenProtocolPackage")
+                .product(name: "TailscreenAudio", package: "TailscreenKit")
             ],
             path: "Tests/TailscreenTests",
             linkerSettings: [
-                .unsafeFlags(["-L", "TailscaleKitPackage/lib"])
+                .unsafeFlags(["-L", "TailscaleKit/lib"])
             ]
         )
     ]

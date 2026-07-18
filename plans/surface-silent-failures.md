@@ -26,7 +26,7 @@ Per CLAUDE.md's error-surfacing convention, errors at the UI go through `appStat
 - No wire-protocol changes (existing PLI / CODEC_NO messages suffice).
 - No sharer-side UI for receive-loop health beyond logs (counter in logs only, per the task scope).
 - No retry policy changes for the capture-helper (crash budget / watchdog in `TailscaleScreenShareServer` stays as is).
-- No changes under `TailscaleKitPackage/` (patches-only rule).
+- No changes under `TailscaleKit/` (patches-only rule).
 
 ## Current state (with file:line references)
 

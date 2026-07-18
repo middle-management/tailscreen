@@ -20,7 +20,7 @@ Every quality/performance knob in Tailscreen is a hardcoded literal scattered ac
 - No per-viewer or per-peer settings; one global config.
 - No UI for timeouts, in-flight cap, keyframe interval, VT quality, DataRateLimits shape — centralized but internal.
 - No wire-protocol additions (reuse `InType.setBitrate`; no settings negotiation with viewers — the viewer auto-detects codec from RTP payload type already).
-- No changes under `TailscaleKitPackage/`.
+- No changes under `TailscaleKit/`.
 
 ## Current state (with file:line references)
 
@@ -150,7 +150,7 @@ New `Section(L("Quality"))` in `SettingsView` between Viewers and Audio (:30-32)
 - **Don't touch capture from the main process** (CLAUDE.md): all SCStream/encoder config stays in the helper; the main process only sets env + wire messages.
 - **UserDefaults key stability**: version the JSON via `Codable` optional fields with defaults (decode-with-fallback), so an older blob never crashes settings load.
 - **Localization**: interpolated keys must land in the catalog in `%lld`/`%@` form or `LocalizationCatalogTests` fails; codec names / "fps" unit treated per the brand-noun/glyph rule.
-- **Linker/package rules**: no `Package.swift` changes needed; keep the relative `-L TailscaleKitPackage/lib` untouched.
+- **Linker/package rules**: no `Package.swift` changes needed; keep the relative `-L TailscaleKit/lib` untouched.
 
 ## Estimated scope
 

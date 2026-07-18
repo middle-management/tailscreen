@@ -9,7 +9,7 @@ Quick guide on how to set up and use the TailscaleKit package in your Swift proj
 If starting fresh:
 
 ```bash
-cd TailscaleKitPackage
+cd TailscaleKit
 git init
 git submodule add https://github.com/tailscale/libtailscale.git upstream/libtailscale
 ```
@@ -29,7 +29,7 @@ git submodule update --init --recursive
 ### 2. Run Setup Script
 
 ```bash
-cd TailscaleKitPackage
+cd TailscaleKit
 ./setup.sh
 ```
 
@@ -53,13 +53,13 @@ In your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(path: "../TailscaleKitPackage")
+    .package(path: "../TailscaleKit")
 ],
 targets: [
     .target(
         name: "YourApp",
         dependencies: [
-            .product(name: "TailscaleKit", package: "TailscaleKitPackage")
+            .product(name: "TailscaleKit", package: "TailscaleKit")
         ]
     )
 ]
@@ -67,11 +67,11 @@ targets: [
 
 ### Option 2: Git Dependency (Production)
 
-Host the TailscaleKitPackage as a separate git repository, then:
+Host the TailscaleKit as a separate git repository, then:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/yourusername/TailscaleKitPackage", branch: "main")
+    .package(url: "https://github.com/yourusername/TailscaleKit", branch: "main")
 ],
 targets: [
     .target(
@@ -137,11 +137,11 @@ Your project should look like:
 
 ```
 YourProject/
-├── Package.swift                    # Depends on TailscaleKitPackage
+├── Package.swift                    # Depends on TailscaleKit
 ├── Sources/
 │   └── YourApp/
 │       └── main.swift              # Uses TailscaleKit
-└── TailscaleKitPackage/            # Local package
+└── TailscaleKit/            # Local package
     ├── Package.swift
     ├── setup.sh
     ├── Sources/
@@ -175,14 +175,14 @@ swift build -c release
 When Tailscale releases updates:
 
 ```bash
-cd TailscaleKitPackage
+cd TailscaleKit
 ./setup.sh --update
 ```
 
 Or manually:
 
 ```bash
-cd TailscaleKitPackage/upstream/libtailscale
+cd TailscaleKit/upstream/libtailscale
 git pull origin main
 cd ../..
 ./setup.sh
@@ -212,7 +212,7 @@ jobs:
 
       - name: Setup TailscaleKit
         run: |
-          cd TailscaleKitPackage
+          cd TailscaleKit
           ./setup.sh
 
       - name: Build
@@ -227,7 +227,7 @@ jobs:
 ### Module not found
 
 ```bash
-cd TailscaleKitPackage
+cd TailscaleKit
 ./setup.sh
 ```
 
@@ -251,7 +251,7 @@ git submodule update --init --recursive
 
 2. Re-run setup:
    ```bash
-   cd TailscaleKitPackage
+   cd TailscaleKit
    ./setup.sh
    ```
 

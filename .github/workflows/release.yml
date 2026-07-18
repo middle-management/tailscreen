@@ -60,11 +60,11 @@ jobs:
           go-version: '1.21'
 
       - name: Apply libtailscale patches
-        working-directory: TailscaleKitPackage
+        working-directory: TailscaleKit
         run: make apply-patches
 
       - name: Build universal libtailscale.a
-        working-directory: TailscaleKitPackage/upstream/libtailscale
+        working-directory: TailscaleKit/upstream/libtailscale
         run: |
           set -euxo pipefail
 
@@ -140,9 +140,9 @@ jobs:
       - name: Build universal Tailscreen binary
         env:
           # Prepend the universal-static opus dir so COpus's `pkgConfig:
-          # "opus"` resolves it (not a Homebrew dylib); TailscaleKitPackage
+          # "opus"` resolves it (not a Homebrew dylib); TailscaleKit
           # still supplies libtailscale.pc.
-          PKG_CONFIG_PATH: /tmp/opus-universal/lib/pkgconfig:${{ github.workspace }}/TailscaleKitPackage
+          PKG_CONFIG_PATH: /tmp/opus-universal/lib/pkgconfig:${{ github.workspace }}/TailscaleKit
         run: |
           set -euxo pipefail
           swift build -c release --arch arm64 --arch x86_64

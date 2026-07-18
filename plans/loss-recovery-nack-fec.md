@@ -18,7 +18,7 @@ Today the only loss-recovery tool is the PLI: any unrecoverable sequence gap dro
 **Non-goals**
 - FEC ships as a later phase (design sketched, not implemented in phase 1).
 - No RFC 4588 RTX SSRC/PT multiplexing — retransmits are byte-identical resends (the receiver's `RTPReorderBuffer` already dedups and gap-fills, Sources/RTPPacket.swift:392-414).
-- No changes to audio (PT 98) or the TCP annotation/metadata channel. No TailscaleKitPackage patches needed (PacketListener send/recv suffices).
+- No changes to audio (PT 98) or the TCP annotation/metadata channel. No TailscaleKit patches needed (PacketListener send/recv suffices).
 
 ## Current state (with file:line references)
 
@@ -105,7 +105,7 @@ Today the only loss-recovery tool is the PLI: any unrecoverable sequence gap dro
 - **Retransmit storms:** a slow viewer NACKing frames the send-chain cap deliberately shed (Server.swift:1539-1544) re-adds the load we shed; the 25 % token bucket and PLI conversion are mandatory, not tuning.
 - **Buffer-pool interaction:** retaining broadcast templates blocks `RTPPacketBufferPool` recycling via COW (RTPPacket.swift:207-216); the ring must own copies and the allocation delta should be checked under `make test-e2e-local`.
 - **Per-viewer seq spaces:** the ring index is per viewer (random `nextSequence` start, Server.swift:1008); all arithmetic must be `&-`/`&+` wrap-safe like `RTPReorderBuffer`.
-- **CLAUDE.md constraints:** tsnet suites are local-only (CI runs only the pure-logic suites — everything new here except the E2E seam must be pure); SCStream reconfiguration for the fps ladder happens **only in the capture helper** (never `SCShareableContent`/SCStream in the main process); port 7447 stays hardcoded; new control bytes must stay ≤ 0x7F for `looksLikeControl`; don't edit `TailscaleKitPackage/Sources` (no patch needed — `PacketListener` already suffices); Swift 6 — new networking types follow the `@unchecked Sendable` + internal-lock convention, pure structs are plain `Sendable`; update CLAUDE.md protocol/testing sections in the same commit.
+- **CLAUDE.md constraints:** tsnet suites are local-only (CI runs only the pure-logic suites — everything new here except the E2E seam must be pure); SCStream reconfiguration for the fps ladder happens **only in the capture helper** (never `SCShareableContent`/SCStream in the main process); port 7447 stays hardcoded; new control bytes must stay ≤ 0x7F for `looksLikeControl`; don't edit `TailscaleKit/Sources` (no patch needed — `PacketListener` already suffices); Swift 6 — new networking types follow the `@unchecked Sendable` + internal-lock convention, pure structs are plain `Sendable`; update CLAUDE.md protocol/testing sections in the same commit.
 - **Compat matrix must be tested explicitly:** old-viewer↔new-server (PLI path untouched, Server.swift:826-829), new-viewer↔old-server (0x08 dropped by `decode` nil → `handleIncoming` guard, Server.swift:790; viewer stays in PLI mode absent server caps).
 
 ## Deviations

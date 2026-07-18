@@ -487,7 +487,7 @@ All CI-able (pure logic — no tsnet, per CLAUDE.md's CI constraint).
   so no COW pressure on `RTPPacketBufferPool` (unlike `RetransmitBuffer`,
   which copies for exactly that reason, RetransmitBuffer.swift:16-20).
 - **CLAUDE.md constraints:** new control byte stays ≤ 0x7F; port 7447 stays
-  hardcoded; no TailscaleKitPackage edits (PacketListener suffices); tsnet
+  hardcoded; no TailscaleKit edits (PacketListener suffices); tsnet
   suites stay local-only (everything new here is pure); new networking state
   follows the existing lock conventions, pure types are plain `Sendable`;
   CLAUDE.md protocol/test-list updates land in the same commit.
@@ -502,7 +502,7 @@ All CI-able (pure logic — no tsnet, per CLAUDE.md's CI constraint).
 
 **M.** ~550 LOC source (wire ~60, FECCodec ~120, FECGroupBuffer ~130, server
 ~140, client ~80, stats ~20) + ~600 LOC tests. No helper-wire, encoder, or
-TailscaleKitPackage changes; no new subprocess surface.
+TailscaleKit changes; no new subprocess surface.
 
 ## Post-review amendments (implemented; deviations from the design above)
 
