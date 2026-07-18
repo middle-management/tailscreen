@@ -16,7 +16,7 @@ set -m  # job control: each pipeline gets its own process group
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOG="${TAILSCREEN_E2E_LOG:-/tmp/tailscreen-e2e.log}"
 TIMEOUT_SECS="${TAILSCREEN_E2E_TIMEOUT:-90}"
-BIN="$REPO_ROOT/Apps/macOS/Apps/macOS/.build/debug/Tailscreen"
+BIN="$REPO_ROOT/Apps/macOS/.build/debug/Tailscreen"
 SHARER_HOSTNAME_PREFIX="tailscreen-"  # matches TailscreenInstance.serverHostnamePrefix
 
 if [ ! -x "$BIN" ]; then

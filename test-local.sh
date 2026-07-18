@@ -22,7 +22,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$REPO_ROOT"
 
 LOG="${TAILSCREEN_LOG:-/tmp/tailscreen-merged.log}"
-BIN="Apps/macOS/Apps/macOS/.build/debug/Tailscreen"
+BIN="Apps/macOS/.build/debug/Tailscreen"
 
 if [ ! -x "$BIN" ]; then
     echo "Building Tailscreen..."
