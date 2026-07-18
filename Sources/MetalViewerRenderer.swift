@@ -478,8 +478,8 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
     /// Runs on the display-link tick (main thread); `lastColorPrimaries`
     /// short-circuits the common case where the primaries never change.
     private func applyColorSpaceIfNeeded(from buffer: CVPixelBuffer) {
-        let raw = CVBufferGetAttachment(buffer, kCVImageBufferColorPrimariesKey, nil)
-        let primaries = raw?.takeUnretainedValue() as? String
+        let raw = CVBufferCopyAttachment(buffer, kCVImageBufferColorPrimariesKey, nil)
+        let primaries = raw as? String
         if primaries == lastColorPrimaries { return }
         lastColorPrimaries = primaries
         let name = ColorInfo.layerColorSpaceName(forPrimaries: primaries)
