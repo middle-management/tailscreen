@@ -138,10 +138,12 @@ body {
 // Gradient accent text (hero headline span, stat numerals). Duplicated via
 // a mixin rather than @extend so it can live inside @supports under Ruby Sass.
 @mixin ts-gradient-text {
+  // Mixed against $link-color so the sweep stays readable in both schemes.
   background-image: linear-gradient(
-    110deg,
-    $link-color,
-    mix(#a855f7, $link-color, 55%)
+    100deg,
+    $link-color 5%,
+    mix(#a855f7, $link-color, 70%) 50%,
+    mix(#e879f9, $link-color, 70%) 95%
   );
   -webkit-background-clip: text;
   background-clip: text;
@@ -183,6 +185,7 @@ body {
     font-weight: 800;
     letter-spacing: -0.03em;
     line-height: 1.1;
+    text-wrap: balance;
   }
 
   .ts-hero-tagline {
@@ -204,8 +207,8 @@ body {
 
   .ts-hero-note {
     margin: 0;
-    font-size: 0.78rem;
-    color: rgba($body-text-color, 0.6);
+    font-size: 0.8rem;
+    color: rgba($body-text-color, 0.78);
   }
 }
 
@@ -245,6 +248,60 @@ body {
 .ts-mock {
   max-width: 40rem;
   margin: 2.25rem auto 2rem;
+}
+
+// A slim fake macOS menubar above the viewer window: sells "the whole UI is
+// a menubar icon" with the Tailscreen glyph in its active state.
+.ts-mock-menubar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.8rem;
+  margin: 0 0.6rem 0.55rem;
+  padding: 0.28rem 0.75rem;
+  border: 1px solid $border-color;
+  border-radius: 8px;
+  background-color: $sidebar-color;
+  color: rgba($body-text-color, 0.65);
+
+  svg {
+    display: block;
+    width: 0.85rem;
+    height: 0.85rem;
+  }
+}
+
+.ts-mock-mb-menus {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  margin-right: auto;
+}
+
+.ts-mock-mb-menu {
+  display: block;
+  height: 6px;
+  border-radius: 3px;
+  background-color: rgba($body-text-color, 0.25);
+
+  &:first-child {
+    background-color: rgba($body-text-color, 0.45);
+  }
+}
+
+.ts-mock-mb-app {
+  display: flex;
+  align-items: center;
+  padding: 0.14rem 0.32rem;
+  border-radius: 5px;
+  background-color: rgba($link-color, 0.16);
+  color: $link-color;
+}
+
+.ts-mock-mb-time {
+  font-size: 0.68rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
 }
 
 .ts-mock-window {
@@ -406,7 +463,7 @@ body {
   margin: 0.75rem 0 0;
   text-align: center;
   font-size: 0.8rem;
-  color: rgba($body-text-color, 0.6);
+  color: rgba($body-text-color, 0.78);
 }
 
 // ---------------------------------------------------------------------------
@@ -446,7 +503,7 @@ body {
   margin-top: 0.25rem;
   font-size: 0.72rem;
   line-height: 1.4;
-  color: rgba($body-text-color, 0.75);
+  color: rgba($body-text-color, 0.85);
 }
 
 // ---------------------------------------------------------------------------
@@ -562,7 +619,7 @@ body {
 
 .ts-steps {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
   gap: 0.875rem;
   margin: 1.5rem 0 2rem;
 }

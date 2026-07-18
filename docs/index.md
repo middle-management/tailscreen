@@ -3,6 +3,7 @@ title: Home
 layout: home
 nav_order: 1
 permalink: /
+image: /assets/social-card.png
 ---
 
 <div class="ts-hero">
@@ -12,7 +13,7 @@ permalink: /
     <span class="ts-badge">macOS 15+</span>
     <span class="ts-badge">MIT</span>
   </p>
-  <h1>Screen sharing that feels like<br><span class="ts-accent">sitting at the same Mac</span>.</h1>
+  <h1>Screen sharing that feels&nbsp;like <span class="ts-accent">sitting at the same Mac</span>.</h1>
   <p class="ts-hero-tagline">Tailscreen streams one Mac&rsquo;s screen to another over your own
   Tailscale network &mdash; encrypted, peer-to-peer, at 60&nbsp;fps. No meeting
   link, no server in the middle, no port to forward.</p>
@@ -24,6 +25,27 @@ permalink: /
 </div>
 
 <div class="ts-mock" aria-hidden="true">
+  <div class="ts-mock-menubar">
+    <span class="ts-mock-mb-menus">
+      <span class="ts-mock-mb-menu" style="width: 1.6rem"></span>
+      <span class="ts-mock-mb-menu" style="width: 1.1rem"></span>
+      <span class="ts-mock-mb-menu" style="width: 1.3rem"></span>
+      <span class="ts-mock-mb-menu" style="width: 1.2rem"></span>
+    </span>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg">
+      <path d="M5 12.5a10 10 0 0 1 14 0"/>
+      <path d="M8.5 16a5 5 0 0 1 7 0"/>
+      <circle cx="12" cy="19" r="1" fill="currentColor" stroke="none"/>
+    </svg>
+    <span class="ts-mock-mb-app">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">
+        <rect x="3" y="4" width="18" height="13" rx="2"/>
+        <path d="M9 21h6"/>
+        <path d="M12 17v4"/>
+      </svg>
+    </span>
+    <span class="ts-mock-mb-time">Tue 12:04</span>
+  </div>
   <div class="ts-mock-window">
     <div class="ts-mock-titlebar">
       <span class="ts-mock-dot ts-mock-dot--red"></span>
@@ -69,7 +91,7 @@ permalink: /
     <span class="ts-stat-c">hardware-encoded HEVC, full Retina</span>
   </div>
   <div class="ts-stat">
-    <span class="ts-stat-n">0</span>
+    <span class="ts-stat-n">Zero</span>
     <span class="ts-stat-c">servers between your Macs</span>
   </div>
   <div class="ts-stat">
@@ -110,7 +132,8 @@ third-party server.
 <div class="ts-spotlight">
   <div class="ts-spotlight-icon">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">
-      <path d="M5.5 2.5l13 10.4-6.7 1L9.2 20z"/>
+      <path d="M12 3l7 3v5c0 4.6-3 7.6-7 9-4-1.4-7-4.4-7-9V6l7-3z"/>
+      <path d="M9.5 8.5l5.5 4.3-2.9.5-1.1 2.7z" fill="currentColor" stroke="none"/>
     </svg>
   </div>
   <div class="ts-spotlight-body">
@@ -227,15 +250,6 @@ third-party server.
   <li>A Swift 6 toolchain &mdash; only if you&rsquo;re building from source.</li>
 </ul>
 
-<div class="ts-cta">
-  <h2>Your screen, on their Mac, in seconds.</h2>
-  <p>Install it, sign in to Tailscale, hit Start Sharing.</p>
-  <p class="ts-cta-actions">
-    <a href="{% link install.md %}" class="btn btn-primary fs-5">Install Tailscreen</a>
-    <a href="{% link usage.md %}" class="btn fs-5">Read the usage guide</a>
-  </p>
-</div>
-
 ## Where to go next
 
 | You want to...                                  | Read this                                        |
@@ -252,3 +266,12 @@ third-party server.
 
 [MIT](https://github.com/middle-management/tailscreen/blob/main/LICENSE).
 The upstream `libtailscale` is BSD-3-Clause. Do whatever.
+
+<div class="ts-cta">
+  <h2>Your screen, on their Mac, in seconds.</h2>
+  <p>Install it, sign in to Tailscale, hit Start Sharing.</p>
+  <p class="ts-cta-actions">
+    <a href="{% link install.md %}" class="btn btn-primary fs-5">Install Tailscreen</a>
+    <a href="{% link usage.md %}" class="btn fs-5">Read the usage guide</a>
+  </p>
+</div>
