@@ -41,7 +41,7 @@ that roadmap.
 
 - The sources live **only here** — the macOS app consumes this package as
   a real SwiftPM dependency (`Package.swift` at the repo root declares it;
-  `Sources/ProtocolReexports.swift` `@_exported import`s all three products
+  `Apps/macOS/Sources/ProtocolReexports.swift` `@_exported import`s all three products
   so app code keeps using the types unqualified).
 - Because the app crosses a module boundary, everything the app touches is
   `public` — including explicit memberwise initializers (Swift never

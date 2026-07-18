@@ -1,15 +1,15 @@
 included:
-  - Sources
-  - Tests
-  - Examples
+  - Apps/macOS/Sources
+  - Apps/macOS/Tests
+  - Apps/macOS/Examples
   - Packages/TailscreenKit/Sources
 
 excluded:
   - .build
   - Packages/TailscaleKit/upstream
   - Packages/TailscaleKit/Sources
-  - Sources/ScreenShareClient.swift
-  - Sources/ScreenShareServer.swift
+  - Apps/macOS/Sources/ScreenShareClient.swift
+  - Apps/macOS/Sources/ScreenShareServer.swift
 
 # Bug-class rules first; style rules opt-in only when they catch real risk.
 disabled_rules:

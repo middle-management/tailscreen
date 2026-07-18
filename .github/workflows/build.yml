@@ -64,6 +64,7 @@ jobs:
         # .build/<config>/codecov/. The subsequent step turns that into a
         # human-readable summary and uploads the raw profdata as an artifact.
         # PKG_CONFIG_PATH is set job-wide (libtailscale + libopus).
+        working-directory: Apps/macOS
         run: swift test --enable-code-coverage
 
       - name: Coverage summary
@@ -76,6 +77,7 @@ jobs:
         # PKG_CONFIG_PATH (libtailscale + libopus) is set job-wide, so
         # `swift build --show-bin-path` can load the manifest's systemLibrary
         # targets; without it BUILD_BIN_PATH ends up empty, dropping coverage.
+        working-directory: Apps/macOS
         run: |
           set -u
           BUILD_BIN_PATH="$(swift build --show-bin-path 2>/dev/null || echo)"
@@ -110,7 +112,7 @@ jobs:
         with:
           name: coverage-profdata
           path: |
-            .build/**/codecov/default.profdata
+            Apps/macOS/.build/**/codecov/default.profdata
           if-no-files-found: warn
           retention-days: 14
 
@@ -127,6 +129,7 @@ jobs:
         if: github.event_name == 'pull_request'
         continue-on-error: true
         # PKG_CONFIG_PATH (libtailscale + libopus) is set job-wide.
+        working-directory: Apps/macOS
         run: |
           set -u
           BUILD_BIN_PATH="$(swift build --show-bin-path 2>/dev/null || echo)"
@@ -144,7 +147,7 @@ jobs:
             -instr-profile="${PROFDATA}" \
             -ignore-filename-regex='\.build/|Tests/' \
             "${XCTEST_BIN}" > coverage.lcov
-          ./scripts/diff-coverage.sh coverage.lcov "origin/${{ github.base_ref }}" 70
+          ../../scripts/diff-coverage.sh coverage.lcov "origin/${{ github.base_ref }}" 70
 
   # Release-config compile check: -O + cross-module optimization + stripped
   # assert()s surface a different class of errors than debug builds, and
@@ -172,6 +175,7 @@ jobs:
       - name: Build libtailscale
         run: make tailscale
       - name: Build (release)
+        working-directory: Apps/macOS
         run: swift build -c release
 
   # Portability gate: the TailscreenProtocol package (wire protocol + pure

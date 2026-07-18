@@ -21,20 +21,24 @@ aimed at AI assistants working in the tree.
 
 ```
 tailscreen/
-├── Sources/                    # Tailscreen executable (Swift)
-├── Tests/TailscreenTests/      # Unit + connectivity tests
-├── Examples/                   # Standalone API usage demo
-├── TailscaleKit/        # Local SwiftPM dep wrapping libtailscale
-│   ├── upstream/libtailscale/  # Git submodule
-│   ├── Sources/  lib/  include/   # Symlinks into upstream
-│   ├── Patches/                # .patch files applied on top of upstream Swift
-│   ├── Modules/libtailscale/   # Module map for the C library
-│   └── libtailscale.pc         # pkg-config file (consumed via PKG_CONFIG_PATH)
+├── Apps/
+│   └── macOS/                  # The macOS app — a SwiftPM package (run app
+│       │                       #   `swift` commands from this directory)
+│       ├── Sources/            # Tailscreen executable (Swift)
+│       └── Tests/TailscreenTests/  # Unit + connectivity tests
+├── Packages/                   # Local SwiftPM packages the app depends on
+│   ├── TailscreenKit/          # Portable (Linux-buildable) protocol core
+│   ├── OpusKit/                # systemLibrary wrapper over libopus
+│   └── TailscaleKit/           # Wraps libtailscale
+│       ├── upstream/libtailscale/  # Git submodule
+│       ├── Sources/  lib/  include/  # Symlinks into upstream
+│       ├── Patches/            # .patch files applied on top of upstream Swift
+│       ├── Modules/libtailscale/   # Module map for the C library
+│       └── libtailscale.pc     # pkg-config file (consumed via PKG_CONFIG_PATH)
 ├── e2e/docker-compose.yml      # Local headscale control plane
 ├── scripts/e2e-{up,down,test}.sh
 ├── .github/workflows/
 ├── docs/                       # this site
-├── Package.swift
 ├── Makefile                    # build entry point — always go through this
 └── test-local.sh               # multi-instance local launcher
 ```
@@ -48,12 +52,12 @@ target (`.DEFAULT_GOAL := help`). The highlights:
 | :------------------ | :----------------------------------------------------------------- |
 | `make build`        | Build `libtailscale.a`, then `swift build`. Always start here.    |
 | `make run`          | Build + run the debug binary.                                      |
-| `make release`      | `swift build -c release` → `.build/release/Tailscreen`.            |
+| `make release`      | `swift build -c release` → `Apps/macOS/.build/release/Tailscreen`.            |
 | `make install`      | Release build + copy to `~/bin/Tailscreen`.                        |
 | `make clean`        | Wipe `.build/`, run `swift package clean`, clean TailscaleKit.     |
 | `make test`         | `swift test` (after rebuilding `libtailscale`).                    |
 | `make lint`         | Run SwiftLint (baseline-gated; only new violations fail).          |
-| `make format`       | Run `swift-format` in-place over `Sources/` and `Tests/`.          |
+| `make format`       | Run `swift-format` in-place over the app + TailscreenKit sources.          |
 | `make format-check` | Run `swift-format` in lint mode (no changes). CI uses this.        |
 | `make e2e-up`       | Start a local headscale control plane in Docker.                   |
 | `make e2e-down`     | Tear down headscale + volume.                                      |
@@ -109,7 +113,7 @@ a longer session:
 
 ```bash
 eval "$(make e2e-up)"     # exports TAILSCREEN_TS_AUTHKEY + TAILSCREEN_TS_CONTROL_URL
-swift test --filter TailscaleConnectivityTests
+cd Apps/macOS && swift test --filter TailscaleConnectivityTests
 make e2e-down
 ```
 
@@ -123,7 +127,7 @@ Mint an auth key in the Tailscale admin console, export it, run tests:
 
 ```bash
 export TAILSCREEN_TS_AUTHKEY=tskey-...
-swift test
+cd Apps/macOS && swift test
 ```
 
 Without an auth key, the connectivity tests will skip or fail — that's

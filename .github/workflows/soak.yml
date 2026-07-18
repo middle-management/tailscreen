@@ -2,7 +2,7 @@ name: Soak
 
 # Nightly long-run soak tier: the ParserFuzzTests harness at ~50× the PR
 # iteration budget plus the seeded LossyChannel impairment matrix (see
-# Tests/TailscreenTests/SoakTests.swift). Everything is deterministic — every
+# Apps/macOS/Tests/TailscreenTests/SoakTests.swift). Everything is deterministic — every
 # case derives its seed from its matrix coordinates, so a red nightly names
 # the exact reproducing configuration. `workflow_dispatch` for on-demand runs
 # (used once to validate the workflow itself).
@@ -35,8 +35,9 @@ jobs:
         # nightly's reproducing seed/config survives as an artifact.
         run: |
           set -o pipefail
-          TAILSCREEN_SOAK=1 PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" \
-            swift test --filter SoakTests 2>&1 | tee soak.log
+          export PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit"
+          cd Apps/macOS
+          TAILSCREEN_SOAK=1 swift test --filter SoakTests 2>&1 | tee "$GITHUB_WORKSPACE/soak.log"
       - name: Upload soak log
         if: failure()
         uses: actions/upload-artifact@v4
@@ -44,6 +45,6 @@ jobs:
           name: soak-log
           path: |
             soak.log
-            .build/**/*.xcresult
+            Apps/macOS/.build/**/*.xcresult
           if-no-files-found: warn
           retention-days: 14

@@ -25,13 +25,13 @@ tailscale: ## Build libtailscale.a via the TailscaleKit submodule
 
 # Build with TailscaleKit dependency
 build: tailscale ## Build the debug binary (libtailscale + swift build)
-	swift build
+	cd Apps/macOS && swift build
 
 run: tailscale ## Build + run the debug binary
-	swift run
+	cd Apps/macOS && swift run
 
 test: tailscale ## Run the unit test suite (swift test)
-	swift test
+	cd Apps/macOS && swift test
 
 # The platform-portable sub-package (wire protocol + pure decision logic +
 # the tsnet-facing transport tier — see Packages/TailscreenKit/README.md).
@@ -49,7 +49,7 @@ test-protocol: ## Build + smoke-test the portable TailscreenProtocol package
 # double-resumed continuations, callback ordering bugs that compile fine
 # under Swift 6 strict concurrency. Slower (~3x), so kept off `make test`.
 test-tsan: tailscale ## Run tests under ThreadSanitizer
-	swift test --sanitize=thread
+	cd Apps/macOS && swift test --sanitize=thread
 
 # SwiftLint over Sources/Tests/Examples. Install once: `brew install swiftlint`.
 # Existing violations are frozen in .swiftlint-baseline.json; only NEW
@@ -67,26 +67,26 @@ lint-baseline: ## Regenerate the SwiftLint baseline from current state
 # Apple's swift-format ships with the Swift toolchain on macOS (Xcode 16+).
 # `format` rewrites files in place; `format-check` is the lint-only mode
 # used by CI. Config lives in `.swift-format` at the repo root.
-format: ## Run swift-format in-place over Sources/ and Tests/
+format: ## Run swift-format in-place over the app package
 	@command -v swift-format >/dev/null 2>&1 || { echo "swift-format missing — install Xcode 16+ or run 'brew install swift-format'"; exit 1; }
-	@swift-format format --in-place --parallel --recursive Sources Tests Packages/TailscreenKit/Sources
+	@swift-format format --in-place --parallel --recursive Apps/macOS/Sources Apps/macOS/Tests Packages/TailscreenKit/Sources
 
 format-check: ## Run swift-format in lint mode (no changes); CI uses this
 	@command -v swift-format >/dev/null 2>&1 || { echo "swift-format missing — install Xcode 16+ or run 'brew install swift-format'"; exit 1; }
-	@swift-format lint --strict --parallel --recursive Sources Tests Packages/TailscreenKit/Sources
+	@swift-format lint --strict --parallel --recursive Apps/macOS/Sources Apps/macOS/Tests Packages/TailscreenKit/Sources
 
-release: tailscale ## Build the release binary (.build/release/Tailscreen)
-	swift build -c release
-	@echo "Binary available at: .build/release/Tailscreen"
+release: tailscale ## Build the release binary (Apps/macOS/.build/release/Tailscreen)
+	cd Apps/macOS && swift build -c release
+	@echo "Binary available at: Apps/macOS/.build/release/Tailscreen"
 
 clean: ## Wipe .build/ and the TailscaleKit build artifacts
-	swift package clean
-	rm -rf .build
+	cd Apps/macOS && swift package clean
+	rm -rf Apps/macOS/.build
 	@cd Packages/TailscaleKit && $(MAKE) clean
 
 install: release ## Build release + copy binary to ~/bin/Tailscreen
 	@mkdir -p ~/bin
-	@cp .build/release/Tailscreen ~/bin/
+	@cp Apps/macOS/.build/release/Tailscreen ~/bin/
 	@echo "Installed to ~/bin/Tailscreen"
 
 # Bring up a local headscale control server for integration testing.
@@ -108,15 +108,15 @@ test-e2e-local: tailscale build ## End-to-end (LOCAL): screen-share XCTest under
 	@./scripts/test-e2e-xctest.sh
 
 # Two real Tailscreen processes, full UI pipeline, asserted by log marker.
-# Needs Screen Recording permission granted to .build/debug/Tailscreen.
+# Needs Screen Recording permission granted to Apps/macOS/.build/debug/Tailscreen.
 test-e2e-harness: tailscale build ## End-to-end (LOCAL): two-instance scripted harness
 	@./scripts/test-e2e-local.sh
 
 # Regenerate the macOS .icns app icon from the source SVG. Requires
 # librsvg (`brew install librsvg`) and the system iconutil.
 ICON_SRC := docs/assets/logo.svg
-ICON_OUT := Resources/Tailscreen.icns
-ICONSET  := Resources/Tailscreen.iconset
+ICON_OUT := Apps/macOS/Resources/Tailscreen.icns
+ICONSET  := Apps/macOS/Resources/Tailscreen.iconset
 
 icon: ## Regenerate Tailscreen.icns + in-app PDFs from docs/assets/logo.svg
 	@command -v rsvg-convert >/dev/null 2>&1 || { echo "rsvg-convert missing — brew install librsvg"; exit 1; }
@@ -134,8 +134,8 @@ icon: ## Regenerate Tailscreen.icns + in-app PDFs from docs/assets/logo.svg
 	@# Menubar PDFs are state-specific brand variants (idle TV outline,
 	@# filled screen for sharing, outline + play triangle for viewing).
 	@# WelcomeIcon uses the full with-stand artwork.
-	@rsvg-convert -f pdf Sources/Resources/MenubarIcon.svg    -o Sources/Resources/MenubarIcon.pdf
-	@rsvg-convert -f pdf Sources/Resources/MenubarSharing.svg -o Sources/Resources/MenubarSharing.pdf
-	@rsvg-convert -f pdf Sources/Resources/MenubarViewing.svg -o Sources/Resources/MenubarViewing.pdf
-	@rsvg-convert -f pdf docs/assets/logo.svg -o Sources/Resources/WelcomeIcon.pdf
-	@echo "Wrote Sources/Resources/{MenubarIcon,MenubarSharing,MenubarViewing,WelcomeIcon}.pdf"
+	@rsvg-convert -f pdf Apps/macOS/Sources/Resources/MenubarIcon.svg    -o Apps/macOS/Sources/Resources/MenubarIcon.pdf
+	@rsvg-convert -f pdf Apps/macOS/Sources/Resources/MenubarSharing.svg -o Apps/macOS/Sources/Resources/MenubarSharing.pdf
+	@rsvg-convert -f pdf Apps/macOS/Sources/Resources/MenubarViewing.svg -o Apps/macOS/Sources/Resources/MenubarViewing.pdf
+	@rsvg-convert -f pdf docs/assets/logo.svg -o Apps/macOS/Sources/Resources/WelcomeIcon.pdf
+	@echo "Wrote Apps/macOS/Sources/Resources/{MenubarIcon,MenubarSharing,MenubarViewing,WelcomeIcon}.pdf"

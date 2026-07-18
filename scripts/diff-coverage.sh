@@ -2,7 +2,7 @@
 # diff-coverage.sh — coverage gate on CHANGED lines only.
 #
 # Joins the lcov `DA:` records (executable-line hit counts) against the line
-# ranges this branch changed in Sources/*.swift, and fails when the covered
+# ranges this branch changed in Apps/macOS/Sources/*.swift, and fails when the covered
 # fraction of changed executable lines falls below the threshold. Lines that
 # lcov has no DA: record for (comments, declarations, blank) don't count
 # against the gate.
@@ -35,11 +35,16 @@ fi
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 
+# Anchor at the repo root so the invoker's cwd (CI runs this from
+# Apps/macOS) doesn't change what the git pathspec below matches.
+LCOV_FILE="$(cd "$(dirname "$LCOV_FILE")" && pwd)/$(basename "$LCOV_FILE")"
+cd "$REPO_ROOT"
+
 # 1. Changed line ranges: "<file>\t<line>" per added/modified line in
-#    Sources/*.swift. -U0 keeps hunks tight; the @@ header's +start,count
+#    Apps/macOS/Sources/*.swift. -U0 keeps hunks tight; the @@ header's +start,count
 #    names the new-file line range.
 CHANGED_LINES="$(
-    git diff -U0 --no-color "${BASE_REF}...HEAD" -- 'Sources/*.swift' 2>/dev/null |
+    git diff -U0 --no-color "${BASE_REF}...HEAD" -- 'Apps/macOS/Sources/*.swift' 2>/dev/null |
         awk '
             /^\+\+\+ b\// { file = substr($2, 3); next }
             /^@@/ {
@@ -55,7 +60,7 @@ CHANGED_LINES="$(
 )"
 
 if [ -z "$CHANGED_LINES" ]; then
-    echo "diff-coverage: no changed Sources/*.swift lines vs ${BASE_REF} — nothing to gate."
+    echo "diff-coverage: no changed Apps/macOS/Sources/*.swift lines vs ${BASE_REF} — nothing to gate."
     exit 0
 fi
 

@@ -101,13 +101,13 @@ make run
 Or build once and run the binary directly:
 
 ```bash
-.build/debug/Tailscreen
+Apps/macOS/.build/debug/Tailscreen
 ```
 
 ### Release build and install
 
 ```bash
-make release           # → .build/release/Tailscreen
+make release           # → Apps/macOS/.build/release/Tailscreen
 make install           # release + copy to ~/bin/Tailscreen
 ```
 
