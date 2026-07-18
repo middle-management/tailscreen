@@ -335,6 +335,11 @@ class ScreenCapture: NSObject, @unchecked Sendable {
         streamOutput?.onStreamSample = { [weak self] in
             self?.onStreamSample?()
         }
+        streamOutput?.onStreamStopped = { [weak self] error in
+            // An in-band `.stopped` frame (e.g. the sole shared window closed)
+            // routes through the same owner callback as a delegate stop.
+            self?.onStreamStopped?(error)
+        }
 
         if let stream = stream, let output = streamOutput {
             do {
@@ -456,6 +461,11 @@ class ScreenCapture: NSObject, @unchecked Sendable {
 
     func stop() async {
         logEvent("stop.begin")
+        // Mark the output stopping FIRST: `stopCapture()` below makes SCStream
+        // emit a `.stopped` status frame, and without this flag the output's
+        // in-band stop bridge would misread that deliberate stop as a window
+        // vanishing — turning a changeSource helper swap into a phantom crash.
+        streamOutput?.beginStopping()
         // Clear callbacks before tearing the SCStream down. The
         // SCStreamDelegate.didStopWithError can fire asynchronously *after*
         // `stopCapture()` returns; if a new ScreenCapture has been
@@ -593,6 +603,31 @@ private class StreamOutput: NSObject, SCStreamOutput {
     var onContentRectChanged: ((CGRect) -> Void)?
     /// Forwarded ~1 Hz on any delivered sample (see `ScreenCapture.onStreamSample`).
     var onStreamSample: (() -> Void)?
+    /// Fired once when a delivered sample carries `SCFrameStatus.stopped` —
+    /// the stream ended in-band rather than via the delegate's
+    /// `didStopWithError`. Closing the sole shared window takes this path on
+    /// some macOS versions: no delegate error ever fires, and the `.stopped`
+    /// status frame still ticks the heartbeat below, so without this bridge
+    /// the parent's hung-helper watchdog can't trip and the share hangs
+    /// "sharing" forever with dead capture.
+    var onStreamStopped: ((Error?) -> Void)?
+    /// Latches after the first `.stopped` frame so `onStreamStopped` fires once
+    /// even if SCStream keeps delivering stopped frames. Serial queue → no lock.
+    private var didSignalStop = false
+    /// Set by `ScreenCapture.stop()` before it tears the stream down. A
+    /// *deliberate* stop (Stop Sharing, the changeSource helper swap) makes
+    /// SCStream deliver a `.stopped` frame too — we must NOT treat that as a
+    /// window-vanish, or the changeSource helper swap looks like a crash and
+    /// races a spurious auto-restart against the new helper (slot refusal →
+    /// share torn down). Cross-thread: written on the MainActor, read on the
+    /// sample-handler queue, so it takes a lock.
+    private let stopping = OSAllocatedUnfairLock<Bool>(initialState: false)
+
+    /// Mark the output as intentionally stopping so a subsequent `.stopped`
+    /// status frame is ignored rather than bridged to `onStreamStopped`.
+    func beginStopping() {
+        stopping.withLock { $0 = true }
+    }
     /// Last time `onStreamSample` was forwarded, for the 1 Hz throttle. Touched
     /// only on the serial sample-handler queue, so it needs no lock.
     private var lastSampleNotifyNs: UInt64 = 0
@@ -614,8 +649,24 @@ private class StreamOutput: NSObject, SCStreamOutput {
         // no imageBuffer. Logging the status the first few times
         // tells us whether replayd is genuinely silent or just
         // sending status pings without pixel data.
-        let status = Self.frameStatus(from: sampleBuffer)
+        let statusValue = Self.frameStatusValue(from: sampleBuffer)
+        let status = Self.frameStatusString(statusValue)
         let hasImage = sampleBuffer.imageBuffer != nil
+
+        // In-band stream stop: closing the sole shared window can arrive as a
+        // `.stopped` status frame instead of a delegate `didStopWithError`.
+        // Bridge it to `onStreamStopped` *before* the heartbeat below —
+        // otherwise the `.stopped` frame ticks liveness, masking the
+        // hung-helper watchdog, and the share never tears down. Latched so
+        // repeated stopped frames signal only once.
+        if statusValue == .stopped, !stopping.withLock({ $0 }) {
+            if !didSignalStop {
+                didSignalStop = true
+                print("StreamOutput[\(sessionID)] frame status=.stopped — signalling stream stop")
+                onStreamStopped?(nil)
+            }
+            return
+        }
 
         // Liveness: the delegate fires for every delivered sample, including
         // `.idle` frames on a static screen, so this is a content-independent
@@ -692,16 +743,21 @@ private class StreamOutput: NSObject, SCStreamOutput {
         return CGRect(dictionaryRepresentation: dict as CFDictionary)
     }
 
-    /// Pull `SCStreamFrameInfo.status` out of the sample buffer's
-    /// attachments. Returns a human-readable string.
-    private static func frameStatus(from sb: CMSampleBuffer) -> String {
+    /// Pull the raw `SCStreamFrameInfo.status` enum out of the sample buffer's
+    /// attachments. `nil` when the attachment is missing/undecodable.
+    private static func frameStatusValue(from sb: CMSampleBuffer) -> SCFrameStatus? {
         guard
             let attachments = CMSampleBufferGetSampleAttachmentsArray(sb, createIfNecessary: false)
                 as? [[CFString: Any]],
             let attachment = attachments.first,
-            let raw = attachment[SCStreamFrameInfo.status as CFString] as? Int,
-            let status = SCFrameStatus(rawValue: raw)
-        else { return "unknown" }
+            let raw = attachment[SCStreamFrameInfo.status as CFString] as? Int
+        else { return nil }
+        return SCFrameStatus(rawValue: raw)
+    }
+
+    /// Human-readable name for a decoded `SCFrameStatus` (nil ⇒ "unknown").
+    private static func frameStatusString(_ status: SCFrameStatus?) -> String {
+        guard let status else { return "unknown" }
         switch status {
         case .complete: return "complete"
         case .idle: return "idle"

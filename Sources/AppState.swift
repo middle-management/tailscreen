@@ -867,34 +867,64 @@ class AppState: ObservableObject {
                         // crash budget was exhausted.
                         guard let self else { return }
                         guard self.sharingState == .active || self.sharingState == .starting else { return }
-                        if Self.isUserInitiatedCaptureStop(error) {
+                        switch Self.captureStopAction(error) {
+                        case .userInitiated:
                             await self.stopSharing(
                                 reason: "SCStream userStopped: \(error?.localizedDescription ?? "nil")")
-                            return
-                        }
-                        let receiveLoopDomain = TailscaleScreenShareServer.receiveLoopErrorDomain
-                        if let error, (error as NSError).domain == receiveLoopDomain {
+                        case .connectionLost:
                             // The share's UDP control loop is dead — that's
                             // not something a fresh capture helper can fix,
                             // so skip the restart path and tear down. Tell
                             // the user: the share ending on its own must
                             // not be a silent mystery.
-                            self.logger.log("Share receive loop dead (\(error)); tearing sharing down.")
-                            await self.stopSharing(reason: "receive loop dead: \(error.localizedDescription)")
+                            self.logger.log(
+                                "Share receive loop dead (\(error?.localizedDescription ?? "nil")); tearing sharing down.")
+                            await self.stopSharing(
+                                reason: "receive loop dead: \(error?.localizedDescription ?? "nil")")
                             self.showAlertMessage(
                                 title: L("Sharing Stopped"),
                                 message: L(
                                     "The connection to your viewers was lost and couldn't be re-established, so the share was stopped. Check the network and start sharing again."
                                 ))
-                            return
-                        }
-                        guard let server = self.server else { return }
-                        do {
-                            try await server.restartCapture()
-                            self.logger.log("ScreenCapture: restarted after mid-stream stop.")
-                        } catch {
-                            self.logger.log("ScreenCapture: restart failed (\(error)); tearing sharing down.")
-                            await self.stopSharing(reason: "SCStream restart failed: \(error)")
+                        case .helperUnrecoverable:
+                            // Non-retryable helper *error*: another instance
+                            // holds the capture slot, a decode failure, etc.
+                            // Respawning just hits the same wall, so tear down
+                            // and say why — otherwise the menubar stays
+                            // "sharing" with frozen capture and viewers are
+                            // never released.
+                            self.logger.log(
+                                "Capture stopped unrecoverably (\(error?.localizedDescription ?? "nil")); tearing sharing down.")
+                            await self.stopSharing(
+                                reason: "helper unrecoverable: \(error?.localizedDescription ?? "nil")")
+                            self.showAlertMessage(
+                                title: L("Sharing Stopped"),
+                                message: L(
+                                    "Screen sharing couldn't continue because the capture source became unavailable. Start sharing again to pick a new source."
+                                ))
+                        case .sourceClosed:
+                            // Expected stop: the user closed the shared window
+                            // or app. Tear the share down (nothing left to
+                            // capture) but report it as a gentle notice, not an
+                            // error — this wasn't a failure.
+                            self.logger.log(
+                                "Shared source closed (\(error?.localizedDescription ?? "nil")); stopping share.")
+                            await self.stopSharing(
+                                reason: "shared source closed: \(error?.localizedDescription ?? "nil")")
+                            self.presentNotice(
+                                title: L("Sharing Stopped"),
+                                message: L(
+                                    "The window you were sharing was closed, so screen sharing stopped."
+                                ))
+                        case .attemptRestart:
+                            guard let server = self.server else { return }
+                            do {
+                                try await server.restartCapture()
+                                self.logger.log("ScreenCapture: restarted after mid-stream stop.")
+                            } catch {
+                                self.logger.log("ScreenCapture: restart failed (\(error)); tearing sharing down.")
+                                await self.stopSharing(reason: "SCStream restart failed: \(error)")
+                            }
                         }
                     }
                 }
@@ -1195,6 +1225,45 @@ class AppState: ObservableObject {
         guard let nsErr = error as NSError? else { return false }
         return nsErr.domain == SCStreamError.errorDomain
             && nsErr.code == SCStreamError.Code.userStopped.rawValue
+    }
+
+    /// What `onCaptureStopped` should do about a capture failure. The server
+    /// runs its own crash-budget restarts internally, so every error it hands
+    /// up is a give-up signal — but only *some* of them are recoverable with a
+    /// fresh-budget retry. The terminal domains (dead receive loop; a helper
+    /// exit the server classified non-retryable, e.g. the shared window
+    /// closed) must tear the share down: retrying loops forever against a
+    /// source that will never come back. Pure so the routing is unit-testable
+    /// without a live stream.
+    enum CaptureStopAction: Equatable {
+        /// User clicked Control Center "Stop" — quiet teardown.
+        case userInitiated
+        /// UDP control loop is dead — teardown + "connection lost" alert.
+        case connectionLost
+        /// Helper failed non-retryably for a genuine error (slot refused,
+        /// decode failure) — teardown + error alert.
+        case helperUnrecoverable
+        /// The shared window / display / app was closed by the user —
+        /// teardown + a gentle, non-error notice.
+        case sourceClosed
+        /// Transient/unclassified — grant one fresh-budget `restartCapture()`,
+        /// tearing down only if that spawn itself throws.
+        case attemptRestart
+    }
+
+    nonisolated static func captureStopAction(_ error: Error?) -> CaptureStopAction {
+        if isUserInitiatedCaptureStop(error) { return .userInitiated }
+        guard let nsErr = error as NSError? else { return .attemptRestart }
+        switch nsErr.domain {
+        case TailscaleScreenShareServer.receiveLoopErrorDomain:
+            return .connectionLost
+        case TailscaleScreenShareServer.helperSourceGoneErrorDomain:
+            return .sourceClosed
+        case TailscaleScreenShareServer.helperUnrecoverableErrorDomain:
+            return .helperUnrecoverable
+        default:
+            return .attemptRestart
+        }
     }
 
     /// Toggle whether the sharer can draw on their own screen. The panel is
@@ -2384,6 +2453,23 @@ class AppState: ObservableObject {
     /// supply one.
     private func showAlertMessage(title: String, message: String) {
         presentError(.legacy(title: title, message: message))
+    }
+
+    /// A soft, non-error informational notice — a plain `.informational`
+    /// `NSAlert` with a single OK button and no error code / Copy Details.
+    /// For *expected* events (e.g. the shared window was closed) that end the
+    /// share but aren't failures, so the scary `presentError` surface is wrong.
+    /// Runs its own modal panel for the same `MenuBarExtra` popover reason
+    /// documented on `presentError`.
+    func presentNotice(title: String, message: String) {
+        logger.log("Notice: \(title) — \(message)")
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: L("OK"))
+        alert.runModal()
     }
 
     /// Diff the new viewer roster against the previous one to fire a

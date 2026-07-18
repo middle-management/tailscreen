@@ -128,6 +128,14 @@ enum CaptureHelperMain {
                             await runner.startWithFilter(
                                 filter, colorInfo: colorInfo,
                                 captureAudio: selection.captureAudio)
+                        } catch let error as PickerReconstructionError {
+                            // The captured window/display/app no longer
+                            // resolves — the user closed it. Non-retryable like
+                            // `permanent:`, but tagged `source-gone:` so the
+                            // main process can treat it as an expected stop
+                            // (a gentle notice) rather than an error alert.
+                            writer.writeFatal("source-gone: \(error)")
+                            exit(3)
                         } catch {
                             // `permanent:` prefix tells the server's
                             // onUnexpectedExit handler not to burn the

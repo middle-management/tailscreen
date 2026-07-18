@@ -766,6 +766,10 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         /// already holds one). Respawning hits the exact same wall — bail
         /// straight to teardown instead of burning the crash budget.
         case slotRefused
+        /// The captured window / display / app no longer resolves — the user
+        /// closed it (`writeFatal("source-gone: …")`). Non-retryable, but an
+        /// *expected* stop the UI reports as a gentle notice, not an error.
+        case sourceGone
         /// The helper tagged its own death as non-retryable (decode failure,
         /// startup-watchdog timeout, …) via `writeFatal("permanent: …")`.
         case permanent
@@ -781,6 +785,9 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     static func classifyHelperExit(reason: String) -> HelperExitDisposition {
         if reason.contains("-3805") || reason.localizedCaseInsensitiveContains("being interrupted") {
             return .slotRefused
+        }
+        if reason.contains("source-gone:") {
+            return .sourceGone
         }
         if reason.contains("permanent:") {
             return .permanent
@@ -896,7 +903,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             switch Self.classifyHelperExit(reason: reason) {
             case .slotRefused:
                 let err = NSError(
-                    domain: "Tailscreen.HelperScreenCapture",
+                    domain: Self.helperUnrecoverableErrorDomain,
                     code: 1,
                     userInfo: [
                         NSLocalizedDescriptionKey:
@@ -905,9 +912,17 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
                 )
                 self.onCaptureStopped?(err)
                 return
+            case .sourceGone:
+                let err = NSError(
+                    domain: Self.helperSourceGoneErrorDomain,
+                    code: 5,
+                    userInfo: [NSLocalizedDescriptionKey: reason]
+                )
+                self.onCaptureStopped?(err)
+                return
             case .permanent:
                 let err = NSError(
-                    domain: "Tailscreen.HelperScreenCapture",
+                    domain: Self.helperUnrecoverableErrorDomain,
                     code: 4,
                     userInfo: [NSLocalizedDescriptionKey: reason]
                 )
@@ -1492,6 +1507,24 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// fix a socket loop that can no longer read, so it goes straight to
     /// `stopSharing` instead of the capture-restart path.
     static let receiveLoopErrorDomain = "Tailscreen.ReceiveLoop"
+
+    /// `NSError` domain marking a helper failure the server has classified as
+    /// non-retryable (`classifyHelperExit` → `.slotRefused` / `.permanent`).
+    /// AppState treats this domain like `receiveLoopErrorDomain`: go straight
+    /// to `stopSharing`, never `restartCapture()`. Without it, a closed
+    /// single-window share respawns into `windowNotFound` forever — the helper
+    /// dies, the server hands AppState a `.permanent` error, AppState restarts,
+    /// the fresh helper can't resolve the gone window and dies again — while
+    /// the menubar stays "sharing" and viewers are never torn down.
+    static let helperUnrecoverableErrorDomain = "Tailscreen.HelperUnrecoverable"
+
+    /// `NSError` domain marking the one *expected* non-retryable helper exit:
+    /// the captured window / display / app was closed (`classifyHelperExit`
+    /// → `.sourceGone`). AppState tears the share down like
+    /// `helperUnrecoverableErrorDomain`, but reports it as a gentle notice
+    /// ("the shared window closed") rather than a scary error alert — the user
+    /// closed the window on purpose.
+    static let helperSourceGoneErrorDomain = "Tailscreen.HelperSourceGone"
 
     /// Error surfaced through `onCaptureStopped` when the control-receive
     /// loop gives up — `ReceiveLoopPolicy.maxConsecutiveErrors` in a row, or
