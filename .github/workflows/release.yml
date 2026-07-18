@@ -115,7 +115,10 @@ jobs:
             make -j"$(sysctl -n hw.ncpu)"
             cp .libs/libopus.a "/tmp/libopus-${arch}.a"
           }
-          build_arch arm64 arm-apple-darwin
+          # aarch64, not arm: an `arm-*` host makes opus configure target
+          # 32-bit ARM and emit GNU-syntax .S assembly that Apple's clang
+          # assembler rejects; aarch64 uses NEON intrinsics instead.
+          build_arch arm64 aarch64-apple-darwin
           build_arch x86_64 x86_64-apple-darwin
           PREFIX=/tmp/opus-universal
           mkdir -p "$PREFIX/lib/pkgconfig" "$PREFIX/include/opus"
