@@ -40,7 +40,7 @@ TailscreenApp (@main)
  │        │       → MetalViewerRenderer, + NACKScheduler / RRAccounting
  │        │       + TCP/7447 (annotations + input events out)
  │        ├─ RemoteControlInjector ── CGEvent injection (Accessibility TCC)
- │        ├─ VoiceChannel          ── PCM ↔ AAC ↔ RTP, bidi over UDP/7447
+ │        ├─ VoiceChannel          ── PCM ↔ Opus ↔ RTP, bidi over UDP/7447
  │        ├─ TailscalePeerDiscovery ── LocalAPI + TCP probe
  │        ├─ TailscaleIPNWatcher    ── IPN bus subscription
  │        ├─ TailscaleAuth          ── browser-based login
@@ -48,7 +48,7 @@ TailscreenApp (@main)
  ├─ picker-helper subprocess (short-lived: exits when the user picks)
  │    └─ SCContentSharingPicker
  └─ capture-helper subprocess (lives for one share)
-      └─ SCStream (video + optional system audio) → VideoEncoder / AAC → framed stdout
+      └─ SCStream (video + optional system audio) → VideoEncoder / Opus → framed stdout
 ```
 
 If you've used a low-latency video stack before, this will look familiar.
@@ -200,15 +200,20 @@ a real display, and a genuinely bad network to exercise.
 
 ## Audio
 
-`VoiceChannel` handles both directions of voice (AAC-LC, mono, 48 kHz)
+`VoiceChannel` handles both directions of voice (Opus, mono, 48 kHz)
 plus playback of the sharer's **system audio**. Voice is bidirectional
 with viewer-to-viewer relay through the sharer. The receive side runs an
 adaptive jitter buffer, conceals short sequence gaps instead of glitching,
 and puts a failing decoder on a cooldown rather than hammering it.
 
+The codec is Opus — libopus wrapped by the local `OpusKitPackage` — which
+replaced the original AudioToolbox AAC-LC path. Royalty-free and
+software-only, so the exact same codec ports to Linux and Windows
+(see the [porting plan]({% link porting-plan.md %})).
+
 System audio is captured *in the capture helper* (`SCStream` grabs it
 with the video via `capturesAudio`, excluding Tailscreen's own output so
-viewers' voices never loop back), encoded to AAC, and framed to the
+viewers' voices never loop back), encoded to Opus, and framed to the
 parent over the same stdout pipe as video. On the wire it's a separate
 RTP payload type and a reserved SSRC; on the viewer it plays through a
 dedicated player node mixed with voice. The mute toggle is an emission

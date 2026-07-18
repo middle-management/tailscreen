@@ -186,8 +186,9 @@ doesn&rsquo;t. Your screen never touches a third-party server.</p>
       </svg>
     </div>
     <h3>Voice &amp; system audio</h3>
-    <p>Talk over the same tunnel, and share what your Mac is playing.
-    Viewers hear both; everyone gets a mute button.</p>
+    <p>Talk over the same tunnel, and share what your Mac is playing
+    &mdash; all Opus-encoded. Viewers hear both; everyone gets a mute
+    button.</p>
   </div>
   <div class="ts-card">
     <div class="ts-card-icon">

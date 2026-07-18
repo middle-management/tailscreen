@@ -130,7 +130,7 @@ sharing and they're gone.
 ## Voice chat
 
 Both sides have a mic button (and **⌃⌥M** works system-wide, even when
-Tailscreen isn't focused). Audio is AAC over the same tunnel as the video.
+Tailscreen isn't focused). Audio is Opus over the same tunnel as the video.
 With multiple viewers, everyone hears everyone — the sharer relays each
 viewer's voice to the other viewers. The receive path runs an adaptive
 jitter buffer with packet-loss concealment, so a lossy Wi-Fi link degrades
