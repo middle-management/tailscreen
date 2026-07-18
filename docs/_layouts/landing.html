@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="{{ site.lang | default: 'en-US' }}">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" id="ts-theme-css" href="{{ '/assets/css/just-the-docs-tailscreen.css' | relative_url }}">
+  <script>
+    // Swap the whole compiled stylesheet for the dark scheme. The docs pages
+    // do this via jtd.setTheme (see head_custom.html); the landing layout
+    // doesn't load the theme's JS, so it swaps the link href directly.
+    (function () {
+      var link = document.getElementById('ts-theme-css');
+      var light = link.href;
+      var dark = light.replace('-tailscreen.css', '-tailscreen-dark.css');
+      var media = window.matchMedia('(prefers-color-scheme: dark)');
+      function apply() { link.href = media.matches ? dark : light; }
+      apply();
+      media.addEventListener('change', apply);
+    })();
+  </script>
+  {% include head_custom.html %}
+  {% seo %}
+</head>
+<body class="ts-landing">
+  <header class="ts-nav">
+    <div class="ts-container ts-nav-inner">
+      <a class="ts-nav-brand" href="{{ '/' | relative_url }}">
+        <img src="{{ '/assets/logo.svg' | relative_url }}" alt="">
+        <span>Tailscreen</span>
+      </a>
+      <nav class="ts-nav-links">
+        <a href="{% link usage.md %}">Docs</a>
+        <a href="https://github.com/middle-management/tailscreen">GitHub</a>
+        <a class="btn btn-primary" href="{% link install.md %}">Install</a>
+      </nav>
+    </div>
+  </header>
+  <main class="ts-landing-main">
+    {{ content }}
+  </main>
+  <footer class="ts-footer">
+    <div class="ts-container">
+      <p class="ts-footer-links">
+        <a href="{% link install.md %}">Install</a>
+        <a href="{% link usage.md %}">Usage</a>
+        <a href="{% link architecture.md %}">Architecture</a>
+        <a href="{% link protocol.md %}">Protocol</a>
+        <a href="{% link security.md %}">Security</a>
+        <a href="{% link troubleshooting.md %}">Troubleshooting</a>
+        <a href="{% link contributing.md %}">Contributing</a>
+        <a href="https://github.com/middle-management/tailscreen">GitHub</a>
+      </p>
+      <p class="ts-footer-license">Tailscreen is
+      <a href="https://github.com/middle-management/tailscreen/blob/main/LICENSE">MIT-licensed</a>;
+      the upstream <code>libtailscale</code> is BSD-3-Clause. Do whatever.</p>
+    </div>
+  </footer>
+</body>
+</html>

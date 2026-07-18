@@ -132,6 +132,223 @@ body {
 }
 
 // ---------------------------------------------------------------------------
+// Landing layout (homepage only, _layouts/landing.html)
+// ---------------------------------------------------------------------------
+// The homepage renders without the docs chrome: its own top nav, full-width
+// sections, and a footer. Docs pages keep the just-the-docs layout.
+
+.ts-container {
+  max-width: 66rem;
+  margin: 0 auto;
+  padding: 0 1.5rem;
+}
+
+.ts-container-narrow {
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: 0 1.5rem;
+}
+
+.ts-landing {
+  margin: 0;
+
+  .ts-nav {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    border-bottom: 1px solid $border-color;
+    background-color: rgba($body-background-color, 0.88);
+    -webkit-backdrop-filter: blur(10px);
+    backdrop-filter: blur(10px);
+  }
+
+  .ts-nav-inner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-top: 0.6rem;
+    padding-bottom: 0.6rem;
+  }
+
+  .ts-nav-brand {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    font-size: 1.05rem;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    color: $body-heading-color;
+    text-decoration: none;
+    background-image: none;
+
+    img {
+      width: 26px;
+      height: 26px;
+    }
+  }
+
+  .ts-nav-links {
+    display: flex;
+    align-items: center;
+    gap: 1.3rem;
+
+    a {
+      font-size: 0.9rem;
+      font-weight: 500;
+      color: rgba($body-text-color, 0.9);
+      text-decoration: none;
+      background-image: none;
+
+      &:hover {
+        color: $link-color;
+      }
+    }
+
+    .btn {
+      padding: 0.35rem 0.9rem;
+      font-size: 0.85rem;
+    }
+
+    // The link-color rule above outspecifies the theme's .btn-primary;
+    // restore its white label.
+    a.btn-primary,
+    a.btn-primary:hover {
+      color: #ffffff;
+    }
+  }
+
+  .ts-landing-main {
+    padding-bottom: 1rem;
+
+    // Markdown section headings become centered product-section titles.
+    h2 {
+      margin: 4.25rem 0 1.6rem;
+      text-align: center;
+      font-size: 1.9rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      color: $body-heading-color;
+    }
+  }
+
+  .ts-intro {
+    max-width: 44rem;
+    margin: 0 auto;
+    text-align: center;
+    font-size: 1rem;
+    line-height: 1.7;
+    color: rgba($body-text-color, 0.9);
+  }
+
+  // Scale the shared homepage components up to the wider canvas.
+  .ts-hero {
+    padding: 3.5rem 1.5rem 0;
+
+    h1 {
+      max-width: 52rem;
+      font-size: 3.3rem !important;
+    }
+
+    .ts-hero-tagline {
+      max-width: 40rem;
+      font-size: 1.15rem;
+    }
+  }
+
+  .ts-mock {
+    max-width: 46rem;
+  }
+
+  .ts-stats {
+    max-width: 60rem;
+    margin-left: auto;
+    margin-right: auto;
+    margin-bottom: 3rem;
+  }
+
+  .ts-feature-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+
+  .ts-cta {
+    margin-top: 4.5rem;
+    padding-top: 3rem;
+    padding-bottom: 3.1rem;
+  }
+
+  .ts-footer {
+    margin-top: 4rem;
+    padding: 2rem 0 2.4rem;
+    border-top: 1px solid $border-color;
+    text-align: center;
+    font-size: 0.85rem;
+    color: rgba($body-text-color, 0.8);
+
+    a {
+      color: rgba($body-text-color, 0.9);
+      text-decoration: none;
+      background-image: none;
+
+      &:hover {
+        color: $link-color;
+      }
+    }
+
+    .ts-footer-links {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 0.4rem 1.4rem;
+      margin: 0 0 0.8rem;
+    }
+
+    .ts-footer-license {
+      margin: 0;
+      color: rgba($body-text-color, 0.65);
+
+      a {
+        color: rgba($body-text-color, 0.8);
+        text-decoration: underline;
+      }
+    }
+  }
+}
+
+.ts-spotlight-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.875rem;
+
+  .ts-spotlight {
+    margin: 0;
+  }
+}
+
+@media (max-width: 60rem) {
+  .ts-landing .ts-feature-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .ts-spotlight-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 40rem) {
+  .ts-landing .ts-hero h1 {
+    font-size: 2.3rem !important;
+  }
+
+  .ts-landing .ts-feature-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .ts-landing .ts-nav-links {
+    gap: 0.9rem;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Homepage: shared bits
 // ---------------------------------------------------------------------------
 
@@ -150,7 +367,8 @@ body {
   -webkit-text-fill-color: transparent;
 }
 
-.main-content kbd {
+.main-content kbd,
+.ts-landing kbd {
   display: inline-block;
   min-width: 1.4em;
   padding: 0.05em 0.4em;
@@ -662,7 +880,8 @@ body {
 // Homepage: requirements checklist
 // ---------------------------------------------------------------------------
 
-.main-content ul.ts-checks {
+.main-content ul.ts-checks,
+.ts-landing ul.ts-checks {
   margin: 1rem 0 2rem;
   padding-left: 0;
   list-style: none;

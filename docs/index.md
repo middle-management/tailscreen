@@ -1,13 +1,12 @@
 ---
-title: Home
-layout: home
-nav_order: 1
+title: Tailscreen
+layout: landing
+nav_exclude: true
 permalink: /
 image: /assets/social-card.png
 ---
 
 <div class="ts-hero">
-  <img src="{{ '/assets/logo.svg' | relative_url }}" alt="Tailscreen logo">
   <p class="ts-badges">
     <span class="ts-badge">Open source</span>
     <span class="ts-badge">macOS 15+</span>
@@ -24,6 +23,7 @@ image: /assets/social-card.png
   <p class="ts-hero-note">Free and open source. The only account it needs is the Tailscale login you already have.</p>
 </div>
 
+<div class="ts-container">
 <div class="ts-mock" aria-hidden="true">
   <div class="ts-mock-menubar">
     <span class="ts-mock-mb-menus">
@@ -104,14 +104,17 @@ image: /assets/social-card.png
   </div>
 </div>
 
-ScreenCaptureKit grabs the pixels, VideoToolbox encodes them in hardware,
-and [Tailscale](https://tailscale.com/)'s WireGuard tunnel carries them
-straight to the other Mac — direct when the network allows, through
-Tailscale's DERP relays when it doesn't. Your screen never touches a
-third-party server.
+<p class="ts-intro">ScreenCaptureKit grabs the pixels, VideoToolbox encodes
+them in hardware, and <a href="https://tailscale.com/">Tailscale</a>&rsquo;s
+WireGuard tunnel carries them straight to the other Mac &mdash; direct when
+the network allows, through Tailscale&rsquo;s DERP relays when it
+doesn&rsquo;t. Your screen never touches a third-party server.</p>
+</div>
 
 ## Sharp where it counts
 
+<div class="ts-container">
+<div class="ts-spotlight-row">
 <div class="ts-spotlight">
   <div class="ts-spotlight-icon">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">
@@ -145,9 +148,12 @@ third-party server.
     from anywhere when you want it back <em>right now</em>.</p>
   </div>
 </div>
+</div>
+</div>
 
 ## Everything else you'd expect
 
+<div class="ts-container">
 <div class="ts-feature-grid">
   <div class="ts-card">
     <div class="ts-card-icon">
@@ -219,9 +225,11 @@ third-party server.
     you stop. No ghost machines in your admin console.</p>
   </div>
 </div>
+</div>
 
 ## How it works
 
+<div class="ts-container">
 <div class="ts-steps">
   <div class="ts-step">
     <span class="ts-step-n">1</span>
@@ -239,9 +247,11 @@ third-party server.
     <p>That&rsquo;s the whole thing. No links, no PINs, no calendar invite.</p>
   </div>
 </div>
+</div>
 
 ## What you need
 
+<div class="ts-container-narrow">
 <ul class="ts-checks">
   <li>macOS 15 (Sequoia) or later, on both ends. Earlier macOS versions, iOS, and Linux aren&rsquo;t supported.</li>
   <li>A Tailscale account &mdash; the free personal tier is fine.</li>
@@ -249,29 +259,15 @@ third-party server.
   (Accessibility too, but only if you ever grant remote control.)</li>
   <li>A Swift 6 toolchain &mdash; only if you&rsquo;re building from source.</li>
 </ul>
+</div>
 
-## Where to go next
-
-| You want to...                                  | Read this                                        |
-| :---------------------------------------------- | :----------------------------------------------- |
-| Get it running                                  | [Install]({% link install.md %})                 |
-| Actually use it                                 | [Usage]({% link usage.md %})                     |
-| See how the pieces fit together                 | [Architecture]({% link architecture.md %})       |
-| Read the wire format                            | [Network Protocol]({% link protocol.md %})       |
-| Confirm nobody else is watching                 | [Privacy & Security]({% link security.md %})     |
-| Diagnose a black viewer window                  | [Troubleshooting]({% link troubleshooting.md %}) |
-| Hack on it                                      | [Contributing]({% link contributing.md %})       |
-
-## License
-
-[MIT](https://github.com/middle-management/tailscreen/blob/main/LICENSE).
-The upstream `libtailscale` is BSD-3-Clause. Do whatever.
-
+<div class="ts-container">
 <div class="ts-cta">
   <h2>Your screen, on their Mac, in seconds.</h2>
   <p>Install it, sign in to Tailscale, hit Start Sharing.</p>
   <p class="ts-cta-actions">
     <a href="{% link install.md %}" class="btn btn-primary fs-5">Install Tailscreen</a>
-    <a href="{% link usage.md %}" class="btn fs-5">Read the usage guide</a>
+    <a href="{% link usage.md %}" class="btn fs-5">Read the docs</a>
   </p>
+</div>
 </div>
