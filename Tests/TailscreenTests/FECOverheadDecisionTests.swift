@@ -21,11 +21,12 @@ final class FECOverheadDecisionTests: XCTestCase {
     private let ms: UInt64 = 1_000_000
 
     private func sample(
-        rttMs: UInt64, residualQ8: Int = 0, recovered: Int = 0, expected: Int = 1000, capable: Bool = true
+        rttMs: UInt64, residualQ8: Int = 0, recovered: Int = 0, nackRecovered: Int = 0,
+        expected: Int = 1000, capable: Bool = true
     ) -> Sample {
         Sample(
             rttNs: rttMs * ms, residualLossQ8: residualQ8, recovered: recovered,
-            expectedPackets: expected, fecCapable: capable)
+            nackRecovered: nackRecovered, expectedPackets: expected, fecCapable: capable)
     }
 
     private func decide(_ samples: [String: Sample], state: State = State()) -> Decision {
@@ -38,6 +39,23 @@ final class FECOverheadDecisionTests: XCTestCase {
         let d = decide(["v": sample(rttMs: 200, residualQ8: 8)])
         XCTAssertEqual(d.state, State(groupSize: 10, cleanWindows: 0))
         XCTAssertEqual(d.gated, ["v"])
+    }
+
+    func testNackMaskedLossStillGatesOn() {
+        // NACK is repairing the loss so RR residual is low (2 < gate), but at
+        // high RTT — exactly where FEC's zero-RTT recovery beats NACK's per-loss
+        // round trip. The NACK-recovered count must feed raw-loss reconstruction
+        // so the gate still trips: residual 2 + (40/1000 → Q8 10) = 12 raw.
+        let d = decide(["v": sample(rttMs: 200, residualQ8: 2, nackRecovered: 40)])
+        XCTAssertEqual(d.gated, ["v"])
+        XCTAssertEqual(d.state.groupSize, 7)  // 12 raw > fecMidLossQ8 (10) → medium
+    }
+
+    func testNackRecoveryAloneOnFastPathStaysOff() {
+        // Same raw loss but RTT 100 ms < 150 ms: NACK round trip is cheap, so
+        // no parity — the gate needs BOTH high RTT and high raw loss.
+        let d = decide(["v": sample(rttMs: 100, residualQ8: 2, nackRecovered: 40)])
+        XCTAssertTrue(d.gated.isEmpty)
     }
 
     func testLossyButFastPathStaysOff() {

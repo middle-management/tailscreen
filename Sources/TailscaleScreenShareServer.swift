@@ -130,6 +130,12 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         /// reset each window). Recovered + residual reconstructs the raw link
         /// loss the FEC arm decides on — residual alone would oscillate.
         var fecRecoveredThisWindow: Int = 0
+        /// Packets this viewer reported recovering via NACK retransmission this
+        /// sweep window (extended RR `nackRecovered` field, reset each window).
+        /// Folded into raw link loss identically to `fecRecoveredThisWindow` —
+        /// a served retransmit masks loss just like an FEC recovery, so the FEC
+        /// arm must count it to see a link NACK is quietly repairing.
+        var nackRecoveredThisWindow: Int = 0
         /// Video packets planned for THIS viewer this sweep window (reset each
         /// window). This is the viewer's own expected count — a keyframe-only
         /// throttled viewer's is a small fraction of the template stream — so
@@ -1774,12 +1780,14 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         // stray/forged trailing field must not feed the FEC arm.
         let viewerHasFEC = viewerCaps.withLock { $0[addr]?.contains(.fec) ?? false }
         let fecRecovered = viewerHasFEC ? Int(report.fecRecovered) : 0
+        let nackRecovered = viewerHasFEC ? Int(report.nackRecovered) : 0
         viewers.withLock { state in
             guard var viewer = state[addr] else { return }
             viewer.lossFractionQ8 = lossQ8
             viewer.lastRRAtNs = now
             if rttNs > 0 { viewer.rttNs = rttNs }
             viewer.fecRecoveredThisWindow += fecRecovered
+            viewer.nackRecoveredThisWindow += nackRecovered
             state[addr] = viewer
         }
     }
@@ -2952,8 +2960,10 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             for key in Array(state.keys) {
                 guard var viewer = state[key] else { continue }
                 let recovered = viewer.fecRecoveredThisWindow
+                let nackRecovered = viewer.nackRecoveredThisWindow
                 let expected = viewer.packetsSentThisWindow
                 viewer.fecRecoveredThisWindow = 0
+                viewer.nackRecoveredThisWindow = 0
                 viewer.packetsSentThisWindow = 0
                 state[key] = viewer
                 let fresh = viewer.lastRRAtNs != 0 && now &- viewer.lastRRAtNs < windowNs
@@ -2961,6 +2971,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
                     rttNs: viewer.rttNs,
                     residualLossQ8: fresh ? viewer.lossFractionQ8 : 0,
                     recovered: recovered,
+                    nackRecovered: nackRecovered,
                     expectedPackets: expected,
                     fecCapable: capsByAddr[key]?.contains(.fec) ?? false)
             }
@@ -2972,10 +2983,12 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             let rows =
                 samples
                 .map { addr, s in
-                    let rec = Self.fecRecoveredQ8(recovered: s.recovered, expectedPackets: s.expectedPackets)
+                    let rec = Self.fecRecoveredQ8(
+                        recovered: s.recovered + s.nackRecovered, expectedPackets: s.expectedPackets)
                     return
                         "\(addr) rtt=\(s.rttNs / 1_000_000)ms residLossQ8=\(s.residualLossQ8) "
-                        + "rawLossQ8=\(min(255, s.residualLossQ8 + rec)) rec=\(s.recovered)/\(s.expectedPackets) fec=\(s.fecCapable)"
+                        + "rawLossQ8=\(min(255, s.residualLossQ8 + rec)) "
+                        + "fecRec=\(s.recovered) nackRec=\(s.nackRecovered)/\(s.expectedPackets) fec=\(s.fecCapable)"
                 }
                 .joined(separator: " | ")
             logger.log(
@@ -3265,6 +3278,13 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         var residualLossQ8: Int = 0
         /// FEC-recovered packets this viewer reported this window.
         var recovered: Int = 0
+        /// NACK-recovered packets this viewer reported this window. Feeds
+        /// raw-loss reconstruction identically to `recovered`: a served
+        /// retransmit masks link loss (counts as received), so without it a
+        /// link NACK is quietly repairing reads clean and FEC never gates on —
+        /// even at the high RTT where NACK's per-loss round trip is the very
+        /// latency FEC's zero-RTT recovery removes.
+        var nackRecovered: Int = 0
         /// Video packets planned for THIS viewer this window — the
         /// denominator for its own recovered-loss fraction. Per-viewer on
         /// purpose: a shared template-stream count would sum recoveries
@@ -3339,10 +3359,17 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         var worstGatedRawQ8 = 0
         var worstRawQ8 = 0
         for (addr, sample) in samples where sample.fecCapable {
+            // Raw link loss = residual (post-recovery RR loss) + everything the
+            // link lost but a recovery masked. BOTH FEC and NACK recoveries
+            // count as received in `fracLostQ8`, so both must be added back to
+            // reconstruct raw loss — else NACK's own success on a high-RTT link
+            // hides the loss that justifies turning FEC on.
             let rawLossQ8 = min(
                 255,
                 sample.residualLossQ8
-                    + fecRecoveredQ8(recovered: sample.recovered, expectedPackets: sample.expectedPackets))
+                    + fecRecoveredQ8(
+                        recovered: sample.recovered + sample.nackRecovered,
+                        expectedPackets: sample.expectedPackets))
             worstRawQ8 = max(worstRawQ8, rawLossQ8)
             if fecViewerGate(rttNs: sample.rttNs, rawLossQ8: rawLossQ8) {
                 gated.insert(addr)

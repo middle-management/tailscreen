@@ -220,29 +220,31 @@ public enum ScreenShareControlMessage: UInt8, CaseIterable {
     }
 
     /// Encode a receiver report. See `receiverReport` for the layout. Pass
-    /// `includeFECRecovered: true` (FEC negotiated) to append the trailing
-    /// `[fecRecovered:2 BE]` — the 22-byte extended form. The default emits
-    /// the legacy 20-byte layout so pre-FEC servers see exactly the bytes
-    /// they already parse (their decode is length-tolerant either way).
-    public static func encodeReceiverReport(_ report: ReceiverReport, includeFECRecovered: Bool = false) -> Data {
-        var data = Data(capacity: includeFECRecovered ? 22 : 20)
+    /// `includeRecoveryFields: true` (FEC negotiated) to append the trailing
+    /// `[fecRecovered:2 BE][nackRecovered:2 BE]` — the 24-byte extended form.
+    /// The default emits the legacy 20-byte layout so pre-FEC servers see
+    /// exactly the bytes they already parse (all decoders are length-tolerant:
+    /// a 22-byte FEC-era decoder reads `fecRecovered` and ignores the trailing
+    /// two, a 20-byte decoder ignores both).
+    public static func encodeReceiverReport(_ report: ReceiverReport, includeRecoveryFields: Bool = false) -> Data {
+        var data = Data(capacity: includeRecoveryFields ? 24 : 20)
         data.append(receiverReport.rawValue)
         data.append(report.fracLostQ8)
         data.appendBE(report.extHighestSeq)
         data.appendBE(report.jitterTicks)
         data.appendBE(report.lastPingTs)
         data.appendBE(report.delaySincePingMs)
-        if includeFECRecovered {
+        if includeRecoveryFields {
             data.appendBE(report.fecRecovered)
+            data.appendBE(report.nackRecovered)
         }
         return data
     }
 
     /// Parse a receiver report; nil if malformed (needs at least the 20-byte
-    /// legacy layout). The optional trailing `[fecRecovered:2 BE]` (22-byte
-    /// extended form, FEC-negotiated viewers) decodes when present and reads
-    /// as 0 for the legacy layout — the same both-forms tolerance as
-    /// `decodeHelloAckCaps`.
+    /// legacy layout). The optional trailing `[fecRecovered:2 BE]` (≥22 bytes)
+    /// and `[nackRecovered:2 BE]` (≥24 bytes) decode when present and read as 0
+    /// otherwise — the same both-forms tolerance as `decodeHelloAckCaps`.
     public static func decodeReceiverReport(_ data: Data) -> ReceiverReport? {
         guard data.count >= 20, data[data.startIndex] == receiverReport.rawValue else { return nil }
         let base = data.startIndex
@@ -250,13 +252,18 @@ public enum ScreenShareControlMessage: UInt8, CaseIterable {
             data.count >= 22
             ? data.readBE(UInt16.self, at: data.index(base, offsetBy: 20))
             : 0
+        let nackRecovered: UInt16 =
+            data.count >= 24
+            ? data.readBE(UInt16.self, at: data.index(base, offsetBy: 22))
+            : 0
         return ReceiverReport(
             fracLostQ8: data[data.index(base, offsetBy: 1)],
             extHighestSeq: data.readBE(UInt32.self, at: data.index(base, offsetBy: 2)),
             jitterTicks: data.readBE(UInt32.self, at: data.index(base, offsetBy: 6)),
             lastPingTs: data.readBE(UInt64.self, at: data.index(base, offsetBy: 10)),
             delaySincePingMs: data.readBE(UInt16.self, at: data.index(base, offsetBy: 18)),
-            fecRecovered: fecRecovered
+            fecRecovered: fecRecovered,
+            nackRecovered: nackRecovered
         )
     }
 
@@ -371,17 +378,28 @@ public struct ReceiverReport: Sendable, Equatable {
     /// so the server subtracts its own processing delay from the RTT.
     public var delaySincePingMs: UInt16
     /// Packets this viewer recovered via FEC since its previous report.
-    /// Rides the optional 22-byte extended layout (FEC negotiated only);
-    /// reads as 0 from the legacy 20-byte form. Recovered packets count as
-    /// *received* in `fracLostQ8` (residual loss drives the bitrate arm), so
-    /// this field is what lets the server's FEC arm still see raw link loss —
-    /// the anti-oscillation term (FEC hiding all loss must not switch FEC
-    /// off, which would re-trigger the loss it was hiding).
+    /// Rides the optional 24-byte extended layout (FEC negotiated only);
+    /// reads as 0 from the legacy 20-byte (and FEC-era 22-byte) forms.
+    /// Recovered packets count as *received* in `fracLostQ8` (residual loss
+    /// drives the bitrate arm), so this field is what lets the server's FEC
+    /// arm still see raw link loss — the anti-oscillation term (FEC hiding all
+    /// loss must not switch FEC off, which would re-trigger the loss it was
+    /// hiding).
     public var fecRecovered: UInt16 = 0
+    /// Packets this viewer recovered via NACK retransmission since its previous
+    /// report. Same role as `fecRecovered` for the FEC arm's raw-loss
+    /// reconstruction: a served retransmit counts as *received* (so it drops
+    /// residual loss), so without this the arm can't tell a genuinely clean
+    /// link from a lossy one NACK is quietly repairing — and FEC would never
+    /// gate on a high-RTT link where NACK's per-loss round trip is exactly the
+    /// latency FEC's zero-RTT recovery removes. Rides the 24-byte extended
+    /// layout; reads as 0 from the 20/22-byte forms.
+    public var nackRecovered: UInt16 = 0
 
     public init(
         fracLostQ8: UInt8, extHighestSeq: UInt32, jitterTicks: UInt32,
-        lastPingTs: UInt64, delaySincePingMs: UInt16, fecRecovered: UInt16 = 0
+        lastPingTs: UInt64, delaySincePingMs: UInt16, fecRecovered: UInt16 = 0,
+        nackRecovered: UInt16 = 0
     ) {
         self.fracLostQ8 = fracLostQ8
         self.extHighestSeq = extHighestSeq
@@ -389,6 +407,7 @@ public struct ReceiverReport: Sendable, Equatable {
         self.lastPingTs = lastPingTs
         self.delaySincePingMs = delaySincePingMs
         self.fecRecovered = fecRecovered
+        self.nackRecovered = nackRecovered
     }
 }
 

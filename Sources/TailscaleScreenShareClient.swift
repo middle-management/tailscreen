@@ -1088,25 +1088,30 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         if lastPingArrivalNs != 0 {
             delayMs = UInt16(min(65535, (now &- lastPingArrivalNs) / 1_000_000))
         }
-        // The extended 22-byte layout (trailing `fecRecovered`) goes out only
-        // when `.fec` negotiated; legacy/NACK-era servers keep receiving the
-        // exact 20-byte form they already parse (their decode is
-        // length-tolerant either way, but why poke it).
+        // The extended 24-byte layout (trailing `fecRecovered` + `nackRecovered`)
+        // goes out only when `.fec` negotiated; legacy/NACK-era servers keep
+        // receiving the exact 20-byte form they already parse (their decode is
+        // length-tolerant either way, but why poke it). Drain the NACK-recovery
+        // counter every report regardless so it can't grow unbounded when only
+        // the shorter form ships.
         let fecNegotiated = negotiatedCaps.contains(.fec)
+        let nackRecovered = negotiatedCaps.contains(.nack) ? nackScheduler.drainNackRecovered() : 0
         let report = ReceiverReport(
             fracLostQ8: fracLostQ8,
             extHighestSeq: extHighestSeq,
             jitterTicks: 0,
             lastPingTs: lastServerPingNs,
             delaySincePingMs: delayMs,
-            fecRecovered: UInt16(clamping: fecRecoveredSinceReport))
+            fecRecovered: UInt16(clamping: fecRecoveredSinceReport),
+            nackRecovered: UInt16(clamping: nackRecovered))
         try? await pl.send(
-            ScreenShareControlMessage.encodeReceiverReport(report, includeFECRecovered: fecNegotiated),
+            ScreenShareControlMessage.encodeReceiverReport(report, includeRecoveryFields: fecNegotiated),
             to: addr)
         if debugFEC {
             logger.log(
                 "RR sent: fracLostQ8=\(fracLostQ8) pingEcho=\(lastServerPingNs != 0 ? "yes" : "NONE") "
-                    + "delaySincePingMs=\(delayMs) fecRecovered=\(fecRecoveredSinceReport)")
+                    + "delaySincePingMs=\(delayMs) fecRecovered=\(fecRecoveredSinceReport) nackRecovered=\(nackRecovered)"
+            )
         }
         fecRecoveredSinceReport = 0
         lastRRSentNs = now

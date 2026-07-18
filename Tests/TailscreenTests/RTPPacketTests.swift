@@ -946,13 +946,40 @@ final class LossRecoveryWireTests: XCTestCase {
         let legacyDecoded = ScreenShareControlMessage.decodeReceiverReport(legacy)
         XCTAssertEqual(legacyDecoded?.fecRecovered, 0, "20-byte form reads fecRecovered as 0")
         XCTAssertEqual(legacyDecoded?.fracLostQ8, 3)
-        // Extended 22-byte form round-trips the field.
-        let extended = ScreenShareControlMessage.encodeReceiverReport(report, includeFECRecovered: true)
-        XCTAssertEqual(extended.count, 22)
+        // Extended 24-byte form round-trips the recovery fields.
+        let extended = ScreenShareControlMessage.encodeReceiverReport(report, includeRecoveryFields: true)
+        XCTAssertEqual(extended.count, 24)
         XCTAssertEqual(ScreenShareControlMessage.decodeReceiverReport(extended), report)
         // And the extended form is still one tolerant decode away for a
         // NACK-era server (its `>= 20` guard reads the first 20 bytes).
         XCTAssertEqual(ScreenShareControlMessage.decodeReceiverReport(extended)?.fracLostQ8, 3)
+    }
+
+    func testReceiverReportNackRecoveredRoundTrip() {
+        // The FEC arm reconstructs raw link loss as residual + recovered. NACK
+        // recoveries mask loss too (a served retransmit counts as received), so
+        // without carrying the NACK-recovered count the arm can't see raw loss
+        // once NACK is working — FEC never gates on a high-RTT lossy link. The
+        // 24-byte extended RR carries both recovery counters.
+        let report = ReceiverReport(
+            fracLostQ8: 3, extHighestSeq: 0x0002_0001, jitterTicks: 0,
+            lastPingTs: 77, delaySincePingMs: 9, fecRecovered: 1234, nackRecovered: 567)
+        let extended = ScreenShareControlMessage.encodeReceiverReport(report, includeRecoveryFields: true)
+        XCTAssertEqual(extended.count, 24)
+        XCTAssertEqual(ScreenShareControlMessage.decodeReceiverReport(extended), report)
+
+        // A 22-byte (FEC-era, pre-NACK-counter) report reads nackRecovered as 0
+        // but still round-trips fecRecovered.
+        var short22 = extended
+        short22.removeLast(2)
+        XCTAssertEqual(short22.count, 22)
+        XCTAssertEqual(ScreenShareControlMessage.decodeReceiverReport(short22)?.nackRecovered, 0)
+        XCTAssertEqual(ScreenShareControlMessage.decodeReceiverReport(short22)?.fecRecovered, 1234)
+
+        // Legacy 20-byte reads both counters as 0.
+        let legacy = ScreenShareControlMessage.encodeReceiverReport(report)
+        XCTAssertEqual(legacy.count, 20)
+        XCTAssertEqual(ScreenShareControlMessage.decodeReceiverReport(legacy)?.nackRecovered, 0)
     }
 
     func testExtendedHelloAckBackCompat() {
