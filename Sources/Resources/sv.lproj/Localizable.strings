@@ -207,6 +207,8 @@
 "Decoding has been failing for several seconds and automatic recovery hasn't helped. Check the connection on both ends, or disconnect and reconnect." = "Avkodningen har misslyckats i flera sekunder och automatisk återställning har inte hjälpt. Kontrollera anslutningen i båda ändar, eller koppla från och anslut igen.";
 "Sharing Stopped" = "Delning stoppad";
 "The connection to your viewers was lost and couldn't be re-established, so the share was stopped. Check the network and start sharing again." = "Anslutningen till dina tittare förlorades och kunde inte återupprättas, så delningen stoppades. Kontrollera nätverket och starta delningen igen.";
+"Screen sharing couldn't continue because the capture source became unavailable. Start sharing again to pick a new source." = "Skärmdelningen kunde inte fortsätta eftersom källan blev otillgänglig. Starta delningen igen för att välja en ny källa.";
+"The window you were sharing was closed, so screen sharing stopped." = "Fönstret du delade stängdes, så skärmdelningen stoppades.";
 
 /* MARK: - Notifications (TailscreenUserNotifications.swift / ViewerApproval.swift) */
 "Tailscreen request" = "Tailscreen-begäran";

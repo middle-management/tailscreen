@@ -39,4 +39,53 @@ final class CaptureStopDecisionTests: XCTestCase {
         )
         XCTAssertFalse(AppState.isUserInitiatedCaptureStop(err))
     }
+
+    // MARK: - captureStopAction routing
+
+    func testUserStoppedRoutesToUserInitiated() {
+        let err = NSError(
+            domain: SCStreamError.errorDomain,
+            code: SCStreamError.Code.userStopped.rawValue
+        )
+        XCTAssertEqual(AppState.captureStopAction(err), .userInitiated)
+    }
+
+    func testReceiveLoopDeadRoutesToConnectionLost() {
+        let err = NSError(
+            domain: TailscaleScreenShareServer.receiveLoopErrorDomain, code: 1)
+        XCTAssertEqual(AppState.captureStopAction(err), .connectionLost)
+    }
+
+    /// A genuine non-retryable helper *error* (slot refused, decode failure)
+    /// tears the share down with an error alert — it must not loop
+    /// `restartCapture()` against a wall it will keep hitting.
+    func testHelperUnrecoverableRoutesToStop() {
+        let err = NSError(
+            domain: TailscaleScreenShareServer.helperUnrecoverableErrorDomain,
+            code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "replayd refused the slot"])
+        XCTAssertEqual(AppState.captureStopAction(err), .helperUnrecoverable)
+    }
+
+    /// The core regression case: closing the shared window is a non-retryable
+    /// stop, but an *expected* one — it routes to `.sourceClosed` (gentle
+    /// notice), distinct from the error bucket, and never loops the restart.
+    func testSourceGoneRoutesToSourceClosed() {
+        let err = NSError(
+            domain: TailscaleScreenShareServer.helperSourceGoneErrorDomain,
+            code: 5,
+            userInfo: [NSLocalizedDescriptionKey: "source-gone: windowNotFound"])
+        XCTAssertEqual(AppState.captureStopAction(err), .sourceClosed)
+    }
+
+    func testUnknownErrorRoutesToRestart() {
+        // A transient/unclassified failure still gets the one fresh-budget
+        // restart attempt — we only stop outright on the terminal domains.
+        let err = NSError(domain: "Tailscreen.HelperScreenCapture", code: 2)
+        XCTAssertEqual(AppState.captureStopAction(err), .attemptRestart)
+    }
+
+    func testNilErrorRoutesToRestart() {
+        XCTAssertEqual(AppState.captureStopAction(nil), .attemptRestart)
+    }
 }
