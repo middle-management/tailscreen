@@ -13,7 +13,7 @@
 # harmless when brew is absent, e.g. Linux, where opus.pc is on the default
 # path). Any inherited PKG_CONFIG_PATH is appended so a custom prefix wins.
 BREW_PKGCONFIG := $(shell brew --prefix 2>/dev/null)/lib/pkgconfig
-export PKG_CONFIG_PATH := $(CURDIR)/TailscaleKit:$(BREW_PKGCONFIG):$(PKG_CONFIG_PATH)
+export PKG_CONFIG_PATH := $(CURDIR)/Packages/TailscaleKit:$(BREW_PKGCONFIG):$(PKG_CONFIG_PATH)
 
 help: ## Show this help and exit
 	@awk 'BEGIN { FS = ":.*## "; printf "Tailscreen — Make targets\n\nUsage: make <target>\n\nTargets:\n" } \
@@ -21,7 +21,7 @@ help: ## Show this help and exit
 
 # Build TailscaleKit C library if needed
 tailscale: ## Build libtailscale.a via the TailscaleKit submodule
-	@cd TailscaleKit && $(MAKE)
+	@cd Packages/TailscaleKit && $(MAKE)
 
 # Build with TailscaleKit dependency
 build: tailscale ## Build the debug binary (libtailscale + swift build)
@@ -34,7 +34,7 @@ test: tailscale ## Run the unit test suite (swift test)
 	swift test
 
 # The platform-portable sub-package (wire protocol + pure decision logic +
-# the tsnet-facing transport tier — see TailscreenKit/README.md).
+# the tsnet-facing transport tier — see Packages/TailscreenKit/README.md).
 # The app depends on it as a real SwiftPM dependency; the files live only in
 # the package. Needs no built libtailscale.a and no Apple framework, so it
 # also runs on Linux; CI's linux-protocol job runs exactly this. The
@@ -42,8 +42,8 @@ test: tailscale ## Run the unit test suite (swift test)
 # submodule checked out with patches applied (header only — no Go build),
 # hence the apply-patches prerequisite.
 test-protocol: ## Build + smoke-test the portable TailscreenProtocol package
-	@$(MAKE) -C TailscaleKit apply-patches
-	swift test --package-path TailscreenKit
+	@$(MAKE) -C Packages/TailscaleKit apply-patches
+	swift test --package-path Packages/TailscreenKit
 
 # Thread sanitizer build of the test suite. Catches data races on locks,
 # double-resumed continuations, callback ordering bugs that compile fine
@@ -69,11 +69,11 @@ lint-baseline: ## Regenerate the SwiftLint baseline from current state
 # used by CI. Config lives in `.swift-format` at the repo root.
 format: ## Run swift-format in-place over Sources/ and Tests/
 	@command -v swift-format >/dev/null 2>&1 || { echo "swift-format missing — install Xcode 16+ or run 'brew install swift-format'"; exit 1; }
-	@swift-format format --in-place --parallel --recursive Sources Tests TailscreenKit/Sources
+	@swift-format format --in-place --parallel --recursive Sources Tests Packages/TailscreenKit/Sources
 
 format-check: ## Run swift-format in lint mode (no changes); CI uses this
 	@command -v swift-format >/dev/null 2>&1 || { echo "swift-format missing — install Xcode 16+ or run 'brew install swift-format'"; exit 1; }
-	@swift-format lint --strict --parallel --recursive Sources Tests TailscreenKit/Sources
+	@swift-format lint --strict --parallel --recursive Sources Tests Packages/TailscreenKit/Sources
 
 release: tailscale ## Build the release binary (.build/release/Tailscreen)
 	swift build -c release
@@ -82,7 +82,7 @@ release: tailscale ## Build the release binary (.build/release/Tailscreen)
 clean: ## Wipe .build/ and the TailscaleKit build artifacts
 	swift package clean
 	rm -rf .build
-	@cd TailscaleKit && $(MAKE) clean
+	@cd Packages/TailscaleKit && $(MAKE) clean
 
 install: release ## Build release + copy binary to ~/bin/Tailscreen
 	@mkdir -p ~/bin

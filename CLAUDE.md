@@ -11,9 +11,9 @@ Guidance for Claude (and other AI assistants) working in this repo. Keep it accu
 - **Swift 6** with strict concurrency (`@MainActor`, `Sendable`).
 - **macOS 15.2 (Sequoia)** deployment target. Not iOS. The 15.2 floor (vs. 15.0) is dictated by the `SCContentFilter.includedDisplays` / `includedWindows` / `includedApplications` getters the picker-helper uses to extract primitives.
 - **Go 1.21+** required at build time to compile `libtailscale.a` (the C archive that TailscaleKit wraps).
-- **libopus** required at build time: the app links it (via `./OpusKit`'s `COpus` systemLibrary) for the Opus audio path. Install with `brew install opus` (macOS) / `apt install libopus-dev` (Linux); pkg-config resolves it.
+- **libopus** required at build time: the app links it (via `./Packages/OpusKit`'s `COpus` systemLibrary) for the Opus audio path. Install with `brew install opus` (macOS) / `apt install libopus-dev` (Linux); pkg-config resolves it.
 - **SwiftUI** + `MenuBarExtra`, **ScreenCaptureKit**, **VideoToolbox**, **Metal** (`CAMetalLayer`).
-- **TailscaleKit** consumed as a local SwiftPM package (`./TailscaleKit`); **OpusKit** likewise (`./OpusKit`).
+- **TailscaleKit** consumed as a local SwiftPM package (`./Packages/TailscaleKit`); **OpusKit** likewise (`./Packages/OpusKit`).
 
 Runtime needs: Screen Recording permission, and either interactive Tailscale login or `TAILSCREEN_TS_AUTHKEY` (+ optional `TAILSCREEN_TS_CONTROL_URL`).
 
@@ -23,18 +23,19 @@ Runtime needs: Screen Recording permission, and either interactive Tailscale log
 tailscreen/
 ├── Sources/                    # Tailscreen executable (Swift)
 ├── Tests/TailscreenTests/      # Unit + connectivity tests
-├── TailscreenKit/              # Portable (Linux-buildable) protocol core —
-│   │                           #   a real dependency of the app (see its README)
-│   └── Sources/{TailscreenProtocol,TailscreenTransport,TailscreenAudio}/
-├── OpusKit/                    # Local SwiftPM dep: systemLibrary wrapper over
-│   │                           #   libopus — the app's audio codec (replaced
-│   │                           #   AudioToolbox AAC); see its README
-├── TailscaleKit/               # Local SwiftPM dep wrapping libtailscale
-│   ├── upstream/libtailscale/  # Git submodule (tailscale/libtailscale)
-│   ├── Sources/  lib/  include/   # Symlinks into upstream
-│   ├── Patches/                # .patch files applied to upstream Swift
-│   ├── Modules/libtailscale/   # Module map for the C library
-│   └── libtailscale.pc         # pkg-config file (used via PKG_CONFIG_PATH)
+├── Packages/                   # Local SwiftPM packages the app depends on
+│   ├── TailscreenKit/          # Portable (Linux-buildable) protocol core —
+│   │   │                       #   a real dependency of the app (see its README)
+│   │   └── Sources/{TailscreenProtocol,TailscreenTransport,TailscreenAudio}/
+│   ├── OpusKit/                # systemLibrary wrapper over libopus — the app's
+│   │   │                       #   audio codec (replaced AudioToolbox AAC);
+│   │   │                       #   see its README
+│   └── TailscaleKit/           # Wraps libtailscale
+│       ├── upstream/libtailscale/  # Git submodule (tailscale/libtailscale)
+│       ├── Sources/  lib/  include/  # Symlinks into upstream
+│       ├── Patches/            # .patch files applied to upstream Swift
+│       ├── Modules/libtailscale/   # Module map for the C library
+│       └── libtailscale.pc     # pkg-config file (used via PKG_CONFIG_PATH)
 ├── e2e/docker-compose.yml      # Local headscale control plane (port 8080)
 ├── scripts/e2e-{up,down,test}.sh
 ├── .github/workflows/
@@ -47,7 +48,7 @@ Use `rg` to find specific files; the layout above is enough orientation.
 
 ## Build & run
 
-Always go through `make` — the root Makefile sets `PKG_CONFIG_PATH=$(CURDIR)/TailscaleKit` so SwiftPM's `systemLibrary` target finds `libtailscale.pc`, which in turn supplies the `-L` flag for `libtailscale.a`.
+Always go through `make` — the root Makefile sets `PKG_CONFIG_PATH=$(CURDIR)/Packages/TailscaleKit` so SwiftPM's `systemLibrary` target finds `libtailscale.pc`, which in turn supplies the `-L` flag for `libtailscale.a`.
 
 ```bash
 make build         # builds libtailscale.a, then `swift build`
@@ -69,9 +70,9 @@ First build downloads Go modules; **network access required**.
 
 ### TailscaleKit submodule
 
-`TailscaleKit/upstream/libtailscale` is pinned in `.gitmodules` (`ignore = dirty`). After a fresh clone, run `git submodule update --init --recursive` (or clone with `--recurse-submodules`).
+`Packages/TailscaleKit/upstream/libtailscale` is pinned in `.gitmodules` (`ignore = dirty`). After a fresh clone, run `git submodule update --init --recursive` (or clone with `--recurse-submodules`).
 
-Patches in `TailscaleKit/Patches/*.patch` are applied on top of the upstream Swift sources. They add things like a `Foundation` import, glue imports for C-bridge types, `send`/`receive` on connections, public `logout`, listener poll-timeout handling, the `tsnet ListenPacket` / `PacketListener` Swift wrapper used by the UDP video path, a short-write-safe `OutgoingConnection.send` loop (patch 023 — replaced the app-side reflection hack that reached the private fd), and Linux portability gates (patch 022 — Combine→AsyncStream fallback, Glibc syscall shim, `FoundationNetworking` imports, SOCKS-free direct-loopback LocalAPI). **Do not edit `TailscaleKit/Sources/`** — those are symlinks into the submodule. Add or modify a patch instead, then re-run `make tailscale`. A new patch must be a sequential diff against the fully-patched tree (see `Patches/README.md` — the Makefile hard-fails on rejected hunks; `|| true` used to hide them and let GNU patch double-apply).
+Patches in `Packages/TailscaleKit/Patches/*.patch` are applied on top of the upstream Swift sources. They add things like a `Foundation` import, glue imports for C-bridge types, `send`/`receive` on connections, public `logout`, listener poll-timeout handling, the `tsnet ListenPacket` / `PacketListener` Swift wrapper used by the UDP video path, a short-write-safe `OutgoingConnection.send` loop (patch 023 — replaced the app-side reflection hack that reached the private fd), and Linux portability gates (patch 022 — Combine→AsyncStream fallback, Glibc syscall shim, `FoundationNetworking` imports, SOCKS-free direct-loopback LocalAPI). **Do not edit `Packages/TailscaleKit/Sources/`** — those are symlinks into the submodule. Add or modify a patch instead, then re-run `make tailscale`. A new patch must be a sequential diff against the fully-patched tree (see `Patches/README.md` — the Makefile hard-fails on rejected hunks; `|| true` used to hide them and let GNU patch double-apply).
 
 **TailscaleKit builds and passes its tests on Linux** (Go c-archive + Swift wrapper; CI job `linux-tailscalekit`). The live two-node tsnet exchange (TCP + UDP `PacketListener` + LocalAPI over local headscale via `scripts/e2e-up-native.sh`, which is OS-aware) has been verified manually on a Linux host — see `docs/porting-plan.md` Phase 1.
 
@@ -80,7 +81,7 @@ Patches in `TailscaleKit/Patches/*.patch` are applied on top of the upstream Swi
 ### Unit tests
 ```bash
 make test
-# or: PKG_CONFIG_PATH="$(pwd)/TailscaleKit" swift test
+# or: PKG_CONFIG_PATH="$(pwd)/Packages/TailscaleKit" swift test
 ```
 
 ### E2E connectivity (real tsnet transport)
@@ -235,7 +236,7 @@ stays dependency-free; the `linux-protocol` job installs `libopus-dev` +
 
 The rules for package files (no Apple frameworks; how to move a file in;
 what must be `public`) live canonically in
-**`TailscreenKit/README.md`** — read it before touching the
+**`Packages/TailscreenKit/README.md`** — read it before touching the
 package. The package's own test target is a shallow smoke suite only; the
 real coverage stays in `Tests/TailscreenTests`.
 
@@ -322,7 +323,7 @@ The macOS native `SCContentSharingPicker` runs in its own short-lived child proc
 `Package.swift` links libtailscale via a **relative** path:
 
 ```swift
-linkerSettings: [.unsafeFlags(["-L", "TailscaleKit/lib"])]
+linkerSettings: [.unsafeFlags(["-L", "Packages/TailscaleKit/lib"])]
 ```
 
 Never make this absolute — it breaks portability and CI. Both the `Tailscreen` target and the `TailscreenTests` target carry this flag.
@@ -341,7 +342,7 @@ User-facing strings are localized through SwiftPM resources. `Package.swift` set
 
 - **`swift build` fails with linker errors** — you skipped `make tailscale`. The Go build emits `libtailscale.a`; without it nothing links.
 - **Two local instances see no peers** — both processes are sharing one Tailscale state dir. Use `./test-local.sh` (or set `TAILSCREEN_INSTANCE` manually).
-- **Editing `TailscaleKit/Sources/` directly** — those paths are symlinks into the upstream submodule. Add a patch under `TailscaleKit/Patches/` instead.
+- **Editing `Packages/TailscaleKit/Sources/` directly** — those paths are symlinks into the upstream submodule. Add a patch under `Packages/TailscaleKit/Patches/` instead.
 - **Port 7447 is hardcoded** across the discovery, server, client, and metadata paths. If you make it configurable, search for `7447` and update everywhere it appears.
 - **Auth flow needs an active node** — interactive login only works after `Start Sharing` or `Connect to…` has initialized the tsnet node.
 - **CI uses submodules.** Workflows already pass `submodules: recursive`; if you add a new workflow that builds, do the same.
@@ -349,7 +350,7 @@ User-facing strings are localized through SwiftPM resources. `Package.swift` set
 - **Don't present `SCContentSharingPicker` from the main process either.** Same family of APIs, same defensive isolation — spawn `--picker-helper` instead. The picker subprocess exits the moment the user picks, so its XPC handles never live alongside the long-running main process.
 - **Don't deserialize an `SCContentFilter` in the main process.** The decoded filter retains XPC handles to system services; the unarchive happens only inside the capture-helper.
 - **Don't add SCStream lifecycle to the main process.** All capture lives in the helper subprocess. The main-process screen-share server only spawns the helper and broadcasts what comes back.
-- **Linux CI (`linux-protocol`) fails after touching a package file** — you added an Apple-only dependency to a file in `TailscreenKit/Sources/`. Keep package files Foundation-only (see the package README's whitelist) or move the mac-bound piece into the app target. Reproduce with `make test-protocol` (works on macOS too).
+- **Linux CI (`linux-protocol`) fails after touching a package file** — you added an Apple-only dependency to a file in `Packages/TailscreenKit/Sources/`. Keep package files Foundation-only (see the package README's whitelist) or move the mac-bound piece into the app target. Reproduce with `make test-protocol` (works on macOS too).
 - **App fails to compile against a package type** ("initializer is inaccessible", "cannot find X in scope") — the declaration is `internal` in TailscreenKit. Mark what the app needs `public` (structs the app constructs need explicit public inits — Swift never synthesizes memberwise inits as public). Test-only seams should stay internal; tests use `@testable import TailscreenProtocol`/`TailscreenTransport`.
 - **Stop Sharing badge stuck on** — usually means a helper subprocess was orphaned by a stop/restart race. The screen-share server has a restart lock for this; if you touch capture restart, preserve the await-pending-restart-then-teardown ordering. This includes the mid-share "Change Source…" path: `TailscaleScreenShareServer.changeSource(filterData:)` swaps the cached selection and rides the same tracked restart — never spawn a helper directly.
 
@@ -357,13 +358,13 @@ User-facing strings are localized through SwiftPM resources. `Package.swift` set
 
 Three workflows under `.github/workflows/` (plus a docs-deploy workflow):
 
-- **Build** — runs `make build` + `make test` on every PR and push to `main`. Skips doc-only changes. Uses `concurrency.cancel-in-progress` to drop superseded runs. Also in this workflow: a **`linux-protocol` job** (Ubuntu, `swift:6.1-noble` container: `swift test --package-path TailscreenKit` — the required portability gate for the protocol package; needs the submodule + patches for the transport tier's header and apt `libopus-dev`/`pkg-config` for the `TailscreenAudio` tier, but no Go build), a **`linux-tailscalekit` job** (same container + apt Go: builds the patched libtailscale c-archive and runs the TailscaleKit unit tests on Linux — the transport-portability gate), a **`linux-opus` job** (same container + apt `libopus-dev`: builds `OpusKit` and runs its encode/decode round-trip tests — the audio-codec-portability gate for the Opus-only decision, `docs/porting-plan.md` #6), a **`build-release` job** (`swift build -c release` compile check, required — release-config breaks used to surface only on published releases) and a **diff-coverage gate** (`scripts/diff-coverage.sh`: lcov `DA:` records joined against `git diff -U0 origin/main...HEAD` changed lines in `Sources/*.swift`, fails under 70 % coverage of changed executable lines; currently `continue-on-error: true` with the same flip-to-required TODO convention as the `format` job).
+- **Build** — runs `make build` + `make test` on every PR and push to `main`. Skips doc-only changes. Uses `concurrency.cancel-in-progress` to drop superseded runs. Also in this workflow: a **`linux-protocol` job** (Ubuntu, `swift:6.1-noble` container: `swift test --package-path Packages/TailscreenKit` — the required portability gate for the protocol package; needs the submodule + patches for the transport tier's header and apt `libopus-dev`/`pkg-config` for the `TailscreenAudio` tier, but no Go build), a **`linux-tailscalekit` job** (same container + apt Go: builds the patched libtailscale c-archive and runs the TailscaleKit unit tests on Linux — the transport-portability gate), a **`linux-opus` job** (same container + apt `libopus-dev`: builds `OpusKit` and runs its encode/decode round-trip tests — the audio-codec-portability gate for the Opus-only decision, `docs/porting-plan.md` #6), a **`build-release` job** (`swift build -c release` compile check, required — release-config breaks used to surface only on published releases) and a **diff-coverage gate** (`scripts/diff-coverage.sh`: lcov `DA:` records joined against `git diff -U0 origin/main...HEAD` changed lines in `Sources/*.swift`, fails under 70 % coverage of changed executable lines; currently `continue-on-error: true` with the same flip-to-required TODO convention as the `format` job).
 - **Soak** — nightly (`cron: 17 3 * * *`) + `workflow_dispatch`: runs `SoakTests` with `TAILSCREEN_SOAK=1` (the `ParserFuzzHarness` at ~50× PR budget plus the seeded `LossyChannel` impairment matrix). Deterministic — a red nightly names its reproducing seed/configuration.
 - **Release** — fires when a GitHub release is **published**. Cross-builds `libtailscale.a` for `arm64` + `amd64`, lipo-merges, then `swift build -c release --arch arm64 --arch x86_64` for a universal Mach-O. Wraps it in `Tailscreen.app`, codesigns with a Developer ID identity, notarizes via `notarytool`, staples, and uploads the zipped `.app` + `checksums.txt` to the release. Signing + notarization run only when **all** of the Apple secrets (`APPLE_DEVELOPER_ID_CERT_P12`, `APPLE_DEVELOPER_ID_CERT_PASSWORD`, `APPLE_NOTARY_API_KEY_P8`, `APPLE_NOTARY_API_KEY_ID`, `APPLE_NOTARY_API_ISSUER_ID`) are set; otherwise an unsigned `.app` is uploaded with a warning. The Homebrew tap repo owns cask formatting.
 
 ## Git workflow notes
 
-- `.gitmodules` pins `TailscaleKit/upstream/libtailscale` to `tailscale/libtailscale.git` (`ignore = dirty`).
+- `.gitmodules` pins `Packages/TailscaleKit/upstream/libtailscale` to `tailscale/libtailscale.git` (`ignore = dirty`).
 - After cloning: `git submodule update --init --recursive`.
 - `.gitignore` excludes `.build/`, `.swiftpm/`, `Package.resolved`, the built `Tailscreen` binary, and `.envrc`.
 - AI sessions develop on a designated `claude/...` branch — **do not push to `main`**. The active branch is named in the per-session prompt.

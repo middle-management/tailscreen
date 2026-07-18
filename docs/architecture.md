@@ -254,12 +254,12 @@ hated.
 [TailscaleKit](https://github.com/tailscale/libtailscale) is a Swift
 wrapper around `libtailscale` (the same C library used by Tailscale's own
 embeds). We pull it in as a local SwiftPM package at
-`./TailscaleKit/` so we can apply our patches on top of the upstream
+`./Packages/TailscaleKit/` so we can apply our patches on top of the upstream
 Swift sources. The patches are all small — things like a `Foundation`
 import, glue imports for the C bridge, `send`/`receive` on connections, a
 public `logout`, listener poll-timeout handling, and our `tsnet
 ListenPacket` Swift wrapper for the UDP video path. They live in
-`TailscaleKit/Patches/`.
+`Packages/TailscaleKit/Patches/`.
 
 Each Tailscreen session spins up an **ephemeral tsnet node**: a fresh
 Tailscale identity that lives only as long as the session. The Tailscale

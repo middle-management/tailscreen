@@ -2,12 +2,12 @@ included:
   - Sources
   - Tests
   - Examples
-  - TailscreenKit/Sources
+  - Packages/TailscreenKit/Sources
 
 excluded:
   - .build
-  - TailscaleKit/upstream
-  - TailscaleKit/Sources
+  - Packages/TailscaleKit/upstream
+  - Packages/TailscaleKit/Sources
   - Sources/ScreenShareClient.swift
   - Sources/ScreenShareServer.swift
 

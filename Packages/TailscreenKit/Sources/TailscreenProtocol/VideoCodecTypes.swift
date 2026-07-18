@@ -2,7 +2,7 @@ import Foundation
 
 // Codec-level wire types + encoder tuning constants, in their own file (not
 // VideoEncoder.swift) because they are part of the platform-portable
-// TailscreenProtocol set — see TailscreenKit/README.md. Nothing
+// TailscreenProtocol set — see Packages/TailscreenKit/README.md. Nothing
 // here may import an Apple framework.
 
 /// Codec used on the wire. The sharer picks at startup (preferring HEVC

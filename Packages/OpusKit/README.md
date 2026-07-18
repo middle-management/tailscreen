@@ -46,7 +46,7 @@ instance per stream, single-threaded.
 ## Build & test
 
 ```bash
-swift test --package-path OpusKit   # macOS or Linux, needs libopus
+swift test --package-path Packages/OpusKit   # macOS or Linux, needs libopus
 ```
 
 CI's `linux-opus` job runs exactly this. The tests are encode→decode round

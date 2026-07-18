@@ -3,7 +3,7 @@ import Foundation
 // JSON wire types for the TCP metadata channel, in their own file (not
 // TailscreenMetadata.swift, which is AppKit-bound) because they are part of
 // the platform-portable TailscreenProtocol set — see
-// TailscreenKit/README.md. Nothing here may import an Apple
+// Packages/TailscreenKit/README.md. Nothing here may import an Apple
 // framework.
 
 /// Metadata about a Tailscreen screen share

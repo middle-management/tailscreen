@@ -33,7 +33,7 @@ jobs:
     # every build/test step resolves libopus. macos-latest is arm64, so the
     # brew prefix is /opt/homebrew.
     env:
-      PKG_CONFIG_PATH: ${{ github.workspace }}/TailscaleKit:/opt/homebrew/lib/pkgconfig
+      PKG_CONFIG_PATH: ${{ github.workspace }}/Packages/TailscaleKit:/opt/homebrew/lib/pkgconfig
 
     steps:
       - name: Checkout code
@@ -48,7 +48,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.21'
-          cache-dependency-path: TailscaleKit/upstream/libtailscale/go.sum
+          cache-dependency-path: Packages/TailscaleKit/upstream/libtailscale/go.sum
 
       - name: Install libopus
         # OpusKit's COpus systemLibrary resolves libopus via pkg-config; the
@@ -156,7 +156,7 @@ jobs:
     # See the `build` job: SwiftPM on arm64 runners doesn't search brew's
     # pkgconfig dir, so put libopus (and libtailscale) on PKG_CONFIG_PATH.
     env:
-      PKG_CONFIG_PATH: ${{ github.workspace }}/TailscaleKit:/opt/homebrew/lib/pkgconfig
+      PKG_CONFIG_PATH: ${{ github.workspace }}/Packages/TailscaleKit:/opt/homebrew/lib/pkgconfig
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -166,7 +166,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.21'
-          cache-dependency-path: TailscaleKit/upstream/libtailscale/go.sum
+          cache-dependency-path: Packages/TailscaleKit/upstream/libtailscale/go.sum
       - name: Install libopus
         run: brew install opus
       - name: Build libtailscale
@@ -176,7 +176,7 @@ jobs:
 
   # Portability gate: the TailscreenProtocol package (wire protocol + pure
   # decision logic + the tsnet-facing TailscreenTransport tier — a real
-  # dependency of the app, see TailscreenKit/README.md) must
+  # dependency of the app, see Packages/TailscreenKit/README.md) must
   # build and pass its smoke tests on Linux, where no Apple framework
   # exists. This is what keeps the portable set portable: an
   # AppKit/os/CoreGraphics/VideoToolbox import sneaking into a package
@@ -195,18 +195,18 @@ jobs:
           submodules: recursive
       - name: Install make + libopus
         # The swift:*-noble images are slim — no make (or gcc). The patch
-        # loop lives in TailscaleKit/Makefile, so make is required.
+        # loop lives in Packages/TailscaleKit/Makefile, so make is required.
         # libopus-dev + pkg-config are for the TailscreenAudio target's
         # OpusKit dependency (opus.pc is on the Linux default search path,
         # so no PKG_CONFIG_PATH entry is needed for it).
         run: apt-get update && apt-get install -y --no-install-recommends make libopus-dev pkg-config
       - name: Apply TailscaleKit patches (header only, no Go build)
-        run: make -C TailscaleKit apply-patches
+        run: make -C Packages/TailscaleKit apply-patches
       - name: Build + test TailscreenProtocol on Linux
-        run: PKG_CONFIG_PATH="$PWD/TailscaleKit" swift test --package-path TailscreenKit
+        run: PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" swift test --package-path Packages/TailscreenKit
 
   # Audio-codec-portability gate: OpusKit (a systemLibrary wrapper over
-  # libopus — see OpusKit/README.md) must build and pass its
+  # libopus — see Packages/OpusKit/README.md) must build and pass its
   # encode/decode round-trip tests on Linux. This is the portable foundation
   # for the Opus-only audio decision (docs/porting-plan.md #6); wiring it
   # into the app's audio path is a later mac-side step. Cheap: one apt
@@ -219,7 +219,7 @@ jobs:
       - name: Install libopus
         run: apt-get update && apt-get install -y --no-install-recommends libopus-dev pkg-config
       - name: Build + test OpusKit on Linux
-        run: swift test --package-path OpusKit
+        run: swift test --package-path Packages/OpusKit
 
   # Transport-portability gate: libtailscale (Go c-archive) + the patched
   # TailscaleKit Swift wrapper must build and pass their unit tests on
@@ -248,9 +248,9 @@ jobs:
           # "dubious ownership" and Go's VCS stamping dies with exit 128.
           # The stamp is worthless for a c-archive — skip it.
           GOFLAGS: -buildvcs=false
-        run: make -C TailscaleKit
+        run: make -C Packages/TailscaleKit
       - name: Test TailscaleKit on Linux
-        run: PKG_CONFIG_PATH="$PWD/TailscaleKit" swift test --package-path TailscaleKit
+        run: PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" swift test --package-path Packages/TailscaleKit
 
   lint:
     runs-on: macos-latest
@@ -304,7 +304,7 @@ jobs:
     # See the `build` job: put libopus (+ libtailscale) on PKG_CONFIG_PATH so
     # SwiftPM resolves them on arm64 runners. The Makefile appends this.
     env:
-      PKG_CONFIG_PATH: ${{ github.workspace }}/TailscaleKit:/opt/homebrew/lib/pkgconfig
+      PKG_CONFIG_PATH: ${{ github.workspace }}/Packages/TailscaleKit:/opt/homebrew/lib/pkgconfig
     steps:
       - uses: actions/checkout@v4
         with:
@@ -312,7 +312,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.21'
-          cache-dependency-path: TailscaleKit/upstream/libtailscale/go.sum
+          cache-dependency-path: Packages/TailscaleKit/upstream/libtailscale/go.sum
       - name: Install libopus
         run: brew install opus
       - name: Build libtailscale

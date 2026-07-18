@@ -69,14 +69,14 @@ fails to link** until `make tailscale` (or `make build`) has produced
 
 ## TailscaleKit and the patches
 
-`TailscaleKit/upstream/libtailscale` is a submodule pinned in
+`Packages/TailscaleKit/upstream/libtailscale` is a submodule pinned in
 `.gitmodules` with `ignore = dirty`. After cloning, run:
 
 ```bash
 git submodule update --init --recursive
 ```
 
-The patches under `TailscaleKit/Patches/` get applied on top of the
+The patches under `Packages/TailscaleKit/Patches/` get applied on top of the
 upstream Swift sources during `make tailscale`. They're all small. They
 add things like:
 
@@ -88,7 +88,7 @@ add things like:
 - The `tsnet ListenPacket` / `PacketListener` Swift wrapper for the UDP
   video path.
 
-**Don't edit `TailscaleKit/Sources/` directly.** Those paths are
+**Don't edit `Packages/TailscaleKit/Sources/` directly.** Those paths are
 symlinks into the submodule. You'll lose your edits the next `make
 tailscale` run, plus the changes won't survive a fresh clone. Add or
 modify a `.patch` file instead and re-run `make tailscale`.

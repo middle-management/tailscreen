@@ -150,7 +150,7 @@ New `Section(L("Quality"))` in `SettingsView` between Viewers and Audio (:30-32)
 - **Don't touch capture from the main process** (CLAUDE.md): all SCStream/encoder config stays in the helper; the main process only sets env + wire messages.
 - **UserDefaults key stability**: version the JSON via `Codable` optional fields with defaults (decode-with-fallback), so an older blob never crashes settings load.
 - **Localization**: interpolated keys must land in the catalog in `%lld`/`%@` form or `LocalizationCatalogTests` fails; codec names / "fps" unit treated per the brand-noun/glyph rule.
-- **Linker/package rules**: no `Package.swift` changes needed; keep the relative `-L TailscaleKit/lib` untouched.
+- **Linker/package rules**: no `Package.swift` changes needed; keep the relative `-L Packages/TailscaleKit/lib` untouched.
 
 ## Estimated scope
 

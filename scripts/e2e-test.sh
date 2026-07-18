@@ -12,5 +12,5 @@ trap cleanup EXIT
 eval "$("$REPO_ROOT/scripts/e2e-up.sh")"
 
 cd "$REPO_ROOT"
-PKG_CONFIG_PATH="$REPO_ROOT/TailscaleKit" \
+PKG_CONFIG_PATH="$REPO_ROOT/Packages/TailscaleKit" \
     swift test --filter TailscaleConnectivityTests

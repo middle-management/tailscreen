@@ -192,7 +192,7 @@ You cloned without `--recurse-submodules`. Fix:
 git submodule update --init --recursive
 ```
 
-`TailscaleKit/upstream/libtailscale` is pinned in `.gitmodules` and
+`Packages/TailscaleKit/upstream/libtailscale` is pinned in `.gitmodules` and
 required for the build.
 
 ## Reporting a bug

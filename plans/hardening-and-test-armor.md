@@ -398,7 +398,7 @@ suite.
 
 1. **Release-config build job.** New `build-release` job beside `build` (:27): checkout with
    `submodules: recursive`, `actions/setup-go@v5` (same cache-dependency-path), `make tailscale`,
-   then `PKG_CONFIG_PATH="$PWD/TailscaleKit" swift build -c release`. No tests, no
+   then `PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" swift build -c release`. No tests, no
    artifact — the point is that `-O` + cross-module optimization + stripped `assert()`s compile
    clean on every PR instead of first breaking on a published release. Required (not
    continue-on-error): a release-config compile break is always real.

@@ -13,7 +13,7 @@ The platform-portable core of Tailscreen, in three targets/tiers:
 - **`TailscreenTransport`** — the tsnet-facing layer
   (`TailscalePeerDiscovery`, `TailscaleIPNWatcher`). Depends on
   `TailscreenProtocol` and on `TailscaleKit` (the patched wrapper, which
-  itself builds on Linux — see `TailscaleKit/Patches/022`).
+  itself builds on Linux — see `Packages/TailscaleKit/Patches/022`).
   *Compiling* it needs only the checked-out submodule with patches applied
   (`make -C ../TailscaleKit apply-patches`); the built
   `libtailscale.a` is a link-time input that nothing in this package links.
@@ -58,9 +58,9 @@ that roadmap.
 
 ```bash
 make test-protocol   # from the repo root (applies TailscaleKit patches first)
-# or directly (after `make -C TailscaleKit apply-patches`):
-PKG_CONFIG_PATH="$PWD/TailscaleKit" \
-  swift test --package-path TailscreenKit  # macOS and Linux
+# or directly (after `make -C Packages/TailscaleKit apply-patches`):
+PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" \
+  swift test --package-path Packages/TailscreenKit  # macOS and Linux
 ```
 
 CI's `linux-protocol` job (`.github/workflows/build.yml`) runs exactly this

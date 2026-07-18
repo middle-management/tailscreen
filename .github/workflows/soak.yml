@@ -26,7 +26,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.21'
-          cache-dependency-path: TailscaleKit/upstream/libtailscale/go.sum
+          cache-dependency-path: Packages/TailscaleKit/upstream/libtailscale/go.sum
       - name: Build libtailscale
         run: make tailscale
       - name: Run soak tests
@@ -35,7 +35,7 @@ jobs:
         # nightly's reproducing seed/config survives as an artifact.
         run: |
           set -o pipefail
-          TAILSCREEN_SOAK=1 PKG_CONFIG_PATH="$PWD/TailscaleKit" \
+          TAILSCREEN_SOAK=1 PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" \
             swift test --filter SoakTests 2>&1 | tee soak.log
       - name: Upload soak log
         if: failure()
