@@ -67,7 +67,7 @@ against.
 ### Clone — with submodules
 
 Tailscale's C library lives in a submodule under
-`TailscaleKitPackage/upstream/libtailscale`. Forget the recursive clone
+`Packages/TailscaleKit/upstream/libtailscale`. Forget the recursive clone
 and the build fails with a confusing missing-headers error. So:
 
 ```bash
@@ -87,7 +87,7 @@ make build
 ```
 
 This compiles `libtailscale.a` from the Go submodule, applies the patches
-under `TailscaleKitPackage/Patches/` to the upstream Swift sources (more on
+under `Packages/TailscaleKit/Patches/` to the upstream Swift sources (more on
 that in [Contributing]({% link contributing.md %})), builds the TailscaleKit
 wrapper, and finally builds the app. First build pulls Go modules, so it
 needs internet.
@@ -101,13 +101,13 @@ make run
 Or build once and run the binary directly:
 
 ```bash
-.build/debug/Tailscreen
+Apps/macOS/.build/debug/Tailscreen
 ```
 
 ### Release build and install
 
 ```bash
-make release           # → .build/release/Tailscreen
+make release           # → Apps/macOS/.build/release/Tailscreen
 make install           # release + copy to ~/bin/Tailscreen
 ```
 

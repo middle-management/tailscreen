@@ -107,7 +107,7 @@ address now, additively, while all peers are macOS.
    license-encumbered for distribution and FFmpeg's native AAC encoder is
    worse, so rather than negotiate a second codec we replaced AAC outright
    with **Opus** (royalty-free, software-only, portable). It lives in the
-   local `OpusKitPackage` (a `systemLibrary` wrapper over libopus, CI-gated
+   local `OpusKit` (a `systemLibrary` wrapper over libopus, CI-gated
    on Linux by `linux-opus`) and is wired into the app via the portable
    `TailscreenAudio` tier (`OpusVoiceEncoder`/`OpusVoiceDecoder`,
    960-sample / 20 ms frames). The RTP payload types (98 voice / 99 system)
@@ -157,7 +157,7 @@ address now, additively, while all peers are macOS.
 
 ## Phasing
 
-**Phase 0 — portable core (done).** `TailscreenProtocolPackage` compiles
+**Phase 0 — portable core (done).** `TailscreenKit` compiles
 the wire protocol + decision logic on Linux with smoke tests; the
 `linux-protocol` CI job keeps it that way.
 
@@ -265,7 +265,7 @@ problem), so deprioritizing it helps Linux more than Windows.
 
 **Continuous.** Migrate the pure test suites (`RTPPacketTests`,
 `FECCodecTests`, `NACKSchedulerTests`, `ParserFuzzTests`, …) from the main
-package into `TailscreenProtocolPackage` so they run on Linux CI too — they
+package into `TailscreenKit` so they run on Linux CI too — they
 test portable code but currently import the mac-only `Tailscreen` module.
 The flip of the macOS app to *depend on* the protocol package (instead of
 the symlink-sharing Phase 0 started with) is done — the access-control

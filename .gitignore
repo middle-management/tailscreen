@@ -16,6 +16,6 @@ Tailscreen
 .envrc
 
 # Intermediate iconset from `make icon`; only the final .icns is committed.
-Resources/*.iconset/
+Apps/macOS/Resources/*.iconset/
 e2e/.native-run/
 e2e/.native-bin/

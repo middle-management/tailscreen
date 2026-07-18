@@ -1,7 +1,7 @@
 // swift-tools-version: 6.0
 import PackageDescription
 
-// TailscreenProtocol — the platform-portable core of Tailscreen.
+// TailscreenKit — the platform-portable core of Tailscreen.
 //
 // These sources live only here and build on Linux (and eventually
 // Windows). The macOS app consumes this package as a real SwiftPM
@@ -14,7 +14,7 @@ import PackageDescription
 //     frameworks, NO dependencies — Foundation/Synchronization only.
 //   - TailscreenTransport: tsnet-facing peer discovery + IPN-bus watcher.
 //     Depends on TailscaleKit (and thus on the checked-out submodule with
-//     patches applied — `make -C ../TailscaleKitPackage apply-patches`);
+//     patches applied — `make -C ../TailscaleKit apply-patches`);
 //     compiling it needs only the patched header, not the built
 //     libtailscale.a (that's a link-time input).
 //   - TailscreenAudio: the Opus voice/system-audio codec (Float32↔Int16 +
@@ -22,7 +22,7 @@ import PackageDescription
 //     also builds on Linux (needs libopus-dev + pkg-config). Kept out of
 //     TailscreenProtocol so that tier stays dependency-free.
 let package = Package(
-    name: "TailscreenProtocol",
+    name: "TailscreenKit",
     platforms: [
         // Match the app's floor so Apple-platform builds of this package
         // see the same availability window (irrelevant on Linux).
@@ -43,8 +43,8 @@ let package = Package(
         )
     ],
     dependencies: [
-        .package(path: "../TailscaleKitPackage"),
-        .package(path: "../OpusKitPackage")
+        .package(path: "../TailscaleKit"),
+        .package(path: "../OpusKit")
     ],
     targets: [
         .target(
@@ -55,14 +55,14 @@ let package = Package(
             name: "TailscreenTransport",
             dependencies: [
                 "TailscreenProtocol",
-                .product(name: "TailscaleKit", package: "TailscaleKitPackage")
+                .product(name: "TailscaleKit", package: "TailscaleKit")
             ],
             path: "Sources/TailscreenTransport"
         ),
         .target(
             name: "TailscreenAudio",
             dependencies: [
-                .product(name: "OpusKit", package: "OpusKitPackage")
+                .product(name: "OpusKit", package: "OpusKit")
             ],
             path: "Sources/TailscreenAudio"
         ),

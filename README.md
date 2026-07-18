@@ -71,7 +71,7 @@ The single most common build failure is running bare `swift build` first — it'
 For a release build:
 
 ```bash
-make release      # → .build/release/Tailscreen
+make release      # → Apps/macOS/.build/release/Tailscreen
 make install      # → ~/bin/Tailscreen
 ```
 
@@ -80,8 +80,8 @@ More detail in the [Install docs](https://tailscreen.dev/install/).
 ## Run it
 
 ```bash
-swift run                       # or: make run
-.build/release/Tailscreen       # after `make release`
+cd Apps/macOS && swift run     # or: make run
+Apps/macOS/.build/release/Tailscreen       # after `make release`
 ```
 
 ## Use it
@@ -131,7 +131,7 @@ make test-e2e-local     # XCTest: synthetic frames + real capture-helper + picke
 make test-e2e-harness   # Two real Tailscreen instances, asserted by log marker
 ```
 
-First run of either pops a Screen Recording permission prompt on `.build/debug/Tailscreen`; grant it and re-run. See [CLAUDE.md](CLAUDE.md#local-screen-share-e2e-local-only) for the env-var hooks the harness uses.
+First run of either pops a Screen Recording permission prompt on `Apps/macOS/.build/debug/Tailscreen`; grant it and re-run. See [CLAUDE.md](CLAUDE.md#local-screen-share-e2e-local-only) for the env-var hooks the harness uses.
 
 ### Voice (manual)
 
@@ -192,7 +192,7 @@ The full list lives in the [Troubleshooting docs](https://tailscreen.dev/trouble
 - **"Permission Denied" capturing the screen.** Toggle **System Settings → Privacy & Security → Screen Recording**, then *quit and relaunch* Tailscreen. macOS doesn't push the new permission to a running process.
 - **"Connection Failed".** Check that Tailscale itself works first (`tailscale ping <hostname>`), and that your ACLs allow TCP+UDP/7447. If a peer is missing from the **DEVICES** list, hit the ⟳ refresh button — discovery probes can race with peers coming online.
 - **Black viewer window.** **Disconnect** and reconnect — that forces a fresh keyframe.
-- **Build fails with linker errors.** This usually means `libtailscale.a` hasn't been built yet. Run `make build` once, then `swift build` works.
+- **Build fails with linker errors.** This usually means `libtailscale.a` hasn't been built yet. Run `make build` once, then `swift build` (from `Apps/macOS/`) works.
 
 ## CI/CD
 

@@ -10,7 +10,7 @@ Apple-only and bind to AVFoundation types (`AVAudioPCMBuffer` /
 `AVAudioEngine`) — exactly the platform coupling the Opus-only audio
 decision (see `docs/porting-plan.md` #6) exists to remove. Several are also
 minimally maintained. So OpusKit wraps the plain C library the same way
-`TailscaleKitPackage` wraps libtailscale: a SwiftPM `systemLibrary` target
+`TailscaleKit` wraps libtailscale: a SwiftPM `systemLibrary` target
 (`COpus`) plus a Foundation-only Swift wrapper (`OpusKit`). The same source
 builds on macOS, Linux, and Windows against a system libopus.
 
@@ -46,7 +46,7 @@ instance per stream, single-threaded.
 ## Build & test
 
 ```bash
-swift test --package-path OpusKitPackage   # macOS or Linux, needs libopus
+swift test --package-path Packages/OpusKit   # macOS or Linux, needs libopus
 ```
 
 CI's `linux-opus` job runs exactly this. The tests are encode→decode round
@@ -57,7 +57,7 @@ invalid-frame rejection.
 ## Status
 
 Integrated. OpusKit is wrapped by the **`TailscreenAudio`** target of
-`TailscreenProtocolPackage` (`OpusVoiceEncoder` / `OpusVoiceDecoder` /
+`TailscreenKit` (`OpusVoiceEncoder` / `OpusVoiceDecoder` /
 `OpusPCM` — the Float32↔Int16 boundary + 960-sample / 20 ms framing), which
 `VoiceChannel` (voice) and `SystemAudioTap` (system audio, `.audio` mode)
 drive. The app depends on `TailscreenAudio`, not OpusKit directly — keeping

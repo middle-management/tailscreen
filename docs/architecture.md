@@ -206,7 +206,7 @@ with viewer-to-viewer relay through the sharer. The receive side runs an
 adaptive jitter buffer, conceals short sequence gaps instead of glitching,
 and puts a failing decoder on a cooldown rather than hammering it.
 
-The codec is Opus — libopus wrapped by the local `OpusKitPackage` — which
+The codec is Opus — libopus wrapped by the local `OpusKit` — which
 replaced the original AudioToolbox AAC-LC path. Royalty-free and
 software-only, so the exact same codec ports to Linux and Windows
 (see the [porting plan]({% link porting-plan.md %})).
@@ -254,12 +254,12 @@ hated.
 [TailscaleKit](https://github.com/tailscale/libtailscale) is a Swift
 wrapper around `libtailscale` (the same C library used by Tailscale's own
 embeds). We pull it in as a local SwiftPM package at
-`./TailscaleKitPackage/` so we can apply our patches on top of the upstream
+`./Packages/TailscaleKit/` so we can apply our patches on top of the upstream
 Swift sources. The patches are all small — things like a `Foundation`
 import, glue imports for the C bridge, `send`/`receive` on connections, a
 public `logout`, listener poll-timeout handling, and our `tsnet
 ListenPacket` Swift wrapper for the UDP video path. They live in
-`TailscaleKitPackage/Patches/`.
+`Packages/TailscaleKit/Patches/`.
 
 Each Tailscreen session spins up an **ephemeral tsnet node**: a fresh
 Tailscale identity that lives only as long as the session. The Tailscale

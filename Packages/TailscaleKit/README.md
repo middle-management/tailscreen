@@ -19,7 +19,7 @@ This package provides a clean, reusable Swift Package Manager integration for Ta
 
 ```bash
 git clone --recurse-submodules <your-repo-url>
-cd TailscaleKitPackage
+cd TailscaleKit
 ```
 
 Or if already cloned:
@@ -51,13 +51,13 @@ swift build
 Add to your `Package.swift`:
 
 ```swift
-.package(path: "../TailscaleKitPackage")
+.package(path: "../TailscaleKit")
 ```
 
 Or as a git dependency (if you host this package):
 
 ```swift
-.package(url: "https://github.com/yourusername/TailscaleKitPackage", branch: "main")
+.package(url: "https://github.com/yourusername/TailscaleKit", branch: "main")
 ```
 
 Then add the dependency to your target:
@@ -174,7 +174,7 @@ let (data, _) = try await session.data(from: url)
 ## Directory Structure
 
 ```
-TailscaleKitPackage/
+TailscaleKit/
 ├── Package.swift              # Swift Package definition
 ├── setup.sh                   # Build script (only builds C library)
 ├── README.md                  # This file

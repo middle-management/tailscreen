@@ -7,7 +7,7 @@
 # Local-only: full UI pipeline including SCStream, replayd, real display.
 # Won't run on GitHub Actions macOS runners — no Screen Recording TCC.
 #
-# First run will pop a Screen Recording prompt for .build/debug/Tailscreen
+# First run will pop a Screen Recording prompt for Apps/macOS/.build/debug/Tailscreen
 # and time out. Grant permission and re-run; subsequent runs are unattended.
 
 set -euo pipefail
@@ -16,7 +16,7 @@ set -m  # job control: each pipeline gets its own process group
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOG="${TAILSCREEN_E2E_LOG:-/tmp/tailscreen-e2e.log}"
 TIMEOUT_SECS="${TAILSCREEN_E2E_TIMEOUT:-90}"
-BIN="$REPO_ROOT/.build/debug/Tailscreen"
+BIN="$REPO_ROOT/Apps/macOS/Apps/macOS/.build/debug/Tailscreen"
 SHARER_HOSTNAME_PREFIX="tailscreen-"  # matches TailscreenInstance.serverHostnamePrefix
 
 if [ ! -x "$BIN" ]; then

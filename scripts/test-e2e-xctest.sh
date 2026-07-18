@@ -22,8 +22,8 @@ trap cleanup EXIT
 # shellcheck disable=SC1091
 eval "$("$REPO_ROOT/scripts/e2e-up.sh")"
 
-cd "$REPO_ROOT"
-PKG_CONFIG_PATH="$REPO_ROOT/TailscaleKitPackage" \
+cd "$REPO_ROOT/Apps/macOS"
+PKG_CONFIG_PATH="$REPO_ROOT/Packages/TailscaleKit" \
 TAILSCREEN_ALLOW_CAPTURE_TEST="${TAILSCREEN_ALLOW_CAPTURE_TEST:-1}" \
     swift test \
         --filter ScreenShareSyntheticFramesTests \

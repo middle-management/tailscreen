@@ -22,7 +22,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$REPO_ROOT"
 
 LOG="${TAILSCREEN_LOG:-/tmp/tailscreen-merged.log}"
-BIN=".build/debug/Tailscreen"
+BIN="Apps/macOS/Apps/macOS/.build/debug/Tailscreen"
 
 if [ ! -x "$BIN" ]; then
     echo "Building Tailscreen..."
@@ -77,7 +77,7 @@ CFZombieLevel=17"
         # Mode C: AddressSanitizer via Swift's -sanitize=address. Catches
         # the use-after-free at the exact instruction where it happens with
         # a full stack, unlike the post-mortem pool-pop crash. Needs a
-        # separate debug build: `swift build -Xswiftc -sanitize=address`
+        # separate debug build: `cd Apps/macOS && swift build -Xswiftc -sanitize=address`
         # (the ASan runtime is linked in). Much faster than libgmalloc and
         # plays nicely with ScreenCaptureKit's XPC.
         debug_env="$debug_env ASAN_OPTIONS=abort_on_error=1:halt_on_error=1:print_stacktrace=1"
@@ -90,7 +90,7 @@ CFZombieLevel=17"
         # "Listening on Tailscale port 7447" with the screen-capture daemon
         # never responding. Prefer Instruments' Zombies template for
         # pinpointing: `instruments -t Zombies -D /tmp/zombies.trace \
-        #   .build/debug/Tailscreen` (while debug symbols are intact).
+        #   Apps/macOS/.build/debug/Tailscreen` (while debug symbols are intact).
         echo "WARNING: TAILSCREEN_DEBUG_GMALLOC=1 breaks ScreenCaptureKit." >&2
         echo "         Use Instruments' Zombies template instead." >&2
         debug_env="$debug_env DYLD_INSERT_LIBRARIES=/usr/lib/libgmalloc.dylib \
@@ -127,7 +127,7 @@ if [ "${TAILSCREEN_DEBUG_ZOMBIES:-0}" = "1" ]; then
 fi
 if [ "${TAILSCREEN_DEBUG_ASAN:-0}" = "1" ]; then
     echo "ASan ENABLED. Rebuild with:"
-    echo "  swift build -Xswiftc -sanitize=address"
+    echo "  cd Apps/macOS && swift build -Xswiftc -sanitize=address"
     echo "ASan will print a full stack at the use-after-free site on crash."
 fi
 if [ "${TAILSCREEN_DEBUG_GMALLOC:-0}" = "1" ]; then

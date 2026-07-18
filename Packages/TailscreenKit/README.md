@@ -1,4 +1,4 @@
-# TailscreenProtocol
+# TailscreenKit
 
 The platform-portable core of Tailscreen, in three targets/tiers:
 
@@ -13,9 +13,9 @@ The platform-portable core of Tailscreen, in three targets/tiers:
 - **`TailscreenTransport`** — the tsnet-facing layer
   (`TailscalePeerDiscovery`, `TailscaleIPNWatcher`). Depends on
   `TailscreenProtocol` and on `TailscaleKit` (the patched wrapper, which
-  itself builds on Linux — see `TailscaleKitPackage/Patches/022`).
+  itself builds on Linux — see `Packages/TailscaleKit/Patches/022`).
   *Compiling* it needs only the checked-out submodule with patches applied
-  (`make -C ../TailscaleKitPackage apply-patches`); the built
+  (`make -C ../TailscaleKit apply-patches`); the built
   `libtailscale.a` is a link-time input that nothing in this package links.
   Their Combine surface (`ObservableObject`/`@Published`, which mac
   Foundation re-exports) compiles on Linux via the shims in
@@ -41,7 +41,7 @@ that roadmap.
 
 - The sources live **only here** — the macOS app consumes this package as
   a real SwiftPM dependency (`Package.swift` at the repo root declares it;
-  `Sources/ProtocolReexports.swift` `@_exported import`s all three products
+  `Apps/macOS/Sources/ProtocolReexports.swift` `@_exported import`s all three products
   so app code keeps using the types unqualified).
 - Because the app crosses a module boundary, everything the app touches is
   `public` — including explicit memberwise initializers (Swift never
@@ -58,9 +58,9 @@ that roadmap.
 
 ```bash
 make test-protocol   # from the repo root (applies TailscaleKit patches first)
-# or directly (after `make -C TailscaleKitPackage apply-patches`):
-PKG_CONFIG_PATH="$PWD/TailscaleKitPackage" \
-  swift test --package-path TailscreenProtocolPackage  # macOS and Linux
+# or directly (after `make -C Packages/TailscaleKit apply-patches`):
+PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" \
+  swift test --package-path Packages/TailscreenKit  # macOS and Linux
 ```
 
 CI's `linux-protocol` job (`.github/workflows/build.yml`) runs exactly this

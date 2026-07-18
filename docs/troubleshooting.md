@@ -77,8 +77,8 @@ Fix: use `./test-local.sh` (which sets `TAILSCREEN_INSTANCE` per child),
 or set it manually:
 
 ```bash
-TAILSCREEN_INSTANCE=1 .build/debug/Tailscreen
-TAILSCREEN_INSTANCE=2 .build/debug/Tailscreen
+TAILSCREEN_INSTANCE=1 Apps/macOS/.build/debug/Tailscreen
+TAILSCREEN_INSTANCE=2 Apps/macOS/.build/debug/Tailscreen
 ```
 
 Each instance gets its own state directory and its own hostname. Now they
@@ -192,7 +192,7 @@ You cloned without `--recurse-submodules`. Fix:
 git submodule update --init --recursive
 ```
 
-`TailscaleKitPackage/upstream/libtailscale` is pinned in `.gitmodules` and
+`Packages/TailscaleKit/upstream/libtailscale` is pinned in `.gitmodules` and
 required for the build.
 
 ## Reporting a bug
