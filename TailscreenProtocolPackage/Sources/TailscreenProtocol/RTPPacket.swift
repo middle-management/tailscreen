@@ -325,13 +325,32 @@ public struct ScreenShareCaps: OptionSet, Sendable, Hashable {
     /// enables the feature only when both advertised it — an old peer sees
     /// an unknown OptionSet bit and ignores it.
     public static let fec = ScreenShareCaps(rawValue: 1 << 2)
+    /// **Sharer→viewer only** (set in the server's HELLO_ACK caps, never in a
+    /// viewer's HELLO): this sharer's build/platform can inject viewer input,
+    /// so the viewer should offer its "Request Control" affordance. Absence
+    /// means the sharer can't do remote control at all (e.g. a future
+    /// non-injection Linux/Windows sharer) — the viewer hides the request so
+    /// the user isn't clicking a button that silently does nothing (old
+    /// behavior: the `.controlRequest` was skipped as an unknown TCP type
+    /// with no feedback). This is *static* capability; the runtime "Allow
+    /// control requests" toggle and the Accessibility gate still answer a
+    /// live request with an immediate `.controlRevoked` decline.
+    public static let remoteControl = ScreenShareCaps(rawValue: 1 << 3)
+    /// **Sharer→viewer only**: this sharer renders and fans out viewer
+    /// annotations (draws them on its own overlay + relays to other viewers).
+    /// The viewer offers its annotation toolbar only when set — a sharer that
+    /// can't render annotations (a future minimal Linux/Windows sharer) would
+    /// otherwise leave the viewer drawing local-only scribbles that reach
+    /// nobody. Absent ⇒ the viewer hides the drawing tools. Like
+    /// `.remoteControl`, purely a sharer capability; a viewer never sets it.
+    public static let annotations = ScreenShareCaps(rawValue: 1 << 4)
 
     /// Every defined capability bit, in one production-side list so
     /// `WireByteRegistryTests` can assert its registry matches this exactly
     /// (single-bit-ness + pairwise disjointness + count). A **new cap MUST be
     /// appended here** in the same change that defines it — a cap that never
     /// joins this list is invisible to the registry's teeth.
-    public static let allKnown: [ScreenShareCaps] = [.nack, .receiverReport, .fec]
+    public static let allKnown: [ScreenShareCaps] = [.nack, .receiverReport, .fec, .remoteControl, .annotations]
 }
 
 /// RTCP-RR-style receiver report payload (see `ScreenShareControlMessage`

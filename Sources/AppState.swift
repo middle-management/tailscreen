@@ -112,6 +112,27 @@ class AppState: ObservableObject {
     /// capture live). Reset on disconnect.
     @Published var viewerControlState: ViewerControlState = .none
 
+    /// Whether the *current* sharer advertised remote-control support
+    /// (`ScreenShareCaps.remoteControl` in its HELLO_ACK). The viewer's
+    /// "Request Control" affordance is hidden when false, so the user never
+    /// clicks a button against a sharer that can't inject input. False until
+    /// the HELLO_ACK arrives and on disconnect.
+    @Published var sharerSupportsRemoteControl = false
+
+    /// Whether the current sharer advertised annotation support
+    /// (`ScreenShareCaps.annotations`). The viewer's annotation toolbar is
+    /// disabled when false so it doesn't draw local-only strokes at a sharer
+    /// that can't render/relay them. Defaults *true* (unlike remote control)
+    /// so the mac→mac common case shows tools immediately with no
+    /// disable-flash; a non-supporting sharer's HELLO_ACK corrects it. Reset
+    /// to true on disconnect.
+    @Published var sharerSupportsAnnotations = true {
+        didSet {
+            guard oldValue != sharerSupportsAnnotations else { return }
+            viewerToolbar?.setAnnotationsEnabled(sharerSupportsAnnotations)
+        }
+    }
+
     /// Second global hotkey (⌃⌥. by default) — a panic revoke of the live
     /// remote-control grant. Grant-scoped: created when a grant appears and
     /// destroyed when it clears (see `syncRevokeControlHotkey`), so idle
@@ -1311,6 +1332,18 @@ class AppState: ObservableObject {
                 }
             }
 
+            c.onRemoteControlSupportChanged = { [weak self] supported in
+                Task { @MainActor [weak self] in
+                    self?.sharerSupportsRemoteControl = supported
+                }
+            }
+
+            c.onAnnotationSupportChanged = { [weak self] supported in
+                Task { @MainActor [weak self] in
+                    self?.sharerSupportsAnnotations = supported
+                }
+            }
+
             c.onControlGranted = { [weak self] in
                 Task { @MainActor [weak self] in
                     guard let self, self.connectionState == .viewing else { return }
@@ -1439,6 +1472,9 @@ class AppState: ObservableObject {
         win.toolbar = toolbar.toolbar
         win.toolbarStyle = .unified
         self.viewerToolbar = toolbar
+        // Sync the toolbar to the sharer's annotation capability, in case the
+        // HELLO_ACK already resolved it before the window (and toolbar) came up.
+        toolbar.setAnnotationsEnabled(sharerSupportsAnnotations)
 
         let delegate = ViewerWindowDelegate(
             onClose: { [weak self] in
@@ -1720,6 +1756,8 @@ class AppState: ObservableObject {
         connectionState = .idle
         connectedHostname = nil
         viewerAwaitingApproval = false
+        sharerSupportsRemoteControl = false
+        sharerSupportsAnnotations = true
         // End any remote-control session and stop capturing input.
         if viewerControlState != .none {
             viewerControlState = .none

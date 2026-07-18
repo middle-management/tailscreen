@@ -142,6 +142,60 @@ exactly the point: it never half-enters a mode it doesn't support. The
 whole recovery matrix degrades cleanly in both directions, ending at
 plain PLI.
 
+`serverCaps` also carries two bits the viewer never sends back — sharer
+capabilities the viewer uses to gate its own UI so it never offers an
+interaction the sharer can't honour:
+
+- **bit 3 `remoteControl`** — this build/platform can inject viewer input.
+  The viewer offers Request Control only when set, so a non-injection
+  sharer (a future Linux/Windows build) never receives a `.controlRequest`
+  it would silently drop. Static capability: the sharer's runtime "Allow
+  control requests" toggle and Accessibility grant still decline a live
+  request with `controlRevoked`.
+- **bit 4 `annotations`** — this sharer renders viewer annotations on its
+  own overlay and relays them to other viewers. The viewer's annotation
+  toolbar is disabled when absent, so it never draws local-only strokes
+  that reach neither the sharer nor other viewers.
+
+Both follow the same rule the loss-recovery caps do: absence degrades to
+"feature off," and — pre-1.0 with no deployed peers — the bit is
+authoritative, so a set bit is the only thing that lights up the UI.
+
+**Reserved / future caps.** The `caps` byte is a single `UInt8` per
+direction; bits 0–4 are assigned, leaving room but not unlimited room.
+Candidates deliberately *not* yet spent:
+
+- **Video-codec caps** (viewer→sharer "I decode HEVC" / "I decode 10-bit").
+  The weakest candidate, because codec is *already* negotiated — just not
+  in HELLO. It's self-describing on every packet (payload type 96/97),
+  the parameter sets ride every keyframe, and the `CODEC_NO` / `PROFILE_NO`
+  fallbacks are keyframe-latched: an incompatible viewer signals, the
+  sharer re-inits the encoder, and the switch lands at the next keyframe
+  (~1–2 s). A HELLO cap would only save the *initial* `CODEC_NO`
+  round-trip for a single incompatible viewer — a time-to-first-frame
+  delay at startup, not a mid-stream glitch — and even that is diluted by
+  the encode-once-fan-out rule (the first non-HEVC viewer latches everyone
+  to H.264 anyway). The existing keyframe-granular mechanism already
+  converges on its own; a cap is pure polish.
+- **System-audio cap** (viewer→sharer "I play PT 99") would let the sharer
+  skip system-audio fan-out to viewers that would drop it — a bandwidth
+  optimization, not a UX one.
+- **~~Opus~~ — no cap needed (decision: Opus-only).** Opus was the obvious
+  "must-negotiate" future codec, but the pre-1.0 decision is to *replace*
+  AAC with Opus rather than negotiate between them (see
+  `docs/porting-plan.md` #6). Opus has no support gap on any platform, so
+  with no deployed AAC-only peers there's nothing to negotiate — one
+  audio codec, distinguished on the wire by its payload type like the
+  existing 98/99, no capability bit.
+
+**Extending the caps field.** If the 8 bits ever fill, reserve the top bit
+as an "extended caps follow" flag: a peer that sets it appends a second
+caps byte, and a peer that understands the flag reads it. Old peers that
+don't set/understand the flag stay single-byte — the same
+ignore-unknown degradation, applied to the caps field itself. So the
+budget is a soft limit, not a hard one; we just haven't needed the second
+byte yet.
+
 ### NACK — selective retransmission (`0x0A`)
 
 `[0x0A][count:1][(pid:2 BE, blp:2 BE) × count]`, ≤ 16 entries — RTCP

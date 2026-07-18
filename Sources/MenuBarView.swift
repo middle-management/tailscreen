@@ -889,16 +889,20 @@ private struct RemoteControlViewerButton: View {
     var body: some View {
         switch appState.viewerControlState {
         case .none:
-            Button {
-                appState.requestRemoteControl()
-            } label: {
-                Label(L("Request Control"), systemImage: "cursorarrow.rays")
-                    .frame(maxWidth: .infinity)
+            // Only offer the request when the sharer advertised it can inject
+            // input at all — otherwise the request is silently dropped.
+            if appState.sharerSupportsRemoteControl {
+                Button {
+                    appState.requestRemoteControl()
+                } label: {
+                    Label(L("Request Control"), systemImage: "cursorarrow.rays")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help(L("Ask the sharer to let you control their Mac"))
+                .accessibilityHint(L("The sharer must grant control before your input is injected"))
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .help(L("Ask the sharer to let you control their Mac"))
-            .accessibilityHint(L("The sharer must grant control before your input is injected"))
         case .requested:
             Button {
                 appState.stopViewerControl()

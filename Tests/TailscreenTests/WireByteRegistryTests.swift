@@ -194,11 +194,15 @@ final class WireByteRegistryTests: XCTestCase {
         let pinned: [(name: String, value: ScreenShareCaps)] = [
             ("nack", .nack),
             ("receiverReport", .receiverReport),
-            ("fec", .fec)
+            ("fec", .fec),
+            ("remoteControl", .remoteControl),
+            ("annotations", .annotations)
         ]
         XCTAssertEqual(ScreenShareCaps.nack.rawValue, 1 << 0)
         XCTAssertEqual(ScreenShareCaps.receiverReport.rawValue, 1 << 1)
         XCTAssertEqual(ScreenShareCaps.fec.rawValue, 1 << 2)
+        XCTAssertEqual(ScreenShareCaps.remoteControl.rawValue, 1 << 3)
+        XCTAssertEqual(ScreenShareCaps.annotations.rawValue, 1 << 4)
         // Exhaustiveness teeth (as much as Swift allows for an OptionSet):
         // the production-side `allKnown` list must match this registry table
         // exactly. A new cap MUST be appended to `allKnown` when defined —
