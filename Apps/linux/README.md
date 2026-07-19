@@ -75,13 +75,27 @@ export TAILSCREEN_TS_AUTHKEY=tskey-…          # or TAILSCREEN_TS_CONTROL_URL f
 The window opens at 1280×720 and resizes to the sharer's first decoded frame.
 Close the window to end the session.
 
+### Authentication
+
+- **With `TAILSCREEN_TS_AUTHKEY`** (a reusable ephemeral key from the Tailscale
+  admin console): the node joins headlessly — no prompt. Best for repeated runs
+  and headless boxes.
+- **Without a key:** the viewer falls back to **interactive browser login**. It
+  subscribes to the tsnet IPN bus before bringing the node up, catches the
+  `BrowseToURL` login link, prints it prominently on stderr, and (only if a
+  desktop `DISPLAY` is present) best-effort `xdg-open`s it. Open that URL in a
+  browser to approve; the node then comes up. The node is **ephemeral**, so a
+  fresh run generally re-prompts — a reusable key avoids that.
+
 ## Running under OrbStack (macOS host)
 
 The handiest way to exercise the live path from a Mac: run the **sharer**
 (`Tailscreen.app`) on the Mac and the **viewer** in an OrbStack Linux machine.
 The viewer brings up its *own* ephemeral tsnet node inside the guest, so the
 Linux side needs **no** host Tailscale and nothing shared from the Mac — just
-outbound network (OrbStack provides it) and an auth key onto the same tailnet.
+outbound network (OrbStack provides it) and a way onto the same tailnet: a
+reusable auth key (simplest for a guest), or the interactive browser login the
+viewer falls back to when no key is set (see [Authentication](#authentication)).
 
 ### 1. Create a machine and build
 

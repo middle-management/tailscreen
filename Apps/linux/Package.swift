@@ -61,6 +61,9 @@ let package = Package(
             dependencies: [
                 "TailscreenViewerCore",
                 .product(name: "TailscreenProtocol", package: "TailscreenKit"),
+                // TailscaleIPNWatcher — surfaces the interactive-login
+                // BrowseToURL so a keyless run can log in via a browser.
+                .product(name: "TailscreenTransport", package: "TailscreenKit"),
                 .product(name: "TailscaleKit", package: "TailscaleKit"),
             ],
             path: "Sources/TailscreenViewerCLI",

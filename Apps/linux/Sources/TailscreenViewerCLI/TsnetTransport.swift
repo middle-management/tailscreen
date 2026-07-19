@@ -1,6 +1,7 @@
 import Foundation
 import TailscaleKit
 import TailscreenProtocol
+import TailscreenTransport
 import TailscreenViewer
 import TailscreenViewerCore
 
@@ -52,6 +53,10 @@ final class TsnetTransport {
 
     /// Connect and run until the sharer says goodbye or `shouldClose` fires.
     ///
+    /// If `config.authKey` is nil, brings the node up via interactive browser
+    /// login (the login URL is surfaced on stderr / best-effort opened);
+    /// otherwise the key joins headlessly.
+    ///
     /// - Parameters:
     ///   - config: connection + capability parameters.
     ///   - decoder: the concrete video decoder (FFmpeg on Linux).
@@ -81,8 +86,24 @@ final class TsnetTransport {
             ),
             logger: logger
         )
+        // Interactive login (no auth key): tsnet's `up()` blocks until the
+        // backend reaches Running, which on a fresh device means waiting for a
+        // browser login. tsnet emits that login URL as a BrowseToURL notify on
+        // the IPN bus — subscribe BEFORE `up()` (else the notify fires with
+        // nobody listening and `up()` waits forever) and surface the URL for
+        // the user to open. With an auth key this path is skipped entirely.
+        var authWatcher: TailscaleIPNWatcher?
+        if config.authKey == nil {
+            let watcher = TailscaleIPNWatcher()
+            watcher.onBrowseToURL = { url in Self.surfaceLoginURL(url) }
+            try await watcher.startWatching(node: node)
+            authWatcher = watcher
+            logger.log("No auth key set — waiting for interactive browser login…")
+        }
+
         logger.log("Bringing up tsnet node \(hostName)…")
         try await node.up()
+        authWatcher?.stopWatching()
 
         let ips = try await node.addrs()
         logger.log("tsnet up — ip4=\(ips.ip4 ?? "-") ip6=\(ips.ip6 ?? "-")")
@@ -148,6 +169,34 @@ final class TsnetTransport {
         logger.log(pipeline.isStopped ? "Sharer ended the session." : "Viewer window closed.")
         await listener.close()
         try? await node.down()
+    }
+
+    /// Surface an interactive-login URL: print it prominently on stderr (so it
+    /// stands out from the `[tsnet]` log stream — the common case is a headless
+    /// guest where the user copies it to a browser on another machine) and, if
+    /// a desktop session is present, best-effort `xdg-open` it locally. Nothing
+    /// here can throw into the login path — a failed open just leaves the
+    /// printed URL.
+    nonisolated static func surfaceLoginURL(_ url: URL) {
+        let line = String(repeating: "─", count: 60)
+        let banner = """
+
+            \(line)
+              Tailscale login required — open this URL in a browser:
+
+                \(url.absoluteString)
+            \(line)
+
+            """
+        FileHandle.standardError.write(Data(banner.utf8))
+
+        // Only attempt a local open when a display is available; in a headless
+        // guest there's no browser and xdg-open would just error.
+        guard ProcessInfo.processInfo.environment["DISPLAY"] != nil else { return }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["xdg-open", url.absoluteString]
+        try? process.run()
     }
 
     /// Bracket IPv6 literals ("[::1]:7447"); leave IPv4 untouched.
