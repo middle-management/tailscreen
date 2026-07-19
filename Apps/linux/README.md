@@ -183,9 +183,12 @@ machine to an X server on the Mac — you supply the X server (XQuartz):
    ```bash
    sudo apt install -y x11-apps && xeyes
    ```
-   If `xeyes` shows, the viewer's window will too. If it doesn't, fix the
-   display before touching the viewer (it's an XQuartz/`DISPLAY` issue, not a
-   Tailscreen one).
+   If `xeyes` doesn't show, fix the display before touching the viewer (it's an
+   XQuartz/`DISPLAY` issue, not a Tailscreen one). Note `xeyes` uses **no**
+   OpenGL, so it succeeding only proves plain X11 works — XQuartz's GLX is
+   separately broken (it can't hand Mesa a usable FBConfig), which is why the
+   viewer renders through SDL's **software** renderer by default rather than the
+   accelerated `opengl` one (whose GLX context creation would fatally X-error).
 5. **Run for real** — same command as the smoke test, minus the dummy driver
    (and drop `--no-audio` only if the guest has a working ALSA device; usually
    it doesn't, so leave it):
@@ -199,6 +202,10 @@ machine to an X server on the Mac — you supply the X server (XQuartz):
 
 - **Audio:** an OrbStack guest normally has no ALSA device — keep `--no-audio`
   (a missing device is treated as non-fatal, so audio is optional either way).
+- **GPU-accelerated rendering:** off by default (see the GLX note above). On a
+  native Linux desktop with working OpenGL, set `TAILSCREEN_SDL_ACCELERATED=1`
+  to use SDL's `opengl` renderer for GPU scaling. Leave it unset for forwarded
+  X11 / XQuartz, where accelerated rendering fatally X-errors.
 - **Local headscale instead of a real tailnet:** point *both* sides at it — on
   the Mac `eval "$(make e2e-up)"`, and pass the viewer
   `--control-url http://<mac-lan-ip>:8080` with the same key. More moving parts

@@ -73,9 +73,20 @@ func parseArguments() -> (config: ViewerConfig, wantAudio: Bool) {
 let (config, wantAudio) = parseArguments()
 
 // The renderer opens at a default size and resizes to the first decoded frame.
+// Default to SDL's software renderer: the common path (X11 forwarded to XQuartz
+// over OrbStack) has no usable GLX FBConfig, so the accelerated `opengl` driver
+// dlopens libGL, creates a GLX context, and fatally X-errors the process before
+// any window shows. Set TAILSCREEN_SDL_ACCELERATED=1 on a native Linux desktop
+// with working GL to opt back into GPU-accelerated scaling.
+let useAccelerated = ProcessInfo.processInfo.environment["TAILSCREEN_SDL_ACCELERATED"] == "1"
 let window: SDL.VideoWindow
 do {
-    window = try SDL.VideoWindow(title: "Tailscreen — \(config.hostname)", width: 1280, height: 720)
+    window = try SDL.VideoWindow(
+        title: "Tailscreen — \(config.hostname)",
+        width: 1280,
+        height: 720,
+        softwareRenderer: !useAccelerated
+    )
 } catch {
     fail("could not open a video window: \(error)")
 }
