@@ -246,6 +246,23 @@ the mac-side consumers). It's kept out of `TailscreenProtocol` so that tier
 stays dependency-free; the `linux-protocol` job installs `libopus-dev` +
 `pkg-config` for it (opus.pc is on Linux's default pkg-config path).
 
+And a fourth tier: target **`TailscreenViewer`** (`ViewerSession` + the
+`VideoDecoding` / `VideoSink` / `AudioSink` protocols and the
+`DecodedVideoFrame` value type). This is the portable, host-agnostic viewer
+data-plane core: it turns inbound RTP datagrams + a host-supplied clock into
+decoded video frames, decoded audio, and outbound feedback control bytes
+(HELLO / NACK / PLI / receiver reports), reusing `TailscreenProtocol`
+(`MultiCodecDepacketizer`, `NACKScheduler`, `RRAccounting`,
+`AudioRTPDepacketizer`, `ScreenShareControlMessage`) and `TailscreenAudio`
+(`OpusVoiceDecoder`). It owns **no** socket, thread, or timer — the host feeds
+it bytes (`receiveRTP`) and a clock (`tick(nowNs:)`) and ships its outputs — so
+it's fully unit-testable and portable, and it stays free of any concrete
+codec/renderer/audio backend (FFmpeg/SDL/ALSA plug in behind the protocols in a
+later PR). Depends on `TailscreenProtocol` + `TailscreenAudio` only, so it also
+builds on Linux; the video path + audio path + HELLO/PLI/NACK/RR handshake are
+covered, FEC ingest is a noted follow-up (see the `TODO(fec)` in
+`ViewerSession.swift`). Tests: `TailscreenViewerTests`.
+
 The rules for package files (no Apple frameworks; how to move a file in;
 what must be `public`) live canonically in
 **`Packages/TailscreenKit/README.md`** — read it before touching the
