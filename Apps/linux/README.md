@@ -48,7 +48,8 @@ Needs a Swift 6 toolchain and system dev libraries:
 # Debian/Ubuntu
 sudo apt-get install -y \
   libavcodec-dev libavutil-dev libsdl2-dev libasound2-dev libopus-dev \
-  pkg-config golang-go make gcc libc6-dev
+  pkg-config golang-go make gcc libc6-dev \
+  libxml2 libcurl4-openssl-dev libedit2 libpython3-dev libz3-dev  # Swift runtime deps
 
 # libtailscale.a (the executable links it; the Core library + test don't)
 make -C ../../Packages/TailscaleKit
@@ -108,7 +109,8 @@ orb -m tsviewer                       # shell into the guest
 
 sudo apt update
 sudo apt install -y clang git make gcc libc6-dev pkg-config \
-  libavcodec-dev libavutil-dev libsdl2-dev libasound2-dev libopus-dev golang-go
+  libavcodec-dev libavutil-dev libsdl2-dev libasound2-dev libopus-dev golang-go \
+  libxml2 libcurl4-openssl-dev libedit2 libpython3-dev libz3-dev   # Swift runtime deps
 # Swift 6.1 via swiftly:
 curl -sL https://swiftlang.github.io/swiftly/swiftly-install.sh | bash
 . ~/.local/share/swiftly/env.sh && swiftly install 6.1 && swiftly use 6.1
@@ -119,6 +121,22 @@ make -C Packages/TailscaleKit         # libtailscale.a (Go)
 cd Apps/linux
 PKG_CONFIG_PATH="$PWD/../../Packages/TailscaleKit" swift build
 ```
+
+> **Shared-mount gotcha:** OrbStack bind-mounts your Mac home, so the checkout
+> is shared. `Packages/TailscaleKit/upstream/libtailscale/libtailscale.a` is
+> the one build artifact that's OS-specific *and* lives at a fixed path — if
+> the Mac built it first, `make -C Packages/TailscaleKit` says *"Nothing to be
+> done"* and you'll later hit `undefined reference to tailscale_*` at link
+> time (a Mach-O archive can't link on Linux). Force a Linux rebuild:
+> ```bash
+> rm -f Packages/TailscaleKit/upstream/libtailscale/libtailscale.{a,h}
+> GOFLAGS=-buildvcs=false make -C Packages/TailscaleKit
+> ```
+> This overwrites the Mac's copy, so run `make tailscale` on the Mac again when
+> you switch back (it's the only file that ping-pongs). To avoid it entirely,
+> clone into a path **outside** the mount (e.g. `/opt/build/tailscreen`) — that
+> tree keeps its own Linux `libtailscale.a` and also builds faster on native
+> disk.
 
 ### 2. Smoke test first — headless (no display needed)
 
