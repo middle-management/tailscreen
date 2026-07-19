@@ -114,11 +114,14 @@ test-e2e-harness: tailscale build ## End-to-end (LOCAL): two-instance scripted h
 
 # Regenerate the macOS .icns app icon from the source SVG. Requires
 # librsvg (`brew install librsvg`) and the system iconutil.
-ICON_SRC := docs/assets/logo.svg
+# app-icon.svg is the Dock/Finder artwork (logo glyph on a rounded-rect
+# tile, standard Big Sur icon grid); logo.svg stays the bare glyph used
+# by the README, docs, and in-app PDFs.
+ICON_SRC := docs/assets/app-icon.svg
 ICON_OUT := Apps/macOS/Resources/Tailscreen.icns
 ICONSET  := Apps/macOS/Resources/Tailscreen.iconset
 
-icon: ## Regenerate Tailscreen.icns + in-app PDFs from docs/assets/logo.svg
+icon: ## Regenerate Tailscreen.icns + in-app PDFs from docs/assets/{app-icon,logo}.svg
 	@command -v rsvg-convert >/dev/null 2>&1 || { echo "rsvg-convert missing — brew install librsvg"; exit 1; }
 	@command -v iconutil >/dev/null 2>&1 || { echo "iconutil missing — install Xcode command line tools"; exit 1; }
 	@rm -rf "$(ICONSET)" && mkdir -p "$(ICONSET)"
