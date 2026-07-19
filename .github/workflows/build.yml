@@ -242,6 +242,22 @@ jobs:
       - name: Build + test FFmpegKit on Linux
         run: swift test --package-path Packages/FFmpegKit
 
+  # Audio-playback-portability gate: ALSAKit (a systemLibrary wrapper over
+  # libasound — see Packages/ALSAKit/README.md) must build and pass its
+  # PCM-playback tests on Linux. This is the Linux viewer's audio-output
+  # backend (the counterpart to the mac viewer's AVAudioEngine sink); the
+  # tests open ALSA's always-present "null" PCM so they run headless with no
+  # sound hardware. Cheap: one apt install, no submodules, no Go.
+  linux-alsa:
+    runs-on: ubuntu-latest
+    container: swift:6.1-noble
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install libasound
+        run: apt-get update && apt-get install -y --no-install-recommends libasound2-dev pkg-config
+      - name: Build + test ALSAKit on Linux
+        run: swift test --package-path Packages/ALSAKit
+
   # Transport-portability gate: libtailscale (Go c-archive) + the patched
   # TailscaleKit Swift wrapper must build and pass their unit tests on
   # Linux. This is the compile-time half of the porting plan's Phase 1;
