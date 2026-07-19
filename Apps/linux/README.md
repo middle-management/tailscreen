@@ -75,6 +75,104 @@ export TAILSCREEN_TS_AUTHKEY=tskey-…          # or TAILSCREEN_TS_CONTROL_URL f
 The window opens at 1280×720 and resizes to the sharer's first decoded frame.
 Close the window to end the session.
 
+## Running under OrbStack (macOS host)
+
+The handiest way to exercise the live path from a Mac: run the **sharer**
+(`Tailscreen.app`) on the Mac and the **viewer** in an OrbStack Linux machine.
+The viewer brings up its *own* ephemeral tsnet node inside the guest, so the
+Linux side needs **no** host Tailscale and nothing shared from the Mac — just
+outbound network (OrbStack provides it) and an auth key onto the same tailnet.
+
+### 1. Create a machine and build
+
+An OrbStack **machine** (not a plain container) auto-mounts your Mac home, so
+your checkout is visible at the same path.
+
+```bash
+orb create ubuntu:noble tsviewer
+orb -m tsviewer                       # shell into the guest
+
+sudo apt update
+sudo apt install -y clang git make gcc libc6-dev pkg-config \
+  libavcodec-dev libavutil-dev libsdl2-dev libasound2-dev libopus-dev golang-go
+# Swift 6.1 via swiftly:
+curl -sL https://swiftlang.github.io/swiftly/swiftly-install.sh | bash
+. ~/.local/share/swiftly/env.sh && swiftly install 6.1 && swiftly use 6.1
+
+cd ~/…/tailscreen                     # same path as on the Mac
+git submodule update --init --recursive
+make -C Packages/TailscaleKit         # libtailscale.a (Go)
+cd Apps/linux
+PKG_CONFIG_PATH="$PWD/../../Packages/TailscaleKit" swift build
+```
+
+### 2. Smoke test first — headless (no display needed)
+
+Confirm the tsnet connect + decode path works before dealing with a display.
+SDL's dummy driver still uploads frames; you just watch the logs:
+
+```bash
+export TAILSCREEN_TS_AUTHKEY=tskey-auth-...        # same tailnet as the Mac
+SDL_VIDEODRIVER=dummy .build/debug/tailscreen-viewer <sharer-host> --no-audio
+```
+
+`<sharer-host>` is the Mac sharer's **Tailscale node hostname** (from the
+Tailscale admin console, or the mac app's log — the ephemeral node it
+registers). Expect `[tsnet] … up` → `HELLO sent` → the receive loop running.
+
+### 3. Show the actual window (GUI over X11)
+
+The SDL renderer needs an X11 display. OrbStack forwards X11 from a Linux
+machine to an X server on the Mac — you supply the X server (XQuartz):
+
+1. **Install + start XQuartz on the Mac** (one-time):
+   ```bash
+   brew install --cask xquartz
+   ```
+   Then **log out and back in** (XQuartz needs a fresh login the first time),
+   and launch XQuartz.
+2. **Allow network clients:** XQuartz → *Settings… → Security* → tick
+   *“Allow connections from network clients.”* Quit and relaunch XQuartz so it
+   takes effect.
+3. **Check the display is wired up in the guest.** OrbStack usually sets
+   `DISPLAY` for you:
+   ```bash
+   echo "$DISPLAY"                    # e.g. ":0" or "host.docker.internal:0"
+   ```
+   If it's **empty**, set it and authorize the guest from the Mac:
+   ```bash
+   # on the Mac (Terminal):
+   xhost + 127.0.0.1
+   # in the guest:
+   export DISPLAY=host.docker.internal:0
+   ```
+4. **Sanity-check the display path** independent of Tailscreen — a plain X11
+   app should pop a window on your Mac:
+   ```bash
+   sudo apt install -y x11-apps && xeyes
+   ```
+   If `xeyes` shows, the viewer's window will too. If it doesn't, fix the
+   display before touching the viewer (it's an XQuartz/`DISPLAY` issue, not a
+   Tailscreen one).
+5. **Run for real** — same command as the smoke test, minus the dummy driver
+   (and drop `--no-audio` only if the guest has a working ALSA device; usually
+   it doesn't, so leave it):
+   ```bash
+   export TAILSCREEN_TS_AUTHKEY=tskey-auth-...
+   .build/debug/tailscreen-viewer <sharer-host> --no-audio
+   ```
+   The window opens on your Mac and resizes to the sharer's first frame.
+
+### Notes
+
+- **Audio:** an OrbStack guest normally has no ALSA device — keep `--no-audio`
+  (a missing device is treated as non-fatal, so audio is optional either way).
+- **Local headscale instead of a real tailnet:** point *both* sides at it — on
+  the Mac `eval "$(make e2e-up)"`, and pass the viewer
+  `--control-url http://<mac-lan-ip>:8080` with the same key. More moving parts
+  (the guest must reach the host's `:8080` and DERP), so prefer a real tailnet
+  unless you specifically want to avoid one.
+
 ## Not here yet
 
 - **FEC ingest** — `ViewerSession` degrades to NACK-or-PLI until the deferred
