@@ -107,6 +107,16 @@ final class TsnetTransport {
 
         let ips = try await node.addrs()
         logger.log("tsnet up — ip4=\(ips.ip4 ?? "-") ip6=\(ips.ip6 ?? "-")")
+
+        // Surface which tailnet identity we actually joined. A viewer that
+        // authenticated into the wrong tailnet looks identical to a connected
+        // one that just isn't getting frames — printing the account here turns
+        // that into an obvious mismatch. Best-effort; never blocks the session.
+        let auth = TailscaleAuth()
+        await auth.checkAuthStatus(node: node)
+        let identity = auth.userProfile?.loginName ?? "unknown account"
+        logger.log("▶ Connected as \(identity) — node \(hostName) @ \(ips.ip4 ?? ips.ip6 ?? "?")")
+
         guard let tailscale = await node.tailscale else {
             throw TailscaleError.badInterfaceHandle
         }
@@ -125,17 +135,33 @@ final class TsnetTransport {
         // closure the session calls on the receive thread) yields here, and a
         // single consumer task drains it through the actor's `send` in order.
         let (outbound, outboundContinuation) = AsyncStream<Data>.makeStream()
+        // Wrap the caller's sink so the first decoded frame (and any later
+        // resolution change) is announced — the "am I actually receiving
+        // video?" signal.
+        let loggingSink = StatusVideoSink(inner: videoSink, logger: logger)
         let pipeline = ViewerPipeline(
             caps: config.caps,
             decoder: decoder,
-            videoSink: videoSink,
+            videoSink: loggingSink,
             audioSink: audioSink,
             onControlToSend: { data in outboundContinuation.yield(data) }
         )
 
+        let sendLogger = logger
         let senderTask = Task {
+            var loggedSendError = false
             for await datagram in outbound {
-                try? await listener.send(datagram, to: dest)
+                do {
+                    try await listener.send(datagram, to: dest)
+                } catch {
+                    // Surface the first failure (a dial/resolve error means the
+                    // target is wrong or unreachable) rather than silently
+                    // dropping every outbound packet.
+                    if !loggedSendError {
+                        sendLogger.log("⚠ UDP send to \(dest) failed: \(error)")
+                        loggedSendError = true
+                    }
+                }
             }
         }
         defer {
@@ -145,13 +171,28 @@ final class TsnetTransport {
 
         // Advertise our caps; the sharer replies with a HELLO_ACK.
         pipeline.start()
-        logger.log("HELLO sent (caps=\(config.caps.rawValue))")
+        logger.log("HELLO queued to \(dest) (caps=\(config.caps.rawValue)) — awaiting HELLO_ACK…")
 
         // Receive + tick loop. `recv` returns at least every second (its
         // timeout), giving a natural ~1 Hz cadence for `tick` even with no
-        // inbound traffic; real datagrams return it sooner.
+        // inbound traffic; real datagrams return it sooner. Session-state
+        // transitions are announced once each so the user sees admission /
+        // pending-approval rather than a silent black window.
+        var loggedPending = false
+        var loggedAdmitted = false
         while !pipeline.isStopped && !shouldClose() {
             pipeline.tick(nowNs: DispatchTime.now().uptimeNanoseconds)
+            let session = pipeline.session
+            if session.isPendingApproval, !loggedPending {
+                logger.log("▶ Waiting for the sharer to approve this viewer…")
+                loggedPending = true
+            }
+            if let ssrc = session.assignedSSRC, !loggedAdmitted {
+                logger.log(
+                    "▶ Admitted by sharer (ssrc=\(ssrc), serverCaps=\(session.serverCaps.rawValue)) — awaiting video…"
+                )
+                loggedAdmitted = true
+            }
             do {
                 let (datagram, from) = try await listener.recv(timeout: 1_000)
                 guard !datagram.isEmpty else { continue }
@@ -166,7 +207,13 @@ final class TsnetTransport {
                 continue
             }
         }
-        logger.log(pipeline.isStopped ? "Sharer ended the session." : "Viewer window closed.")
+        if pipeline.session.wasDenied {
+            logger.log("▶ Sharer declined this viewer.")
+        } else if pipeline.isStopped {
+            logger.log("▶ Sharer ended the session.")
+        } else {
+            logger.log("▶ Viewer window closed.")
+        }
         await listener.close()
         try? await node.down()
     }
@@ -205,5 +252,34 @@ final class TsnetTransport {
             return "[\(host)]:\(port)"
         }
         return "\(host):\(port)"
+    }
+}
+
+/// Forwards decoded frames to the real sink while announcing the first frame
+/// (the "video is actually flowing" signal) and any later resolution change.
+/// Everything runs on the transport's single actor, so plain mutable state is
+/// safe here.
+private final class StatusVideoSink: VideoSink {
+    private let inner: VideoSink
+    private let logger: StderrLogger
+    private var announced = false
+    private var lastWidth = 0
+    private var lastHeight = 0
+
+    init(inner: VideoSink, logger: StderrLogger) {
+        self.inner = inner
+        self.logger = logger
+    }
+
+    func present(_ frame: DecodedVideoFrame) {
+        if !announced {
+            logger.log("▶ Receiving video — \(frame.width)×\(frame.height)")
+            announced = true
+        } else if frame.width != lastWidth || frame.height != lastHeight {
+            logger.log("▶ Video size changed to \(frame.width)×\(frame.height)")
+        }
+        lastWidth = frame.width
+        lastHeight = frame.height
+        inner.present(frame)
     }
 }
