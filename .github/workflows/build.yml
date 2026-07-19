@@ -258,6 +258,23 @@ jobs:
       - name: Build + test ALSAKit on Linux
         run: swift test --package-path Packages/ALSAKit
 
+  # Render-portability gate: SDLKit (a systemLibrary wrapper over SDL2 — see
+  # Packages/SDLKit/README.md) must build and pass its texture-upload smoke
+  # tests on Linux. This is the portable video-output foundation for the
+  # Linux/Windows viewer (docs/porting-plan.md — "Render"), where the macOS
+  # app uses Metal; wiring it behind the decode path is later work. Headless
+  # via SDL's dummy video driver, so no display server is needed. Cheap: one
+  # apt install, no submodules, no Go.
+  linux-sdl:
+    runs-on: ubuntu-latest
+    container: swift:6.1-noble
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install SDL2 dev libraries
+        run: apt-get update && apt-get install -y --no-install-recommends libsdl2-dev pkg-config
+      - name: Build + test SDLKit on Linux
+        run: SDL_VIDEODRIVER=dummy swift test --package-path Packages/SDLKit
+
   # Transport-portability gate: libtailscale (Go c-archive) + the patched
   # TailscaleKit Swift wrapper must build and pass their unit tests on
   # Linux. This is the compile-time half of the porting plan's Phase 1;

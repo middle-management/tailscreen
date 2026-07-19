@@ -44,9 +44,8 @@ exchange is verified (see Phase 1 below). Phases 2+ are proposal.
 | Picker | `SCContentSharingPicker` (helper) | The portal's own consent dialog *is* the picker | `GraphicsCapturePicker` |
 | Encode | VideoToolbox H.264/HEVC | VA-API / NVENC (via FFmpeg), x264/x265 software fallback | Media Foundation HW encoders, or FFmpeg (NVENC/AMF/QSV) |
 | Decode | VideoToolbox | FFmpeg (libavcodec) + VA-API hwaccel — software decode **done** (`Packages/FFmpegKit`) | Media Foundation / FFmpeg + D3D11VA |
-| Render | Metal (`CAMetalLayer`) | Vulkan or OpenGL; SDL as the pragmatic first cut | D3D11 swapchain; SDL again viable |
-| Voice + system audio | CoreAudio / AVFoundation for I/O; **Opus** (OpusKit/libopus) codec — done | **ALSA playback landed for the viewer** (`Packages/ALSAKit`, `snd_pcm` FLOAT_LE writer — also works on PipeWire/PulseAudio via their ALSA-compat PCM, so a safe portable first backend); PipeWire capture + native playback later; Opus already portable | WASAPI (loopback capture is first-class); Opus already portable |
-| Remote-control injection | `CGEvent` + Accessibility TCC | `org.freedesktop.portal.RemoteDesktop` (consent UX ≈ TCC) | `SendInput` |
+| Render | Metal (`CAMetalLayer`) | Vulkan or OpenGL; SDL as the pragmatic first cut — **landed: `Packages/SDLKit`** (SDL2 IYUV streaming texture, YUV→RGB in the renderer) | D3D11 swapchain; SDL again viable (`Packages/SDLKit` reusable) |
+| Voice + system audio | CoreAudio / AVFoundation for I/O; **Opus** (OpusKit/libopus) codec — done | **ALSA playback landed for the viewer** (`Packages/ALSAKit`, `snd_pcm` FLOAT_LE writer — also works on PipeWire/PulseAudio via their ALSA-compat PCM, so a safe portable first backend); PipeWire capture + native playback later; Opus already portable | WASAPI (loopback capture is first-class); Opus already portable || Remote-control injection | `CGEvent` + Accessibility TCC | `org.freedesktop.portal.RemoteDesktop` (consent UX ≈ TCC) | `SendInput` |
 | Global hotkeys | Carbon | GlobalShortcuts portal (newer compositors only) | `RegisterHotKey` |
 | Tray/menubar UI | SwiftUI `MenuBarExtra` + AppKit | StatusNotifierItem + GTK4/libadwaita (or minimal custom) | `Shell_NotifyIcon` + Win32/WinUI shim |
 | Notifications | UserNotifications | `org.freedesktop.Notifications` | WinRT toasts |
