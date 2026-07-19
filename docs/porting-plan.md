@@ -190,6 +190,18 @@ playback, PLI/NACK/RR/FEC (already in the portable core), and annotations
 out. (Remote-control input capture is deprioritized — see the effort note
 below.) A viewer-only Linux release is a shippable milestone on its own.
 
+*Landed:* the portable **viewer data-plane core** — `ViewerSession` in the
+new `TailscreenViewer` target (`Packages/TailscreenKit`). It's host-agnostic:
+given inbound RTP + a host clock it produces decoded video frames, decoded
+audio, and outbound feedback bytes (HELLO/NACK/PLI/RR), reusing the existing
+depacketizers + `NACKScheduler`/`RRAccounting`/`OpusVoiceDecoder`, behind
+`VideoDecoding`/`VideoSink`/`AudioSink` protocols so the concrete FFmpeg
+decoder / SDL renderer / ALSA sink plug in later without this target linking
+them. It owns no socket/thread/timer, so it's fully unit-tested
+(`TailscreenViewerTests`) and Linux-buildable today. FEC ingest
+(`FECGroupBuffer`) is the one deferred piece — the viewer degrades to
+NACK-or-PLI until it lands (`TODO(fec)` in `ViewerSession.swift`).
+
 **Phase 3 — Linux sharer.** Portal capture → encoder adapter (#3, #4) →
 the existing broadcast/fan-out logic, which is already extracted into pure
 decision functions. Then admission UI, voice, system audio (#5, #6). Tray

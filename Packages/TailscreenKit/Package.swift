@@ -40,6 +40,10 @@ let package = Package(
         .library(
             name: "TailscreenAudio",
             targets: ["TailscreenAudio"]
+        ),
+        .library(
+            name: "TailscreenViewer",
+            targets: ["TailscreenViewer"]
         )
     ],
     dependencies: [
@@ -66,10 +70,23 @@ let package = Package(
             ],
             path: "Sources/TailscreenAudio"
         ),
+        .target(
+            name: "TailscreenViewer",
+            dependencies: [
+                "TailscreenProtocol",
+                "TailscreenAudio"
+            ],
+            path: "Sources/TailscreenViewer"
+        ),
         .testTarget(
             name: "TailscreenProtocolTests",
             dependencies: ["TailscreenProtocol", "TailscreenAudio"],
             path: "Tests/TailscreenProtocolTests"
+        ),
+        .testTarget(
+            name: "TailscreenViewerTests",
+            dependencies: ["TailscreenViewer", "TailscreenProtocol", "TailscreenAudio"],
+            path: "Tests/TailscreenViewerTests"
         )
     ]
 )
