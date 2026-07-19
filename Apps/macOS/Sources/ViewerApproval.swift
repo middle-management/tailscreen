@@ -108,6 +108,14 @@ final class ViewerJoinNotifier {
     private func ensureAuthorization() {
         guard !didRequestAuthorization else { return }
         didRequestAuthorization = true
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        // UNUserNotificationCenter invokes this completion on its own service
+        // queue, but `requestAuthorization`'s handler isn't `@Sendable`, so the
+        // compiler infers it as MainActor-isolated (this class is @MainActor).
+        // Swift 6's runtime then traps on the off-main executor check
+        // (dispatch_assert_queue_fail → SIGTRAP) the first time a viewer joins.
+        // Typing the closure `@Sendable` makes it non-isolated so it runs on
+        // UN's queue with no executor assertion.
+        let ignore: @Sendable (Bool, (any Error)?) -> Void = { _, _ in }
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound], completionHandler: ignore)
     }
 }
