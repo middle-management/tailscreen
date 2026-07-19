@@ -43,7 +43,7 @@ exchange is verified (see Phase 1 below). Phases 2+ are proposal.
 | Capture | ScreenCaptureKit (helper subprocess) | PipeWire via `org.freedesktop.portal.ScreenCast` | Windows.Graphics.Capture (WinRT); DXGI duplication fallback |
 | Picker | `SCContentSharingPicker` (helper) | The portal's own consent dialog *is* the picker | `GraphicsCapturePicker` |
 | Encode | VideoToolbox H.264/HEVC | VA-API / NVENC (via FFmpeg), x264/x265 software fallback | Media Foundation HW encoders, or FFmpeg (NVENC/AMF/QSV) |
-| Decode | VideoToolbox | FFmpeg (libavcodec) + VA-API hwaccel | Media Foundation / FFmpeg + D3D11VA |
+| Decode | VideoToolbox | FFmpeg (libavcodec) + VA-API hwaccel — software decode **done** (`Packages/FFmpegKit`) | Media Foundation / FFmpeg + D3D11VA |
 | Render | Metal (`CAMetalLayer`) | Vulkan or OpenGL; SDL as the pragmatic first cut | D3D11 swapchain; SDL again viable |
 | Voice + system audio | CoreAudio / AVFoundation for I/O; **Opus** (OpusKit/libopus) codec — done | PipeWire (capture + playback); Opus already portable | WASAPI (loopback capture is first-class); Opus already portable |
 | Remote-control injection | `CGEvent` + Accessibility TCC | `org.freedesktop.portal.RemoteDesktop` (consent UX ≈ TCC) | `SendInput` |
@@ -90,7 +90,12 @@ address now, additively, while all peers are macOS.
    and Media Foundation speak Annex-B by default — every non-VT encoder
    and decoder adapter needs start-code ⇄ length-prefix conversion and
    extradata (SPS/PPS/VPS) extraction. Mechanical, but it must live in
-   the shared adapter layer, not be reinvented per platform.
+   the shared adapter layer, not be reinvented per platform. **Landed for
+   the viewer:** `Packages/FFmpegKit` — a `systemLibrary` wrapper over
+   libavcodec — provides `NALUnit.avccToAnnexB` (the shared converter) and
+   `FFmpeg.VideoDecoder` (H.264/HEVC AVCC/Annex-B → YUV frames, in-band
+   parameter sets, no extradata needed), CI-gated on Linux by `linux-ffmpeg`.
+   In-band SPS/PPS/VPS means no separate extradata extraction is required.
 4. **Encoder rate-control semantics don't transfer.** `EncoderTuning` is
    calibrated to VideoToolbox's quality key + `DataRateLimits`; VA-API,
    NVENC, and MF each have different rate-control modes. The congestion
