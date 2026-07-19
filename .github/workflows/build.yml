@@ -225,6 +225,23 @@ jobs:
       - name: Build + test OpusKit on Linux
         run: swift test --package-path Packages/OpusKit
 
+  # Video-decode-portability gate: FFmpegKit (a systemLibrary wrapper over
+  # libavcodec — see Packages/FFmpegKit/README.md) must build and pass its
+  # decode tests on Linux. This is the portable video-decode foundation for
+  # the Linux/Windows viewer (docs/porting-plan.md — "Decode"); wiring it into
+  # a portable viewer session is later work. Cheap: one apt install, no
+  # submodules, no Go. (libavutil-dev comes with libavcodec-dev; opus.pc-style
+  # default-path resolution means no PKG_CONFIG_PATH entry is needed.)
+  linux-ffmpeg:
+    runs-on: ubuntu-latest
+    container: swift:6.1-noble
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install FFmpeg dev libraries
+        run: apt-get update && apt-get install -y --no-install-recommends libavcodec-dev libavutil-dev pkg-config
+      - name: Build + test FFmpegKit on Linux
+        run: swift test --package-path Packages/FFmpegKit
+
   # Transport-portability gate: libtailscale (Go c-archive) + the patched
   # TailscaleKit Swift wrapper must build and pass their unit tests on
   # Linux. This is the compile-time half of the porting plan's Phase 1;
