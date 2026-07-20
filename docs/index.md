@@ -162,9 +162,10 @@ doesn&rsquo;t. Your screen never touches a third-party server.</p>
         <path d="M9 11.5l2 2 4-4"/>
       </svg>
     </div>
-    <h3>Approval, on by default</h3>
-    <p>Nobody sees a single frame until you Accept them. Remember peers as
-    Always Allow &mdash; or Deny &amp; Block.</p>
+    <h3>You decide who sees what</h3>
+    <p>Nobody sees a single frame until you Accept them &mdash; and cloaked
+    apps (Messages, your password manager) are never captured at all, even
+    on full-display shares.</p>
   </div>
   <div class="ts-card">
     <div class="ts-card-icon">

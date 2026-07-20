@@ -53,6 +53,30 @@ picker without disconnecting anyone — viewers see a brief pause and then
 the new content. Annotations are cleared on both ends when the source
 changes, so stale strokes don't float over the new content.
 
+### Cloaked Apps: hiding apps from viewers
+
+Some apps just shouldn't be on stream — Messages, Mail, your password
+manager. Add them once in **Settings → Cloaked Apps** and their windows
+are excluded from every whole-display share, so there's no need to clean
+up your screen before hitting Start Sharing. The **Add App…** menu lists
+your running apps; each entry has a **Remove** button, and the **Hide
+cloaked apps while sharing** toggle lets you temporarily disable cloaking
+without losing the list.
+
+The rules, spelled out:
+
+- **Applies to display shares.** Sharing a single window or app already
+  limits capture to exactly what you picked, so there's nothing to cloak.
+- **An explicit pick wins.** If you deliberately choose to share a cloaked
+  app (window or app share), it's shared — a standing default never
+  overrides a deliberate choice.
+- **It's live.** Editing the list mid-share applies within a second or
+  two; viewers see a brief pause while the capture pipeline rebuilds.
+  A cloaked app that *launches* mid-share is picked up the same way.
+- Cloaked windows are excluded at capture time — the pixels never reach
+  the encoder, never mind the network. Viewers simply see your wallpaper
+  (or whatever is behind the window) where the app would be.
+
 ## Viewing a shared screen
 
 You have two options. Browse Shares is usually the easier one.

@@ -108,6 +108,17 @@ while "Deny & Block" both expels and remembers.
 testing. Never set it in production; note that even it does not override
 the block list.
 
+Admission controls *who* sees your screen; **Cloaked Apps** (Settings →
+Cloaked Apps) controls *what* even admitted viewers see. Apps on the
+cloak list are excluded from every whole-display share at the capture
+layer — `ScreenCaptureKit` never delivers their pixels, so nothing
+sensitive is encoded, sent, and blurred after the fact; it's simply never
+captured. Two honest caveats: a cloaked app that launches mid-share can
+be visible for a moment (typically under a couple of seconds) while the
+capture filter is rebuilt to include it, and cloaking is a
+tidy-screen/anti-oops measure for display shares — if you explicitly pick
+a cloaked app to share, your deliberate choice wins.
+
 ## Who can control your Mac
 
 Remote control is off until granted, per session, per viewer:
