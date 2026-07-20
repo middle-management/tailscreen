@@ -80,6 +80,8 @@
 "Connection healthy" = "Anslutningen är stabil";
 "Connection degraded — packet loss" = "Anslutningen är försämrad — paketförlust";
 "Limited to keyframes — poor connection" = "Begränsad till nyckelbildrutor — dålig anslutning";
+"Disconnect this viewer" = "Koppla från denna tittare";
+"Disconnect %@" = "Koppla från %@";
 
 /* MARK: - Viewer approval rows (MenuBarView.swift) */
 "Deny" = "Neka";
@@ -171,6 +173,8 @@
 /* MARK: - Viewer consent + request-to-share outcomes (AppState.swift) */
 "Connection Declined" = "Anslutning nekad";
 "The sharer declined your request to view their screen." = "Delaren nekade din begäran om att se deras skärm.";
+"Disconnected by Sharer" = "Frånkopplad av delaren";
+"The sharer disconnected you from their screen share." = "Delaren kopplade bort dig från sin skärmdelning.";
 "Request Accepted" = "Begäran accepterad";
 "%@ accepted your request and is choosing what to share." = "%@ accepterade din begäran och väljer vad som ska delas.";
 "Request Declined" = "Begäran nekad";

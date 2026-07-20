@@ -85,6 +85,8 @@
 "Connection healthy" = "Connection healthy";
 "Connection degraded — packet loss" = "Connection degraded — packet loss";
 "Limited to keyframes — poor connection" = "Limited to keyframes — poor connection";
+"Disconnect this viewer" = "Disconnect this viewer";
+"Disconnect %@" = "Disconnect %@";
 
 /* MARK: - Viewer approval rows (MenuBarView.swift) */
 "Deny" = "Deny";
@@ -176,6 +178,8 @@
 /* MARK: - Viewer consent + request-to-share outcomes (AppState.swift) */
 "Connection Declined" = "Connection Declined";
 "The sharer declined your request to view their screen." = "The sharer declined your request to view their screen.";
+"Disconnected by Sharer" = "Disconnected by Sharer";
+"The sharer disconnected you from their screen share." = "The sharer disconnected you from their screen share.";
 "Request Accepted" = "Request Accepted";
 "%@ accepted your request and is choosing what to share." = "%@ accepted your request and is choosing what to share.";
 "Request Declined" = "Request Declined";

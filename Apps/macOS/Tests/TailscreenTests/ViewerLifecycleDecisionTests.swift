@@ -78,6 +78,46 @@ final class ViewerLifecycleDecisionTests: XCTestCase {
             ).isEmpty)
     }
 
+    // MARK: - expelledQuietDecision (kicked-viewer quiet window)
+
+    func testKickedAddrInsideWindowIsQuieted() {
+        let (remaining, quieted) = TailscaleScreenShareServer.expelledQuietDecision(
+            expelledAtNs: ["kicked": 100 * s], addr: "kicked", nowNs: 110 * s, quietNs: 30 * s)
+        XCTAssertTrue(quieted, "a straggler keepalive inside the window must be denied, not re-admitted")
+        XCTAssertEqual(remaining, ["kicked": 100 * s])
+    }
+
+    func testKickedAddrExpiresAfterWindowAndIsPruned() {
+        let (remaining, quieted) = TailscaleScreenShareServer.expelledQuietDecision(
+            expelledAtNs: ["kicked": 100 * s], addr: "kicked", nowNs: 131 * s, quietNs: 30 * s)
+        XCTAssertFalse(quieted)
+        XCTAssertTrue(remaining.isEmpty, "expired entries must be pruned so the map stays bounded")
+    }
+
+    func testExactlyAtQuietWindowBoundaryIsStillQuieted() {
+        // Inclusive boundary (<=): an entry exactly quietNs old survives
+        // this check and ages out on the next one.
+        let (remaining, quieted) = TailscaleScreenShareServer.expelledQuietDecision(
+            expelledAtNs: ["kicked": 100 * s], addr: "kicked", nowNs: 130 * s, quietNs: 30 * s)
+        XCTAssertTrue(quieted)
+        XCTAssertEqual(remaining.count, 1)
+    }
+
+    func testUnrelatedAddrIsNotQuietedButExpiredPeersStillPrune() {
+        let (remaining, quieted) = TailscaleScreenShareServer.expelledQuietDecision(
+            expelledAtNs: ["old": 50 * s, "recent": 100 * s],
+            addr: "someone-else", nowNs: 110 * s, quietNs: 30 * s)
+        XCTAssertFalse(quieted)
+        XCTAssertEqual(remaining, ["recent": 100 * s], "pruning applies even when the probed addr misses")
+    }
+
+    func testEmptyExpelledMapQuietsNobody() {
+        let (remaining, quieted) = TailscaleScreenShareServer.expelledQuietDecision(
+            expelledAtNs: [:], addr: "anyone", nowNs: 100 * s, quietNs: 30 * s)
+        XCTAssertFalse(quieted)
+        XCTAssertTrue(remaining.isEmpty)
+    }
+
     // MARK: - appendingPLI
 
     func testPLIRingAppendsInOrder() {
