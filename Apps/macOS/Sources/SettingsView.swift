@@ -68,30 +68,30 @@ struct SettingsView: View {
                     }
                 }
             }
-            Section(L("App Veil")) {
+            Section(L("Cloaked Apps")) {
                 Toggle(
-                    L("Hide veiled apps while sharing"),
+                    L("Hide cloaked apps while sharing"),
                     isOn: Binding(
-                        get: { appState.appVeil.isEnabled },
-                        set: { appState.appVeil.isEnabled = $0 }
+                        get: { appState.appCloak.isEnabled },
+                        set: { appState.appCloak.isEnabled = $0 }
                     ))
-                if appState.appVeil.entries.isEmpty {
+                if appState.appCloak.entries.isEmpty {
                     Text(
                         L(
-                            "Veiled apps are hidden from viewers whenever you share a whole display — no need to clean up your screen before sharing."
+                            "Cloaked apps are hidden from viewers whenever you share a whole display — no need to clean up your screen before sharing."
                         )
                     )
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 } else {
-                    ForEach(appState.appVeil.entries) { entry in
+                    ForEach(appState.appCloak.entries) { entry in
                         HStack(spacing: 8) {
                             Text(entry.displayName)
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                             Spacer(minLength: 4)
                             Button(L("Remove")) {
-                                appState.appVeil.remove(bundleID: entry.bundleID)
+                                appState.appCloak.remove(bundleID: entry.bundleID)
                             }
                             .controlSize(.small)
                             .accessibilityLabel(L("Remove \(entry.displayName)"))
@@ -99,13 +99,13 @@ struct SettingsView: View {
                     }
                 }
                 Menu(L("Add App…")) {
-                    let candidates = veilableRunningApps()
+                    let candidates = cloakableRunningApps()
                     if candidates.isEmpty {
                         Text(L("No other running apps"))
                     } else {
                         ForEach(candidates, id: \.bundleID) { app in
                             Button(app.name) {
-                                appState.appVeil.add(
+                                appState.appCloak.add(
                                     bundleID: app.bundleID, displayName: app.name)
                             }
                         }
@@ -113,7 +113,7 @@ struct SettingsView: View {
                 }
                 Text(
                     L(
-                        "Applies when you share a whole display. Sharing a single window or app already limits what viewers see, and an app you explicitly pick to share is never veiled."
+                        "Applies when you share a whole display. Sharing a single window or app already limits what viewers see, and an app you explicitly pick to share is never cloaked."
                     )
                 )
                 .font(.caption)
@@ -237,15 +237,15 @@ struct SettingsView: View {
         .onAppear { appState.refreshAudioDevices() }
     }
 
-    /// Running apps the user could add to the App Veil list: ordinary
+    /// Running apps the user could add to the Cloaked Apps list: ordinary
     /// (Dock-visible) apps, minus Tailscreen itself and anything already
-    /// veiled. `NSWorkspace` is legal here — it's AppKit, not the
+    /// cloaked. `NSWorkspace` is legal here — it's AppKit, not the
     /// ScreenCaptureKit family CLAUDE.md bans from the main process — and
     /// enumerating *running* apps mirrors Tuple's "Add…" flow without
     /// needing a full /Applications scan.
     @MainActor
-    private func veilableRunningApps() -> [(name: String, bundleID: String)] {
-        let veiled = Set(appState.appVeil.entries.map(\.bundleID))
+    private func cloakableRunningApps() -> [(name: String, bundleID: String)] {
+        let cloaked = Set(appState.appCloak.entries.map(\.bundleID))
         let selfID = Bundle.main.bundleIdentifier
         var seen = Set<String>()
         return NSWorkspace.shared.runningApplications
@@ -253,7 +253,7 @@ struct SettingsView: View {
             .compactMap { app -> (name: String, bundleID: String)? in
                 guard let bundleID = app.bundleIdentifier,
                     bundleID != selfID,
-                    !veiled.contains(bundleID),
+                    !cloaked.contains(bundleID),
                     seen.insert(bundleID).inserted
                 else { return nil }
                 return (name: app.localizedName ?? bundleID, bundleID: bundleID)

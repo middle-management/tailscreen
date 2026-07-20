@@ -29,12 +29,12 @@ public struct PickerSelection: Codable, Sendable, Equatable {
     /// separately gated by the `setAudioEnabled` latch, so this only controls
     /// whether the output exists.
     public let captureAudio: Bool
-    /// App Veil: bundle IDs the capture-helper must exclude from a
+    /// Cloaked Apps: bundle IDs the capture-helper must exclude from a
     /// `.display` share (`SCContentFilter(display:excludingApplications:…)`).
     /// Only meaningful for `.display` — window shares capture a single
     /// window, and an `.application` share's include-list already hides
     /// everything not picked. The picker never writes this; the sharer's
-    /// main process injects it from the persisted veil list before spawning
+    /// main process injects it from the persisted cloak list before spawning
     /// the helper (like `captureAudio`). Missing key decodes to `[]` so old
     /// JSON stays valid.
     public let excludedBundleIDs: [String]
@@ -84,7 +84,7 @@ public struct PickerSelection: Codable, Sendable, Equatable {
     }
 
     /// A copy with `excludedBundleIDs` set — used by the sharer to inject
-    /// the App Veil list without mutating the picker-produced value.
+    /// the Cloaked Apps list without mutating the picker-produced value.
     public func settingExcludedBundleIDs(_ ids: [String]) -> PickerSelection {
         PickerSelection(
             kind: kind, displayID: displayID, windowID: windowID,

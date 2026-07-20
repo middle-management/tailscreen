@@ -200,13 +200,13 @@ class AppState: ObservableObject {
     /// on every change (see the `$entries` subscription in `init`).
     let viewerAccessPolicies = ViewerAccessPolicyStore()
 
-    /// Persistent App Veil list behind the Settings "App Veil" section:
+    /// Persistent Cloaked Apps list behind the Settings "Cloaked Apps" section:
     /// apps whose windows are hidden from viewers whenever a whole display
     /// is shared. Baked into `PickerSelection.excludedBundleIDs` at share
     /// start (`applyingShareTransforms`) and live re-pushed on every
-    /// list/toggle change via the debounced `scheduleVeilRepush` (see the
+    /// list/toggle change via the debounced `scheduleCloakRepush` (see the
     /// subscriptions in `init`).
-    let appVeil = AppVeilStore()
+    let appCloak = AppCloakStore()
 
     /// User preference: sharing-side quality knobs (fps cap, codec
     /// preference, encoder quality, bandwidth ceiling). Persisted as a
@@ -236,10 +236,10 @@ class AppState: ObservableObject {
     /// like everything else on AppState.
     private var qualitySettingsSyncTask: Task<Void, Never>?
 
-    /// Debounce task + force latch for the App Veil live re-push (see
-    /// `scheduleVeilRepush`). MainActor, like everything else on AppState.
-    private var veilSyncTask: Task<Void, Never>?
-    private var veilRepushForce = false
+    /// Debounce task + force latch for the Cloaked Apps live re-push (see
+    /// `scheduleCloakRepush`). MainActor, like everything else on AppState.
+    private var cloakSyncTask: Task<Void, Never>?
+    private var cloakRepushForce = false
 
     /// Viewer IDs we've already fired a "joined" notification for this
     /// session. Keyed by the server's internal `"ip:port"` ID so a viewer
@@ -399,7 +399,7 @@ class AppState: ObservableObject {
     nonisolated(unsafe) private var notificationObservers: [NSObjectProtocol] = []
 
     // NSWorkspace's notification center + the launch-observer token
-    // registered on it (App Veil's "veiled app launched mid-share"
+    // registered on it (the Cloaked Apps "cloaked app launched mid-share"
     // trigger). Kept separate from `notificationObservers` because those
     // tokens belong to `NotificationCenter.default` — removing a token
     // from the wrong center silently leaks it. Same `nonisolated(unsafe)`
@@ -466,27 +466,27 @@ class AppState: ObservableObject {
                 self?.server?.setAccessPolicies(policies)
             }.store(in: &cancellables)
 
-        // Mirror the App Veil store to the UI, and re-veil a live share
+        // Mirror the Cloaked Apps store to the UI, and re-cloak a live share
         // when the list or the master toggle changes. The debounced
         // re-push reads the store at fire time — after the property write
         // has landed — so `$entries`'s deliver-before-write timing (which
         // the policy snapshot above has to dance around) doesn't matter.
-        appVeil.objectWillChange.sink { [weak self] _ in
+        appCloak.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }.store(in: &cancellables)
-        appVeil.$entries
+        appCloak.$entries
             .map { entries in entries.map(\.bundleID) }
             .removeDuplicates()
             .dropFirst()
-            .sink { [weak self] _ in self?.scheduleVeilRepush() }
+            .sink { [weak self] _ in self?.scheduleCloakRepush() }
             .store(in: &cancellables)
-        appVeil.$isEnabled
+        appCloak.$isEnabled
             .removeDuplicates()
             .dropFirst()
-            .sink { [weak self] _ in self?.scheduleVeilRepush() }
+            .sink { [weak self] _ in self?.scheduleCloakRepush() }
             .store(in: &cancellables)
 
-        // A veiled app *launching* mid-share can't be hidden by the running
+        // A cloaked app *launching* mid-share can't be hidden by the running
         // helper: its SCContentFilter resolved applications at build time,
         // and an app that wasn't running never resolved into the exclusion
         // list. Watch for launches and force a re-push (helper respawn) so
@@ -508,7 +508,7 @@ class AppState: ObservableObject {
                         let selection = self.currentSelection,
                         selection.excludedBundleIDs.contains(bundleID)
                     else { return }
-                    self.scheduleVeilRepush(force: true)
+                    self.scheduleCloakRepush(force: true)
                 }
             }
         )
@@ -766,8 +766,8 @@ class AppState: ObservableObject {
     ///   * `captureAudio = true` so the helper configures its `.audio`
     ///     SCStream output (emission stays gated by the `setAudioEnabled`
     ///     latch, so this only makes the output exist);
-    ///   * the App Veil exclusion list (`AppVeilStore`) so a display share
-    ///     hides the veiled apps' windows from viewers.
+    ///   * the Cloaked Apps exclusion list (`AppCloakStore`) so a display share
+    ///     hides the cloaked apps' windows from viewers.
     ///
     /// Shared by `startSharing` and `changeShareSource` so the two share
     /// bring-up paths can't drift (Change Source used to ship the raw
@@ -780,48 +780,48 @@ class AppState: ObservableObject {
         let transformed =
             selection
             .settingCaptureAudio(true)
-            .settingExcludedBundleIDs(appVeil.effectiveExclusions(for: selection.kind))
+            .settingExcludedBundleIDs(appCloak.effectiveExclusions(for: selection.kind))
         guard let reencoded = try? JSONEncoder().encode(transformed) else { return filterData }
         currentSelection = transformed
         return reencoded
     }
 
-    /// Coalesce App Veil edits into one helper respawn (~500 ms cancel-and-
+    /// Coalesce Cloaked Apps edits into one helper respawn (~500 ms cancel-and-
     /// replace, like the quality-ceiling debounce): every re-push restarts
     /// the capture-helper, so an un-debounced multi-add in Settings would
     /// burst restarts. `force` skips the no-change guard — used when a
-    /// veiled app *launches* mid-share: the exclusion list is byte-identical
+    /// cloaked app *launches* mid-share: the exclusion list is byte-identical
     /// but the live filter was built before the app existed, so only a
-    /// respawn actually veils it.
-    private func scheduleVeilRepush(force: Bool = false) {
-        veilRepushForce = veilRepushForce || force
-        veilSyncTask?.cancel()
-        veilSyncTask = Task { [weak self] in
+    /// respawn actually cloaks it.
+    private func scheduleCloakRepush(force: Bool = false) {
+        cloakRepushForce = cloakRepushForce || force
+        cloakSyncTask?.cancel()
+        cloakSyncTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(500))
             guard !Task.isCancelled, let self else { return }
-            let forced = self.veilRepushForce
-            self.veilRepushForce = false
-            await self.applyVeilToActiveShare(force: forced)
+            let forced = self.cloakRepushForce
+            self.cloakRepushForce = false
+            await self.applyCloakToActiveShare(force: forced)
         }
     }
 
-    /// Re-bake the App Veil exclusions into the cached selection and
+    /// Re-bake the Cloaked Apps exclusions into the cached selection and
     /// retarget the live capture-helper. No-op unless a share is active and
     /// the exclusion set actually changed (or `force`). Rides the same
     /// `server.changeSource` tracked-restart path as "Change Source…", so
     /// viewers recover via the fresh helper's in-band parameter sets; the
     /// sharer overlay and annotations are untouched because the shared
     /// surface itself is unchanged.
-    private func applyVeilToActiveShare(force: Bool) async {
+    private func applyCloakToActiveShare(force: Bool) async {
         guard sharingState == .active, let server, let selection = currentSelection else { return }
-        let exclusions = appVeil.effectiveExclusions(for: selection.kind)
+        let exclusions = appCloak.effectiveExclusions(for: selection.kind)
         guard force || exclusions != selection.excludedBundleIDs else { return }
         let updated = selection.settingExcludedBundleIDs(exclusions)
         guard let data = try? JSONEncoder().encode(updated) else { return }
         currentSelection = updated
         do {
             _ = try await server.changeSource(filterData: data)
-            logger.log("appVeil: re-pushed veil to live share (\(exclusions.count) veiled)")
+            logger.log("appCloak: re-pushed cloak to live share (\(exclusions.count) cloaked)")
         } catch is CancellationError {
             // Share stopped while the re-push was in flight — the stop path
             // owns teardown.
@@ -829,8 +829,8 @@ class AppState: ObservableObject {
             // The old helper is already gone by the time changeSource
             // throws; mirror changeShareSource's failure handling so the
             // share doesn't linger frozen.
-            logger.log("appVeil: live re-push failed (\(error)); tearing sharing down")
-            await stopSharing(reason: "appVeil repush failed: \(error)")
+            logger.log("appCloak: live re-push failed (\(error)); tearing sharing down")
+            await stopSharing(reason: "appCloak repush failed: \(error)")
             presentError(.sharingGeneric(error))
         }
     }
@@ -963,7 +963,7 @@ class AppState: ObservableObject {
         // whole display. A decode failure isn't fatal — we just fall
         // back to the legacy full-display overlay.
         currentSelection = try? JSONDecoder().decode(PickerSelection.self, from: filterData)
-        // Bake the sharer-side settings (system-audio output, App Veil
+        // Bake the sharer-side settings (system-audio output, Cloaked Apps
         // exclusions) into the selection bytes the server caches.
         let effectiveFilterData = applyingShareTransforms(to: filterData)
         sharingState = .starting

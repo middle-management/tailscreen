@@ -2,18 +2,18 @@ import XCTest
 
 @testable import TailscreenProtocol
 
-/// App Veil — the pure exclusion decision (`AppVeil.effectiveExclusions`),
-/// the persisted list (`AppVeilStore` round-trip through an injected
+/// Cloaked Apps — the pure exclusion decision (`AppCloak.effectiveExclusions`),
+/// the persisted list (`AppCloakStore` round-trip through an injected
 /// `UserDefaults` suite, tri-state enabled default), and the
 /// `PickerSelection.excludedBundleIDs` JSON contract (backward-compatible
 /// decode, copy helpers). All CI-able; the live capture-side effect
 /// (`SCContentFilter(display:excludingApplications:…)`) is local-only.
-final class AppVeilTests: XCTestCase {
+final class AppCloakTests: XCTestCase {
 
     /// Scratch `UserDefaults` suite, wiped on teardown so runs don't
     /// contaminate each other (or the developer's real defaults).
     private func makeScratchDefaults() throws -> UserDefaults {
-        let name = "app-veil-tests-\(UUID().uuidString)"
+        let name = "app-cloak-tests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
         addTeardownBlock { UserDefaults.standard.removePersistentDomain(forName: name) }
         return defaults
@@ -21,37 +21,37 @@ final class AppVeilTests: XCTestCase {
 
     // MARK: - Pure exclusion decision
 
-    func testDisplayShareExcludesVeiledApps() {
+    func testDisplayShareExcludesCloakedApps() {
         XCTAssertEqual(
-            AppVeil.effectiveExclusions(
-                kind: .display, veiled: ["com.a.a", "com.b.b"], enabled: true),
+            AppCloak.effectiveExclusions(
+                kind: .display, cloaked: ["com.a.a", "com.b.b"], enabled: true),
             ["com.a.a", "com.b.b"])
     }
 
     func testExclusionsAreOrderStableAndDeduped() {
         XCTAssertEqual(
-            AppVeil.effectiveExclusions(
+            AppCloak.effectiveExclusions(
                 kind: .display,
-                veiled: ["com.b.b", "com.a.a", "com.b.b", "", "com.a.a"],
+                cloaked: ["com.b.b", "com.a.a", "com.b.b", "", "com.a.a"],
                 enabled: true),
             ["com.b.b", "com.a.a"])
     }
 
     /// A `.window` share captures exactly one window and an `.application`
-    /// share's include-list already hides everything not picked — veiling
-    /// must not interfere (an explicitly picked app wins over its veil
+    /// share's include-list already hides everything not picked — cloaking
+    /// must not interfere (an explicitly picked app wins over its cloak
     /// entry).
     func testNonDisplayKindsNeverExclude() {
         for kind in [PickerSelection.Kind.window, .application] {
             XCTAssertEqual(
-                AppVeil.effectiveExclusions(kind: kind, veiled: ["com.a.a"], enabled: true),
-                [], "kind \(kind) must not veil")
+                AppCloak.effectiveExclusions(kind: kind, cloaked: ["com.a.a"], enabled: true),
+                [], "kind \(kind) must not cloak")
         }
     }
 
-    func testMasterToggleOffDisablesVeiling() {
+    func testMasterToggleOffDisablesCloaking() {
         XCTAssertEqual(
-            AppVeil.effectiveExclusions(kind: .display, veiled: ["com.a.a"], enabled: false),
+            AppCloak.effectiveExclusions(kind: .display, cloaked: ["com.a.a"], enabled: false),
             [])
     }
 
@@ -60,30 +60,30 @@ final class AppVeilTests: XCTestCase {
     @MainActor
     func testStoreRoundTripsThroughDefaults() throws {
         let defaults = try makeScratchDefaults()
-        let store = AppVeilStore(defaults: defaults)
+        let store = AppCloakStore(defaults: defaults)
         XCTAssertTrue(store.entries.isEmpty)
         store.add(bundleID: "com.slack.Slack", displayName: "Slack")
         store.add(bundleID: "com.apple.mail", displayName: "Mail")
-        XCTAssertTrue(store.isVeiled("com.slack.Slack"))
-        XCTAssertFalse(store.isVeiled("com.other.app"))
+        XCTAssertTrue(store.isCloaked("com.slack.Slack"))
+        XCTAssertFalse(store.isCloaked("com.other.app"))
 
         // A fresh store over the same suite sees the persisted list, in
         // insertion order.
-        let reloaded = AppVeilStore(defaults: defaults)
+        let reloaded = AppCloakStore(defaults: defaults)
         XCTAssertEqual(reloaded.entries.map(\.bundleID), ["com.slack.Slack", "com.apple.mail"])
         XCTAssertEqual(reloaded.entries.map(\.displayName), ["Slack", "Mail"])
 
         reloaded.remove(bundleID: "com.slack.Slack")
-        let reloadedAgain = AppVeilStore(defaults: defaults)
+        let reloadedAgain = AppCloakStore(defaults: defaults)
         XCTAssertEqual(reloadedAgain.entries.map(\.bundleID), ["com.apple.mail"])
     }
 
-    /// Re-adding a veiled app refreshes its cosmetic display name without
+    /// Re-adding a cloaked app refreshes its cosmetic display name without
     /// duplicating the entry or bumping its position.
     @MainActor
     func testReAddRefreshesDisplayNameWithoutDuplicating() throws {
         let defaults = try makeScratchDefaults()
-        let store = AppVeilStore(defaults: defaults)
+        let store = AppCloakStore(defaults: defaults)
         store.add(bundleID: "com.a.a", displayName: "Old Name")
         store.add(bundleID: "com.b.b", displayName: "B")
         store.add(bundleID: "com.a.a", displayName: "New Name")
@@ -97,13 +97,13 @@ final class AppVeilTests: XCTestCase {
     @MainActor
     func testEnabledTriStateDefault() throws {
         let defaults = try makeScratchDefaults()
-        XCTAssertTrue(AppVeilStore(defaults: defaults).isEnabled)
+        XCTAssertTrue(AppCloakStore(defaults: defaults).isEnabled)
 
-        let store = AppVeilStore(defaults: defaults)
+        let store = AppCloakStore(defaults: defaults)
         store.isEnabled = false
-        XCTAssertFalse(AppVeilStore(defaults: defaults).isEnabled)
+        XCTAssertFalse(AppCloakStore(defaults: defaults).isEnabled)
         store.isEnabled = true
-        XCTAssertTrue(AppVeilStore(defaults: defaults).isEnabled)
+        XCTAssertTrue(AppCloakStore(defaults: defaults).isEnabled)
     }
 
     /// `effectiveExclusions(for:)` is the store-side projection of the pure
@@ -111,7 +111,7 @@ final class AppVeilTests: XCTestCase {
     @MainActor
     func testStoreEffectiveExclusions() throws {
         let defaults = try makeScratchDefaults()
-        let store = AppVeilStore(defaults: defaults)
+        let store = AppCloakStore(defaults: defaults)
         store.add(bundleID: "com.a.a", displayName: "A")
         XCTAssertEqual(store.effectiveExclusions(for: .display), ["com.a.a"])
         XCTAssertEqual(store.effectiveExclusions(for: .window), [])
@@ -124,8 +124,8 @@ final class AppVeilTests: XCTestCase {
     @MainActor
     func testCorruptEntriesBlobDegradesToEmpty() throws {
         let defaults = try makeScratchDefaults()
-        defaults.set(Data("not json".utf8), forKey: AppVeilStore.entriesKey)
-        XCTAssertTrue(AppVeilStore(defaults: defaults).entries.isEmpty)
+        defaults.set(Data("not json".utf8), forKey: AppCloakStore.entriesKey)
+        XCTAssertTrue(AppCloakStore(defaults: defaults).entries.isEmpty)
     }
 
     // MARK: - PickerSelection JSON contract
@@ -155,19 +155,19 @@ final class AppVeilTests: XCTestCase {
     func testCopyHelpersPreserveEachOther() {
         let base = PickerSelection(
             kind: .display, displayID: 7, windowID: nil, bundleIDs: [])
-        let veiledThenAudio =
+        let cloakedThenAudio =
             base
             .settingExcludedBundleIDs(["com.a.a"])
             .settingCaptureAudio(true)
-        XCTAssertEqual(veiledThenAudio.excludedBundleIDs, ["com.a.a"])
-        XCTAssertTrue(veiledThenAudio.captureAudio)
+        XCTAssertEqual(cloakedThenAudio.excludedBundleIDs, ["com.a.a"])
+        XCTAssertTrue(cloakedThenAudio.captureAudio)
 
-        let audioThenVeiled =
+        let audioThenCloaked =
             base
             .settingCaptureAudio(true)
             .settingExcludedBundleIDs(["com.a.a"])
-        XCTAssertEqual(audioThenVeiled, veiledThenAudio)
-        XCTAssertEqual(audioThenVeiled.displayID, 7)
-        XCTAssertEqual(audioThenVeiled.kind, .display)
+        XCTAssertEqual(audioThenCloaked, cloakedThenAudio)
+        XCTAssertEqual(audioThenCloaked.displayID, 7)
+        XCTAssertEqual(audioThenCloaked.kind, .display)
     }
 }
