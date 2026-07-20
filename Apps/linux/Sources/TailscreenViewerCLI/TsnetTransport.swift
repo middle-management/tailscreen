@@ -75,7 +75,9 @@ final class TsnetTransport {
             atPath: config.statePath, withIntermediateDirectories: true)
 
         // Bring up an ephemeral node (no manual device registration).
-        let hostName = "tailscreen-viewer-\(UUID().uuidString.prefix(8))"
+        // `viewerHostnamePrefix` is excluded from peer discovery, so this
+        // ephemeral viewer node never shows up as a connectable screen.
+        let hostName = "\(TailscreenInstance.viewerHostnamePrefix)\(UUID().uuidString.prefix(8))"
         let node = try TailscaleNode(
             config: Configuration(
                 hostName: hostName,
