@@ -72,16 +72,20 @@ func parseArguments() -> (config: ViewerConfig, wantAudio: Bool) {
 
 let (config, wantAudio) = parseArguments()
 
-// The renderer opens at a default size and resizes to the first decoded frame.
+// The renderer opens at a default size and scales the decoded frame to fit.
 // Default to SDL's software renderer: the common path (X11 forwarded to XQuartz
 // over OrbStack) has no usable GLX FBConfig, so the accelerated `opengl` driver
 // dlopens libGL, creates a GLX context, and fatally X-errors the process before
 // any window shows. Set TAILSCREEN_SDL_ACCELERATED=1 on a native Linux desktop
 // with working GL to opt back into GPU-accelerated scaling.
+//
+// The sink owns a dedicated SDL render thread (see ThreadedSDLVideoSink) — SDL
+// must be driven from one consistent thread, which the @MainActor transport
+// loop can't guarantee across await points on Linux.
 let useAccelerated = ProcessInfo.processInfo.environment["TAILSCREEN_SDL_ACCELERATED"] == "1"
-let window: SDL.VideoWindow
+let videoSink: ThreadedSDLVideoSink
 do {
-    window = try SDL.VideoWindow(
+    videoSink = try ThreadedSDLVideoSink(
         title: "Tailscreen — \(config.hostname)",
         width: 1280,
         height: 720,
@@ -90,7 +94,6 @@ do {
 } catch {
     fail("could not open a video window: \(error)")
 }
-let videoSink = SDLVideoSink(window: window)
 
 var audioSink: AudioSink?
 if wantAudio {
@@ -135,13 +138,7 @@ do {
         decoder: decoder,
         videoSink: videoSink,
         audioSink: audioSink,
-        shouldClose: {
-            // Called once per run-loop iteration: keep the window painted (an
-            // X window blanks to white on expose if not redrawn) and report a
-            // close request.
-            videoSink.repaint()
-            return videoSink.pollShouldClose()
-        }
+        shouldClose: { videoSink.pollShouldClose() }
     )
 } catch {
     fail("session failed: \(error)")

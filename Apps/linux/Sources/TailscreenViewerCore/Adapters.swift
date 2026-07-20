@@ -56,49 +56,93 @@ extension VideoCodec {
 
 // MARK: - Video render (SDL → VideoSink)
 
-/// Adapts `SDLKit`'s YUV window to the viewer core's `VideoSink`. `present`
-/// throwing (SDL upload/copy failure, or a bad plane size) is logged and
-/// dropped rather than propagated — one bad frame shouldn't tear the session
-/// down, and the next keyframe recovers the display.
-public final class SDLVideoSink: VideoSink {
-    private let window: SDL.VideoWindow
-    /// The most recent frame, retained so `repaint()` can re-present it when no
-    /// new frame is decoding. Video is event-driven (a frame only arrives when
-    /// the sharer's screen changes), but an X window must be redrawn to stay
-    /// on-screen — otherwise it blanks to white on the next expose. The mac
-    /// renderer solves this with a continuous display-link; here the run loop
-    /// calls `repaint()` each tick to the same effect.
-    private var lastFrame: DecodedVideoFrame?
+/// Adapts `SDLKit`'s YUV window to the viewer core's `VideoSink`, driving **all**
+/// SDL calls from a single dedicated thread.
+///
+/// SDL's window, renderer, and event queue must be created and used from one
+/// consistent thread. The transport that feeds this sink runs as a Swift
+/// `@MainActor` async loop, whose executor is not guaranteed to stay on one OS
+/// thread across `await` points on Linux — so presenting directly from there
+/// left the window silently unpainted (SDL no-ops rendering off its owning
+/// thread, no error). Instead this sink owns a render thread that creates the
+/// window and runs a continuous loop: pump events, present the latest decoded
+/// frame (re-presenting it when idle so a static screen doesn't blank to white
+/// on expose — the mac renderer's display-link, by hand). `present()` just
+/// hands over the newest frame under a lock; the transport never touches SDL.
+public final class ThreadedSDLVideoSink: VideoSink, @unchecked Sendable {
+    private let lock = NSLock()
+    private var latest: DecodedVideoFrame?
+    private var closed = false
+    private var startupError: Error?
+    private let ready = DispatchSemaphore(value: 0)
 
-    public init(window: SDL.VideoWindow) {
-        self.window = window
+    /// Spawns the render thread and blocks until the window is up (or throws if
+    /// window creation failed on that thread).
+    public init(title: String, width: Int, height: Int, softwareRenderer: Bool) throws {
+        let thread = Thread { [self] in
+            renderLoop(title: title, width: width, height: height, softwareRenderer: softwareRenderer)
+        }
+        thread.name = "sdl-render"
+        thread.stackSize = 4 << 20
+        thread.start()
+        ready.wait()
+        lock.lock()
+        let err = startupError
+        lock.unlock()
+        if let err { throw err }
     }
 
+    /// Hand the newest frame to the render thread (drops any not-yet-shown
+    /// frame — only the latest matters for display). Never calls SDL.
     public func present(_ frame: DecodedVideoFrame) {
-        lastFrame = frame
-        draw(frame)
+        lock.lock()
+        latest = frame
+        lock.unlock()
     }
 
-    /// Re-present the last decoded frame (no-op until the first frame). Cheap
-    /// and idempotent; called from the run loop so a static screen stays
-    /// painted instead of blanking to white.
-    public func repaint() {
-        if let lastFrame { draw(lastFrame) }
+    /// True once the user closed the window (observed on the render thread).
+    public func pollShouldClose() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return closed
     }
 
-    private func draw(_ frame: DecodedVideoFrame) {
+    private func renderLoop(title: String, width: Int, height: Int, softwareRenderer: Bool) {
+        let window: SDL.VideoWindow
         do {
-            try window.present(
-                width: frame.width, height: frame.height,
-                yPlane: frame.yPlane, uPlane: frame.uPlane, vPlane: frame.vPlane
-            )
+            window = try SDL.VideoWindow(
+                title: title, width: width, height: height, softwareRenderer: softwareRenderer)
         } catch {
-            FileHandle.standardError.write(Data("SDL present failed: \(error)\n".utf8))
+            lock.lock()
+            startupError = error
+            lock.unlock()
+            ready.signal()
+            return
+        }
+        ready.signal()
+
+        while true {
+            if window.pollShouldClose() {
+                lock.lock()
+                closed = true
+                lock.unlock()
+                break
+            }
+            lock.lock()
+            let frame = latest
+            lock.unlock()
+            if let frame {
+                do {
+                    try window.present(
+                        width: frame.width, height: frame.height,
+                        yPlane: frame.yPlane, uPlane: frame.uPlane, vPlane: frame.vPlane)
+                } catch {
+                    FileHandle.standardError.write(Data("SDL present failed: \(error)\n".utf8))
+                }
+            }
+            Thread.sleep(forTimeInterval: 1.0 / 60.0)
         }
     }
-
-    /// Pump the SDL event queue; true when the user closed the window.
-    public func pollShouldClose() -> Bool { window.pollShouldClose() }
 }
 
 // MARK: - Audio output (ALSA → AudioSink)
