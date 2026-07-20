@@ -29,28 +29,40 @@ public struct PickerSelection: Codable, Sendable, Equatable {
     /// separately gated by the `setAudioEnabled` latch, so this only controls
     /// whether the output exists.
     public let captureAudio: Bool
+    /// App Veil: bundle IDs the capture-helper must exclude from a
+    /// `.display` share (`SCContentFilter(display:excludingApplications:…)`).
+    /// Only meaningful for `.display` — window shares capture a single
+    /// window, and an `.application` share's include-list already hides
+    /// everything not picked. The picker never writes this; the sharer's
+    /// main process injects it from the persisted veil list before spawning
+    /// the helper (like `captureAudio`). Missing key decodes to `[]` so old
+    /// JSON stays valid.
+    public let excludedBundleIDs: [String]
 
     public init(
         kind: Kind,
         displayID: UInt32?,
         windowID: UInt32?,
         bundleIDs: [String],
-        captureAudio: Bool = false
+        captureAudio: Bool = false,
+        excludedBundleIDs: [String] = []
     ) {
         self.kind = kind
         self.displayID = displayID
         self.windowID = windowID
         self.bundleIDs = bundleIDs
         self.captureAudio = captureAudio
+        self.excludedBundleIDs = excludedBundleIDs
     }
 
     private enum CodingKeys: String, CodingKey {
-        case kind, displayID, windowID, bundleIDs, captureAudio
+        case kind, displayID, windowID, bundleIDs, captureAudio, excludedBundleIDs
     }
 
-    /// Custom decode so a missing `captureAudio` key (old picker-helper JSON)
-    /// falls back to `false` instead of failing. `encode(to:)` stays
-    /// synthesized — the field always serializes.
+    /// Custom decode so a missing `captureAudio` / `excludedBundleIDs` key
+    /// (old picker-helper JSON) falls back to `false` / `[]` instead of
+    /// failing. `encode(to:)` stays synthesized — the fields always
+    /// serialize.
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         kind = try container.decode(Kind.self, forKey: .kind)
@@ -58,6 +70,8 @@ public struct PickerSelection: Codable, Sendable, Equatable {
         windowID = try container.decodeIfPresent(UInt32.self, forKey: .windowID)
         bundleIDs = try container.decode([String].self, forKey: .bundleIDs)
         captureAudio = try container.decodeIfPresent(Bool.self, forKey: .captureAudio) ?? false
+        excludedBundleIDs =
+            try container.decodeIfPresent([String].self, forKey: .excludedBundleIDs) ?? []
     }
 
     /// A copy with `captureAudio` set — used by the sharer to turn on the
@@ -65,6 +79,16 @@ public struct PickerSelection: Codable, Sendable, Equatable {
     public func settingCaptureAudio(_ on: Bool) -> PickerSelection {
         PickerSelection(
             kind: kind, displayID: displayID, windowID: windowID,
-            bundleIDs: bundleIDs, captureAudio: on)
+            bundleIDs: bundleIDs, captureAudio: on,
+            excludedBundleIDs: excludedBundleIDs)
+    }
+
+    /// A copy with `excludedBundleIDs` set — used by the sharer to inject
+    /// the App Veil list without mutating the picker-produced value.
+    public func settingExcludedBundleIDs(_ ids: [String]) -> PickerSelection {
+        PickerSelection(
+            kind: kind, displayID: displayID, windowID: windowID,
+            bundleIDs: bundleIDs, captureAudio: captureAudio,
+            excludedBundleIDs: ids)
     }
 }

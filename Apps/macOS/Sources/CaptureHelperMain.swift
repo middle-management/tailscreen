@@ -181,7 +181,21 @@ enum CaptureHelperMain {
             else {
                 throw PickerReconstructionError.displayNotFound(selection.displayID)
             }
-            return SCContentFilter(display: display, excludingWindows: [])
+            // App Veil: hide the veiled apps' windows from viewers. The
+            // exclusion is by *application*, so new windows of a resolved
+            // app stay hidden without a filter rebuild. A veiled app that
+            // isn't running can't resolve here — the parent watches for its
+            // launch (`AppState`'s NSWorkspace observer) and re-pushes the
+            // filter so it gets veiled by the respawned helper.
+            let veiledSet = Set(selection.excludedBundleIDs)
+            guard !veiledSet.isEmpty else {
+                return SCContentFilter(display: display, excludingWindows: [])
+            }
+            let veiledApps = content.applications.filter {
+                veiledSet.contains($0.bundleIdentifier)
+            }
+            return SCContentFilter(
+                display: display, excludingApplications: veiledApps, exceptingWindows: [])
         case .window:
             guard let id = selection.windowID,
                 let window = content.windows.first(where: { $0.windowID == id })

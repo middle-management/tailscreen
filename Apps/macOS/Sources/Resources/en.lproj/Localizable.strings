@@ -146,6 +146,12 @@
 "Blocked" = "Blocked";
 "Remove" = "Remove";
 "Remove %@" = "Remove %@";
+"App Veil" = "App Veil";
+"Hide veiled apps while sharing" = "Hide veiled apps while sharing";
+"Veiled apps are hidden from viewers whenever you share a whole display — no need to clean up your screen before sharing." = "Veiled apps are hidden from viewers whenever you share a whole display — no need to clean up your screen before sharing.";
+"Add App…" = "Add App…";
+"No other running apps" = "No other running apps";
+"Applies when you share a whole display. Sharing a single window or app already limits what viewers see, and an app you explicitly pick to share is never veiled." = "Applies when you share a whole display. Sharing a single window or app already limits what viewers see, and an app you explicitly pick to share is never veiled.";
 "Quality" = "Quality";
 "Preset" = "Preset";
 "Low" = "Low";
