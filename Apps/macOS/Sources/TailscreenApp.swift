@@ -7,12 +7,15 @@ import SwiftUI
 /// pending request-to-share only surfaces while the app is fully idle —
 /// mirroring `PendingRequestsBanner`, which keeps requests queued but
 /// invisible while a share/connection is up or in flight. While sharing,
-/// a pending remote-control request badges the sharing glyph — control is
-/// high-stakes and the OS notification is bundled-app-only, so the menubar
-/// must carry the signal too.
+/// a pending remote-control request or a viewer parked on the approval
+/// gate badges the sharing glyph — both are decisions only the sharer can
+/// unblock, and the OS notification is bundled-app-only, so the menubar
+/// must carry the signal too. Control outranks a waiting viewer: granting
+/// control of the Mac is the higher-stakes prompt.
 enum MenubarIconState: Equatable {
     case sharing
     case sharingControlRequested
+    case sharingViewerWaiting
     case viewing
     case requestPending
     case idle
@@ -21,13 +24,17 @@ enum MenubarIconState: Equatable {
         sharing: SharingState,
         connection: ConnectionState,
         hasPendingRequests: Bool,
-        hasControlRequests: Bool
+        hasControlRequests: Bool,
+        hasWaitingViewers: Bool
     ) -> MenubarIconState {
         if sharing == .active {
-            // Control requests only exist while a share is up (the server
-            // surfaces them and stopSharing clears them), so the badge is
-            // meaningful only on the sharing glyph.
-            return hasControlRequests ? .sharingControlRequested : .sharing
+            // Control requests and pending viewers only exist while a
+            // share is up (the server surfaces them and stopSharing
+            // clears them), so these badges are meaningful only on the
+            // sharing glyph.
+            if hasControlRequests { return .sharingControlRequested }
+            if hasWaitingViewers { return .sharingViewerWaiting }
+            return .sharing
         }
         if connection == .viewing { return .viewing }
         if hasPendingRequests && sharing == .idle && connection == .idle {
@@ -61,7 +68,8 @@ struct TailscreenApp: App {
             sharing: appState.sharingState,
             connection: appState.connectionState,
             hasPendingRequests: !appState.metadataService.pendingRequests.isEmpty,
-            hasControlRequests: !appState.controlRequests.isEmpty
+            hasControlRequests: !appState.controlRequests.isEmpty,
+            hasWaitingViewers: !appState.pendingViewers.isEmpty
         )
         let image: NSImage?
         let label: String
@@ -70,8 +78,11 @@ struct TailscreenApp: App {
             image = Self.sharingImage
             label = L("Tailscreen: sharing your screen")
         case .sharingControlRequested:
-            image = Self.controlRequestImage
+            image = Self.sharingAttentionImage
             label = L("Tailscreen: a viewer is asking to control your Mac")
+        case .sharingViewerWaiting:
+            image = Self.sharingAttentionImage
+            label = L("Tailscreen: a viewer is waiting for your approval")
         case .viewing:
             image = Self.viewingImage
             label = L("Tailscreen: viewing a shared screen")
@@ -112,10 +123,13 @@ struct TailscreenApp: App {
     private static let requestImage = idleImage.map(badgedWithAttentionDot)
 
     /// Sharing glyph with the same attention dot, shown while a viewer's
-    /// remote-control request is awaiting Grant / Deny. Reuses the sharing
-    /// template so the "you are sharing" signal stays visible under the
-    /// badge.
-    private static let controlRequestImage = sharingImage.map(badgedWithAttentionDot)
+    /// remote-control request is awaiting Grant / Deny or a viewer is
+    /// parked on the approval gate awaiting Accept / Deny. One image for
+    /// both: at 6pt in an 18pt template, distinct badge shapes wouldn't
+    /// read — the accessibility label and the popover disambiguate.
+    /// Reuses the sharing template so the "you are sharing" signal stays
+    /// visible under the badge.
+    private static let sharingAttentionImage = sharingImage.map(badgedWithAttentionDot)
 
     /// Draw `base` with a small filled dot in the top-right corner. A
     /// slightly larger circle is knocked out of the base first so the dot
