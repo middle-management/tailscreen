@@ -329,6 +329,23 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// it — a pre-approval never un-blocks a blocked peer.
     private let preApprovedIPs = OSAllocatedUnfairLock<Set<String>>(initialState: [])
 
+    /// Addrs kicked by `expelViewer`, with the expel time. A straggler
+    /// KEEPALIVE/PLI from a kicked client (its HELLO_DENY still in flight,
+    /// or lost) must not re-register it through `registerOrRefresh` — with
+    /// the approval gate on it would re-park as a spurious pending row the
+    /// instant the sharer kicked it, and in open-door mode it would be
+    /// silently readmitted. Only a fresh HELLO (a deliberate reconnect)
+    /// clears the entry and runs the gate again. The blocked-peer expel is
+    /// additionally covered by its remembered-deny policy; the one-time
+    /// `disconnectViewer` kick has only this. Entries age out after
+    /// `expelledQuietNs` so the map stays bounded.
+    private let expelledAddrs = OSAllocatedUnfairLock<[String: UInt64]>(initialState: [:])
+
+    /// How long a kicked addr's KEEPALIVEs are ignored (and re-answered
+    /// with denial datagrams) before the entry ages out. Generous vs. the
+    /// viewer teardown-on-HELLO_DENY latency, tiny vs. share lifetime.
+    private let expelledQuietNs: UInt64 = 30_000_000_000
+
     /// Quality knobs snapshotted at `start()` and reused for **every**
     /// helper respawn, so a crash-restart mid-share can't silently pick up
     /// different settings (fps/codec edits apply on the next share). The
@@ -2130,6 +2147,27 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         }
         if wasPending { return }
 
+        // Kicked-viewer quiet window: a straggler KEEPALIVE/PLI from an
+        // addr `expelViewer` just removed must not re-run the admission
+        // gate (see `expelledAddrs`). Re-send the denial so a straggler
+        // that missed the first HELLO_DENY still tears down. A fresh
+        // HELLO is a deliberate reconnect — clear the entry and let it
+        // through the gate normally.
+        if isNew {
+            expelledAddrs.withLock { _ = $0.removeValue(forKey: addr) }
+        } else {
+            let recentlyExpelled = expelledAddrs.withLock { state -> Bool in
+                let decision = Self.expelledQuietDecision(
+                    expelledAtNs: state, addr: addr, nowNs: now, quietNs: expelledQuietNs)
+                state = decision.remaining
+                return decision.isQuieted
+            }
+            if recentlyExpelled {
+                sendDenialDatagrams(to: addr)
+                return
+            }
+        }
+
         let approvalRequired = requireApproval.withLock { $0 }
         let alreadyKnown = viewers.withLock { $0[addr] != nil }
         let ip = ipFromAddr(addr)
@@ -2311,7 +2349,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         }
         for addr in Self.connectedDenyList(viewerStableIDs: connectedStableIDs, policies: policies) {
             logger.log("Expelling connected viewer \(addr): policy changed to deny")
-            expelViewer(addr: addr)
+            expelViewer(addr: addr, reason: "remembered deny")
         }
     }
 
@@ -2421,15 +2459,37 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         sendDenialDatagrams(to: addr)
     }
 
-    /// Kick an already-connected viewer that turned out to be blocked —
-    /// open-door mode admits on HELLO before the async StableNodeID
-    /// resolution completes, so a remembered-deny peer can briefly join
-    /// before this pulls them back out. No-op for unknown addrs.
-    private func expelViewer(addr: String) {
+    /// Sharer-initiated one-time disconnect of a connected viewer — the
+    /// per-row ✕ in the SharingCard's viewer list. Same symmetric teardown
+    /// as the blocked-peer expel, but nothing is remembered: the peer's
+    /// next HELLO goes back through the normal admission gate (approval
+    /// prompt, or straight in with the gate off). Safe to call for an
+    /// unknown addr (no-op).
+    func disconnectViewer(addr: String) {
+        expelViewer(addr: addr, reason: "disconnected by sharer")
+    }
+
+    /// Kick an already-connected viewer: a blocked peer being pulled back
+    /// out (open-door mode admits on HELLO before the async StableNodeID
+    /// resolution completes, so a remembered-deny peer can briefly join),
+    /// or the sharer's one-time `disconnectViewer`. `reason` is for the
+    /// log line and the control-revoke audit trail only. No-op for
+    /// unknown addrs.
+    private func expelViewer(addr: String, reason: String) {
+        // Open the kicked-viewer quiet window BEFORE removing the addr so
+        // a KEEPALIVE racing this teardown can't re-register it in the
+        // gap between the roster removal and the window opening.
+        let now = DispatchTime.now().uptimeNanoseconds
+        expelledAddrs.withLock { $0[addr] = now }
         let removed = viewers.withLock { state -> Bool in
             state.removeValue(forKey: addr) != nil
         }
-        guard removed else { return }
+        guard removed else {
+            // Unknown addr: no expel happened, so don't leave a quiet
+            // window that would eat this peer's next keepalives.
+            expelledAddrs.withLock { _ = $0.removeValue(forKey: addr) }
+            return
+        }
         viewerInfos.withLock { _ = $0.removeValue(forKey: addr) }
         // Symmetric teardown: drop the per-viewer video send chain (a
         // lingering chain would keep addressing the kicked peer) and sever
@@ -2443,9 +2503,9 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         retransmitBuffer.removeViewer(addr: addr)
         fecGatedAddrs.withLock { _ = $0.remove(addr) }
         closeAnnotationChannels(forIP: ipFromAddr(addr))
-        revokeControlIfHeld(byIP: ipFromAddr(addr), reason: "viewer blocked")
+        revokeControlIfHeld(byIP: ipFromAddr(addr), reason: reason)
         notifyViewersChanged()
-        logger.log("Viewer expelled (remembered deny) \(addr)")
+        logger.log("Viewer expelled (\(reason)) \(addr)")
         sendDenialDatagrams(to: addr)
     }
 
@@ -2728,7 +2788,19 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         guard connectedPresent.present else { return }
         if connectedPresent.changed { notifyViewersChanged() }
         let policy = stableID.flatMap { id in accessPolicies.withLock { $0[id] } }
-        if policy == .deny { expelViewer(addr: addr) }
+        if policy == .deny { expelViewer(addr: addr, reason: "remembered deny") }
+    }
+
+    /// Pure kicked-viewer quiet-window decision: prune entries older than
+    /// `quietNs` and report whether `addr` is still inside its window (its
+    /// straggler KEEPALIVEs must be answered with denial, not re-run
+    /// through the admission gate). Extracted from `registerOrRefresh` so
+    /// the window math is unit testable.
+    static func expelledQuietDecision(
+        expelledAtNs: [String: UInt64], addr: String, nowNs: UInt64, quietNs: UInt64
+    ) -> (remaining: [String: UInt64], isQuieted: Bool) {
+        let remaining = expelledAtNs.filter { nowNs &- $0.value <= quietNs }
+        return (remaining, remaining[addr] != nil)
     }
 
     /// Pure staleness computation: which addresses have been silent longer
@@ -3896,6 +3968,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         peerNameCache.withLock { $0.removeAll() }
         peerStableIDCache.withLock { $0.removeAll() }
         preApprovedIPs.withLock { $0.removeAll() }
+        expelledAddrs.withLock { $0.removeAll() }
         // Drop per-viewer send chains. Any in-flight send job completes on its
         // own (its pl.send just fails once the listener closes below).
         videoSendTails.withLock { $0.removeAll() }

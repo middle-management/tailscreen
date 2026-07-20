@@ -92,6 +92,12 @@ choices:
 - **Deny & Block** — reject them now and automatically in the future.
   Blocking someone who's *already* connected kicks them out too.
 
+Once viewers are connected, each row in the sharing card's viewer list
+has a ✕ button that disconnects that viewer on the spot. It's one-time —
+they see "Disconnected by Sharer" and nothing is remembered, so they can
+reconnect and go through the normal approval flow again. To keep someone
+out for good, use **Deny & Block** instead.
+
 You also get a notification ("Viewer Wants to Connect") if the menubar
 isn't open. Remembered decisions live in **Settings → Viewers** under
 "Remembered viewers", where you can remove entries any time. They're keyed

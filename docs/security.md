@@ -99,7 +99,10 @@ Two implementation details that matter for trusting this:
   authenticates — not by any self-reported hostname.
 
 Denied viewers get told they were declined (rather than left guessing),
-and pending viewers see a waiting state, not your screen.
+and pending viewers see a waiting state, not your screen. An admitted
+viewer can also be removed at any moment: the ✕ on its row in the sharing
+card disconnects it one-time (it can return through the checks above),
+while "Deny & Block" both expels and remembers.
 
 `TAILSCREEN_OPEN_DOOR=1` forces the approval gate off for scripted
 testing. Never set it in production; note that even it does not override
