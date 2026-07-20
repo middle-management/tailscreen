@@ -1375,12 +1375,26 @@ class AppState: ObservableObject {
                     // from re-promoting to `.viewing` after this teardown.
                     let state = self.connectionState
                     guard state == .viewing || state == .connecting else { return }
+                    // Same wire byte covers two situations, told apart by
+                    // where we were when it landed: still waiting on the
+                    // approval placard means our request was declined;
+                    // already watching (placard long gone) means the
+                    // sharer kicked us mid-session. Snapshot before
+                    // disconnect() resets `viewerAwaitingApproval`.
+                    let wasWatching = state == .viewing && !self.viewerAwaitingApproval
                     self.viewerWasDenied = true
                     await self.disconnect()
-                    self.showAlertMessage(
-                        title: L("Connection Declined"),
-                        message: L("The sharer declined your request to view their screen.")
-                    )
+                    if wasWatching {
+                        self.showAlertMessage(
+                            title: L("Disconnected by Sharer"),
+                            message: L("The sharer disconnected you from their screen share.")
+                        )
+                    } else {
+                        self.showAlertMessage(
+                            title: L("Connection Declined"),
+                            message: L("The sharer declined your request to view their screen.")
+                        )
+                    }
                 }
             }
 
@@ -2666,6 +2680,15 @@ class AppState: ObservableObject {
     /// the viewer tears their session down immediately.
     func denyPendingViewer(_ id: String) {
         server?.denyViewer(addr: id)
+    }
+
+    /// One-time disconnect of a *connected* viewer — the ✕ button on the
+    /// SharingCard's viewer row. Nothing is remembered: the peer can
+    /// reconnect and goes back through the normal admission gate. For the
+    /// persistent variant, use "Deny & Block" on the pending row (or
+    /// remove/deny via Settings → Viewers).
+    func disconnectConnectedViewer(_ id: String) {
+        server?.disconnectViewer(addr: id)
     }
 
     /// "Always Allow": remember the peer as allowed (so future HELLOs skip

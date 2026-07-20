@@ -209,4 +209,101 @@ final class ScreenShareAccessControlTests: XCTestCase {
         await client3.disconnect()
         await server.stop()
     }
+
+    /// The SharingCard's per-row ✕: `disconnectViewer` kicks a *connected*
+    /// viewer one-time — HELLO_DENY fires viewer-side (`onDeniedBySharer`),
+    /// the roster empties, and NOTHING is remembered: the same node (same
+    /// state dir, same StableNodeID) reconnects and parks pending at the
+    /// approval gate again, where a fresh approve re-admits it. Distinguishes
+    /// the kick from "Deny & Block", whose policy sweep would reject the
+    /// re-HELLO outright.
+    func testSharerDisconnectIsOneTimeKick() async throws {
+        let env = try TailscreenE2E.loadEnvOrSkip()
+        let dirs = try TailscreenE2E.makeStateDirs(
+            testCase: self, label: "sharer-kick",
+            names: ["server", "viewer"])
+
+        let roster = RosterBox()
+        let server = TailscaleScreenShareServer()
+        server.onPendingViewersChanged = { roster.setPending($0) }
+        server.onViewersChanged = { roster.setViewers($0) }
+        server.setRequireApproval(true)
+
+        try await server.start(
+            hostname: TailscreenE2E.makeHostname("kick-server"),
+            authKey: env.authKey,
+            path: try XCTUnwrap(dirs["server"]),
+            controlURL: env.controlURL,
+            filterData: nil
+        )
+        addTeardownBlock { Task { await server.stop() } }
+
+        let ips = try await server.getIPAddresses()
+        let serverIP = try XCTUnwrap(ips.ip4 ?? ips.ip6, "server has no tailnet IP")
+        let viewerDir = try XCTUnwrap(dirs["viewer"])
+
+        // ── Park, approve, join. ──
+        let renderer1 = await MainActor.run { MetalViewerRenderer() }
+        let client1 = TailscaleScreenShareClient(renderer: renderer1)
+        let ack1 = expectation(description: "viewer ACKed after approve")
+        ack1.assertForOverFulfill = false
+        client1.onAudioSSRCAssigned = { _ in ack1.fulfill() }
+        let denied = expectation(description: "kicked viewer told via HELLO_DENY")
+        denied.assertForOverFulfill = false
+        client1.onDeniedBySharer = { denied.fulfill() }
+        try await client1.connect(
+            to: serverIP,
+            port: NetworkConfig.tailscreenPort,
+            authKey: env.authKey,
+            path: viewerDir,
+            controlURL: env.controlURL
+        )
+        addTeardownBlock { Task { await client1.disconnect() } }
+
+        let pending = try await waitFor("viewer parked pending") {
+            roster.currentPending.first
+        }
+        server.approveViewer(addr: pending.id)
+        await fulfillment(of: [ack1], timeout: 30)
+        _ = try await waitFor("approved viewer joined roster") {
+            roster.currentViewerAddrs.contains(pending.id) ? true : nil
+        }
+
+        // ── Kick: viewer learns it was disconnected, roster empties. ──
+        server.disconnectViewer(addr: pending.id)
+        await fulfillment(of: [denied], timeout: 30)
+        _ = try await waitFor("kicked viewer left the roster") {
+            roster.currentViewerAddrs.contains(pending.id) ? nil : true
+        }
+        // Free the state dir (and its node identity) for the reconnect.
+        await client1.disconnect()
+
+        // ── Same node identity comes back: parks pending (not rejected),
+        //    and a fresh approve re-admits it. ──
+        let renderer2 = await MainActor.run { MetalViewerRenderer() }
+        let client2 = TailscaleScreenShareClient(renderer: renderer2)
+        let ack2 = expectation(description: "returning viewer ACKed after re-approve")
+        ack2.assertForOverFulfill = false
+        client2.onAudioSSRCAssigned = { _ in ack2.fulfill() }
+        try await client2.connect(
+            to: serverIP,
+            port: NetworkConfig.tailscreenPort,
+            authKey: env.authKey,
+            path: viewerDir,
+            controlURL: env.controlURL
+        )
+        addTeardownBlock { Task { await client2.disconnect() } }
+
+        let reparked = try await waitFor("returning viewer parked pending again") {
+            roster.currentPending.first
+        }
+        server.approveViewer(addr: reparked.id)
+        await fulfillment(of: [ack2], timeout: 30)
+        _ = try await waitFor("returning viewer re-joined roster") {
+            roster.currentViewerAddrs.contains(reparked.id) ? true : nil
+        }
+
+        await client2.disconnect()
+        await server.stop()
+    }
 }

@@ -577,7 +577,11 @@ private struct AudioDevicePickers: View {
 /// `TailscaleScreenShareServer`; rows that haven't resolved yet (or whose peer
 /// isn't in the netmap) fall back to the raw Tailscale IP, truncated to keep
 /// the layout stable. Falls back to a single "No viewers yet" line when empty.
+/// Each row carries a trailing ✕ that disconnects that viewer one-time —
+/// nothing is remembered, so they can reconnect through the normal admission
+/// gate (the persistent variant stays "Deny & Block" on the pending row).
 private struct ViewersList: View {
+    @EnvironmentObject var appState: AppState
     let viewers: [ViewerInfo]
 
     var body: some View {
@@ -607,6 +611,16 @@ private struct ViewersList: View {
                             .lineLimit(1)
                             .truncationMode(.tail)
                         Spacer(minLength: 0)
+                        Button {
+                            appState.disconnectConnectedViewer(viewer.id)
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help(L("Disconnect this viewer"))
+                        .accessibilityLabel(L("Disconnect \(viewer.hostname ?? viewer.tailscaleIP)"))
                     }
                 }
             }
