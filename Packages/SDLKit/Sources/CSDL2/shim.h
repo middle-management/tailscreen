@@ -25,6 +25,14 @@ static inline Uint32 sdlkit_pixelformat_iyuv(void) { return SDL_PIXELFORMAT_IYUV
 // SDL_TEXTUREACCESS_STREAMING — a texture we re-upload each frame.
 static inline int sdlkit_textureaccess_streaming(void) { return SDL_TEXTUREACCESS_STREAMING; }
 
+// SDL_RENDERER_SOFTWARE — force SDL's CPU (XShm/XImage) renderer instead of the
+// accelerated OpenGL one. `SDL_CreateRenderer(win, -1, 0)` otherwise picks the
+// `opengl` driver, which dlopens libGL and creates a GLX context — fatal on an
+// X server with no usable GLX FBConfig (e.g. X11 forwarded to XQuartz), where
+// the Xlib error aborts the whole process before any fallback. The software
+// renderer needs no GL and still does YUV→RGB on upload/copy.
+static inline Uint32 sdlkit_renderer_software(void) { return SDL_RENDERER_SOFTWARE; }
+
 // True when a pumped event means "the user wants the window closed" — either a
 // top-level SDL_QUIT or a per-window close (SDL_WINDOWEVENT_CLOSE). Reading the
 // SDL_Event union here keeps its variant access out of Swift.

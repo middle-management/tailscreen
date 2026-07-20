@@ -72,14 +72,28 @@ func parseArguments() -> (config: ViewerConfig, wantAudio: Bool) {
 
 let (config, wantAudio) = parseArguments()
 
-// The renderer opens at a default size and resizes to the first decoded frame.
-let window: SDL.VideoWindow
+// The renderer opens at a default size and scales the decoded frame to fit.
+// Default to SDL's software renderer: the common path (X11 forwarded to XQuartz
+// over OrbStack) has no usable GLX FBConfig, so the accelerated `opengl` driver
+// dlopens libGL, creates a GLX context, and fatally X-errors the process before
+// any window shows. Set TAILSCREEN_SDL_ACCELERATED=1 on a native Linux desktop
+// with working GL to opt back into GPU-accelerated scaling.
+//
+// The sink owns a dedicated SDL render thread (see ThreadedSDLVideoSink) — SDL
+// must be driven from one consistent thread, which the @MainActor transport
+// loop can't guarantee across await points on Linux.
+let useAccelerated = ProcessInfo.processInfo.environment["TAILSCREEN_SDL_ACCELERATED"] == "1"
+let videoSink: ThreadedSDLVideoSink
 do {
-    window = try SDL.VideoWindow(title: "Tailscreen — \(config.hostname)", width: 1280, height: 720)
+    videoSink = try ThreadedSDLVideoSink(
+        title: "Tailscreen — \(config.hostname)",
+        width: 1280,
+        height: 720,
+        softwareRenderer: !useAccelerated
+    )
 } catch {
     fail("could not open a video window: \(error)")
 }
-let videoSink = SDLVideoSink(window: window)
 
 var audioSink: AudioSink?
 if wantAudio {
@@ -92,6 +106,28 @@ if wantAudio {
 }
 
 let decoder = FFmpegVideoDecoder()
+
+// Offline render self-test: decode a local AVCC access-unit file and display it
+// in a loop through the real SDL window — no network, no sharer, no approval.
+// Isolates the decode+display path from transport, e.g. to verify an X server /
+// XQuartz / Xvfb setup shows anything at all.
+//   TAILSCREEN_PLAY_FILE=/path/to/keyframe.avcc   (HEVC; TAILSCREEN_PLAY_H264=1 for H.264)
+if let playFile = ProcessInfo.processInfo.environment["TAILSCREEN_PLAY_FILE"] {
+    guard let data = try? Data(contentsOf: URL(fileURLWithPath: playFile)) else {
+        fail("play-file: could not read \(playFile)")
+    }
+    let codec: VideoCodec = ProcessInfo.processInfo.environment["TAILSCREEN_PLAY_H264"] == "1" ? .h264 : .hevc
+    let frames = (try? decoder.decode(accessUnit: data, codec: codec, isKeyframe: true)) ?? []
+    guard let frame = frames.first else { fail("play-file: decoded 0 frames from \(playFile)") }
+    FileHandle.standardError.write(
+        Data("play-file: showing \(frame.width)×\(frame.height) — close the window to quit\n".utf8))
+    while !videoSink.pollShouldClose() {
+        videoSink.present(frame)
+        try? await Task.sleep(nanoseconds: 33_000_000)
+    }
+    exit(0)
+}
+
 let transport = TsnetTransport()
 
 // `main.swift` supports top-level `await`; the whole run stays on the main
