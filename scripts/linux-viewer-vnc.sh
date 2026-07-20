@@ -58,6 +58,13 @@ fi
 stop_all
 sleep 1
 
+# macOS Screen Sharing hangs against a no-auth VNC server (it expects the VNC
+# password handshake), so always run x11vnc with a password. Default "tailscreen";
+# override with VNC_PASSWORD.
+VNC_PASS="${VNC_PASSWORD:-tailscreen}"
+PASSFILE=/tmp/tsviewer-vncpass
+x11vnc -storepasswd "$VNC_PASS" "$PASSFILE" >/dev/null 2>&1
+
 echo "Starting Xvfb $DISPLAY_NUM ($GEOMETRY) + fluxbox + x11vnc:$PORT …"
 if use_systemd; then
     sudo systemd-run --unit=tsviewer-xvfb Xvfb "$DISPLAY_NUM" -screen 0 "$GEOMETRY"
@@ -65,14 +72,14 @@ if use_systemd; then
     sudo systemd-run --unit=tsviewer-wm --setenv=DISPLAY="$DISPLAY_NUM" fluxbox
     sleep 1
     sudo systemd-run --unit=tsviewer-vnc \
-        x11vnc -display "$DISPLAY_NUM" -forever -shared -nopw -rfbport "$PORT" -listen 0.0.0.0
+        x11vnc -display "$DISPLAY_NUM" -forever -shared -rfbauth "$PASSFILE" -rfbport "$PORT" -listen 0.0.0.0
     sleep 2
 else
     setsid Xvfb "$DISPLAY_NUM" -screen 0 "$GEOMETRY" >/tmp/tsviewer-xvfb.log 2>&1 < /dev/null &
     sleep 2
     setsid env DISPLAY="$DISPLAY_NUM" fluxbox >/tmp/tsviewer-wm.log 2>&1 < /dev/null &
     sleep 1
-    setsid x11vnc -display "$DISPLAY_NUM" -forever -shared -nopw -rfbport "$PORT" -listen 0.0.0.0 \
+    setsid x11vnc -display "$DISPLAY_NUM" -forever -shared -rfbauth "$PASSFILE" -rfbport "$PORT" -listen 0.0.0.0 \
         >/tmp/tsviewer-vnc.log 2>&1 < /dev/null &
     sleep 2
 fi
@@ -81,7 +88,7 @@ HOST_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 echo
 echo "───────────────────────────────────────────────────────────"
 echo "  VNC ready. On your Mac: Finder ⌘K → vnc://${HOST_IP}:${PORT}"
-echo "  (no password). Then approve the viewer on the sharer."
+echo "  Password: ${VNC_PASS}. Then approve the viewer on the sharer."
 echo "───────────────────────────────────────────────────────────"
 echo
 echo "Running viewer into $DISPLAY_NUM (Ctrl-C to stop the viewer; run --stop to tear down X/VNC)…"
