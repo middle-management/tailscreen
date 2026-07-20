@@ -49,7 +49,7 @@ final class AppCloakTests: XCTestCase {
         }
     }
 
-    func testMasterToggleOffDisablesCloaking() {
+    func testMainToggleOffDisablesCloaking() {
         XCTAssertEqual(
             AppCloak.effectiveExclusions(kind: .display, cloaked: ["com.a.a"], enabled: false),
             [])
@@ -91,7 +91,7 @@ final class AppCloakTests: XCTestCase {
         XCTAssertEqual(store.entries.first?.displayName, "New Name")
     }
 
-    /// The master toggle defaults **on** for a never-touched install, and
+    /// The main toggle defaults **on** for a never-touched install, and
     /// an explicit opt-out sticks across store instances (tri-state read,
     /// same migration shape as `ViewerApprovalDefaults`).
     @MainActor

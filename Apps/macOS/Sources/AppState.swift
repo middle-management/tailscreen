@@ -467,7 +467,7 @@ class AppState: ObservableObject {
             }.store(in: &cancellables)
 
         // Mirror the Cloaked Apps store to the UI, and re-cloak a live share
-        // when the list or the master toggle changes. The debounced
+        // when the list or the main toggle changes. The debounced
         // re-push reads the store at fire time — after the property write
         // has landed — so `$entries`'s deliver-before-write timing (which
         // the policy snapshot above has to dance around) doesn't matter.

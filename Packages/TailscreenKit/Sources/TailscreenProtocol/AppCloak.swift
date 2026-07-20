@@ -30,7 +30,7 @@ public struct CloakedAppEntry: Codable, Sendable, Identifiable, Equatable {
 /// value snapshot baked into the selection JSON at share start (and on
 /// each cloak-list change while a display share is live).
 ///
-/// Persistence is a JSON blob (the entries) plus a Bool (the master
+/// Persistence is a JSON blob (the entries) plus a Bool (the main
 /// toggle) under two `UserDefaults` keys. The defaults instance is
 /// injectable so tests can use a scratch suite. The toggle defaults **on**
 /// (a cloak list you built should protect you without a second switch);
@@ -43,7 +43,7 @@ public final class AppCloakStore: ObservableObject {
     /// All cloaked apps, oldest first (stable Settings ordering).
     @Published private(set) public var entries: [CloakedAppEntry] = []
 
-    /// Master toggle: when off, the list is kept but no apps are cloaked —
+    /// Main toggle: when off, the list is kept but no apps are cloaked —
     /// Tuple-style "temporarily uncloak" without losing the list.
     @Published public var isEnabled: Bool {
         didSet { defaults.set(isEnabled, forKey: Self.enabledKey) }
