@@ -62,12 +62,31 @@ extension VideoCodec {
 /// down, and the next keyframe recovers the display.
 public final class SDLVideoSink: VideoSink {
     private let window: SDL.VideoWindow
+    /// The most recent frame, retained so `repaint()` can re-present it when no
+    /// new frame is decoding. Video is event-driven (a frame only arrives when
+    /// the sharer's screen changes), but an X window must be redrawn to stay
+    /// on-screen — otherwise it blanks to white on the next expose. The mac
+    /// renderer solves this with a continuous display-link; here the run loop
+    /// calls `repaint()` each tick to the same effect.
+    private var lastFrame: DecodedVideoFrame?
 
     public init(window: SDL.VideoWindow) {
         self.window = window
     }
 
     public func present(_ frame: DecodedVideoFrame) {
+        lastFrame = frame
+        draw(frame)
+    }
+
+    /// Re-present the last decoded frame (no-op until the first frame). Cheap
+    /// and idempotent; called from the run loop so a static screen stays
+    /// painted instead of blanking to white.
+    public func repaint() {
+        if let lastFrame { draw(lastFrame) }
+    }
+
+    private func draw(_ frame: DecodedVideoFrame) {
         do {
             try window.present(
                 width: frame.width, height: frame.height,

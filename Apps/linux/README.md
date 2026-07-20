@@ -152,60 +152,80 @@ SDL_VIDEODRIVER=dummy .build/debug/tailscreen-viewer <sharer-host> --no-audio
 Tailscale admin console, or the mac app's log — the ephemeral node it
 registers). Expect `[tsnet] … up` → `HELLO sent` → the receive loop running.
 
-### 3. Show the actual window (GUI over X11)
+### 3. Show the actual window (GUI)
 
-The SDL renderer needs an X11 display. OrbStack forwards X11 from a Linux
-machine to an X server on the Mac — you supply the X server (XQuartz):
+The SDL renderer needs an X server. There are two ways to see it from a Mac;
+**the VNC path is strongly recommended** — XQuartz has two independent problems
+that make it painful (documented below).
 
-1. **Install + start XQuartz on the Mac** (one-time):
+#### Recommended: run a real X server on the guest + VNC (`scripts/linux-viewer-vnc.sh`)
+
+Render into a native headless Xvfb on the guest and mirror it to the Mac over
+VNC. No XQuartz, no `DISPLAY` guessing, no GLX issues, and it's reproducible:
+
+```bash
+# in the guest, from the repo root:
+sudo apt install -y xvfb x11vnc fluxbox
+cd Apps/linux && swift build && cd -
+TAILSCREEN_TS_AUTHKEY=tskey-auth-... scripts/linux-viewer-vnc.sh <sharer-host> --no-audio
+```
+
+It prints a `vnc://<guest-ip>:5900` address. On the Mac: **Finder → ⌘K →
+`vnc://<guest-ip>:5900`** (no password), or open **Screen Sharing.app**. You'll
+see the viewer window rendering the shared screen. Tear down with
+`scripts/linux-viewer-vnc.sh --stop`.
+
+#### Alternative: XQuartz (fiddly — two gotchas)
+
+If you'd rather forward X11 to XQuartz on the Mac, you must work around both of
+these or you'll get an invisible or crashing window:
+
+1. **Enable indirect GLX** (one-time, on the Mac) — SDL creates a throwaway GLX
+   context when it opens a window, and XQuartz disables iGLX by default, which
+   makes that fatally X-error (`glx: failed to create drisw screen` /
+   `BadValue … X_GLXCreateContext`):
    ```bash
-   brew install --cask xquartz
+   defaults write org.xquartz.X11 enable_iglx -bool true   # then fully quit + relaunch XQuartz
    ```
-   Then **log out and back in** (XQuartz needs a fresh login the first time),
-   and launch XQuartz.
-2. **Allow network clients:** XQuartz → *Settings… → Security* → tick
-   *“Allow connections from network clients.”* Quit and relaunch XQuartz so it
-   takes effect.
-3. **Check the display is wired up in the guest.** OrbStack usually sets
-   `DISPLAY` for you:
+2. **Use a TCP `DISPLAY`, not the default launchd-socket one.** OrbStack's
+   default `DISPLAY` is XQuartz's Mac-only launchd socket
+   (`/private/tmp/.../org.xquartz:0`), a path that doesn't exist inside the
+   Linux guest — so SDL silently falls back to the non-displaying `offscreen`
+   driver (frames "present" but nothing appears; the viewer now prints a warning
+   when this happens). Point at XQuartz over TCP instead:
    ```bash
-   echo "$DISPLAY"                    # e.g. ":0" or "host.docker.internal:0"
-   ```
-   If it's **empty**, set it and authorize the guest from the Mac:
-   ```bash
-   # on the Mac (Terminal):
+   # on the Mac: allow the guest, and enable TCP in XQuartz Settings → Security
    xhost + 127.0.0.1
    # in the guest:
    export DISPLAY=host.docker.internal:0
+   TAILSCREEN_TS_AUTHKEY=tskey-auth-... .build/debug/tailscreen-viewer <sharer-host> --no-audio
    ```
-4. **Sanity-check the display path** independent of Tailscreen — a plain X11
-   app should pop a window on your Mac:
-   ```bash
-   sudo apt install -y x11-apps && xeyes
-   ```
-   If `xeyes` doesn't show, fix the display before touching the viewer (it's an
-   XQuartz/`DISPLAY` issue, not a Tailscreen one). Note `xeyes` uses **no**
-   OpenGL, so it succeeding only proves plain X11 works — XQuartz's GLX is
-   separately broken (it can't hand Mesa a usable FBConfig), which is why the
-   viewer renders through SDL's **software** renderer by default rather than the
-   accelerated `opengl` one (whose GLX context creation would fatally X-error).
-5. **Run for real** — same command as the smoke test, minus the dummy driver
-   (and drop `--no-audio` only if the guest has a working ALSA device; usually
-   it doesn't, so leave it):
-   ```bash
-   export TAILSCREEN_TS_AUTHKEY=tskey-auth-...
-   .build/debug/tailscreen-viewer <sharer-host> --no-audio
-   ```
-   The window opens on your Mac and resizes to the sharer's first frame.
+
+A plain `xeyes` "working" is **not** a sufficient check — it uses no OpenGL, so
+it only proves basic X11, not the GLX path SDL exercises. Use the offline render
+self-test instead (below).
+
+#### Offline render self-test (no network / sharer / approval)
+
+To verify a display setup shows *anything* before wrestling with the live path,
+play a captured access-unit file straight into the window:
+
+```bash
+TAILSCREEN_PLAY_FILE=/path/to/keyframe.avcc .build/debug/tailscreen-viewer x
+```
+
+It decodes the file and loops the frame on screen — if that shows, decode +
+display work and any remaining "white window" is a transport/`DISPLAY` issue,
+not the renderer.
 
 ### Notes
 
 - **Audio:** an OrbStack guest normally has no ALSA device — keep `--no-audio`
   (a missing device is treated as non-fatal, so audio is optional either way).
-- **GPU-accelerated rendering:** off by default (see the GLX note above). On a
-  native Linux desktop with working OpenGL, set `TAILSCREEN_SDL_ACCELERATED=1`
-  to use SDL's `opengl` renderer for GPU scaling. Leave it unset for forwarded
-  X11 / XQuartz, where accelerated rendering fatally X-errors.
+- **GPU-accelerated rendering:** off by default (SDL's `opengl` renderer dlopens
+  libGL and creates a GLX context, which fatally X-errors on X servers without
+  usable GLX — XQuartz, some Xvfb). On a native Linux desktop with working
+  OpenGL, set `TAILSCREEN_SDL_ACCELERATED=1` to use it for GPU scaling.
 - **Local headscale instead of a real tailnet:** point *both* sides at it — on
   the Mac `eval "$(make e2e-up)"`, and pass the viewer
   `--control-url http://<mac-lan-ip>:8080` with the same key. More moving parts

@@ -85,6 +85,27 @@ public enum SDL {
             }
             self.renderer = renderer
 
+            // Some remote X servers (XQuartz over OrbStack) don't map/expose the
+            // window off SDL_CreateWindow alone — force it visible + raised.
+            SDL_ShowWindow(window)
+            SDL_RaiseWindow(window)
+
+            // Warn loudly if SDL fell back to a non-displaying driver. When
+            // `DISPLAY` is unset or unreachable (e.g. XQuartz's Mac-only launchd
+            // socket path, invisible from inside a Linux guest), SDL silently
+            // selects the `offscreen`/`dummy` driver and renders into memory —
+            // frames "present" with no error but nothing ever appears. Say so
+            // instead of leaving the user staring at a void.
+            if let driverC = SDL_GetCurrentVideoDriver() {
+                let driver = String(cString: driverC)
+                if driver == "offscreen" || driver == "dummy" {
+                    let msg = "warning: SDL video driver is '\(driver)' — the window will NOT be visible. "
+                        + "Set DISPLAY to a reachable X server (e.g. DISPLAY=host.docker.internal:0 for "
+                        + "XQuartz over OrbStack, or run under Xvfb).\n"
+                    FileHandle.standardError.write(Data(msg.utf8))
+                }
+            }
+
             do {
                 try createTexture(width: Int32(width), height: Int32(height))
             } catch {

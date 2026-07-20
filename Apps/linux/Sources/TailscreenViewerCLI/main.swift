@@ -103,6 +103,28 @@ if wantAudio {
 }
 
 let decoder = FFmpegVideoDecoder()
+
+// Offline render self-test: decode a local AVCC access-unit file and display it
+// in a loop through the real SDL window — no network, no sharer, no approval.
+// Isolates the decode+display path from transport, e.g. to verify an X server /
+// XQuartz / Xvfb setup shows anything at all.
+//   TAILSCREEN_PLAY_FILE=/path/to/keyframe.avcc   (HEVC; TAILSCREEN_PLAY_H264=1 for H.264)
+if let playFile = ProcessInfo.processInfo.environment["TAILSCREEN_PLAY_FILE"] {
+    guard let data = try? Data(contentsOf: URL(fileURLWithPath: playFile)) else {
+        fail("play-file: could not read \(playFile)")
+    }
+    let codec: VideoCodec = ProcessInfo.processInfo.environment["TAILSCREEN_PLAY_H264"] == "1" ? .h264 : .hevc
+    let frames = (try? decoder.decode(accessUnit: data, codec: codec, isKeyframe: true)) ?? []
+    guard let frame = frames.first else { fail("play-file: decoded 0 frames from \(playFile)") }
+    FileHandle.standardError.write(
+        Data("play-file: showing \(frame.width)×\(frame.height) — close the window to quit\n".utf8))
+    while !videoSink.pollShouldClose() {
+        videoSink.present(frame)
+        try? await Task.sleep(nanoseconds: 33_000_000)
+    }
+    exit(0)
+}
+
 let transport = TsnetTransport()
 
 // `main.swift` supports top-level `await`; the whole run stays on the main
@@ -113,7 +135,13 @@ do {
         decoder: decoder,
         videoSink: videoSink,
         audioSink: audioSink,
-        shouldClose: { videoSink.pollShouldClose() }
+        shouldClose: {
+            // Called once per run-loop iteration: keep the window painted (an
+            // X window blanks to white on expose if not redrawn) and report a
+            // close request.
+            videoSink.repaint()
+            return videoSink.pollShouldClose()
+        }
     )
 } catch {
     fail("session failed: \(error)")

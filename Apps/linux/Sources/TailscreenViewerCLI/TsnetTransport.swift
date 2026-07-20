@@ -173,9 +173,11 @@ final class TsnetTransport {
         pipeline.start()
         logger.log("HELLO queued to \(dest) (caps=\(config.caps.rawValue)) — awaiting HELLO_ACK…")
 
-        // Receive + tick loop. `recv` returns at least every second (its
-        // timeout), giving a natural ~1 Hz cadence for `tick` even with no
-        // inbound traffic; real datagrams return it sooner. Session-state
+        // Receive + tick loop. `recv` uses a short (~33 ms) timeout so the loop
+        // keeps ticking, repainting (via `shouldClose`), and pumping window
+        // events at ~30 Hz even when no datagrams arrive — a static shared
+        // screen sends no packets, but the window must be redrawn or it blanks
+        // to white on expose. Real datagrams return `recv` sooner. Session-state
         // transitions are announced once each so the user sees admission /
         // pending-approval rather than a silent black window.
         var loggedPending = false
@@ -194,7 +196,11 @@ final class TsnetTransport {
                 loggedAdmitted = true
             }
             do {
-                let (datagram, from) = try await listener.recv(timeout: 1_000)
+                // Short timeout so the loop keeps repainting (via shouldClose)
+                // and ticking at ~30 Hz even when no datagrams arrive — a
+                // static shared screen sends no packets but the window must
+                // stay painted. Real datagrams return recv sooner.
+                let (datagram, from) = try await listener.recv(timeout: 33)
                 guard !datagram.isEmpty else { continue }
                 // The sharer is the only expected sender (it learned our addr
                 // from the HELLO); ignore anything else.
