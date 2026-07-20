@@ -306,6 +306,7 @@
 /* Menubar status-item accessibility labels */
 "Tailscreen: sharing your screen" = "Tailscreen: delar din skärm";
 "Tailscreen: a viewer is asking to control your Mac" = "Tailscreen: en tittare ber om att få styra din Mac";
+"Tailscreen: a viewer is waiting for your approval" = "Tailscreen: en tittare väntar på ditt godkännande";
 "Tailscreen: viewing a shared screen" = "Tailscreen: visar en delad skärm";
 "Tailscreen: someone wants you to share" = "Tailscreen: någon vill att du delar";
 
