@@ -465,9 +465,9 @@ final class VideoDecoder: @unchecked Sendable {
         // Invalidate doesn't wait for submitted frames to finish; the
         // output callback can fire after Invalidate returns, retain a
         // CVPixelBuffer whose backing is gone, and SIGSEGV the caller
-        // (e.g. TailscaleScreenShareClient.handleDecodedFrame doing
-        // objc_retain on a dead pointer when the viewer's window-close
-        // button triggers disconnect mid-decode).
+        // (e.g. the VTVideoDecoderAdapter's onDecodedFrame boxing a dead
+        // pointer when the viewer's window-close button triggers disconnect
+        // mid-decode).
         queue.sync {
             if let session = session {
                 VTDecompressionSessionWaitForAsynchronousFrames(session)

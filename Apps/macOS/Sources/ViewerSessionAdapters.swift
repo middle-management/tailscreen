@@ -82,6 +82,13 @@ final class VTVideoDecoderAdapter: VideoDecoding, @unchecked Sendable {
     var onRecoveryAction: ((DecodeRecoveryAction) -> Void)?
     var onRecovered: (() -> Void)?
 
+    /// Test-only: fires with each decoded `CVPixelBuffer` on the decoder's
+    /// output thread, *before* the `callbackQueue` hop — the client forwards it
+    /// to its `onDecodedFrameForTesting` seam (the E2E suites assert a frame
+    /// decoded, off the windowed render path xctest lacks). Matches the legacy
+    /// loop's firing thread/order.
+    var onDecodedPixelBufferForTesting: ((CVPixelBuffer) -> Void)?
+
     private let decoder: VideoDecoder
     private let callbackQueue: DispatchQueue
     private var installedParameters: CodecParameterSets?
@@ -98,6 +105,7 @@ final class VTVideoDecoderAdapter: VideoDecoding, @unchecked Sendable {
 
         decoder.onDecodedFrame = { [weak self] buffer in
             guard let self else { return }
+            self.onDecodedPixelBufferForTesting?(buffer)
             let box = CVPixelBufferBox(buffer: buffer, receiveUptimeNs: self.lastSubmitUptimeNs)
             self.callbackQueue.async { self.onDecodedFrame?(box) }
         }

@@ -15,18 +15,27 @@ import os
 /// can split. Going through `PacketListener` (SOCK_DGRAM socketpair, see
 /// patches 013-015) keeps every datagram intact in both directions.
 ///
+/// The receive-side data plane — HELLO/HELLO_ACK, NACK, receiver reports,
+/// PLI, FEC, RTP reassembly, and control demux — is the portable
+/// `ViewerSession` (shared with the Linux/Windows viewer). This class owns the
+/// mac-only shell around it: the UDP socket, the VideoToolbox/Metal adapters,
+/// the TCP annotation + remote-control channels, `VoiceChannel` audio, the
+/// decode-recovery escalation ladder, and the keepalive / idle-disconnect
+/// plumbing.
+///
 /// Flow on connect:
 ///
 ///   1. Bind a local UDP `PacketListener` on the node's tailnet IP at an
 ///      ephemeral port. tsnet picks the port; the server learns it from
 ///      the source address of the HELLO datagram.
-///   2. Send a HELLO control byte to the server's "ip:port".
-///   3. Receive RTP packets, reassemble into AVCC access units, decode.
+///   2. Build a `ViewerSession` and `start()` it — the session emits the
+///      extended HELLO (advertising NACK / receiver-report / FEC) via
+///      `onControlToSend`.
+///   3. Feed every inbound datagram to `ViewerSession.receiveRTP`; decoded
+///      frames flow decoder → `MetalSinkAdapter` → renderer, and the session
+///      emits its own NACK/PLI/RR feedback back over UDP.
 ///   4. Periodically send KEEPALIVE so the server's idle sweeper doesn't
 ///      drop us during quiet stretches.
-///
-/// On packet loss the depacketizer flags the next clean access unit; we
-/// react by sending a PLI back to the server, which forces a fresh IDR.
 ///
 /// The renderer (and the `NSWindow` it lives in) is owned by `AppState` for
 /// the process lifetime — see the long comment that used to live here for
@@ -44,87 +53,21 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     private let renderer: MetalViewerRenderer
     private var decoder: VideoDecoder?
 
-    /// **Experimental (mac-viewer convergence, Phase C).** When
-    /// `TAILSCREEN_VIEWER_SESSION=1`, the receive path routes datagrams through
-    /// the portable `ViewerSession` (video/audio/loss-recovery data plane)
-    /// wired to the mac adapters, instead of this class's bespoke loop. Default
-    /// off — the legacy path is untouched. Runtime-validate locally
-    /// (`test-local.sh` / `net-impair.sh`) before trusting it. Now at full
-    /// feature parity with the legacy loop: the stats overlay (received
-    /// bytes/codec + PLI/NACK/FEC counters via the session's observation
-    /// hooks), the HEVC→H.264 CODEC_NO fallback, the decode-recovery ladder,
-    /// and — via the session's tolerant `decodeHelloAckCaps` — a legacy 5-byte
-    /// HELLO_ACK (old sharer, no caps) still learns the assigned SSRC and
-    /// degrades cleanly to PLI-only. What remains before flipping the default
-    /// is runtime baking, not a functional gap.
-    private let useViewerSession =
-        ProcessInfo.processInfo.environment["TAILSCREEN_VIEWER_SESSION"] == "1"
-    /// The portable session, built in `connect()` when `useViewerSession` is on.
+    /// The portable `ViewerSession` — the video / audio / loss-recovery data
+    /// plane (HELLO/HELLO_ACK, NACK, receiver reports, PLI, FEC, reassembly,
+    /// control demux) shared with the Linux/Windows viewer and covered by the
+    /// `linux-protocol` / `linux-viewer` CI. Built fresh per `connect()`. This
+    /// is the viewer's **sole** receive path: the mac client is now a socket +
+    /// the mac adapters (`VTVideoDecoderAdapter` / `MetalSinkAdapter`) + the
+    /// mac-only side channels (annotations, remote control, `VoiceChannel`
+    /// audio, the decode-recovery ladder) arranged *around* the session.
     private var viewerSession: ViewerSession?
     /// Serial queue the VideoToolbox adapter hops decoded frames onto (the
     /// frame path — adapter → sink → renderer — never touches session state, so
     /// it needn't be the receive task's context; it just must be consistent).
     private let viewerFrameQueue = DispatchQueue(label: "com.tailscreen.viewer-session-frames")
-    /// Demultiplexes incoming RTP packets to the right codec depacketizer
-    /// based on the payload type — viewer auto-detects H.264 (PT 96) or
-    /// HEVC (PT 97) without out-of-band negotiation.
-    private var depacketizer = MultiCodecDepacketizer()
     private var isConnected = false
     private var isDisconnecting = false
-
-    // MARK: NACK / receiver-report state (all touched only on the receive task)
-
-    /// Capabilities the server advertised in the extended HELLO_ACK. Empty
-    /// until the ack lands (or if the server is legacy), so the viewer stays on
-    /// the PLI-only path until negotiation completes — a new-viewer↔old-server
-    /// pairing degrades automatically.
-    private var negotiatedCaps: ScreenShareCaps = []
-    /// Gap tracker driving NACK-based selective retransmission. Consulted only
-    /// once the server advertised `.nack`. Rebuilt with looser reorder
-    /// tolerances when `.fec` negotiates, so an FEC recovery already in
-    /// flight isn't raced by a NACK (see `TransportTuning`'s FEC scheduler
-    /// tolerances).
-    private var nackScheduler = NACKScheduler()
-    /// FEC group buffer: retains recent video packets and solves XOR parity
-    /// datagrams into recovered packets. Consulted only while parity is
-    /// actually flowing (`fecParityActive`).
-    private var fecBuffer = FECGroupBuffer()
-    /// True while parity is actually flowing: set on the first 0x0D received,
-    /// cleared after `TransportTuning.fecParityIdleNs` without one. Bare
-    /// `.fec` negotiation must NOT arm anything — the server always
-    /// advertises the cap, and its adaptive gate keeps parity off on clean
-    /// links, so an always-armed viewer would pay the relaxed NACK timing
-    /// (25 ms / N+2 packets) and per-packet buffering for nothing. Arming on
-    /// evidence keeps zero-cost-when-off true on BOTH ends; the first lossy
-    /// group right at arming is the accepted warm-up (its members predate
-    /// buffering — NACK still covers it).
-    private var fecParityActive = false
-    /// Uptime of the most recent parity datagram, for the disarm timer.
-    private var lastParityArrivalNs: UInt64 = 0
-    /// Packets recovered via FEC since the last receiver report — carried in
-    /// the extended RR's `fecRecovered` field so the server's FEC arm sees
-    /// raw link loss even when parity is hiding all of it.
-    private var fecRecoveredSinceReport = 0
-    /// Video packets received this session (receive-task-only; log cadence).
-    private var packetsReceived = 0
-    /// Access units delivered this session (receive-task-only; log cadence).
-    private var framesDelivered = 0
-    /// Receiver-report accounting (video packets only). Pure `RRAccounting`
-    /// value — baseline/duplicate math lives there so `RRAccountingTests`
-    /// covers it on CI; this class just feeds it seqs (FEC-recovered packets
-    /// included — recovered ≠ lost) and ships the report.
-    private var rrAccounting = RRAccounting()
-    private var lastRRSentNs: UInt64 = 0
-    /// Server uptime from the last PING, and our local uptime at its arrival —
-    /// echoed in the next report so the sharer can compute RTT.
-    private var lastServerPingNs: UInt64 = 0
-    private var lastPingArrivalNs: UInt64 = 0
-    /// `TAILSCREEN_DEBUG_FEC=1` — viewer side of the FEC/RTT arming diagnostic:
-    /// logs each receiver-report send (or its suppression) with the ping echo,
-    /// so a live run shows whether the sharer is getting the RTT feedback the
-    /// FEC gate needs. Pairs with the server's `debugFEC` sweep log.
-    private let debugFEC =
-        ProcessInfo.processInfo.environment["TAILSCREEN_DEBUG_FEC"] == "1"
 
     /// Audio SSRC the sharer assigned via HELLO_ACK. nil until the ack
     /// arrives; the VoiceChannel waits on this before sending mic audio.
@@ -161,12 +104,6 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     private let logger: TSLogger
     private var receiveTask: Task<Void, Never>?
     private var keepaliveTask: Task<Void, Never>?
-
-    /// Last-installed parameter sets, applied to the decoder on first sight
-    /// and re-applied if they change (resolution change, encoder restart).
-    /// The server emits parameter sets in-band as RTP packets at the head
-    /// of every IDR, so we don't need a separate parameter-sets message.
-    private var installedParameters: CodecParameterSets?
 
     /// TCP back-channel for annotation ops. Separate from the UDP video
     /// stream because strokes need reliable, ordered delivery — a dropped
@@ -390,9 +327,9 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     }
 
     /// Test-only: send one PLI control packet to the server immediately. The
-    /// production PLI path fires from the depacketizer on detected packet loss,
-    /// which is hard to provoke deterministically; this drives the viewer→server
-    /// PLI path directly so a test can assert the server records it.
+    /// production PLI path fires from inside `ViewerSession` on detected packet
+    /// loss, which is hard to provoke deterministically; this drives the
+    /// viewer→server PLI path directly so a test can assert the server records it.
     func sendPLIForTesting() async {
         guard isConnected, let pl = packetListener, let addr = serverAddr else { return }
         try? await pl.send(ScreenShareControlMessage.encode(.pli), to: addr)
@@ -428,11 +365,9 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         // the stats overlay doesn't inherit a stale drop-rate or codec
         // label across reconnects.
         renderer.resetStats()
-        // Reset loss-recovery / receiver-report state too: these are instance
-        // fields, so a client reused across disconnect→reconnect would
-        // otherwise misclassify the new session's first packets (stale
-        // highest-seq, negotiated caps, gap tracker).
-        resetLossRecoveryState()
+        // Reset the per-session viewer UI support flags; the loss-recovery
+        // data plane is rebuilt fresh below as a new `ViewerSession`.
+        resetViewerSupportState()
 
         let node: TailscaleNode
         if let existing = existingNode {
@@ -495,51 +430,21 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
 
         let decoder = VideoDecoder()
         self.decoder = decoder
-        if useViewerSession {
-            // Experimental Phase C: the adapter owns the decoder's callbacks and
-            // the portable ViewerSession drives the receive path (built below).
-            buildViewerSession(decoder: decoder, addr: addr)
-        } else {
-            decoder.onDecodedFrame = { [weak self] pixelBuffer in
-                self?.onDecodedFrameForTesting?(pixelBuffer)
-                self?.handleDecodedFrame(pixelBuffer)
-            }
-            decoder.onDecodeFailure = { [weak self] codec in
-                self?.handleDecodeFailure(codec)
-            }
-            decoder.onFrameDecodeFailed = { [weak self] in
-                self?.renderer.noteDecodeFailure()
-            }
-            decoder.onRecoveryAction = { [weak self] action in
-                self?.handleDecodeRecoveryAction(action)
-            }
-            decoder.onRecovered = { [weak self] in
-                self?.logger.log("Client: decoding recovered — clearing degraded indication")
-                self?.renderer.setDegraded(false)
-            }
-        }
+        // The mac adapters own the decoder's callbacks; the portable
+        // ViewerSession drives the receive path (built here, run below).
+        buildViewerSession(decoder: decoder, addr: addr)
 
         self.isConnected = true
 
-        // Advertise NACK + receiver-report + FEC support in the extended
-        // HELLO. Old servers read byte 0 only and reply with a legacy 5-byte
-        // ack (caps `[]`), so the viewer stays on the PLI path against them;
-        // a NACK-era server's ack simply lacks `.fec` and no FEC state arms.
-        if let session = viewerSession {
-            session.start()  // emits HELLO through onControlToSend
-            logger.log("HELLO sent via ViewerSession (experimental TAILSCREEN_VIEWER_SESSION path)")
-        } else {
-            let hello = ScreenShareControlMessage.encodeHello(caps: [.nack, .receiverReport, .fec])
-            try await pl.send(hello, to: addr)
-            logger.log("HELLO sent to \(addr) (caps=nack,rr,fec)")
-        }
+        // The session advertises NACK + receiver-report + FEC in its extended
+        // HELLO (via `onControlToSend`). Old servers read byte 0 only and reply
+        // with a legacy 5-byte ack (caps `[]`), so the viewer degrades to the
+        // PLI path against them; a NACK-era server's ack simply lacks `.fec`.
+        viewerSession?.start()
+        logger.log("HELLO sent via ViewerSession to \(addr)")
 
         receiveTask = Task { [weak self] in
-            if self?.useViewerSession == true {
-                await self?.receiveLoopViaViewerSession()
-            } else {
-                await self?.receiveLoop()
-            }
+            await self?.receiveLoop()
         }
         keepaliveTask = Task { [weak self] in
             await self?.keepaliveLoop()
@@ -623,23 +528,26 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         }
     }
 
-    // MARK: - Experimental ViewerSession receive path (Phase C, flag-gated)
+    // MARK: - ViewerSession receive path
 
     /// Assemble the portable `ViewerSession` wired to the mac adapters: the
     /// VideoToolbox decoder (frames hop onto `viewerFrameQueue`, then to the
     /// Metal renderer via `MetalSinkAdapter`), raw audio forwarded to the host's
     /// `VoiceChannel` (`onAudioReceived`), and control feedback (HELLO / NACK /
-    /// PLI / receiver reports) sent back over UDP. Only called when
-    /// `useViewerSession` is set. See that property for the known first-cut gaps.
+    /// PLI / receiver reports) sent back over UDP. Built once per `connect()`.
     private func buildViewerSession(decoder: VideoDecoder, addr: String) {
         let adapter = VTVideoDecoderAdapter(decoder: decoder, callbackQueue: viewerFrameQueue)
-        // Mac decode-recovery + codec-fallback paths, wired to the same client
-        // handlers the legacy loop uses. These ride the adapter's pass-through
-        // hooks (bypassing ViewerSession) so the CODEC_NO H.264 fallback and the
-        // decode-recovery escalation ladder behave identically to the bespoke
-        // path — closing the first-cut gaps noted in `useViewerSession`.
+        // Mac decode-recovery + codec-fallback paths. These ride the adapter's
+        // pass-through hooks (bypassing ViewerSession, which never inspects a
+        // decoded frame) so the CODEC_NO H.264 fallback and the decode-recovery
+        // escalation ladder run mac-side.
         adapter.onCodecUnsupported = { [weak self] codec in
             self?.handleDecodeFailure(codec)
+        }
+        // Test seam: the E2E suites assert a frame decoded via this callback
+        // (the windowed Metal render path doesn't run under xctest).
+        adapter.onDecodedPixelBufferForTesting = { [weak self] buffer in
+            self?.onDecodedFrameForTesting?(buffer)
         }
         adapter.onFrameDecodeFailed = { [weak self] in
             self?.renderer.noteDecodeFailure()
@@ -696,11 +604,13 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         }
     }
 
-    /// Experimental Phase C receive loop: route every datagram through the
-    /// portable `ViewerSession`, drive its ~1 Hz tick, and translate the
-    /// session's negotiated state into the client callbacks `AppState` already
-    /// consumes. Mirrors `receiveLoop()`'s recv + idle-disconnect + backoff.
-    private func receiveLoopViaViewerSession() async {
+    /// The receive loop: route every datagram through the portable
+    /// `ViewerSession`, drive its ~1 Hz tick, and translate the session's
+    /// negotiated state (assigned SSRC + serverCaps, pending/denied/stopped)
+    /// into the client callbacks `AppState` consumes. Owns only the recv +
+    /// idle-disconnect + backoff plumbing; all loss recovery lives in the
+    /// session.
+    private func receiveLoop() async {
         guard let pl = packetListener else { return }
         let idleDisconnectAfterNs = TransportTuning.clientIdleDisconnectNs
         var lastDataNs = DispatchTime.now().uptimeNanoseconds
@@ -789,327 +699,6 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         }
     }
 
-    private func receiveLoop() async {
-        guard let pl = packetListener else { return }
-        // Match the sharer's 15 s idle sweep so a sharer that's just
-        // pausing video (e.g. backgrounded SCStream while the user
-        // switches Spaces) doesn't fully tear our session down. The
-        // sharer's own watchdog will still notice if we've truly gone
-        // silent for >15 s, at which point both ends time out together.
-        // Both constants live in TransportTuning to keep them coupled.
-        let idleDisconnectAfterNs = TransportTuning.clientIdleDisconnectNs
-        var lastDataNs = DispatchTime.now().uptimeNanoseconds
-        // Suppresses the idle-disconnect while the sharer has us parked
-        // behind their approval gate (HELLO_PENDING, then silence — the
-        // sharer may take minutes to click Accept). Set on HELLO_PENDING,
-        // cleared on HELLO_ACK/HELLO_DENY or the first decoded AU. An
-        // actively-KEEPALIVE'ing pending viewer is never swept server-side
-        // (its lastSeen refreshes), so waiting indefinitely is consistent
-        // with the server's 60 s pending sweep; a real teardown still comes
-        // via SERVER_BYE on Stop Sharing.
-        var awaitingApproval = false
-        var consecutiveErrors = 0
-        var errorStampsNs: [UInt64] = []
-
-        while isConnected {
-            // ~1 Hz cadence (recv blocks up to 1 s): re-NACK / PLI-fallback for
-            // stale gaps and emit the receiver report.
-            await maybePeriodicFeedback()
-            let recvStartNs = DispatchTime.now().uptimeNanoseconds
-            do {
-                // recv returns one UDP datagram. The server is the only
-                // party that should be sending to us (it learned our addr
-                // from the HELLO source); ignore datagrams from anywhere
-                // else as a precaution.
-                let (datagram, from) = try await pl.recv(timeout: 1_000)
-                consecutiveErrors = 0
-                if datagram.isEmpty { continue }
-                if from != serverAddr {
-                    // Don't pollute the depacketizer with packets from
-                    // unexpected senders. In practice this never happens
-                    // on a tailnet; safety net only.
-                    continue
-                }
-                lastDataNs = DispatchTime.now().uptimeNanoseconds
-                packetsReceived += 1
-
-                // The server sends control bytes at us:
-                //   - SERVER_BYE on `Stop Sharing` — tear down immediately
-                //     instead of waiting out the no-video idle timer.
-                //   - HELLO_ACK in response to our HELLO — assigns the
-                //     audio SSRC we'll use to send mic packets.
-                // Real RTP has V=2 → 0x80–0xBF, so a leading non-V=2 byte
-                // is a control packet we need to interpret.
-                if ScreenShareControlMessage.looksLikeControl(datagram) {
-                    switch ScreenShareControlMessage.decode(datagram) {
-                    case .serverBye:
-                        logger.log("Receive: SERVER_BYE — sharer stopped")
-                        NotificationCenter.default.post(name: .tailscreenViewerPeerClosed, object: nil)
-                        return
-                    case .helloAck:
-                        // Admitted — normal idle handling resumes.
-                        awaitingApproval = false
-                        if let ack = ScreenShareControlMessage.decodeHelloAckCaps(datagram) {
-                            if negotiatedCaps != ack.caps {
-                                negotiatedCaps = ack.caps
-                                onRemoteControlSupportChanged?(ack.caps.contains(.remoteControl))
-                                onAnnotationSupportChanged?(ack.caps.contains(.annotations))
-                                // Deepen the reorder window AND hold open gaps
-                                // by time, not packet count, so retransmits land
-                                // ~1 RTT later before the window overflows (a
-                                // count-based window overflowed in tens of ms at
-                                // video bitrate, tearing every keyframe). The ack
-                                // precedes video, so recreating the depacketizer
-                                // loses nothing.
-                                if ack.caps.contains(.nack) {
-                                    depacketizer = MultiCodecDepacketizer(
-                                        reorderDepth: TransportTuning.nackReorderDepth,
-                                        gapHoldNs: TransportTuning.reorderGapHoldNs)
-                                    logger.log("Server advertised NACK — deep time-held reorder window enabled")
-                                }
-                                // `.fec` in the ack only permits the 0x0D
-                                // path; the FEC receive machinery (relaxed
-                                // scheduler tolerances + media buffering)
-                                // arms on the FIRST parity datagram actually
-                                // received — see `fecParityActive`.
-                            }
-                            if assignedAudioSSRC != ack.ssrc {
-                                assignedAudioSSRC = ack.ssrc
-                                onAudioSSRCAssigned?(ack.ssrc)
-                            }
-                        }
-                    case .helloPending:
-                        awaitingApproval = true
-                        onAwaitingApproval?()
-                    case .ping:
-                        // RTT probe — stash it to echo in the next report.
-                        if let uptime = ScreenShareControlMessage.decodePing(datagram) {
-                            lastServerPingNs = uptime
-                            lastPingArrivalNs = DispatchTime.now().uptimeNanoseconds
-                        }
-                    case .fec:
-                        // XOR parity for a recent media group. Solvable only
-                        // when exactly one member is missing; the recovered
-                        // packet then enters the same ingest path as a
-                        // received one.
-                        if await handleFECParityDatagram(datagram) {
-                            awaitingApproval = false
-                        }
-                    case .helloDenied:
-                        logger.log("Receive: HELLO_DENY — the sharer declined this viewer")
-                        if let onDeniedBySharer {
-                            onDeniedBySharer()
-                        } else {
-                            NotificationCenter.default.post(
-                                name: .tailscreenViewerPeerClosed, object: nil)
-                        }
-                        return
-                    default:
-                        break
-                    }
-                    continue
-                }
-                // Audio RTP (PT 98 voice, PT 99 system audio): route to
-                // VoiceChannel, skip the video path. VoiceChannel demuxes the
-                // two by payload type.
-                if let (header, _) = RTPHeader.decode(from: datagram) {
-                    let pt = header.payloadType
-                    if pt == RTPHeader.voicePayloadType || pt == RTPHeader.systemAudioPayloadType {
-                        onAudioReceived?(datagram)
-                        continue
-                    }
-                }
-
-                // Video RTP: bookkeeping for the stats overlay. Account for
-                // every video byte off the wire (header + payload) so the
-                // overlay's bitrate readout reflects actual link load, not
-                // just decoded payload, and report the codec the first time
-                // we see one of the video payload types.
-                if let (videoHeader, _) = RTPHeader.decode(from: datagram) {
-                    var isVideo = false
-                    switch videoHeader.payloadType {
-                    case RTPHeader.h264PayloadType:
-                        renderer.noteReceivedBytes(datagram.count)
-                        renderer.noteCodec(.h264)
-                        isVideo = true
-                    case RTPHeader.hevcPayloadType:
-                        renderer.noteReceivedBytes(datagram.count)
-                        renderer.noteCodec(.hevc)
-                        isVideo = true
-                    default:
-                        break
-                    }
-                    if isVideo {
-                        let nowNs = DispatchTime.now().uptimeNanoseconds
-                        await handleVideoFeedback(seq: videoHeader.sequenceNumber, nowNs: nowNs)
-                        // FEC: while parity is flowing, retain the packet for
-                        // parity solves and check whether it completed a
-                        // group whose parity arrived first (parity can outrun
-                        // a reordered member). Gated on `fecParityActive`,
-                        // not bare negotiation, so a session that never sees
-                        // parity pays zero per-packet buffering cost.
-                        if fecParityActive {
-                            let recovery = fecBuffer.noteMedia(
-                                seq: videoHeader.sequenceNumber, packet: datagram, nowNs: nowNs)
-                            if let recovery, await processRecoveredPacket(recovery) {
-                                awaitingApproval = false
-                            }
-                        }
-                    }
-                }
-
-                if await ingestVideoPacket(datagram) {
-                    // Video is flowing — we're past the approval gate.
-                    awaitingApproval = false
-                }
-            } catch {
-                guard isConnected else { break }
-                // `TailscaleError.readFailed` is thrown both for the benign
-                // 1 s poll timeout and for a dead fd (POLLHUP → instant
-                // return). errno isn't visible from here, but elapsed time
-                // tells them apart — treating every readFailed as a timeout
-                // let a dead socket busy-spin with the error counter
-                // permanently reset.
-                if case TailscaleError.readFailed = error {
-                    let elapsedNs = DispatchTime.now().uptimeNanoseconds &- recvStartNs
-                    if !ReceiveLoopPolicy.classifyReadFailedAsError(elapsedNs: elapsedNs) {
-                        consecutiveErrors = 0
-                        let nowNs = DispatchTime.now().uptimeNanoseconds
-                        // Don't self-disconnect while parked for approval —
-                        // the sharer's silence there is expected, not a dead
-                        // server. Stop Sharing still reaches us via SERVER_BYE.
-                        if !awaitingApproval && nowNs &- lastDataNs > idleDisconnectAfterNs {
-                            let idleMs = (nowNs &- lastDataNs) / 1_000_000
-                            logger.log("Receive: idle for \(idleMs) ms, assuming server gone")
-                            NotificationCenter.default.post(name: .tailscreenViewerPeerClosed, object: nil)
-                            break
-                        }
-                        continue
-                    }
-                    // Near-instant readFailed = dead fd; count it below.
-                }
-                // A one-off receive error used to kill this loop permanently
-                // — and, unlike the idle-timeout path, without posting
-                // `.tailscreenViewerPeerClosed`, so the window froze on a
-                // stale frame with a live-looking UI. Retry with a capped
-                // backoff instead, and if the socket is genuinely dead
-                // (`maxConsecutiveErrors` in a row, or the windowed backstop
-                // for errors interleaved with timeouts) tear down through
-                // the same notification the idle path uses.
-                consecutiveErrors += 1
-                let nowNs = DispatchTime.now().uptimeNanoseconds
-                let windowCount = ReceiveLoopPolicy.slidingWindowErrorCount(&errorStampsNs, appending: nowNs)
-                logger.log("Receive error #\(consecutiveErrors) (\(windowCount) in window): \(error)")
-                let deadConsecutive = consecutiveErrors >= ReceiveLoopPolicy.maxConsecutiveErrors
-                let deadWindowed = windowCount >= ReceiveLoopPolicy.maxErrorsPerWindow
-                if deadConsecutive || deadWindowed {
-                    let detail = "\(consecutiveErrors) consecutive, \(windowCount) in window"
-                    logger.log("Receive loop dead (\(detail)) — disconnecting")
-                    NotificationCenter.default.post(name: .tailscreenViewerPeerClosed, object: nil)
-                    break
-                }
-                try? await Task.sleep(
-                    nanoseconds: ReceiveLoopPolicy.retryDelayNs(consecutiveErrors: consecutiveErrors))
-            }
-        }
-    }
-
-    /// Shared tail of the video path for wire AND FEC-recovered packets —
-    /// downstream of here a recovered packet must be indistinguishable from
-    /// a received one (depacketizer, AU completion, the NACK-mode PLI
-    /// gating). Returns true when an AU was delivered, so the receive loop
-    /// can clear its awaiting-approval flag.
-    private func ingestVideoPacket(_ packet: Data) async -> Bool {
-        // `nowNs` drives the reorder buffer's time-based gap hold in NACK mode
-        // (same monotonic clock the NACK scheduler observes on).
-        let au = depacketizer.ingest(packet, nowNs: DispatchTime.now().uptimeNanoseconds)
-        guard let au else { return false }
-        framesDelivered += 1
-        if au.lostBeforeThisAU && !negotiatedCaps.contains(.nack) {
-            // In NACK mode the scheduler owns loss recovery
-            // (retransmit, then a PLI fallback for gaps it abandons),
-            // so the depacketizer's own loss signal must not
-            // double-fire keyframes. Rate-limited otherwise — see
-            // `sendPLIThrottled` for the loss-amplification hazard.
-            await sendPLIThrottled()
-        }
-        if framesDelivered == 1 || framesDelivered % 60 == 0 {
-            logger.log(
-                "Client: AU #\(framesDelivered) (kf=\(au.containsIDR), \(au.avcc.count)B, packets=\(packetsReceived))"
-            )
-        }
-        self.lastReceiveUptimeNs = DispatchTime.now().uptimeNanoseconds
-        deliverAU(au)
-        return true
-    }
-
-    /// Feed one FEC-recovered packet through the SAME path as a received
-    /// datagram, with exactly three accounting deltas: the overlay counts a
-    /// recovery instead of wire bytes (it wasn't on the wire); the receiver
-    /// report counts it as *received* (recovered ≠ lost — residual loss
-    /// drives the bitrate arm) while `fecRecoveredSinceReport` feeds the
-    /// extended-RR field (raw loss drives the FEC arm); and the pending NACK
-    /// gap is cancelled *without* an RTT sample (`cancelGap` — the straggler
-    /// path would inject FEC latency into the RTT EMA). Returns true when
-    /// the recovered packet completed an AU.
-    private func processRecoveredPacket(_ recovery: FECGroupBuffer.Recovery) async -> Bool {
-        renderer.noteFECRecovered()
-        fecRecoveredSinceReport += 1
-        if negotiatedCaps.contains(.receiverReport) {
-            rrAccounting.observe(seq: recovery.seq)
-        }
-        // `noteRecovered`, not `cancelGap`: besides clearing the gap without
-        // an RTT sample, it advances the scheduler's highest-seen cursor when
-        // the recovery is ahead of every wire packet — the tail-of-batch
-        // (marker) case, where the next AU's first packet would otherwise
-        // re-open a phantom gap for the already-recovered seq and burn a
-        // spurious NACK.
-        nackScheduler.noteRecovered(seq: recovery.seq, nowNs: DispatchTime.now().uptimeNanoseconds)
-        return await ingestVideoPacket(recovery.packet)
-    }
-
-    /// Handle one inbound FEC parity datagram (0x0D): bounds-checked decode
-    /// (untrusted UDP — truncated/garbage rejects cleanly), arm/refresh the
-    /// FEC receive machinery (parity on the wire is the arming evidence),
-    /// group solve, and the recovered-packet flow. Returns true when a
-    /// recovery completed an AU. No-op unless `.fec` was negotiated.
-    private func handleFECParityDatagram(_ datagram: Data) async -> Bool {
-        guard negotiatedCaps.contains(.fec) else { return false }
-        guard let parity = ScreenShareControlMessage.decodeFEC(datagram) else { return false }
-        let now = DispatchTime.now().uptimeNanoseconds
-        lastParityArrivalNs = now
-        if !fecParityActive {
-            fecParityActive = true
-            // Loosen the scheduler's reorder tolerances IN PLACE (gaps + RTT
-            // estimate survive) so a recovery already in flight — up to N−1
-            // trailing group members plus the parity away — isn't raced by a
-            // NACK; NACK fires only for multi-loss groups FEC can't solve.
-            nackScheduler.setReorderTolerances(
-                toleranceNs: TransportTuning.fecSchedulerToleranceNs,
-                packetTolerance: TransportTuning.fecSchedulerPacketTolerance)
-            logger.log("FEC parity flowing — recovery armed")
-        }
-        let recovery = fecBuffer.noteParity(
-            baseSeq: parity.baseSeq,
-            count: parity.count,
-            body: parity.body,
-            nowNs: now)
-        guard let recovery else { return false }
-        return await processRecoveredPacket(recovery)
-    }
-
-    private func deliverAU(_ au: VideoAccessUnit) {
-        if au.containsIDR {
-            if let params = Self.extractParameterSets(from: au) {
-                if params != installedParameters {
-                    installedParameters = params
-                    decoder?.setParameterSets(params)
-                }
-            }
-        }
-        decoder?.decode(data: au.avcc, isKeyframe: au.containsIDR)
-    }
-
     /// Pulls parameter sets out of an IDR access unit. The server prepends
     /// them in-band on every keyframe (SPS+PPS for H.264; VPS+SPS+PPS for
     /// HEVC) so any AU flagged `containsIDR` should carry them. NAL types
@@ -1160,170 +749,25 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         }
     }
 
-    private var lastReceiveUptimeNs: UInt64 = 0
-
-    /// Throttle state for PLIs (see `sendPLIThrottled`). Locked because it's
-    /// written from the receive task *and* from decoder-escalation Tasks.
-    private let lastPLISentNs = OSAllocatedUnfairLock<UInt64>(initialState: 0)
-    /// Minimum spacing between PLIs. ~100 ms caps keyframe requests at ~10/s
-    /// instead of up to one per dropped frame (60/s), while staying responsive.
-    private let pliMinIntervalNs: UInt64 = 100_000_000
-
-    /// Send a PLI to the server unless one went out within
-    /// `pliMinIntervalNs`. The loss-driven path (depacketizer gap in
-    /// `receiveLoop`) routes through this throttle: each PLI forces the
-    /// encoder to emit a (large) keyframe, which fragments into more packets
-    /// and, on a lossy link, can lose *more* — unthrottled loss-driven PLIs
-    /// are a loss-amplification loop. One per interval is plenty; the
-    /// keyframe it triggers covers all loss up to its arrival. The
-    /// decode-recovery ladder uses `sendPLIUnthrottled` instead.
-    private func sendPLIThrottled() async {
-        guard isConnected, let pl = packetListener, let addr = serverAddr else { return }
-        let nowNs = DispatchTime.now().uptimeNanoseconds
-        let shouldSend = lastPLISentNs.withLock { last -> Bool in
-            guard nowNs &- last >= pliMinIntervalNs else { return false }
-            last = nowNs
-            return true
-        }
-        guard shouldSend else { return }
-        renderer.notePLISent()
-        try? await pl.send(ScreenShareControlMessage.encode(.pli), to: addr)
-    }
-
-    /// Send a PLI immediately, bypassing the 100 ms throttle. Reserved for
-    /// the decode-recovery ladder: its rungs fire at most once per failing
-    /// episode, so there's no amplification risk — and a ladder PLI the
-    /// throttle swallowed would stall recovery until the next rung. Pushes
-    /// the throttle window forward so an immediately-following loss-driven
-    /// PLI still spaces out.
+    /// Send a PLI to the sharer immediately. Used by the decode-recovery ladder
+    /// (`handleDecodeRecoveryAction`) — its rungs fire at most once per failing
+    /// episode, so there's no loss-amplification risk. Loss-driven PLIs are the
+    /// session's own concern now (emitted from `ViewerSession` via its NACK
+    /// scheduler), so the old receive-task throttle went with the legacy loop.
     private func sendPLIUnthrottled() async {
         guard isConnected, let pl = packetListener, let addr = serverAddr else { return }
-        lastPLISentNs.withLock { $0 = DispatchTime.now().uptimeNanoseconds }
         renderer.notePLISent()
         try? await pl.send(ScreenShareControlMessage.encode(.pli), to: addr)
     }
 
-    /// Clear all NACK / receiver-report / depacketizer state for a fresh
-    /// session. Called from `connect()` so a reused client instance doesn't
-    /// carry a previous session's negotiated caps, sequence baseline, or gap
-    /// tracker into the new one.
-    private func resetLossRecoveryState() {
-        negotiatedCaps = []
+    /// Reset the per-session viewer UI support flags on a fresh `connect()` so a
+    /// reused client instance doesn't carry the previous session's advertised
+    /// remote-control / annotation support into the new one before its HELLO_ACK
+    /// re-establishes them. The loss-recovery state proper now lives in the
+    /// freshly-built `ViewerSession`, so there's nothing else to clear here.
+    private func resetViewerSupportState() {
         onRemoteControlSupportChanged?(false)
         onAnnotationSupportChanged?(true)
-        nackScheduler = NACKScheduler()
-        depacketizer = MultiCodecDepacketizer()
-        fecBuffer = FECGroupBuffer()
-        fecParityActive = false
-        lastParityArrivalNs = 0
-        fecRecoveredSinceReport = 0
-        packetsReceived = 0
-        framesDelivered = 0
-        rrAccounting = RRAccounting()
-        lastRRSentNs = 0
-        lastServerPingNs = 0
-        lastPingArrivalNs = 0
-    }
-
-    // MARK: - NACK / receiver-report feedback (receive-task-only)
-
-    /// Feed one received video packet's sequence number into the loss-recovery
-    /// machinery: receiver-report accounting (always, if the server pings) and
-    /// the NACK scheduler (when NACK was negotiated). Dispatches any NACK/PLI
-    /// actions the scheduler emits.
-    private func handleVideoFeedback(seq: UInt16, nowNs: UInt64) async {
-        if negotiatedCaps.contains(.receiverReport) { rrAccounting.observe(seq: seq) }
-        guard negotiatedCaps.contains(.nack) else { return }
-        for action in nackScheduler.observe(seq: seq, nowNs: nowNs) {
-            await dispatchNACKAction(action)
-        }
-    }
-
-    /// Periodic (~1 Hz) tick: age out gaps that stopped seeing new packets
-    /// (re-NACK / PLI fallback), disarm the FEC machinery once parity stops
-    /// flowing, and send the receiver report.
-    private func maybePeriodicFeedback() async {
-        let now = DispatchTime.now().uptimeNanoseconds
-        if fecParityActive, now &- lastParityArrivalNs > TransportTuning.fecParityIdleNs {
-            // The server gated parity off (link recovered) — restore phase-1
-            // NACK timing and drop the buffered media so the FEC path costs
-            // nothing again until parity reappears.
-            fecParityActive = false
-            fecBuffer.reset()
-            nackScheduler.setReorderTolerances(
-                toleranceNs: NACKScheduler.defaultReorderToleranceNs,
-                packetTolerance: NACKScheduler.defaultReorderPacketTolerance)
-            logger.log("FEC parity idle — recovery disarmed")
-        }
-        if negotiatedCaps.contains(.nack) {
-            for action in nackScheduler.tick(nowNs: now) {
-                await dispatchNACKAction(action)
-            }
-        }
-        if negotiatedCaps.contains(.receiverReport), now &- lastRRSentNs >= 1_000_000_000 {
-            await sendReceiverReport(now: now)
-        }
-    }
-
-    /// Send one NACK datagram or fall back to a (throttled) PLI.
-    private func dispatchNACKAction(_ action: NACKAction) async {
-        guard isConnected, let pl = packetListener, let addr = serverAddr else { return }
-        switch action {
-        case .sendNACK(let seqs):
-            guard !seqs.isEmpty else { return }
-            renderer.noteNACKSent()
-            let entries = NACKScheduler.packFCI(seqs)
-            try? await pl.send(ScreenShareControlMessage.encodeNACK(entries), to: addr)
-        case .sendPLI:
-            await sendPLIThrottled()
-        }
-    }
-
-    /// Build and send the RTCP-RR-style receiver report, then reset the
-    /// per-interval accounting (both handled by `RRAccounting.makeReport`).
-    private func sendReceiverReport(now: UInt64) async {
-        guard isConnected, let pl = packetListener, let addr = serverAddr else { return }
-        guard let (fracLostQ8, extHighestSeq) = rrAccounting.makeReport() else {
-            if debugFEC { logger.log("RR suppressed: no baseline yet (no packets observed this interval)") }
-            lastRRSentNs = now
-            return
-        }
-        var delayMs: UInt16 = 0
-        if lastPingArrivalNs != 0 {
-            delayMs = UInt16(min(65535, (now &- lastPingArrivalNs) / 1_000_000))
-        }
-        // The extended 24-byte layout (trailing `fecRecovered` + `nackRecovered`)
-        // goes out only when `.fec` negotiated; legacy/NACK-era servers keep
-        // receiving the exact 20-byte form they already parse (their decode is
-        // length-tolerant either way, but why poke it). Drain the NACK-recovery
-        // counter every report regardless so it can't grow unbounded when only
-        // the shorter form ships.
-        let fecNegotiated = negotiatedCaps.contains(.fec)
-        let nackRecovered = negotiatedCaps.contains(.nack) ? nackScheduler.drainNackRecovered() : 0
-        let report = ReceiverReport(
-            fracLostQ8: fracLostQ8,
-            extHighestSeq: extHighestSeq,
-            jitterTicks: 0,
-            lastPingTs: lastServerPingNs,
-            delaySincePingMs: delayMs,
-            fecRecovered: UInt16(clamping: fecRecoveredSinceReport),
-            nackRecovered: UInt16(clamping: nackRecovered))
-        try? await pl.send(
-            ScreenShareControlMessage.encodeReceiverReport(report, includeRecoveryFields: fecNegotiated),
-            to: addr)
-        if debugFEC {
-            logger.log(
-                "RR sent: fracLostQ8=\(fracLostQ8) pingEcho=\(lastServerPingNs != 0 ? "yes" : "NONE") "
-                    + "delaySincePingMs=\(delayMs) fecRecovered=\(fecRecoveredSinceReport) nackRecovered=\(nackRecovered)"
-            )
-        }
-        fecRecoveredSinceReport = 0
-        lastRRSentNs = now
-    }
-
-    private func handleDecodedFrame(_ buffer: CVPixelBuffer) {
-        guard isConnected, !isDisconnecting else { return }
-        renderer.setPixelBuffer(buffer, receiveUptimeNs: lastReceiveUptimeNs)
     }
 
     func disconnect() async {
@@ -1379,6 +823,10 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
             decoder.shutdown()
             self.decoder = nil
         }
+        // Release the session (and, through it, the VT adapter's hold on the
+        // now-shut-down decoder) once the receive task that drove it has been
+        // cancelled and awaited above.
+        viewerSession = nil
 
         // Teardown owns clearing the degraded indication — the ladder that
         // set it is gone with the decoder, and leaving it latched kept the

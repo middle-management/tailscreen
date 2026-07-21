@@ -170,10 +170,26 @@ mac `build`/`test` CI job, not the Linux loop.
   a regression test. The flagged path is therefore at **full feature parity**;
   what remains is runtime baking on a Mac before swapping the default (Phase E)
   and deleting the client's duplicated loss-recovery code (Phase D).
-- **Phase D** — move keepalive / idle / annotation / stats-feeding to sit
-  _around_ the session core; **delete** the duplicated FEC/NACK/RR/PLI from the
-  client.
-- **Phase E** — flip the flag default, bake, remove the legacy path.
+- **Phase D + E — full cutover ✅ (landed).** Because the duplicated
+  FEC/NACK/RR/PLI machinery lived *entirely* inside the legacy `receiveLoop`
+  (the `ViewerSession` path never touched it), deleting the duplication and
+  removing the legacy path were the same change — so D and E collapsed into one
+  cutover. `ViewerSession` is now the mac viewer's **sole** receive path: the
+  `TAILSCREEN_VIEWER_SESSION` flag is gone, the legacy `receiveLoop` +
+  `ingestVideoPacket` / `processRecoveredPacket` / `handleFECParityDatagram` /
+  `deliverAU` + the whole feedback cluster (`handleVideoFeedback` /
+  `maybePeriodicFeedback` / `dispatchNACKAction` / `sendReceiverReport`) and
+  their fields (`negotiatedCaps`, `nackScheduler`, `fecBuffer`, `rrAccounting`,
+  the depacketizer, PING/RR bookkeeping) are deleted (~550 lines). What stays
+  mac-side, arranged *around* the session: the socket, the VT/Metal adapters,
+  the annotation + remote-control TCP channels, `VoiceChannel` audio, the
+  keepalive + idle-disconnect plumbing, the stats overlay (fed via the session's
+  observation hooks + a `noteReceivedVideoStats` helper), the CODEC_NO fallback,
+  and the decode-recovery ladder (`sendPLIUnthrottled`). The `onDecodedFrameForTesting`
+  E2E seam is preserved via a new `VTVideoDecoderAdapter.onDecodedPixelBufferForTesting`
+  pass-through. Compile-verified by the mac `build`/`test` CI job; the live
+  render + loss-recovery path is the local A/B (validated under `net-impair.sh`
+  through Phase C).
 
 ## Risks
 
