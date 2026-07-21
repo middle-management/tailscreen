@@ -163,9 +163,13 @@ mac `build`/`test` CI job, not the Linux loop.
   codec-unsupported failure to the client's HEVC→H.264 `CODEC_NO` fallback and
   passes the decode-recovery ladder
   (`onFrameDecodeFailed`/`onRecoveryAction`/`onRecovered`) straight through.
-  Remaining first-cut gap: a legacy 5-byte HELLO_ACK (old sharer) leaves the
-  session without an SSRC — a small separate portable fix. Swapping the default
-  is the rest of Phase C.
+  The last suspected gap — a legacy 5-byte HELLO_ACK (old sharer) leaving the
+  session without an SSRC — turned out to be a non-issue: the session's
+  tolerant `decodeHelloAckCaps` already learns the SSRC from the 5-byte form
+  (caps `[]`, so the loss-recovery matrix degrades to PLI-only), now pinned by
+  a regression test. The flagged path is therefore at **full feature parity**;
+  what remains is runtime baking on a Mac before swapping the default (Phase E)
+  and deleting the client's duplicated loss-recovery code (Phase D).
 - **Phase D** — move keepalive / idle / annotation / stats-feeding to sit
   _around_ the session core; **delete** the duplicated FEC/NACK/RR/PLI from the
   client.
