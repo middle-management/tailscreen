@@ -24,7 +24,7 @@ final class ViewerSessionTests: XCTestCase {
             uPlane: [UInt8](repeating: 0x80, count: 4),
             vPlane: [UInt8](repeating: 0x80, count: 4)
         )
-        func decode(accessUnit: Data, isKeyframe: Bool) throws -> [DecodedVideoFrame] {
+        func decode(accessUnit: Data, codec: VideoCodec, isKeyframe: Bool) throws -> [DecodedVideoFrame] {
             if shouldThrow { throw Boom() }
             decoded.append((accessUnit, isKeyframe))
             return [frame]

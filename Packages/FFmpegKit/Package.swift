@@ -15,7 +15,12 @@ import PackageDescription
 let package = Package(
     name: "FFmpegKit",
     products: [
-        .library(name: "FFmpegKit", targets: ["FFmpegKit"])
+        .library(name: "FFmpegKit", targets: ["FFmpegKit"]),
+        // The raw libavcodec module is exported so a consumer's tests can drive
+        // the C API directly — e.g. to generate real H.264 bitstream to feed
+        // through the decoder (the Linux viewer's pipeline integration test
+        // does exactly this, mirroring FFmpegKit's own round-trip test).
+        .library(name: "CFFmpeg", targets: ["CFFmpeg"]),
     ],
     targets: [
         .systemLibrary(

@@ -202,6 +202,24 @@ them. It owns no socket/thread/timer, so it's fully unit-tested
 (`FECGroupBuffer`) is the one deferred piece — the viewer degrades to
 NACK-or-PLI until it lands (`TODO(fec)` in `ViewerSession.swift`).
 
+*Landed:* the **viewer wiring** — `Apps/linux`, a SwiftPM package that plugs
+the concrete backends into `ViewerSession`: `FFmpegVideoDecoder`
+(FFmpegKit → `VideoDecoding`), `SDLVideoSink` (SDLKit → `VideoSink`),
+`ALSAAudioSink` (ALSAKit → `AudioSink`), a `ViewerPipeline` assembler, and a
+`tailscreen-viewer` executable driven by a tsnet `TsnetTransport` (the mac
+client's `TailscaleNode` + `PacketListener` connect path, ported). Split so
+the decode→render→audio path is CI-proven independent of tsnet:
+`PipelineIntegrationTests` runs a real H.264 keyframe through
+encode → production RTP packetizer → `ViewerSession` → FFmpeg decode →
+collecting sinks (the Linux twin of `ScreenShareSyntheticFramesTests`), under
+the `linux-viewer` CI job, which also link-checks the tsnet binary on Linux.
+The one seam refinement this needed: `VideoDecoding.decode` now takes the
+`codec` (forwarded from the RTP payload type via `au.codec`) so the decoder
+picks H.264/HEVC deterministically instead of sniffing the bitstream. A *live*
+tsnet run needs a real tailnet and stays local-only. Still open before a
+shippable viewer: FEC ingest (above), and the outbound TCP back-channel
+(annotations / remote-control send).
+
 **Phase 3 — Linux sharer.** Portal capture → encoder adapter (#3, #4) →
 the existing broadcast/fan-out logic, which is already extracted into pure
 decision functions. Then admission UI, voice, system audio (#5, #6). Tray

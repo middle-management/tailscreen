@@ -48,8 +48,14 @@ public enum SDL {
         ///   - title: window title bar text.
         ///   - width: initial window/texture width in pixels.
         ///   - height: initial window/texture height in pixels.
+        ///   - softwareRenderer: force SDL's CPU renderer instead of the
+        ///     accelerated OpenGL one. Defaults to `true` because the common
+        ///     deployment (X11 forwarded to XQuartz over OrbStack) has no
+        ///     usable GLX FBConfig, so `-1`/accelerated selection dlopens libGL
+        ///     and fatally X-errors the process. Pass `false` on a native Linux
+        ///     desktop with working GL to get GPU-accelerated scaling.
         /// - Throws: `SDL.Error` if any SDL object fails to initialise.
-        public init(title: String, width: Int, height: Int) throws {
+        public init(title: String, width: Int, height: Int, softwareRenderer: Bool = true) throws {
             guard SDL_Init(sdlkit_init_video()) == 0 else {
                 throw Error()
             }
@@ -64,16 +70,41 @@ public enum SDL {
             }
             self.window = window
 
-            // -1 picks the first suitable driver; with no accelerated backend
-            // (e.g. the dummy video driver under CI) SDL falls back to its
-            // software renderer, which still supports YUV texture upload + copy.
-            guard let renderer = SDL_CreateRenderer(window, -1, 0) else {
+            // -1 picks the first suitable driver. Left to itself that's the
+            // `opengl` driver, which dlopens libGL and creates a GLX context —
+            // fatal on an X server with no usable GLX FBConfig (X11 → XQuartz).
+            // `SDL_RENDERER_SOFTWARE` forces the CPU renderer (no GL), which
+            // still supports YUV texture upload + copy. Under the CI dummy video
+            // driver either path resolves to software anyway.
+            let rendererFlags: UInt32 = softwareRenderer ? sdlkit_renderer_software() : 0
+            guard let renderer = SDL_CreateRenderer(window, -1, rendererFlags) else {
                 let error = Error()
                 SDL_DestroyWindow(window)
                 SDL_Quit()
                 throw error
             }
             self.renderer = renderer
+
+            // Some remote X servers (XQuartz over OrbStack) don't map/expose the
+            // window off SDL_CreateWindow alone — force it visible + raised.
+            SDL_ShowWindow(window)
+            SDL_RaiseWindow(window)
+
+            // Warn loudly if SDL fell back to a non-displaying driver. When
+            // `DISPLAY` is unset or unreachable (e.g. XQuartz's Mac-only launchd
+            // socket path, invisible from inside a Linux guest), SDL silently
+            // selects the `offscreen`/`dummy` driver and renders into memory —
+            // frames "present" with no error but nothing ever appears. Say so
+            // instead of leaving the user staring at a void.
+            if let driverC = SDL_GetCurrentVideoDriver() {
+                let driver = String(cString: driverC)
+                if driver == "offscreen" || driver == "dummy" {
+                    let msg = "warning: SDL video driver is '\(driver)' — the window will NOT be visible. "
+                        + "Set DISPLAY to a reachable X server (e.g. DISPLAY=host.docker.internal:0 for "
+                        + "XQuartz over OrbStack, or run under Xvfb).\n"
+                    FileHandle.standardError.write(Data(msg.utf8))
+                }
+            }
 
             do {
                 try createTexture(width: Int32(width), height: Int32(height))

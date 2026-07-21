@@ -1,4 +1,5 @@
 import Foundation
+import TailscreenProtocol
 
 // The host-agnostic seam of the portable viewer data-plane. `ViewerSession`
 // (see ViewerSession.swift) turns inbound RTP into decoded frames + audio +
@@ -49,11 +50,14 @@ public struct DecodedVideoFrame: Sendable, Equatable {
 /// frames. Throwing signals a decode failure the session answers with a PLI
 /// (keyframe request), so the stream can recover.
 public protocol VideoDecoding: AnyObject {
-    /// Decode one AVCC-formatted access unit. `isKeyframe` is true when the AU
-    /// carries an IDR (its in-band parameter sets, if any, are inside `accessUnit`
-    /// — the decoder extracts them). Returns the frames the AU produced (usually
-    /// one; may be empty while a decoder primes).
-    func decode(accessUnit: Data, isKeyframe: Bool) throws -> [DecodedVideoFrame]
+    /// Decode one AVCC-formatted access unit. `codec` is the stream's codec
+    /// (`.h264` / `.hevc`), deterministically known from the RTP payload type —
+    /// the session forwards it so the decoder never has to sniff the bitstream.
+    /// `isKeyframe` is true when the AU carries an IDR (its in-band parameter
+    /// sets, if any, are inside `accessUnit` — the decoder extracts them).
+    /// Returns the frames the AU produced (usually one; may be empty while a
+    /// decoder primes).
+    func decode(accessUnit: Data, codec: VideoCodec, isKeyframe: Bool) throws -> [DecodedVideoFrame]
 }
 
 /// Where decoded frames go — the host's renderer (Metal on macOS, SDL/GL on
