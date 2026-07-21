@@ -105,18 +105,35 @@ callbacks so the mac stats overlay stays fed once the session owns that
 emission. Not a blocker for the data plane — can also be folded into Phase B
 when the mac stats wiring actually needs them.
 
-## Adapter design (Phase B)
+## Adapter design (Phase B — in progress)
 
+Landed in `Apps/macOS/Sources/ViewerSessionAdapters.swift` (not yet wired into
+the client — that's Phase C):
+
+- **`CVPixelBufferBox: DecodedFrame`** — the mac frame currency. Holds the
+  VideoToolbox `CVPixelBuffer` (IOSurface-backed, Metal-compatible) so the
+  zero-copy path survives routing through `ViewerSession`; `width`/`height`
+  come from `CVPixelBufferGetWidth/Height`.
 - **`VTVideoDecoderAdapter: VideoDecoding`** wraps the existing `VideoDecoder`.
-  It hides the last mismatches _inside the adapter_: it extracts in-band
-  SPS/PPS/VPS from the AU and calls `setParameterSets` before `decode` (so
-  param-set install stops being a session concern), and it owns the
-  decode-recovery ladder, surfacing a thrown error to the session only when it
-  actually wants a PLI. Emits `CVPixelBufferBox` frames via the async callback.
+  It hides two mismatches _inside the adapter_: it extracts in-band SPS/PPS/VPS
+  from each keyframe and calls `setParameterSets` before `decode` (so param-set
+  install stops being a session concern), and it bridges VideoToolbox's
+  asynchronous `CVPixelBuffer` callback to the session's `onDecodedFrame` — with
+  the **thread hop** onto a host-supplied `callbackQueue` (the receive queue)
+  the threading contract requires. Emits `CVPixelBufferBox`. *Deferred to a
+  later step:* moving the full CODEC_NO H.264 fallback + decode-recovery ladder
+  behind the adapter — for now a session-create failure surfaces as
+  `onDecodeFailure` → PLI.
 - **`MetalSinkAdapter: VideoSink`** forwards `present(box)` →
   `renderer.setPixelBuffer(box.buffer, receiveUptimeNs:)` (the timestamp the
-  stats overlay wants rides the box).
-- **Audio**: no adapter — the passthrough hook wires to `VoiceChannel`.
+  stats overlay wants rides on the box).
+- **Audio**: no adapter — the A.3 passthrough hook wires to `VoiceChannel`.
+
+Unit-tested by `ViewerSessionAdapterTests` (parameter-set extraction for
+H.264/HEVC incl. the missing-set nil, and `CVPixelBufferBox` dimensions); the
+live VT-decode + Metal path rides the existing on-CI
+`ScreenShareSyntheticFramesTests`. These are macOS-only and verified by the
+mac `build`/`test` CI job, not the Linux loop.
 
 ## Migration order
 

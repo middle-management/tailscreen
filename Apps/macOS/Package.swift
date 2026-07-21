@@ -34,7 +34,8 @@ let package = Package(
                 .product(name: "TailscaleKit", package: "TailscaleKit"),
                 .product(name: "TailscreenProtocol", package: "TailscreenKit"),
                 .product(name: "TailscreenTransport", package: "TailscreenKit"),
-                .product(name: "TailscreenAudio", package: "TailscreenKit")
+                .product(name: "TailscreenAudio", package: "TailscreenKit"),
+                .product(name: "TailscreenViewer", package: "TailscreenKit")
             ],
             path: "Sources",
             resources: [
@@ -50,7 +51,8 @@ let package = Package(
             name: "TailscreenTests",
             dependencies: [
                 "Tailscreen",
-                .product(name: "TailscreenAudio", package: "TailscreenKit")
+                .product(name: "TailscreenAudio", package: "TailscreenKit"),
+                .product(name: "TailscreenViewer", package: "TailscreenKit")
             ],
             path: "Tests/TailscreenTests",
             linkerSettings: [
