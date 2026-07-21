@@ -23,7 +23,7 @@ public final class FFmpegVideoDecoder: VideoDecoding {
 
     public init() {}
 
-    public func decode(accessUnit: Data, codec: VideoCodec, isKeyframe: Bool) throws -> [DecodedVideoFrame] {
+    public func decode(accessUnit: Data, codec: VideoCodec, isKeyframe: Bool) throws -> [any DecodedFrame] {
         let dec = try decoderFor(codec)
         let frames = try dec.decode(avcc: accessUnit)
         return frames.map {
@@ -93,8 +93,12 @@ public final class ThreadedSDLVideoSink: VideoSink, @unchecked Sendable {
     }
 
     /// Hand the newest frame to the render thread (drops any not-yet-shown
-    /// frame — only the latest matters for display). Never calls SDL.
-    public func present(_ frame: DecodedVideoFrame) {
+    /// frame — only the latest matters for display). Never calls SDL. The
+    /// portable seam is codec-agnostic (`any DecodedFrame`); this SDL sink only
+    /// understands CPU I420, so a non-`DecodedVideoFrame` is dropped (it can't
+    /// arise here — the paired `FFmpegVideoDecoder` only emits that type).
+    public func present(_ frame: any DecodedFrame) {
+        guard let frame = frame as? DecodedVideoFrame else { return }
         lock.lock()
         latest = frame
         lock.unlock()

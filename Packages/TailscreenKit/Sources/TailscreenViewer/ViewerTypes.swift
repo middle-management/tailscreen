@@ -9,6 +9,25 @@ import TailscreenProtocol
 // renderer / ALSA sink in behind them, while THIS target stays Foundation-only
 // and Linux-buildable (no FFmpeg/SDL/ALSA dependency — see the package README).
 
+/// A decoded video frame the session routes **without inspecting** — a marker
+/// so the concrete frame type is opaque to `ViewerSession`. The decoder produces
+/// `DecodedFrame`s and the sink consumes them; the session only carries them
+/// from one to the other, so the type is whatever the host's decoder/renderer
+/// pair agrees on: CPU I420 (`DecodedVideoFrame`) for the FFmpeg→SDL path, or a
+/// platform-native handle (e.g. a `CVPixelBuffer` box on macOS) for a zero-copy
+/// VideoToolbox→Metal path — without the portable target importing CoreVideo.
+/// `ViewerSession` never reads a frame; the sink downcasts to its own concrete
+/// type (a decoder/sink pair always agree on it) to reach the pixels. The only
+/// requirements are the frame **dimensions** — cheap for every backing (I420
+/// carries them; `CVPixelBufferGetWidth/Height` on a mac box) and exactly what
+/// a generic decorator or stats overlay needs, so those don't have to downcast.
+public protocol DecodedFrame {
+    /// Frame width in luma samples.
+    var width: Int { get }
+    /// Frame height in luma samples.
+    var height: Int { get }
+}
+
 /// One decoded video frame in packed 8-bit YUV 4:2:0 (I420) planar form.
 ///
 /// The plane layout deliberately matches what the FFmpeg decoder in
@@ -17,7 +36,9 @@ import TailscreenProtocol
 /// the viewer core dependency-free. `yPlane` is `width × height` luma samples;
 /// `uPlane` / `vPlane` are each `⌈width/2⌉ × ⌈height/2⌉` chroma samples
 /// (tightly packed, no row padding — the host/adapter owns any stride reshuffle).
-public struct DecodedVideoFrame: Sendable, Equatable {
+///
+/// The default `DecodedFrame` — the Linux/portable instantiation of the seam.
+public struct DecodedVideoFrame: Sendable, Equatable, DecodedFrame {
     /// Frame width in luma samples.
     public let width: Int
     /// Frame height in luma samples.
@@ -56,14 +77,18 @@ public protocol VideoDecoding: AnyObject {
     /// `isKeyframe` is true when the AU carries an IDR (its in-band parameter
     /// sets, if any, are inside `accessUnit` — the decoder extracts them).
     /// Returns the frames the AU produced (usually one; may be empty while a
-    /// decoder primes).
-    func decode(accessUnit: Data, codec: VideoCodec, isKeyframe: Bool) throws -> [DecodedVideoFrame]
+    /// decoder primes) as opaque `DecodedFrame`s — the session passes them to
+    /// the sink untouched, so a decoder is free to emit CPU I420
+    /// (`DecodedVideoFrame`) or a platform-native handle its paired sink
+    /// understands.
+    func decode(accessUnit: Data, codec: VideoCodec, isKeyframe: Bool) throws -> [any DecodedFrame]
 }
 
 /// Where decoded frames go — the host's renderer (Metal on macOS, SDL/GL on
-/// Linux, or a test collector).
+/// Linux, or a test collector). The frame is the opaque `DecodedFrame` the
+/// paired decoder produced; the sink downcasts to its own concrete type.
 public protocol VideoSink: AnyObject {
-    func present(_ frame: DecodedVideoFrame)
+    func present(_ frame: any DecodedFrame)
 }
 
 /// Where decoded audio PCM goes — the host's audio output. PCM is 48 kHz mono

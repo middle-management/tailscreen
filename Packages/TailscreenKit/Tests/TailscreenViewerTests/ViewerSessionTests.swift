@@ -24,7 +24,7 @@ final class ViewerSessionTests: XCTestCase {
             uPlane: [UInt8](repeating: 0x80, count: 4),
             vPlane: [UInt8](repeating: 0x80, count: 4)
         )
-        func decode(accessUnit: Data, codec: VideoCodec, isKeyframe: Bool) throws -> [DecodedVideoFrame] {
+        func decode(accessUnit: Data, codec: VideoCodec, isKeyframe: Bool) throws -> [any DecodedFrame] {
             if shouldThrow { throw Boom() }
             decoded.append((accessUnit, isKeyframe))
             return [frame]
@@ -33,7 +33,9 @@ final class ViewerSessionTests: XCTestCase {
 
     private final class StubVideoSink: VideoSink {
         var frames: [DecodedVideoFrame] = []
-        func present(_ frame: DecodedVideoFrame) { frames.append(frame) }
+        func present(_ frame: any DecodedFrame) {
+            if let frame = frame as? DecodedVideoFrame { frames.append(frame) }
+        }
     }
 
     private final class StubAudioSink: AudioSink {
