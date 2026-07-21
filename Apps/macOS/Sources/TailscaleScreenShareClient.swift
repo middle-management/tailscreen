@@ -49,11 +49,12 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     /// the portable `ViewerSession` (video/audio/loss-recovery data plane)
     /// wired to the mac adapters, instead of this class's bespoke loop. Default
     /// off — the legacy path is untouched. Runtime-validate locally
-    /// (`test-local.sh` / `net-impair.sh`) before trusting it. Known first-cut
-    /// gaps vs. the legacy path: the stats overlay isn't fed (no note* hooks),
-    /// the HEVC→H.264 CODEC_NO fallback degrades to a plain PLI, the
-    /// decode-recovery ladder isn't driven, and a legacy 5-byte HELLO_ACK
-    /// (old sharer, no caps) leaves the session without an assigned SSRC.
+    /// (`test-local.sh` / `net-impair.sh`) before trusting it. Now at parity
+    /// with the legacy loop on the stats overlay (received bytes/codec +
+    /// PLI/NACK/FEC counters via the session's observation hooks), the
+    /// HEVC→H.264 CODEC_NO fallback, and the decode-recovery ladder. Remaining
+    /// gap: a legacy 5-byte HELLO_ACK (old sharer, no caps) leaves the session
+    /// without an assigned SSRC (a separate portable fix).
     private let useViewerSession =
         ProcessInfo.processInfo.environment["TAILSCREEN_VIEWER_SESSION"] == "1"
     /// The portable session, built in `connect()` when `useViewerSession` is on.
@@ -630,8 +631,26 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     /// `useViewerSession` is set. See that property for the known first-cut gaps.
     private func buildViewerSession(decoder: VideoDecoder, addr: String) {
         let adapter = VTVideoDecoderAdapter(decoder: decoder, callbackQueue: viewerFrameQueue)
+        // Mac decode-recovery + codec-fallback paths, wired to the same client
+        // handlers the legacy loop uses. These ride the adapter's pass-through
+        // hooks (bypassing ViewerSession) so the CODEC_NO H.264 fallback and the
+        // decode-recovery escalation ladder behave identically to the bespoke
+        // path — closing the first-cut gaps noted in `useViewerSession`.
+        adapter.onCodecUnsupported = { [weak self] codec in
+            self?.handleDecodeFailure(codec)
+        }
+        adapter.onFrameDecodeFailed = { [weak self] in
+            self?.renderer.noteDecodeFailure()
+        }
+        adapter.onRecoveryAction = { [weak self] action in
+            self?.handleDecodeRecoveryAction(action)
+        }
+        adapter.onRecovered = { [weak self] in
+            self?.logger.log("Client: decoding recovered — clearing degraded indication")
+            self?.renderer.setDegraded(false)
+        }
         let sink = MetalSinkAdapter(renderer: renderer)
-        viewerSession = ViewerSession(
+        let session = ViewerSession(
             caps: [.nack, .receiverReport, .fec],
             decoder: adapter,
             videoSink: sink,
@@ -648,6 +667,31 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                 self?.onAudioReceived?(datagram)
             }
         )
+        // Stats overlay: feed the renderer's loss-recovery counters as the
+        // session emits feedback. These fire on the receive task (where
+        // receiveRTP/tick run), same as the legacy loop's note* calls.
+        session.onPLISent = { [weak self] in self?.renderer.notePLISent() }
+        session.onNACKSent = { [weak self] in self?.renderer.noteNACKSent() }
+        session.onFECRecovered = { [weak self] in self?.renderer.noteFECRecovered() }
+        viewerSession = session
+    }
+
+    /// Stats-overlay bookkeeping for the ViewerSession receive path: account for
+    /// every video byte off the wire and report the codec on first sight,
+    /// mirroring the legacy loop. The loss-recovery counters (PLI/NACK/FEC) are
+    /// fed via the session's observation hooks wired in `buildViewerSession`.
+    private func noteReceivedVideoStats(_ datagram: Data) {
+        guard let (header, _) = RTPHeader.decode(from: datagram) else { return }
+        switch header.payloadType {
+        case RTPHeader.h264PayloadType:
+            renderer.noteReceivedBytes(datagram.count)
+            renderer.noteCodec(.h264)
+        case RTPHeader.hevcPayloadType:
+            renderer.noteReceivedBytes(datagram.count)
+            renderer.noteCodec(.hevc)
+        default:
+            break
+        }
     }
 
     /// Experimental Phase C receive loop: route every datagram through the
@@ -708,6 +752,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                 if datagram.isEmpty { continue }
                 if from != serverAddr { continue }
                 lastDataNs = DispatchTime.now().uptimeNanoseconds
+                noteReceivedVideoStats(datagram)
                 viewerSession?.receiveRTP(datagram)
             } catch {
                 guard isConnected else { break }
