@@ -274,8 +274,23 @@ covered, FEC ingest is a noted follow-up (see the `TODO(fec)` in
 The rules for package files (no Apple frameworks; how to move a file in;
 what must be `public`) live canonically in
 **`Packages/TailscreenKit/README.md`** — read it before touching the
-package. The package's own test target is a shallow smoke suite only; the
-real coverage stays in `Apps/macOS/Tests/TailscreenTests`.
+package. The package's `TailscreenProtocolTests` target now carries the
+migrated pure suites — the loss-recovery/RTP/wire/util tests whose subject
+types live entirely in `TailscreenProtocol`/`TailscreenAudio`
+(`FECCodecTests`, `FECGroupBufferTests`, `NACKSchedulerTests`,
+`RetransmitBufferTests`, `RRAccountingTests`, `RTPPacketTests`,
+`RTPBufferPoolTests`, `RTPAudioTests`, `ReceiveLoopPolicyTests`,
+`CaptureHelperWireTests`, `ScreenShareProtocolTests`,
+`ShareResponseProtocolTests`, `ShareLockTests`, `QualitySettingsTests`,
+`TailscreenInstanceTests`, `ViewerZoomMathTests`, `OpusAudioCodecTests`),
+so they run on Linux CI (`linux-protocol`) instead of only in the mac
+build. Suites that touch mac-only symbols stay in
+`Apps/macOS/Tests/TailscreenTests`: anything importing an Apple framework,
+the server/`AppState`/`VideoDecoder`/`VoiceChannel` decision suites, and the
+impairment/fuzz cluster (`RTPLossyChannelTests`, `ParserFuzzTests`,
+`SoakTests`) whose shared `LossyChannel`/`ParserFuzzHarness` helpers still
+have mac consumers. When you add a pure suite for portable code, put it in
+the package target; when it mixes in a mac symbol, it stays mac-side.
 
 The Linux/Windows roadmap this enables (viewer first, then sharer) lives in
 `docs/porting-plan.md`.

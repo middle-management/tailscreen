@@ -1,8 +1,6 @@
 import XCTest
 
-@testable import Tailscreen
 @testable import TailscreenProtocol
-@testable import TailscreenTransport
 
 final class RTPPacketTests: XCTestCase {
     func testHeaderRoundTrip() throws {

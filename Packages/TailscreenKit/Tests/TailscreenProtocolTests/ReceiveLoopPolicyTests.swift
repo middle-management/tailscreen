@@ -1,8 +1,6 @@
 import XCTest
 
-@testable import Tailscreen
 @testable import TailscreenProtocol
-@testable import TailscreenTransport
 
 /// Unit tests for the shared UDP receive-loop retry policy — the capped
 /// exponential backoff, the consecutive and windowed give-up thresholds, and

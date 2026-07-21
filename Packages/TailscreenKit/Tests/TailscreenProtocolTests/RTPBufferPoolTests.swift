@@ -1,8 +1,6 @@
 import XCTest
 
-@testable import Tailscreen
 @testable import TailscreenProtocol
-@testable import TailscreenTransport
 
 /// Direct unit tests for `RTPPacketBufferPool`. The packetizer-level
 /// aliasing tests in `RTPPacketTests` cover the pool indirectly through

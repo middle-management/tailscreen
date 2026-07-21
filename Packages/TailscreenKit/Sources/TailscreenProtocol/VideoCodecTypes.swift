@@ -47,4 +47,16 @@ public enum EncoderTuning {
 
     /// `DataRateLimits`: window length in seconds.
     public static let dataRateWindowSeconds = 0.5
+
+    /// Default bits-per-pixel used to derive a target bitrate from the
+    /// captured resolution when no explicit ceiling is set. HEVC's better
+    /// compression earns a lower budget for equivalent quality. A pure
+    /// codec→bpp mapping (no VideoToolbox dependency), so it lives in the
+    /// portable tuning layer and a non-mac encoder adapter reuses it.
+    public static func defaultBitsPerPixel(for codec: VideoCodec) -> Double {
+        switch codec {
+        case .hevc: return 0.08
+        case .h264: return 0.10
+        }
+    }
 }

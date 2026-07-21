@@ -297,10 +297,26 @@ removes the worst Linux unknown. On Windows injection would've been one
 of the *easiest* items (`SendInput` is global and simple, no confinement
 problem), so deprioritizing it helps Linux more than Windows.
 
-**Continuous.** Migrate the pure test suites (`RTPPacketTests`,
-`FECCodecTests`, `NACKSchedulerTests`, `ParserFuzzTests`, …) from the main
-package into `TailscreenKit` so they run on Linux CI too — they
-test portable code but currently import the mac-only `Tailscreen` module.
+**Continuous.** Migrate the pure test suites from the main package into
+`TailscreenKit` so they run on Linux CI too — they test portable code but
+historically imported the mac-only `Tailscreen` module. *In progress:* 17
+suites (the loss-recovery/RTP/wire/util set — `RTPPacketTests`,
+`FECCodecTests`, `FECGroupBufferTests`, `NACKSchedulerTests`,
+`RetransmitBufferTests`, `RRAccountingTests`, `RTPBufferPoolTests`,
+`RTPAudioTests`, `ReceiveLoopPolicyTests`, `CaptureHelperWireTests`,
+`ScreenShareProtocolTests`, `ShareResponseProtocolTests`, `ShareLockTests`,
+`QualitySettingsTests`, `TailscreenInstanceTests`, `ViewerZoomMathTests`,
+`OpusAudioCodecTests`) now live in `TailscreenProtocolTests` and run under
+`linux-protocol` (≈260 tests). Moving `defaultBitsPerPixel` from the mac
+`VideoEncoder` onto the portable `EncoderTuning` was the only production
+change it required. Still mac-side, blocked on a shared helper or a mac
+symbol: `ParserFuzzTests`/`SoakTests` (fuzz `HelperScreenCapture` +
+`ParserFuzzHarness`), `RTPLossyChannelTests`/`VoiceChannelTests` (share the
+`LossyChannel` helper), `MacKeyCodeMappingTests` (the `keyModifiers(from:)`
+leg uses `NSEvent.ModifierFlags`), `WireByteRegistryTests` (picker
+framing), and the `RemoteControlPolicy`/`ViewerAccessPolicy` suites (mixed
+mac symbols) — a follow-up can split the shared helpers into a
+Linux-buildable test-support file to unblock the rest.
 The flip of the macOS app to *depend on* the protocol package (instead of
 the symlink-sharing Phase 0 started with) is done — the access-control
 migration (internal → public across the module boundary, explicit

@@ -1,8 +1,6 @@
 import XCTest
 
-@testable import Tailscreen
 @testable import TailscreenProtocol
-@testable import TailscreenTransport
 
 /// Pure tests for the XOR single-parity codec: parity/recover round trips for
 /// every position in a group (the last packet carries the marker bit — its

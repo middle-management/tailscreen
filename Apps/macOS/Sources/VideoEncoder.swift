@@ -159,10 +159,8 @@ final class VideoEncoder: @unchecked Sendable {
     /// idle steady-state bandwidth typically falls well below it because
     /// `kVTCompressionPropertyKey_Quality` drives the actual rate.
     static func defaultBitsPerPixel(for codec: VideoCodec) -> Double {
-        switch codec {
-        case .hevc: return 0.08
-        case .h264: return 0.10
-        }
+        // Single source of truth lives in the portable tuning layer.
+        EncoderTuning.defaultBitsPerPixel(for: codec)
     }
 
     /// `VTSessionSetProperty` wrapper that records a refused property (by

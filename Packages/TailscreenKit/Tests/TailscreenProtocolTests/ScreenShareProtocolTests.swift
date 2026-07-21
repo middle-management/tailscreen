@@ -1,8 +1,6 @@
 import XCTest
 
-@testable import Tailscreen
 @testable import TailscreenProtocol
-@testable import TailscreenTransport
 
 final class ScreenShareProtocolTests: XCTestCase {
     func testRoundTripAnnotation() throws {

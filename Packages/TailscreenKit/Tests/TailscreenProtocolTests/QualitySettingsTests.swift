@@ -1,8 +1,6 @@
 import XCTest
 
-@testable import Tailscreen
 @testable import TailscreenProtocol
-@testable import TailscreenTransport
 
 /// CI-able unit tests for the quality-settings model (no tsnet, no SCK):
 /// preset ↔ knob derivation, normalization clamps, helper-environment
@@ -31,8 +29,8 @@ final class QualitySettingsTests: XCTestCase {
         XCTAssertEqual(EncoderTuning.keyframeIntervalMultiplier, 10)
         XCTAssertEqual(EncoderTuning.dataRateBurstFactor, 1.75)
         XCTAssertEqual(EncoderTuning.dataRateWindowSeconds, 0.5)
-        XCTAssertEqual(VideoEncoder.defaultBitsPerPixel(for: .hevc), 0.08)
-        XCTAssertEqual(VideoEncoder.defaultBitsPerPixel(for: .h264), 0.10)
+        XCTAssertEqual(EncoderTuning.defaultBitsPerPixel(for: .hevc), 0.08)
+        XCTAssertEqual(EncoderTuning.defaultBitsPerPixel(for: .h264), 0.10)
     }
 
     func testTransportTuningPinsLegacyLiterals() {
