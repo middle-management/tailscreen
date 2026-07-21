@@ -420,9 +420,9 @@ public struct RTPHeader: Sendable {
     /// PT and matches what most WebRTC stacks use for HEVC.
     public static let hevcPayloadType: UInt8 = 97
     /// Dynamic payload type for Opus voice. 98 follows H.264 (96) + HEVC
-    /// (97). (The `aac` in the name is historical — the voice codec was
-    /// AAC-LC before the Opus-only switch; PT 98 is unchanged on the wire.)
-    public static let aacPayloadType: UInt8 = 98
+    /// (97). (Formerly `aacPayloadType` — the voice codec was AAC-LC before the
+    /// Opus-only switch; the wire value 98 is unchanged, only the name.)
+    public static let voicePayloadType: UInt8 = 98
     /// Dynamic payload type for shared system/computer audio (Opus),
     /// distinct from voice (98) so viewers demux the two without any
     /// negotiation — the same auto-detect philosophy as video's 96/97.
@@ -436,7 +436,7 @@ public struct RTPHeader: Sendable {
     /// appended here** in the same change that defines it — a PT constant
     /// that never joins this list is invisible to the registry's teeth.
     public static let allPayloadTypes: [UInt8] = [
-        h264PayloadType, hevcPayloadType, aacPayloadType, systemAudioPayloadType
+        h264PayloadType, hevcPayloadType, voicePayloadType, systemAudioPayloadType
     ]
     /// Reserved SSRC for the sharer's voice (mic) stream. SSRC spaces are
     /// kept disjoint on purpose: sharer voice owns 0, system audio owns 1,

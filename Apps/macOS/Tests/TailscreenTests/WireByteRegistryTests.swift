@@ -302,12 +302,12 @@ final class WireByteRegistryTests: XCTestCase {
         let pinned: [(name: String, value: UInt8)] = [
             ("h264PayloadType", 96),
             ("hevcPayloadType", 97),
-            ("aacPayloadType", 98),
+            ("voicePayloadType", 98),
             ("systemAudioPayloadType", 99)
         ]
         XCTAssertEqual(RTPHeader.h264PayloadType, 96)
         XCTAssertEqual(RTPHeader.hevcPayloadType, 97)
-        XCTAssertEqual(RTPHeader.aacPayloadType, 98)
+        XCTAssertEqual(RTPHeader.voicePayloadType, 98)
         XCTAssertEqual(RTPHeader.systemAudioPayloadType, 99)
         // Exhaustiveness teeth: the production-side `allPayloadTypes` list
         // must match this registry table exactly (a new PT MUST be appended

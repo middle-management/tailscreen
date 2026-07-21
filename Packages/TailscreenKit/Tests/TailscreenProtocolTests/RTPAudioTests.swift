@@ -62,7 +62,7 @@ final class RTPAudioTests: XCTestCase {
     }
 
     func testDepackAcceptsBothAudioPayloadTypes() {
-        for pt in [RTPHeader.aacPayloadType, RTPHeader.systemAudioPayloadType] {
+        for pt in [RTPHeader.voicePayloadType, RTPHeader.systemAudioPayloadType] {
             var data = Data()
             let header = RTPHeader(
                 marker: true, payloadType: pt, sequenceNumber: 1, timestamp: 0, ssrc: 3)

@@ -17,7 +17,7 @@ public final class AudioRTPPacketizer {
 
     public let ssrc: UInt32
     /// RTP payload type stamped on every packet. Defaults to
-    /// `aacPayloadType` (98) so voice call sites are untouched; the server's
+    /// `voicePayloadType` (98) so voice call sites are untouched; the server's
     /// system-audio path passes `systemAudioPayloadType` (99).
     public let payloadType: UInt8
     private var sequence: UInt16
@@ -25,7 +25,7 @@ public final class AudioRTPPacketizer {
 
     public init(
         ssrc: UInt32,
-        payloadType: UInt8 = RTPHeader.aacPayloadType,
+        payloadType: UInt8 = RTPHeader.voicePayloadType,
         startSequence: UInt16 = 0,
         startTimestamp: UInt32 = 0
     ) {
@@ -68,7 +68,7 @@ public struct AudioRTPDepacketizer {
     public func unpack(_ packet: Data) -> Parsed? {
         guard let (header, payloadOffset) = RTPHeader.decode(from: packet) else { return nil }
         let pt = header.payloadType
-        let isAudioPT = pt == RTPHeader.aacPayloadType || pt == RTPHeader.systemAudioPayloadType
+        let isAudioPT = pt == RTPHeader.voicePayloadType || pt == RTPHeader.systemAudioPayloadType
         guard isAudioPT else { return nil }
         let payload = packet[packet.index(packet.startIndex, offsetBy: payloadOffset)..<packet.endIndex]
         guard !payload.isEmpty else { return nil }
