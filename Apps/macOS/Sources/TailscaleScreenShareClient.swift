@@ -49,12 +49,14 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     /// the portable `ViewerSession` (video/audio/loss-recovery data plane)
     /// wired to the mac adapters, instead of this class's bespoke loop. Default
     /// off — the legacy path is untouched. Runtime-validate locally
-    /// (`test-local.sh` / `net-impair.sh`) before trusting it. Now at parity
-    /// with the legacy loop on the stats overlay (received bytes/codec +
-    /// PLI/NACK/FEC counters via the session's observation hooks), the
-    /// HEVC→H.264 CODEC_NO fallback, and the decode-recovery ladder. Remaining
-    /// gap: a legacy 5-byte HELLO_ACK (old sharer, no caps) leaves the session
-    /// without an assigned SSRC (a separate portable fix).
+    /// (`test-local.sh` / `net-impair.sh`) before trusting it. Now at full
+    /// feature parity with the legacy loop: the stats overlay (received
+    /// bytes/codec + PLI/NACK/FEC counters via the session's observation
+    /// hooks), the HEVC→H.264 CODEC_NO fallback, the decode-recovery ladder,
+    /// and — via the session's tolerant `decodeHelloAckCaps` — a legacy 5-byte
+    /// HELLO_ACK (old sharer, no caps) still learns the assigned SSRC and
+    /// degrades cleanly to PLI-only. What remains before flipping the default
+    /// is runtime baking, not a functional gap.
     private let useViewerSession =
         ProcessInfo.processInfo.environment["TAILSCREEN_VIEWER_SESSION"] == "1"
     /// The portable session, built in `connect()` when `useViewerSession` is on.

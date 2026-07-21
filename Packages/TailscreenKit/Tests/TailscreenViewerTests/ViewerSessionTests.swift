@@ -509,6 +509,30 @@ final class ViewerSessionTests: XCTestCase {
         XCTAssertTrue(session.serverCaps.contains(.fec))
     }
 
+    /// A legacy sharer (no cap support) replies with the plain 5-byte HELLO_ACK
+    /// `[0x04][ssrc:4]`. The tolerant `decodeHelloAckCaps` parser must still
+    /// learn the SSRC (so audio relay + admission proceed) with empty
+    /// serverCaps, so the whole loss-recovery matrix degrades to PLI-only — the
+    /// viewer never advertises NACK/FEC behavior a legacy sharer can't honor.
+    func testLegacyHelloAckLearnsSsrcWithoutCaps() {
+        let decoder = StubDecoder()
+        let sink = StubVideoSink()
+        let control = ControlCollector()
+        let session = ViewerSession(
+            caps: fullCaps, decoder: decoder, videoSink: sink,
+            audioSink: nil, onControlToSend: control.send
+        )
+
+        // The 5-byte legacy encoder — no serverCaps byte.
+        let ack = ScreenShareControlMessage.encodeHelloAck(ssrc: 91)
+        XCTAssertEqual(ack.count, 5, "legacy HELLO_ACK is exactly 5 bytes")
+        session.receiveRTP(ack)
+
+        XCTAssertEqual(session.assignedSSRC, 91, "legacy 5-byte ack must still assign the SSRC")
+        XCTAssertEqual(session.serverCaps, [], "a legacy ack advertises no caps")
+        XCTAssertFalse(session.isPendingApproval)
+    }
+
     func testTickEmitsReceiverReportAfterVideo() {
         let decoder = StubDecoder()
         let sink = StubVideoSink()
