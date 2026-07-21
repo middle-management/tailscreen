@@ -249,9 +249,9 @@ public final class ViewerSession {
                 toleranceNs: TransportTuning.fecSchedulerToleranceNs,
                 packetTolerance: TransportTuning.fecSchedulerPacketTolerance)
         }
-        if let recovery = fecBuffer.noteParity(
+        let recovery = fecBuffer.noteParity(
             baseSeq: parity.baseSeq, count: parity.count, body: parity.body, nowNs: nowNs)
-        {
+        if let recovery {
             processRecoveredPacket(recovery)
         }
     }
