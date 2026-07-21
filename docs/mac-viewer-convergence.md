@@ -86,18 +86,24 @@ not `Sendable` and owns no queue — that contract is documented on the protocol
 Covered by a synchronous-stub path plus an explicit async-delivery test (a
 stub that defers frames past `decode` and delivers on a later poke).
 
-### A.3 — Audio passthrough (next)
+### A.3 — Audio passthrough ✅ (landed)
 
-Add a raw-datagram passthrough so a host can own audio decode: if the host
-supplies an `onAudioDatagram` hook, the session forwards PT-98/99 datagrams
-(mac → `VoiceChannel.receive`, exactly as `onAudioReceived` does today)
-instead of running its internal `OpusVoiceDecoder`. Linux keeps the
-`AudioSink` path. Small additive change that preserves the whole mac
-`VoiceChannel` resilience layer.
+`ViewerSession.init` gained an optional `onAudioDatagram` hook: when set,
+inbound audio RTP (PT 98/99) is forwarded to the host **verbatim** and the
+built-in `AudioRTPDepacketizer` + `OpusVoiceDecoder` path is skipped, so a
+host with its own richer audio pipeline (macOS's `VoiceChannel` — per-SSRC
+jitter buffer, concealment, voice/system demux, dual `AVAudioPlayerNode`s)
+owns decode, exactly as the mac client's `onAudioReceived` → `VoiceChannel`
+does today. nil (the default) keeps the built-in `AudioSink` path, so Linux
+is unchanged. Covered by a passthrough test (a real PT-98 datagram is
+forwarded byte-for-byte and the built-in path stays silent).
 
-Plus lightweight **observation hooks** (`onPLISent` / `onNACKSent` /
-`onFECRecovered` / `onDecodeFailure`) so the mac stats overlay stays fed once
-the session owns that emission.
+### A.4 — Observation hooks (next, optional)
+
+Lightweight `onPLISent` / `onNACKSent` / `onFECRecovered` / `onDecodeFailure`
+callbacks so the mac stats overlay stays fed once the session owns that
+emission. Not a blocker for the data plane — can also be folded into Phase B
+when the mac stats wiring actually needs them.
 
 ## Adapter design (Phase B)
 

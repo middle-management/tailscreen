@@ -40,6 +40,12 @@ public final class ViewerSession {
     private let videoSink: VideoSink
     private let audioSink: AudioSink?
     private let onControlToSend: (Data) -> Void
+    /// Optional raw-audio passthrough. When set, inbound audio RTP (PT 98/99)
+    /// is handed to the host verbatim and the built-in Opus path is skipped —
+    /// so a host with its own richer audio pipeline (macOS's `VoiceChannel`:
+    /// per-SSRC jitter buffer, concealment, voice/system demux) owns decode.
+    /// nil ⇒ the built-in `audioSink` path runs.
+    private let onAudioDatagram: ((Data) -> Void)?
 
     // MARK: Video path
 
@@ -104,21 +110,27 @@ public final class ViewerSession {
     ///   - caps: capabilities to advertise (NACK / receiver-report / FEC).
     ///   - decoder: the host's video decoder.
     ///   - videoSink: where decoded frames go.
-    ///   - audioSink: where decoded audio goes (nil to drop audio).
+    ///   - audioSink: where decoded audio goes (nil to drop audio). Ignored
+    ///     when `onAudioDatagram` is set (the host owns audio decode then).
     ///   - onControlToSend: the host sends these bytes back to the sharer over
     ///     UDP (HELLO, NACK, PLI, receiver reports).
+    ///   - onAudioDatagram: optional raw-audio passthrough. When provided,
+    ///     inbound audio RTP (PT 98/99) is forwarded verbatim instead of being
+    ///     decoded internally, so a host can plug in its own audio pipeline.
     public init(
         caps: ScreenShareCaps,
         decoder: VideoDecoding,
         videoSink: VideoSink,
         audioSink: AudioSink? = nil,
-        onControlToSend: @escaping (Data) -> Void
+        onControlToSend: @escaping (Data) -> Void,
+        onAudioDatagram: ((Data) -> Void)? = nil
     ) {
         self.caps = caps
         self.decoder = decoder
         self.videoSink = videoSink
         self.audioSink = audioSink
         self.onControlToSend = onControlToSend
+        self.onAudioDatagram = onAudioDatagram
 
         // A deeper reorder window + time-based gap hold in NACK mode: a
         // retransmit lands ~1 RTT later, long after a 16-packet window would
@@ -335,6 +347,13 @@ public final class ViewerSession {
     // MARK: - Audio handling
 
     private func handleAudio(_ data: Data) {
+        // Host owns audio decode (e.g. macOS's VoiceChannel) — hand it the raw
+        // datagram and skip the built-in Opus path entirely. The host demuxes
+        // PT 98 (voice) vs 99 (system) itself.
+        if let onAudioDatagram {
+            onAudioDatagram(data)
+            return
+        }
         guard let audioSink else { return }
         guard let parsed = audioDepacketizer.unpack(data) else { return }
         let decoder: OpusVoiceDecoder
