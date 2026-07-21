@@ -343,6 +343,37 @@ jobs:
         # the A/V libs are on the default pkg-config path.
         run: PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" swift test --package-path Apps/linux
 
+  linux-gtk-viewer:
+    # The native GTK desktop viewer (Apps/linux-gtk) — a separate package from
+    # the SDL viewer so swift-cross-ui + GTK4 don't burden the linux-viewer job.
+    # No libtailscale/Go: this L0a build reaches only TailscreenProtocol/Viewer/
+    # Audio + swift-cross-ui, and the render path is gated headlessly.
+    runs-on: ubuntu-latest
+    container: swift:6.1-noble
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install GTK4 + GL + headless display
+        # swift-cross-ui's GtkBackend needs gtk4 (+ gobject-introspection for
+        # its bindings); CGtkVideo links epoxy; the render self-test runs under
+        # a virtual X server with Mesa software GL. libopus-dev is pulled in by
+        # TailscreenViewer's audio tier.
+        run: |
+          apt-get update && apt-get install -y --no-install-recommends \
+            libgtk-4-dev gir1.2-gtk-4.0 libgirepository1.0-dev libepoxy-dev \
+            libgl1-mesa-dri xvfb libopus-dev pkg-config
+      - name: Build the GTK viewer
+        run: swift build --package-path Apps/linux-gtk
+      - name: Headless render self-test (Xvfb + software GL)
+        # Renders a 4-bar YUV frame through GtkVideoView, reads the pixels back,
+        # and exits 0 only if the BT.709 output is correct — a CI-gated proof
+        # the GL video path renders. The live tsnet leg is local-only (L0b).
+        run: |
+          timeout 90 xvfb-run -a -s "-screen 0 800x600x24" \
+            env GDK_BACKEND=x11 LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe \
+            Apps/linux-gtk/.build/debug/tailscreen-viewer-gtk --render-self-test
+
   lint:
     runs-on: macos-latest
     steps:
