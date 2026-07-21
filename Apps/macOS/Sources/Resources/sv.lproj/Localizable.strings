@@ -143,6 +143,12 @@
 "Blocked" = "Blockerad";
 "Remove" = "Ta bort";
 "Remove %@" = "Ta bort %@";
+"Cloaked Apps" = "Maskerade appar";
+"Hide cloaked apps while sharing" = "Dölj maskerade appar medan du delar";
+"Cloaked apps are hidden from viewers whenever you share a whole display — no need to clean up your screen before sharing." = "Maskerade appar döljs för tittare när du delar en hel skärm — du behöver inte städa upp skärmen innan du delar.";
+"Add App…" = "Lägg till app…";
+"No other running apps" = "Inga andra appar igång";
+"Applies when you share a whole display. Sharing a single window or app already limits what viewers see, and an app you explicitly pick to share is never cloaked." = "Gäller när du delar en hel skärm. Att dela ett enskilt fönster eller en enskild app begränsar redan vad tittarna ser, och en app du uttryckligen väljer att dela maskeras aldrig.";
 "Quality" = "Kvalitet";
 "Preset" = "Förval";
 "Low" = "Låg";

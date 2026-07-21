@@ -68,6 +68,58 @@ struct SettingsView: View {
                     }
                 }
             }
+            Section(L("Cloaked Apps")) {
+                Toggle(
+                    L("Hide cloaked apps while sharing"),
+                    isOn: Binding(
+                        get: { appState.appCloak.isEnabled },
+                        set: { appState.appCloak.isEnabled = $0 }
+                    ))
+                if appState.appCloak.entries.isEmpty {
+                    Text(
+                        L(
+                            "Cloaked apps are hidden from viewers whenever you share a whole display — no need to clean up your screen before sharing."
+                        )
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                } else {
+                    ForEach(appState.appCloak.entries) { entry in
+                        HStack(spacing: 8) {
+                            Text(entry.displayName)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Spacer(minLength: 4)
+                            Button(L("Remove")) {
+                                appState.appCloak.remove(bundleID: entry.bundleID)
+                            }
+                            .controlSize(.small)
+                            .accessibilityLabel(L("Remove \(entry.displayName)"))
+                        }
+                    }
+                }
+                Menu(L("Add App…")) {
+                    let candidates = cloakableRunningApps()
+                    if candidates.isEmpty {
+                        Text(L("No other running apps"))
+                    } else {
+                        ForEach(candidates, id: \.bundleID) { app in
+                            Button(app.name) {
+                                appState.appCloak.add(
+                                    bundleID: app.bundleID, displayName: app.name)
+                            }
+                        }
+                    }
+                }
+                Text(
+                    L(
+                        "Applies when you share a whole display. Sharing a single window or app already limits what viewers see, and an app you explicitly pick to share is never cloaked."
+                    )
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+
             Section(L("Quality")) {
                 Picker(
                     L("Preset"),
@@ -183,6 +235,30 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .frame(width: 440, height: 600)
         .onAppear { appState.refreshAudioDevices() }
+    }
+
+    /// Running apps the user could add to the Cloaked Apps list: ordinary
+    /// (Dock-visible) apps, minus Tailscreen itself and anything already
+    /// cloaked. `NSWorkspace` is legal here — it's AppKit, not the
+    /// ScreenCaptureKit family CLAUDE.md bans from the main process — and
+    /// enumerating *running* apps mirrors Tuple's "Add…" flow without
+    /// needing a full /Applications scan.
+    @MainActor
+    private func cloakableRunningApps() -> [(name: String, bundleID: String)] {
+        let cloaked = Set(appState.appCloak.entries.map(\.bundleID))
+        let selfID = Bundle.main.bundleIdentifier
+        var seen = Set<String>()
+        return NSWorkspace.shared.runningApplications
+            .filter { $0.activationPolicy == .regular }
+            .compactMap { app -> (name: String, bundleID: String)? in
+                guard let bundleID = app.bundleIdentifier,
+                    bundleID != selfID,
+                    !cloaked.contains(bundleID),
+                    seen.insert(bundleID).inserted
+                else { return nil }
+                return (name: app.localizedName ?? bundleID, bundleID: bundleID)
+            }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
     /// Marketing version, with the build number appended only when it

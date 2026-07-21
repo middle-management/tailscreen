@@ -148,6 +148,12 @@
 "Blocked" = "Blocked";
 "Remove" = "Remove";
 "Remove %@" = "Remove %@";
+"Cloaked Apps" = "Cloaked Apps";
+"Hide cloaked apps while sharing" = "Hide cloaked apps while sharing";
+"Cloaked apps are hidden from viewers whenever you share a whole display — no need to clean up your screen before sharing." = "Cloaked apps are hidden from viewers whenever you share a whole display — no need to clean up your screen before sharing.";
+"Add App…" = "Add App…";
+"No other running apps" = "No other running apps";
+"Applies when you share a whole display. Sharing a single window or app already limits what viewers see, and an app you explicitly pick to share is never cloaked." = "Applies when you share a whole display. Sharing a single window or app already limits what viewers see, and an app you explicitly pick to share is never cloaked.";
 "Quality" = "Quality";
 "Preset" = "Preset";
 "Low" = "Low";

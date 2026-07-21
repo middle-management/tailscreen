@@ -200,6 +200,14 @@ class AppState: ObservableObject {
     /// on every change (see the `$entries` subscription in `init`).
     let viewerAccessPolicies = ViewerAccessPolicyStore()
 
+    /// Persistent Cloaked Apps list behind the Settings "Cloaked Apps" section:
+    /// apps whose windows are hidden from viewers whenever a whole display
+    /// is shared. Baked into `PickerSelection.excludedBundleIDs` at share
+    /// start (`applyingShareTransforms`) and live re-pushed on every
+    /// list/toggle change via the debounced `scheduleCloakRepush` (see the
+    /// subscriptions in `init`).
+    let appCloak = AppCloakStore()
+
     /// User preference: sharing-side quality knobs (fps cap, codec
     /// preference, encoder quality, bandwidth ceiling). Persisted as a
     /// JSON blob under `qualitySettings`. The bandwidth ceiling
@@ -227,6 +235,11 @@ class AppState: ObservableObject {
     /// Debounce task for `qualitySettings.didSet` (see above). MainActor,
     /// like everything else on AppState.
     private var qualitySettingsSyncTask: Task<Void, Never>?
+
+    /// Debounce task + force latch for the Cloaked Apps live re-push (see
+    /// `scheduleCloakRepush`). MainActor, like everything else on AppState.
+    private var cloakSyncTask: Task<Void, Never>?
+    private var cloakRepushForce = false
 
     /// Viewer IDs we've already fired a "joined" notification for this
     /// session. Keyed by the server's internal `"ip:port"` ID so a viewer
@@ -385,6 +398,17 @@ class AppState: ObservableObject {
     // this, both with exclusive access to the instance.
     nonisolated(unsafe) private var notificationObservers: [NSObjectProtocol] = []
 
+    // NSWorkspace's notification center + the launch-observer token
+    // registered on it (the Cloaked Apps "cloaked app launched mid-share"
+    // trigger). Kept separate from `notificationObservers` because those
+    // tokens belong to `NotificationCenter.default` — removing a token
+    // from the wrong center silently leaks it. Same `nonisolated(unsafe)`
+    // rationale as above: only `init`/`deinit` mutate these, and `deinit`
+    // must reach the center without touching `NSWorkspace.shared` off the
+    // main actor.
+    nonisolated(unsafe) private var workspaceNotificationCenter: NotificationCenter = .default
+    nonisolated(unsafe) private var workspaceObservers: [NSObjectProtocol] = []
+
     /// True once the user has manually resized the viewer window
     /// (windowDidResize fired while `suppressViewerResizeTracking` was
     /// false). When set, auto-snap on incoming video-size changes is
@@ -441,6 +465,53 @@ class AppState: ObservableObject {
             .sink { [weak self] policies in
                 self?.server?.setAccessPolicies(policies)
             }.store(in: &cancellables)
+
+        // Mirror the Cloaked Apps store to the UI, and re-cloak a live share
+        // when the list or the main toggle changes. The debounced
+        // re-push reads the store at fire time — after the property write
+        // has landed — so `$entries`'s deliver-before-write timing (which
+        // the policy snapshot above has to dance around) doesn't matter.
+        appCloak.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }.store(in: &cancellables)
+        appCloak.$entries
+            .map { entries in entries.map(\.bundleID) }
+            .removeDuplicates()
+            .dropFirst()
+            .sink { [weak self] _ in self?.scheduleCloakRepush() }
+            .store(in: &cancellables)
+        appCloak.$isEnabled
+            .removeDuplicates()
+            .dropFirst()
+            .sink { [weak self] _ in self?.scheduleCloakRepush() }
+            .store(in: &cancellables)
+
+        // A cloaked app *launching* mid-share can't be hidden by the running
+        // helper: its SCContentFilter resolved applications at build time,
+        // and an app that wasn't running never resolved into the exclusion
+        // list. Watch for launches and force a re-push (helper respawn) so
+        // the fresh filter picks it up. NSWorkspace notifications arrive on
+        // its own center, not `NotificationCenter.default`.
+        workspaceNotificationCenter = NSWorkspace.shared.notificationCenter
+        workspaceObservers.append(
+            workspaceNotificationCenter.addObserver(
+                forName: NSWorkspace.didLaunchApplicationNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] note in
+                let launched =
+                    note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+                let bundleID = launched?.bundleIdentifier
+                Task { @MainActor [weak self] in
+                    guard let self, let bundleID else { return }
+                    guard self.sharingState == .active,
+                        let selection = self.currentSelection,
+                        selection.excludedBundleIDs.contains(bundleID)
+                    else { return }
+                    self.scheduleCloakRepush(force: true)
+                }
+            }
+        )
 
         // Try to restore a previous session silently. If on-disk Tailscale
         // state is valid, `up()` returns quickly and the user is signed in
@@ -651,6 +722,9 @@ class AppState: ObservableObject {
         for token in notificationObservers {
             center.removeObserver(token)
         }
+        for token in workspaceObservers {
+            workspaceNotificationCenter.removeObserver(token)
+        }
     }
 
     private var cancellables = Set<AnyCancellable>()
@@ -683,6 +757,81 @@ class AppState: ObservableObject {
                 message: L("macOS's screen-sharing picker failed to start: \(error.localizedDescription)")
             )
             return nil
+        }
+    }
+
+    /// Bake sharer-side settings into the picker's selection bytes before
+    /// they're cached on the server / handed to the capture-helper:
+    ///
+    ///   * `captureAudio = true` so the helper configures its `.audio`
+    ///     SCStream output (emission stays gated by the `setAudioEnabled`
+    ///     latch, so this only makes the output exist);
+    ///   * the Cloaked Apps exclusion list (`AppCloakStore`) so a display share
+    ///     hides the cloaked apps' windows from viewers.
+    ///
+    /// Shared by `startSharing` and `changeShareSource` so the two share
+    /// bring-up paths can't drift (Change Source used to ship the raw
+    /// picker bytes, which silently dropped the audio output on retarget).
+    /// Updates `currentSelection` on success; a decode/encode failure
+    /// falls back to the original bytes untouched.
+    private func applyingShareTransforms(to filterData: Data) -> Data {
+        guard let selection = try? JSONDecoder().decode(PickerSelection.self, from: filterData)
+        else { return filterData }
+        let transformed =
+            selection
+            .settingCaptureAudio(true)
+            .settingExcludedBundleIDs(appCloak.effectiveExclusions(for: selection.kind))
+        guard let reencoded = try? JSONEncoder().encode(transformed) else { return filterData }
+        currentSelection = transformed
+        return reencoded
+    }
+
+    /// Coalesce Cloaked Apps edits into one helper respawn (~500 ms cancel-and-
+    /// replace, like the quality-ceiling debounce): every re-push restarts
+    /// the capture-helper, so an un-debounced multi-add in Settings would
+    /// burst restarts. `force` skips the no-change guard — used when a
+    /// cloaked app *launches* mid-share: the exclusion list is byte-identical
+    /// but the live filter was built before the app existed, so only a
+    /// respawn actually cloaks it.
+    private func scheduleCloakRepush(force: Bool = false) {
+        cloakRepushForce = cloakRepushForce || force
+        cloakSyncTask?.cancel()
+        cloakSyncTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled, let self else { return }
+            let forced = self.cloakRepushForce
+            self.cloakRepushForce = false
+            await self.applyCloakToActiveShare(force: forced)
+        }
+    }
+
+    /// Re-bake the Cloaked Apps exclusions into the cached selection and
+    /// retarget the live capture-helper. No-op unless a share is active and
+    /// the exclusion set actually changed (or `force`). Rides the same
+    /// `server.changeSource` tracked-restart path as "Change Source…", so
+    /// viewers recover via the fresh helper's in-band parameter sets; the
+    /// sharer overlay and annotations are untouched because the shared
+    /// surface itself is unchanged.
+    private func applyCloakToActiveShare(force: Bool) async {
+        guard sharingState == .active, let server, let selection = currentSelection else { return }
+        let exclusions = appCloak.effectiveExclusions(for: selection.kind)
+        guard force || exclusions != selection.excludedBundleIDs else { return }
+        let updated = selection.settingExcludedBundleIDs(exclusions)
+        guard let data = try? JSONEncoder().encode(updated) else { return }
+        currentSelection = updated
+        do {
+            _ = try await server.changeSource(filterData: data)
+            logger.log("appCloak: re-pushed cloak to live share (\(exclusions.count) cloaked)")
+        } catch is CancellationError {
+            // Share stopped while the re-push was in flight — the stop path
+            // owns teardown.
+        } catch {
+            // The old helper is already gone by the time changeSource
+            // throws; mirror changeShareSource's failure handling so the
+            // share doesn't linger frozen.
+            logger.log("appCloak: live re-push failed (\(error)); tearing sharing down")
+            await stopSharing(reason: "appCloak repush failed: \(error)")
+            presentError(.sharingGeneric(error))
         }
     }
 
@@ -732,9 +881,10 @@ class AppState: ObservableObject {
         guard sharingState == .active, self.server === server else { return }
 
         currentSelection = try? JSONDecoder().decode(PickerSelection.self, from: filterData)
+        let effectiveFilterData = applyingShareTransforms(to: filterData)
         let didRetarget: Bool
         do {
-            didRetarget = try await server.changeSource(filterData: filterData)
+            didRetarget = try await server.changeSource(filterData: effectiveFilterData)
         } catch is CancellationError {
             // The restart task throws CancellationError when the share was
             // stopped while the retarget was in flight — a deliberate stop,
@@ -813,18 +963,9 @@ class AppState: ObservableObject {
         // whole display. A decode failure isn't fatal — we just fall
         // back to the legacy full-display overlay.
         currentSelection = try? JSONDecoder().decode(PickerSelection.self, from: filterData)
-        // Turn on the capture-helper's system-audio output (emission is gated
-        // separately by the latch). Re-encode the selection so the helper adds
-        // its `.audio` SCStream output; a decode/encode failure just falls back
-        // to the original video-only bytes.
-        var effectiveFilterData = filterData
-        if let selection = currentSelection {
-            let withAudio = selection.settingCaptureAudio(true)
-            if let reencoded = try? JSONEncoder().encode(withAudio) {
-                effectiveFilterData = reencoded
-                currentSelection = withAudio
-            }
-        }
+        // Bake the sharer-side settings (system-audio output, Cloaked Apps
+        // exclusions) into the selection bytes the server caches.
+        let effectiveFilterData = applyingShareTransforms(to: filterData)
         sharingState = .starting
         // Cleanup contract: any path out of this function (success,
         // failure, cancellation) leaves `sharingState` consistent.
