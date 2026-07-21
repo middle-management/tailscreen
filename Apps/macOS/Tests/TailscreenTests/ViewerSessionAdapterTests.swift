@@ -110,12 +110,12 @@ final class ViewerSessionAdapterTests: XCTestCase {
         let adapter = VTVideoDecoderAdapter(callbackQueue: queue)
         let delivered = expectation(description: "a decoded CVPixelBufferBox is delivered")
         delivered.assertForOverFulfill = false
-        let lock = NSLock()
+        // `received` is written only on `queue` (the adapter delivers there) and
+        // read back with `queue.sync` after fulfillment — serialized, so no lock
+        // (and `NSLock` is unavailable from an async context anyway).
         var received: CVPixelBufferBox?
         adapter.onDecodedFrame = { frame in
-            lock.lock()
             if received == nil { received = frame as? CVPixelBufferBox }
-            lock.unlock()
             delivered.fulfill()
         }
 
@@ -126,9 +126,7 @@ final class ViewerSessionAdapterTests: XCTestCase {
 
         await fulfillment(of: [delivered], timeout: 15)
 
-        lock.lock()
-        let box = received
-        lock.unlock()
+        let box = queue.sync { received }
         let unwrapped = try XCTUnwrap(box, "a CVPixelBufferBox should have been delivered")
         XCTAssertGreaterThan(unwrapped.width, 0)
         XCTAssertGreaterThan(unwrapped.height, 0)
