@@ -143,7 +143,18 @@ mac `build`/`test` CI job, not the Linux loop.
 - **Phase C** — add a `ViewerSession`-backed receive path in
   `TailscaleScreenShareClient` **behind a feature flag**, legacy path intact;
   A/B them in dev (frame counts, loss recovery under `scripts/net-impair.sh`,
-  stats parity).
+  stats parity). *First cut landed* (`TAILSCREEN_VIEWER_SESSION=1`): a
+  `buildViewerSession` factory wires the adapters + `onAudioDatagram` →
+  `VoiceChannel` + `onControlToSend` → UDP, and `receiveLoopViaViewerSession`
+  routes datagrams to `ViewerSession.receiveRTP`/`tick` and translates the
+  session's negotiated state (SSRC + caps, pending/denied/stopped) into the
+  existing client callbacks. Default off; the legacy loop is untouched. This
+  path is **compile-verified on CI only** — its runtime correctness needs a
+  local A/B on a Mac. Known first-cut gaps vs. the legacy loop: the stats
+  overlay isn't fed, the HEVC→H.264 `CODEC_NO` fallback degrades to a plain
+  PLI, the decode-recovery ladder isn't driven, and a legacy 5-byte HELLO_ACK
+  (old sharer) leaves the session without an SSRC. Closing those, then
+  swapping the default, is the rest of Phase C.
 - **Phase D** — move keepalive / idle / annotation / stats-feeding to sit
   _around_ the session core; **delete** the duplicated FEC/NACK/RR/PLI from the
   client.
