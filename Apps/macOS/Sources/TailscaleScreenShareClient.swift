@@ -2,6 +2,7 @@ import AppKit
 import CoreVideo
 import Foundation
 import TailscaleKit
+import TailscreenViewer
 import os
 
 /// Screen-share viewer.
@@ -42,6 +43,25 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     private var serverAddr: String?
     private let renderer: MetalViewerRenderer
     private var decoder: VideoDecoder?
+
+    /// **Experimental (mac-viewer convergence, Phase C).** When
+    /// `TAILSCREEN_VIEWER_SESSION=1`, the receive path routes datagrams through
+    /// the portable `ViewerSession` (video/audio/loss-recovery data plane)
+    /// wired to the mac adapters, instead of this class's bespoke loop. Default
+    /// off — the legacy path is untouched. Runtime-validate locally
+    /// (`test-local.sh` / `net-impair.sh`) before trusting it. Known first-cut
+    /// gaps vs. the legacy path: the stats overlay isn't fed (no note* hooks),
+    /// the HEVC→H.264 CODEC_NO fallback degrades to a plain PLI, the
+    /// decode-recovery ladder isn't driven, and a legacy 5-byte HELLO_ACK
+    /// (old sharer, no caps) leaves the session without an assigned SSRC.
+    private let useViewerSession =
+        ProcessInfo.processInfo.environment["TAILSCREEN_VIEWER_SESSION"] == "1"
+    /// The portable session, built in `connect()` when `useViewerSession` is on.
+    private var viewerSession: ViewerSession?
+    /// Serial queue the VideoToolbox adapter hops decoded frames onto (the
+    /// frame path — adapter → sink → renderer — never touches session state, so
+    /// it needn't be the receive task's context; it just must be consistent).
+    private let viewerFrameQueue = DispatchQueue(label: "com.tailscreen.viewer-session-frames")
     /// Demultiplexes incoming RTP packets to the right codec depacketizer
     /// based on the payload type — viewer auto-detects H.264 (PT 96) or
     /// HEVC (PT 97) without out-of-band negotiation.
@@ -471,24 +491,30 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         logger.log("Bound local UDP, dialing \(addr)")
 
         let decoder = VideoDecoder()
-        decoder.onDecodedFrame = { [weak self] pixelBuffer in
-            self?.onDecodedFrameForTesting?(pixelBuffer)
-            self?.handleDecodedFrame(pixelBuffer)
-        }
-        decoder.onDecodeFailure = { [weak self] codec in
-            self?.handleDecodeFailure(codec)
-        }
-        decoder.onFrameDecodeFailed = { [weak self] in
-            self?.renderer.noteDecodeFailure()
-        }
-        decoder.onRecoveryAction = { [weak self] action in
-            self?.handleDecodeRecoveryAction(action)
-        }
-        decoder.onRecovered = { [weak self] in
-            self?.logger.log("Client: decoding recovered — clearing degraded indication")
-            self?.renderer.setDegraded(false)
-        }
         self.decoder = decoder
+        if useViewerSession {
+            // Experimental Phase C: the adapter owns the decoder's callbacks and
+            // the portable ViewerSession drives the receive path (built below).
+            buildViewerSession(decoder: decoder, addr: addr)
+        } else {
+            decoder.onDecodedFrame = { [weak self] pixelBuffer in
+                self?.onDecodedFrameForTesting?(pixelBuffer)
+                self?.handleDecodedFrame(pixelBuffer)
+            }
+            decoder.onDecodeFailure = { [weak self] codec in
+                self?.handleDecodeFailure(codec)
+            }
+            decoder.onFrameDecodeFailed = { [weak self] in
+                self?.renderer.noteDecodeFailure()
+            }
+            decoder.onRecoveryAction = { [weak self] action in
+                self?.handleDecodeRecoveryAction(action)
+            }
+            decoder.onRecovered = { [weak self] in
+                self?.logger.log("Client: decoding recovered — clearing degraded indication")
+                self?.renderer.setDegraded(false)
+            }
+        }
 
         self.isConnected = true
 
@@ -496,12 +522,21 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         // HELLO. Old servers read byte 0 only and reply with a legacy 5-byte
         // ack (caps `[]`), so the viewer stays on the PLI path against them;
         // a NACK-era server's ack simply lacks `.fec` and no FEC state arms.
-        let hello = ScreenShareControlMessage.encodeHello(caps: [.nack, .receiverReport, .fec])
-        try await pl.send(hello, to: addr)
-        logger.log("HELLO sent to \(addr) (caps=nack,rr,fec)")
+        if let session = viewerSession {
+            session.start()  // emits HELLO through onControlToSend
+            logger.log("HELLO sent via ViewerSession (experimental TAILSCREEN_VIEWER_SESSION path)")
+        } else {
+            let hello = ScreenShareControlMessage.encodeHello(caps: [.nack, .receiverReport, .fec])
+            try await pl.send(hello, to: addr)
+            logger.log("HELLO sent to \(addr) (caps=nack,rr,fec)")
+        }
 
         receiveTask = Task { [weak self] in
-            await self?.receiveLoop()
+            if self?.useViewerSession == true {
+                await self?.receiveLoopViaViewerSession()
+            } else {
+                await self?.receiveLoop()
+            }
         }
         keepaliveTask = Task { [weak self] in
             await self?.keepaliveLoop()
@@ -582,6 +617,128 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
             renderer.setDegraded(true)
         case .surfaceError:
             NotificationCenter.default.post(name: .tailscreenViewerVideoStalled, object: nil)
+        }
+    }
+
+    // MARK: - Experimental ViewerSession receive path (Phase C, flag-gated)
+
+    /// Assemble the portable `ViewerSession` wired to the mac adapters: the
+    /// VideoToolbox decoder (frames hop onto `viewerFrameQueue`, then to the
+    /// Metal renderer via `MetalSinkAdapter`), raw audio forwarded to the host's
+    /// `VoiceChannel` (`onAudioReceived`), and control feedback (HELLO / NACK /
+    /// PLI / receiver reports) sent back over UDP. Only called when
+    /// `useViewerSession` is set. See that property for the known first-cut gaps.
+    private func buildViewerSession(decoder: VideoDecoder, addr: String) {
+        let adapter = VTVideoDecoderAdapter(decoder: decoder, callbackQueue: viewerFrameQueue)
+        let sink = MetalSinkAdapter(renderer: renderer)
+        viewerSession = ViewerSession(
+            caps: [.nack, .receiverReport, .fec],
+            decoder: adapter,
+            videoSink: sink,
+            audioSink: nil,
+            onControlToSend: { [weak self] data in
+                // Fire-and-forget async send on the tsnet listener. Cross-message
+                // ordering isn't guaranteed, but control bytes tolerate it (HELLO
+                // is the first, and the only order-critical one).
+                Task { [weak self] in try? await self?.packetListener?.send(data, to: addr) }
+            },
+            onAudioDatagram: { [weak self] datagram in
+                // The host owns audio decode: pipe PT-98/99 straight into the
+                // mac VoiceChannel, exactly as the legacy loop's onAudioReceived.
+                self?.onAudioReceived?(datagram)
+            }
+        )
+    }
+
+    /// Experimental Phase C receive loop: route every datagram through the
+    /// portable `ViewerSession`, drive its ~1 Hz tick, and translate the
+    /// session's negotiated state into the client callbacks `AppState` already
+    /// consumes. Mirrors `receiveLoop()`'s recv + idle-disconnect + backoff.
+    private func receiveLoopViaViewerSession() async {
+        guard let pl = packetListener else { return }
+        let idleDisconnectAfterNs = TransportTuning.clientIdleDisconnectNs
+        var lastDataNs = DispatchTime.now().uptimeNanoseconds
+        var awaitingApproval = false
+        var consecutiveErrors = 0
+        var errorStampsNs: [UInt64] = []
+        var firedAdmission = false
+        var firedAwaiting = false
+
+        while isConnected {
+            // Re-fetch the (non-Sendable) session each iteration and use it only
+            // in this synchronous block, so it's never held across the await
+            // below. `receiveRTP` after the await reads the property fresh.
+            guard let session = viewerSession else { break }
+            session.tick(nowNs: DispatchTime.now().uptimeNanoseconds)
+
+            // Translate one-shot session-state transitions into the client's
+            // callbacks (the bespoke loop fires these inline on the control bytes).
+            if !firedAwaiting, session.isPendingApproval {
+                firedAwaiting = true
+                awaitingApproval = true
+                onAwaitingApproval?()
+            }
+            if session.wasDenied {
+                logger.log("Receive(VS): denied by sharer")
+                if let onDeniedBySharer {
+                    onDeniedBySharer()
+                } else {
+                    NotificationCenter.default.post(name: .tailscreenViewerPeerClosed, object: nil)
+                }
+                break
+            }
+            if !firedAdmission, let ssrc = session.assignedSSRC {
+                firedAdmission = true
+                awaitingApproval = false
+                assignedAudioSSRC = ssrc
+                onAudioSSRCAssigned?(ssrc)
+                onRemoteControlSupportChanged?(session.serverCaps.contains(.remoteControl))
+                onAnnotationSupportChanged?(session.serverCaps.contains(.annotations))
+            }
+            if session.isStopped {
+                logger.log("Receive(VS): sharer stopped")
+                NotificationCenter.default.post(name: .tailscreenViewerPeerClosed, object: nil)
+                break
+            }
+
+            let recvStartNs = DispatchTime.now().uptimeNanoseconds
+            do {
+                let (datagram, from) = try await pl.recv(timeout: 1_000)
+                consecutiveErrors = 0
+                if datagram.isEmpty { continue }
+                if from != serverAddr { continue }
+                lastDataNs = DispatchTime.now().uptimeNanoseconds
+                viewerSession?.receiveRTP(datagram)
+            } catch {
+                guard isConnected else { break }
+                if case TailscaleError.readFailed = error {
+                    let elapsedNs = DispatchTime.now().uptimeNanoseconds &- recvStartNs
+                    if !ReceiveLoopPolicy.classifyReadFailedAsError(elapsedNs: elapsedNs) {
+                        consecutiveErrors = 0
+                        let nowNs = DispatchTime.now().uptimeNanoseconds
+                        if !awaitingApproval && nowNs &- lastDataNs > idleDisconnectAfterNs {
+                            logger.log("Receive(VS): idle for >timeout, assuming server gone")
+                            NotificationCenter.default.post(
+                                name: .tailscreenViewerPeerClosed, object: nil)
+                            break
+                        }
+                        continue
+                    }
+                }
+                consecutiveErrors += 1
+                let nowNs = DispatchTime.now().uptimeNanoseconds
+                let windowCount = ReceiveLoopPolicy.slidingWindowErrorCount(
+                    &errorStampsNs, appending: nowNs)
+                logger.log("Receive(VS) error #\(consecutiveErrors) (\(windowCount) in window): \(error)")
+                let deadConsecutive = consecutiveErrors >= ReceiveLoopPolicy.maxConsecutiveErrors
+                let deadWindowed = windowCount >= ReceiveLoopPolicy.maxErrorsPerWindow
+                if deadConsecutive || deadWindowed {
+                    NotificationCenter.default.post(name: .tailscreenViewerPeerClosed, object: nil)
+                    break
+                }
+                try? await Task.sleep(
+                    nanoseconds: ReceiveLoopPolicy.retryDelayNs(consecutiveErrors: consecutiveErrors))
+            }
         }
     }
 
