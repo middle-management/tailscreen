@@ -1451,6 +1451,14 @@ public final class MultiCodecDepacketizer {
             return nil
         }
     }
+
+    /// Drain access units completed but not yet returned by `ingest` (a single
+    /// late packet — including an FEC recovery — can unblock a run of buffered
+    /// packets, but `ingest` returns only the first). Only the active codec's
+    /// depacketizer holds anything; the other's queue is empty.
+    public func drainReady() -> [VideoAccessUnit] {
+        h264.drainReady() + h265.drainReady()
+    }
 }
 
 extension Data {

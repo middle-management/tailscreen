@@ -267,9 +267,17 @@ it bytes (`receiveRTP`) and a clock (`tick(nowNs:)`) and ships its outputs — s
 it's fully unit-testable and portable, and it stays free of any concrete
 codec/renderer/audio backend (FFmpeg/SDL/ALSA plug in behind the protocols in a
 later PR). Depends on `TailscreenProtocol` + `TailscreenAudio` only, so it also
-builds on Linux; the video path + audio path + HELLO/PLI/NACK/RR handshake are
-covered, FEC ingest is a noted follow-up (see the `TODO(fec)` in
-`ViewerSession.swift`). Tests: `TailscreenViewerTests`.
+builds on Linux; the video path + audio path + HELLO/PLI/NACK/RR handshake +
+**FEC ingest** are covered. FEC ingest mirrors the mac client: `FECGroupBuffer`
++ `FECCodec.recover` arm on the first `0x0D` parity datagram, recovered packets
+feed the shared ingest path (RR counts them received, `NACKScheduler.noteRecovered`
+clears the gap without an RTT sample), NACK tolerances loosen in place while
+parity flows and disarm after `TransportTuning.fecParityIdleNs`, and the RR's
+`fecRecovered` field carries the raw-loss signal. `ViewerSession.ingestVideo`
+now drains all ready AUs after each ingest (`MultiCodecDepacketizer.drainReady`)
+so a gap fill — reorder completion or an FEC-recovered tail packet with no
+trailing traffic — surfaces every unblocked frame immediately. Tests:
+`TailscreenViewerTests`.
 
 The rules for package files (no Apple frameworks; how to move a file in;
 what must be `public`) live canonically in

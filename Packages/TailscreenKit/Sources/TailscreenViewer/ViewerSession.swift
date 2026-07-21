@@ -10,8 +10,9 @@ import TailscreenProtocol
 /// `AudioSink`), and outbound feedback control bytes (via `onControlToSend`).
 /// It reuses the already-portable pieces of `TailscreenProtocol`
 /// (`MultiCodecDepacketizer`, `NACKScheduler`, `RRAccounting`,
-/// `AudioRTPDepacketizer`, `ScreenShareControlMessage`) and `TailscreenAudio`
-/// (`OpusVoiceDecoder`), so nothing here is macOS-specific.
+/// `FECGroupBuffer` + `FECCodec`, `AudioRTPDepacketizer`,
+/// `ScreenShareControlMessage`) and `TailscreenAudio` (`OpusVoiceDecoder`), so
+/// nothing here is macOS-specific.
 ///
 /// **It owns no I/O.** No socket, no thread, no timer. The host feeds it bytes
 /// (`receiveRTP`) and a monotonic clock (`tick(nowNs:)`), and ships whatever the
@@ -45,6 +46,25 @@ public final class ViewerSession {
     private let depacketizer: MultiCodecDepacketizer
     private var nack: NACKScheduler
     private var rr = RRAccounting()
+
+    // MARK: FEC path
+
+    /// Receiver-side FEC state: a bounded ring of recent media packets plus
+    /// briefly-buffered parity datagrams, solved into recovered packets. Only
+    /// consulted while parity is actually flowing (`fecParityActive`).
+    private var fecBuffer = FECGroupBuffer()
+    /// True while parity is flowing: armed on the first 0x0D actually received,
+    /// disarmed after `TransportTuning.fecParityIdleNs` without one. Bare `.fec`
+    /// negotiation must NOT arm anything — the sharer always advertises the cap
+    /// and its adaptive gate keeps parity off on clean links, so an
+    /// always-armed viewer would pay the relaxed NACK timing for nothing.
+    private var fecParityActive = false
+    /// Clock reading of the most recent parity datagram, for the disarm timer.
+    private var lastParityArrivalNs: UInt64 = 0
+    /// Packets recovered via FEC since the last receiver report — carried in
+    /// the extended RR's `fecRecovered` field so the sharer's FEC arm sees raw
+    /// link loss even when parity is hiding all of it.
+    private var fecRecoveredSinceReport = 0
 
     // MARK: Audio path
 
@@ -160,7 +180,23 @@ public final class ViewerSession {
             emit(actions: nack.tick(nowNs: nowNs))
         }
 
+        maybeDisarmFEC()
         maybeSendReceiverReport()
+    }
+
+    /// Disarm the FEC machinery once parity stops flowing: the sharer gated
+    /// parity off (link recovered), so restore phase-1 NACK timing and drop the
+    /// buffered media, and the FEC path costs nothing again until parity
+    /// reappears.
+    private func maybeDisarmFEC() {
+        guard fecParityActive, nowNs &- lastParityArrivalNs > TransportTuning.fecParityIdleNs else {
+            return
+        }
+        fecParityActive = false
+        fecBuffer.reset()
+        nack.setReorderTolerances(
+            toleranceNs: NACKScheduler.defaultReorderToleranceNs,
+            packetTolerance: NACKScheduler.defaultReorderPacketTolerance)
     }
 
     // MARK: - Control handling
@@ -186,8 +222,37 @@ public final class ViewerSession {
                 lastPingTs = uptime
                 lastPingReceivedNs = nowNs
             }
+        case .fec:
+            handleFECParity(data)
         default:
             break  // keepalive / viewer-only bytes — nothing to do here.
+        }
+    }
+
+    /// Handle one inbound FEC parity datagram (0x0D). Parity rides the control
+    /// plane (`looksLikeControl` sees the 0x0D first byte), so it lands here,
+    /// not on the video path. Bounds-checked decode (untrusted UDP), arm/refresh
+    /// the FEC receive machinery (parity on the wire is the arming evidence),
+    /// group solve, and the recovered-packet flow. No-op unless both sides
+    /// negotiated `.fec`.
+    private func handleFECParity(_ data: Data) {
+        guard caps.contains(.fec), serverCaps.contains(.fec) else { return }
+        guard let parity = ScreenShareControlMessage.decodeFEC(data) else { return }
+        lastParityArrivalNs = nowNs
+        if !fecParityActive {
+            fecParityActive = true
+            // Loosen the scheduler's reorder tolerances IN PLACE (gaps + RTT
+            // estimate survive) so a recovery already in flight — up to N−1
+            // trailing group members plus the parity away — isn't raced by a
+            // NACK; NACK fires only for multi-loss groups FEC can't solve.
+            nack.setReorderTolerances(
+                toleranceNs: TransportTuning.fecSchedulerToleranceNs,
+                packetTolerance: TransportTuning.fecSchedulerPacketTolerance)
+        }
+        if let recovery = fecBuffer.noteParity(
+            baseSeq: parity.baseSeq, count: parity.count, body: parity.body, nowNs: nowNs)
+        {
+            processRecoveredPacket(recovery)
         }
     }
 
@@ -203,8 +268,51 @@ public final class ViewerSession {
             emit(actions: nack.observe(seq: seq, nowNs: nowNs))
         }
 
-        guard let au = depacketizer.ingest(data, nowNs: nowNs) else { return }
+        // FEC: while parity is flowing, retain this packet for parity solves
+        // and check whether it completed a group whose parity arrived first
+        // (parity can outrun a reordered member). Gated on `fecParityActive`,
+        // not bare negotiation, so a session that never sees parity pays zero
+        // per-packet buffering cost. The recovered packet (an earlier seq in
+        // the group) ingests before this wire packet — the reorder buffer
+        // orders both by seq, so the interleave is harmless.
+        if fecParityActive, let recovery = fecBuffer.noteMedia(seq: seq, packet: data, nowNs: nowNs) {
+            processRecoveredPacket(recovery)
+        }
+
+        ingestVideo(data)
+    }
+
+    /// Shared tail for wire AND FEC-recovered packets — downstream of here a
+    /// recovered packet is indistinguishable from a received one (reassembly,
+    /// AU completion, decode).
+    private func ingestVideo(_ packet: Data) {
+        guard let au = depacketizer.ingest(packet, nowNs: nowNs) else { return }
         decodeAndPresent(au)
+        // A gap fill (reorder completion or an FEC recovery) can unblock a run
+        // of buffered AUs at once; `ingest` returns only the first and trickles
+        // the rest one per later packet. Present them all now instead — a
+        // viewer has no reason to hold a ready frame, and an FEC-recovered
+        // tail packet may have no trailing wire packet to trickle out on.
+        for extra in depacketizer.drainReady() {
+            decodeAndPresent(extra)
+        }
+    }
+
+    /// Feed one FEC-recovered packet through the SAME path as a received one,
+    /// with two accounting deltas: the receiver report counts it as *received*
+    /// (recovered ≠ lost — residual loss drives the sharer's bitrate arm) while
+    /// `fecRecoveredSinceReport` feeds the extended-RR field (raw loss drives
+    /// the FEC arm); and the pending NACK gap is cleared via `noteRecovered`
+    /// (not the straggler path, which would inject FEC latency into the RTT
+    /// EMA — `noteRecovered` also advances the highest-seen cursor past a
+    /// recovered tail-of-batch marker so the next batch opens no phantom gap).
+    private func processRecoveredPacket(_ recovery: FECGroupBuffer.Recovery) {
+        fecRecoveredSinceReport += 1
+        if caps.contains(.receiverReport) {
+            rr.observe(seq: recovery.seq)
+        }
+        nack.noteRecovered(seq: recovery.seq, nowNs: nowNs)
+        ingestVideo(recovery.packet)
     }
 
     private func decodeAndPresent(_ au: VideoAccessUnit) {
@@ -268,7 +376,7 @@ public final class ViewerSession {
             jitterTicks: 0,
             lastPingTs: lastPingTs,
             delaySincePingMs: delayMs,
-            fecRecovered: 0,
+            fecRecovered: UInt16(clamping: fecRecoveredSinceReport),
             nackRecovered: UInt16(min(Int(UInt16.max), nack.drainNackRecovered()))
         )
         // The extended (recovery-field) form only when both sides negotiated
@@ -279,13 +387,6 @@ public final class ViewerSession {
         )
         lastReportNs = nowNs
         sentFirstReport = true
+        fecRecoveredSinceReport = 0
     }
 }
-
-// TODO(fec): FEC ingest (FECGroupBuffer + FECCodec.recover in front of the
-// depacketizer, arming on the first 0x0D parity datagram, and the FEC-mode
-// NACKScheduler tolerances via setReorderTolerances) is deferred to a
-// follow-up. The RR already carries the negotiated recovery-field layout, and
-// serverCaps records the sharer's .fec advertisement, so wiring the buffer in
-// is additive — no wire or handshake change. Until then a viewer degrades to
-// NACK-or-PLI, exactly like a peer that never advertised .fec.

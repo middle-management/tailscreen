@@ -198,9 +198,17 @@ depacketizers + `NACKScheduler`/`RRAccounting`/`OpusVoiceDecoder`, behind
 `VideoDecoding`/`VideoSink`/`AudioSink` protocols so the concrete FFmpeg
 decoder / SDL renderer / ALSA sink plug in later without this target linking
 them. It owns no socket/thread/timer, so it's fully unit-tested
-(`TailscreenViewerTests`) and Linux-buildable today. FEC ingest
-(`FECGroupBuffer`) is the one deferred piece — the viewer degrades to
-NACK-or-PLI until it lands (`TODO(fec)` in `ViewerSession.swift`).
+(`TailscreenViewerTests`) and Linux-buildable today. **FEC ingest now
+landed:** `FECGroupBuffer` + `FECCodec.recover` arm on the first `0x0D`
+parity datagram (not bare negotiation — a clean link that never sees parity
+keeps phase-1 NACK timing and pays no buffering), recovered packets feed the
+shared ingest path (RR counts them received; `NACKScheduler.noteRecovered`
+clears the gap without an RTT sample), the NACK reorder tolerances loosen in
+place while parity flows and disarm after `TransportTuning.fecParityIdleNs`,
+and the RR's `fecRecovered` field carries the raw-loss signal the sharer's FEC
+arm needs — a faithful port of the mac client's receive-side FEC. Ingest now
+drains all ready AUs per packet (`MultiCodecDepacketizer.drainReady`) so an
+FEC-recovered tail packet with no trailing traffic still surfaces its frame.
 
 *Landed:* the **viewer wiring** — `Apps/linux`, a SwiftPM package that plugs
 the concrete backends into `ViewerSession`: `FFmpegVideoDecoder`
@@ -217,8 +225,8 @@ The one seam refinement this needed: `VideoDecoding.decode` now takes the
 `codec` (forwarded from the RTP payload type via `au.codec`) so the decoder
 picks H.264/HEVC deterministically instead of sniffing the bitstream. A *live*
 tsnet run needs a real tailnet and stays local-only. Still open before a
-shippable viewer: FEC ingest (above), and the outbound TCP back-channel
-(annotations / remote-control send).
+shippable viewer: the outbound TCP back-channel (annotations / remote-control
+send). (FEC ingest — previously listed here — has landed; see above.)
 
 **Phase 3 — Linux sharer.** Portal capture → encoder adapter (#3, #4) →
 the existing broadcast/fan-out logic, which is already extracted into pure

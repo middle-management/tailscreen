@@ -234,8 +234,6 @@ not the renderer.
 
 ## Not here yet
 
-- **FEC ingest** — `ViewerSession` degrades to NACK-or-PLI until the deferred
-  `FECGroupBuffer` work lands (tracked in `ViewerSession.swift`'s `TODO(fec)`).
 - **Remote control / annotations send** — the viewer receives video/audio and
   sends loss-recovery feedback; the outbound TCP back-channel (annotations,
   control) is future work.
