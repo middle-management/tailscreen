@@ -367,6 +367,31 @@ final class ViewerSessionTests: XCTestCase {
         XCTAssertEqual(audioSink.pcm.first?.count, OpusVoiceEncoder.frameSamples)
     }
 
+    /// With an `onAudioDatagram` passthrough, inbound audio RTP is forwarded
+    /// verbatim and the built-in Opus path is skipped — the seam a host with
+    /// its own audio pipeline (macOS's VoiceChannel) uses.
+    func testAudioPassthroughForwardsRawDatagram() throws {
+        var forwarded: [Data] = []
+        let audioSink = StubAudioSink()
+        let session = ViewerSession(
+            caps: fullCaps, decoder: StubDecoder(), videoSink: StubVideoSink(),
+            audioSink: audioSink, onControlToSend: { _ in },
+            onAudioDatagram: { forwarded.append($0) }
+        )
+
+        let encoder = try OpusVoiceEncoder()
+        let frame = (0..<OpusVoiceEncoder.frameSamples).map { i in
+            Float(0.3 * sin(2 * .pi * 440 * Double(i) / 48_000))
+        }
+        let opus = try XCTUnwrap(try encoder.encode(pcm: frame))
+        let rtp = AudioRTPPacketizer(ssrc: RTPHeader.sharerVoiceSSRC).packetize(au: opus)
+
+        session.receiveRTP(rtp)
+
+        XCTAssertEqual(forwarded, [rtp], "the exact datagram is forwarded for the host to demux/decode")
+        XCTAssertEqual(audioSink.pcm.count, 0, "the built-in Opus path is skipped when passthrough is set")
+    }
+
     // MARK: - Handshake + feedback cadence
 
     func testStartEmitsHelloAdvertisingCaps() {
