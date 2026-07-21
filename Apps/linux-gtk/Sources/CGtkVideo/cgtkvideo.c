@@ -38,7 +38,7 @@ static GLuint compile(GLenum t, const char *src) {
     glCompileShader(s);
     GLint ok = 0;
     glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
-    if (!ok) { char log[512]; glGetShaderInfoLog(s, 512, 0, log); fprintf(stderr, "CGTKVIDEO shader error: %s\n", log); }
+    if (!ok) { char log[512]; glGetShaderInfoLog(s, 512, 0, log); fprintf(stderr, "CGTKVIDEO shader compile error: %s\n", log); }
     return s;
 }
 
@@ -57,9 +57,18 @@ static void init(void) {
     GLuint vs = compile(GL_VERTEX_SHADER, VS), fs = compile(GL_FRAGMENT_SHADER, FS);
     prog = glCreateProgram();
     glAttachShader(prog, vs); glAttachShader(prog, fs); glLinkProgram(prog);
+    GLint ok = 0;
+    glGetProgramiv(prog, GL_LINK_STATUS, &ok);
+    if (!ok) { char log[512]; glGetProgramInfoLog(prog, 512, 0, log); fprintf(stderr, "CGTKVIDEO program link error: %s\n", log); }
+    glDeleteShader(vs); glDeleteShader(fs);
     glGenVertexArrays(1, &vao);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     texY = mktex(); texU = mktex(); texV = mktex();
+    // Sampler→unit bindings are program state; set once (they persist).
+    glUseProgram(prog);
+    glUniform1i(glGetUniformLocation(prog, "texY"), 0);
+    glUniform1i(glGetUniformLocation(prog, "texU"), 1);
+    glUniform1i(glGetUniformLocation(prog, "texV"), 2);
     inited = 1;
 }
 
@@ -71,7 +80,7 @@ static void upload(GLuint tex, int w, int h, const uint8_t *data) {
 void cgtkvideo_draw_yuv(int32_t width, int32_t height,
                         const uint8_t *y, const uint8_t *u, const uint8_t *v) {
     if (!inited) init();
-    int cw = width / 2, ch = height / 2;
+    int cw = (width + 1) / 2, ch = (height + 1) / 2;  // ceil: match DecodedVideoFrame plane dims
     upload(texY, width, height, y);
     upload(texU, cw, ch, u);
     upload(texV, cw, ch, v);
@@ -79,9 +88,9 @@ void cgtkvideo_draw_yuv(int32_t width, int32_t height,
     glClearColor(0, 0, 0, 1);
     glClear(GL_COLOR_BUFFER_BIT);
     glUseProgram(prog);
-    glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, texY); glUniform1i(glGetUniformLocation(prog, "texY"), 0);
-    glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, texU); glUniform1i(glGetUniformLocation(prog, "texU"), 1);
-    glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, texV); glUniform1i(glGetUniformLocation(prog, "texV"), 2);
+    glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, texY);
+    glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, texU);
+    glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, texV);
     glBindVertexArray(vao);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 }
@@ -91,10 +100,17 @@ void cgtkvideo_clear(void) {
     glClear(GL_COLOR_BUFFER_BIT);
 }
 
+void cgtkvideo_reset(void) {
+    // GL objects belonged to a context being torn down (freed with it); just
+    // forget them so the next draw re-inits against the fresh context.
+    inited = 0;
+}
+
 int32_t cgtkvideo_selftest_check(void) {
+    // NOTE: reads the bound single-sample GLArea FBO. GtkGLArea does not enable
+    // MSAA by default; if that ever changes, blit-resolve before reading.
     GLint vp[4]; glGetIntegerv(GL_VIEWPORT, vp);
     int fw = vp[2], fh = vp[3];
-    // Expected: 4 bars white/black/red/blue. Assert via robust inequalities.
     unsigned char px[4][4];
     for (int i = 0; i < 4; i++) {
         int x = fw * (2 * i + 1) / 8, py = fh / 2;

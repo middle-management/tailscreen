@@ -369,10 +369,15 @@ jobs:
         # Renders a 4-bar YUV frame through GtkVideoView, reads the pixels back,
         # and exits 0 only if the BT.709 output is correct — a CI-gated proof
         # the GL video path renders. The live tsnet leg is local-only (L0b).
+        # Assert BOTH: the process exits 0 (bad pixels → exit 3, timeout → 124)
+        # AND the PASS marker was actually printed, so a "graceful" early exit
+        # (window closed / init failed) that never ran the check can't false-pass.
         run: |
+          set -o pipefail
           timeout 90 xvfb-run -a -s "-screen 0 800x600x24" \
             env GDK_BACKEND=x11 LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe \
-            Apps/linux-gtk/.build/debug/tailscreen-viewer-gtk --render-self-test
+            Apps/linux-gtk/.build/debug/tailscreen-viewer-gtk --render-self-test 2>&1 | tee /tmp/gtk-selftest.log
+          grep -q 'CGTKVIDEO_SELFTEST result=PASS' /tmp/gtk-selftest.log
 
   lint:
     runs-on: macos-latest

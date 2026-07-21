@@ -50,7 +50,14 @@ public struct GtkVideoView: View {
         let area = Gtk.GLArea()
         let store = self.store
         let selfTest = self.selfTest
+        // GL object names are per-context; if the area's context is torn down
+        // and recreated (unrealize→realize, reparent), re-init on the next draw.
+        area.createContext = { _ in cgtkvideo_reset() }
         area.render = { _, _ in
+            // `frame` is a value-type copy with COW plane storage, so these
+            // buffer pointers stay valid even if an off-thread `present()`
+            // overwrites the store mid-draw. This safety depends on
+            // `DecodedVideoFrame` remaining a value type.
             if let frame = store.current() {
                 frame.yPlane.withUnsafeBufferPointer { yb in
                     frame.uPlane.withUnsafeBufferPointer { ub in
