@@ -182,7 +182,7 @@ public final class ViewerSession {
         switch header.payloadType {
         case RTPHeader.h264PayloadType, RTPHeader.hevcPayloadType:
             handleVideo(data, header: header)
-        case RTPHeader.aacPayloadType, RTPHeader.systemAudioPayloadType:
+        case RTPHeader.voicePayloadType, RTPHeader.systemAudioPayloadType:
             handleAudio(data)
         default:
             break  // Unknown PT — drop (forward compatible).

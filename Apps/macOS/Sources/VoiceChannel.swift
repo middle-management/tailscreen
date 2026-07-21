@@ -261,7 +261,7 @@ final class VoiceChannel: @unchecked Sendable {
     /// without building packets.
     static func audioRoute(payloadType: UInt8) -> AudioRoute {
         switch payloadType {
-        case RTPHeader.aacPayloadType: return .voice
+        case RTPHeader.voicePayloadType: return .voice
         case RTPHeader.systemAudioPayloadType: return .systemAudio
         default: return .drop
         }

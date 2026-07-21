@@ -771,7 +771,7 @@ final class HelloAckTests: XCTestCase {
     }
 
     func testRTPHeaderAACPayloadType() {
-        XCTAssertEqual(RTPHeader.aacPayloadType, 98)
+        XCTAssertEqual(RTPHeader.voicePayloadType, 98)
         XCTAssertEqual(RTPHeader.audioClockHz, 48_000)
     }
 }

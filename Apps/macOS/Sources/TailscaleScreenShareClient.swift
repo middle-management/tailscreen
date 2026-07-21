@@ -867,7 +867,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                 // two by payload type.
                 if let (header, _) = RTPHeader.decode(from: datagram) {
                     let pt = header.payloadType
-                    if pt == RTPHeader.aacPayloadType || pt == RTPHeader.systemAudioPayloadType {
+                    if pt == RTPHeader.voicePayloadType || pt == RTPHeader.systemAudioPayloadType {
                         onAudioReceived?(datagram)
                         continue
                     }

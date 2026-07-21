@@ -1627,7 +1627,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             // RTP from a viewer is only allowed for audio (PT=98). Anything
             // else (video PTs) is dropped.
             if let (header, _) = RTPHeader.decode(from: data),
-                header.payloadType == RTPHeader.aacPayloadType
+                header.payloadType == RTPHeader.voicePayloadType
             {
                 handleInboundAudioRTP(data, header: header, from: addr)
             }

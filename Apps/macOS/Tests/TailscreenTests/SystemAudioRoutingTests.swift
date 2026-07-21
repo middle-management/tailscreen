@@ -15,7 +15,7 @@ final class SystemAudioRoutingTests: XCTestCase {
     }
 
     func testVoicePayloadTypeRoutesToVoice() {
-        XCTAssertEqual(VoiceChannel.audioRoute(payloadType: RTPHeader.aacPayloadType), .voice)
+        XCTAssertEqual(VoiceChannel.audioRoute(payloadType: RTPHeader.voicePayloadType), .voice)
     }
 
     func testSystemAudioPayloadTypeRoutesToSystemAudio() {
