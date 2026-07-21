@@ -274,7 +274,7 @@ private final class StatusVideoSink: VideoSink {
         self.logger = logger
     }
 
-    func present(_ frame: DecodedVideoFrame) {
+    func present(_ frame: any DecodedFrame) {
         if !announced {
             logger.log("▶ Receiving video — \(frame.width)×\(frame.height)")
             announced = true

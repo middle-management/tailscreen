@@ -19,7 +19,9 @@ final class PipelineIntegrationTests: XCTestCase {
 
     private final class CollectingVideoSink: VideoSink {
         var frames: [DecodedVideoFrame] = []
-        func present(_ frame: DecodedVideoFrame) { frames.append(frame) }
+        func present(_ frame: any DecodedFrame) {
+            if let frame = frame as? DecodedVideoFrame { frames.append(frame) }
+        }
     }
 
     // MARK: - Real decode reaches the sink

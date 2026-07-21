@@ -210,6 +210,13 @@ arm needs — a faithful port of the mac client's receive-side FEC. Ingest now
 drains all ready AUs per packet (`MultiCodecDepacketizer.drainReady`) so an
 FEC-recovered tail packet with no trailing traffic still surfaces its frame.
 
+Because `ViewerSession` now duplicates the mac client's loss-recovery core
+almost verbatim, the natural next consolidation is to make the mac viewer
+*reuse* it as its receive-side data plane (one tested implementation, run on
+Linux CI every PR). The seam work that unblocks that — starting with making
+the decoded video frame opaque to the session so a mac `CVPixelBuffer` flows
+through zero-copy — lives in **`docs/mac-viewer-convergence.md`**.
+
 *Landed:* the **viewer wiring** — `Apps/linux`, a SwiftPM package that plugs
 the concrete backends into `ViewerSession`: `FFmpegVideoDecoder`
 (FFmpegKit → `VideoDecoding`), `SDLVideoSink` (SDLKit → `VideoSink`),
