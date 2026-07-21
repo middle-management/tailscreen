@@ -133,6 +133,15 @@ public final class ViewerSession {
             self.depacketizer = MultiCodecDepacketizer()
         }
         self.nack = NACKScheduler()
+
+        // Route decoded frames straight to the sink, and decode failures to a
+        // PLI (keyframe request), regardless of NACK negotiation. Captured
+        // directly (not via `self`) so the decoder's callbacks don't retain the
+        // session; per `VideoDecoding`'s threading contract these fire on the
+        // host's serialization context (synchronously for FFmpeg, after an
+        // adapter hop for an async backend like VideoToolbox).
+        decoder.onDecodedFrame = { videoSink.present($0) }
+        decoder.onDecodeFailure = { onControlToSend(ScreenShareControlMessage.encode(.pli)) }
     }
 
     // MARK: - Lifecycle
@@ -287,14 +296,14 @@ public final class ViewerSession {
     /// AU completion, decode).
     private func ingestVideo(_ packet: Data) {
         guard let au = depacketizer.ingest(packet, nowNs: nowNs) else { return }
-        decodeAndPresent(au)
+        submit(au)
         // A gap fill (reorder completion or an FEC recovery) can unblock a run
         // of buffered AUs at once; `ingest` returns only the first and trickles
-        // the rest one per later packet. Present them all now instead — a
-        // viewer has no reason to hold a ready frame, and an FEC-recovered
-        // tail packet may have no trailing wire packet to trickle out on.
+        // the rest one per later packet. Submit them all now instead — a viewer
+        // has no reason to hold a ready frame, and an FEC-recovered tail packet
+        // may have no trailing wire packet to trickle out on.
         for extra in depacketizer.drainReady() {
-            decodeAndPresent(extra)
+            submit(extra)
         }
     }
 
@@ -315,17 +324,12 @@ public final class ViewerSession {
         ingestVideo(recovery.packet)
     }
 
-    private func decodeAndPresent(_ au: VideoAccessUnit) {
-        do {
-            let frames = try decoder.decode(accessUnit: au.avcc, codec: au.codec, isKeyframe: au.containsIDR)
-            for frame in frames {
-                videoSink.present(frame)
-            }
-        } catch {
-            // Decode failed — ask for a fresh keyframe so the stream can
-            // recover, regardless of NACK negotiation.
-            onControlToSend(ScreenShareControlMessage.encode(.pli))
-        }
+    /// Submit one access unit to the decoder. Decoded frames come back through
+    /// `onDecodedFrame` → the sink (wired in `init`); a decode failure comes
+    /// back through `onDecodeFailure` → a PLI. For a synchronous decoder both
+    /// happen inside this call; for an async one, later.
+    private func submit(_ au: VideoAccessUnit) {
+        decoder.decode(accessUnit: au.avcc, codec: au.codec, isKeyframe: au.containsIDR)
     }
 
     // MARK: - Audio handling

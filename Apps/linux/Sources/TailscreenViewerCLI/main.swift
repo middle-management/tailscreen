@@ -117,8 +117,13 @@ if let playFile = ProcessInfo.processInfo.environment["TAILSCREEN_PLAY_FILE"] {
         fail("play-file: could not read \(playFile)")
     }
     let codec: VideoCodec = ProcessInfo.processInfo.environment["TAILSCREEN_PLAY_H264"] == "1" ? .h264 : .hevc
-    let frames = (try? decoder.decode(accessUnit: data, codec: codec, isKeyframe: true)) ?? []
-    guard let frame = frames.first else { fail("play-file: decoded 0 frames from \(playFile)") }
+    // The decoder delivers via callback now (sync for FFmpeg, so the frame is
+    // captured by the time `decode` returns). This path exits before the
+    // pipeline wires its own callback, so setting it here is safe.
+    var decodedFrame: (any DecodedFrame)?
+    decoder.onDecodedFrame = { decodedFrame = $0 }
+    decoder.decode(accessUnit: data, codec: codec, isKeyframe: true)
+    guard let frame = decodedFrame else { fail("play-file: decoded 0 frames from \(playFile)") }
     FileHandle.standardError.write(
         Data("play-file: showing \(frame.width)×\(frame.height) — close the window to quit\n".utf8))
     while !videoSink.pollShouldClose() {
