@@ -36,6 +36,16 @@ public final class ViewerSession {
     /// / FEC — the sharer-only bits are never set here).
     public let caps: ScreenShareCaps
 
+    // MARK: Observation hooks (optional; for a host stats overlay)
+
+    /// Called each time the session emits a PLI (keyframe request) — whether
+    /// from the loss-recovery scheduler or a decode failure.
+    public var onPLISent: (() -> Void)?
+    /// Called each time the session emits a NACK (selective-retransmit request).
+    public var onNACKSent: (() -> Void)?
+    /// Called each time the session recovers a packet via FEC.
+    public var onFECRecovered: (() -> Void)?
+
     private let decoder: VideoDecoding
     private let videoSink: VideoSink
     private let audioSink: AudioSink?
@@ -153,7 +163,10 @@ public final class ViewerSession {
         // host's serialization context (synchronously for FFmpeg, after an
         // adapter hop for an async backend like VideoToolbox).
         decoder.onDecodedFrame = { videoSink.present($0) }
-        decoder.onDecodeFailure = { onControlToSend(ScreenShareControlMessage.encode(.pli)) }
+        decoder.onDecodeFailure = { [weak self] in
+            onControlToSend(ScreenShareControlMessage.encode(.pli))
+            self?.onPLISent?()
+        }
     }
 
     // MARK: - Lifecycle
@@ -329,6 +342,7 @@ public final class ViewerSession {
     /// recovered tail-of-batch marker so the next batch opens no phantom gap).
     private func processRecoveredPacket(_ recovery: FECGroupBuffer.Recovery) {
         fecRecoveredSinceReport += 1
+        onFECRecovered?()
         if caps.contains(.receiverReport) {
             rr.observe(seq: recovery.seq)
         }
@@ -378,8 +392,10 @@ public final class ViewerSession {
                 let entries = NACKScheduler.packFCI(seqs)
                 guard !entries.isEmpty else { continue }
                 onControlToSend(ScreenShareControlMessage.encodeNACK(entries))
+                onNACKSent?()
             case .sendPLI:
                 onControlToSend(ScreenShareControlMessage.encode(.pli))
+                onPLISent?()
             }
         }
     }

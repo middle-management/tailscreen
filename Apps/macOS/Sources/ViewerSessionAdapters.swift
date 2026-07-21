@@ -65,6 +65,23 @@ final class VTVideoDecoderAdapter: VideoDecoding, @unchecked Sendable {
     var onDecodedFrame: ((any DecodedFrame) -> Void)?
     var onDecodeFailure: (() -> Void)?
 
+    /// Mac-only decode-recovery / codec-fallback pass-throughs. These bypass
+    /// `ViewerSession` entirely — it never inspects decoded frames — and fire on
+    /// the underlying decoder's serial queue (no `callbackQueue` hop), exactly as
+    /// the legacy client wired the raw `VideoDecoder` callbacks. The host uses
+    /// them to drive the CODEC_NO (`0x07`) H.264 fallback and the
+    /// `DecodeRecoveryAction` escalation ladder that the session's naive
+    /// `onDecodeFailure → PLI` doesn't cover.
+    ///
+    /// `onCodecUnsupported` carries the codec the decoder couldn't build a
+    /// session for (so the host can ask the sharer to switch codecs); because it
+    /// takes over the underlying decoder's `onDecodeFailure`, the session's own
+    /// `onDecodeFailure` seam is left unused on mac — the ladder owns PLIs.
+    var onCodecUnsupported: ((VideoCodec) -> Void)?
+    var onFrameDecodeFailed: (() -> Void)?
+    var onRecoveryAction: ((DecodeRecoveryAction) -> Void)?
+    var onRecovered: (() -> Void)?
+
     private let decoder: VideoDecoder
     private let callbackQueue: DispatchQueue
     private var installedParameters: CodecParameterSets?
@@ -85,14 +102,17 @@ final class VTVideoDecoderAdapter: VideoDecoding, @unchecked Sendable {
             self.callbackQueue.async { self.onDecodedFrame?(box) }
         }
         // "Can't build a decompression session" (typically HEVC on a Mac
-        // without HEVC decode) surfaces as a decode failure → the session
-        // answers with a PLI. The richer CODEC_NO H.264 fallback and the
-        // decode-recovery ladder stay in the client for now and move behind
-        // this adapter in a later step.
-        decoder.onDecodeFailure = { [weak self] _ in
-            guard let self else { return }
-            self.callbackQueue.async { self.onDecodeFailure?() }
+        // without HEVC decode): route to the CODEC_NO H.264 fallback with the
+        // offending codec, not the session's plain PLI (a fresh keyframe in the
+        // same undecodable codec wouldn't help). Fires on the decoder's queue.
+        decoder.onDecodeFailure = { [weak self] codec in
+            self?.onCodecUnsupported?(codec)
         }
+        // The per-frame decode-failure stats signal and the consecutive-failure
+        // escalation ladder pass straight through to the host (no session hop).
+        decoder.onFrameDecodeFailed = { [weak self] in self?.onFrameDecodeFailed?() }
+        decoder.onRecoveryAction = { [weak self] action in self?.onRecoveryAction?(action) }
+        decoder.onRecovered = { [weak self] in self?.onRecovered?() }
     }
 
     func decode(accessUnit: Data, codec: VideoCodec, isKeyframe: Bool) {

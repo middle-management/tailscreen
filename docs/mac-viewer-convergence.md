@@ -98,12 +98,17 @@ does today. nil (the default) keeps the built-in `AudioSink` path, so Linux
 is unchanged. Covered by a passthrough test (a real PT-98 datagram is
 forwarded byte-for-byte and the built-in path stays silent).
 
-### A.4 — Observation hooks (next, optional)
+### A.4 — Observation hooks ✅ (landed)
 
-Lightweight `onPLISent` / `onNACKSent` / `onFECRecovered` / `onDecodeFailure`
-callbacks so the mac stats overlay stays fed once the session owns that
-emission. Not a blocker for the data plane — can also be folded into Phase B
-when the mac stats wiring actually needs them.
+Lightweight `onPLISent` / `onNACKSent` / `onFECRecovered` callbacks on
+`ViewerSession` so the mac stats overlay stays fed once the session owns loss-
+recovery emission: they fire alongside every emitted PLI/NACK and each
+FEC-recovered packet. The mac client wires them to the renderer's
+`notePLISent` / `noteNACKSent` / `noteFECRecovered` counters in
+`buildViewerSession`; received-bytes/codec accounting rides a small
+`noteReceivedVideoStats` helper in the receive loop (the session treats frames
+as opaque, so byte/codec accounting stays host-side). Covered by hook tests in
+`ViewerSessionTests`.
 
 ## Adapter design (Phase B — in progress)
 
@@ -120,10 +125,12 @@ the client — that's Phase C):
   install stops being a session concern), and it bridges VideoToolbox's
   asynchronous `CVPixelBuffer` callback to the session's `onDecodedFrame` — with
   the **thread hop** onto a host-supplied `callbackQueue` (the receive queue)
-  the threading contract requires. Emits `CVPixelBufferBox`. *Deferred to a
-  later step:* moving the full CODEC_NO H.264 fallback + decode-recovery ladder
-  behind the adapter — for now a session-create failure surfaces as
-  `onDecodeFailure` → PLI.
+  the threading contract requires. Emits `CVPixelBufferBox`. It also exposes
+  mac-only pass-through hooks (`onCodecUnsupported`, `onFrameDecodeFailed`,
+  `onRecoveryAction`, `onRecovered`) that bypass `ViewerSession` and carry the
+  full CODEC_NO H.264 fallback + decode-recovery ladder to the client, so a
+  session-build failure drives the codec fallback (not a plain PLI) — parity
+  with the legacy loop.
 - **`MetalSinkAdapter: VideoSink`** forwards `present(box)` →
   `renderer.setPixelBuffer(box.buffer, receiveUptimeNs:)` (the timestamp the
   stats overlay wants rides on the box).
@@ -150,11 +157,15 @@ mac `build`/`test` CI job, not the Linux loop.
   session's negotiated state (SSRC + caps, pending/denied/stopped) into the
   existing client callbacks. Default off; the legacy loop is untouched. This
   path is **compile-verified on CI only** — its runtime correctness needs a
-  local A/B on a Mac. Known first-cut gaps vs. the legacy loop: the stats
-  overlay isn't fed, the HEVC→H.264 `CODEC_NO` fallback degrades to a plain
-  PLI, the decode-recovery ladder isn't driven, and a legacy 5-byte HELLO_ACK
-  (old sharer) leaves the session without an SSRC. Closing those, then
-  swapping the default, is the rest of Phase C.
+  local A/B on a Mac (validated once under `net-impair.sh`). *Reach-parity
+  landed:* the stats overlay is now fed (received bytes/codec + PLI/NACK/FEC
+  counters via the A.4 hooks), and the `VTVideoDecoderAdapter` routes its
+  codec-unsupported failure to the client's HEVC→H.264 `CODEC_NO` fallback and
+  passes the decode-recovery ladder
+  (`onFrameDecodeFailed`/`onRecoveryAction`/`onRecovered`) straight through.
+  Remaining first-cut gap: a legacy 5-byte HELLO_ACK (old sharer) leaves the
+  session without an SSRC — a small separate portable fix. Swapping the default
+  is the rest of Phase C.
 - **Phase D** — move keepalive / idle / annotation / stats-feeding to sit
   _around_ the session core; **delete** the duplicated FEC/NACK/RR/PLI from the
   client.

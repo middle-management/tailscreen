@@ -180,6 +180,85 @@ final class ViewerSessionTests: XCTestCase {
         XCTAssertGreaterThan(control.count(of: .pli), 0, "decode failure should request a keyframe")
     }
 
+    // MARK: - Observation hooks (stats overlay)
+
+    /// The optional `onPLISent` hook fires whenever the session emits a PLI —
+    /// here via a decode failure — so a host stats overlay can count keyframe
+    /// requests without re-parsing the outbound control bytes.
+    func testOnPLISentHookFiresOnDecodeFailure() {
+        let decoder = StubDecoder()
+        decoder.shouldThrow = true
+        let sink = StubVideoSink()
+        let control = ControlCollector()
+        let session = ViewerSession(
+            caps: [.receiverReport], decoder: decoder, videoSink: sink,
+            audioSink: nil, onControlToSend: control.send
+        )
+        var plis = 0
+        session.onPLISent = { plis += 1 }
+
+        let packetizer = H264Packetizer()
+        let nals = AVCCParser.nalUnits(from: makeAVCC())
+        for packet in packetizer.packetize(nals: nals, timestamp: 9000, ssrc: 7, startSequence: 0) {
+            session.receiveRTP(packet)
+        }
+
+        XCTAssertEqual(plis, control.count(of: .pli), "onPLISent must fire once per emitted PLI")
+        XCTAssertGreaterThan(plis, 0)
+    }
+
+    /// `onNACKSent` fires alongside every emitted NACK; a real gap surfaces at
+    /// least one of a NACK or a PLI, and whichever fires is mirrored by its hook.
+    func testOnNACKSentHookFiresWithNack() {
+        let decoder = StubDecoder()
+        let sink = StubVideoSink()
+        let control = ControlCollector()
+        let session = ViewerSession(
+            caps: fullCaps, decoder: decoder, videoSink: sink,
+            audioSink: nil, onControlToSend: control.send
+        )
+        var nacks = 0
+        var plis = 0
+        session.onNACKSent = { nacks += 1 }
+        session.onPLISent = { plis += 1 }
+
+        let packetizer = H264Packetizer()
+        let nals = AVCCParser.nalUnits(from: makeAVCC(byteCount: 200, marker: 0x41))
+        var packets: [Data] = []
+        for i in 0..<8 {
+            packets.append(contentsOf: packetizer.packetize(
+                nals: nals, timestamp: UInt32(9000 + i * 3000), ssrc: 42, startSequence: UInt16(i)))
+        }
+        for (i, packet) in packets.enumerated() where i != 2 {
+            session.receiveRTP(packet)
+        }
+        session.tick(nowNs: 0)
+
+        XCTAssertEqual(nacks, control.count(of: .nack), "onNACKSent must mirror emitted NACKs")
+        XCTAssertEqual(plis, control.count(of: .pli), "onPLISent must mirror emitted PLIs")
+        XCTAssertGreaterThan(nacks + plis, 0)
+    }
+
+    /// `onFECRecovered` fires once per FEC-recovered packet, so the overlay's
+    /// recovery counter tracks the same events the extended RR reports.
+    func testOnFECRecoveredHookFiresOnRecovery() {
+        let decoder = StubDecoder()
+        let sink = StubVideoSink()
+        let control = ControlCollector()
+        let session = fecSession(decoder, sink, control)
+        var recovered = 0
+        session.onFECRecovered = { recovered += 1 }
+
+        let (packets, parity) = makeFECGroup(base: 0, count: 5, ssrc: 5)
+        session.receiveRTP(parity)
+        for (i, packet) in packets.enumerated() where i != 4 {
+            session.receiveRTP(packet)
+        }
+        session.tick(nowNs: 1_000_000)
+
+        XCTAssertEqual(recovered, 1, "one FEC recovery should fire onFECRecovered exactly once")
+    }
+
     /// An async decoder delivers frames out-of-band (after `decode` returns) —
     /// the session presents whatever `onDecodedFrame` hands it, whenever it
     /// arrives, so a VideoToolbox-style backend works through the same seam.
