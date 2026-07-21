@@ -1,9 +1,7 @@
 import Foundation
 import XCTest
 
-@testable import Tailscreen
 @testable import TailscreenProtocol
-@testable import TailscreenTransport
 
 /// Pure-logic tests for the send-side `RetransmitBuffer`: seq → template
 /// lookup (including UInt16 wraparound), the triple eviction policy (age /

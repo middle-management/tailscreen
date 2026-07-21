@@ -1,8 +1,6 @@
 import XCTest
 
-@testable import Tailscreen
 @testable import TailscreenProtocol
-@testable import TailscreenTransport
 
 /// Pure tests for the viewer-side FEC group buffer: single-loss recovery,
 /// parity-before-member reordering, multi-loss deferral to NACK (parity

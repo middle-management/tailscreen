@@ -267,15 +267,38 @@ it bytes (`receiveRTP`) and a clock (`tick(nowNs:)`) and ships its outputs — s
 it's fully unit-testable and portable, and it stays free of any concrete
 codec/renderer/audio backend (FFmpeg/SDL/ALSA plug in behind the protocols in a
 later PR). Depends on `TailscreenProtocol` + `TailscreenAudio` only, so it also
-builds on Linux; the video path + audio path + HELLO/PLI/NACK/RR handshake are
-covered, FEC ingest is a noted follow-up (see the `TODO(fec)` in
-`ViewerSession.swift`). Tests: `TailscreenViewerTests`.
+builds on Linux; the video path + audio path + HELLO/PLI/NACK/RR handshake +
+**FEC ingest** are covered. FEC ingest mirrors the mac client: `FECGroupBuffer`
++ `FECCodec.recover` arm on the first `0x0D` parity datagram, recovered packets
+feed the shared ingest path (RR counts them received, `NACKScheduler.noteRecovered`
+clears the gap without an RTT sample), NACK tolerances loosen in place while
+parity flows and disarm after `TransportTuning.fecParityIdleNs`, and the RR's
+`fecRecovered` field carries the raw-loss signal. `ViewerSession.ingestVideo`
+now drains all ready AUs after each ingest (`MultiCodecDepacketizer.drainReady`)
+so a gap fill — reorder completion or an FEC-recovered tail packet with no
+trailing traffic — surfaces every unblocked frame immediately. Tests:
+`TailscreenViewerTests`.
 
 The rules for package files (no Apple frameworks; how to move a file in;
 what must be `public`) live canonically in
 **`Packages/TailscreenKit/README.md`** — read it before touching the
-package. The package's own test target is a shallow smoke suite only; the
-real coverage stays in `Apps/macOS/Tests/TailscreenTests`.
+package. The package's `TailscreenProtocolTests` target now carries the
+migrated pure suites — the loss-recovery/RTP/wire/util tests whose subject
+types live entirely in `TailscreenProtocol`/`TailscreenAudio`
+(`FECCodecTests`, `FECGroupBufferTests`, `NACKSchedulerTests`,
+`RetransmitBufferTests`, `RRAccountingTests`, `RTPPacketTests`,
+`RTPBufferPoolTests`, `RTPAudioTests`, `ReceiveLoopPolicyTests`,
+`CaptureHelperWireTests`, `ScreenShareProtocolTests`,
+`ShareResponseProtocolTests`, `ShareLockTests`, `QualitySettingsTests`,
+`TailscreenInstanceTests`, `ViewerZoomMathTests`, `OpusAudioCodecTests`),
+so they run on Linux CI (`linux-protocol`) instead of only in the mac
+build. Suites that touch mac-only symbols stay in
+`Apps/macOS/Tests/TailscreenTests`: anything importing an Apple framework,
+the server/`AppState`/`VideoDecoder`/`VoiceChannel` decision suites, and the
+impairment/fuzz cluster (`RTPLossyChannelTests`, `ParserFuzzTests`,
+`SoakTests`) whose shared `LossyChannel`/`ParserFuzzHarness` helpers still
+have mac consumers. When you add a pure suite for portable code, put it in
+the package target; when it mixes in a mac symbol, it stays mac-side.
 
 The Linux/Windows roadmap this enables (viewer first, then sharer) lives in
 `docs/porting-plan.md`.

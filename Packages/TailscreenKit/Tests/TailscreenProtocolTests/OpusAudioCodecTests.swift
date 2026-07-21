@@ -1,9 +1,7 @@
 import TailscreenAudio
 import XCTest
 
-@testable import Tailscreen
 @testable import TailscreenProtocol
-@testable import TailscreenTransport
 
 /// App-level round-trip over the `OpusVoiceEncoder` / `OpusVoiceDecoder`
 /// wrappers (the Float32↔Int16 boundary + 960-sample framing on top of

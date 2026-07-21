@@ -152,6 +152,143 @@ final class ViewerSessionTests: XCTestCase {
         XCTAssertGreaterThan(control.count(of: .pli), 0, "decode failure should request a keyframe")
     }
 
+    // MARK: - FEC ingest
+
+    /// Build N contiguous single-packet IDR AUs (one RTP packet each, seqs
+    /// `base..<base+N`, one ssrc) plus the XOR parity datagram covering them.
+    private func makeFECGroup(
+        base: UInt16, count: Int, ssrc: UInt32
+    ) -> (packets: [Data], parity: Data) {
+        let packetizer = H264Packetizer()
+        let nals = AVCCParser.nalUnits(from: makeAVCC(byteCount: 200, marker: 0x41))
+        var packets: [Data] = []
+        for i in 0..<count {
+            let p = packetizer.packetize(
+                nals: nals, timestamp: UInt32(9000 + i * 3000), ssrc: ssrc,
+                startSequence: base &+ UInt16(i))
+            precondition(p.count == 1, "200-byte AU should be a single RTP packet")
+            packets.append(p[0])
+        }
+        let body = FECCodec.parityBody(for: packets[0..<count])
+        let parity = ScreenShareControlMessage.encodeFEC(baseSeq: base, count: count, body: body)
+        return (packets, parity)
+    }
+
+    private func fecSession(
+        _ decoder: StubDecoder, _ sink: StubVideoSink, _ control: ControlCollector,
+        serverFEC: Bool = true
+    ) -> ViewerSession {
+        let session = ViewerSession(
+            caps: fullCaps, decoder: decoder, videoSink: sink,
+            audioSink: nil, onControlToSend: control.send)
+        let serverCaps: ScreenShareCaps = serverFEC ? fullCaps : [.nack, .receiverReport]
+        session.receiveRTP(ScreenShareControlMessage.encodeHelloAck(ssrc: 5, caps: serverCaps))
+        return session
+    }
+
+    /// Parity-first ordering (the buffer arms on the first parity, then solves
+    /// as the completing member arrives): one lost packet in a group is
+    /// recovered with zero NACK/PLI and the missing AU still reaches the sink.
+    func testFECRecoversSingleLoss() {
+        let decoder = StubDecoder()
+        let sink = StubVideoSink()
+        let control = ControlCollector()
+        let session = fecSession(decoder, sink, control)
+
+        let (packets, parity) = makeFECGroup(base: 0, count: 5, ssrc: 5)
+        let missing = 4  // the tail (marker) packet — the load-bearing recovery
+
+        // Parity first arms the machinery and buffers the group; members then
+        // fill in until exactly one is missing, at which point it solves.
+        session.receiveRTP(parity)
+        for (i, packet) in packets.enumerated() where i != missing {
+            session.receiveRTP(packet)
+        }
+        session.tick(nowNs: 1_000_000)
+
+        XCTAssertEqual(sink.frames.count, 5, "the lost AU should be FEC-recovered, so all 5 present")
+        XCTAssertEqual(control.count(of: .pli), 0, "a single loss recovered by FEC needs no PLI")
+        XCTAssertEqual(control.count(of: .nack), 0, "a single loss recovered by FEC needs no NACK")
+    }
+
+    /// Members-first ordering with the buffer already armed: the parity solves
+    /// immediately on arrival (the `trySolve` path, distinct from the
+    /// solve-on-media path above). A prior fully-received group does the arming.
+    func testFECImmediateSolveOnParityArrival() {
+        let decoder = StubDecoder()
+        let sink = StubVideoSink()
+        let control = ControlCollector()
+        let session = fecSession(decoder, sink, control)
+
+        // Group A: parity-first, fully delivered — arms the buffer, recovers
+        // nothing (nothing was lost).
+        let (aPackets, aParity) = makeFECGroup(base: 0, count: 5, ssrc: 5)
+        session.receiveRTP(aParity)
+        for packet in aPackets { session.receiveRTP(packet) }
+        XCTAssertEqual(sink.frames.count, 5)
+
+        // Group B: all members but the middle one arrive (retained because the
+        // buffer is now armed), then the parity solves the hole immediately.
+        let (bPackets, bParity) = makeFECGroup(base: 5, count: 5, ssrc: 5)
+        let missing = 2
+        for (i, packet) in bPackets.enumerated() where i != missing {
+            session.receiveRTP(packet)
+        }
+        session.receiveRTP(bParity)
+        session.tick(nowNs: 1_000_000)
+
+        XCTAssertEqual(sink.frames.count, 10, "group B's lost AU should solve on parity arrival")
+        XCTAssertEqual(control.count(of: .pli), 0)
+    }
+
+    /// A recovered packet counts as *received* in the RR (residual loss, the
+    /// bitrate arm) while the extended RR's `fecRecovered` field carries the
+    /// raw-loss signal the sharer's FEC arm needs.
+    func testFECRecoveryCountedInReceiverReport() throws {
+        let decoder = StubDecoder()
+        let sink = StubVideoSink()
+        let control = ControlCollector()
+        let session = fecSession(decoder, sink, control)
+
+        let (packets, parity) = makeFECGroup(base: 0, count: 5, ssrc: 5)
+        session.receiveRTP(parity)
+        for (i, packet) in packets.enumerated() where i != 3 {
+            session.receiveRTP(packet)
+        }
+        session.tick(nowNs: 1_000_000_000)
+
+        let rrData = try XCTUnwrap(
+            control.datagrams.first { ScreenShareControlMessage.decode($0) == .receiverReport })
+        let report = try XCTUnwrap(ScreenShareControlMessage.decodeReceiverReport(rrData))
+        XCTAssertEqual(report.fecRecovered, 1, "one FEC recovery should be reported")
+
+        // The next report resets the delta (drained on send).
+        control.datagrams.removeAll()
+        session.tick(nowNs: 3_000_000_000)
+        if let next = control.datagrams.first(where: { ScreenShareControlMessage.decode($0) == .receiverReport }) {
+            XCTAssertEqual(ScreenShareControlMessage.decodeReceiverReport(next)?.fecRecovered, 0)
+        }
+    }
+
+    /// Parity is inert unless BOTH sides negotiated `.fec` — a sharer that
+    /// never advertised it (so the viewer's `.fec` cap goes unmatched) leaves
+    /// the loss unrecovered, exactly like a legacy peer.
+    func testParityIgnoredWithoutNegotiatedFEC() {
+        let decoder = StubDecoder()
+        let sink = StubVideoSink()
+        let control = ControlCollector()
+        let session = fecSession(decoder, sink, control, serverFEC: false)
+
+        let (packets, parity) = makeFECGroup(base: 0, count: 5, ssrc: 5)
+        session.receiveRTP(parity)
+        for (i, packet) in packets.enumerated() where i != 4 {
+            session.receiveRTP(packet)
+        }
+        session.tick(nowNs: 1_000_000)
+
+        XCTAssertEqual(sink.frames.count, 4, "without negotiated FEC the lost AU is not recovered")
+    }
+
     // MARK: - Audio
 
     func testOpusAudioReachesAudioSink() throws {

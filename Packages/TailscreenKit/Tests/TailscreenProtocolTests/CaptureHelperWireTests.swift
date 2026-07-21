@@ -1,8 +1,6 @@
 import XCTest
 
-@testable import Tailscreen
 @testable import TailscreenProtocol
-@testable import TailscreenTransport
 
 /// Round-trip the parent → helper framed protocol with focus on the
 /// new `contentFilter` message type. We can't exercise a real

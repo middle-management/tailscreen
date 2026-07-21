@@ -1,8 +1,6 @@
 import XCTest
 
-@testable import Tailscreen
 @testable import TailscreenProtocol
-@testable import TailscreenTransport
 
 /// Pure-decision tests for the viewer's `NACKScheduler`: reorder tolerance
 /// (pure reordering must never NACK), the retry cadence keyed to injected RTT,

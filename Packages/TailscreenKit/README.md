@@ -48,11 +48,18 @@ that roadmap.
   synthesizes those as public). Test-only seams stay `internal`: the test
   suite uses `@testable import TailscreenProtocol` /
   `@testable import TailscreenTransport` / `@testable import TailscreenAudio`.
-- `Tests/TailscreenProtocolTests` is a deliberately shallow smoke suite
-  proving the module *runs* (encode/decode/recover round trips) on Linux.
-  The exhaustive wire-format, loss-recovery, and fuzz coverage lives in the
-  main repo's `Tests/TailscreenTests`, which exercises this package through
-  the app's dependency.
+- `Tests/TailscreenProtocolTests` began as a shallow smoke suite and now
+  also holds the **migrated pure suites** — the loss-recovery/RTP/wire/util
+  tests whose subject types live entirely in this package (FEC, NACK,
+  retransmit, RR, RTP packet/buffer/audio, receive-loop policy, capture-helper
+  wire, screen-share/share-response protocol, share lock, quality settings,
+  instance naming, viewer zoom math, Opus codec). They run on Linux CI
+  (`linux-protocol`). A suite belongs here iff it imports no Apple framework
+  and references only package types; anything that mixes in a mac symbol (an
+  Apple-framework import, a server/`AppState`/`VideoDecoder`/`VoiceChannel`
+  decision, or a shared helper with a mac consumer like `LossyChannel` /
+  `ParserFuzzHarness`) stays in the main repo's `Tests/TailscreenTests`, which
+  exercises this package through the app's dependency.
 
 ## Build & test
 
