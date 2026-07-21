@@ -209,7 +209,7 @@ public final class ViewerSession {
 
     private func decodeAndPresent(_ au: VideoAccessUnit) {
         do {
-            let frames = try decoder.decode(accessUnit: au.avcc, isKeyframe: au.containsIDR)
+            let frames = try decoder.decode(accessUnit: au.avcc, codec: au.codec, isKeyframe: au.containsIDR)
             for frame in frames {
                 videoSink.present(frame)
             }

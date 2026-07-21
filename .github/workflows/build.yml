@@ -306,6 +306,43 @@ jobs:
       - name: Test TailscaleKit on Linux
         run: PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" swift test --package-path Packages/TailscaleKit
 
+  # Viewer-integration gate: the portable Linux viewer package (Apps/linux)
+  # must build and pass its pipeline integration test on Linux. This is where
+  # the concrete backends finally plug into the portable ViewerSession core —
+  # FFmpegKit decode + SDLKit render + ALSAKit audio behind the
+  # VideoDecoding/VideoSink/AudioSink seams (docs/porting-plan.md, "Viewer
+  # wiring"). The `swift test` run:
+  #   • runs `PipelineIntegrationTests` (real H.264 encode → RTP → ViewerSession
+  #     → FFmpeg decode → collecting sinks — no tsnet, no window, no device), and
+  #   • compiles AND LINKS the `tailscreen-viewer` executable, which pulls in
+  #     the tsnet transport, so this doubles as the Linux link-check for that
+  #     binary (a live run needs a real tailnet and stays local-only).
+  # Heavier than the per-backend gates above: it needs every A/V dev lib plus
+  # the libtailscale Go c-archive (same build as linux-tailscalekit).
+  linux-viewer:
+    runs-on: ubuntu-latest
+    container: swift:6.1-noble
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install build tools + A/V dev libraries
+        # golang-go/make/gcc for the libtailscale c-archive (see
+        # linux-tailscalekit); the rest are the viewer's decode/render/audio
+        # system libs (FFmpeg / SDL2 / ALSA / Opus).
+        run: |
+          apt-get update && apt-get install -y --no-install-recommends \
+            golang-go make gcc libc6-dev pkg-config \
+            libavcodec-dev libavutil-dev libsdl2-dev libasound2-dev libopus-dev
+      - name: Build libtailscale (patched) on Linux
+        env:
+          GOFLAGS: -buildvcs=false
+        run: make -C Packages/TailscaleKit
+      - name: Build + test the Linux viewer package
+        # PKG_CONFIG_PATH resolves libtailscale.pc (→ -L for libtailscale.a);
+        # the A/V libs are on the default pkg-config path.
+        run: PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" swift test --package-path Apps/linux
+
   lint:
     runs-on: macos-latest
     steps:

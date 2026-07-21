@@ -55,6 +55,13 @@ public enum TailscreenInstance {
     /// instances.
     public static let clientHostnamePrefix = "tailscreen-client-"
 
+    /// Hostname prefix the portable viewer (`Apps/linux`) registers its
+    /// ephemeral tsnet node under. Deliberately built on `clientHostnamePrefix`
+    /// so `isTailscreenServerHostname` excludes it — a transient viewer must not
+    /// appear as a connectable screen in peer discovery. (`TailscreenInstanceTests`
+    /// pins the `clientHostnamePrefix`-prefix invariant this relies on.)
+    public static let viewerHostnamePrefix = clientHostnamePrefix + "viewer-"
+
     /// True when `hostname` looks like a long-lived Tailscreen instance —
     /// i.e. an installation that can host or accept shares, not a
     /// transient viewer node.

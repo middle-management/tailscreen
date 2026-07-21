@@ -22,12 +22,18 @@ Runtime needs: Screen Recording permission, and either interactive Tailscale log
 ```
 tailscreen/
 ├── Apps/
-│   └── macOS/                  # The macOS app — a SwiftPM package (run app
-│       │                       #   `swift` commands from THIS directory)
+│   ├── macOS/                  # The macOS app — a SwiftPM package (run app
+│   │   │                       #   `swift` commands from THIS directory)
+│   │   ├── Package.swift
+│   │   ├── Sources/            # Tailscreen executable (Swift)
+│   │   ├── Tests/TailscreenTests/  # Unit + connectivity tests
+│   │   └── Resources/          # Tailscreen.icns (release .app packaging)
+│   └── linux/                  # The portable Linux/Windows VIEWER — a SwiftPM
+│       │                       #   package wiring FFmpegKit+SDLKit+ALSAKit into
+│       │                       #   the ViewerSession core (see its README)
 │       ├── Package.swift
-│       ├── Sources/            # Tailscreen executable (Swift)
-│       ├── Tests/TailscreenTests/  # Unit + connectivity tests
-│       └── Resources/          # Tailscreen.icns (release .app packaging)
+│       ├── Sources/{TailscreenViewerCore,TailscreenViewerCLI}/
+│       └── Tests/TailscreenViewerCoreTests/  # real-decode pipeline test
 ├── Packages/                   # Local SwiftPM packages the app depends on
 │   ├── TailscreenKit/          # Portable (Linux-buildable) protocol core —
 │   │   │                       #   a real dependency of the app (see its README)
@@ -40,9 +46,11 @@ tailscreen/
 │   │   │                       #   used by the mac app); see its README
 │   ├── ALSAKit/                # systemLibrary wrapper over libasound (ALSA) —
 │   │   │                       #   the Linux viewer's audio-playback backend
-│   │   │                       #   (Linux-only; not wired in yet); see README│   ├── SDLKit/                 # systemLibrary wrapper over SDL2 — the portable
+│   │   │                       #   (Linux-only; wired via Apps/linux); see README
+│   ├── SDLKit/                 # systemLibrary wrapper over SDL2 — the portable
 │   │   │                       #   Linux/Windows viewer's YUV video output
-│   │   │                       #   (Metal's counterpart); standalone, additive│   └── TailscaleKit/           # Wraps libtailscale
+│   │   │                       #   (Metal's counterpart; wired via Apps/linux)
+│   └── TailscaleKit/           # Wraps libtailscale
 │       ├── upstream/libtailscale/  # Git submodule (tailscale/libtailscale)
 │       ├── Sources/  lib/  include/  # Symlinks into upstream
 │       ├── Patches/            # .patch files applied to upstream Swift
@@ -387,7 +395,7 @@ User-facing strings are localized through SwiftPM resources. `Package.swift` set
 
 Three workflows under `.github/workflows/` (plus a docs-deploy workflow):
 
-- **Build** — runs `make build` + `make test` on every PR and push to `main`. Skips doc-only changes. Uses `concurrency.cancel-in-progress` to drop superseded runs. Also in this workflow: a **`linux-protocol` job** (Ubuntu, `swift:6.1-noble` container: `swift test --package-path Packages/TailscreenKit` — the required portability gate for the protocol package; needs the submodule + patches for the transport tier's header and apt `libopus-dev`/`pkg-config` for the `TailscreenAudio` tier, but no Go build), a **`linux-tailscalekit` job** (same container + apt Go: builds the patched libtailscale c-archive and runs the TailscaleKit unit tests on Linux — the transport-portability gate), a **`linux-opus` job** (same container + apt `libopus-dev`: builds `OpusKit` and runs its encode/decode round-trip tests — the audio-codec-portability gate for the Opus-only decision, `docs/porting-plan.md` #6), a **`linux-ffmpeg` job** (same container + apt `libavcodec-dev`: builds `FFmpegKit` and runs its H.264 decode / AVCC↔Annex-B tests — the video-decode-portability gate for the Linux/Windows viewer), a **`linux-alsa` job** (same container + apt `libasound2-dev`: builds `ALSAKit` and runs its PCM-playback tests against ALSA's `null` device — the audio-playback-portability gate for the Linux viewer's audio output), a **`linux-sdl` job** (same container + apt `libsdl2-dev`: builds `SDLKit` and runs its YUV texture-upload smoke tests headless under SDL's dummy video driver — the render-portability gate for the Linux/Windows viewer, `docs/porting-plan.md` "Render"), a **`build-release` job** (`swift build -c release` compile check, required — release-config breaks used to surface only on published releases) and a **diff-coverage gate** (`scripts/diff-coverage.sh`: lcov `DA:` records joined against `git diff -U0 origin/main...HEAD` changed lines in `Sources/*.swift`, fails under 70 % coverage of changed executable lines; currently `continue-on-error: true` with the same flip-to-required TODO convention as the `format` job).- **Soak** — nightly (`cron: 17 3 * * *`) + `workflow_dispatch`: runs `SoakTests` with `TAILSCREEN_SOAK=1` (the `ParserFuzzHarness` at ~50× PR budget plus the seeded `LossyChannel` impairment matrix). Deterministic — a red nightly names its reproducing seed/configuration.
+- **Build** — runs `make build` + `make test` on every PR and push to `main`. Skips doc-only changes. Uses `concurrency.cancel-in-progress` to drop superseded runs. Also in this workflow: a **`linux-protocol` job** (Ubuntu, `swift:6.1-noble` container: `swift test --package-path Packages/TailscreenKit` — the required portability gate for the protocol package; needs the submodule + patches for the transport tier's header and apt `libopus-dev`/`pkg-config` for the `TailscreenAudio` tier, but no Go build), a **`linux-tailscalekit` job** (same container + apt Go: builds the patched libtailscale c-archive and runs the TailscaleKit unit tests on Linux — the transport-portability gate), a **`linux-opus` job** (same container + apt `libopus-dev`: builds `OpusKit` and runs its encode/decode round-trip tests — the audio-codec-portability gate for the Opus-only decision, `docs/porting-plan.md` #6), a **`linux-ffmpeg` job** (same container + apt `libavcodec-dev`: builds `FFmpegKit` and runs its H.264 decode / AVCC↔Annex-B tests — the video-decode-portability gate for the Linux/Windows viewer), a **`linux-alsa` job** (same container + apt `libasound2-dev`: builds `ALSAKit` and runs its PCM-playback tests against ALSA's `null` device — the audio-playback-portability gate for the Linux viewer's audio output), a **`linux-sdl` job** (same container + apt `libsdl2-dev`: builds `SDLKit` and runs its YUV texture-upload smoke tests headless under SDL's dummy video driver — the render-portability gate for the Linux/Windows viewer, `docs/porting-plan.md` "Render"), a **`linux-viewer` job** (same container + all the A/V dev libs + the libtailscale Go c-archive: `swift test --package-path Apps/linux` — the viewer-integration gate that runs `PipelineIntegrationTests` (real H.264 encode → RTP → `ViewerSession` → FFmpeg decode → collecting sinks) AND link-checks the `tailscreen-viewer` tsnet executable on Linux; a live tsnet run stays local-only), a **`build-release` job** (`swift build -c release` compile check, required — release-config breaks used to surface only on published releases) and a **diff-coverage gate** (`scripts/diff-coverage.sh`: lcov `DA:` records joined against `git diff -U0 origin/main...HEAD` changed lines in `Sources/*.swift`, fails under 70 % coverage of changed executable lines; currently `continue-on-error: true` with the same flip-to-required TODO convention as the `format` job).- **Soak** — nightly (`cron: 17 3 * * *`) + `workflow_dispatch`: runs `SoakTests` with `TAILSCREEN_SOAK=1` (the `ParserFuzzHarness` at ~50× PR budget plus the seeded `LossyChannel` impairment matrix). Deterministic — a red nightly names its reproducing seed/configuration.
 - **Release** — fires when a GitHub release is **published**. Cross-builds `libtailscale.a` for `arm64` + `amd64`, lipo-merges, then `swift build -c release --arch arm64 --arch x86_64` for a universal Mach-O. Wraps it in `Tailscreen.app`, codesigns with a Developer ID identity, notarizes via `notarytool`, staples, and uploads the zipped `.app` + `checksums.txt` to the release. Signing + notarization run only when **all** of the Apple secrets (`APPLE_DEVELOPER_ID_CERT_P12`, `APPLE_DEVELOPER_ID_CERT_PASSWORD`, `APPLE_NOTARY_API_KEY_P8`, `APPLE_NOTARY_API_KEY_ID`, `APPLE_NOTARY_API_ISSUER_ID`) are set; otherwise an unsigned `.app` is uploaded with a warning. The Homebrew tap repo owns cask formatting.
 
 ## Git workflow notes
