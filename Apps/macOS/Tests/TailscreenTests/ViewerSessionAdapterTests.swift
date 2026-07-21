@@ -79,4 +79,58 @@ final class ViewerSessionAdapterTests: XCTestCase {
         XCTAssertEqual(frame.width, 320)
         XCTAssertEqual(frame.height, 240)
     }
+
+    // MARK: - Live VideoToolbox decode through the adapter
+
+    /// Feed a real, in-process-encoded access unit (params prepended in-band,
+    /// as the wire carries them on a keyframe) through `VTVideoDecoderAdapter`
+    /// and assert a decoded `CVPixelBufferBox` is delivered on the callback
+    /// queue — the load-bearing proof that the mac decode adapter actually
+    /// drives VideoToolbox and produces the zero-copy frame the convergence
+    /// depends on. Self-skips (via `encodeSyntheticAUs`) on a virtualized CI
+    /// runner with no hardware video path.
+    func testAdapterDecodesRealFrameToPixelBufferBox() async throws {
+        let synth = try await TailscreenE2E.encodeSyntheticAUs()
+
+        let codec: VideoCodec
+        let paramNALs: [Data]
+        switch synth.params {
+        case .h264(let sps, let pps):
+            codec = .h264
+            paramNALs = [sps, pps]
+        case .hevc(let vps, let sps, let pps):
+            codec = .hevc
+            paramNALs = [vps, sps, pps]
+        }
+        // The server prepends parameter sets in-band on keyframes; do the same
+        // so the adapter's own extraction installs them before decoding.
+        let firstAU = avcc(paramNALs) + synth.aus[0].data
+
+        let queue = DispatchQueue(label: "test.vt-adapter")
+        let adapter = VTVideoDecoderAdapter(callbackQueue: queue)
+        let delivered = expectation(description: "a decoded CVPixelBufferBox is delivered")
+        delivered.assertForOverFulfill = false
+        let lock = NSLock()
+        var received: CVPixelBufferBox?
+        adapter.onDecodedFrame = { frame in
+            lock.lock()
+            if received == nil { received = frame as? CVPixelBufferBox }
+            lock.unlock()
+            delivered.fulfill()
+        }
+
+        adapter.decode(accessUnit: firstAU, codec: codec, isKeyframe: true)
+        for au in synth.aus.dropFirst() {
+            adapter.decode(accessUnit: au.data, codec: codec, isKeyframe: au.isKey)
+        }
+
+        await fulfillment(of: [delivered], timeout: 15)
+
+        lock.lock()
+        let box = received
+        lock.unlock()
+        let unwrapped = try XCTUnwrap(box, "a CVPixelBufferBox should have been delivered")
+        XCTAssertGreaterThan(unwrapped.width, 0)
+        XCTAssertGreaterThan(unwrapped.height, 0)
+    }
 }
