@@ -65,23 +65,43 @@ public struct DecodedVideoFrame: Sendable, Equatable, DecodedFrame {
     }
 }
 
-/// A concrete video decoder the host supplies. `ViewerSession` hands it one
-/// reassembled AVCC access unit at a time; the implementation (VideoToolbox on
-/// macOS, FFmpeg on Linux, or a test stub) turns it into zero or more decoded
-/// frames. Throwing signals a decode failure the session answers with a PLI
-/// (keyframe request), so the stream can recover.
+/// A concrete video decoder the host supplies. `ViewerSession` *submits* one
+/// reassembled AVCC access unit at a time via `decode`, and receives decoded
+/// frames back through the `onDecodedFrame` callback — **synchronously** within
+/// `decode` for a synchronous backend (FFmpeg on Linux, or a test stub), or
+/// **later** for an asynchronous one (VideoToolbox on macOS, whose
+/// decompression session delivers frames on its own thread). A decode failure
+/// is signalled via `onDecodeFailure`; the session answers it with a PLI
+/// (keyframe request) so the stream can recover.
+///
+/// **Threading contract.** Both callbacks MUST be invoked on the same
+/// serialization context the host drives the session on (the queue it calls
+/// `receiveRTP` / `tick` from). A synchronous backend satisfies this for free
+/// — it fires the callback inside `decode`, which the host already called on
+/// that queue. An asynchronous backend must hop back to that context before
+/// invoking a callback, because `ViewerSession` is not `Sendable` and owns no
+/// queue of its own.
 public protocol VideoDecoding: AnyObject {
-    /// Decode one AVCC-formatted access unit. `codec` is the stream's codec
-    /// (`.h264` / `.hevc`), deterministically known from the RTP payload type —
-    /// the session forwards it so the decoder never has to sniff the bitstream.
-    /// `isKeyframe` is true when the AU carries an IDR (its in-band parameter
-    /// sets, if any, are inside `accessUnit` — the decoder extracts them).
-    /// Returns the frames the AU produced (usually one; may be empty while a
-    /// decoder primes) as opaque `DecodedFrame`s — the session passes them to
-    /// the sink untouched, so a decoder is free to emit CPU I420
-    /// (`DecodedVideoFrame`) or a platform-native handle its paired sink
-    /// understands.
-    func decode(accessUnit: Data, codec: VideoCodec, isKeyframe: Bool) throws -> [any DecodedFrame]
+    /// Invoked once per decoded frame. The session sets this at wiring time and
+    /// routes the (opaque) frame straight to the `VideoSink`. A decoder is free
+    /// to emit CPU I420 (`DecodedVideoFrame`) or a platform-native handle its
+    /// paired sink understands — the session never inspects it.
+    var onDecodedFrame: ((any DecodedFrame) -> Void)? { get set }
+
+    /// Invoked when decoding fails (a submit error, or an asynchronous decode
+    /// error). The session responds with a PLI so the sharer sends a fresh
+    /// keyframe. A backend that runs its own recovery ladder calls this only
+    /// when it actually wants the sharer to intervene.
+    var onDecodeFailure: (() -> Void)? { get set }
+
+    /// Submit one AVCC-formatted access unit for decoding. `codec` is the
+    /// stream's codec (`.h264` / `.hevc`), deterministically known from the RTP
+    /// payload type — the session forwards it so the decoder never has to sniff
+    /// the bitstream. `isKeyframe` is true when the AU carries an IDR (its
+    /// in-band parameter sets, if any, are inside `accessUnit` — the decoder
+    /// extracts them). Frames and failures are delivered via the callbacks
+    /// above, not returned.
+    func decode(accessUnit: Data, codec: VideoCodec, isKeyframe: Bool)
 }
 
 /// Where decoded frames go — the host's renderer (Metal on macOS, SDL/GL on

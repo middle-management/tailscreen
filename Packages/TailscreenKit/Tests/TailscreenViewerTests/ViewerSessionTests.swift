@@ -15,19 +15,45 @@ final class ViewerSessionTests: XCTestCase {
     /// Video decoder stub: returns a fixed frame per AU and records the AUs it
     /// was handed. Can be flipped to throw to exercise the decode-failure PLI.
     private final class StubDecoder: VideoDecoding {
+        var onDecodedFrame: ((any DecodedFrame) -> Void)?
+        var onDecodeFailure: (() -> Void)?
         var decoded: [(au: Data, isKeyframe: Bool)] = []
         var shouldThrow = false
-        struct Boom: Error {}
         let frame = DecodedVideoFrame(
             width: 4, height: 4,
             yPlane: [UInt8](repeating: 0x10, count: 16),
             uPlane: [UInt8](repeating: 0x80, count: 4),
             vPlane: [UInt8](repeating: 0x80, count: 4)
         )
-        func decode(accessUnit: Data, codec: VideoCodec, isKeyframe: Bool) throws -> [any DecodedFrame] {
-            if shouldThrow { throw Boom() }
+        func decode(accessUnit: Data, codec: VideoCodec, isKeyframe: Bool) {
+            if shouldThrow {
+                onDecodeFailure?()
+                return
+            }
             decoded.append((accessUnit, isKeyframe))
-            return [frame]
+            onDecodedFrame?(frame)  // synchronous delivery, inside decode
+        }
+    }
+
+    /// Models an asynchronous backend (VideoToolbox): `decode` returns without
+    /// delivering; the frame arrives later, when `flush()` is called (standing
+    /// in for the VT output callback, already hopped to the session's queue).
+    private final class AsyncStubDecoder: VideoDecoding {
+        var onDecodedFrame: ((any DecodedFrame) -> Void)?
+        var onDecodeFailure: (() -> Void)?
+        private var pending: [DecodedVideoFrame] = []
+        let frame = DecodedVideoFrame(
+            width: 8, height: 8,
+            yPlane: [UInt8](repeating: 0x10, count: 64),
+            uPlane: [UInt8](repeating: 0x80, count: 16),
+            vPlane: [UInt8](repeating: 0x80, count: 16)
+        )
+        func decode(accessUnit: Data, codec: VideoCodec, isKeyframe: Bool) {
+            pending.append(frame)  // not delivered yet — async backend
+        }
+        func flush() {
+            pending.forEach { onDecodedFrame?($0) }
+            pending.removeAll()
         }
     }
 
@@ -152,6 +178,30 @@ final class ViewerSessionTests: XCTestCase {
 
         XCTAssertEqual(sink.frames.count, 0)
         XCTAssertGreaterThan(control.count(of: .pli), 0, "decode failure should request a keyframe")
+    }
+
+    /// An async decoder delivers frames out-of-band (after `decode` returns) —
+    /// the session presents whatever `onDecodedFrame` hands it, whenever it
+    /// arrives, so a VideoToolbox-style backend works through the same seam.
+    func testAsyncDecoderDeliversFramesOutOfBand() {
+        let decoder = AsyncStubDecoder()
+        let sink = StubVideoSink()
+        let control = ControlCollector()
+        let session = ViewerSession(
+            caps: fullCaps, decoder: decoder, videoSink: sink,
+            audioSink: nil, onControlToSend: control.send
+        )
+
+        let packetizer = H264Packetizer()
+        let nals = AVCCParser.nalUnits(from: makeAVCC())
+        for packet in packetizer.packetize(nals: nals, timestamp: 9000, ssrc: 42, startSequence: 0) {
+            session.receiveRTP(packet)
+        }
+
+        XCTAssertEqual(sink.frames.count, 0, "an async decoder hasn't delivered yet")
+        decoder.flush()
+        XCTAssertEqual(sink.frames.count, 1, "the deferred frame reaches the sink once emitted")
+        XCTAssertEqual(sink.frames.first?.width, 8)
     }
 
     // MARK: - FEC ingest

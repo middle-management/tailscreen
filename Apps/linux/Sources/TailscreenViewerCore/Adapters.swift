@@ -18,19 +18,31 @@ import TailscreenViewer
 /// the RTP payload type and forwards it per-AU (`codec:`). A mid-stream codec
 /// change (rare — only a sharer H.264↔HEVC fallback) recreates the decoder.
 public final class FFmpegVideoDecoder: VideoDecoding {
+    public var onDecodedFrame: ((any DecodedFrame) -> Void)?
+    public var onDecodeFailure: (() -> Void)?
+
     private var decoder: FFmpeg.VideoDecoder?
     private var currentCodec: VideoCodec?
 
     public init() {}
 
-    public func decode(accessUnit: Data, codec: VideoCodec, isKeyframe: Bool) throws -> [any DecodedFrame] {
-        let dec = try decoderFor(codec)
-        let frames = try dec.decode(avcc: accessUnit)
-        return frames.map {
-            DecodedVideoFrame(
-                width: $0.width, height: $0.height,
-                yPlane: $0.yPlane, uPlane: $0.uPlane, vPlane: $0.vPlane
-            )
+    /// libavcodec decodes synchronously, so frames are delivered through
+    /// `onDecodedFrame` inside this call (satisfying the session's threading
+    /// contract for free). A decode error routes to `onDecodeFailure` → PLI.
+    public func decode(accessUnit: Data, codec: VideoCodec, isKeyframe: Bool) {
+        do {
+            let dec = try decoderFor(codec)
+            let frames = try dec.decode(avcc: accessUnit)
+            for frame in frames {
+                onDecodedFrame?(
+                    DecodedVideoFrame(
+                        width: frame.width, height: frame.height,
+                        yPlane: frame.yPlane, uPlane: frame.uPlane, vPlane: frame.vPlane
+                    )
+                )
+            }
+        } catch {
+            onDecodeFailure?()
         }
     }
 

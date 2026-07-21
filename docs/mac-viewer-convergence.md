@@ -70,19 +70,21 @@ adds near-zero ripple; the per-frame boxing cost is negligible at video rates.
 Compile-time frame/sink pairing via generics stays open as a later refinement
 if wanted.
 
-### A.2 — Async frame delivery (next)
+### A.2 — Async frame delivery ✅ (landed)
 
 The mac decoder is asynchronous (VideoToolbox decompression → an
 `onDecodedFrame: (CVPixelBuffer) -> Void` callback on VT's thread); the
-portable `decode(...) -> [frame]` is synchronous. Restructure the seam so a
-decoder **emits** frames via a session-provided callback rather than a return
-value: `decode(au)` submits, and each ready frame invokes the session's
-present path (`sink.present` + post-present bookkeeping). FFmpeg calls it
-synchronously inside `decode`; VT calls it from its callback thread — **which
-must hop back to the session's single serialization queue** (`ViewerSession`
-is not `Sendable`). That hop is the main threading design point. A simpler,
-behavior-changing alternative is to drive VT in synchronous mode and keep the
-sync return.
+portable `decode(...) -> [frame]` was synchronous. The seam now has a decoder
+**emit** frames via callbacks rather than return them: `VideoDecoding` gains
+`onDecodedFrame` / `onDecodeFailure` and `decode(...)` returns `Void` (submit).
+`ViewerSession` wires those in `init` — a decoded frame goes straight to the
+sink, a failure to a PLI — so `decode` is now just a submit. FFmpeg fires the
+callback synchronously inside `decode` (satisfying the threading contract for
+free); VideoToolbox will fire it later, and the **adapter must hop back to the
+host's serialization context** before invoking it, because `ViewerSession` is
+not `Sendable` and owns no queue — that contract is documented on the protocol.
+Covered by a synchronous-stub path plus an explicit async-delivery test (a
+stub that defers frames past `decode` and delivers on a later poke).
 
 ### A.3 — Audio passthrough (next)
 
