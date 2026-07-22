@@ -17,9 +17,10 @@ public final class FrameStore: @unchecked Sendable {
         frame = newFrame
         let redraw = requestRedraw
         lock.unlock()
-        // Ask the GLArea to repaint. `set` is called from `present`, which runs
-        // on the GTK main thread (the @MainActor transport, serviced by
-        // swift-cross-ui's RunLoop tick), so calling into GTK here is safe.
+        // Ask the GLArea to repaint. The redraw hand-off (`cgtkvideo_queue_render`)
+        // marshals the actual GTK call onto the main thread via g_idle_add, so
+        // `set` (and thus `present`) is safe from any thread; the frame itself
+        // is a value-type copy behind the lock above.
         redraw?()
     }
 

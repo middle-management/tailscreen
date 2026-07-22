@@ -35,6 +35,7 @@ let package = Package(
             linkerSettings: [
                 .linkedLibrary("epoxy"),
                 .linkedLibrary("gtk-4"),
+                .linkedLibrary("glib-2.0"),
             ]
         ),
         // GtkVideoView + the video sink + frame store: the downstream video

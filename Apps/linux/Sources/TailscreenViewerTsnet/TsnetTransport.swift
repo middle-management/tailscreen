@@ -219,6 +219,11 @@ public final class TsnetTransport {
                 guard !datagram.isEmpty else { continue }
                 // The sharer is the only expected sender (it learned our addr
                 // from the HELLO); ignore anything else.
+                // KNOWN LIMITATION (pre-existing; affects the SDL viewer too):
+                // `dest` is the dialed string, so if `config.hostname` is a
+                // Tailscale *hostname* rather than a tailnet IP, `from` (the
+                // sharer's resolved IP) won't string-match and video is dropped.
+                // Dial by tailnet IP until this matches on the resolved peer.
                 guard from == dest else { continue }
                 pipeline.receive(datagram)
             } catch {

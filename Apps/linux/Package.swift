@@ -58,7 +58,6 @@ let package = Package(
         .target(
             name: "TailscreenViewerSDL",
             dependencies: [
-                "TailscreenViewerCore",
                 .product(name: "SDLKit", package: "SDLKit"),
                 .product(name: "TailscreenViewer", package: "TailscreenKit"),
                 .product(name: "TailscreenProtocol", package: "TailscreenKit"),

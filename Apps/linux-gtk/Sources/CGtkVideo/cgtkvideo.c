@@ -127,12 +127,28 @@ int32_t cgtkvideo_selftest_check(void) {
     return ok ? 1 : 0;
 }
 
-// Forward-declare the single gtk entry point (resolved at final link against
-// libgtk-4, which the swift-cross-ui GtkBackend already links) so this target
-// needs no gtk include path. GtkWidget* and GtkGLArea* share the same GObject
-// address, so passing the area's widget pointer is valid.
+// Forward-declare the gtk/glib entry points (resolved at final link against
+// libgtk-4 / libglib-2.0, which the swift-cross-ui GtkBackend already links) so
+// this target needs no gtk include path. GtkWidget* and GtkGLArea* share the
+// same GObject address, so passing the area's widget pointer is valid.
 typedef struct _GtkGLArea GtkGLArea;
+typedef int gboolean;
+typedef void *gpointer;
+typedef gboolean (*GSourceFunc)(gpointer);
 extern void gtk_gl_area_queue_render(GtkGLArea *area);
+extern unsigned int g_idle_add(GSourceFunc function, gpointer data);
+
+static gboolean cgtkvideo_render_idle(gpointer data) {
+    gtk_gl_area_queue_render((GtkGLArea *)data);
+    return 0;  // G_SOURCE_REMOVE — one-shot
+}
+
 void cgtkvideo_queue_render(void *gl_area_widget) {
-    if (gl_area_widget) gtk_gl_area_queue_render((GtkGLArea *)gl_area_widget);
+    // Marshal onto the GTK main thread. g_idle_add is safe to call from ANY
+    // thread; the idle source runs on whichever thread iterates the default main
+    // context (the GTK main thread). So the caller (`present`) need not be on
+    // the main thread — GTK is only ever touched here, deferred to its own
+    // thread. (The frame data path is separately made safe by FrameStore's
+    // lock + value-type copy.)
+    if (gl_area_widget) g_idle_add(cgtkvideo_render_idle, gl_area_widget);
 }
