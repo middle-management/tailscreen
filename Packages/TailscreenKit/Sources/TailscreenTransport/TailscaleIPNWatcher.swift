@@ -1,6 +1,5 @@
 import Foundation
 import TailscaleKit
-
 import TailscreenProtocol
 
 /// Watches the Tailscale IPN bus for real-time peer status updates
@@ -85,7 +84,8 @@ public class TailscaleIPNWatcher: ObservableObject {
                         dnsName: peer.Name,
                         tailscaleIPs: ipStrings,
                         online: peer.Online ?? false,
-                        lastSeen: peer.LastSeen != nil ? String(peer.LastSeen!) : nil
+                        lastSeen: peer.LastSeen != nil ? String(peer.LastSeen!) : nil,
+                        tags: peer.Tags ?? []
                     )
                     updatedPeers[nodeID] = status
                 }
@@ -130,10 +130,13 @@ public struct TailscalePeerStatus: Identifiable, Sendable {
     public let tailscaleIPs: [String]
     public let online: Bool
     public let lastSeen: String?
+    /// Tailscale ACL tags ("tag:server") from the netmap node. Empty for
+    /// untagged (typically interactive-login personal) nodes.
+    public let tags: [String]
 
     public init(
         nodeID: String, hostname: String, dnsName: String, tailscaleIPs: [String], online: Bool,
-        lastSeen: String?
+        lastSeen: String?, tags: [String] = []
     ) {
         self.id = nodeID
         self.nodeID = nodeID
@@ -142,6 +145,7 @@ public struct TailscalePeerStatus: Identifiable, Sendable {
         self.tailscaleIPs = tailscaleIPs
         self.online = online
         self.lastSeen = lastSeen
+        self.tags = tags
     }
 }
 

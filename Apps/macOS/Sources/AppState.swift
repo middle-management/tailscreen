@@ -340,6 +340,33 @@ class AppState: ObservableObject {
     // Peer discovery
     @Published var availablePeers: [TailscreenPeer] = []
     @Published var isDiscovering = false
+    /// User's peer-list filter (hide offline / by ACL tag), persisted like
+    /// the quality settings so it survives relaunch. `availablePeers` stays
+    /// the raw netmap-derived list — the filter UI needs it to enumerate
+    /// every known tag and count hidden rows, and the
+    /// `TAILSCREEN_AUTOCONNECT_TO` automation path must not be filtered.
+    @Published var peerFilter: PeerListFilter = PeerListFilterStore.load() {
+        didSet {
+            guard peerFilter != oldValue else { return }
+            PeerListFilterStore.save(peerFilter)
+        }
+    }
+
+    /// The peers the menubar's AVAILABLE SCREENS section renders: the raw
+    /// list projected through `peerFilter` (pure decision, covered by
+    /// `PeerListFilterTests` in the protocol package).
+    var filteredPeers: [TailscreenPeer] {
+        availablePeers.filter { peerFilter.matches(isOnline: $0.isOnline, tags: $0.tags) }
+    }
+
+    /// Tags offered by the filter menu: the union of every discovered
+    /// peer's tags plus any currently-selected tags — a selected tag whose
+    /// peers left the tailnet must stay listed so it can be unselected.
+    var knownPeerTags: [String] {
+        var union = peerFilter.selectedTags
+        for peer in availablePeers { union.formUnion(peer.tags) }
+        return union.sorted()
+    }
     /// True once any discovery pass has finished (successfully or not).
     /// The menubar devices section shows its loading skeleton until this
     /// flips — an empty `availablePeers` before the first pass means "no

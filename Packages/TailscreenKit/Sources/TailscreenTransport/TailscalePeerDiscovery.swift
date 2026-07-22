@@ -1,6 +1,5 @@
 import Foundation
 import TailscaleKit
-
 import TailscreenProtocol
 
 /// One Tailscreen installation on the tailnet.
@@ -17,8 +16,26 @@ public struct TailscreenPeer: Identifiable, Sendable, Equatable {
     public let dnsName: String
     public let tailscaleIP: String
     public let isOnline: Bool
+    /// Tailscale ACL tags ("tag:server") from the netmap — the tag axis of
+    /// `PeerListFilter`. Empty for untagged nodes.
+    public let tags: [String]
     public var metadata: TailscreenMetadata?
     public var lastSeen: String?
+
+    public init(
+        id: String, hostname: String, dnsName: String, tailscaleIP: String,
+        isOnline: Bool, tags: [String] = [], metadata: TailscreenMetadata? = nil,
+        lastSeen: String? = nil
+    ) {
+        self.id = id
+        self.hostname = hostname
+        self.dnsName = dnsName
+        self.tailscaleIP = tailscaleIP
+        self.isOnline = isOnline
+        self.tags = tags
+        self.metadata = metadata
+        self.lastSeen = lastSeen
+    }
 }
 
 /// Lists Tailscreen installations on the local tailnet by filtering the
@@ -86,6 +103,7 @@ public class TailscalePeerDiscovery: ObservableObject {
                 dnsName: peerStatus.DNSName,
                 tailscaleIP: Self.preferIPv4(peerStatus.TailscaleIPs ?? []),
                 isOnline: peerStatus.Online,
+                tags: peerStatus.Tags ?? [],
                 metadata: nil,
                 lastSeen: nil
             )
@@ -148,6 +166,7 @@ public class TailscalePeerDiscovery: ObservableObject {
                 dnsName: ps.dnsName,
                 tailscaleIP: Self.preferIPv4(ps.tailscaleIPs),
                 isOnline: ps.online,
+                tags: ps.tags,
                 metadata: nil,
                 lastSeen: ps.lastSeen
             )
