@@ -383,11 +383,22 @@ jobs:
         # Assert BOTH: the process exits 0 (bad pixels → exit 3, timeout → 124)
         # AND the PASS marker was actually printed, so a "graceful" early exit
         # (window closed / init failed) that never ran the check can't false-pass.
+        # POSIX-sh compatible: the job's container shell is `sh` (dash), which
+        # has no `set -o pipefail`, so we avoid the pipe entirely. Redirect to a
+        # file (preserves the process exit code — a pipe to `tee` would mask it)
+        # and capture the status via an `if` (so `set -e` doesn't abort first)
+        # before printing the log and running the two assertions.
         run: |
-          set -o pipefail
-          timeout 90 xvfb-run -a -s "-screen 0 800x600x24" \
+          if timeout 90 xvfb-run -a -s "-screen 0 800x600x24" \
             env GDK_BACKEND=x11 LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe \
-            Apps/linux-gtk/.build/debug/tailscreen-viewer-gtk --render-self-test 2>&1 | tee /tmp/gtk-selftest.log
+            Apps/linux-gtk/.build/debug/tailscreen-viewer-gtk --render-self-test \
+            > /tmp/gtk-selftest.log 2>&1; then
+            status=0
+          else
+            status=$?
+          fi
+          cat /tmp/gtk-selftest.log
+          test "$status" -eq 0
           grep -q 'CGTKVIDEO_SELFTEST result=PASS' /tmp/gtk-selftest.log
 
   lint:
