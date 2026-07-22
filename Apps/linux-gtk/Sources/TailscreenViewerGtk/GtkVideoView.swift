@@ -53,6 +53,12 @@ public struct GtkVideoView: View {
         // GL object names are per-context; if the area's context is torn down
         // and recreated (unrealize→realize, reparent), re-init on the next draw.
         area.createContext = { _ in cgtkvideo_reset() }
+        // Let the video sink request repaints as frames arrive. Captured weakly
+        // so the store doesn't keep the area alive past the widget tree.
+        store.setRedraw { [weak area] in
+            guard let area else { return }
+            cgtkvideo_queue_render(UnsafeMutableRawPointer(area.widgetPointer))
+        }
         area.render = { _, _ in
             // `frame` is a value-type copy with COW plane storage, so these
             // buffer pointers stay valid even if an off-thread `present()`

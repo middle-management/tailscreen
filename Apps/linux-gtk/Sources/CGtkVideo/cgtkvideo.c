@@ -126,3 +126,13 @@ int32_t cgtkvideo_selftest_check(void) {
     fflush(stderr);
     return ok ? 1 : 0;
 }
+
+// Forward-declare the single gtk entry point (resolved at final link against
+// libgtk-4, which the swift-cross-ui GtkBackend already links) so this target
+// needs no gtk include path. GtkWidget* and GtkGLArea* share the same GObject
+// address, so passing the area's widget pointer is valid.
+typedef struct _GtkGLArea GtkGLArea;
+extern void gtk_gl_area_queue_render(GtkGLArea *area);
+void cgtkvideo_queue_render(void *gl_area_widget) {
+    if (gl_area_widget) gtk_gl_area_queue_render((GtkGLArea *)gl_area_widget);
+}

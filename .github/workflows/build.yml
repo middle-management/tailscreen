@@ -354,17 +354,28 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - name: Install GTK4 + GL + headless display
+      - name: Install GTK4 + GL + headless display + A/V + Go
         # swift-cross-ui's GtkBackend needs gtk4 (+ gobject-introspection for
-        # its bindings); CGtkVideo links epoxy; the render self-test runs under
-        # a virtual X server with Mesa software GL. libopus-dev is pulled in by
-        # TailscreenViewer's audio tier.
+        # its bindings); CGtkVideo links epoxy + gtk-4; the render self-test runs
+        # under a virtual X server with Mesa software GL. The live path reuses
+        # Apps/linux's Core (FFmpeg/ALSA/Opus) + Tsnet (→ libtailscale, hence
+        # golang-go/make), though the render self-test itself needs no network.
         run: |
           apt-get update && apt-get install -y --no-install-recommends \
             libgtk-4-dev gir1.2-gtk-4.0 libgirepository1.0-dev libepoxy-dev \
-            libgl1-mesa-dri xvfb libopus-dev pkg-config
+            libgl1-mesa-dri xvfb libopus-dev pkg-config \
+            golang-go make gcc libc6-dev \
+            libavcodec-dev libavutil-dev libasound2-dev
+      - name: Build libtailscale (patched) on Linux
+        env:
+          GOFLAGS: -buildvcs=false
+        run: make -C Packages/TailscaleKit
       - name: Build the GTK viewer
-        run: swift build --package-path Apps/linux-gtk
+        # PKG_CONFIG_PATH resolves libtailscale.pc for the tsnet transport.
+        # Build the executable product specifically so SwiftPM prunes to the
+        # Linux subgraph (DefaultBackend→GtkBackend) — a bare `swift build`
+        # would also try to compile swift-cross-ui's Windows-only WinUI backend.
+        run: PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" swift build --package-path Apps/linux-gtk --product tailscreen-viewer-gtk
       - name: Headless render self-test (Xvfb + software GL)
         # Renders a 4-bar YUV frame through GtkVideoView, reads the pixels back,
         # and exits 0 only if the BT.709 output is correct — a CI-gated proof
