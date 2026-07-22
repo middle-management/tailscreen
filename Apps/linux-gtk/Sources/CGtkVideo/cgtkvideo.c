@@ -5,15 +5,19 @@
 
 static int inited = 0;
 static GLuint prog, vao, texY, texU, texV;
+static GLint uXformLoc = -1;
+// View state (zoom ≥ 1, pan in NDC), settable from Swift via cgtkvideo_set_view.
+static float gZoom = 1.0f, gPanX = 0.0f, gPanY = 0.0f;
 
 static const char *VS =
 "#version 300 es\n"
+"uniform vec4 uXform;\n"  // xy = scale (aspect-fit × zoom), zw = pan offset (NDC)
 "out vec2 uv;\n"
 "void main(){\n"
 "  vec2 p = vec2((gl_VertexID==1||gl_VertexID==3)?1.0:-1.0,\n"
 "                (gl_VertexID==2||gl_VertexID==3)?1.0:-1.0);\n"
-"  uv = vec2((p.x+1.0)*0.5, (1.0-p.y)*0.5);\n"
-"  gl_Position = vec4(p,0.0,1.0);\n"
+"  uv = vec2((p.x+1.0)*0.5, (1.0-p.y)*0.5);\n"  // texcoord from the base quad
+"  gl_Position = vec4(p*uXform.xy + uXform.zw, 0.0, 1.0);\n"  // letterbox/zoom/pan
 "}\n";
 
 static const char *FS =
@@ -69,7 +73,14 @@ static void init(void) {
     glUniform1i(glGetUniformLocation(prog, "texY"), 0);
     glUniform1i(glGetUniformLocation(prog, "texU"), 1);
     glUniform1i(glGetUniformLocation(prog, "texV"), 2);
+    uXformLoc = glGetUniformLocation(prog, "uXform");
     inited = 1;
+}
+
+void cgtkvideo_set_view(float zoom, float pan_x, float pan_y) {
+    gZoom = zoom;
+    gPanX = pan_x;
+    gPanY = pan_y;
 }
 
 static void upload(GLuint tex, int w, int h, const uint8_t *data) {
@@ -85,9 +96,25 @@ void cgtkvideo_draw_yuv(int32_t width, int32_t height,
     upload(texU, cw, ch, u);
     upload(texV, cw, ch, v);
 
+    // Aspect-fit: scale the video quad to preserve its aspect inside the
+    // viewport (black letterbox bars are the cleared background), then apply
+    // zoom (≥1) and pan. Fitting to width when the frame is wider than the
+    // viewport, else to height.
+    GLint vp[4]; glGetIntegerv(GL_VIEWPORT, vp);
+    float sx = 1.0f, sy = 1.0f;
+    if (vp[2] > 0 && vp[3] > 0 && width > 0 && height > 0) {
+        float viewportAspect = (float)vp[2] / (float)vp[3];
+        float frameAspect = (float)width / (float)height;
+        if (frameAspect > viewportAspect) sy = viewportAspect / frameAspect;
+        else sx = frameAspect / viewportAspect;
+    }
+    sx *= gZoom;
+    sy *= gZoom;
+
     glClearColor(0, 0, 0, 1);
     glClear(GL_COLOR_BUFFER_BIT);
     glUseProgram(prog);
+    glUniform4f(uXformLoc, sx, sy, gPanX, gPanY);
     glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, texY);
     glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, texU);
     glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, texV);
@@ -121,7 +148,14 @@ int32_t cgtkvideo_selftest_check(void) {
     int black = px[1][0] < 60 && px[1][1] < 60 && px[1][2] < 60;
     int red = px[2][0] > 180 && px[2][0] > px[2][2] + 60;
     int blue = px[3][2] > 180 && px[3][2] > px[3][0] + 60;
-    int ok = white && black && red && blue;
+    // Letterbox check: the 4:1 bars frame in a less-wide viewport is fit to
+    // width, so the top edge must be a black letterbox bar (with a plain stretch
+    // it would be the white bar). Proves aspect-fit is actually applied.
+    unsigned char top[4] = {0};
+    glReadPixels(fw / 2, fh - 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, top);
+    int letterbox = top[0] < 60 && top[1] < 60 && top[2] < 60;
+    fprintf(stderr, "CGTKVIDEO_SELFTEST letterbox_top rgb=%d,%d,%d\n", top[0], top[1], top[2]);
+    int ok = white && black && red && blue && letterbox;
     fprintf(stderr, "CGTKVIDEO_SELFTEST result=%s\n", ok ? "PASS" : "FAIL");
     fflush(stderr);
     return ok ? 1 : 0;

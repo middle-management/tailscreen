@@ -13,6 +13,11 @@ void cgtkvideo_draw_yuv(int32_t width, int32_t height,
 // Clear to black (when there's no frame yet).
 void cgtkvideo_clear(void);
 
+// Set the view transform applied on top of aspect-fit: `zoom` (≥1) scales the
+// video about the centre, `pan_x`/`pan_y` shift it in NDC ([-1,1]). Defaults are
+// 1 / 0 / 0 (plain aspect-fit). Driven from the viewer's zoom/pan state.
+void cgtkvideo_set_view(float zoom, float pan_x, float pan_y);
+
 // Drop cached GL objects so the next draw re-initialises them. Wire this to the
 // GtkGLArea's create-context signal: GL object names are per-context, so a
 // context teardown/recreate (unrealize→realize, reparent) must re-init.
