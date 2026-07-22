@@ -8,9 +8,13 @@ import TailscreenViewer
 /// `FFmpegVideoDecoder` only emits that type).
 public final class GtkVideoSink: VideoSink, @unchecked Sendable {
     private let store: FrameStore
+    private let uiState: ViewerUIState?
+    // Touched only on `present`, which the session drives serially.
+    private var announcedVideo = false
 
-    public init(store: FrameStore) {
+    public init(store: FrameStore, uiState: ViewerUIState? = nil) {
         self.store = store
+        self.uiState = uiState
     }
 
     public func present(_ frame: any DecodedFrame) {
@@ -21,5 +25,9 @@ public final class GtkVideoSink: VideoSink, @unchecked Sendable {
         // not itself touch GTK. The transport currently drives it on the main
         // actor, but this does not depend on that.
         store.set(frame)
+        if !announcedVideo {
+            announcedVideo = true
+            uiState?.markVideoFlowing()  // hides the connecting placard
+        }
     }
 }
