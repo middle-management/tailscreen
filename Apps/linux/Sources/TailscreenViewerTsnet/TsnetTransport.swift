@@ -82,12 +82,21 @@ public final class TsnetTransport {
     ///   - audioSink: where decoded audio goes (ALSA), or nil.
     ///   - shouldClose: polled each loop; returning true ends the session (the
     ///     SDL window close hook).
+    ///   - backChannelHandlers: inbound annotation / control-grant callbacks for
+    ///     the TCP back-channel (empty by default — the SDL CLI takes none).
+    ///   - onBackChannelReady: called once the outbound TCP back-channel is
+    ///     dialing, handing the host a `ViewerBackChannel` to send annotation
+    ///     ops / control requests / input events (nil ⇒ receive-only, the SDL
+    ///     CLI's behaviour).
     public func run(
         config: ViewerConfig,
         decoder: VideoDecoding,
         videoSink: VideoSink,
         audioSink: AudioSink?,
-        shouldClose: @escaping () -> Bool
+        shouldClose: @escaping () -> Bool,
+        backChannelHandlers: ViewerBackChannel.Handlers = ViewerBackChannel.Handlers(),
+        onBackChannelReady: (@Sendable (ViewerBackChannel) -> Void)? = nil,
+        onAdmitted: (@Sendable (ScreenShareCaps) -> Void)? = nil
     ) async throws {
         try? FileManager.default.createDirectory(
             atPath: config.statePath, withIntermediateDirectories: true)
@@ -151,6 +160,25 @@ public final class TsnetTransport {
         let dest = Self.formatAddr(host: config.hostname, port: config.port)
         logger.log("Bound local UDP; dialing \(dest)")
 
+        // Outbound TCP back-channel (annotations / control), reusing the same
+        // node handle. It dials + reconnects on its own task, so failure here
+        // never blocks the video path — a viewer with a dead back-channel still
+        // watches. Handed to the host so its chrome can send strokes/requests.
+        let backChannel = ViewerBackChannel(
+            tailscale: tailscale, host: config.hostname, port: config.port,
+            handlers: backChannelHandlers, logger: logger)
+        await backChannel.start()
+        onBackChannelReady?(backChannel)
+        // Teardown backstop for every exit path (incl. a throw before the
+        // normal end): cancel the back-channel's loop + close its socket. Kept
+        // fire-and-forget on purpose — `stop()` can park up to the receive
+        // poll interval closing the live connection, and blocking session
+        // teardown on that would freeze the window close. The unstructured Task
+        // is independently rooted so it still runs to completion, and
+        // `node.down()` below tears the whole node (and this fd) down
+        // regardless, so ordering here is immaterial.
+        defer { Task { await backChannel.stop() } }
+
         // Ordered, non-blocking outbound queue: `onControlToSend` (a sync
         // closure the session calls on the receive thread) yields here, and a
         // single consumer task drains it through the actor's `send` in order.
@@ -213,6 +241,11 @@ public final class TsnetTransport {
                     "▶ Admitted by sharer (ssrc=\(ssrc), serverCaps=\(session.serverCaps.rawValue)) — awaiting video…"
                 )
                 loggedAdmitted = true
+                // Surface the sharer's caps so the host can gate its chrome
+                // (the Request-Control button rides `.remoteControl`, the
+                // annotation toolbar rides `.annotations`) — same gating the
+                // mac viewer applies from the HELLO_ACK.
+                onAdmitted?(session.serverCaps)
             }
             do {
                 let (datagram, from) = try await listener.recv(timeout: 250)
@@ -273,7 +306,7 @@ public final class TsnetTransport {
     }
 
     /// Bracket IPv6 literals ("[::1]:7447"); leave IPv4 untouched.
-    static func formatAddr(host: String, port: UInt16) -> String {
+    nonisolated static func formatAddr(host: String, port: UInt16) -> String {
         if host.contains(":") && !host.hasPrefix("[") {
             return "[\(host)]:\(port)"
         }

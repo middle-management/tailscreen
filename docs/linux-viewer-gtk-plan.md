@@ -148,8 +148,19 @@ guarantee the SDL path never had.
 - Viewer-side TCP dialer (TailscaleKit `OutgoingConnection` → `sharer:7447`,
   framing `ScreenShareMessage`) — the porting plan's named "last gap before
   shippable". Server-side `TailscreenControlListener` shows the wire format.
+  **Done:** `ViewerBackChannel` (in `TailscreenViewerTsnet`) dials + frames +
+  reconnects (with a min-healthy-uptime backoff guard over the mac client's
+  pattern) and dispatches inbound annotation / control-grant / revoke;
+  `TsnetTransport.run` starts it alongside the UDP path and surfaces the
+  sharer's caps (`onAdmitted`) so chrome is caps-gated exactly like the mac
+  viewer.
 - Annotation toolbar (native buttons, caps-gated) + remote-control request
-  affordance. Mic toggle deferred until ALSA **capture** exists (playback-only
+  affordance. **Done (partial):** a caps-gated Request/Release-Control button
+  wired to the back-channel with grant/revoke status. **Follow-up:** the input
+  *capture* (GTK pointer/keyboard event controllers → `sendInputEvent`) and the
+  annotation *drawing surface* (both directions) — GTK event-controller work not
+  verifiable in the headless CI container, same boundary as L1's interactive
+  zoom input. Mic toggle deferred until ALSA **capture** exists (playback-only
   today).
 
 ### L4 — Sharer picker + login polish
