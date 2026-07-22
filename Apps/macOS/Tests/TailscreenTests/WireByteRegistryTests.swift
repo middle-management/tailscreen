@@ -19,8 +19,8 @@ import XCTest
 ///      the failure names both claimants.
 ///
 /// Uniqueness is deliberately scoped *per channel*: the TCP message-type
-/// space and the UDP control-byte space overlap by design (both use
-/// 0x03–0x0A), and the helper wire's `OutType`/`InType` ride different
+/// space (0x03–0x0C) and the UDP control-byte space (0x03–0x0D) overlap by
+/// design, and the helper wire's `OutType`/`InType` ride different
 /// pipes (both use 0x01–0x05 and 0xFF). Asserting cross-channel uniqueness
 /// would institutionalize a false invariant — see
 /// `testTCPAndUDPSpacesAreDisjointOnPurpose`.
@@ -119,7 +119,9 @@ final class WireByteRegistryTests: XCTestCase {
                 WireRow("controlGranted", 0x07),
                 WireRow("controlRevoked", 0x08),
                 WireRow("inputEvent", 0x09),
-                WireRow("controlReleased", 0x0A)
+                WireRow("controlReleased", 0x0A),
+                WireRow("metadataRequest", 0x0B),
+                WireRow("metadataResponse", 0x0C)
             ])
     }
 
@@ -343,14 +345,19 @@ final class WireByteRegistryTests: XCTestCase {
     // MARK: - Cross-channel documentation
 
     func testTCPAndUDPSpacesAreDisjointOnPurpose() {
-        // Deliberately-passing documentation assertion: TCP 0x0A
-        // (controlReleased) and UDP 0x0A (nack) coexist because the TCP
+        // Deliberately-passing documentation assertion: TCP 0x0A–0x0C
+        // (controlReleased/metadataRequest/metadataResponse) and UDP
+        // 0x0A–0x0C (nack/receiverReport/ping) coexist because the TCP
         // message-type space and the UDP control-byte space are disjoint BY
         // DESIGN (different transports, different parsers). If you found this
         // test because the values look like a collision: they aren't — do not
         // renumber either side, and do not add cross-channel uniqueness here.
         XCTAssertEqual(ScreenShareMessage.MessageType.controlReleased.rawValue, 0x0A)
         XCTAssertEqual(ScreenShareControlMessage.nack.rawValue, 0x0A)
+        XCTAssertEqual(ScreenShareMessage.MessageType.metadataRequest.rawValue, 0x0B)
+        XCTAssertEqual(ScreenShareControlMessage.receiverReport.rawValue, 0x0B)
+        XCTAssertEqual(ScreenShareMessage.MessageType.metadataResponse.rawValue, 0x0C)
+        XCTAssertEqual(ScreenShareControlMessage.ping.rawValue, 0x0C)
     }
 
     /// Registry: the neutral `KeyModifiers` wire bits carried in

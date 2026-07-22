@@ -5,7 +5,15 @@ import Foundation
 /// derived from netmap data the discovery layer already carries (no probes,
 /// no wire change):
 ///
-///  - **Status** — `hideOffline` drops rows tsnet reports unreachable.
+///  - **Status** — `hideOffline` drops rows tsnet reports unreachable, and
+///    `onlySharing` keeps only peers whose fetched `.metadataResponse` said
+///    `isSharing`. Sharing state is a *fetched* fact (a per-peer TCP dial,
+///    see `TailscreenMetadataClient`), so it is tri-state at match time
+///    (`PeerSharingState`): `.sharing` / `.notSharing` / `.unknown` (no
+///    answer yet, peer offline, or a legacy build that doesn't speak
+///    `.metadataRequest`). While `onlySharing` is on, `.unknown`
+///    deliberately hides — the user asked for screens they can actually
+///    watch, and rows appear as answers land.
 ///  - **Tags** — `selectedTags` keeps only peers carrying at least one of
 ///    the selected Tailscale ACL tags (`"tag:server"` etc.). Tags exist
 ///    only on *tagged* nodes (tagged pre-auth key or admin-console tag), so
@@ -22,25 +30,47 @@ public struct PeerListFilter: Codable, Sendable, Equatable {
     public var hideOffline: Bool
     public var selectedTags: Set<String>
     public var includeUntagged: Bool
+    public var onlySharing: Bool
 
     public static let `default` = PeerListFilter(
         hideOffline: false, selectedTags: [], includeUntagged: true)
 
-    public init(hideOffline: Bool, selectedTags: Set<String>, includeUntagged: Bool) {
+    public init(
+        hideOffline: Bool, selectedTags: Set<String>, includeUntagged: Bool,
+        onlySharing: Bool = false
+    ) {
         self.hideOffline = hideOffline
         self.selectedTags = selectedTags
         self.includeUntagged = includeUntagged
+        self.onlySharing = onlySharing
+    }
+
+    /// Decode-with-fallback so a filter persisted by an older build (fewer
+    /// fields) loads with the new axes off instead of resetting the user's
+    /// whole filter to `.default` via the store's decode-failure path.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        hideOffline = try container.decodeIfPresent(Bool.self, forKey: .hideOffline) ?? false
+        selectedTags =
+            try container.decodeIfPresent(Set<String>.self, forKey: .selectedTags) ?? []
+        includeUntagged =
+            try container.decodeIfPresent(Bool.self, forKey: .includeUntagged) ?? true
+        onlySharing = try container.decodeIfPresent(Bool.self, forKey: .onlySharing) ?? false
     }
 
     /// True when the filter can hide anything — drives the "filter is on"
     /// icon state and the Clear Filters affordance.
     public var isActive: Bool {
-        hideOffline || !selectedTags.isEmpty
+        hideOffline || onlySharing || !selectedTags.isEmpty
     }
 
-    /// Pure decision: does a peer with this online state and tag set pass?
-    public func matches(isOnline: Bool, tags: [String]) -> Bool {
+    /// Pure decision: does a peer with this online state, tag set, and
+    /// fetched sharing state pass?
+    public func matches(
+        isOnline: Bool, tags: [String], sharing: PeerSharingState = .unknown
+    ) -> Bool {
         if hideOffline && !isOnline { return false }
+        if onlySharing && sharing != .sharing { return false }
         guard !selectedTags.isEmpty else { return true }
         if tags.isEmpty { return includeUntagged }
         return tags.contains(where: selectedTags.contains)
@@ -53,6 +83,28 @@ public struct PeerListFilter: Codable, Sendable, Equatable {
     public static func displayName(forTag tag: String) -> String {
         let stripped = tag.hasPrefix("tag:") ? String(tag.dropFirst(4)) : tag
         return stripped.isEmpty ? tag : stripped
+    }
+}
+
+/// A peer's sharing state as known to the viewer — the input to the
+/// filter's `onlySharing` axis. Deliberately an enum, not `Bool?`: the
+/// unknown case is load-bearing (a legacy peer or unanswered dial must
+/// never read as "not sharing" in code that displays state, and must hide
+/// under `onlySharing` by explicit choice, not optional coincidence).
+public enum PeerSharingState: Sendable, Equatable {
+    case sharing
+    case notSharing
+    case unknown
+
+    /// Project a fetched `.metadataResponse` (nil = no answer) onto the
+    /// tri-state.
+    public init(fetched metadata: TailscreenMetadata?) {
+        switch metadata {
+        case .some(let metadata):
+            self = metadata.isSharing ? .sharing : .notSharing
+        case .none:
+            self = .unknown
+        }
     }
 }
 

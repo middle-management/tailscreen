@@ -70,6 +70,13 @@ public final class TailscreenControlListener: @unchecked Sendable {
     /// the gate release in lockstep with the viewer leaving control mode.
     public var onControlReleased: ((UUID) -> Void)?
 
+    /// Fires for every `.metadataRequest` message (peer→peer "describe
+    /// yourself" — drives the requester's sharing-status filter). Argument
+    /// is the connection's stable `UUID`; the handler answers with
+    /// `.metadataResponse` on the SAME connection via `send(_:to:)` (no
+    /// dial-back, like `.shareResponse`).
+    public var onMetadataRequest: ((UUID) -> Void)?
+
     /// Fires when an accepted TCP connection closes. Argument is the
     /// connection's stable `UUID`. Used by the share server to retire
     /// per-viewer annotation state.
@@ -224,9 +231,13 @@ public final class TailscreenControlListener: @unchecked Sendable {
             onInputEvent?(event, connectionID, peerAddress)
         case .controlReleased:
             onControlReleased?(connectionID)
-        case .shareResponse, .controlGranted, .controlRevoked:
-            // `.shareResponse` rides the requester's own outgoing connection,
-            // read inline (see `TailscreenMetadataService.awaitShareResponse`).
+        case .metadataRequest:
+            onMetadataRequest?(connectionID)
+        case .shareResponse, .controlGranted, .controlRevoked, .metadataResponse:
+            // `.shareResponse` / `.metadataResponse` ride the requester's own
+            // outgoing connection, read inline (see
+            // `TailscreenMetadataService.awaitShareResponse` /
+            // `TailscreenMetadataClient.fetchMetadata`).
             // `.controlGranted` / `.controlRevoked` are sharer→viewer only —
             // a viewer sending them to us is confused or malicious; drop.
             break

@@ -1208,6 +1208,12 @@ private struct PeerFilterMenu: View {
                     get: { $0.hideOffline },
                     set: { $0.hideOffline = $1 }))
 
+            Toggle(
+                L("Only screens being shared"),
+                isOn: binding(
+                    get: { $0.onlySharing },
+                    set: { $0.onlySharing = $1 }))
+
             let tags = appState.knownPeerTags
             if !tags.isEmpty {
                 Section(L("Filter by Tag")) {
@@ -1379,6 +1385,16 @@ private struct PeerMenuRow: View {
                             Text(L("Offline"))
                                 .font(.caption)
                                 .foregroundStyle(.tertiary)
+                        } else if let share = appState.peerShareInfo[peer.id], share.isSharing {
+                            // Fetched share status (`.metadataResponse`) —
+                            // the share name is peer data, shown as-is
+                            // (parser-clamped); fall back to a generic
+                            // caption when the peer didn't name its share.
+                            Text(share.shareName.isEmpty ? L("Sharing") : share.shareName)
+                                .font(.caption)
+                                .foregroundStyle(.green)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
                         }
                     }
 

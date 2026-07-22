@@ -3,9 +3,11 @@ import XCTest
 @testable import TailscreenProtocol
 
 /// CI-able unit tests for the menubar peer-list filter: the pure
-/// `PeerListFilter.matches` decision (hide-offline ∧ any-of-tags with the
-/// explicit untagged bucket), the `tag:`-prefix display-name stripping,
-/// and the `PeerListFilterStore` persistence round-trip.
+/// `PeerListFilter.matches` decision (hide-offline ∧ only-sharing ∧
+/// any-of-tags with the explicit untagged bucket, sharing state tri-state
+/// with unknown hiding while the axis is on), the `tag:`-prefix
+/// display-name stripping, and the `PeerListFilterStore` persistence
+/// round-trip incl. the older-blob decode-with-fallback.
 final class PeerListFilterTests: XCTestCase {
 
     // MARK: - Defaults
@@ -17,6 +19,10 @@ final class PeerListFilterTests: XCTestCase {
         XCTAssertTrue(filter.matches(isOnline: false, tags: []))
         XCTAssertTrue(filter.matches(isOnline: true, tags: ["tag:server"]))
         XCTAssertTrue(filter.matches(isOnline: false, tags: ["tag:server", "tag:ci"]))
+        // Sharing state is irrelevant while the axis is off — including
+        // unknown and explicitly-not-sharing.
+        XCTAssertTrue(filter.matches(isOnline: true, tags: [], sharing: .unknown))
+        XCTAssertTrue(filter.matches(isOnline: true, tags: [], sharing: .notSharing))
     }
 
     // MARK: - Status axis
@@ -29,6 +35,44 @@ final class PeerListFilterTests: XCTestCase {
         XCTAssertFalse(filter.matches(isOnline: false, tags: []))
         // Tags don't rescue an offline peer.
         XCTAssertFalse(filter.matches(isOnline: false, tags: ["tag:server"]))
+    }
+
+    // MARK: - Sharing axis
+
+    func testOnlySharingKeepsOnlyConfirmedSharers() {
+        var filter = PeerListFilter.default
+        filter.onlySharing = true
+        XCTAssertTrue(filter.isActive)
+        XCTAssertTrue(filter.matches(isOnline: true, tags: [], sharing: .sharing))
+        XCTAssertFalse(filter.matches(isOnline: true, tags: [], sharing: .notSharing))
+        // Unknown (no answer yet / legacy peer / offline) hides while the
+        // axis is on — the user asked for screens they can actually watch.
+        XCTAssertFalse(filter.matches(isOnline: true, tags: [], sharing: .unknown))
+    }
+
+    func testOnlySharingConjoinsWithOtherAxes() {
+        var filter = PeerListFilter.default
+        filter.onlySharing = true
+        filter.selectedTags = ["tag:server"]
+        filter.includeUntagged = false
+        // Sharing but wrong tag → hidden; tagged but not sharing → hidden.
+        XCTAssertFalse(filter.matches(isOnline: true, tags: ["tag:ci"], sharing: .sharing))
+        XCTAssertFalse(filter.matches(isOnline: true, tags: ["tag:server"], sharing: .notSharing))
+        XCTAssertTrue(filter.matches(isOnline: true, tags: ["tag:server"], sharing: .sharing))
+    }
+
+    func testSharingStateProjectionFromFetchedMetadata() {
+        XCTAssertEqual(PeerSharingState(fetched: nil), .unknown)
+        let idle = TailscreenMetadata(
+            shareName: "", hostname: "wisp-2",
+            screenResolution: .init(width: 1, height: 1),
+            isSharing: false, timestamp: Date(timeIntervalSince1970: 0))
+        XCTAssertEqual(PeerSharingState(fetched: idle), .notSharing)
+        let live = TailscreenMetadata(
+            shareName: "s", hostname: "wisp-1",
+            screenResolution: .init(width: 1, height: 1),
+            isSharing: true, timestamp: Date(timeIntervalSince1970: 0))
+        XCTAssertEqual(PeerSharingState(fetched: live), .sharing)
     }
 
     // MARK: - Tag axis
@@ -114,9 +158,27 @@ final class PeerListFilterTests: XCTestCase {
             let filter = PeerListFilter(
                 hideOffline: true,
                 selectedTags: ["tag:server", "tag:ci"],
-                includeUntagged: false)
+                includeUntagged: false,
+                onlySharing: true)
             PeerListFilterStore.save(filter, to: defaults)
             XCTAssertEqual(PeerListFilterStore.load(from: defaults), filter)
+        }
+    }
+
+    func testStoreOlderBlobWithoutOnlySharingLoadsWithAxisOff() throws {
+        // A blob persisted before the sharing axis existed must load with
+        // the new axis off and every stored choice intact — NOT reset the
+        // whole filter to `.default` via the decode-failure path.
+        try withScratchDefaults { defaults in
+            let legacyJSON = """
+                {"hideOffline":true,"selectedTags":["tag:server"],"includeUntagged":false}
+                """
+            defaults.set(Data(legacyJSON.utf8), forKey: PeerListFilterStore.key)
+            let loaded = PeerListFilterStore.load(from: defaults)
+            XCTAssertTrue(loaded.hideOffline)
+            XCTAssertEqual(loaded.selectedTags, ["tag:server"])
+            XCTAssertFalse(loaded.includeUntagged)
+            XCTAssertFalse(loaded.onlySharing)
         }
     }
 

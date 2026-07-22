@@ -8,6 +8,11 @@ import Foundation
 
 /// Metadata about a Tailscreen screen share
 public struct TailscreenMetadata: Codable, Sendable, Equatable {
+    /// Clamp applied by the `.metadataResponse` parser to the wire-supplied
+    /// display strings (`shareName`, `hostname`) — they render in menubar
+    /// rows, so a hostile peer must not be able to bloat the popover.
+    public static let maxDisplayStringLength = 128
+
     public var version: String = "1.0"
     public let shareName: String
     public let hostname: String

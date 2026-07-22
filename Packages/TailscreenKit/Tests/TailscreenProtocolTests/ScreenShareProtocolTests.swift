@@ -204,6 +204,101 @@ final class ScreenShareProtocolTests: XCTestCase {
         XCTAssertNil(parser.next())
     }
 
+    // MARK: - Metadata query (sharing-status filter)
+
+    func testMetadataRequestRoundTrip() throws {
+        var parser = ScreenShareMessageParser()
+        parser.append(ScreenShareMessage.metadataRequest.encode())
+        let decoded = try XCTUnwrap(parser.next())
+        guard case .metadataRequest = decoded else {
+            return XCTFail("expected .metadataRequest, got \(decoded)")
+        }
+        XCTAssertNil(parser.next())
+    }
+
+    func testMetadataResponseRoundTrip() throws {
+        let metadata = TailscreenMetadata(
+            shareName: "Robert's Screen",
+            hostname: "wisp-1",
+            screenResolution: .init(width: 2560, height: 1440),
+            isSharing: true,
+            timestamp: Date(timeIntervalSince1970: 1_753_000_000),
+            videoCodec: .hevc)
+        var parser = ScreenShareMessageParser()
+        parser.append(ScreenShareMessage.metadataResponse(metadata).encode())
+        let decoded = try XCTUnwrap(parser.next())
+        guard case .metadataResponse(let got) = decoded else {
+            return XCTFail("expected .metadataResponse, got \(decoded)")
+        }
+        XCTAssertEqual(got, metadata)
+        XCTAssertNil(parser.next())
+    }
+
+    func testMetadataResponseNotSharingRoundTrip() throws {
+        // The idle answer (reachable but not sharing) is a distinct state
+        // the filter relies on — pin that isSharing=false survives the trip.
+        let metadata = TailscreenMetadata(
+            shareName: "",
+            hostname: "wisp-2",
+            screenResolution: .init(width: 1920, height: 1080),
+            isSharing: false,
+            timestamp: Date(timeIntervalSince1970: 1_753_000_000))
+        var parser = ScreenShareMessageParser()
+        parser.append(ScreenShareMessage.metadataResponse(metadata).encode())
+        let decoded = try XCTUnwrap(parser.next())
+        guard case .metadataResponse(let got) = decoded else {
+            return XCTFail("expected .metadataResponse, got \(decoded)")
+        }
+        XCTAssertFalse(got.isSharing)
+        XCTAssertNil(got.videoCodec)
+    }
+
+    func testMetadataResponseDisplayStringsClampedOnReceive() throws {
+        // The share name / hostname render in menubar rows — a hostile
+        // peer must not be able to bloat the popover (same rule as
+        // `.requestToShare`'s hostname clamp).
+        let huge = String(repeating: "x", count: 4096)
+        let metadata = TailscreenMetadata(
+            shareName: huge,
+            hostname: huge,
+            screenResolution: .init(width: 1, height: 1),
+            isSharing: true,
+            timestamp: Date(timeIntervalSince1970: 0))
+        var parser = ScreenShareMessageParser()
+        parser.append(ScreenShareMessage.metadataResponse(metadata).encode())
+        let decoded = try XCTUnwrap(parser.next())
+        guard case .metadataResponse(let got) = decoded else {
+            return XCTFail("expected .metadataResponse, got \(decoded)")
+        }
+        XCTAssertEqual(got.shareName.count, TailscreenMetadata.maxDisplayStringLength)
+        XCTAssertEqual(got.hostname.count, TailscreenMetadata.maxDisplayStringLength)
+        XCTAssertTrue(got.isSharing)
+    }
+
+    func testMalformedMetadataResponseDecodesToNilWithoutCrashing() throws {
+        var frame = Data()
+        frame.append(ScreenShareMessage.MessageType.metadataResponse.rawValue)
+        let garbage = Data([0x7B, 0x21, 0x40, 0x23])  // "{!@#"
+        let len = UInt32(garbage.count)
+        frame.append(UInt8((len >> 24) & 0xFF))
+        frame.append(UInt8((len >> 16) & 0xFF))
+        frame.append(UInt8((len >> 8) & 0xFF))
+        frame.append(UInt8(len & 0xFF))
+        frame.append(garbage)
+
+        var parser = ScreenShareMessageParser()
+        parser.append(frame)
+        XCTAssertNil(parser.next())  // garbage payload → nil, consumed
+        XCTAssertFalse(parser.isCorrupt)  // decode-fail is not a framing error
+
+        // The stream is still usable for the next frame.
+        parser.append(ScreenShareMessage.metadataRequest.encode())
+        let decoded = try XCTUnwrap(parser.next())
+        guard case .metadataRequest = decoded else {
+            return XCTFail("expected .metadataRequest after garbage response")
+        }
+    }
+
     func testMalformedInputEventDecodesToNilWithoutCrashing() throws {
         // A well-formed frame header (type 0x09) with garbage JSON payload
         // must yield nil (no crash), and a following valid frame still parses.
