@@ -184,7 +184,15 @@ guarantee the SDL path never had.
 ### L5 — Windows (later, separate)
 - The same `GtkVideoView` *feature* on `WinUIBackend` becomes a WinUI video view
   (`SwapChainPanel` + D3D). Different backend, same architecture. Out of scope
-  until Linux is solid.
+  until Linux is solid. **Scoped:** the concrete porting plan — the reuse map
+  (only the video surface + audio sink are new), the load-bearing
+  `WinUIVideoView`/`SwapChainPanel` spike mirroring the GTK one, the D3D11
+  YUV→RGB shim (`CSwapChainVideo`), the unchanged threading model
+  (`DispatcherQueue.TryEnqueue` for `g_idle_add`), the `windows-latest` +
+  **WARP** render-self-test CI story, and the W0–W3 sub-phases — lives in
+  [`docs/viewer-windows-plan.md`](/viewer-windows-plan/). No Windows code can
+  compile in the Linux dev/CI container (WinUIBackend is the pruned target), so
+  the plan is the deliverable; implementation follows a Windows toolchain.
 
 ## CI story
 
