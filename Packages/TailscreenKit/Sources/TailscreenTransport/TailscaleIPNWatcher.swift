@@ -84,7 +84,7 @@ public class TailscaleIPNWatcher: ObservableObject {
                         dnsName: peer.Name,
                         tailscaleIPs: ipStrings,
                         online: peer.Online ?? false,
-                        lastSeen: peer.LastSeen != nil ? String(peer.LastSeen!) : nil,
+                        lastSeen: peer.LastSeen.map { String($0) },
                         tags: peer.Tags ?? []
                     )
                     updatedPeers[nodeID] = status
