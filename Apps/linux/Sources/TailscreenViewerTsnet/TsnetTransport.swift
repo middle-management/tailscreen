@@ -63,11 +63,127 @@ struct StderrLogger: LogSink {
 /// main actor gives that for free — the `recv`/`send`/`tick` loop and every
 /// sink call run on one executor, matching the non-`Sendable` contract of
 /// `ViewerSession`.
+/// A Tailscreen sharer discovered on the tailnet — the picker's row model.
+/// A deliberately small value type (not `TailscreenPeer`) so the GTK app
+/// depends only on `TailscreenViewerTsnet`, not the whole transport package.
+/// `tailscaleIP` is the dial target: dialing by IP (not hostname) also sidesteps
+/// the `from == dest` hostname-mismatch limitation the CLI host path warns about.
+public struct DiscoveredSharer: Sendable, Identifiable, Equatable {
+    public let id: String
+    public let hostname: String
+    public let tailscaleIP: String
+    public let isOnline: Bool
+
+    public init(id: String, hostname: String, tailscaleIP: String, isOnline: Bool) {
+        self.id = id
+        self.hostname = hostname
+        self.tailscaleIP = tailscaleIP
+        self.isOnline = isOnline
+    }
+}
+
 @MainActor
 public final class TsnetTransport {
     private let logger = StderrLogger()
 
+    /// The brought-up ephemeral node, retained between `prepare` (+ optional
+    /// `discoverPeers`) and `run` so a picker flow can list sharers on the live
+    /// node before choosing one to dial. `run` brings it up itself if a caller
+    /// (the SDL CLI) skips `prepare`.
+    private var preparedNode: TailscaleNode?
+
     public init() {}
+
+    /// Bring up the ephemeral tsnet node (interactive login supported) without
+    /// starting a session. Idempotent — a second call while a node is live is a
+    /// no-op. Lets a host bring the node up, discover sharers, and only then
+    /// choose one to `run` against. Only the state/auth/control fields of
+    /// `config` are used here (not `hostname`, which is the later dial target).
+    ///
+    /// - Parameter onLoginURL: where an interactive-login URL is surfaced
+    ///   (default: the stderr banner + best-effort `xdg-open`). A GUI host
+    ///   passes its own to show the URL in-window.
+    public func prepare(
+        config: ViewerConfig,
+        onLoginURL: (@Sendable (URL) -> Void)? = nil
+    ) async throws {
+        guard preparedNode == nil else { return }
+        try? FileManager.default.createDirectory(
+            atPath: config.statePath, withIntermediateDirectories: true)
+
+        // Bring up an ephemeral node (no manual device registration).
+        // `viewerHostnamePrefix` is excluded from peer discovery, so this
+        // ephemeral viewer node never shows up as a connectable screen.
+        let hostName = "\(TailscreenInstance.viewerHostnamePrefix)\(UUID().uuidString.prefix(8))"
+        let node = try TailscaleNode(
+            config: Configuration(
+                hostName: hostName,
+                path: config.statePath,
+                authKey: config.authKey,
+                controlURL: config.controlURL,
+                ephemeral: true
+            ),
+            logger: logger
+        )
+        // Interactive login (no auth key): tsnet's `up()` blocks until the
+        // backend reaches Running, which on a fresh device means waiting for a
+        // browser login. tsnet emits that login URL as a BrowseToURL notify on
+        // the IPN bus — subscribe BEFORE `up()` (else the notify fires with
+        // nobody listening and `up()` waits forever) and surface the URL for
+        // the user to open. With an auth key this path is skipped entirely.
+        var authWatcher: TailscaleIPNWatcher?
+        if config.authKey == nil {
+            let watcher = TailscaleIPNWatcher()
+            watcher.onBrowseToURL = { url in
+                if let onLoginURL { onLoginURL(url) } else { Self.surfaceLoginURL(url) }
+            }
+            try await watcher.startWatching(node: node)
+            authWatcher = watcher
+            logger.log("No auth key set — waiting for interactive browser login…")
+        }
+
+        logger.log("Bringing up tsnet node \(hostName)…")
+        // Stop the auth watcher on failure too: it subscribed the IPN bus
+        // before `up()`, and its MessageProcessor keeps running (retaining the
+        // node) unless `stopWatching()` cancels it — a leak on the interactive-
+        // login path if `up()` throws.
+        do {
+            try await node.up()
+        } catch {
+            authWatcher?.stopWatching()
+            throw error
+        }
+        authWatcher?.stopWatching()
+
+        let ips = try await node.addrs()
+        logger.log("tsnet up — ip4=\(ips.ip4 ?? "-") ip6=\(ips.ip6 ?? "-")")
+
+        // Surface which tailnet identity we actually joined. A viewer that
+        // authenticated into the wrong tailnet looks identical to a connected
+        // one that just isn't getting frames — printing the account here turns
+        // that into an obvious mismatch. Best-effort; never blocks the session.
+        let auth = TailscaleAuth()
+        await auth.checkAuthStatus(node: node)
+        let identity = auth.userProfile?.loginName ?? "unknown account"
+        logger.log("▶ Connected as \(identity) — node \(hostName) @ \(ips.ip4 ?? ips.ip6 ?? "?")")
+
+        preparedNode = node
+    }
+
+    /// List Tailscreen sharers on the tailnet (requires `prepare` first).
+    /// One-shot seed from `backendStatus` — enough to populate a picker; the
+    /// live IPN-bus refresh is a follow-up. Excludes offline peers is left to
+    /// the caller (the row carries `isOnline`).
+    public func discoverPeers() async throws -> [DiscoveredSharer] {
+        guard let node = preparedNode else { throw TailscaleError.badInterfaceHandle }
+        let discovery = TailscalePeerDiscovery()
+        try await discovery.startDiscovery(node: node)
+        return discovery.availablePeers.map {
+            DiscoveredSharer(
+                id: $0.id, hostname: $0.hostname,
+                tailscaleIP: $0.tailscaleIP, isOnline: $0.isOnline)
+        }
+    }
 
     /// Connect and run until the sharer says goodbye or `shouldClose` fires.
     ///
@@ -98,54 +214,20 @@ public final class TsnetTransport {
         onBackChannelReady: (@Sendable (ViewerBackChannel) -> Void)? = nil,
         onAdmitted: (@Sendable (ScreenShareCaps) -> Void)? = nil
     ) async throws {
-        try? FileManager.default.createDirectory(
-            atPath: config.statePath, withIntermediateDirectories: true)
-
-        // Bring up an ephemeral node (no manual device registration).
-        // `viewerHostnamePrefix` is excluded from peer discovery, so this
-        // ephemeral viewer node never shows up as a connectable screen.
-        let hostName = "\(TailscreenInstance.viewerHostnamePrefix)\(UUID().uuidString.prefix(8))"
-        let node = try TailscaleNode(
-            config: Configuration(
-                hostName: hostName,
-                path: config.statePath,
-                authKey: config.authKey,
-                controlURL: config.controlURL,
-                ephemeral: true
-            ),
-            logger: logger
-        )
-        // Interactive login (no auth key): tsnet's `up()` blocks until the
-        // backend reaches Running, which on a fresh device means waiting for a
-        // browser login. tsnet emits that login URL as a BrowseToURL notify on
-        // the IPN bus — subscribe BEFORE `up()` (else the notify fires with
-        // nobody listening and `up()` waits forever) and surface the URL for
-        // the user to open. With an auth key this path is skipped entirely.
-        var authWatcher: TailscaleIPNWatcher?
-        if config.authKey == nil {
-            let watcher = TailscaleIPNWatcher()
-            watcher.onBrowseToURL = { url in Self.surfaceLoginURL(url) }
-            try await watcher.startWatching(node: node)
-            authWatcher = watcher
-            logger.log("No auth key set — waiting for interactive browser login…")
-        }
-
-        logger.log("Bringing up tsnet node \(hostName)…")
-        try await node.up()
-        authWatcher?.stopWatching()
+        // Bring the node up if a caller (the SDL CLI) skipped `prepare`; a
+        // picker host that already called `prepare` + `discoverPeers` reuses
+        // the live node (this is a no-op then).
+        try await prepare(config: config)
+        guard let node = preparedNode else { throw TailscaleError.badInterfaceHandle }
+        // Clear the node reference on EVERY exit path, not just the clean loop
+        // exit below. `preparedNode` lives on the process-lifetime transport, so
+        // a throw between here and that tail (addrs / tailscale / listener bind /
+        // back-channel start) would otherwise pin the node forever — its last
+        // reference never drops, so `deinit` (the real `tailscale_close`) never
+        // runs, leaking the tsnet node and wedging any retry on the stale one.
+        defer { preparedNode = nil }
 
         let ips = try await node.addrs()
-        logger.log("tsnet up — ip4=\(ips.ip4 ?? "-") ip6=\(ips.ip6 ?? "-")")
-
-        // Surface which tailnet identity we actually joined. A viewer that
-        // authenticated into the wrong tailnet looks identical to a connected
-        // one that just isn't getting frames — printing the account here turns
-        // that into an obvious mismatch. Best-effort; never blocks the session.
-        let auth = TailscaleAuth()
-        await auth.checkAuthStatus(node: node)
-        let identity = auth.userProfile?.loginName ?? "unknown account"
-        logger.log("▶ Connected as \(identity) — node \(hostName) @ \(ips.ip4 ?? ips.ip6 ?? "?")")
-
         guard let tailscale = await node.tailscale else {
             throw TailscaleError.badInterfaceHandle
         }
@@ -275,6 +357,8 @@ public final class TsnetTransport {
         }
         await listener.close()
         try? await node.down()
+        // `preparedNode = nil` is handled by the `defer` above (which also
+        // covers the throwing exit paths).
     }
 
     /// Surface an interactive-login URL: print it prominently on stderr (so it

@@ -165,9 +165,21 @@ guarantee the SDL path never had.
 
 ### L4 — Sharer picker + login polish
 - Use `TailscalePeerDiscovery` (exists, unused) → a native list to pick a sharer
-  instead of the CLI host arg.
+  instead of the CLI host arg. **Done:** `TsnetTransport` split into `prepare`
+  (bring the node up without a session) + `discoverPeers` (→ `[DiscoveredSharer]`)
+  + `run` (dial a chosen host); `run` calls `prepare` itself so the SDL CLI is
+  unchanged. Launched with no host arg, the GTK app enters picker mode
+  (`PickerModel` phase machine + a swift-cross-ui `ScrollView`/`ForEach` list);
+  selecting a row dials the sharer's **tailnet IP** (also sidestepping the
+  `from == dest` hostname-match limitation).
 - Interactive tsnet login URL surfaced as an in-window prompt (today: stderr +
-  `xdg-open`).
+  `xdg-open`). **Done:** `prepare(onLoginURL:)` routes the URL to the picker
+  placard (`PickerModel.loginURL`); the stderr banner + `xdg-open` remain the
+  default when no handler is supplied (the SDL CLI).
+- **Follow-up:** live IPN-bus refresh of the list (today's discovery is a
+  one-shot `backendStatus` seed); reconnect/back-to-picker after a session ends.
+  Picker + login are live-only (a real tailnet with sharers), so compile +
+  render-self-test verified; a live run needs a tailnet.
 
 ### L5 — Windows (later, separate)
 - The same `GtkVideoView` *feature* on `WinUIBackend` becomes a WinUI video view
