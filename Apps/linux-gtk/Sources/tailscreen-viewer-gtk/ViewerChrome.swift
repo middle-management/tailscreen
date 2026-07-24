@@ -307,6 +307,44 @@ struct SessionPlacard: View {
     }
 }
 
+/// Annotation toolbar over the video (shown only when the sharer advertised
+/// `ScreenShareCaps.annotations`): a Pen toggle, a row of color swatches, and
+/// Undo / Clear. Strokes are drawn on the video and relayed to the sharer.
+struct AnnotationToolbar: View {
+    let penActive: Bool
+    let colors: [Annotation.RGBA]
+    let selectedColor: Int
+    let onTogglePen: @MainActor @Sendable () -> Void
+    let onSelectColor: @MainActor @Sendable (Int) -> Void
+    let onUndo: @MainActor @Sendable () -> Void
+    let onClear: @MainActor @Sendable () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Button(penActive ? "✓ Pen" : "Pen", action: onTogglePen)
+            ForEach(Array(colors.enumerated()), id: \.offset) { item in
+                Circle()
+                    .fill(Color(
+                        red: item.element.r, green: item.element.g,
+                        blue: item.element.b, opacity: item.element.a))
+                    .frame(width: 18, height: 18)
+                    .overlay {
+                        Circle().stroke(
+                            item.offset == selectedColor ? Color.white : Color(white: 0, opacity: 0),
+                            style: StrokeStyle(width: 2))
+                    }
+                    .onTapGesture { onSelectColor(item.offset) }
+            }
+            Button("Undo", action: onUndo)
+            Button("Clear", action: onClear)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .hubCard(radius: 10)
+        .padding(12)
+    }
+}
+
 /// Small translucent stats pill over the video (top-left): resolution + fps.
 /// Toggleable. Network stats (bitrate/loss) need portable session counters —
 /// a follow-up.

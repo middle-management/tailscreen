@@ -30,15 +30,18 @@ public struct GtkVideoView: View {
     let store: FrameStore
     let selfTest: Bool
     let onInputEvent: ((InputEvent) -> Void)?
+    let annotations: AnnotationStore?
 
     public init(
         store: FrameStore,
         selfTest: Bool = false,
-        onInputEvent: ((InputEvent) -> Void)? = nil
+        onInputEvent: ((InputEvent) -> Void)? = nil,
+        annotations: AnnotationStore? = nil
     ) {
         self.store = store
         self.selfTest = selfTest
         self.onInputEvent = onInputEvent
+        self.annotations = annotations
     }
 
     public var body: some View { EmptyView() }
@@ -75,8 +78,14 @@ public struct GtkVideoView: View {
         area.expandVertically = true
         let store = self.store
         let selfTest = self.selfTest
+        let annotations = self.annotations
         // One-shot: grow the (hub-sized) window to the video on the first frame.
         let sizedToVideo = ResizeLatch()
+        // Repaint when a stroke is drawn or a relayed op arrives.
+        annotations?.setRedraw { [weak area] in
+            guard let area else { return }
+            cgtkvideo_queue_render(UnsafeMutableRawPointer(area.widgetPointer))
+        }
         // Shared continuous zoom/pan state (scroll-zoom, drag-free pan, and the
         // double-tap smart-magnify toggle). One instance is captured by both the
         // render closure — which resets the view on a resolution change — and the
@@ -123,6 +132,24 @@ public struct GtkVideoView: View {
                         }
                     }
                 }
+                // Overlay annotation strokes (mapped through the same transform).
+                if let annotations {
+                    let data = annotations.renderData()
+                    if !data.counts.isEmpty {
+                        data.xy.withUnsafeBufferPointer { xy in
+                            data.counts.withUnsafeBufferPointer { counts in
+                                data.rgba.withUnsafeBufferPointer { rgba in
+                                    data.widths.withUnsafeBufferPointer { widths in
+                                        cgtkvideo_draw_annotations(
+                                            xy.baseAddress, counts.baseAddress,
+                                            Int32(data.counts.count),
+                                            rgba.baseAddress, widths.baseAddress)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             } else {
                 cgtkvideo_clear()
             }
@@ -137,6 +164,9 @@ public struct GtkVideoView: View {
         // capture, and must be a no-op in the headless render self-test.
         if !selfTest {
             Self.attachZoomPan(to: area, store: store, zoom: zoom)
+        }
+        if let annotations, !selfTest {
+            Self.attachAnnotationDrawing(to: area, store: store, annotations: annotations)
         }
         // GtkGLArea is a Gtk.Widget; GtkBackend.Widget == Gtk.Widget, so this
         // runtime cast is safe whenever `backend is GtkBackend`.
@@ -156,6 +186,56 @@ public struct GtkVideoView: View {
     /// render callback fires every frame).
     private final class ResizeLatch {
         var done = false
+    }
+
+    /// Tracks whether an annotation drag is in progress (button held).
+    private final class DrawState {
+        var drawing = false
+    }
+
+    /// Attach freehand annotation drawing: a button-1 press in pen mode starts a
+    /// stroke, pointer motion extends it, release commits it (relayed via the
+    /// store's `onLocalOp`). A no-op unless `annotations.mode == .pen`, so it
+    /// coexists with zoom/pan + remote-control capture (pen mode is the viewer's
+    /// explicit choice). Never attached in the render self-test.
+    private static func attachAnnotationDrawing(
+        to area: Gtk.GLArea, store: FrameStore, annotations: AnnotationStore
+    ) {
+        let widget = UnsafeMutableRawPointer(area.widgetPointer)
+        let draw = DrawState()
+
+        func normalized(_ px: Double, _ py: Double) -> CGPoint {
+            var w: Int32 = 0
+            var h: Int32 = 0
+            cgtkvideo_widget_size(widget, &w, &h)
+            let frame = store.current()
+            let point = ViewerInputMapping.normalizePointer(
+                px: px, py: py, widgetW: Double(w), widgetH: Double(h),
+                videoW: frame?.width ?? 0, videoH: frame?.height ?? 0)
+            return CGPoint(x: point.x, y: point.y)
+        }
+
+        let click = GestureClick()
+        click.button = 1
+        click.pressed = { _, _, x, y in
+            guard annotations.mode == .pen else { return }
+            draw.drawing = true
+            annotations.beginStroke(at: normalized(x, y))
+        }
+        click.released = { _, _, x, y in
+            guard draw.drawing else { return }
+            draw.drawing = false
+            annotations.extendStroke(to: normalized(x, y))
+            annotations.endStroke()
+        }
+        area.addEventController(click)
+
+        let motion = EventControllerMotion()
+        motion.motion = { _, x, y in
+            guard draw.drawing, annotations.mode == .pen else { return }
+            annotations.extendStroke(to: normalized(x, y))
+        }
+        area.addEventController(motion)
     }
 
     /// The window size to request for a video of `width`×`height`: the frame's

@@ -32,6 +32,10 @@ let gControls = ViewerControls(ui: gUIState)
 let gInput = InputForwarder(ui: gUIState)
 let gPicker = PickerModel()
 let gProfiles = ProfileStore()
+let gAnnotations = AnnotationStore()
+let gAnnoForwarder = AnnotationForwarder()
+// The annotation toolbar's color choices (a subset of the shared palette).
+let gPalette = Array(Annotation.RGBA.palette.prefix(6))
 // Account-menu actions, wired in picker mode (nil elsewhere → menu hidden).
 var gSwitchProfile: (@MainActor @Sendable (String) -> Void)?
 var gAddAccount: (@MainActor @Sendable () -> Void)?
@@ -127,10 +131,21 @@ if gSelfTest {
     if gArgs.contains("--ui-preview-video") {
         gStore.set(makeColorBarsFrame())
         gUIState.remoteControlAvailable = true
+        gUIState.annotationsAvailable = true
         gUIState.hasVideo = true
         gUIState.videoWidth = 1920
         gUIState.videoHeight = 1080
         gUIState.fps = 30
+        gUIState.penActive = true
+        // A couple of sample strokes so the annotation overlay is visible.
+        gAnnotations.apply(.add(Annotation(
+            id: UUID(), tool: .pen,
+            points: [CGPoint(x: 0.15, y: 0.3), CGPoint(x: 0.35, y: 0.55), CGPoint(x: 0.25, y: 0.7)],
+            color: Annotation.RGBA.palette[0], width: 4)))
+        gAnnotations.apply(.add(Annotation(
+            id: UUID(), tool: .pen,
+            points: [CGPoint(x: 0.55, y: 0.4), CGPoint(x: 0.8, y: 0.4)],
+            color: Annotation.RGBA.palette[1], width: 4)))
     }
     if gArgs.contains("--ui-preview-placard") {
         gUIState.inSession = true
@@ -160,8 +175,10 @@ if gSelfTest {
     // Inbound back-channel handlers: control grant/revoke drive the toolbar's
     // state machine. Inbound annotation *rendering* (drawing relayed strokes on
     // an overlay canvas) is a follow-up — the plumbing already carries the ops.
+    // Relay finalized local annotation ops; apply relayed ops to the canvas.
+    gAnnotations.onLocalOp = { op in gAnnoForwarder.submit(op) }
     let backChannelHandlers = ViewerBackChannel.Handlers(
-        onAnnotation: { _ in },
+        onAnnotation: { op in gAnnotations.apply(op) },
         onControlGranted: { gUIState.setControlState(.active) },
         onControlRevoked: { reason in gUIState.setControlState(.revoked(reason: reason)) })
 
@@ -173,6 +190,7 @@ if gSelfTest {
         var config = baseConfig
         config.hostname = dialHost
         sink.resetForNewSession()  // the sink outlives one session
+        gAnnotations.resetForNewSession()
         gUIState.beginSession()
         // A reference box for the decline flag, set from the @Sendable
         // onDeclined callback (both it and the post-run read run on MainActor).
@@ -187,6 +205,7 @@ if gSelfTest {
                     onBackChannelReady: { channel in
                         gControls.attach(channel)
                         gInput.attach(channel)
+                        gAnnoForwarder.attach(channel)
                     },
                     onAdmitted: { caps in
                         gUIState.setCaps(
@@ -287,6 +306,7 @@ if gSelfTest {
         // and re-list.
         gReturnToPicker = {
             gUIState.returnToPickerState()
+            gAnnotations.resetForNewSession()
             gPicker.phase = .picking
             discoverAndSweep()
         }
@@ -427,7 +447,9 @@ struct ViewerApp: App {
             GtkVideoView(store: gStore, selfTest: true)
         } else if ui.hasVideo {
             ZStack {
-                GtkVideoView(store: gStore, onInputEvent: { gInput.submit($0) })
+                GtkVideoView(
+                    store: gStore, onInputEvent: { gInput.submit($0) },
+                    annotations: gAnnotations)
                 // Stats HUD, pinned top-left over the video.
                 VStack {
                     HStack {
@@ -437,14 +459,30 @@ struct ViewerApp: App {
                     Spacer()
                 }
                 .padding(10)
-                // Remote-control toolbar, pinned to the bottom. Shown only when
-                // the sharer advertised `.remoteControl` (caps-gated, like the
-                // mac viewer). Once control is granted, `GtkVideoView` captures
-                // pointer/keyboard and `gInput` forwards them; this bar owns the
-                // request/grant/release handshake.
-                if ui.remoteControlAvailable {
-                    VStack {
-                        Spacer()
+                // Bottom toolbars: annotation tools (caps-gated) above the
+                // remote-control bar (caps-gated). Once control is granted,
+                // `GtkVideoView` captures pointer/keyboard and `gInput` forwards
+                // them; the control bar owns the request/grant/release handshake.
+                VStack {
+                    Spacer()
+                    if ui.annotationsAvailable {
+                        AnnotationToolbar(
+                            penActive: ui.penActive,
+                            colors: gPalette,
+                            selectedColor: ui.annotationColorIndex,
+                            onTogglePen: {
+                                let on = gAnnotations.mode != .pen
+                                gAnnotations.mode = on ? .pen : .off
+                                gUIState.penActive = on
+                            },
+                            onSelectColor: { index in
+                                gUIState.annotationColorIndex = index
+                                gAnnotations.color = gPalette[index]
+                            },
+                            onUndo: { gAnnotations.undo() },
+                            onClear: { gAnnotations.clearAll() })
+                    }
+                    if ui.remoteControlAvailable {
                         RemoteControlBar(
                             buttonLabel: controlButtonLabel,
                             declinedReason: revokedReason,

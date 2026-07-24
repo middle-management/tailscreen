@@ -13,6 +13,17 @@ void cgtkvideo_draw_yuv(int32_t width, int32_t height,
 // Clear to black (when there's no frame yet).
 void cgtkvideo_clear(void);
 
+// Draw annotation strokes over the just-drawn video. Points are normalized
+// [0,1] in the video content space (origin top-left), flattened x0,y0,x1,y1,…;
+// `counts` holds the vertex count of each of `n_strokes` strokes in order;
+// `rgba` is 4 floats (0..1) per stroke; `widths_px` is per-stroke line width in
+// pixels (NULL ⇒ default). Maps each point through the SAME aspect-fit + zoom +
+// pan transform the last `cgtkvideo_draw_yuv` used, so strokes track the video.
+// Call inside the GLArea render, AFTER cgtkvideo_draw_yuv.
+void cgtkvideo_draw_annotations(const float *norm_xy, const int *counts,
+                                int n_strokes, const float *rgba,
+                                const float *widths_px);
+
 // Set the view transform applied on top of aspect-fit: `zoom` (≥1) scales the
 // video about the centre, `pan_x`/`pan_y` shift it in NDC ([-1,1]). Defaults are
 // 1 / 0 / 0 (plain aspect-fit). Driven from the viewer's zoom/pan state.

@@ -8,6 +8,14 @@ static GLuint prog, vao, texY, texU, texV;
 static GLint uXformLoc = -1;
 // View state (zoom ≥ 1, pan in NDC), settable from Swift via cgtkvideo_set_view.
 static float gZoom = 1.0f, gPanX = 0.0f, gPanY = 0.0f;
+// The last aspect-fit × zoom scale computed by cgtkvideo_draw_yuv, reused by the
+// annotation renderer so strokes track the video content (letterbox + zoom/pan).
+static float gLastSx = 1.0f, gLastSy = 1.0f;
+
+// --- Annotation line renderer -----------------------------------------------
+static int annInited = 0;
+static GLuint annProg, annVao, annVbo;
+static GLint annPosLoc = -1, annColorLoc = -1;
 
 static const char *VS =
 "#version 300 es\n"
@@ -110,6 +118,8 @@ void cgtkvideo_draw_yuv(int32_t width, int32_t height,
     }
     sx *= gZoom;
     sy *= gZoom;
+    gLastSx = sx;
+    gLastSy = sy;
 
     glClearColor(0, 0, 0, 1);
     glClear(GL_COLOR_BUFFER_BIT);
@@ -131,6 +141,74 @@ void cgtkvideo_reset(void) {
     // GL objects belonged to a context being torn down (freed with it); just
     // forget them so the next draw re-inits against the fresh context.
     inited = 0;
+    annInited = 0;
+}
+
+// --- Annotation line renderer -----------------------------------------------
+static const char *ANN_VS =
+"#version 300 es\n"
+"in vec2 aPos;\n"  // NDC position
+"void main(){ gl_Position = vec4(aPos, 0.0, 1.0); }\n";
+
+static const char *ANN_FS =
+"#version 300 es\n"
+"precision highp float;\n"
+"uniform vec4 uColor;\n"
+"out vec4 frag;\n"
+"void main(){ frag = uColor; }\n";
+
+static void ann_init(void) {
+    GLuint vs = compile(GL_VERTEX_SHADER, ANN_VS), fs = compile(GL_FRAGMENT_SHADER, ANN_FS);
+    annProg = glCreateProgram();
+    glAttachShader(annProg, vs); glAttachShader(annProg, fs); glLinkProgram(annProg);
+    glDeleteShader(vs); glDeleteShader(fs);
+    annPosLoc = glGetAttribLocation(annProg, "aPos");
+    annColorLoc = glGetUniformLocation(annProg, "uColor");
+    glGenVertexArrays(1, &annVao);
+    glGenBuffers(1, &annVbo);
+    annInited = 1;
+}
+
+void cgtkvideo_draw_annotations(const float *norm_xy, const int *counts,
+                                int n_strokes, const float *rgba,
+                                const float *widths_px) {
+    if (n_strokes <= 0 || !norm_xy || !counts || !rgba) return;
+    if (!inited) return;  // no video drawn yet ⇒ no transform to map against
+    if (!annInited) ann_init();
+
+    glUseProgram(annProg);
+    glBindVertexArray(annVao);
+    glBindBuffer(GL_ARRAY_BUFFER, annVbo);
+    glEnableVertexAttribArray((GLuint)annPosLoc);
+    glVertexAttribPointer((GLuint)annPosLoc, 2, GL_FLOAT, GL_FALSE, 0, 0);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    int offset = 0;  // running point index into norm_xy
+    for (int s = 0; s < n_strokes; s++) {
+        int n = counts[s];
+        if (n <= 0) continue;
+        // Map each normalized (u,v), origin top-left, to NDC through the same
+        // aspect-fit × zoom + pan transform the video quad uses:
+        //   ndc = ((2u-1)*sx + panX, (1-2v)*sy + panY)
+        float *ndc = (float *)malloc(sizeof(float) * 2 * (size_t)n);
+        if (!ndc) break;
+        for (int i = 0; i < n; i++) {
+            float u = norm_xy[(offset + i) * 2 + 0];
+            float v = norm_xy[(offset + i) * 2 + 1];
+            ndc[i * 2 + 0] = (2.0f * u - 1.0f) * gLastSx + gPanX;
+            ndc[i * 2 + 1] = (1.0f - 2.0f * v) * gLastSy + gPanY;
+        }
+        glBufferData(GL_ARRAY_BUFFER, sizeof(float) * 2 * (size_t)n, ndc, GL_STREAM_DRAW);
+        glUniform4f(annColorLoc, rgba[s * 4 + 0], rgba[s * 4 + 1], rgba[s * 4 + 2], rgba[s * 4 + 3]);
+        float w = widths_px ? widths_px[s] : 3.0f;
+        if (w < 1.0f) w = 1.0f;
+        glLineWidth(w);
+        glDrawArrays(n == 1 ? GL_POINTS : GL_LINE_STRIP, 0, n);
+        free(ndc);
+        offset += n;
+    }
+    glDisableVertexAttribArray((GLuint)annPosLoc);
 }
 
 int32_t cgtkvideo_selftest_check(void) {

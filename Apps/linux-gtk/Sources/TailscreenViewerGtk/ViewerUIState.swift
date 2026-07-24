@@ -57,6 +57,12 @@ public final class ViewerUIState: ObservableObject, @unchecked Sendable {
     /// Whether the stats HUD is shown (toggled from the control bar).
     @Published public var showStats = false
 
+    /// Annotation toolbar state (shown only when the sharer advertised
+    /// `ScreenShareCaps.annotations`): whether pen mode is active + the selected
+    /// palette color index.
+    @Published public var penActive = false
+    @Published public var annotationColorIndex = 0
+
     public init() {}
 
     /// True from the moment a viewing session starts until it ends and the UI
@@ -97,6 +103,8 @@ public final class ViewerUIState: ObservableObject, @unchecked Sendable {
             self.fps = 0
             self.videoWidth = 0
             self.videoHeight = 0
+            self.penActive = false
+            self.annotationColorIndex = 0
         }
     }
 

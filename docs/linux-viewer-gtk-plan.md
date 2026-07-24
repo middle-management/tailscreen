@@ -173,10 +173,22 @@ guarantee the SDL path never had.
   `ViewerBackChannel.sendInputEvent`'s ordering contract (never one `Task` per
   event, so a down/up pair can't invert). The mapping logic is CI-tested by the
   `linux-viewer` job; the GTK event-controller wiring is compile-gated (not
-  verifiable headless, same boundary as L1's interactive zoom input). **Follow-
-  up:** scroll capture (swift-cross-ui exposes no `EventControllerScroll` binding
-  yet — needs a small C shim), and the annotation *drawing surface* (both
-  directions). Mic toggle deferred until ALSA **capture** exists (playback-only
+  verifiable headless, same boundary as L1's interactive zoom input).
+- **Zoom/pan (done).** Scroll zooms about the cursor, Shift+scroll pans, double-
+  click smart-magnifies — geometry via the CI-tested `ViewerZoomMath`, scroll
+  captured through a `cgtkvideo_attach_scroll` C shim (swift-cross-ui has no
+  `EventControllerScroll` binding).
+- **Annotations (done, both directions).** A freehand **pen** draws strokes over
+  the video (a bottom `AnnotationToolbar`: pen toggle, color swatches, undo,
+  clear, caps-gated on `ScreenShareCaps.annotations`). Strokes render in GL via a
+  new `cgtkvideo_draw_annotations` (polylines mapped through the *same* aspect-fit
+  + zoom/pan transform as the video, so they track content), held in an
+  `AnnotationStore` (lock-guarded; local + relayed strokes). Finalized ops relay
+  to the sharer through `AnnotationForwarder` (one `AsyncStream`, single consumer,
+  re-bindable channel — preserves add/undo order across reconnects), and inbound
+  relayed ops apply to the same canvas. **Follow-up:** the non-pen tools
+  (line/arrow/rect/oval/click) and thick-stroke geometry (today's GL line width is
+  best-effort). Mic toggle deferred until ALSA **capture** exists (playback-only
   today).
 
 ### L4 — Sharer picker + login polish
