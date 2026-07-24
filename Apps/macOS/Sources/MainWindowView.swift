@@ -1088,6 +1088,22 @@ private struct PeerDetailView: View {
             VStack(alignment: .leading, spacing: 6) {
                 infoRow(label: "DNS", value: dnsDisplay)
                 infoRow(label: "IP", value: peer.tailscaleIP)
+                if let v6 = peer.tailscaleIPs.first(where: { $0.contains(":") }) {
+                    infoRow(label: "IPv6", value: v6)
+                }
+                if let entry = rememberedEntry {
+                    HStack(spacing: 6) {
+                        Text(L("Access"))
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                            .frame(width: 40, alignment: .leading)
+                        Text(entry.policy == .allow ? L("Allowed") : L("Blocked"))
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(entry.policy == .allow ? Color.green : Color.red)
+                        Spacer(minLength: 0)
+                    }
+                    .help(L("Remembered viewer decision — manage it in Settings → Viewers."))
+                }
                 if peer.isOnline, let route = routeText {
                     HStack(spacing: 6) {
                         Text(L("Route"))
@@ -1186,6 +1202,15 @@ private struct PeerDetailView: View {
     /// MagicDNS name without the FQDN's trailing dot.
     private var dnsDisplay: String {
         peer.dnsName.hasSuffix(".") ? String(peer.dnsName.dropLast()) : peer.dnsName
+    }
+
+    /// Remembered Always Allow / Deny & Block decision for this peer, when
+    /// its StableNodeID is known (LocalAPI seed) and a decision exists.
+    /// Same keying the admission gate itself uses — never wire-claimed
+    /// identity.
+    private var rememberedEntry: PeerAccessEntry? {
+        guard let stableID = peer.stableID else { return nil }
+        return appState.viewerAccessPolicies.entries.first { $0.stableID == stableID }
     }
 
     /// Relative last-seen for offline peers, when the netmap supplied one

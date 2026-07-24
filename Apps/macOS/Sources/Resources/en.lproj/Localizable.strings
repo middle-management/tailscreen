@@ -58,6 +58,8 @@
 "Last seen %@" = "Last seen %@";
 "Shows details and actions" = "Shows details and actions";
 "Show details" = "Show details";
+"Access" = "Access";
+"Remembered viewer decision — manage it in Settings → Viewers." = "Remembered viewer decision — manage it in Settings → Viewers.";
 "Route" = "Route";
 "Direct" = "Direct";
 "DERP (%@)" = "DERP (%@)";

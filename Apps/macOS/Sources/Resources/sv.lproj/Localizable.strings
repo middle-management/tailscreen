@@ -53,6 +53,8 @@
 "Last seen %@" = "Senast sedd %@";
 "Shows details and actions" = "Visar detaljer och åtgärder";
 "Show details" = "Visa detaljer";
+"Access" = "Åtkomst";
+"Remembered viewer decision — manage it in Settings → Viewers." = "Ihågkommet tittarbeslut — hantera det i Inställningar → Tittare.";
 "Route" = "Rutt";
 "Direct" = "Direkt";
 "DERP (%@)" = "DERP (%@)";
