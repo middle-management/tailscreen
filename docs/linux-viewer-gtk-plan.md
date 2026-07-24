@@ -173,10 +173,22 @@ guarantee the SDL path never had.
   `ViewerBackChannel.sendInputEvent`'s ordering contract (never one `Task` per
   event, so a down/up pair can't invert). The mapping logic is CI-tested by the
   `linux-viewer` job; the GTK event-controller wiring is compile-gated (not
-  verifiable headless, same boundary as L1's interactive zoom input). **Follow-
-  up:** scroll capture (swift-cross-ui exposes no `EventControllerScroll` binding
-  yet — needs a small C shim), and the annotation *drawing surface* (both
-  directions). Mic toggle deferred until ALSA **capture** exists (playback-only
+  verifiable headless, same boundary as L1's interactive zoom input).
+- **Zoom/pan (done).** Scroll zooms about the cursor, Shift+scroll pans, double-
+  click smart-magnifies — geometry via the CI-tested `ViewerZoomMath`, scroll
+  captured through a `cgtkvideo_attach_scroll` C shim (swift-cross-ui has no
+  `EventControllerScroll` binding).
+- **Annotations (done, both directions).** A freehand **pen** draws strokes over
+  the video (a bottom `AnnotationToolbar`: pen toggle, color swatches, undo,
+  clear, caps-gated on `ScreenShareCaps.annotations`). Strokes render in GL via a
+  new `cgtkvideo_draw_annotations` (polylines mapped through the *same* aspect-fit
+  + zoom/pan transform as the video, so they track content), held in an
+  `AnnotationStore` (lock-guarded; local + relayed strokes). Finalized ops relay
+  to the sharer through `AnnotationForwarder` (one `AsyncStream`, single consumer,
+  re-bindable channel — preserves add/undo order across reconnects), and inbound
+  relayed ops apply to the same canvas. **Follow-up:** the non-pen tools
+  (line/arrow/rect/oval/click) and thick-stroke geometry (today's GL line width is
+  best-effort). Mic toggle deferred until ALSA **capture** exists (playback-only
   today).
 
 ### L4 — Sharer picker + login polish
@@ -192,10 +204,33 @@ guarantee the SDL path never had.
   `xdg-open`). **Done:** `prepare(onLoginURL:)` routes the URL to the picker
   placard (`PickerModel.loginURL`); the stderr banner + `xdg-open` remain the
   default when no handler is supplied (the SDL CLI).
+- **Hub-styled chrome.** The picker + placards now follow the macOS docked-
+  window hub (`MainWindowView`): a thick header (wordmark + a status subtitle), a
+  centered content column, a rounded login/status card, a **search field**, and a
+  "Screens" list of presence-dot + hostname + IP rows that **expand** into an
+  inline detail pane (a **View Screen** action + Host / IP, the viewer's cut of
+  the mac hub's `PeerDetailView`). Reproduced from swift-cross-ui primitives
+  (`Circle`/`RoundedRectangle` fills, translucent-gray tints that read on both
+  light and dark GTK themes, `.onTapGesture` rows since `Button` takes only a
+  String label; no SF Symbols). The header also carries a **Refresh** button
+  (re-lists via `discoverPeers` without re-login) and a **multi-account menu**
+  (`ProfileStore`: per-profile tsnet state dirs persisted under
+  `$XDG_CONFIG_HOME/tailscreen-viewer-gtk`; switching tears the node down and
+  brings it up under the chosen profile's state dir, Add Account seeds a fresh
+  dir → interactive login, and a profile auto-renames to its resolved Tailscale
+  login) — the viewer's cut of the mac hub's account switcher. Rows show a green
+  **sharing chip** + a `name · WxH · codec` detail caption from a lazy
+  `TailscreenMetadataClient` sweep (`TsnetTransport.fetchMetadata`). Sharer-only
+  hub chrome (Choose-what-to-share, approval toggle, filter menu) is deliberately
+  absent — this is a viewer. `ViewerChrome.swift` holds the reusable views; the
+  `GtkVideoView` is mounted only once frames flow, so the chrome sits on the
+  native window background, not over a black GL surface. A `--ui-preview` flag
+  renders the hub with seeded fake sharers and no networking, so the chrome is
+  screenshot-reviewable headless under Xvfb.
 - **Follow-up:** live IPN-bus refresh of the list (today's discovery is a
-  one-shot `backendStatus` seed); reconnect/back-to-picker after a session ends.
-  Picker + login are live-only (a real tailnet with sharers), so compile +
-  render-self-test verified; a live run needs a tailnet.
+  one-shot `backendStatus` seed); reconnect/back-to-picker
+  after a session ends. Picker + login are live-only (a real tailnet with
+  sharers), so compile + render-self-test verified; a live run needs a tailnet.
 
 ### L5 — Windows (later, separate)
 - The same `GtkVideoView` *feature* on `WinUIBackend` becomes a WinUI video view

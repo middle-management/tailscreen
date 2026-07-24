@@ -8,6 +8,14 @@ static GLuint prog, vao, texY, texU, texV;
 static GLint uXformLoc = -1;
 // View state (zoom ≥ 1, pan in NDC), settable from Swift via cgtkvideo_set_view.
 static float gZoom = 1.0f, gPanX = 0.0f, gPanY = 0.0f;
+// The last aspect-fit × zoom scale computed by cgtkvideo_draw_yuv, reused by the
+// annotation renderer so strokes track the video content (letterbox + zoom/pan).
+static float gLastSx = 1.0f, gLastSy = 1.0f;
+
+// --- Annotation line renderer -----------------------------------------------
+static int annInited = 0;
+static GLuint annProg, annVao, annVbo;
+static GLint annPosLoc = -1, annColorLoc = -1;
 
 static const char *VS =
 "#version 300 es\n"
@@ -110,6 +118,8 @@ void cgtkvideo_draw_yuv(int32_t width, int32_t height,
     }
     sx *= gZoom;
     sy *= gZoom;
+    gLastSx = sx;
+    gLastSy = sy;
 
     glClearColor(0, 0, 0, 1);
     glClear(GL_COLOR_BUFFER_BIT);
@@ -131,6 +141,74 @@ void cgtkvideo_reset(void) {
     // GL objects belonged to a context being torn down (freed with it); just
     // forget them so the next draw re-inits against the fresh context.
     inited = 0;
+    annInited = 0;
+}
+
+// --- Annotation line renderer -----------------------------------------------
+static const char *ANN_VS =
+"#version 300 es\n"
+"in vec2 aPos;\n"  // NDC position
+"void main(){ gl_Position = vec4(aPos, 0.0, 1.0); }\n";
+
+static const char *ANN_FS =
+"#version 300 es\n"
+"precision highp float;\n"
+"uniform vec4 uColor;\n"
+"out vec4 frag;\n"
+"void main(){ frag = uColor; }\n";
+
+static void ann_init(void) {
+    GLuint vs = compile(GL_VERTEX_SHADER, ANN_VS), fs = compile(GL_FRAGMENT_SHADER, ANN_FS);
+    annProg = glCreateProgram();
+    glAttachShader(annProg, vs); glAttachShader(annProg, fs); glLinkProgram(annProg);
+    glDeleteShader(vs); glDeleteShader(fs);
+    annPosLoc = glGetAttribLocation(annProg, "aPos");
+    annColorLoc = glGetUniformLocation(annProg, "uColor");
+    glGenVertexArrays(1, &annVao);
+    glGenBuffers(1, &annVbo);
+    annInited = 1;
+}
+
+void cgtkvideo_draw_annotations(const float *norm_xy, const int *counts,
+                                int n_strokes, const float *rgba,
+                                const float *widths_px) {
+    if (n_strokes <= 0 || !norm_xy || !counts || !rgba) return;
+    if (!inited) return;  // no video drawn yet ⇒ no transform to map against
+    if (!annInited) ann_init();
+
+    glUseProgram(annProg);
+    glBindVertexArray(annVao);
+    glBindBuffer(GL_ARRAY_BUFFER, annVbo);
+    glEnableVertexAttribArray((GLuint)annPosLoc);
+    glVertexAttribPointer((GLuint)annPosLoc, 2, GL_FLOAT, GL_FALSE, 0, 0);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    int offset = 0;  // running point index into norm_xy
+    for (int s = 0; s < n_strokes; s++) {
+        int n = counts[s];
+        if (n <= 0) continue;
+        // Map each normalized (u,v), origin top-left, to NDC through the same
+        // aspect-fit × zoom + pan transform the video quad uses:
+        //   ndc = ((2u-1)*sx + panX, (1-2v)*sy + panY)
+        float *ndc = (float *)malloc(sizeof(float) * 2 * (size_t)n);
+        if (!ndc) break;
+        for (int i = 0; i < n; i++) {
+            float u = norm_xy[(offset + i) * 2 + 0];
+            float v = norm_xy[(offset + i) * 2 + 1];
+            ndc[i * 2 + 0] = (2.0f * u - 1.0f) * gLastSx + gPanX;
+            ndc[i * 2 + 1] = (1.0f - 2.0f * v) * gLastSy + gPanY;
+        }
+        glBufferData(GL_ARRAY_BUFFER, sizeof(float) * 2 * (size_t)n, ndc, GL_STREAM_DRAW);
+        glUniform4f(annColorLoc, rgba[s * 4 + 0], rgba[s * 4 + 1], rgba[s * 4 + 2], rgba[s * 4 + 3]);
+        float w = widths_px ? widths_px[s] : 3.0f;
+        if (w < 1.0f) w = 1.0f;
+        glLineWidth(w);
+        glDrawArrays(n == 1 ? GL_POINTS : GL_LINE_STRIP, 0, n);
+        free(ndc);
+        offset += n;
+    }
+    glDisableVertexAttribArray((GLuint)annPosLoc);
 }
 
 int32_t cgtkvideo_selftest_check(void) {
@@ -207,4 +285,72 @@ void cgtkvideo_widget_make_focusable(void *widget) {
 
 void cgtkvideo_widget_grab_focus(void *widget) {
     if (widget) gtk_widget_grab_focus(widget);
+}
+
+// GtkRoot* gtk_widget_get_root(GtkWidget*) — the widget's toplevel (a GtkWindow
+// for a normal window); GtkWindow implements GtkRoot, so the pointer is a valid
+// GtkWindow*. gtk_window_set_default_size resizes it (GTK4 has no gtk_window_resize).
+extern void *gtk_widget_get_root(void *widget);
+extern void gtk_window_set_default_size(void *window, int width, int height);
+
+void cgtkvideo_resize_toplevel(void *widget, int32_t w, int32_t h) {
+    if (!widget || w <= 0 || h <= 0) return;
+    void *root = gtk_widget_get_root(widget);
+    if (root) gtk_window_set_default_size(root, (int)w, (int)h);
+}
+
+// --- Scroll controller shim --------------------------------------------------
+//
+// swift-cross-ui binds EventControllerMotion/Key/GestureClick but NOT
+// EventControllerScroll, so the zoom/pan input can't be wired from Swift alone.
+// Create a native GtkEventControllerScroll here and forward its deltas (plus the
+// modifier state, read from the controller's current event) to a Swift callback.
+// All symbols are forward-declared (void* opaque handles — C ignores parameter
+// types for symbol resolution) so this GL-only target still pulls no gtk headers.
+typedef unsigned long gulong;
+typedef void (*GCallback)(void);
+// GtkEventControllerScrollFlags: VERTICAL(1) | HORIZONTAL(1<<1) == BOTH_AXES(3).
+#define CGTKVIDEO_SCROLL_BOTH_AXES 3u
+extern void *gtk_event_controller_scroll_new(unsigned int flags);
+extern void gtk_widget_add_controller(void *widget, void *controller);
+extern void *gtk_event_controller_get_current_event(void *controller);
+extern unsigned int gdk_event_get_modifier_state(void *event);
+extern gulong g_signal_connect_data(void *instance, const char *detailed_signal,
+                                     GCallback c_handler, void *data,
+                                     void *destroy_data, int connect_flags);
+
+typedef struct {
+    cgtkvideo_scroll_cb cb;
+    void *user;
+} CgtkScrollCtx;
+
+// GtkEventControllerScroll::scroll — return TRUE (1) to mark the event handled so
+// it doesn't bubble to a scrollable ancestor. `self` is the controller; its
+// current event carries the modifier state.
+static int cgtkvideo_scroll_handler(void *self, double dx, double dy, void *data) {
+    CgtkScrollCtx *ctx = (CgtkScrollCtx *)data;
+    unsigned int mods = 0;
+    void *ev = gtk_event_controller_get_current_event(self);
+    if (ev) mods = gdk_event_get_modifier_state(ev);
+    if (ctx && ctx->cb) ctx->cb(dx, dy, mods, ctx->user);
+    return 1;  // GDK_EVENT_STOP
+}
+
+// GClosureNotify to free the heap context when the closure (and thus the
+// controller/widget) is finalized.
+static void cgtkvideo_scroll_ctx_free(void *data, void *closure) {
+    (void)closure;
+    free(data);
+}
+
+void cgtkvideo_attach_scroll(void *widget, cgtkvideo_scroll_cb cb, void *user) {
+    if (!widget || !cb) return;
+    CgtkScrollCtx *ctx = (CgtkScrollCtx *)malloc(sizeof(CgtkScrollCtx));
+    if (!ctx) return;
+    ctx->cb = cb;
+    ctx->user = user;
+    void *controller = gtk_event_controller_scroll_new(CGTKVIDEO_SCROLL_BOTH_AXES);
+    g_signal_connect_data(controller, "scroll", (GCallback)cgtkvideo_scroll_handler,
+                          ctx, (void *)cgtkvideo_scroll_ctx_free, 0);
+    gtk_widget_add_controller(widget, controller);  // widget takes ownership
 }

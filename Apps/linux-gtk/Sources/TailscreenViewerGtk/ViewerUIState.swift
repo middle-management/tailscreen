@@ -34,7 +34,88 @@ public final class ViewerUIState: ObservableObject, @unchecked Sendable {
         case revoked(reason: String)
     }
 
+    /// Where the current session is in its lifecycle — drives the connection
+    /// placard shown over/instead of video (connecting → awaiting approval →
+    /// viewing, or declined / ended / failed).
+    @Published public var sessionPhase: SessionPhase = .connecting
+
+    public enum SessionPhase: Equatable, Sendable {
+        case connecting
+        case awaitingApproval
+        case viewing
+        case declined
+        case ended
+        case failed(String)
+    }
+
+    /// Live video stats for the HUD overlay (viewer-side: fps counted at the
+    /// sink, resolution from the decoded frame). Network stats (bitrate/loss)
+    /// need portable `ViewerSession` counters — a follow-up.
+    @Published public var fps = 0
+    @Published public var videoWidth = 0
+    @Published public var videoHeight = 0
+    /// Whether the stats HUD is shown (toggled from the control bar).
+    @Published public var showStats = false
+
+    /// Annotation toolbar state (shown only when the sharer advertised
+    /// `ScreenShareCaps.annotations`): whether pen mode is active + the selected
+    /// palette color index.
+    @Published public var penActive = false
+    @Published public var annotationColorIndex = 0
+
     public init() {}
+
+    /// True from the moment a viewing session starts until it ends and the UI
+    /// returns to the picker. Distinguishes "connecting / awaiting approval"
+    /// (show the session placard) from "browsing the screen list".
+    @Published public var inSession = false
+
+    /// Move the session lifecycle on the main thread (safe from any thread).
+    public func post(sessionPhase newPhase: SessionPhase) {
+        DispatchQueue.main.async { self.sessionPhase = newPhase }
+    }
+
+    /// Set the in-session flag on the main thread.
+    public func post(inSession active: Bool) {
+        DispatchQueue.main.async { self.inSession = active }
+    }
+
+    /// Enter a fresh session: in-session, connecting, no video, control reset.
+    public func beginSession() {
+        DispatchQueue.main.async {
+            self.inSession = true
+            self.hasVideo = false
+            self.sessionPhase = .connecting
+            self.controlState = .idle
+        }
+    }
+
+    /// Tear the session UI back down to the picker: clear video, caps, control,
+    /// and stats. Called when a session ends / is declined.
+    public func returnToPickerState() {
+        DispatchQueue.main.async {
+            self.hasVideo = false
+            self.inSession = false
+            self.remoteControlAvailable = false
+            self.annotationsAvailable = false
+            self.controlState = .idle
+            self.sessionPhase = .connecting
+            self.fps = 0
+            self.videoWidth = 0
+            self.videoHeight = 0
+            self.penActive = false
+            self.annotationColorIndex = 0
+        }
+    }
+
+    /// Publish the latest fps + resolution on the main thread.
+    public func post(fps newFps: Int, width: Int, height: Int) {
+        DispatchQueue.main.async {
+            self.fps = newFps
+            self.videoWidth = width
+            self.videoHeight = height
+        }
+    }
 
     /// Publish a status change on the main thread (safe to call from anywhere).
     public func post(status newStatus: String) {

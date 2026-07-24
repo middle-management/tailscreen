@@ -13,6 +13,17 @@ void cgtkvideo_draw_yuv(int32_t width, int32_t height,
 // Clear to black (when there's no frame yet).
 void cgtkvideo_clear(void);
 
+// Draw annotation strokes over the just-drawn video. Points are normalized
+// [0,1] in the video content space (origin top-left), flattened x0,y0,x1,y1,…;
+// `counts` holds the vertex count of each of `n_strokes` strokes in order;
+// `rgba` is 4 floats (0..1) per stroke; `widths_px` is per-stroke line width in
+// pixels (NULL ⇒ default). Maps each point through the SAME aspect-fit + zoom +
+// pan transform the last `cgtkvideo_draw_yuv` used, so strokes track the video.
+// Call inside the GLArea render, AFTER cgtkvideo_draw_yuv.
+void cgtkvideo_draw_annotations(const float *norm_xy, const int *counts,
+                                int n_strokes, const float *rgba,
+                                const float *widths_px);
+
 // Set the view transform applied on top of aspect-fit: `zoom` (≥1) scales the
 // video about the centre, `pan_x`/`pan_y` shift it in NDC ([-1,1]). Defaults are
 // 1 / 0 / 0 (plain aspect-fit). Driven from the viewer's zoom/pan state.
@@ -47,5 +58,28 @@ void cgtkvideo_widget_make_focusable(void *widget);
 // Grab keyboard focus for a widget. Wire this to pointer-press so clicking the
 // video surface directs subsequent keystrokes to it.
 void cgtkvideo_widget_grab_focus(void *widget);
+
+// Resize the widget's toplevel window to w×h (logical px). Walks up to the
+// GtkRoot (the GtkWindow) and calls gtk_window_set_default_size — in GTK4 the
+// sanctioned way to resize a mapped window. Used to grow the hub-sized window to
+// the video's dimensions when the first frame arrives. No-op if the widget
+// isn't in a window yet (call it from a render callback, where it is).
+void cgtkvideo_resize_toplevel(void *widget, int32_t w, int32_t h);
+
+// Scroll callback invoked from the native GtkEventControllerScroll (swift-cross-ui
+// exposes no scroll-controller binding). `dx`/`dy` are the scroll deltas (GTK
+// convention: dy > 0 scrolls down/away, dy < 0 up/toward the user); `mods` is the
+// GdkModifierType bitmask at the event (bit 0 == GDK_SHIFT_MASK); `user` is the
+// opaque context passed to cgtkvideo_attach_scroll. Runs on the GTK main thread.
+typedef void (*cgtkvideo_scroll_cb)(double dx, double dy, unsigned int mods, void *user);
+
+// Attach a native GtkEventControllerScroll (both axes) to a widget so scroll
+// events reach Swift as zoom/pan input — swift-cross-ui has no EventControllerScroll
+// binding, so this shim is the only way to observe scroll. Forward-declares the
+// gtk/glib symbols it needs (resolved at final link, as with the render/widget
+// helpers above) so this GL-only target pulls no gtk headers. The callback context
+// is retained for the widget's lifetime (freed on controller finalize). Call once
+// at wiring time; a no-op for a NULL widget.
+void cgtkvideo_attach_scroll(void *widget, cgtkvideo_scroll_cb cb, void *user);
 
 #endif

@@ -4,7 +4,10 @@ import TailscreenViewer
 /// with YUV values chosen so a BT.709 shader yields unambiguous colours. Used
 /// by the render self-test (`--render-self-test`) and as a placeholder frame.
 public func makeColorBarsFrame() -> DecodedVideoFrame {
-    let w = 256, h = 64, cw = w / 2, ch = h / 2
+    let w = 256
+    let h = 64
+    let cw = w / 2
+    let ch = h / 2
     let yb: [UInt8] = [235, 16, 128, 128]
     let ub: [UInt8] = [128, 128, 128, 255]
     let vb: [UInt8] = [128, 128, 255, 128]
