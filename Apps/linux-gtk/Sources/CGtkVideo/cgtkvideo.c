@@ -220,3 +220,59 @@ void cgtkvideo_resize_toplevel(void *widget, int32_t w, int32_t h) {
     void *root = gtk_widget_get_root(widget);
     if (root) gtk_window_set_default_size(root, (int)w, (int)h);
 }
+
+// --- Scroll controller shim --------------------------------------------------
+//
+// swift-cross-ui binds EventControllerMotion/Key/GestureClick but NOT
+// EventControllerScroll, so the zoom/pan input can't be wired from Swift alone.
+// Create a native GtkEventControllerScroll here and forward its deltas (plus the
+// modifier state, read from the controller's current event) to a Swift callback.
+// All symbols are forward-declared (void* opaque handles — C ignores parameter
+// types for symbol resolution) so this GL-only target still pulls no gtk headers.
+typedef unsigned long gulong;
+typedef void (*GCallback)(void);
+// GtkEventControllerScrollFlags: VERTICAL(1) | HORIZONTAL(1<<1) == BOTH_AXES(3).
+#define CGTKVIDEO_SCROLL_BOTH_AXES 3u
+extern void *gtk_event_controller_scroll_new(unsigned int flags);
+extern void gtk_widget_add_controller(void *widget, void *controller);
+extern void *gtk_event_controller_get_current_event(void *controller);
+extern unsigned int gdk_event_get_modifier_state(void *event);
+extern gulong g_signal_connect_data(void *instance, const char *detailed_signal,
+                                     GCallback c_handler, void *data,
+                                     void *destroy_data, int connect_flags);
+
+typedef struct {
+    cgtkvideo_scroll_cb cb;
+    void *user;
+} CgtkScrollCtx;
+
+// GtkEventControllerScroll::scroll — return TRUE (1) to mark the event handled so
+// it doesn't bubble to a scrollable ancestor. `self` is the controller; its
+// current event carries the modifier state.
+static int cgtkvideo_scroll_handler(void *self, double dx, double dy, void *data) {
+    CgtkScrollCtx *ctx = (CgtkScrollCtx *)data;
+    unsigned int mods = 0;
+    void *ev = gtk_event_controller_get_current_event(self);
+    if (ev) mods = gdk_event_get_modifier_state(ev);
+    if (ctx && ctx->cb) ctx->cb(dx, dy, mods, ctx->user);
+    return 1;  // GDK_EVENT_STOP
+}
+
+// GClosureNotify to free the heap context when the closure (and thus the
+// controller/widget) is finalized.
+static void cgtkvideo_scroll_ctx_free(void *data, void *closure) {
+    (void)closure;
+    free(data);
+}
+
+void cgtkvideo_attach_scroll(void *widget, cgtkvideo_scroll_cb cb, void *user) {
+    if (!widget || !cb) return;
+    CgtkScrollCtx *ctx = (CgtkScrollCtx *)malloc(sizeof(CgtkScrollCtx));
+    if (!ctx) return;
+    ctx->cb = cb;
+    ctx->user = user;
+    void *controller = gtk_event_controller_scroll_new(CGTKVIDEO_SCROLL_BOTH_AXES);
+    g_signal_connect_data(controller, "scroll", (GCallback)cgtkvideo_scroll_handler,
+                          ctx, (void *)cgtkvideo_scroll_ctx_free, 0);
+    gtk_widget_add_controller(widget, controller);  // widget takes ownership
+}

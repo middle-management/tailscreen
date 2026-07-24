@@ -55,4 +55,20 @@ void cgtkvideo_widget_grab_focus(void *widget);
 // isn't in a window yet (call it from a render callback, where it is).
 void cgtkvideo_resize_toplevel(void *widget, int32_t w, int32_t h);
 
+// Scroll callback invoked from the native GtkEventControllerScroll (swift-cross-ui
+// exposes no scroll-controller binding). `dx`/`dy` are the scroll deltas (GTK
+// convention: dy > 0 scrolls down/away, dy < 0 up/toward the user); `mods` is the
+// GdkModifierType bitmask at the event (bit 0 == GDK_SHIFT_MASK); `user` is the
+// opaque context passed to cgtkvideo_attach_scroll. Runs on the GTK main thread.
+typedef void (*cgtkvideo_scroll_cb)(double dx, double dy, unsigned int mods, void *user);
+
+// Attach a native GtkEventControllerScroll (both axes) to a widget so scroll
+// events reach Swift as zoom/pan input — swift-cross-ui has no EventControllerScroll
+// binding, so this shim is the only way to observe scroll. Forward-declares the
+// gtk/glib symbols it needs (resolved at final link, as with the render/widget
+// helpers above) so this GL-only target pulls no gtk headers. The callback context
+// is retained for the widget's lifetime (freed on controller finalize). Call once
+// at wiring time; a no-op for a NULL widget.
+void cgtkvideo_attach_scroll(void *widget, cgtkvideo_scroll_cb cb, void *user);
+
 #endif

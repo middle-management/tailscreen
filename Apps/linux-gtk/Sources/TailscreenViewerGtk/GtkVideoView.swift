@@ -18,8 +18,14 @@ import TailscreenViewerCore
 /// When `onInputEvent` is supplied it also captures opt-in remote-control input:
 /// pointer motion, three mouse buttons, and keyboard, translated to neutral
 /// ``InputEvent``s via `ViewerInputMapping` (the pure, unit-tested Core mapper).
-/// Scroll is not yet captured — swift-cross-ui exposes no `EventControllerScroll`
-/// binding, so it awaits a small C shim (tracked in the GTK viewer plan).
+///
+/// It also drives continuous content zoom/pan (independent of remote control):
+/// scroll zooms about the cursor, Shift+scroll pans while zoomed, and a
+/// double-click toggles smart-magnify — all geometry via the CI-tested pure
+/// `ViewerZoomMath`. Scroll capture goes through the `CGtkVideo` C shim
+/// (`cgtkvideo_attach_scroll`) because swift-cross-ui exposes no
+/// `EventControllerScroll` binding; scroll only zooms/pans the local view and is
+/// never forwarded as remote input.
 public struct GtkVideoView: View {
     let store: FrameStore
     let selfTest: Bool
@@ -71,6 +77,12 @@ public struct GtkVideoView: View {
         let selfTest = self.selfTest
         // One-shot: grow the (hub-sized) window to the video on the first frame.
         let sizedToVideo = ResizeLatch()
+        // Shared continuous zoom/pan state (scroll-zoom, drag-free pan, and the
+        // double-tap smart-magnify toggle). One instance is captured by both the
+        // render closure — which resets the view on a resolution change — and the
+        // input closures. All of them run on the GTK main thread, so the plain
+        // reference needs no locking.
+        let zoom = ViewZoom()
         // GL object names are per-context; if the area's context is torn down
         // and recreated (unrealize→realize, reparent), re-init on the next draw.
         area.createContext = { _ in cgtkvideo_reset() }
@@ -95,6 +107,13 @@ public struct GtkVideoView: View {
                     let (w, h) = Self.windowSize(forVideoWidth: frame.width, height: frame.height)
                     cgtkvideo_resize_toplevel(UnsafeMutableRawPointer(area.widgetPointer), Int32(w), Int32(h))
                 }
+                // A new video size (resolution change) invalidates the current
+                // zoom/pan — its offset was clamped against the old fit rect — so
+                // snap back to plain aspect-fit. Never in self-test (no input
+                // attached; its transform stays the default 1/0/0).
+                if !selfTest, zoom.resetIfVideoSizeChanged(width: frame.width, height: frame.height) {
+                    cgtkvideo_set_view(1, 0, 0)
+                }
                 frame.yPlane.withUnsafeBufferPointer { yb in
                     frame.uPlane.withUnsafeBufferPointer { ub in
                         frame.vPlane.withUnsafeBufferPointer { vb in
@@ -113,6 +132,11 @@ public struct GtkVideoView: View {
         }
         if let onInputEvent {
             Self.attachInputCapture(to: area, store: store, emit: onInputEvent)
+        }
+        // Zoom/pan is a view-transform concern independent of remote-control input
+        // capture, and must be a no-op in the headless render self-test.
+        if !selfTest {
+            Self.attachZoomPan(to: area, store: store, zoom: zoom)
         }
         // GtkGLArea is a Gtk.Widget; GtkBackend.Widget == Gtk.Widget, so this
         // runtime cast is safe whenever `backend is GtkBackend`.
@@ -230,6 +254,162 @@ public struct GtkVideoView: View {
             emit(.keyUp(key: usage, modifiers: m))
         }
         area.addEventController(keys)
+    }
+
+    // MARK: - Continuous zoom / pan
+
+    /// Mutable continuous zoom/pan state shared by the render closure and the
+    /// scroll/click/motion closures. Reference type so all closures see one
+    /// instance; only touched on the GTK main thread, so no synchronization.
+    private final class ViewZoom {
+        /// The pure zoom/pan state (scale + offset in widget points), advanced by
+        /// `ViewerZoomMath` and projected to the GL view transform by `applyView`.
+        var state = ViewerZoomState()
+        /// Last pointer position in widget-logical coordinates, used as the zoom
+        /// anchor for scroll (which carries no pointer position of its own).
+        var lastPointer: CGPoint?
+        /// The scroll handler, stashed here so the context-free C scroll callback
+        /// (which only carries this box as its user pointer) can dispatch into the
+        /// closure that captures the widget + store.
+        var onScroll: ((Double, Double, UInt32) -> Void)?
+        /// The video size the current `state` was clamped against; a change means
+        /// a resolution switch and the view must snap back to fit.
+        private var videoSize: (w: Int, h: Int)?
+
+        /// Note the incoming frame's size; returns true (and resets `state`) when
+        /// it differs from the last — a resolution change invalidating the offset.
+        func resetIfVideoSizeChanged(width: Int, height: Int) -> Bool {
+            if let s = videoSize, s.w == width, s.h == height { return false }
+            let firstFrame = videoSize == nil
+            videoSize = (width, height)
+            if firstFrame { return false }  // nothing to reset on the first frame
+            state = ViewerZoomState()
+            lastPointer = nil
+            return true
+        }
+    }
+
+    /// GTK scroll notches per unit → multiplicative zoom step (matches the mac
+    /// View-menu Zoom In step). Shift+scroll pans instead, this many widget points
+    /// per unit.
+    private static let zoomPerScrollUnit: CGFloat = ViewerZoomMath.menuZoomStep
+    private static let panPointsPerScrollUnit: CGFloat = 48
+    /// GdkModifierType bit 0 == GDK_SHIFT_MASK.
+    private static let gdkShiftMask: UInt32 = 1 << 0
+
+    /// Wire scroll (zoom / Shift-pan), double-click (smart-magnify), and pointer
+    /// tracking (the scroll anchor) into the GLArea. The math is entirely
+    /// `ViewerZoomMath`; each change projects to `cgtkvideo_set_view` +
+    /// `cgtkvideo_queue_render`. Never attached in self-test.
+    private static func attachZoomPan(
+        to area: Gtk.GLArea,
+        store: FrameStore,
+        zoom: ViewZoom
+    ) {
+        let widget = UnsafeMutableRawPointer(area.widgetPointer)
+
+        // Track the pointer so scroll can anchor at the cursor. This is a second,
+        // independent motion controller from the remote-control one — GTK fans the
+        // event out to both — so zoom works whether or not input capture is wired.
+        let motion = EventControllerMotion()
+        motion.motion = { _, x, y in zoom.lastPointer = CGPoint(x: x, y: y) }
+        area.addEventController(motion)
+
+        // Double-click toggles smart-magnify (fit ↔ zoomed) anchored at the tap.
+        let dbl = GestureClick()
+        dbl.button = 1
+        dbl.pressed = { _, nPress, x, y in
+            guard nPress == 2 else { return }
+            guard let fit = fitRect(widget: widget, store: store) else { return }
+            zoom.state = ViewerZoomMath.smartMagnifyToggled(
+                state: zoom.state, anchor: CGPoint(x: x, y: y), fit: fit)
+            applyView(zoom, widget: widget, store: store)
+        }
+        area.addEventController(dbl)
+
+        // Scroll: plain → cursor-anchored zoom; Shift → pan while zoomed.
+        cgtkvideo_attach_scroll(
+            widget,
+            { dx, dy, mods, user in
+                guard let user else { return }
+                let zoom = Unmanaged<ViewZoom>.fromOpaque(user).takeUnretainedValue()
+                zoom.onScroll?(dx, dy, mods)
+            }, Unmanaged.passUnretained(zoom).toOpaque())
+        // The onScroll closure needs the widget + store; stash them on the box so
+        // the context-free C callback can reach them.
+        zoom.onScroll = { [weak area] dx, dy, mods in
+            guard area != nil else { return }
+            guard let fit = fitRect(widget: widget, store: store) else { return }
+            if mods & gdkShiftMask != 0 {
+                // Pan: horizontal from dx, vertical from dy. Positive scroll moves
+                // the content the opposite way (natural "push the surface").
+                let delta = CGSize(
+                    width: -CGFloat(dx) * panPointsPerScrollUnit,
+                    height: -CGFloat(dy) * panPointsPerScrollUnit)
+                zoom.state = ViewerZoomMath.panned(state: zoom.state, by: delta, fit: fit)
+            } else {
+                // Zoom: dy < 0 (scroll up) zooms in. delta is multiplicative.
+                let anchor = zoom.lastPointer ?? CGPoint(x: fit.midX, y: fit.midY)
+                let delta = CGFloat(pow(Double(zoomPerScrollUnit), -dy))
+                zoom.state = ViewerZoomMath.zoomed(
+                    state: zoom.state, by: delta, anchor: anchor, fit: fit)
+            }
+            applyView(zoom, widget: widget, store: store)
+        }
+    }
+
+    /// The aspect-fit rect the video occupies inside the live widget, in
+    /// widget-logical coordinates — the exact rect the GL shader letterboxes to
+    /// (`sx`/`sy` there × widget size), so zoom anchoring and pan clamping line up
+    /// with what's on screen. Nil when the widget or frame has no size yet.
+    private static func fitRect(
+        widget: UnsafeMutableRawPointer,
+        store: FrameStore
+    ) -> CGRect? {
+        var w: Int32 = 0
+        var h: Int32 = 0
+        cgtkvideo_widget_size(widget, &w, &h)
+        let widgetW = CGFloat(w)
+        let widgetH = CGFloat(h)
+        guard widgetW > 0, widgetH > 0,
+            let frame = store.current(), frame.width > 0, frame.height > 0
+        else { return nil }
+        let frameAspect = CGFloat(frame.width) / CGFloat(frame.height)
+        let viewportAspect = widgetW / widgetH
+        var fitW = widgetW
+        var fitH = widgetH
+        if frameAspect > viewportAspect {
+            fitH = widgetW / frameAspect  // fit to width, letterbox top/bottom
+        } else {
+            fitW = widgetH * frameAspect  // fit to height, pillarbox left/right
+        }
+        return CGRect(
+            x: (widgetW - fitW) / 2, y: (widgetH - fitH) / 2, width: fitW, height: fitH)
+    }
+
+    /// Project the current zoom/pan state onto the GL view transform and request a
+    /// repaint. `ViewerZoomMath.videoRect` yields the (re-clamped) displayed rect
+    /// in widget-logical coordinates; its centre maps to the shader's NDC pan and
+    /// its scale to the shader's zoom (whose quad half-extent is `fit × scale`, so
+    /// the projected rect matches `videoRect` exactly).
+    private static func applyView(
+        _ zoom: ViewZoom,
+        widget: UnsafeMutableRawPointer,
+        store: FrameStore
+    ) {
+        guard let fit = fitRect(widget: widget, store: store) else { return }
+        var w: Int32 = 0
+        var h: Int32 = 0
+        cgtkvideo_widget_size(widget, &w, &h)
+        let widgetW = CGFloat(w)
+        let widgetH = CGFloat(h)
+        let rect = ViewerZoomMath.videoRect(fit: fit, state: zoom.state)
+        // Widget-logical (y-down, origin top-left) centre → NDC (y-up, origin
+        // centre). The shader draws the video quad centred at (panX, panY).
+        let panX = 2 * rect.midX / widgetW - 1
+        let panY = 1 - 2 * rect.midY / widgetH
+        cgtkvideo_set_view(Float(zoom.state.scale), Float(panX), Float(panY))
+        cgtkvideo_queue_render(widget)
     }
 
     public func computeLayout<Backend: BaseAppBackend>(
