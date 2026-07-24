@@ -94,7 +94,7 @@ struct ViewerHeader: View {
             }
         }
         .padding(.horizontal, 16)
-        .frame(height: HubStyle.headerHeight)
+        .frame(height: Double(HubStyle.headerHeight))
         .frame(maxWidth: .infinity)
         .background(HubStyle.barFill)
     }
@@ -145,7 +145,7 @@ struct SharerRow: View {
                 .foregroundColor(HubStyle.tertiaryText)
         }
         .padding(.horizontal, 12)
-        .frame(height: 46)
+        .frame(height: 46.0)
         .frame(maxWidth: .infinity)
         .background(
             RoundedRectangle(cornerRadius: HubStyle.rowRadius)

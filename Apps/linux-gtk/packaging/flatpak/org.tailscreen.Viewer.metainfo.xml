@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AppStream metadata for the Tailscreen GTK viewer.
+     Validate with: appstreamcli validate org.tailscreen.Viewer.metainfo.xml
+     The release list and the <url> hosts are placeholders — update them when a
+     real project homepage / release feed exists. -->
+<component type="desktop-application">
+  <id>org.tailscreen.Viewer</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Tailscreen Viewer</name>
+  <summary>View encrypted peer-to-peer screen shares over Tailscale</summary>
+
+  <description>
+    <p>
+      Tailscreen Viewer is the native Linux desktop client for Tailscreen, a
+      low-latency, encrypted peer-to-peer screen sharing tool that runs over
+      Tailscale. It discovers sharers on your tailnet, decodes their H.264 or
+      HEVC video with FFmpeg, and renders it with an OpenGL YUV-to-RGB
+      pipeline inside native GTK4 chrome.
+    </p>
+    <p>
+      No manual device registration is required: the viewer brings up an
+      ephemeral tsnet node and connects directly to the sharer.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">org.tailscreen.Viewer.desktop</launchable>
+
+  <categories>
+    <category>Network</category>
+    <category>RemoteAccess</category>
+    <category>Utility</category>
+  </categories>
+
+  <!-- Placeholder homepage; replace with the real project URL when published. -->
+  <url type="homepage">https://github.com/middle-management/tailscreen</url>
+
+  <provides>
+    <binary>tailscreen-viewer-gtk</binary>
+  </provides>
+
+  <content_rating type="oars-1.1" />
+
+  <releases>
+    <release version="0.0.0" date="2026-07-24">
+      <description>
+        <p>Initial packaging of the native GTK viewer. Placeholder release.</p>
+      </description>
+    </release>
+  </releases>
+</component>

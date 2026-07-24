@@ -67,13 +67,21 @@ lint-baseline: ## Regenerate the SwiftLint baseline from current state
 # Apple's swift-format ships with the Swift toolchain on macOS (Xcode 16+).
 # `format` rewrites files in place; `format-check` is the lint-only mode
 # used by CI. Config lives in `.swift-format` at the repo root.
+#
+# The GTK-viewer library target (Apps/linux-gtk/Sources/TailscreenViewerGtk)
+# is under the gate. The executable target (Apps/linux-gtk/Sources/tailscreen-
+# viewer-gtk) and the portable-viewer core (Apps/linux/Sources) are NOT yet
+# covered: they still carry pre-existing swift-format violations. Fold each in
+# here once its tree is clean.
+FORMAT_PATHS := Apps/macOS/Sources Apps/macOS/Tests Packages/TailscreenKit/Sources Apps/linux-gtk/Sources/TailscreenViewerGtk
+
 format: ## Run swift-format in-place over the app package
 	@command -v swift-format >/dev/null 2>&1 || { echo "swift-format missing — install Xcode 16+ or run 'brew install swift-format'"; exit 1; }
-	@swift-format format --in-place --parallel --recursive Apps/macOS/Sources Apps/macOS/Tests Packages/TailscreenKit/Sources
+	@swift-format format --in-place --parallel --recursive $(FORMAT_PATHS)
 
 format-check: ## Run swift-format in lint mode (no changes); CI uses this
 	@command -v swift-format >/dev/null 2>&1 || { echo "swift-format missing — install Xcode 16+ or run 'brew install swift-format'"; exit 1; }
-	@swift-format lint --strict --parallel --recursive Apps/macOS/Sources Apps/macOS/Tests Packages/TailscreenKit/Sources
+	@swift-format lint --strict --parallel --recursive $(FORMAT_PATHS)
 
 release: tailscale ## Build the release binary (Apps/macOS/.build/release/Tailscreen)
 	cd Apps/macOS && swift build -c release

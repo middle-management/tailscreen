@@ -140,7 +140,9 @@ public struct GtkVideoView: View {
     /// freely afterwards.
     static func windowSize(forVideoWidth width: Int, height: Int) -> (width: Int, height: Int) {
         guard width > 0, height > 0 else { return (960, 540) }
-        let minW = 640.0, maxW = 1280.0, maxH = 800.0
+        let minW = 640.0
+        let maxW = 1280.0
+        let maxH = 800.0
         let aspect = Double(width) / Double(height)
         var w = min(max(Double(width), minW), maxW)
         var h = w / aspect
