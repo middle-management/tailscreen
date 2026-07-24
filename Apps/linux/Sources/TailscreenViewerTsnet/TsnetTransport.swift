@@ -240,7 +240,9 @@ public final class TsnetTransport {
         shouldClose: @escaping () -> Bool,
         backChannelHandlers: ViewerBackChannel.Handlers = ViewerBackChannel.Handlers(),
         onBackChannelReady: (@Sendable (ViewerBackChannel) -> Void)? = nil,
-        onAdmitted: (@Sendable (ScreenShareCaps) -> Void)? = nil
+        onAdmitted: (@Sendable (ScreenShareCaps) -> Void)? = nil,
+        onAwaitingApproval: (@Sendable () -> Void)? = nil,
+        onDeclined: (@Sendable () -> Void)? = nil
     ) async throws {
         // Bring the node up if a caller skipped `prepare` (the direct-host
         // path); a picker host that already called `prepare` + `discoverPeers` reuses
@@ -345,6 +347,7 @@ public final class TsnetTransport {
             if session.isPendingApproval, !loggedPending {
                 logger.log("▶ Waiting for the sharer to approve this viewer…")
                 loggedPending = true
+                onAwaitingApproval?()
             }
             if let ssrc = session.assignedSSRC, !loggedAdmitted {
                 logger.log(
@@ -379,6 +382,7 @@ public final class TsnetTransport {
         }
         if pipeline.session.wasDenied {
             logger.log("▶ Sharer declined this viewer.")
+            onDeclined?()
         } else if pipeline.isStopped {
             logger.log("▶ Sharer ended the session.")
         } else {

@@ -1,5 +1,6 @@
 import SwiftCrossUI
 import TailscreenProtocol
+import TailscreenViewerGtk
 import TailscreenViewerTsnet
 
 // Hub-styled chrome for the GTK viewer, mirroring the macOS app's docked-window
@@ -229,6 +230,7 @@ struct HubStatusPane: View {
 /// the tsnet node awaits browser login (`PickerModel.loginURL`).
 struct HubLoginCard: View {
     let url: String
+    var onOpen: (@MainActor @Sendable () -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -241,10 +243,85 @@ struct HubLoginCard: View {
             Text(url)
                 .font(.callout)
                 .textSelectionEnabled()
+            if let onOpen {
+                Button("Open in Browser", action: onOpen)
+            }
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
         .hubCard()
+    }
+}
+
+/// Centered placard for the session lifecycle before/around video — connecting,
+/// awaiting the sharer's approval, declined, or ended — shown in place of (or
+/// over) the video. Mirrors the mac viewer's connection placards.
+struct SessionPlacard: View {
+    let phase: ViewerUIState.SessionPhase
+    let host: String
+
+    var body: some View {
+        VStack(spacing: 12) {
+            if showsSpinner {
+                ProgressView()
+            }
+            Text(title)
+                .font(.headline)
+                .fontWeight(.semibold)
+                .multilineTextAlignment(.center)
+            if let detail {
+                Text(detail)
+                    .font(.callout)
+                    .foregroundColor(HubStyle.secondaryText)
+                    .multilineTextAlignment(.center)
+            }
+        }
+        .padding(28)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+    }
+
+    private var showsSpinner: Bool {
+        switch phase {
+        case .connecting, .awaitingApproval: return true
+        default: return false
+        }
+    }
+
+    private var title: String {
+        switch phase {
+        case .connecting: return host.isEmpty ? "Connecting…" : "Connecting to \(host)…"
+        case .awaitingApproval: return "Waiting for approval"
+        case .viewing: return ""
+        case .declined: return "The sharer declined your request"
+        case .ended: return "The share has ended"
+        case .failed(let reason): return reason.isEmpty ? "Connection failed" : reason
+        }
+    }
+
+    private var detail: String? {
+        switch phase {
+        case .awaitingApproval: return "The sharer needs to accept you as a viewer."
+        case .declined, .ended: return "Returning to the screen list…"
+        default: return nil
+        }
+    }
+}
+
+/// Small translucent stats pill over the video (top-left): resolution + fps.
+/// Toggleable. Network stats (bitrate/loss) need portable session counters —
+/// a follow-up.
+struct StatsHUD: View {
+    let width: Int
+    let height: Int
+    let fps: Int
+
+    var body: some View {
+        Text("\(width)×\(height) · \(fps) fps")
+            .font(.caption)
+            .foregroundColor(.white)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(RoundedRectangle(cornerRadius: 6).fill(Color(white: 0, opacity: 0.55)))
     }
 }
 
@@ -259,6 +336,7 @@ struct PickerContent: View {
     let shareInfo: [String: TailscreenMetadata]
     let loginURL: String?
     let onSelect: @MainActor @Sendable (DiscoveredSharer) -> Void
+    var onOpenLogin: (@MainActor @Sendable () -> Void)?
 
     /// Transient search text narrowing the list (the mac hub's search field).
     @State private var searchText = ""
@@ -272,7 +350,8 @@ struct PickerContent: View {
         shareInfo: [String: TailscreenMetadata],
         loginURL: String?,
         autoExpandFirst: Bool = false,
-        onSelect: @escaping @MainActor @Sendable (DiscoveredSharer) -> Void
+        onSelect: @escaping @MainActor @Sendable (DiscoveredSharer) -> Void,
+        onOpenLogin: (@MainActor @Sendable () -> Void)? = nil
     ) {
         self.statusLine = statusLine
         self.isPicking = isPicking
@@ -280,6 +359,7 @@ struct PickerContent: View {
         self.shareInfo = shareInfo
         self.loginURL = loginURL
         self.onSelect = onSelect
+        self.onOpenLogin = onOpenLogin
         // Preview/screenshot affordance: open the first row's detail pane so the
         // expanded state is visible without a click.
         _expandedID = State(wrappedValue: autoExpandFirst ? sharers.first?.id : nil)
@@ -316,7 +396,7 @@ struct PickerContent: View {
         ScrollView {
             VStack(spacing: 14) {
                 if let loginURL {
-                    HubLoginCard(url: loginURL)
+                    HubLoginCard(url: loginURL, onOpen: onOpenLogin)
                 }
                 if isPicking {
                     VStack(alignment: .leading, spacing: 10) {

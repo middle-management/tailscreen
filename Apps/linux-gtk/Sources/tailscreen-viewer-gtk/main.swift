@@ -35,6 +35,10 @@ let gProfiles = ProfileStore()
 // Account-menu actions, wired in picker mode (nil elsewhere → menu hidden).
 var gSwitchProfile: (@MainActor @Sendable (String) -> Void)?
 var gAddAccount: (@MainActor @Sendable () -> Void)?
+// Return to the screen list after a session ends (picker mode); open the
+// interactive-login URL in a browser. Wired in the picker block.
+var gReturnToPicker: (@MainActor @Sendable () -> Void)?
+var gOpenLogin: (@MainActor @Sendable () -> Void)?
 let gArgs = Array(CommandLine.arguments.dropFirst())
 let gSelfTest = gArgs.contains("--render-self-test")
 // Headless chrome preview: render the hub with fake data and no networking, for
@@ -124,6 +128,13 @@ if gSelfTest {
         gStore.set(makeColorBarsFrame())
         gUIState.remoteControlAvailable = true
         gUIState.hasVideo = true
+        gUIState.videoWidth = 1920
+        gUIState.videoHeight = 1080
+        gUIState.fps = 30
+    }
+    if gArgs.contains("--ui-preview-placard") {
+        gUIState.inSession = true
+        gUIState.sessionPhase = .awaitingApproval
     }
 } else {
     // Live path: reuse the tsnet transport, driving decoded frames into the
@@ -155,10 +166,18 @@ if gSelfTest {
         onControlRevoked: { reason in gUIState.setControlState(.revoked(reason: reason)) })
 
     // Run a viewing session against a chosen host/IP. Shared by the direct-host
-    // path and the picker's selection callback (both on the main actor).
+    // path and the picker's selection callback (both on the main actor). Drives
+    // the session-lifecycle placard and, in picker mode, returns to the list
+    // when the session ends or is declined.
     func startSession(host dialHost: String) {
         var config = baseConfig
         config.hostname = dialHost
+        sink.resetForNewSession()  // the sink outlives one session
+        gUIState.beginSession()
+        // A reference box for the decline flag, set from the @Sendable
+        // onDeclined callback (both it and the post-run read run on MainActor).
+        final class DeclinedFlag: @unchecked Sendable { var value = false }
+        let declined = DeclinedFlag()
         Task { @MainActor in
             do {
                 try await transport.run(
@@ -173,10 +192,24 @@ if gSelfTest {
                         gUIState.setCaps(
                             remoteControl: caps.contains(.remoteControl),
                             annotations: caps.contains(.annotations))
+                    },
+                    onAwaitingApproval: { gUIState.post(sessionPhase: .awaitingApproval) },
+                    onDeclined: {
+                        declined.value = true
+                        gUIState.post(sessionPhase: .declined)
                     })
                 FileHandle.standardError.write(Data("session ended\n".utf8))
+                gUIState.post(sessionPhase: declined.value ? .declined : .ended)
             } catch {
                 FileHandle.standardError.write(Data("session failed: \(error)\n".utf8))
+                gUIState.post(sessionPhase: .failed("Connection failed"))
+            }
+            // Back to the picker after a beat so the declined/ended placard is
+            // readable (picker mode only; a direct-host run has no list to
+            // return to, so it rests on the placard).
+            if gPickerMode, let ret = gReturnToPicker {
+                try? await Task.sleep(nanoseconds: 1_800_000_000)
+                ret()
             }
         }
     }
@@ -218,6 +251,54 @@ if gSelfTest {
             }
         }
         gPicker.onRefresh = { discoverAndSweep() }
+
+        // Quiet auto-refresh: while the list is showing, re-list every 10 s
+        // WITHOUT flipping to the "discovering…" placard, so peers coming/going
+        // are reflected live (a lightweight stand-in for an IPN-bus subscription;
+        // full IPN wiring is a follow-up). Skips while a session/bring-up is in
+        // flight (phase != .picking).
+        @Sendable func quietRefresh() {
+            Task { @MainActor in
+                guard case .picking = gPicker.phase else { return }
+                guard let peers = try? await transport.discoverPeers() else { return }
+                guard case .picking = gPicker.phase else { return }  // re-check after await
+                let online = peers.filter { $0.isOnline }
+                gPicker.sharers = online
+                let ids = Set(online.map(\.id))
+                gPicker.shareInfo = gPicker.shareInfo.filter { ids.contains($0.key) }
+                await withTaskGroup(of: (String, TailscreenMetadata?).self) { group in
+                    for sharer in online {
+                        group.addTask { (sharer.id, await transport.fetchMetadata(ip: sharer.tailscaleIP)) }
+                    }
+                    for await (id, meta) in group where meta != nil {
+                        gPicker.shareInfo[id] = meta
+                    }
+                }
+            }
+        }
+        Task { @MainActor in
+            while true {
+                try? await Task.sleep(nanoseconds: 10_000_000_000)
+                quietRefresh()
+            }
+        }
+
+        // Return to the screen list when a session ends: reset the session UI
+        // and re-list.
+        gReturnToPicker = {
+            gUIState.returnToPickerState()
+            gPicker.phase = .picking
+            discoverAndSweep()
+        }
+
+        // Open the interactive-login URL in a local browser (best-effort).
+        gOpenLogin = {
+            guard let urlString = gPicker.loginURL else { return }
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            process.arguments = ["xdg-open", urlString]
+            try? process.run()
+        }
 
         // Each profile owns a tsnet state dir (its own identity/keys), unless the
         // user forced one with --state-dir.
@@ -334,12 +415,28 @@ struct ViewerApp: App {
     /// is mounted only when there's something to show, so the hub chrome sits on
     /// the native GTK window background rather than over a black GL surface — the
     /// first frame is stored before `hasVideo` flips, so mounting renders it.
+    // The host being connected to (for the session placard), from the picker's
+    // connecting phase.
+    private var sessionHost: String {
+        if case .connecting(let host) = picker.phase { return host }
+        return ""
+    }
+
     @ViewBuilder private var rootView: some View {
         if gSelfTest {
             GtkVideoView(store: gStore, selfTest: true)
         } else if ui.hasVideo {
             ZStack {
                 GtkVideoView(store: gStore, onInputEvent: { gInput.submit($0) })
+                // Stats HUD, pinned top-left over the video.
+                VStack {
+                    HStack {
+                        StatsHUD(width: ui.videoWidth, height: ui.videoHeight, fps: ui.fps)
+                        Spacer()
+                    }
+                    Spacer()
+                }
+                .padding(10)
                 // Remote-control toolbar, pinned to the bottom. Shown only when
                 // the sharer advertised `.remoteControl` (caps-gated, like the
                 // mac viewer). Once control is granted, `GtkVideoView` captures
@@ -354,6 +451,14 @@ struct ViewerApp: App {
                             onToggle: { gControls.toggleControl() })
                     }
                 }
+            }
+        } else if ui.inSession {
+            // A session is up but no video yet: connecting / awaiting approval /
+            // declined / ended placard.
+            VStack(spacing: 0) {
+                ViewerHeader(subtitle: "Viewer")
+                Divider()
+                SessionPlacard(phase: ui.sessionPhase, host: sessionHost)
             }
         } else {
             VStack(spacing: 0) {
@@ -375,7 +480,8 @@ struct ViewerApp: App {
                         shareInfo: picker.shareInfo,
                         loginURL: picker.loginURL,
                         autoExpandFirst: gUIPreview,
-                        onSelect: { picker.select($0) })
+                        onSelect: { picker.select($0) },
+                        onOpenLogin: gOpenLogin)
                 } else {
                     HubStatusPane(status: ui.status)
                 }

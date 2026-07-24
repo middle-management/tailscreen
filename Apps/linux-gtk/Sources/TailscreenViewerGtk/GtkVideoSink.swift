@@ -11,10 +11,22 @@ public final class GtkVideoSink: VideoSink, @unchecked Sendable {
     private let uiState: ViewerUIState?
     // Touched only on `present`, which the session drives serially.
     private var announcedVideo = false
+    // fps accounting over a ~1 s window (present is called serially).
+    private var windowStartNs: UInt64 = 0
+    private var framesInWindow = 0
 
     public init(store: FrameStore, uiState: ViewerUIState? = nil) {
         self.store = store
         self.uiState = uiState
+    }
+
+    /// Reset the first-frame latch + fps window so a REUSED sink re-announces
+    /// video on the next session (the sink outlives a single viewing session).
+    /// Call on the session-driving context before a new `run`.
+    public func resetForNewSession() {
+        announcedVideo = false
+        windowStartNs = 0
+        framesInWindow = 0
     }
 
     public func present(_ frame: any DecodedFrame) {
@@ -28,6 +40,18 @@ public final class GtkVideoSink: VideoSink, @unchecked Sendable {
         if !announcedVideo {
             announcedVideo = true
             uiState?.markVideoFlowing()  // hides the connecting placard
+            uiState?.post(sessionPhase: .viewing)
+        }
+        // fps HUD: count frames per ~1 s window; publish fps + resolution.
+        let now = DispatchTime.now().uptimeNanoseconds
+        if windowStartNs == 0 { windowStartNs = now }
+        framesInWindow += 1
+        let elapsed = now &- windowStartNs
+        if elapsed >= 1_000_000_000 {
+            let fps = Int((Double(framesInWindow) * 1_000_000_000.0 / Double(elapsed)).rounded())
+            uiState?.post(fps: fps, width: frame.width, height: frame.height)
+            windowStartNs = now
+            framesInWindow = 0
         }
     }
 }
