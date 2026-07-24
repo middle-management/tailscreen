@@ -371,12 +371,18 @@ private struct WelcomePane: View {
 
     /// The brand artwork (display + stand variant) loaded from the
     /// SwiftPM resource bundle. Cached at type level so we don't decode
-    /// the PDF on every re-render.
+    /// the PDF on every re-render. Marked template (like the menubar
+    /// icons) so the view's `.foregroundStyle(.secondary)` actually
+    /// applies — the PDF's baked-in black fill was invisible against the
+    /// dark-mode window background.
     private static let brandImage: NSImage? = {
-        guard let url = Bundle.module.url(forResource: "WelcomeIcon", withExtension: "pdf") else {
+        guard let url = Bundle.module.url(forResource: "WelcomeIcon", withExtension: "pdf"),
+            let img = NSImage(contentsOf: url)
+        else {
             return nil
         }
-        return NSImage(contentsOf: url)
+        img.isTemplate = true
+        return img
     }()
 
     var body: some View {

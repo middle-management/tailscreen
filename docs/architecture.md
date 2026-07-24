@@ -54,9 +54,11 @@ TailscreenApp (@main)
 If you've used a low-latency video stack before, this will look familiar.
 If you haven't, the rest of this page is the tour.
 
-## SwiftUI menubar
+## SwiftUI app shell
 
-The app entry point owns the menubar lifecycle and very little else. The
+The app entry point owns two scenes — a docked hub window (sign-in,
+accounts, the peer list) and a menubar item that acts as the sharing
+tool — and very little else. The
 truth — are we sharing, are we connecting, who are the peers, which display
 — lives in a single `@MainActor` coordinator.
 
@@ -269,14 +271,14 @@ moment Tailscreen closes. Your admin console doesn't fill up with
 
 Peer discovery enumerates peers via the tsnet LocalAPI and opens TCP/7447
 to each in parallel with a short timeout. Anything that accepts and
-replies with the Tailscreen handshake gets shown in **Browse Shares**.
+replies with the Tailscreen handshake gets shown in the **Screens** list.
 
 We also subscribe to the IPN bus so the menu reflects peers coming online
 and offline immediately, not after the next discovery sweep.
 
 The sharp edge in the auth flow is that interactive login only works after
-a tsnet node is initialized, which means after `Start Sharing` or `Connect
-to...` has been clicked at least once. There is no chicken-and-egg fix;
+a tsnet node is initialized, which means after a share or a connection
+has been started at least once. There is no chicken-and-egg fix;
 that's just how `libtailscale` works.
 
 ## Annotations
@@ -300,7 +302,7 @@ something the sharer never sees.
 
 The metadata channel exchanges three things over TCP/7447:
 
-- The share's display name (so the **Browse Shares** list says "Mike's
+- The share's display name (so the **Screens** list says "Mike's
   laptop" rather than `100.83.12.4`).
 - The display resolution.
 - Request-to-share prompts, including the accept/decline answer sent back

@@ -336,7 +336,7 @@ port, multiple channels, separated by the framing byte.
 
 Discovery enumerates peers from the local tsnet LocalAPI, then opens
 TCP/7447 to each peer in parallel with a short timeout. Peers that accept
-and reply with the Tailscreen handshake show up in **Browse Shares**.
+and reply with the Tailscreen handshake show up in the **Screens** list.
 Peers that don't, don't.
 
 The probe is parallel because tailnets get big, and a serial probe of 50
