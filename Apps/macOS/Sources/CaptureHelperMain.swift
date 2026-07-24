@@ -525,6 +525,12 @@ private final class CaptureHelperRunner {
                 let forceH264 = ProcessInfo.processInfo.environment["TAILSCREEN_FORCE_H264"] == "1"
                 let preferred = quality.preferredVideoCodec(forceH264: forceH264)
                 newEncoder.encoderQuality = quality.encoderQuality
+                // Explicit HEVC preference: no H.264 rung on the ladder —
+                // the user opted out of the fallback (H.264-only viewers
+                // can't watch), so an encoder that can't do HEVC should
+                // fail the share, not silently downgrade. Irrelevant when
+                // forceH264 already picked H.264 above.
+                newEncoder.allowsH264Fallback = quality.codecPreference != .hevc
                 // Tag the encoder with the captured color (BT.709 / P3 /
                 // BT.2020) + bit depth; the encoder's fallback ladder drops
                 // 10-bit → 8-bit and HEVC → H.264 if VideoToolbox refuses.

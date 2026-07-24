@@ -158,6 +158,7 @@ final class QualitySettingsTests: XCTestCase {
 
     func testPreferredVideoCodec() {
         XCTAssertEqual(QualitySettings(codecPreference: .auto).preferredVideoCodec(forceH264: false), .hevc)
+        XCTAssertEqual(QualitySettings(codecPreference: .hevc).preferredVideoCodec(forceH264: false), .hevc)
         XCTAssertEqual(QualitySettings(codecPreference: .h264).preferredVideoCodec(forceH264: false), .h264)
     }
 
@@ -177,6 +178,12 @@ final class QualitySettingsTests: XCTestCase {
         let settings = QualitySettings(
             fpsCap: 30, codecPreference: .h264, maxBitrateBps: 2_000_000, encoderQuality: 0.6)
         XCTAssertEqual(QualitySettings.fromEnvironment(settings.helperEnvironment()), settings)
+
+        // Explicit HEVC survives the env hop too — the helper must see the
+        // strict preference, not degrade it to auto.
+        let strict = QualitySettings(codecPreference: .hevc)
+        XCTAssertEqual(
+            QualitySettings.fromEnvironment(strict.helperEnvironment()).codecPreference, .hevc)
     }
 
     func testHelperEnvironmentOmitsCeilingWhenAutomatic() {
@@ -257,11 +264,14 @@ final class QualitySettingsTests: XCTestCase {
         XCTAssertEqual(decoded.preset, .custom)
     }
 
-    func testDecodeMapsLegacyHEVCPreferenceToAuto() throws {
-        // Older builds offered (and persisted) an "hevc" codec preference
-        // that was behaviorally identical to auto; it decodes as .auto now.
+    func testDecodePreservesExplicitHEVCPreference() throws {
+        // "hevc" is a first-class (explicit, no-H.264-fallback) preference
+        // again. A blob from the oldest builds — where "hevc" still meant
+        // "prefer" — now decodes to the strict case, the closest match to
+        // the preference those users expressed; the interim builds that
+        // mapped it to .auto never *wrote* "hevc", so no blob regresses.
         let blob = Data(#"{"codecPreference":"hevc"}"#.utf8)
         let decoded = try JSONDecoder().decode(QualitySettings.self, from: blob)
-        XCTAssertEqual(decoded.codecPreference, .auto)
+        XCTAssertEqual(decoded.codecPreference, .hevc)
     }
 }

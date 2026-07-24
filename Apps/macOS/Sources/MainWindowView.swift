@@ -20,7 +20,9 @@ struct MainWindowView: View {
         VStack(spacing: 0) {
             HubHeader()
             Divider()
-            if appState.tailscaleAuth.isAuthenticated {
+            if appState.isSwitchingProfile {
+                ProfileSwitchingPane()
+            } else if appState.tailscaleAuth.isAuthenticated {
                 HubView()
             } else {
                 WelcomePane()
@@ -96,12 +98,18 @@ private struct HubHeader: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(verbatim: "Tailscreen")
                     .font(.system(.headline, design: .rounded, weight: .bold))
-                if let login = appState.tailscaleAuth.userProfile?.loginName {
-                    Text(verbatim: login)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                if let profile = appState.tailscaleAuth.userProfile {
+                    // Prefer the tailnet (org) name, like Tailscale's own
+                    // title bar — it's the distinguishing fact when the
+                    // same login is used across several tailnets.
+                    Text(
+                        verbatim: profile.tailnetName.isEmpty
+                            ? profile.loginName : profile.tailnetName
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
                 }
             }
 
@@ -132,29 +140,9 @@ private struct HubHeader: View {
                 .help(L("Refresh screens"))
                 .accessibilityLabel(L("Refresh available screens"))
 
-                if let profile = appState.tailscaleAuth.userProfile {
-                    Menu {
-                        Text(verbatim: profile.displayName)
-                        Text(verbatim: profile.loginName)
-                        Divider()
-                        Button(L("Settings…")) { appState.presentSettings() }
-                        Divider()
-                        Button(L("Sign out")) {
-                            Task { await appState.signOut() }
-                        }
-                    } label: {
-                        MonogramAvatar(name: profile.displayName, size: 28)
-                            .overlay(
-                                Circle().strokeBorder(.separator.opacity(0.5), lineWidth: 1)
-                            )
-                    }
-                    .buttonStyle(.plain)
-                    .menuIndicator(.hidden)
-                    .fixedSize()
-                    .help(L("Sign out of Tailscale, signed in as \(profile.displayName)"))
-                    .accessibilityLabel(L("Account"))
-                }
             }
+
+            AccountMenu()
         }
         // Clear the traffic lights, which float over the header's left edge.
         .padding(.leading, 84)
@@ -163,6 +151,215 @@ private struct HubHeader: View {
         .frame(maxWidth: .infinity)
         .background(.bar)
         .gesture(WindowDragGesture())
+    }
+}
+
+/// The header's account control: the profile list (Tailscale-style
+/// multi-account), Add Account…, Settings, and Sign out. Visible whenever
+/// there's something to act on: signed in, or signed out with other
+/// profiles to switch back to. A first-launch single signed-out profile
+/// hides it — the welcome pane's CTA is the only sensible action then.
+private struct AccountMenu: View {
+    @EnvironmentObject var appState: AppState
+
+    var body: some View {
+        if appState.tailscaleAuth.userProfile != nil || appState.profileStore.profiles.count > 1 {
+            AccountMenuButton(appState: appState)
+                .frame(width: 28, height: 28)
+                .help(L("Account"))
+        }
+    }
+}
+
+/// AppKit-backed account button + menu. A real `NSMenu` because SwiftUI's
+/// `Menu` flattens custom row labels to plain text — Tailscale-style
+/// two-line rows (avatar, login over tailnet, checkmark on the active
+/// account) need `NSMenuItem.attributedTitle` + `.image`. Row semantics
+/// mirror Tailscale's: clicking a row switches to that account; holding ⌥
+/// swaps a non-active row for "Remove Account…" (the native alternate-item
+/// pattern).
+private struct AccountMenuButton: NSViewRepresentable {
+    let appState: AppState
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> NSButton {
+        let button = NSButton()
+        button.isBordered = false
+        button.imagePosition = .imageOnly
+        button.setButtonType(.momentaryChange)
+        button.target = context.coordinator
+        button.action = #selector(Coordinator.showMenu(_:))
+        button.setAccessibilityLabel(L("Account"))
+        return button
+    }
+
+    func updateNSView(_ button: NSButton, context: Context) {
+        context.coordinator.appState = appState
+        if let profile = appState.tailscaleAuth.userProfile {
+            button.image = MonogramAvatar.nsImage(name: profile.displayName, size: 26)
+        } else {
+            // Signed out but other profiles exist: neutral glyph, the
+            // menu is the way back in.
+            let symbol = NSImage(
+                systemSymbolName: "person.crop.circle", accessibilityDescription: L("Account"))
+            button.image = symbol?.withSymbolConfiguration(
+                NSImage.SymbolConfiguration(pointSize: 22, weight: .regular))
+        }
+    }
+
+    @MainActor
+    final class Coordinator: NSObject {
+        weak var appState: AppState?
+
+        @objc func showMenu(_ sender: NSButton) {
+            guard let appState else { return }
+            let menu = NSMenu()
+            menu.autoenablesItems = false
+
+            for profile in appState.profileStore.profiles {
+                let isActive = profile.id == appState.profileStore.activeProfileID
+                let item = NSMenuItem(
+                    title: profile.hasSignedIn ? profile.menuTitle : L("New account"),
+                    action: #selector(switchToAccount(_:)),
+                    keyEquivalent: "")
+                item.target = self
+                item.attributedTitle = Self.rowTitle(for: profile)
+                item.image = MonogramAvatar.nsImage(
+                    name: profile.displayName.isEmpty ? profile.loginName : profile.displayName,
+                    size: 24)
+                item.state = isActive ? .on : .off
+                item.representedObject = profile.id
+                menu.addItem(item)
+
+                if !isActive {
+                    // ⌥ swaps the row for its destructive counterpart.
+                    let remove = NSMenuItem(
+                        title: L("Remove Account…"),
+                        action: #selector(removeAccount(_:)),
+                        keyEquivalent: "")
+                    remove.target = self
+                    remove.isAlternate = true
+                    remove.keyEquivalentModifierMask = .option
+                    remove.representedObject = profile.id
+                    menu.addItem(remove)
+                }
+            }
+
+            menu.addItem(.separator())
+            let add = NSMenuItem(
+                title: L("Add Account…"), action: #selector(addAccount(_:)), keyEquivalent: "")
+            add.target = self
+            menu.addItem(add)
+
+            menu.addItem(.separator())
+            let settings = NSMenuItem(
+                title: L("Settings…"), action: #selector(openSettings(_:)), keyEquivalent: "")
+            settings.target = self
+            menu.addItem(settings)
+
+            if appState.tailscaleAuth.isAuthenticated {
+                menu.addItem(.separator())
+                let signOut = NSMenuItem(
+                    title: L("Sign out"), action: #selector(performSignOut(_:)), keyEquivalent: "")
+                signOut.target = self
+                menu.addItem(signOut)
+            }
+
+            menu.popUp(
+                positioning: nil,
+                at: NSPoint(x: 0, y: sender.bounds.height + 6),
+                in: sender)
+        }
+
+        /// Two-line row: login (menu font) over tailnet (small, secondary).
+        /// The tailnet line is the disambiguator — GitHub logins collide
+        /// across orgs. Never-signed-in profiles get the placeholder only.
+        private static func rowTitle(for profile: TailscreenProfile) -> NSAttributedString {
+            guard profile.hasSignedIn else {
+                return NSAttributedString(
+                    string: L("New account"),
+                    attributes: [
+                        .font: NSFont.menuFont(ofSize: 0),
+                        .foregroundColor: NSColor.labelColor
+                    ])
+            }
+            let title = NSMutableAttributedString(
+                string: profile.loginName,
+                attributes: [
+                    .font: NSFont.menuFont(ofSize: 0),
+                    .foregroundColor: NSColor.labelColor
+                ])
+            if !profile.tailnetName.isEmpty {
+                title.append(
+                    NSAttributedString(
+                        string: "\n" + profile.tailnetName,
+                        attributes: [
+                            .font: NSFont.menuFont(ofSize: NSFont.smallSystemFontSize),
+                            .foregroundColor: NSColor.secondaryLabelColor
+                        ]))
+            }
+            return title
+        }
+
+        @objc private func switchToAccount(_ sender: NSMenuItem) {
+            guard let id = sender.representedObject as? UUID, let appState else { return }
+            Task { await appState.switchProfile(to: id) }
+        }
+
+        @objc private func removeAccount(_ sender: NSMenuItem) {
+            guard let id = sender.representedObject as? UUID, let appState,
+                let profile = appState.profileStore.profiles.first(where: { $0.id == id })
+            else { return }
+            appState.confirmRemoveProfile(profile)
+        }
+
+        @objc private func addAccount(_ sender: NSMenuItem) {
+            guard let appState else { return }
+            Task { await appState.addAccountAndSignIn() }
+        }
+
+        @objc private func openSettings(_ sender: NSMenuItem) {
+            appState?.presentSettings()
+        }
+
+        @objc private func performSignOut(_ sender: NSMenuItem) {
+            guard let appState else { return }
+            Task { await appState.signOut() }
+        }
+    }
+}
+
+// MARK: - Profile switching
+
+/// Interstitial shown while `AppState.switchProfile` tears one node down
+/// and silently restores the next profile's session. Without it the gap
+/// renders the signed-out welcome pane — alarming when the target
+/// profile is, in fact, still logged in. The header stays interactive
+/// above this pane, so the account menu remains an escape hatch.
+private struct ProfileSwitchingPane: View {
+    @EnvironmentObject var appState: AppState
+
+    var body: some View {
+        VStack(spacing: 12) {
+            ProgressView()
+            Text(switchingText)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(24)
+    }
+
+    private var switchingText: String {
+        let target = appState.profileStore.activeProfile
+        return target.hasSignedIn
+            ? L("Switching to \(target.menuTitle)…")
+            : L("Switching accounts…")
     }
 }
 
@@ -548,11 +745,14 @@ private struct PeerListSection: View {
                 .frame(height: 28)
                 .transition(.opacity)
         } else {
-            VStack(spacing: 2) {
+            VStack(spacing: 4) {
                 ForEach(visiblePeers) { peer in
-                    PeerMenuRow(peer: peer, isExpanded: selectedPeerID == peer.id) {
-                        toggleSelection(peer)
-                    }
+                    PeerMenuRow(
+                        peer: peer,
+                        isExpanded: selectedPeerID == peer.id,
+                        onToggle: { toggleSelection(peer) },
+                        onConnect: { Task { await appState.connectToPeer(peer) } }
+                    )
                     if selectedPeerID == peer.id {
                         PeerDetailView(peer: peer)
                             .transition(.opacity)
@@ -713,17 +913,27 @@ private struct PeerRowSkeleton: View {
 }
 
 /// One screens-list row: presence dot + hostname (+ green sharing chip)
-/// over the peer's Tailscale IP — the Tailscale device-row idiom.
-/// Clicking toggles the inline `PeerDetailView`; the actions (View
-/// Screen, Ask to Share) live there as real buttons instead of the old
-/// hover-only affordances, which keyboard and VoiceOver users could
-/// never reach.
+/// over the peer's Tailscale IP — the Tailscale device-row idiom. The
+/// row itself is the inline action: clicking connects when the app is
+/// idle and the peer is online (no expand-first hop); otherwise it
+/// toggles the detail pane. The always-visible trailing chevron is a
+/// real button that toggles the pane regardless — reachable by
+/// keyboard/VoiceOver, unlike a hover-only affordance.
 private struct PeerMenuRow: View {
     @EnvironmentObject var appState: AppState
     let peer: TailscreenPeer
     let isExpanded: Bool
     let onToggle: () -> Void
+    let onConnect: () -> Void
     @State private var isHovered = false
+
+    /// Connecting out is only offered while the app is fully idle —
+    /// the sharing/viewing status cards own the session otherwise.
+    private var canConnect: Bool {
+        peer.isOnline
+            && appState.sharingState == .idle
+            && appState.connectionState == .idle
+    }
 
     private var shareInfo: TailscreenMetadata? {
         guard let info = appState.peerShareInfo[peer.id], info.isSharing else { return nil }
@@ -731,62 +941,75 @@ private struct PeerMenuRow: View {
     }
 
     var body: some View {
-        Button(action: onToggle) {
-            HStack(spacing: 10) {
-                Circle()
-                    .fill(
-                        peer.isOnline
-                            ? Color.green : Color(nsColor: .tertiaryLabelColor)
-                    )
-                    .frame(width: 8, height: 8)
-                    .accessibilityHidden(true)
+        HStack(spacing: 0) {
+            Button {
+                if canConnect { onConnect() } else { onToggle() }
+            } label: {
+                HStack(spacing: 10) {
+                    Circle()
+                        .fill(
+                            peer.isOnline
+                                ? Color.green : Color(nsColor: .tertiaryLabelColor)
+                        )
+                        .frame(width: 8, height: 8)
+                        .accessibilityHidden(true)
 
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 6) {
-                        Text(peer.hostname)
-                            .font(.body.weight(.medium))
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        if let share = shareInfo {
-                            // Fetched share status (`.metadataResponse`) —
-                            // the share name is peer data, shown as-is
-                            // (parser-clamped); fall back to a generic
-                            // caption when the peer didn't name its share.
-                            Text(share.shareName.isEmpty ? L("Sharing") : share.shareName)
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.green)
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Text(peer.hostname)
+                                .font(.body.weight(.medium))
                                 .lineLimit(1)
-                                .truncationMode(.tail)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Capsule().fill(Color.green.opacity(0.14)))
+                                .truncationMode(.middle)
+                            if let share = shareInfo {
+                                // Fetched share status (`.metadataResponse`)
+                                // — the share name is peer data, shown as-is
+                                // (parser-clamped); fall back to a generic
+                                // caption when the peer didn't name its
+                                // share.
+                                Text(share.shareName.isEmpty ? L("Sharing") : share.shareName)
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.green)
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(Capsule().fill(Color.green.opacity(0.14)))
+                            }
                         }
+                        Text(peer.isOnline ? peer.tailscaleIP : L("Offline"))
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
-                    Text(peer.isOnline ? peer.tailscaleIP : L("Offline"))
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+
+                    Spacer(minLength: 0)
                 }
+                .padding(.leading, 12)
+                .frame(height: 48)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(L("\(peer.hostname), \(peer.isOnline ? L("online") : L("offline"))"))
+            .accessibilityHint(
+                canConnect
+                    ? L("Connects to view this device's screen")
+                    : L("Shows details and actions"))
 
-                Spacer(minLength: 0)
-
+            Button(action: onToggle) {
                 Image(systemName: "chevron.right")
-                    .font(.caption2.weight(.semibold))
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(.tertiary)
                     .rotationEffect(isExpanded ? .degrees(90) : .degrees(0))
-                    .opacity(isHovered || isExpanded ? 1 : 0)
-                    .accessibilityHidden(true)
+                    .frame(width: 32, height: 48)
+                    .contentShape(Rectangle())
             }
-            .padding(.horizontal, 8)
-            .frame(height: 44)
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            .help(L("Show details"))
+            .accessibilityLabel(L("Show details"))
         }
-        .buttonStyle(.plain)
         .opacity(peer.isOnline ? 1.0 : 0.7)
         .background(MenuRowHoverBackground(isHovered: isHovered || isExpanded))
         .onHover { isHovered = $0 }
-        .accessibilityLabel(L("\(peer.hostname), \(peer.isOnline ? L("online") : L("offline"))"))
-        .accessibilityHint(L("Shows details and actions"))
     }
 }
 
@@ -856,15 +1079,38 @@ private struct PeerDetailView: View {
                 }
             }
 
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 6) {
                 infoRow(label: "DNS", value: dnsDisplay)
                 infoRow(label: "IP", value: peer.tailscaleIP)
+                if peer.isOnline, let route = routeText {
+                    HStack(spacing: 6) {
+                        Text(L("Route"))
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                            .frame(width: 40, alignment: .leading)
+                        if let quality = qualityColor {
+                            Circle()
+                                .fill(quality)
+                                .frame(width: 6, height: 6)
+                                .accessibilityHidden(true)
+                        }
+                        Text(verbatim: route)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                    }
+                    .help(
+                        L(
+                            "Latency is measured over the current Tailscale path. Relayed connections usually switch to direct once traffic flows."
+                        ))
+                }
                 if !peer.tags.isEmpty {
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
                         Text(L("Tags"))
                             .font(.caption)
                             .foregroundStyle(.tertiary)
-                            .frame(width: 34, alignment: .leading)
+                            .frame(width: 40, alignment: .leading)
                         ForEach(peer.tags, id: \.self) { tag in
                             Text(PeerListFilter.displayName(forTag: tag))
                                 .font(.caption2)
@@ -883,7 +1129,7 @@ private struct PeerDetailView: View {
                 }
             }
         }
-        .padding(12)
+        .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -892,7 +1138,33 @@ private struct PeerDetailView: View {
         // Indent under the row's text column so the pane reads as the
         // row's expansion, not a sibling.
         .padding(.leading, 24)
-        .padding(.bottom, 4)
+        .padding(.top, 2)
+        .padding(.bottom, 8)
+    }
+
+    /// "Direct · ~23 ms" / "DERP (fra) · ~120 ms" — the path snapshot from
+    /// the LocalAPI status seed plus the measured metadata round-trip.
+    /// Either half renders alone when the other is unknown.
+    private var routeText: String? {
+        var parts: [String] = []
+        if let cur = peer.curAddr, !cur.isEmpty {
+            parts.append(L("Direct"))
+        } else if let relay = peer.relay, !relay.isEmpty {
+            parts.append(L("DERP (\(relay))"))
+        }
+        if let ms = appState.peerLatencyMs[peer.id] {
+            parts.append(L("~\(ms) ms"))
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    /// Traffic-light latency tier for the quality dot; nil (no dot) until
+    /// a measurement lands.
+    private var qualityColor: Color? {
+        guard let ms = appState.peerLatencyMs[peer.id] else { return nil }
+        if ms < 60 { return .green }
+        if ms < 150 { return .yellow }
+        return .orange
     }
 
     /// "3456 × 2234 · HEVC" — resolution and codec are numbers/brand nouns,
@@ -931,7 +1203,7 @@ private struct PeerDetailView: View {
             Text(verbatim: label)
                 .font(.caption)
                 .foregroundStyle(.tertiary)
-                .frame(width: 34, alignment: .leading)
+                .frame(width: 40, alignment: .leading)
             Text(verbatim: value)
                 .font(.caption.monospaced())
                 .textSelection(.enabled)

@@ -57,6 +57,28 @@
 "Tags" = "Tags";
 "Last seen %@" = "Last seen %@";
 "Shows details and actions" = "Shows details and actions";
+"Show details" = "Show details";
+"Route" = "Route";
+"Direct" = "Direct";
+"DERP (%@)" = "DERP (%@)";
+"~%lld ms" = "~%lld ms";
+"Latency is measured over the current Tailscale path. Relayed connections usually switch to direct once traffic flows." = "Latency is measured over the current Tailscale path. Relayed connections usually switch to direct once traffic flows.";
+
+/* MARK: - Account profiles (MainWindowView.swift / AppState.swift) */
+"Add Account…" = "Add Account…";
+"Switch to This Account" = "Switch to This Account";
+"Remove Account…" = "Remove Account…";
+"New account" = "New account";
+"Finish Your Session First" = "Finish Your Session First";
+"Stop sharing or disconnect before switching accounts." = "Stop sharing or disconnect before switching accounts.";
+"Switching to %@…" = "Switching to %@…";
+"Switching accounts…" = "Switching accounts…";
+"Remove this account?" = "Remove this account?";
+"Removes its sign-in state from this Mac. The device may remain listed in the tailnet admin console until it expires." = "Removes its sign-in state from this Mac. The device may remain listed in the tailnet admin console until it expires.";
+
+/* MARK: - Popover identity strip (MenuBarView.swift) */
+"Signed in as %@" = "Signed in as %@";
+"Opens the Tailscreen window" = "Opens the Tailscreen window";
 
 /* MARK: - Signed-out popover (MenuBarView.swift) */
 "Not signed in" = "Not signed in";
@@ -185,6 +207,7 @@
 "Limit bandwidth" = "Limit bandwidth";
 "%lld Mbps" = "%lld Mbps";
 "Frame rate and codec changes apply the next time you start sharing." = "Frame rate and codec changes apply the next time you start sharing.";
+"HEVC never falls back to H.264 — viewers that can only decode H.264 won't be able to watch. Choose Automatic to fall back when needed." = "HEVC never falls back to H.264 — viewers that can only decode H.264 won't be able to watch. Choose Automatic to fall back when needed.";
 "Audio" = "Audio";
 "Speaker" = "Speaker";
 "About" = "About";

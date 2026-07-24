@@ -53,6 +53,7 @@ struct MenuBarView: View {
             SignedOutMenuView()
         } else {
             VStack(alignment: .leading, spacing: 0) {
+                PopoverIdentityHeader()
                 PendingRequestsBanner()
                 StatusSection()
                 Divider().padding(.vertical, 4)
@@ -62,14 +63,6 @@ struct MenuBarView: View {
                 ) {
                     appState.presentMainWindow()
                 }
-                MenuRow(
-                    L("Settings…"),
-                    systemImage: nil,
-                    shortcut: "⌘,"
-                ) {
-                    appState.presentSettings()
-                }
-                .keyboardShortcut(",", modifiers: .command)
                 MenuRow(
                     L("Quit Tailscreen"),
                     systemImage: nil,
@@ -121,6 +114,59 @@ private struct SignedOutMenuView: View {
         }
         .padding(.vertical, 6)
         .frame(width: 280)
+    }
+}
+
+// MARK: - Identity strip
+
+/// Compact identity strip at the top of the popover: which account — and
+/// therefore which tailnet — a share started from here will appear on.
+/// With multi-account profiles, "Choose what to share…" is ambiguous
+/// without it. The tailnet (org) name leads, since login names collide
+/// across tailnets; clicking opens the main window, where accounts are
+/// switched and managed.
+private struct PopoverIdentityHeader: View {
+    @EnvironmentObject var appState: AppState
+    @State private var isHovered = false
+
+    var body: some View {
+        if let profile = appState.tailscaleAuth.userProfile {
+            Button {
+                appState.presentMainWindow()
+            } label: {
+                HStack(spacing: 8) {
+                    MonogramAvatar(name: profile.displayName, size: 24)
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(
+                            verbatim: profile.tailnetName.isEmpty
+                                ? profile.loginName : profile.tailnetName
+                        )
+                        .font(.callout.weight(.medium))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        if !profile.tailnetName.isEmpty {
+                            Text(verbatim: profile.loginName)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .background(MenuRowHoverBackground(isHovered: isHovered))
+            .onHover { isHovered = $0 }
+            .help(L("Open Tailscreen"))
+            .accessibilityLabel(L("Signed in as \(profile.loginName)"))
+            .accessibilityHint(L("Opens the Tailscreen window"))
+
+            Divider().padding(.vertical, 4)
+        }
     }
 }
 

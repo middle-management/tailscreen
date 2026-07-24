@@ -1851,6 +1851,17 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// latch also short-circuits the already-fell-back case.
     private func handleCodecUnsupported(from addr: String) {
         guard isRunning else { return }
+        // Explicit HEVC preference: the user opted out of the H.264
+        // safety net knowingly (Settings states the trade-off), so a
+        // viewer that can't decode HEVC stays unserved instead of the
+        // whole share downgrading. The manual TAILSCREEN_FORCE_H264 env
+        // latch still wins at helper spawn — that's the by-hand escape
+        // hatch, not this automatic one.
+        guard sessionQuality.withLock({ $0 }).codecPreference != .hevc else {
+            logger.log(
+                "Viewer \(addr) can't decode HEVC — ignoring CODEC_NO (explicit HEVC preference)")
+            return
+        }
         let shouldFallback = forceH264.withLock { flag -> Bool in
             if flag { return false }
             flag = true

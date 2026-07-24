@@ -52,6 +52,28 @@
 "Tags" = "Taggar";
 "Last seen %@" = "Senast sedd %@";
 "Shows details and actions" = "Visar detaljer och åtgärder";
+"Show details" = "Visa detaljer";
+"Route" = "Rutt";
+"Direct" = "Direkt";
+"DERP (%@)" = "DERP (%@)";
+"~%lld ms" = "~%lld ms";
+"Latency is measured over the current Tailscale path. Relayed connections usually switch to direct once traffic flows." = "Latensen mäts över den aktuella Tailscale-vägen. Reläade anslutningar byter oftast till direkt när trafik flödar.";
+
+/* MARK: - Account profiles (MainWindowView.swift / AppState.swift) */
+"Add Account…" = "Lägg till konto…";
+"Switch to This Account" = "Byt till det här kontot";
+"Remove Account…" = "Ta bort konto…";
+"New account" = "Nytt konto";
+"Finish Your Session First" = "Avsluta din session först";
+"Stop sharing or disconnect before switching accounts." = "Sluta dela eller koppla från innan du byter konto.";
+"Switching to %@…" = "Byter till %@…";
+"Switching accounts…" = "Byter konto…";
+"Remove this account?" = "Ta bort det här kontot?";
+"Removes its sign-in state from this Mac. The device may remain listed in the tailnet admin console until it expires." = "Tar bort dess inloggningsuppgifter från den här datorn. Enheten kan finnas kvar i tailnetets adminkonsol tills den löper ut.";
+
+/* MARK: - Popover identity strip (MenuBarView.swift) */
+"Signed in as %@" = "Inloggad som %@";
+"Opens the Tailscreen window" = "Öppnar Tailscreen-fönstret";
 
 /* MARK: - Signed-out popover (MenuBarView.swift) */
 "Not signed in" = "Inte inloggad";
@@ -192,6 +214,7 @@
 "Limit bandwidth" = "Begränsa bandbredd";
 "%lld Mbps" = "%lld Mbps";
 "Frame rate and codec changes apply the next time you start sharing." = "Ändringar av bildfrekvens och codec gäller nästa gång du börjar dela.";
+"HEVC never falls back to H.264 — viewers that can only decode H.264 won't be able to watch. Choose Automatic to fall back when needed." = "HEVC faller aldrig tillbaka till H.264 — tittare som bara kan avkoda H.264 kommer inte att kunna titta. Välj Automatisk för att falla tillbaka vid behov.";
 "Audio" = "Ljud";
 "Speaker" = "Högtalare";
 "About" = "Om";

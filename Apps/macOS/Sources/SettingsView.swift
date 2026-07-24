@@ -159,11 +159,22 @@ struct SettingsView: View {
                     )
                 ) {
                     // Codec names are brand nouns — deliberately unlocalized
-                    // (see CLAUDE.md's Localization section). No HEVC row:
-                    // Automatic already prefers HEVC (with H.264 fallback),
-                    // so a dedicated HEVC choice would behave identically.
+                    // (see CLAUDE.md's Localization section). HEVC here is
+                    // the *explicit* choice: unlike Automatic (HEVC with
+                    // H.264 fallback) it never downgrades, so H.264-only
+                    // viewers can't watch — the caption below says so.
                     Text(L("Automatic")).tag(QualitySettings.CodecPreference.auto)
+                    Text(verbatim: "HEVC").tag(QualitySettings.CodecPreference.hevc)
                     Text(verbatim: "H.264").tag(QualitySettings.CodecPreference.h264)
+                }
+                if appState.qualitySettings.codecPreference == .hevc {
+                    Text(
+                        L(
+                            "HEVC never falls back to H.264 — viewers that can only decode H.264 won't be able to watch. Choose Automatic to fall back when needed."
+                        )
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 }
                 Toggle(
                     L("Limit bandwidth"),
