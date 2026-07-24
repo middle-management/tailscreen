@@ -2220,6 +2220,23 @@ class AppState: ObservableObject {
         peerShareInfo = peerShareInfo.filter { known.contains($0.key) }
     }
 
+    /// Single-peer variant of `refreshPeerShareStatus`, fired when the main
+    /// window's peer-detail pane expands so its share info reflects *now*
+    /// rather than whenever the last full sweep ran. Same rule as the
+    /// sweep: no answer removes the entry, so the pane can never show a
+    /// stale "sharing" state.
+    func refreshShareStatus(for peer: TailscreenPeer) async {
+        guard peer.isOnline, !peer.tailscaleIP.isEmpty else { return }
+        guard let node = server?.node ?? client?.node ?? self.node else { return }
+        if let metadata = await TailscreenMetadataClient.fetchMetadata(
+            fromIP: peer.tailscaleIP, via: node)
+        {
+            peerShareInfo[peer.id] = metadata
+        } else {
+            peerShareInfo.removeValue(forKey: peer.id)
+        }
+    }
+
     /// Initialize Tailscale and trigger login flow
     func initializeTailscaleAndLogin(silent: Bool = true) async {
         await login(silent: silent)

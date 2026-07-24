@@ -46,6 +46,12 @@
 "Screens" = "Skärmar";
 "Search screens" = "Sök skärmar";
 "Account" = "Konto";
+"View Screen" = "Visa skärm";
+"Ask to Share" = "Be om att dela";
+"Copy" = "Kopiera";
+"Tags" = "Taggar";
+"Last seen %@" = "Senast sedd %@";
+"Shows details and actions" = "Visar detaljer och åtgärder";
 
 /* MARK: - Signed-out popover (MenuBarView.swift) */
 "Not signed in" = "Inte inloggad";

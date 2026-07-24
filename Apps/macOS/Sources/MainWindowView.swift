@@ -373,6 +373,11 @@ private struct PeerListSection: View {
     @State private var didAutoDiscover = false
     @State private var searchText = ""
 
+    /// Peer whose inline detail pane is expanded, if any. Selection is a
+    /// UI-only affordance — connecting moved from row-click into the
+    /// pane's explicit View Screen button.
+    @State private var selectedPeerID: String?
+
     /// Off until the initial seed has landed: the initial population snaps
     /// into place, and only changes that happen while the user is actually
     /// looking (IPN updates, manual refreshes) animate.
@@ -422,6 +427,19 @@ private struct PeerListSection: View {
         }
         .onChange(of: appState.filteredPeers.count) { _, count in
             if count > 0 { lastPeerRowCount = min(count, Self.maxSkeletonRows) }
+        }
+    }
+
+    /// Expand/collapse a peer's detail pane. Expanding kicks a one-peer
+    /// share-status fetch so the pane shows the peer's *current* share,
+    /// not the last sweep's snapshot.
+    private func toggleSelection(_ peer: TailscreenPeer) {
+        let expanding = selectedPeerID != peer.id
+        withAnimation(.easeInOut(duration: 0.15)) {
+            selectedPeerID = expanding ? peer.id : nil
+        }
+        if expanding {
+            Task { await appState.refreshShareStatus(for: peer) }
         }
     }
 
@@ -495,8 +513,12 @@ private struct PeerListSection: View {
         } else {
             VStack(spacing: 2) {
                 ForEach(visiblePeers) { peer in
-                    PeerMenuRow(peer: peer) {
-                        Task { await appState.connectToPeer(peer) }
+                    PeerMenuRow(peer: peer, isExpanded: selectedPeerID == peer.id) {
+                        toggleSelection(peer)
+                    }
+                    if selectedPeerID == peer.id {
+                        PeerDetailView(peer: peer)
+                            .transition(.opacity)
                     }
                 }
             }
@@ -654,25 +676,95 @@ private struct PeerRowSkeleton: View {
 }
 
 /// One screens-list row: presence dot + hostname (+ green sharing chip)
-/// over the peer's Tailscale IP, with the connect affordance on hover —
-/// the Tailscale device-row idiom.
+/// over the peer's Tailscale IP — the Tailscale device-row idiom.
+/// Clicking toggles the inline `PeerDetailView`; the actions (View
+/// Screen, Ask to Share) live there as real buttons instead of the old
+/// hover-only affordances, which keyboard and VoiceOver users could
+/// never reach.
 private struct PeerMenuRow: View {
     @EnvironmentObject var appState: AppState
     let peer: TailscreenPeer
-    let onConnect: () -> Void
+    let isExpanded: Bool
+    let onToggle: () -> Void
     @State private var isHovered = false
+
+    private var shareInfo: TailscreenMetadata? {
+        guard let info = appState.peerShareInfo[peer.id], info.isSharing else { return nil }
+        return info
+    }
+
+    var body: some View {
+        Button(action: onToggle) {
+            HStack(spacing: 10) {
+                Circle()
+                    .fill(
+                        peer.isOnline
+                            ? Color.green : Color(nsColor: .tertiaryLabelColor)
+                    )
+                    .frame(width: 8, height: 8)
+                    .accessibilityHidden(true)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text(peer.hostname)
+                            .font(.body.weight(.medium))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        if let share = shareInfo {
+                            // Fetched share status (`.metadataResponse`) —
+                            // the share name is peer data, shown as-is
+                            // (parser-clamped); fall back to a generic
+                            // caption when the peer didn't name its share.
+                            Text(share.shareName.isEmpty ? L("Sharing") : share.shareName)
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.green)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Capsule().fill(Color.green.opacity(0.14)))
+                        }
+                    }
+                    Text(peer.isOnline ? peer.tailscaleIP : L("Offline"))
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 0)
+
+                Image(systemName: "chevron.right")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                    .rotationEffect(isExpanded ? .degrees(90) : .degrees(0))
+                    .opacity(isHovered || isExpanded ? 1 : 0)
+                    .accessibilityHidden(true)
+            }
+            .padding(.horizontal, 8)
+            .frame(height: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .opacity(peer.isOnline ? 1.0 : 0.7)
+        .background(MenuRowHoverBackground(isHovered: isHovered || isExpanded))
+        .onHover { isHovered = $0 }
+        .accessibilityLabel(L("\(peer.hostname), \(peer.isOnline ? L("online") : L("offline"))"))
+        .accessibilityHint(L("Shows details and actions"))
+    }
+}
+
+/// Inline detail pane under a selected peer row: the live share (if any)
+/// with its resolution/codec, the primary View Screen / Ask to Share
+/// actions, and identity facts (MagicDNS name, IP — both copyable — plus
+/// ACL tags and, for offline peers, last-seen).
+private struct PeerDetailView: View {
+    @EnvironmentObject var appState: AppState
+    let peer: TailscreenPeer
 
     /// Connecting out is only offered while the app is fully idle —
     /// mirroring what the menubar popover allowed before the list moved
-    /// here (the status cards owned the popover otherwise). The list stays
-    /// *visible* during a session for reference; rows just don't connect.
+    /// here (the status cards owned the popover otherwise).
     private var canConnect: Bool {
-        peer.isOnline
-            && appState.sharingState == .idle
-            && appState.connectionState == .idle
-    }
-
-    private var canRequestShare: Bool {
         peer.isOnline
             && appState.sharingState == .idle
             && appState.connectionState == .idle
@@ -684,99 +776,143 @@ private struct PeerMenuRow: View {
     }
 
     var body: some View {
-        ZStack {
-            Button(action: onConnect) {
-                HStack(spacing: 10) {
+        VStack(alignment: .leading, spacing: 10) {
+            if let share = shareInfo {
+                HStack(spacing: 6) {
                     Circle()
-                        .fill(
-                            peer.isOnline
-                                ? Color.green : Color(nsColor: .tertiaryLabelColor)
-                        )
-                        .frame(width: 8, height: 8)
+                        .fill(Color.green)
+                        .frame(width: 6, height: 6)
                         .accessibilityHidden(true)
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: 6) {
-                            Text(peer.hostname)
-                                .font(.body.weight(.medium))
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                            if let share = shareInfo {
-                                // Fetched share status (`.metadataResponse`)
-                                // — the share name is peer data, shown as-is
-                                // (parser-clamped); fall back to a generic
-                                // caption when the peer didn't name its
-                                // share.
-                                Text(share.shareName.isEmpty ? L("Sharing") : share.shareName)
-                                    .font(.caption2.weight(.semibold))
-                                    .foregroundStyle(.green)
-                                    .lineLimit(1)
-                                    .truncationMode(.tail)
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 2)
-                                    .background(Capsule().fill(Color.green.opacity(0.14)))
-                            }
-                        }
-                        Text(peer.isOnline ? peer.tailscaleIP : L("Offline"))
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-
+                    Text(share.shareName.isEmpty ? L("Sharing") : share.shareName)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.green)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Text(verbatim: shareCaption(share))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     Spacer(minLength: 0)
-
-                    // Reserve space the trailing buttons will occupy so
-                    // hover-driven appearance doesn't shift the row.
-                    Color.clear.frame(width: trailingReservedWidth, height: 1)
                 }
-                .padding(.horizontal, 8)
-                .frame(height: 44)
-                .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .disabled(!canConnect)
-            .opacity(peer.isOnline ? 1.0 : 0.55)
-            .background(MenuRowHoverBackground(isHovered: isHovered && canConnect))
-            .accessibilityLabel(L("\(peer.hostname), \(peer.isOnline ? L("online") : L("offline"))"))
-            .accessibilityHint(canConnect ? L("Connects to view this device's screen") : "")
 
-            HStack(spacing: 6) {
-                Spacer(minLength: 0)
-                if isHovered && canRequestShare {
+            if peer.isOnline {
+                HStack(spacing: 8) {
+                    Button {
+                        Task { await appState.connectToPeer(peer) }
+                    } label: {
+                        Label(L("View Screen"), systemImage: "display")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(!canConnect)
+                    .accessibilityHint(L("Connects to view this device's screen"))
+
                     Button {
                         Task { await appState.requestToShare(from: peer) }
                     } label: {
-                        Image(systemName: "hand.wave")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 22, height: 22)
-                            .contentShape(Rectangle())
+                        Label(L("Ask to Share"), systemImage: "hand.wave")
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(!canConnect)
                     .help(L("Ask \(peer.hostname) to share their screen"))
-                    .accessibilityLabel(L("Request \(peer.hostname) to share"))
-                }
-                if isHovered && canConnect {
-                    Image(systemName: "chevron.right")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.tertiary)
-                        .accessibilityHidden(true)
                 }
             }
-            .padding(.trailing, 8)
-            .allowsHitTesting(isHovered && canRequestShare)
+
+            VStack(alignment: .leading, spacing: 4) {
+                infoRow(label: "DNS", value: dnsDisplay)
+                infoRow(label: "IP", value: peer.tailscaleIP)
+                if !peer.tags.isEmpty {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(L("Tags"))
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                            .frame(width: 34, alignment: .leading)
+                        ForEach(peer.tags, id: \.self) { tag in
+                            Text(PeerListFilter.displayName(forTag: tag))
+                                .font(.caption2)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Capsule().fill(.quaternary.opacity(0.6)))
+                                .lineLimit(1)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                }
+                if !peer.isOnline, let seen = lastSeenDisplay {
+                    Text(L("Last seen \(seen)"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
-        .onHover { isHovered = $0 }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(.quaternary.opacity(0.4))
+        )
+        // Indent under the row's text column so the pane reads as the
+        // row's expansion, not a sibling.
+        .padding(.leading, 24)
+        .padding(.bottom, 4)
     }
 
-    /// Width carved out at the right of the row so the (visually-overlaid)
-    /// hand-wave button + chevron don't make the hostname appear to shift
-    /// when hover begins/ends.
-    private var trailingReservedWidth: CGFloat {
-        switch (canRequestShare, canConnect) {
-        case (true, _): return 36  // hand-wave + chevron
-        case (_, true): return 14  // chevron only
-        default: return 0
+    /// "3456 × 2234 · HEVC" — resolution and codec are numbers/brand nouns,
+    /// deliberately unlocalized.
+    private func shareCaption(_ share: TailscreenMetadata) -> String {
+        var caption = "\(share.screenResolution.width) × \(share.screenResolution.height)"
+        if let codec = share.videoCodec {
+            caption += " · \(codec == .hevc ? "HEVC" : "H.264")"
+        }
+        return caption
+    }
+
+    /// MagicDNS name without the FQDN's trailing dot.
+    private var dnsDisplay: String {
+        peer.dnsName.hasSuffix(".") ? String(peer.dnsName.dropLast()) : peer.dnsName
+    }
+
+    /// Relative last-seen for offline peers, when the netmap supplied one
+    /// (only the IPN-watcher discovery path does). Unparseable → omitted.
+    private var lastSeenDisplay: String? {
+        guard let raw = peer.lastSeen else { return nil }
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        var date = iso.date(from: raw)
+        if date == nil {
+            iso.formatOptions = [.withInternetDateTime]
+            date = iso.date(from: raw)
+        }
+        guard let date else { return nil }
+        return RelativeDateTimeFormatter().localizedString(for: date, relativeTo: Date())
+    }
+
+    /// Caption label + selectable monospaced value + a copy button.
+    private func infoRow(label: String, value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text(verbatim: label)
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .frame(width: 34, alignment: .leading)
+            Text(verbatim: value)
+                .font(.caption.monospaced())
+                .textSelection(.enabled)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Button {
+                let pasteboard = NSPasteboard.general
+                pasteboard.clearContents()
+                pasteboard.setString(value, forType: .string)
+            } label: {
+                Image(systemName: "doc.on.doc")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help(L("Copy"))
+            .accessibilityLabel(L("Copy"))
+            Spacer(minLength: 0)
         }
     }
 }

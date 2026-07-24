@@ -51,6 +51,12 @@
 "Screens" = "Screens";
 "Search screens" = "Search screens";
 "Account" = "Account";
+"View Screen" = "View Screen";
+"Ask to Share" = "Ask to Share";
+"Copy" = "Copy";
+"Tags" = "Tags";
+"Last seen %@" = "Last seen %@";
+"Shows details and actions" = "Shows details and actions";
 
 /* MARK: - Signed-out popover (MenuBarView.swift) */
 "Not signed in" = "Not signed in";
