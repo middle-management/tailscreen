@@ -17,7 +17,9 @@ struct MainWindowView: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        Group {
+        VStack(spacing: 0) {
+            HubHeader()
+            Divider()
             if appState.tailscaleAuth.isAuthenticated {
                 HubView()
             } else {
@@ -26,7 +28,10 @@ struct MainWindowView: View {
         }
         .frame(minWidth: 340, minHeight: 460)
         .background(Color(nsColor: .textBackgroundColor))
-        .toolbar { toolbarContent }
+        // The window's title bar is hidden (see the `Window` scene) and the
+        // header extends under it, so the traffic lights float over the
+        // header like Tailscale's app.
+        .ignoresSafeArea(edges: .top)
         .onAppear {
             // Environment actions are only reachable from view context, so
             // stash the scene-opening closure where AppKit callers (menu
@@ -34,42 +39,58 @@ struct MainWindowView: View {
             appState.openMainWindowAction = { openWindow(id: TailscreenApp.mainWindowID) }
         }
     }
+}
 
-    /// Window chrome: identity block on the left (the window title is
-    /// hidden — see the `Window` scene's `.windowStyle(.hiddenTitleBar)`),
-    /// list controls + account menu on the right. The account menu replaces
-    /// the old bottom identity footer, mirroring Tailscale's top-right
-    /// avatar.
-    @ToolbarContentBuilder
-    private var toolbarContent: some ToolbarContent {
-        ToolbarItem(placement: .navigation) {
-            VStack(alignment: .leading, spacing: 0) {
+// MARK: - Header
+
+/// Thick custom header standing in for the title bar (which is hidden):
+/// app identity — wordmark + tailnet login — on the left, clear of the
+/// floating traffic lights, and the list controls + account menu on the
+/// right. A custom bar instead of a SwiftUI `.toolbar` for two reasons:
+/// toolbars on a hidden-title-bar window are visually thin, and macOS
+/// toolbar item labels drop custom views (the monogram avatar rendered as
+/// an empty pill there). `WindowDragGesture` keeps the strip draggable
+/// like the title bar it replaces.
+private struct HubHeader: View {
+    @EnvironmentObject var appState: AppState
+
+    var body: some View {
+        HStack(spacing: 14) {
+            VStack(alignment: .leading, spacing: 1) {
                 Text(verbatim: "Tailscreen")
-                    .font(.system(.subheadline, design: .rounded, weight: .bold))
+                    .font(.system(.headline, design: .rounded, weight: .bold))
                 if let login = appState.tailscaleAuth.userProfile?.loginName {
                     Text(verbatim: login)
-                        .font(.caption2)
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
             }
-        }
-        if appState.tailscaleAuth.isAuthenticated {
-            ToolbarItemGroup(placement: .primaryAction) {
+
+            Spacer(minLength: 8)
+
+            if appState.tailscaleAuth.isAuthenticated {
                 PeerFilterMenu()
 
                 Button {
                     Task { await appState.discoverPeers() }
                 } label: {
-                    if appState.isDiscovering {
-                        ProgressView()
-                            .controlSize(.small)
-                            .scaleEffect(0.7)
-                    } else {
-                        Image(systemName: "arrow.clockwise")
+                    Group {
+                        if appState.isDiscovering {
+                            ProgressView()
+                                .controlSize(.small)
+                                .scaleEffect(0.7)
+                        } else {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundStyle(.secondary)
+                        }
                     }
+                    .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
                 .disabled(appState.isDiscovering)
                 .help(L("Refresh screens"))
                 .accessibilityLabel(L("Refresh available screens"))
@@ -85,14 +106,26 @@ struct MainWindowView: View {
                             Task { await appState.signOut() }
                         }
                     } label: {
-                        MonogramAvatar(name: profile.displayName, size: 22)
+                        MonogramAvatar(name: profile.displayName, size: 28)
+                            .overlay(
+                                Circle().strokeBorder(.separator.opacity(0.5), lineWidth: 1)
+                            )
                     }
+                    .buttonStyle(.plain)
                     .menuIndicator(.hidden)
+                    .fixedSize()
                     .help(L("Sign out of Tailscale, signed in as \(profile.displayName)"))
                     .accessibilityLabel(L("Account"))
                 }
             }
         }
+        // Clear the traffic lights, which float over the header's left edge.
+        .padding(.leading, 84)
+        .padding(.trailing, 16)
+        .frame(height: 52)
+        .frame(maxWidth: .infinity)
+        .background(.bar)
+        .gesture(WindowDragGesture())
     }
 }
 
@@ -287,22 +320,19 @@ private struct ShareStatusSection: View {
                     }
                     .opacity(0.8)
                 } else {
-                    Text(L("Share your screen"))
-                        .font(.system(.headline, design: .rounded))
-                    Text(L("Pick a display, window, or app to share with your tailnet."))
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    // Just the action + its one option — a heading here
+                    // ("Share your screen") only restated what the button
+                    // already says.
                     Button {
                         Task { await appState.presentNativePicker() }
                     } label: {
                         Label(L("Choose what to share…"), systemImage: "macwindow.on.rectangle")
+                            .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
-                    .padding(.top, 2)
                     ApprovalToggle()
-                        .padding(.top, 4)
+                        .padding(.top, 2)
                 }
             }
         }
@@ -542,12 +572,17 @@ private struct PeerFilterMenu: View {
                     ? "line.3.horizontal.decrease.circle.fill"
                     : "line.3.horizontal.decrease.circle"
             )
+            .font(.system(size: 14, weight: .medium))
             .foregroundStyle(
                 appState.peerFilter.isActive
-                    ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.primary)
+                    ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary)
             )
+            .frame(width: 24, height: 24)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
         .menuIndicator(.hidden)
+        .fixedSize()
         .help(L("Filter screens"))
         .accessibilityLabel(L("Filter available screens"))
     }

@@ -927,9 +927,6 @@ private struct DisplayPickerSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            SectionHeader(title: L("SHARE"))
-                .padding(.top, 2)
-
             if appState.anotherInstanceSharing {
                 // Another Tailscreen instance on this Mac is currently
                 // capturing. macOS's `replayd` only allows one SCStream
@@ -976,23 +973,8 @@ private struct DisplayPickerSection: View {
                 .onHover { isHovered = $0 }
             }
         }
+        .padding(.top, 4)
         .padding(.bottom, 6)
-    }
-}
-
-// MARK: - Small section header label
-
-private struct SectionHeader: View {
-    let title: String
-
-    var body: some View {
-        Text(title)
-            .font(.caption2.weight(.semibold))
-            .tracking(0.6)
-            .foregroundStyle(.tertiary)
-            .padding(.horizontal, 14)
-            .padding(.top, 6)
-            .padding(.bottom, 2)
     }
 }
 
