@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Tailscreen's small shared design layer. The app stays close to native
@@ -38,5 +39,29 @@ struct MonogramAvatar: View {
 
     private var initial: String {
         name.first.map { String($0).uppercased() } ?? "?"
+    }
+
+    /// AppKit rendering of the same avatar, for `NSMenuItem.image` — the
+    /// account menu is a real `NSMenu` (SwiftUI `Menu` flattens custom row
+    /// labels to plain text, so Tailscale-style two-line rows need AppKit).
+    static func nsImage(name: String, size: CGFloat) -> NSImage {
+        let image = NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
+            NSColor(TSTheme.monogramColor(for: name)).setFill()
+            NSBezierPath(ovalIn: rect).fill()
+            let initial = name.first.map { String($0).uppercased() } ?? "?"
+            let text = NSAttributedString(
+                string: initial,
+                attributes: [
+                    .font: NSFont.systemFont(ofSize: size * 0.45, weight: .semibold),
+                    .foregroundColor: NSColor.white,
+                ])
+            let textSize = text.size()
+            text.draw(
+                at: NSPoint(
+                    x: (rect.width - textSize.width) / 2,
+                    y: (rect.height - textSize.height) / 2))
+            return true
+        }
+        return image
     }
 }

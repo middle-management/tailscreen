@@ -154,80 +154,181 @@ private struct HubHeader: View {
     }
 }
 
-/// The header's account control: signed-in identity, the profile list
-/// (Tailscale-style multi-account — switch, add, remove), Settings, and
-/// Sign out. Visible whenever there's something to act on: signed in, or
-/// signed out with other profiles to switch back to. A first-launch
-/// single signed-out profile hides it — the welcome pane's CTA is the
-/// only sensible action then.
+/// The header's account control: the profile list (Tailscale-style
+/// multi-account), Add Account…, Settings, and Sign out. Visible whenever
+/// there's something to act on: signed in, or signed out with other
+/// profiles to switch back to. A first-launch single signed-out profile
+/// hides it — the welcome pane's CTA is the only sensible action then.
 private struct AccountMenu: View {
     @EnvironmentObject var appState: AppState
 
     var body: some View {
         if appState.tailscaleAuth.userProfile != nil || appState.profileStore.profiles.count > 1 {
-            Menu {
-                if let profile = appState.tailscaleAuth.userProfile {
-                    Text(verbatim: profile.displayName)
-                    Text(verbatim: profile.loginName)
-                    if !profile.tailnetName.isEmpty {
-                        Text(verbatim: profile.tailnetName)
-                    }
-                    Divider()
-                }
-                ForEach(appState.profileStore.profiles) { profile in
-                    if profile.id == appState.profileStore.activeProfileID {
-                        // The active profile is a fact, not an action.
-                        Label(title(for: profile), systemImage: "checkmark")
-                    } else {
-                        Menu(title(for: profile)) {
-                            Button(L("Switch to This Account")) {
-                                Task { await appState.switchProfile(to: profile.id) }
-                            }
-                            Divider()
-                            Button(L("Remove Account…"), role: .destructive) {
-                                appState.confirmRemoveProfile(profile)
-                            }
-                        }
-                    }
-                }
-                Button(L("Add Account…")) {
-                    Task { await appState.addAccountAndSignIn() }
-                }
-                Divider()
-                Button(L("Settings…")) { appState.presentSettings() }
-                if appState.tailscaleAuth.isAuthenticated {
-                    Divider()
-                    Button(L("Sign out")) {
-                        Task { await appState.signOut() }
-                    }
-                }
-            } label: {
-                if let profile = appState.tailscaleAuth.userProfile {
-                    MonogramAvatar(name: profile.displayName, size: 28)
-                        .overlay(
-                            Circle().strokeBorder(.separator.opacity(0.5), lineWidth: 1)
-                        )
-                } else {
-                    // Signed out but other profiles exist: neutral glyph,
-                    // the menu is the way back in.
-                    Image(systemName: "person.crop.circle")
-                        .font(.system(size: 22))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 28, height: 28)
-                }
-            }
-            .buttonStyle(.plain)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .accessibilityLabel(L("Account"))
+            AccountMenuButton(appState: appState)
+                .frame(width: 28, height: 28)
+                .help(L("Account"))
+        }
+    }
+}
+
+/// AppKit-backed account button + menu. A real `NSMenu` because SwiftUI's
+/// `Menu` flattens custom row labels to plain text — Tailscale-style
+/// two-line rows (avatar, login over tailnet, checkmark on the active
+/// account) need `NSMenuItem.attributedTitle` + `.image`. Row semantics
+/// mirror Tailscale's: clicking a row switches to that account; holding ⌥
+/// swaps a non-active row for "Remove Account…" (the native alternate-item
+/// pattern).
+private struct AccountMenuButton: NSViewRepresentable {
+    let appState: AppState
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> NSButton {
+        let button = NSButton()
+        button.isBordered = false
+        button.imagePosition = .imageOnly
+        button.setButtonType(.momentaryChange)
+        button.target = context.coordinator
+        button.action = #selector(Coordinator.showMenu(_:))
+        button.setAccessibilityLabel(L("Account"))
+        return button
+    }
+
+    func updateNSView(_ button: NSButton, context: Context) {
+        context.coordinator.appState = appState
+        if let profile = appState.tailscaleAuth.userProfile {
+            button.image = MonogramAvatar.nsImage(name: profile.displayName, size: 26)
+        } else {
+            // Signed out but other profiles exist: neutral glyph, the
+            // menu is the way back in.
+            let symbol = NSImage(
+                systemSymbolName: "person.crop.circle", accessibilityDescription: L("Account"))
+            button.image = symbol?.withSymbolConfiguration(
+                NSImage.SymbolConfiguration(pointSize: 22, weight: .regular))
         }
     }
 
-    /// Menu title for a profile row: tailnet-qualified login once it has
-    /// signed in ("login — tailnet", since GitHub logins collide across
-    /// orgs), else a placeholder.
-    private func title(for profile: TailscreenProfile) -> String {
-        profile.hasSignedIn ? profile.menuTitle : L("New account")
+    @MainActor
+    final class Coordinator: NSObject {
+        weak var appState: AppState?
+
+        @objc func showMenu(_ sender: NSButton) {
+            guard let appState else { return }
+            let menu = NSMenu()
+            menu.autoenablesItems = false
+
+            for profile in appState.profileStore.profiles {
+                let isActive = profile.id == appState.profileStore.activeProfileID
+                let item = NSMenuItem(
+                    title: profile.hasSignedIn ? profile.menuTitle : L("New account"),
+                    action: #selector(switchToAccount(_:)),
+                    keyEquivalent: "")
+                item.target = self
+                item.attributedTitle = Self.rowTitle(for: profile)
+                item.image = MonogramAvatar.nsImage(
+                    name: profile.displayName.isEmpty ? profile.loginName : profile.displayName,
+                    size: 24)
+                item.state = isActive ? .on : .off
+                item.representedObject = profile.id
+                menu.addItem(item)
+
+                if !isActive {
+                    // ⌥ swaps the row for its destructive counterpart.
+                    let remove = NSMenuItem(
+                        title: L("Remove Account…"),
+                        action: #selector(removeAccount(_:)),
+                        keyEquivalent: "")
+                    remove.target = self
+                    remove.isAlternate = true
+                    remove.keyEquivalentModifierMask = .option
+                    remove.representedObject = profile.id
+                    menu.addItem(remove)
+                }
+            }
+
+            menu.addItem(.separator())
+            let add = NSMenuItem(
+                title: L("Add Account…"), action: #selector(addAccount(_:)), keyEquivalent: "")
+            add.target = self
+            menu.addItem(add)
+
+            menu.addItem(.separator())
+            let settings = NSMenuItem(
+                title: L("Settings…"), action: #selector(openSettings(_:)), keyEquivalent: "")
+            settings.target = self
+            menu.addItem(settings)
+
+            if appState.tailscaleAuth.isAuthenticated {
+                menu.addItem(.separator())
+                let signOut = NSMenuItem(
+                    title: L("Sign out"), action: #selector(performSignOut(_:)), keyEquivalent: "")
+                signOut.target = self
+                menu.addItem(signOut)
+            }
+
+            menu.popUp(
+                positioning: nil,
+                at: NSPoint(x: 0, y: sender.bounds.height + 6),
+                in: sender)
+        }
+
+        /// Two-line row: login (menu font) over tailnet (small, secondary).
+        /// The tailnet line is the disambiguator — GitHub logins collide
+        /// across orgs. Never-signed-in profiles get the placeholder only.
+        private static func rowTitle(for profile: TailscreenProfile) -> NSAttributedString {
+            guard profile.hasSignedIn else {
+                return NSAttributedString(
+                    string: L("New account"),
+                    attributes: [
+                        .font: NSFont.menuFont(ofSize: 0),
+                        .foregroundColor: NSColor.labelColor,
+                    ])
+            }
+            let title = NSMutableAttributedString(
+                string: profile.loginName,
+                attributes: [
+                    .font: NSFont.menuFont(ofSize: 0),
+                    .foregroundColor: NSColor.labelColor,
+                ])
+            if !profile.tailnetName.isEmpty {
+                title.append(
+                    NSAttributedString(
+                        string: "\n" + profile.tailnetName,
+                        attributes: [
+                            .font: NSFont.menuFont(ofSize: NSFont.smallSystemFontSize),
+                            .foregroundColor: NSColor.secondaryLabelColor,
+                        ]))
+            }
+            return title
+        }
+
+        @objc private func switchToAccount(_ sender: NSMenuItem) {
+            guard let id = sender.representedObject as? UUID, let appState else { return }
+            Task { await appState.switchProfile(to: id) }
+        }
+
+        @objc private func removeAccount(_ sender: NSMenuItem) {
+            guard let id = sender.representedObject as? UUID, let appState,
+                let profile = appState.profileStore.profiles.first(where: { $0.id == id })
+            else { return }
+            appState.confirmRemoveProfile(profile)
+        }
+
+        @objc private func addAccount(_ sender: NSMenuItem) {
+            guard let appState else { return }
+            Task { await appState.addAccountAndSignIn() }
+        }
+
+        @objc private func openSettings(_ sender: NSMenuItem) {
+            appState?.presentSettings()
+        }
+
+        @objc private func performSignOut(_ sender: NSMenuItem) {
+            guard let appState else { return }
+            Task { await appState.signOut() }
+        }
     }
 }
 
