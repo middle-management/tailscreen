@@ -7,7 +7,7 @@ import XCTest
 @testable import TailscreenViewerCore
 
 /// End-to-end coverage of the Linux viewer's real data path — the one thing the
-/// per-backend unit suites (FFmpegKit / SDLKit / ALSAKit) and the portable
+/// per-backend unit suites (FFmpegKit / ALSAKit) and the portable
 /// `ViewerSessionTests` each cover only in isolation. Here a *real* H.264
 /// keyframe is encoded in process, RTP-packetized with the production
 /// `H264Packetizer`, fed through a `ViewerPipeline` wired to the real

@@ -4,7 +4,7 @@ import TailscreenViewer
 /// Thread-safe holder for the most recent decoded frame. The video sink writes
 /// the latest frame (from the transport/decoder thread); the `GtkVideoView`
 /// render callback reads it (on the GTK main thread). Latest-frame-wins — an
-/// unshown frame is simply overwritten, exactly like the SDL sink.
+/// unshown frame is simply overwritten (latest-frame-wins display).
 public final class FrameStore: @unchecked Sendable {
     private let lock = NSLock()
     private var frame: DecodedVideoFrame?

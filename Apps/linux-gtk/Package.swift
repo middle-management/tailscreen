@@ -4,14 +4,13 @@ import PackageDescription
 // tailscreen-viewer-gtk — the native GTK desktop viewer (Linux/Windows).
 //
 // A SEPARATE package from Apps/linux on purpose: it pulls in swift-cross-ui +
-// GTK4, which the existing (SDL) `linux-viewer` CI job neither needs nor should
+// GTK4, which the Apps/linux core `linux-viewer` CI job neither needs nor should
 // pay for. Video is a downstream `GtkVideoView` (a swift-cross-ui `View` hosting
 // a `GtkGLArea` with an OpenGL YUV→RGB renderer); chrome is declarative
 // swift-cross-ui. See docs/linux-viewer-gtk-plan.md.
 //
 // It reuses Apps/linux's `TailscreenViewerCore` (FFmpeg decoder + ALSA sink)
-// and `TailscreenViewerTsnet` (the shared tsnet transport) — but NOT the SDL
-// target, so the GTK viewer never links libSDL2. Pulling Tsnet brings
+// and `TailscreenViewerTsnet` (the shared tsnet transport). Pulling Tsnet brings
 // TailscaleKit (→ libtailscale.a), so a live run needs the built c-archive.
 //
 // swift-cross-ui is pinned to an exact revision for reproducibility — its `View`
@@ -60,14 +59,14 @@ let package = Package(
                 .product(name: "TailscreenViewer", package: "TailscreenKit"),
                 .product(name: "TailscreenProtocol", package: "TailscreenKit"),
                 // FFmpeg decoder + the shared tsnet transport, reused from the
-                // SDL viewer package (SDL target intentionally not depended on).
-                // The path dependency's identity is its directory name, `linux`.
+                // Apps/linux core library package. The path dependency's
+                // identity is its directory name, `linux`.
                 .product(name: "TailscreenViewerCore", package: "linux"),
                 .product(name: "TailscreenViewerTsnet", package: "linux"),
             ],
             linkerSettings: [
                 // Resolve libtailscale.a for the tsnet transport (same relative
-                // path the SDL viewer uses).
+                // path the core package uses).
                 .unsafeFlags(["-L", "../../Packages/TailscaleKit/lib"])
             ]
         ),

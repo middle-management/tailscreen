@@ -5,15 +5,16 @@ import TailscreenProtocol
 // (see ViewerSession.swift) turns inbound RTP into decoded frames + audio +
 // outbound feedback bytes without owning a socket, a thread, or a timer, and
 // without linking any concrete codec/renderer/audio backend. These value and
-// protocol types are that seam: a later PR plugs the real FFmpeg decoder / SDL
-// renderer / ALSA sink in behind them, while THIS target stays Foundation-only
-// and Linux-buildable (no FFmpeg/SDL/ALSA dependency — see the package README).
+// protocol types are that seam: the Linux viewer plugs the real FFmpeg decoder /
+// GTK-GL renderer / ALSA sink in behind them, while THIS target stays
+// Foundation-only and Linux-buildable (no FFmpeg/GTK/ALSA dependency — see the
+// package README).
 
 /// A decoded video frame the session routes **without inspecting** — a marker
 /// so the concrete frame type is opaque to `ViewerSession`. The decoder produces
 /// `DecodedFrame`s and the sink consumes them; the session only carries them
 /// from one to the other, so the type is whatever the host's decoder/renderer
-/// pair agrees on: CPU I420 (`DecodedVideoFrame`) for the FFmpeg→SDL path, or a
+/// pair agrees on: CPU I420 (`DecodedVideoFrame`) for the FFmpeg→GTK-GL path, or a
 /// platform-native handle (e.g. a `CVPixelBuffer` box on macOS) for a zero-copy
 /// VideoToolbox→Metal path — without the portable target importing CoreVideo.
 /// `ViewerSession` never reads a frame; the sink downcasts to its own concrete

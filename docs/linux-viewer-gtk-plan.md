@@ -213,17 +213,18 @@ guarantee the SDL path never had.
 - **GTK main loop ↔ Swift concurrency.** The transport-Task + frame-marshalling
   integration is the real new engineering; L0's deliverable is precisely to
   prove it with live frames, not synthetic ones.
-- **Two viewers during transition.** Keep the SDL CLI as a headless/fallback
-  path until the GTK app is trusted, then retire it.
+- **Two viewers during transition.** The SDL CLI was kept as a
+  headless/fallback path during bring-up; **now retired** — the GTK viewer is
+  the sole Linux/Windows viewer, and `Apps/linux` is a library-only core it
+  reuses (the SDL sink, CLI, and `Packages/SDLKit` were removed).
 - **Dependency weight in CI.** GTK4 + swift-cross-ui + swift-syntax add build
   time; mitigated by caching and a dedicated job.
 
-## Open decisions
+## Open decisions (resolved)
 
-- **Package layout:** add the GTK app as a target in `Apps/linux` (reusing
-  `TailscreenViewerCore`) vs. a separate `Apps/linux-gtk` package. Leaning
-  "same package, new target" to reuse the transport/decoder wiring.
-- **Retire SDL or keep it?** Recommend keeping `ThreadedSDLVideoSink` +
-  the CLI as a minimal fallback through L2, then deciding.
-- **swift-cross-ui pin:** a release tag vs. `main`. Recommend pinning a tag for
-  reproducibility once one is chosen.
+- **Package layout:** ~~same package vs. separate~~ → a **separate
+  `Apps/linux-gtk` package** (swift-cross-ui + GTK4 shouldn't burden the core's
+  `linux-viewer` CI job), reusing `Apps/linux`'s `TailscreenViewerCore` +
+  `TailscreenViewerTsnet`.
+- **Retire SDL or keep it?** → **retired.** The GTK viewer superseded it.
+- **swift-cross-ui pin:** → pinned to an exact revision for reproducibility.
