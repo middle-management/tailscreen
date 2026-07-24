@@ -283,14 +283,14 @@ private struct AccountMenuButton: NSViewRepresentable {
                     string: L("New account"),
                     attributes: [
                         .font: NSFont.menuFont(ofSize: 0),
-                        .foregroundColor: NSColor.labelColor,
+                        .foregroundColor: NSColor.labelColor
                     ])
             }
             let title = NSMutableAttributedString(
                 string: profile.loginName,
                 attributes: [
                     .font: NSFont.menuFont(ofSize: 0),
-                    .foregroundColor: NSColor.labelColor,
+                    .foregroundColor: NSColor.labelColor
                 ])
             if !profile.tailnetName.isEmpty {
                 title.append(
@@ -298,7 +298,7 @@ private struct AccountMenuButton: NSViewRepresentable {
                         string: "\n" + profile.tailnetName,
                         attributes: [
                             .font: NSFont.menuFont(ofSize: NSFont.smallSystemFontSize),
-                            .foregroundColor: NSColor.secondaryLabelColor,
+                            .foregroundColor: NSColor.secondaryLabelColor
                         ]))
             }
             return title

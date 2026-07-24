@@ -53,7 +53,7 @@ struct MonogramAvatar: View {
                 string: initial,
                 attributes: [
                     .font: NSFont.systemFont(ofSize: size * 0.45, weight: .semibold),
-                    .foregroundColor: NSColor.white,
+                    .foregroundColor: NSColor.white
                 ])
             let textSize = text.size()
             text.draw(

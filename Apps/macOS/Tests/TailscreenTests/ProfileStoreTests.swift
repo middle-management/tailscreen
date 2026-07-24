@@ -10,23 +10,23 @@ import XCTest
 /// `statePath` contract.
 @MainActor
 final class ProfileStoreTests: XCTestCase {
-    private func makeSuite(_ name: String) -> UserDefaults {
+    private func makeSuite(_ name: String) throws -> UserDefaults {
         let suiteName = "ProfileStoreTests-\(name)"
-        let defaults = UserDefaults(suiteName: suiteName)!
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defaults.removePersistentDomain(forName: suiteName)
         return defaults
     }
 
-    func testFirstLaunchCreatesLegacyRootedDefaultProfile() {
-        let store = ProfileStore(defaults: makeSuite(#function))
+    func testFirstLaunchCreatesLegacyRootedDefaultProfile() throws {
+        let store = ProfileStore(defaults: try makeSuite(#function))
         XCTAssertEqual(store.profiles.count, 1)
         XCTAssertEqual(store.profiles[0].stateDirectory, ProfileStore.legacyStateDirectory)
         XCTAssertEqual(store.activeProfileID, store.profiles[0].id)
         XCTAssertFalse(store.profiles[0].hasSignedIn)
     }
 
-    func testAddProfileGetsUniqueProfilesDirectoryAndIsNotActive() {
-        let store = ProfileStore(defaults: makeSuite(#function))
+    func testAddProfileGetsUniqueProfilesDirectoryAndIsNotActive() throws {
+        let store = ProfileStore(defaults: try makeSuite(#function))
         let first = store.addProfile()
         let second = store.addProfile()
         XCTAssertTrue(first.stateDirectory.hasPrefix("profiles/"))
@@ -37,8 +37,8 @@ final class ProfileStoreTests: XCTestCase {
         XCTAssertEqual(store.activeProfileID, store.profiles[0].id)
     }
 
-    func testSetActiveSwitchesAndIgnoresUnknownID() {
-        let store = ProfileStore(defaults: makeSuite(#function))
+    func testSetActiveSwitchesAndIgnoresUnknownID() throws {
+        let store = ProfileStore(defaults: try makeSuite(#function))
         let added = store.addProfile()
         store.setActive(added.id)
         XCTAssertEqual(store.activeProfileID, added.id)
@@ -46,8 +46,8 @@ final class ProfileStoreTests: XCTestCase {
         XCTAssertEqual(store.activeProfileID, added.id, "unknown id must be ignored")
     }
 
-    func testRemoveRefusesActiveAndLastProfile() {
-        let store = ProfileStore(defaults: makeSuite(#function))
+    func testRemoveRefusesActiveAndLastProfile() throws {
+        let store = ProfileStore(defaults: try makeSuite(#function))
         XCTAssertNil(store.remove(store.activeProfileID), "active profile must not be removable")
         XCTAssertEqual(store.profiles.count, 1)
 
@@ -59,16 +59,16 @@ final class ProfileStoreTests: XCTestCase {
             "last remaining profile must not be removable (it is also active)")
     }
 
-    func testRemoveReturnsEntryForDiskCleanup() {
-        let store = ProfileStore(defaults: makeSuite(#function))
+    func testRemoveReturnsEntryForDiskCleanup() throws {
+        let store = ProfileStore(defaults: try makeSuite(#function))
         let added = store.addProfile()
         let removed = store.remove(added.id)
         XCTAssertEqual(removed, added)
         XCTAssertFalse(store.profiles.contains(added))
     }
 
-    func testUpdateActiveIdentityLabelsActiveProfileOnly() {
-        let store = ProfileStore(defaults: makeSuite(#function))
+    func testUpdateActiveIdentityLabelsActiveProfileOnly() throws {
+        let store = ProfileStore(defaults: try makeSuite(#function))
         let added = store.addProfile()
         store.updateActiveIdentity(
             displayName: "Robert", loginName: "robert@github", tailnetName: "slaskis.github")
@@ -81,7 +81,7 @@ final class ProfileStoreTests: XCTestCase {
             "inactive profile must be untouched")
     }
 
-    func testMenuTitleQualifiesLoginWithTailnet() {
+    func testMenuTitleQualifiesLoginWithTailnet() throws {
         // Two GitHub logins on different orgs are identical by loginName —
         // the tailnet name is the disambiguator.
         var profile = TailscreenProfile(
@@ -94,8 +94,8 @@ final class ProfileStoreTests: XCTestCase {
         XCTAssertEqual(profile.menuTitle, "", "never signed in → caller supplies placeholder")
     }
 
-    func testRoundTripAcrossInstances() {
-        let suite = makeSuite(#function)
+    func testRoundTripAcrossInstances() throws {
+        let suite = try makeSuite(#function)
         let store = ProfileStore(defaults: suite)
         let added = store.addProfile()
         store.setActive(added.id)
@@ -110,7 +110,7 @@ final class ProfileStoreTests: XCTestCase {
     func testBlobWithoutTailnetNameStillDecodes() throws {
         // Registries persisted by builds predating `tailnetName` must keep
         // decoding (missing key → empty), not trip the corrupt-blob reset.
-        let suite = makeSuite(#function)
+        let suite = try makeSuite(#function)
         let id = UUID()
         let legacyJSON = """
             [{"id":"\(id.uuidString)","displayName":"Robert",\
@@ -127,22 +127,22 @@ final class ProfileStoreTests: XCTestCase {
         XCTAssertEqual(store.activeProfileID, id)
     }
 
-    func testStoredActiveIDPointingNowhereFallsBackToFirstProfile() {
-        let suite = makeSuite(#function)
+    func testStoredActiveIDPointingNowhereFallsBackToFirstProfile() throws {
+        let suite = try makeSuite(#function)
         suite.set(UUID().uuidString, forKey: "tailscreenActiveProfileID")
         let store = ProfileStore(defaults: suite)
         XCTAssertEqual(store.activeProfileID, store.profiles[0].id)
     }
 
-    func testCorruptBlobDegradesToDefaultProfile() {
-        let suite = makeSuite(#function)
+    func testCorruptBlobDegradesToDefaultProfile() throws {
+        let suite = try makeSuite(#function)
         suite.set(Data("not json".utf8), forKey: "tailscreenProfiles")
         let store = ProfileStore(defaults: suite)
         XCTAssertEqual(store.profiles.count, 1)
         XCTAssertEqual(store.profiles[0].stateDirectory, ProfileStore.legacyStateDirectory)
     }
 
-    func testStatePathAppendsInstanceSuffixAtResolveTime() {
+    func testStatePathAppendsInstanceSuffixAtResolveTime() throws {
         let legacy = TailscreenProfile(
             id: UUID(), displayName: "", loginName: "", stateDirectory: "tailscale")
         XCTAssertEqual(
