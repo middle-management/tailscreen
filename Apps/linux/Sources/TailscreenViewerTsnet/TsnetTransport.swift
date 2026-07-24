@@ -58,10 +58,10 @@ struct StderrLogger: LogSink {
 /// compile-gated by the `linux-viewer` CI job; a live run is manual/local.
 /// All the *logic* it drives lives in the CI-tested `ViewerSession` core.
 ///
-/// MainActor-isolated: the decoder, SDL renderer, and ALSA sink must all be
-/// driven from a single thread (SDL's hard requirement), and pinning to the
-/// main actor gives that for free — the `recv`/`send`/`tick` loop and every
-/// sink call run on one executor, matching the non-`Sendable` contract of
+/// MainActor-isolated: the GTK viewer services this transport loop on its main
+/// thread (swift-cross-ui ticks `RunLoop.main`), and pinning to the main actor
+/// makes the `recv`/`send`/`tick` loop and every sink call run on one executor,
+/// matching the non-`Sendable` contract of
 /// `ViewerSession`.
 /// A Tailscreen sharer discovered on the tailnet — the picker's row model.
 /// A deliberately small value type (not `TailscreenPeer`) so the GTK app
@@ -89,7 +89,7 @@ public final class TsnetTransport {
     /// The brought-up ephemeral node, retained between `prepare` (+ optional
     /// `discoverPeers`) and `run` so a picker flow can list sharers on the live
     /// node before choosing one to dial. `run` brings it up itself if a caller
-    /// (the SDL CLI) skips `prepare`.
+    /// skips `prepare` (the direct-host path, which dials without discovery).
     private var preparedNode: TailscaleNode?
 
     public init() {}
@@ -194,16 +194,15 @@ public final class TsnetTransport {
     /// - Parameters:
     ///   - config: connection + capability parameters.
     ///   - decoder: the concrete video decoder (FFmpeg on Linux).
-    ///   - videoSink: where decoded frames go (SDL window).
+    ///   - videoSink: where decoded frames go (the GTK GLArea).
     ///   - audioSink: where decoded audio goes (ALSA), or nil.
     ///   - shouldClose: polled each loop; returning true ends the session (the
-    ///     SDL window close hook).
+    ///     host's window-close hook).
     ///   - backChannelHandlers: inbound annotation / control-grant callbacks for
-    ///     the TCP back-channel (empty by default — the SDL CLI takes none).
+    ///     the TCP back-channel (empty by default).
     ///   - onBackChannelReady: called once the outbound TCP back-channel is
     ///     dialing, handing the host a `ViewerBackChannel` to send annotation
-    ///     ops / control requests / input events (nil ⇒ receive-only, the SDL
-    ///     CLI's behaviour).
+    ///     ops / control requests / input events (nil ⇒ receive-only).
     public func run(
         config: ViewerConfig,
         decoder: VideoDecoding,
@@ -214,8 +213,8 @@ public final class TsnetTransport {
         onBackChannelReady: (@Sendable (ViewerBackChannel) -> Void)? = nil,
         onAdmitted: (@Sendable (ScreenShareCaps) -> Void)? = nil
     ) async throws {
-        // Bring the node up if a caller (the SDL CLI) skipped `prepare`; a
-        // picker host that already called `prepare` + `discoverPeers` reuses
+        // Bring the node up if a caller skipped `prepare` (the direct-host
+        // path); a picker host that already called `prepare` + `discoverPeers` reuses
         // the live node (this is a no-op then).
         try await prepare(config: config)
         guard let node = preparedNode else { throw TailscaleError.badInterfaceHandle }
@@ -334,7 +333,8 @@ public final class TsnetTransport {
                 guard !datagram.isEmpty else { continue }
                 // The sharer is the only expected sender (it learned our addr
                 // from the HELLO); ignore anything else.
-                // KNOWN LIMITATION (pre-existing; affects the SDL viewer too):
+                // KNOWN LIMITATION (only affects the direct-host path; the
+                // picker dials the resolved tailnet IP, which does match):
                 // `dest` is the dialed string, so if `config.hostname` is a
                 // Tailscale *hostname* rather than a tailnet IP, `from` (the
                 // sharer's resolved IP) won't string-match and video is dropped.

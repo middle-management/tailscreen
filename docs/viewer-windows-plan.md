@@ -34,8 +34,8 @@ The hard, novel work was the Linux effort (L0–L4), and almost all of it is
 
 Only the **two host-specific leaves** are new: the video surface and the audio
 sink. Everything above the `VideoSink`/`AudioSink`/`VideoDecoding` seams is
-shared verbatim — the same seams the SDL CLI, the GTK app, and the mac client
-already plug into.
+shared verbatim — the same seams the GTK app and the mac client already plug
+into.
 
 ## The one load-bearing spike (mirrors the GTK spike)
 

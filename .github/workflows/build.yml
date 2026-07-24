@@ -258,23 +258,6 @@ jobs:
       - name: Build + test ALSAKit on Linux
         run: swift test --package-path Packages/ALSAKit
 
-  # Render-portability gate: SDLKit (a systemLibrary wrapper over SDL2 — see
-  # Packages/SDLKit/README.md) must build and pass its texture-upload smoke
-  # tests on Linux. This is the portable video-output foundation for the
-  # Linux/Windows viewer (docs/porting-plan.md — "Render"), where the macOS
-  # app uses Metal; wiring it behind the decode path is later work. Headless
-  # via SDL's dummy video driver, so no display server is needed. Cheap: one
-  # apt install, no submodules, no Go.
-  linux-sdl:
-    runs-on: ubuntu-latest
-    container: swift:6.1-noble
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install SDL2 dev libraries
-        run: apt-get update && apt-get install -y --no-install-recommends libsdl2-dev pkg-config
-      - name: Build + test SDLKit on Linux
-        run: SDL_VIDEODRIVER=dummy swift test --package-path Packages/SDLKit
-
   # Transport-portability gate: libtailscale (Go c-archive) + the patched
   # TailscaleKit Swift wrapper must build and pass their unit tests on
   # Linux. This is the compile-time half of the porting plan's Phase 1;
@@ -306,18 +289,19 @@ jobs:
       - name: Test TailscaleKit on Linux
         run: PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" swift test --package-path Packages/TailscaleKit
 
-  # Viewer-integration gate: the portable Linux viewer package (Apps/linux)
-  # must build and pass its pipeline integration test on Linux. This is where
-  # the concrete backends finally plug into the portable ViewerSession core —
-  # FFmpegKit decode + SDLKit render + ALSAKit audio behind the
+  # Viewer-integration gate: the portable Linux viewer library package
+  # (Apps/linux) must build and pass its pipeline integration test on Linux.
+  # This is where the concrete backends plug into the portable ViewerSession
+  # core — FFmpegKit decode + ALSAKit audio behind the
   # VideoDecoding/VideoSink/AudioSink seams (docs/porting-plan.md, "Viewer
   # wiring"). The `swift test` run:
   #   • runs `PipelineIntegrationTests` (real H.264 encode → RTP → ViewerSession
   #     → FFmpeg decode → collecting sinks — no tsnet, no window, no device), and
-  #   • compiles AND LINKS the `tailscreen-viewer` executable, which pulls in
-  #     the tsnet transport, so this doubles as the Linux link-check for that
-  #     binary (a live run needs a real tailnet and stays local-only).
-  # Heavier than the per-backend gates above: it needs every A/V dev lib plus
+  #   • compiles AND LINKS `TailscreenViewerTsnet`, which pulls in the tsnet
+  #     transport, so this doubles as the Linux link-check for that code (a live
+  #     run needs a real tailnet and stays local-only). The native GTK viewer
+  #     that consumes these targets is built by `linux-gtk-viewer`.
+  # Heavier than the per-backend gates above: it needs the A/V dev libs plus
   # the libtailscale Go c-archive (same build as linux-tailscalekit).
   linux-viewer:
     runs-on: ubuntu-latest
@@ -328,12 +312,12 @@ jobs:
           submodules: recursive
       - name: Install build tools + A/V dev libraries
         # golang-go/make/gcc for the libtailscale c-archive (see
-        # linux-tailscalekit); the rest are the viewer's decode/render/audio
-        # system libs (FFmpeg / SDL2 / ALSA / Opus).
+        # linux-tailscalekit); the rest are the viewer's decode/audio system
+        # libs (FFmpeg / ALSA / Opus).
         run: |
           apt-get update && apt-get install -y --no-install-recommends \
             golang-go make gcc libc6-dev pkg-config \
-            libavcodec-dev libavutil-dev libsdl2-dev libasound2-dev libopus-dev
+            libavcodec-dev libavutil-dev libasound2-dev libopus-dev
       - name: Build libtailscale (patched) on Linux
         env:
           GOFLAGS: -buildvcs=false
@@ -345,7 +329,7 @@ jobs:
 
   linux-gtk-viewer:
     # The native GTK desktop viewer (Apps/linux-gtk) — a separate package from
-    # the SDL viewer so swift-cross-ui + GTK4 don't burden the linux-viewer job.
+    # the Apps/linux core so swift-cross-ui + GTK4 don't burden the linux-viewer job.
     # No libtailscale/Go: this L0a build reaches only TailscreenProtocol/Viewer/
     # Audio + swift-cross-ui, and the render path is gated headlessly.
     runs-on: ubuntu-latest

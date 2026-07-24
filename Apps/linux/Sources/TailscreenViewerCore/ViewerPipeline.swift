@@ -9,7 +9,7 @@ import TailscreenViewer
 /// It's deliberately thin — all the receive-side logic lives in `ViewerSession`
 /// — but it (a) fixes the wiring in one place both `main` and the integration
 /// test share, and (b) retains the concrete sinks so the host can reach
-/// backend-specific affordances (e.g. polling the SDL window for a close).
+/// backend-specific affordances (e.g. polling the host window for a close).
 ///
 /// Not `Sendable`: like `ViewerSession`, the host must serialize `start` /
 /// `receive` / `tick` onto one queue.
