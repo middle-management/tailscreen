@@ -666,7 +666,7 @@ private struct ViewersList: View {
 /// need) may take a moment to resolve via the netmap lookup; the row
 /// falls back to the raw Tailscale IP in the gap, and a remembered-allow
 /// peer may flash here briefly before auto-admission kicks in.
-private struct PendingViewersList: View {
+struct PendingViewersList: View {
     @EnvironmentObject var appState: AppState
     let viewers: [PendingViewerInfo]
 
@@ -730,7 +730,7 @@ private struct PendingViewersList: View {
 /// buttons. Shown in the SharingCard whenever a viewer has requested control.
 /// Granting revokes any current grantee (single-holder). Granting is refused
 /// with an Accessibility prompt if the app lacks that permission.
-private struct ControlRequestsList: View {
+struct ControlRequestsList: View {
     @EnvironmentObject var appState: AppState
     let requests: [ControlRequestInfo]
 
@@ -788,7 +788,7 @@ private struct ControlRequestsList: View {
 
 /// "X is controlling your Mac" banner with a prominent Stop button, shown in
 /// the SharingCard while a viewer holds remote control.
-private struct RemoteControlGranteeBanner: View {
+struct RemoteControlGranteeBanner: View {
     @EnvironmentObject var appState: AppState
     let grantee: ControlGrantInfo
 
