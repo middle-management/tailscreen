@@ -382,6 +382,13 @@ class AppState: ObservableObject {
     /// build. Refreshed by `refreshPeerShareStatus()`; entries for peers
     /// that answered nothing are removed rather than left stale.
     @Published private(set) var peerShareInfo: [String: TailscreenMetadata] = [:]
+    /// Rough per-peer round-trip estimate in milliseconds, measured over
+    /// the metadata TCP fetch (dial + request + response on the live
+    /// Tailscale path — direct or DERP alike). An estimate, not a ping:
+    /// includes TCP setup and service time, so read it as a quality
+    /// indicator. Same lifecycle as `peerShareInfo`: recorded on answers,
+    /// removed on no-answer, pruned with the roster.
+    @Published private(set) var peerLatencyMs: [String: Int] = [:]
     private var shareStatusRefreshInFlight = false
 
     /// The peers the main window's Screens list renders: the raw
@@ -2213,19 +2220,24 @@ class AppState: ObservableObject {
         defer { shareStatusRefreshInFlight = false }
 
         let targets = availablePeers.filter { $0.isOnline && !$0.tailscaleIP.isEmpty }
-        await withTaskGroup(of: (String, TailscreenMetadata?).self) { group in
+        await withTaskGroup(of: (String, TailscreenMetadata?, Int).self) { group in
             for peer in targets {
                 let ip = peer.tailscaleIP
                 let id = peer.id
                 group.addTask {
-                    (id, await TailscreenMetadataClient.fetchMetadata(fromIP: ip, via: node))
+                    let start = ContinuousClock.now
+                    let metadata = await TailscreenMetadataClient.fetchMetadata(fromIP: ip, via: node)
+                    let elapsedMs = Int((ContinuousClock.now - start) / .milliseconds(1))
+                    return (id, metadata, elapsedMs)
                 }
             }
-            for await (id, metadata) in group {
+            for await (id, metadata, elapsedMs) in group {
                 if let metadata {
                     peerShareInfo[id] = metadata
+                    peerLatencyMs[id] = elapsedMs
                 } else {
                     peerShareInfo.removeValue(forKey: id)
+                    peerLatencyMs.removeValue(forKey: id)
                 }
             }
         }
@@ -2234,6 +2246,7 @@ class AppState: ObservableObject {
         // removed node can't pin a stale "sharing" row forever.
         let known = Set(availablePeers.map(\.id))
         peerShareInfo = peerShareInfo.filter { known.contains($0.key) }
+        peerLatencyMs = peerLatencyMs.filter { known.contains($0.key) }
     }
 
     /// Single-peer variant of `refreshPeerShareStatus`, fired when the main
@@ -2244,12 +2257,16 @@ class AppState: ObservableObject {
     func refreshShareStatus(for peer: TailscreenPeer) async {
         guard peer.isOnline, !peer.tailscaleIP.isEmpty else { return }
         guard let node = server?.node ?? client?.node ?? self.node else { return }
+        let start = ContinuousClock.now
         let metadata = await TailscreenMetadataClient.fetchMetadata(
             fromIP: peer.tailscaleIP, via: node)
+        let elapsedMs = Int((ContinuousClock.now - start) / .milliseconds(1))
         if let metadata {
             peerShareInfo[peer.id] = metadata
+            peerLatencyMs[peer.id] = elapsedMs
         } else {
             peerShareInfo.removeValue(forKey: peer.id)
+            peerLatencyMs.removeValue(forKey: peer.id)
         }
     }
 

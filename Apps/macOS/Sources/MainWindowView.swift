@@ -745,11 +745,14 @@ private struct PeerListSection: View {
                 .frame(height: 28)
                 .transition(.opacity)
         } else {
-            VStack(spacing: 2) {
+            VStack(spacing: 4) {
                 ForEach(visiblePeers) { peer in
-                    PeerMenuRow(peer: peer, isExpanded: selectedPeerID == peer.id) {
-                        toggleSelection(peer)
-                    }
+                    PeerMenuRow(
+                        peer: peer,
+                        isExpanded: selectedPeerID == peer.id,
+                        onToggle: { toggleSelection(peer) },
+                        onConnect: { Task { await appState.connectToPeer(peer) } }
+                    )
                     if selectedPeerID == peer.id {
                         PeerDetailView(peer: peer)
                             .transition(.opacity)
@@ -910,17 +913,27 @@ private struct PeerRowSkeleton: View {
 }
 
 /// One screens-list row: presence dot + hostname (+ green sharing chip)
-/// over the peer's Tailscale IP — the Tailscale device-row idiom.
-/// Clicking toggles the inline `PeerDetailView`; the actions (View
-/// Screen, Ask to Share) live there as real buttons instead of the old
-/// hover-only affordances, which keyboard and VoiceOver users could
-/// never reach.
+/// over the peer's Tailscale IP — the Tailscale device-row idiom. The
+/// row itself is the inline action: clicking connects when the app is
+/// idle and the peer is online (no expand-first hop); otherwise it
+/// toggles the detail pane. The always-visible trailing chevron is a
+/// real button that toggles the pane regardless — reachable by
+/// keyboard/VoiceOver, unlike a hover-only affordance.
 private struct PeerMenuRow: View {
     @EnvironmentObject var appState: AppState
     let peer: TailscreenPeer
     let isExpanded: Bool
     let onToggle: () -> Void
+    let onConnect: () -> Void
     @State private var isHovered = false
+
+    /// Connecting out is only offered while the app is fully idle —
+    /// the sharing/viewing status cards own the session otherwise.
+    private var canConnect: Bool {
+        peer.isOnline
+            && appState.sharingState == .idle
+            && appState.connectionState == .idle
+    }
 
     private var shareInfo: TailscreenMetadata? {
         guard let info = appState.peerShareInfo[peer.id], info.isSharing else { return nil }
@@ -928,62 +941,75 @@ private struct PeerMenuRow: View {
     }
 
     var body: some View {
-        Button(action: onToggle) {
-            HStack(spacing: 10) {
-                Circle()
-                    .fill(
-                        peer.isOnline
-                            ? Color.green : Color(nsColor: .tertiaryLabelColor)
-                    )
-                    .frame(width: 8, height: 8)
-                    .accessibilityHidden(true)
+        HStack(spacing: 0) {
+            Button {
+                if canConnect { onConnect() } else { onToggle() }
+            } label: {
+                HStack(spacing: 10) {
+                    Circle()
+                        .fill(
+                            peer.isOnline
+                                ? Color.green : Color(nsColor: .tertiaryLabelColor)
+                        )
+                        .frame(width: 8, height: 8)
+                        .accessibilityHidden(true)
 
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 6) {
-                        Text(peer.hostname)
-                            .font(.body.weight(.medium))
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        if let share = shareInfo {
-                            // Fetched share status (`.metadataResponse`) —
-                            // the share name is peer data, shown as-is
-                            // (parser-clamped); fall back to a generic
-                            // caption when the peer didn't name its share.
-                            Text(share.shareName.isEmpty ? L("Sharing") : share.shareName)
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.green)
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Text(peer.hostname)
+                                .font(.body.weight(.medium))
                                 .lineLimit(1)
-                                .truncationMode(.tail)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Capsule().fill(Color.green.opacity(0.14)))
+                                .truncationMode(.middle)
+                            if let share = shareInfo {
+                                // Fetched share status (`.metadataResponse`)
+                                // — the share name is peer data, shown as-is
+                                // (parser-clamped); fall back to a generic
+                                // caption when the peer didn't name its
+                                // share.
+                                Text(share.shareName.isEmpty ? L("Sharing") : share.shareName)
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.green)
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(Capsule().fill(Color.green.opacity(0.14)))
+                            }
                         }
+                        Text(peer.isOnline ? peer.tailscaleIP : L("Offline"))
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
-                    Text(peer.isOnline ? peer.tailscaleIP : L("Offline"))
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+
+                    Spacer(minLength: 0)
                 }
+                .padding(.leading, 12)
+                .frame(height: 48)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(L("\(peer.hostname), \(peer.isOnline ? L("online") : L("offline"))"))
+            .accessibilityHint(
+                canConnect
+                    ? L("Connects to view this device's screen")
+                    : L("Shows details and actions"))
 
-                Spacer(minLength: 0)
-
+            Button(action: onToggle) {
                 Image(systemName: "chevron.right")
-                    .font(.caption2.weight(.semibold))
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(.tertiary)
                     .rotationEffect(isExpanded ? .degrees(90) : .degrees(0))
-                    .opacity(isHovered || isExpanded ? 1 : 0)
-                    .accessibilityHidden(true)
+                    .frame(width: 32, height: 48)
+                    .contentShape(Rectangle())
             }
-            .padding(.horizontal, 8)
-            .frame(height: 44)
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            .help(L("Show details"))
+            .accessibilityLabel(L("Show details"))
         }
-        .buttonStyle(.plain)
         .opacity(peer.isOnline ? 1.0 : 0.7)
         .background(MenuRowHoverBackground(isHovered: isHovered || isExpanded))
         .onHover { isHovered = $0 }
-        .accessibilityLabel(L("\(peer.hostname), \(peer.isOnline ? L("online") : L("offline"))"))
-        .accessibilityHint(L("Shows details and actions"))
     }
 }
 
@@ -1053,15 +1079,38 @@ private struct PeerDetailView: View {
                 }
             }
 
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 6) {
                 infoRow(label: "DNS", value: dnsDisplay)
                 infoRow(label: "IP", value: peer.tailscaleIP)
+                if peer.isOnline, let route = routeText {
+                    HStack(spacing: 6) {
+                        Text(L("Route"))
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                            .frame(width: 40, alignment: .leading)
+                        if let quality = qualityColor {
+                            Circle()
+                                .fill(quality)
+                                .frame(width: 6, height: 6)
+                                .accessibilityHidden(true)
+                        }
+                        Text(verbatim: route)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                    }
+                    .help(
+                        L(
+                            "Latency is measured over the current Tailscale path. Relayed connections usually switch to direct once traffic flows."
+                        ))
+                }
                 if !peer.tags.isEmpty {
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
                         Text(L("Tags"))
                             .font(.caption)
                             .foregroundStyle(.tertiary)
-                            .frame(width: 34, alignment: .leading)
+                            .frame(width: 40, alignment: .leading)
                         ForEach(peer.tags, id: \.self) { tag in
                             Text(PeerListFilter.displayName(forTag: tag))
                                 .font(.caption2)
@@ -1080,7 +1129,7 @@ private struct PeerDetailView: View {
                 }
             }
         }
-        .padding(12)
+        .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -1089,7 +1138,33 @@ private struct PeerDetailView: View {
         // Indent under the row's text column so the pane reads as the
         // row's expansion, not a sibling.
         .padding(.leading, 24)
-        .padding(.bottom, 4)
+        .padding(.top, 2)
+        .padding(.bottom, 8)
+    }
+
+    /// "Direct · ~23 ms" / "DERP (fra) · ~120 ms" — the path snapshot from
+    /// the LocalAPI status seed plus the measured metadata round-trip.
+    /// Either half renders alone when the other is unknown.
+    private var routeText: String? {
+        var parts: [String] = []
+        if let cur = peer.curAddr, !cur.isEmpty {
+            parts.append(L("Direct"))
+        } else if let relay = peer.relay, !relay.isEmpty {
+            parts.append(L("DERP (\(relay))"))
+        }
+        if let ms = appState.peerLatencyMs[peer.id] {
+            parts.append(L("~\(ms) ms"))
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    /// Traffic-light latency tier for the quality dot; nil (no dot) until
+    /// a measurement lands.
+    private var qualityColor: Color? {
+        guard let ms = appState.peerLatencyMs[peer.id] else { return nil }
+        if ms < 60 { return .green }
+        if ms < 150 { return .yellow }
+        return .orange
     }
 
     /// "3456 × 2234 · HEVC" — resolution and codec are numbers/brand nouns,
@@ -1128,7 +1203,7 @@ private struct PeerDetailView: View {
             Text(verbatim: label)
                 .font(.caption)
                 .foregroundStyle(.tertiary)
-                .frame(width: 34, alignment: .leading)
+                .frame(width: 40, alignment: .leading)
             Text(verbatim: value)
                 .font(.caption.monospaced())
                 .textSelection(.enabled)

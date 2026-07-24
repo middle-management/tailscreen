@@ -57,6 +57,12 @@
 "Tags" = "Tags";
 "Last seen %@" = "Last seen %@";
 "Shows details and actions" = "Shows details and actions";
+"Show details" = "Show details";
+"Route" = "Route";
+"Direct" = "Direct";
+"DERP (%@)" = "DERP (%@)";
+"~%lld ms" = "~%lld ms";
+"Latency is measured over the current Tailscale path. Relayed connections usually switch to direct once traffic flows." = "Latency is measured over the current Tailscale path. Relayed connections usually switch to direct once traffic flows.";
 
 /* MARK: - Account profiles (MainWindowView.swift / AppState.swift) */
 "Add Account…" = "Add Account…";

@@ -21,11 +21,20 @@ public struct TailscreenPeer: Identifiable, Sendable, Equatable {
     public let tags: [String]
     public var metadata: TailscreenMetadata?
     public var lastSeen: String?
+    /// Live WireGuard path snapshot from the LocalAPI status seed: a
+    /// non-empty `curAddr` means a direct endpoint is in use; otherwise a
+    /// non-empty `relay` names the DERP region carrying traffic. Only the
+    /// `backendStatus` seed supplies these (netmap nodes carry no path
+    /// info), so `publishMerged` carries them across watcher updates.
+    /// `nil` = unknown. Best-effort: relayed paths usually upgrade to
+    /// direct once traffic flows.
+    public var relay: String?
+    public var curAddr: String?
 
     public init(
         id: String, hostname: String, dnsName: String, tailscaleIP: String,
         isOnline: Bool, tags: [String] = [], metadata: TailscreenMetadata? = nil,
-        lastSeen: String? = nil
+        lastSeen: String? = nil, relay: String? = nil, curAddr: String? = nil
     ) {
         self.id = id
         self.hostname = hostname
@@ -35,6 +44,8 @@ public struct TailscreenPeer: Identifiable, Sendable, Equatable {
         self.tags = tags
         self.metadata = metadata
         self.lastSeen = lastSeen
+        self.relay = relay
+        self.curAddr = curAddr
     }
 }
 
@@ -105,7 +116,9 @@ public class TailscalePeerDiscovery: ObservableObject {
                 isOnline: peerStatus.Online,
                 tags: peerStatus.Tags ?? [],
                 metadata: nil,
-                lastSeen: nil
+                lastSeen: nil,
+                relay: peerStatus.Relay,
+                curAddr: peerStatus.CurAddr
             )
         }
 
@@ -176,9 +189,16 @@ public class TailscalePeerDiscovery: ObservableObject {
     }
 
     /// Publish the union of both sources, watcher winning per node ID
-    /// (its data is fresher — live `online` transitions come from it).
+    /// (its data is fresher — live `online` transitions come from it) —
+    /// except the WireGuard path fields, which only the seed carries: a
+    /// netmap tick must not blank a known relay/direct snapshot.
     private func publishMerged() {
-        let merged = seedPeers.merging(watcherPeers) { _, fromWatcher in fromWatcher }
+        let merged = seedPeers.merging(watcherPeers) { fromSeed, fromWatcher in
+            var peer = fromWatcher
+            peer.relay = fromSeed.relay
+            peer.curAddr = fromSeed.curAddr
+            return peer
+        }
         publishIfChanged(Self.sortPeers(Array(merged.values)))
     }
 
