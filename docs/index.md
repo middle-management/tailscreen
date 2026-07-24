@@ -81,8 +81,8 @@ image: /assets/social-card.png
       <span class="ts-mock-stats"><span class="ts-mock-live"></span>60 fps &middot; HEVC &middot; 4.1 Mbit/s</span>
     </div>
   </div>
-  <p class="ts-mock-caption">The whole UI is a menubar icon. The viewer is just a window &mdash;
-  with someone else&rsquo;s screen in it.</p>
+  <p class="ts-mock-caption">The whole UI is a compact window and a menubar sharing tool. The viewer
+  is just a window &mdash; with someone else&rsquo;s screen in it.</p>
 </div>
 
 <div class="ts-stats">
@@ -235,13 +235,13 @@ doesn&rsquo;t. Your screen never touches a third-party server.</p>
 <div class="ts-steps">
   <div class="ts-step">
     <span class="ts-step-n">1</span>
-    <h3>You hit Start Sharing</h3>
+    <h3>You choose what to share</h3>
     <p>Pick a display, a window, or an app from the native macOS picker.</p>
   </div>
   <div class="ts-step">
     <span class="ts-step-n">2</span>
-    <h3>They hit Browse Shares</h3>
-    <p>Your Mac shows up by name on their menubar. They click it.</p>
+    <h3>They open Tailscreen</h3>
+    <p>Your Mac shows up by name in their Screens list. They click it.</p>
   </div>
   <div class="ts-step">
     <span class="ts-step-n">3</span>
@@ -266,7 +266,7 @@ doesn&rsquo;t. Your screen never touches a third-party server.</p>
 <div class="ts-container">
 <div class="ts-cta">
   <h2>Your screen, on their Mac, in seconds.</h2>
-  <p>Install it, sign in to Tailscale, hit Start Sharing.</p>
+  <p>Install it, sign in to Tailscale, choose what to share.</p>
   <p class="ts-cta-actions">
     <a href="{% link install.md %}" class="btn btn-primary fs-5">Install Tailscreen</a>
     <a href="{% link usage.md %}" class="btn fs-5">Read the docs</a>

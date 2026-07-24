@@ -66,7 +66,7 @@ viewer allow/deny list described below.
 
 ## Ephemeral nodes
 
-Each `Start Sharing` or `Connect to...` session spins up a fresh tsnet
+Each sharing or viewing session spins up a fresh tsnet
 ephemeral node. When the session ends — explicitly via "Stop Sharing", or
 implicitly when the process exits — Tailscale removes the node from your
 tailnet automatically. You will not accumulate phantom devices in your
@@ -177,7 +177,7 @@ if it can reach port 7447. The bounds that enforce that:
 
 macOS forces an explicit user grant before any process can read pixels
 from the display server. Tailscreen requests Screen Recording the first
-time you press **Start Sharing**, the OS prompts you, and the permission
+time you start a share, the OS prompts you, and the permission
 takes effect after the next launch — macOS doesn't apply it to a process
 that's already running, so a restart is required. Revoking the permission
 in **System Settings → Privacy & Security → Screen Recording**

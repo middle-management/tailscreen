@@ -30,16 +30,14 @@ fully airgapped tailnet — see
 
 ## Sharing your screen
 
-1. Click the 📺 in the menubar.
-2. Pick **Start Sharing**. macOS's native picker opens — choose a display,
-   a single window, or one or more apps.
+1. Click the 📺 in the menubar, or open the Tailscreen window.
+2. Pick **Choose what to share…**. macOS's native picker opens — choose a
+   display, a single window, or one or more apps.
 3. Approve Screen Recording if macOS asks. (See
    [Install → Permissions]({% link install.md %}#permissions) — the
    permission only takes effect after a relaunch.)
 4. The first time you ever share, Tailscale will open a browser tab to log
    you in. After that it's a one-click affair.
-5. Pick **Show Tailscale Info** if you want to read off the hostname or
-   100.x.x.x address to whoever's connecting.
 
 That's the whole flow — no meeting to create, no link to copy. The screen
 is up, people on your tailnet can connect, and by default each one waits
@@ -58,7 +56,7 @@ changes, so stale strokes don't float over the new content.
 Some apps just shouldn't be on stream — Messages, Mail, your password
 manager. Add them once in **Settings → Cloaked Apps** and their windows
 are excluded from every whole-display share, so there's no need to clean
-up your screen before hitting Start Sharing. The **Add App…** menu lists
+up your screen before sharing. The **Add App…** menu lists
 your running apps; each entry has a **Remove** button, and the **Hide
 cloaked apps while sharing** toggle lets you temporarily disable cloaking
 without losing the list.
@@ -79,29 +77,21 @@ The rules, spelled out:
 
 ## Viewing a shared screen
 
-You have two options. Browse Shares is usually the easier one.
-
-### Browse Shares
-
-1. Click the 📺 in the menubar.
-2. Pick **Browse Shares...**.
-3. Tailscreen probes your tailnet, asks every machine "are you sharing?",
-   and shows you the ones that said yes.
-4. Click **Connect** next to the share you want.
+1. Open the Tailscreen window — click its Dock icon, or pick **Open
+   Tailscreen** in the menubar.
+2. Find the sharer in the **Screens** list. Search by name or IP, or use
+   the filter to show only screens currently being shared — a peer that's
+   sharing carries a green chip with its share's name.
+3. Click their row.
 
 A window opens. You're done — unless the sharer has viewer approval on (the
 default), in which case you'll sit on the Connecting screen until they
 accept you.
 
-### Connect to...
-
-For when you already know the hostname or IP.
-
-1. Click the 📺 in the menubar.
-2. Pick **Connect to...**.
-3. Type the Tailscale hostname (`macbook-pro`) or IP (`100.x.x.x`).
-
-Same window opens.
+Want a look before you connect? Expand a row with its chevron: you get the
+live share's resolution and codec, the peer's MagicDNS name and IP (both
+copyable), and a Route line showing the current Tailscale path — direct or
+DERP-relayed — with a rough latency estimate.
 
 ## Approving viewers
 
@@ -134,17 +124,26 @@ stay blocked even then — the deny list outranks the toggle.
 
 ## Asking someone to share
 
-The flow also works in reverse. Every online Tailscreen device in your
-menubar list has a request button that asks that peer to share *their*
-screen. Clicking it puts a banner on their menubar — "*name* wants you to
+The flow also works in reverse. Expand a peer's row in the Screens list
+and click **Ask to Share** to ask that peer to share *their* screen.
+Clicking it puts a banner in their Tailscreen — "*name* wants you to
 share", with **Share** and **Decline** buttons. If they hit Share, the
 picker opens on their Mac, and you're automatically pre-approved for the
 share that follows — no second approval round-trip.
 
 You'll get one of three outcomes: **Request Accepted** ("…is choosing what
-to share" — connect via Browse Shares once their share is up), **Request
-Declined**, or **No Response** ("They may be away or running an older
-Tailscreen").
+to share" — click their row once their share is up), **Request Declined**,
+or **No Response** ("They may be away or running an older Tailscreen").
+
+## Multiple accounts
+
+Signed in to more than one tailnet — personal and a work org, say? The
+account menu (the avatar in the window's header) lists every profile with
+its login and tailnet name, Tailscale-style. Click one to switch; the
+others stay signed in on disk, so switching back is instant and
+browser-free. **Add Account…** starts a fresh sign-in, holding ⌥ over a
+profile row swaps it for **Remove Account…**, and the menubar's identity
+strip always shows which account a new share will start on.
 
 ## Annotations
 
@@ -315,8 +314,8 @@ Each child gets `TAILSCREEN_INSTANCE=<i>`, which suffixes the Tailscale
 state directory and hostname (`wisp-1`, `wisp-2`, ...) so the processes
 register as different tailnet nodes. Without it they share one state
 directory and one machine key, the tailnet treats them as the same
-device, and **Browse Shares** comes back empty — the most common cause of
-an empty peer list when testing locally.
+device, and the **Screens** list comes back empty — the most common cause
+of an empty peer list when testing locally.
 
 The launcher also sets `TAILSCREEN_OPEN_DOOR=1` so the second instance
 isn't left parked on the viewer-approval prompt — see

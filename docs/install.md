@@ -119,7 +119,7 @@ because `libtailscale.a` doesn't exist yet. Run `make build` (or at least
 
 ## Permissions
 
-The first time you hit "Start Sharing", macOS pops a Screen Recording
+The first time you share, macOS pops a Screen Recording
 prompt. Approve it in **System Settings → Privacy & Security → Screen
 Recording**, then quit and relaunch — macOS only applies the new
 permission to a restarted process.

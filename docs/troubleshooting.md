@@ -32,8 +32,8 @@ Walk this checklist in order:
 1. Open the Tailscale menubar app on both Macs and confirm they're both
    showing each other in the device list. If they're not both green, this
    is a Tailscale problem first, a Tailscreen problem second.
-2. Confirm the hostname or IP. **Show Tailscale Info** in the sharer's
-   menu prints exactly what the viewer should type.
+2. Confirm the hostname or IP. Expanding the sharer's row in the
+   viewer's **Screens** list shows its MagicDNS name and IP.
 3. Check your tailnet ACLs allow TCP **and** UDP on port 7447 from the
    viewer to the sharer. The default Tailscale ACL is "everything to
    everything" and will work fine. If you've tightened ACLs, double-check
@@ -69,8 +69,8 @@ locally:
 Both instances are using the same Tailscale state directory at
 `~/Library/Application Support/Tailscreen/tailscale`. They both end up
 with the same machine key. The tailnet thinks they're the same device.
-**Browse Shares** excludes the device it's running on, so each instance
-sees an empty list.
+The **Screens** list excludes the device it's running on, so each
+instance sees an empty list.
 {: .note }
 
 Fix: use `./test-local.sh` (which sets `TAILSCREEN_INSTANCE` per child),
