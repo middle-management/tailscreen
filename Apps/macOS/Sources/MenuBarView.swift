@@ -63,14 +63,6 @@ struct MenuBarView: View {
                     appState.presentMainWindow()
                 }
                 MenuRow(
-                    L("Settings…"),
-                    systemImage: nil,
-                    shortcut: "⌘,"
-                ) {
-                    appState.presentSettings()
-                }
-                .keyboardShortcut(",", modifiers: .command)
-                MenuRow(
                     L("Quit Tailscreen"),
                     systemImage: nil,
                     shortcut: "⌘Q"
