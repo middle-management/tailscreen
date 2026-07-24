@@ -2228,9 +2228,9 @@ class AppState: ObservableObject {
     func refreshShareStatus(for peer: TailscreenPeer) async {
         guard peer.isOnline, !peer.tailscaleIP.isEmpty else { return }
         guard let node = server?.node ?? client?.node ?? self.node else { return }
-        if let metadata = await TailscreenMetadataClient.fetchMetadata(
+        let metadata = await TailscreenMetadataClient.fetchMetadata(
             fromIP: peer.tailscaleIP, via: node)
-        {
+        if let metadata {
             peerShareInfo[peer.id] = metadata
         } else {
             peerShareInfo.removeValue(forKey: peer.id)
