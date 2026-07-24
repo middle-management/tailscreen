@@ -32,12 +32,49 @@ struct MainWindowView: View {
         // header extends under it, so the traffic lights float over the
         // header like Tailscale's app.
         .ignoresSafeArea(edges: .top)
+        .background(TitlebarConfigurator())
         .onAppear {
             // Environment actions are only reachable from view context, so
             // stash the scene-opening closure where AppKit callers (menu
             // items, the menubar popover) can invoke it.
             appState.openMainWindowAction = { openWindow(id: TailscreenApp.mainWindowID) }
         }
+    }
+}
+
+/// Configures the hosting `NSWindow` for the thick-header look: hidden
+/// title text plus an **empty** unified-style `NSToolbar`. That empty
+/// toolbar is the standard AppKit mechanism for a tall (~52pt) title-bar
+/// region with the traffic lights **vertically centered** in it — there
+/// is no public title-bar-height API, and without it the lights hug the
+/// window's top-left corner while `HubHeader`'s content centers, reading
+/// as misaligned. The toolbar carries no items (our header is ordinary
+/// SwiftUI content underneath the transparent title bar), so SwiftUI's
+/// toolbar item quirks don't apply.
+private struct TitlebarConfigurator: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        // The view isn't in a window yet during make; configure on the
+        // next runloop turn, and again on updates (cheap + idempotent).
+        DispatchQueue.main.async { Self.configure(view.window) }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        Self.configure(nsView.window)
+    }
+
+    @MainActor
+    private static func configure(_ window: NSWindow?) {
+        guard let window else { return }
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        if window.toolbar == nil {
+            let toolbar = NSToolbar(identifier: "TailscreenTitlebarSpacer")
+            toolbar.showsBaselineSeparator = false
+            window.toolbar = toolbar
+        }
+        window.toolbarStyle = .unified
     }
 }
 
