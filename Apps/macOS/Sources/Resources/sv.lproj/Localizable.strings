@@ -60,6 +60,8 @@
 "New account" = "Nytt konto";
 "Finish Your Session First" = "Avsluta din session först";
 "Stop sharing or disconnect before switching accounts." = "Sluta dela eller koppla från innan du byter konto.";
+"Switching to %@…" = "Byter till %@…";
+"Switching accounts…" = "Byter konto…";
 "Remove this account?" = "Ta bort det här kontot?";
 "Removes its sign-in state from this Mac. The device may remain listed in the tailnet admin console until it expires." = "Tar bort dess inloggningsuppgifter från den här datorn. Enheten kan finnas kvar i tailnetets adminkonsol tills den löper ut.";
 

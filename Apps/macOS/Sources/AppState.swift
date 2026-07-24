@@ -203,6 +203,12 @@ class AppState: ObservableObject {
     /// a tsnet state directory; exactly one is active per process. See
     /// `switchProfile(to:)` / `addAccountAndSignIn()`.
     let profileStore = ProfileStore()
+    /// True while `switchProfile(to:)` is tearing one node down and
+    /// silently restoring the next profile's session. The main window
+    /// shows a "Switching to …" pane for the duration — without it, the
+    /// gap renders the signed-out welcome pane, which reads as "my login
+    /// vanished".
+    @Published private(set) var isSwitchingProfile = false
 
     /// Persistent Cloaked Apps list behind the Settings "Cloaked Apps" section:
     /// apps whose windows are hidden from viewers whenever a whole display
@@ -2627,6 +2633,8 @@ class AppState: ObservableObject {
                 message: L("Stop sharing or disconnect before switching accounts."))
             return
         }
+        isSwitchingProfile = true
+        defer { isSwitchingProfile = false }
         await teardownNodeKeepingLogin()
         profileStore.setActive(id)
         await attemptSessionRestore()

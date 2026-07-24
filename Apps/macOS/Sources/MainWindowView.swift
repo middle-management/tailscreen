@@ -20,7 +20,9 @@ struct MainWindowView: View {
         VStack(spacing: 0) {
             HubHeader()
             Divider()
-            if appState.tailscaleAuth.isAuthenticated {
+            if appState.isSwitchingProfile {
+                ProfileSwitchingPane()
+            } else if appState.tailscaleAuth.isAuthenticated {
                 HubView()
             } else {
                 WelcomePane()
@@ -216,6 +218,37 @@ private struct AccountMenu: View {
     /// else a placeholder.
     private func title(for profile: TailscreenProfile) -> String {
         profile.hasSignedIn ? profile.loginName : L("New account")
+    }
+}
+
+// MARK: - Profile switching
+
+/// Interstitial shown while `AppState.switchProfile` tears one node down
+/// and silently restores the next profile's session. Without it the gap
+/// renders the signed-out welcome pane — alarming when the target
+/// profile is, in fact, still logged in. The header stays interactive
+/// above this pane, so the account menu remains an escape hatch.
+private struct ProfileSwitchingPane: View {
+    @EnvironmentObject var appState: AppState
+
+    var body: some View {
+        VStack(spacing: 12) {
+            ProgressView()
+            Text(switchingText)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(24)
+    }
+
+    private var switchingText: String {
+        let target = appState.profileStore.activeProfile
+        return target.hasSignedIn
+            ? L("Switching to \(target.loginName)…")
+            : L("Switching accounts…")
     }
 }
 

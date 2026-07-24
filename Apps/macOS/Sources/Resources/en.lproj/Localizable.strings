@@ -65,6 +65,8 @@
 "New account" = "New account";
 "Finish Your Session First" = "Finish Your Session First";
 "Stop sharing or disconnect before switching accounts." = "Stop sharing or disconnect before switching accounts.";
+"Switching to %@…" = "Switching to %@…";
+"Switching accounts…" = "Switching accounts…";
 "Remove this account?" = "Remove this account?";
 "Removes its sign-in state from this Mac. The device may remain listed in the tailnet admin console until it expires." = "Removes its sign-in state from this Mac. The device may remain listed in the tailnet admin console until it expires.";
 
