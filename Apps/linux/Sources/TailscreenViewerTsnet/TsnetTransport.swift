@@ -6,7 +6,7 @@ import TailscreenViewer
 import TailscreenViewerCore
 
 /// Connection parameters for the tsnet-backed viewer transport.
-public struct ViewerConfig {
+public struct ViewerConfig: Sendable {
     /// Sharer host to dial — a Tailscale hostname or tailnet IP.
     public var hostname: String
     /// UDP/TCP port the sharer listens on.
@@ -92,6 +92,11 @@ public final class TsnetTransport {
     /// skips `prepare` (the direct-host path, which dials without discovery).
     private var preparedNode: TailscaleNode?
 
+    /// The Tailscale login/identity the prepared node authenticated as (e.g.
+    /// "user@github"), resolved during `prepare`. nil before bring-up or after
+    /// `teardown`. A GUI host uses it to label the active account.
+    public private(set) var accountIdentity: String?
+
     public init() {}
 
     /// Bring up the ephemeral tsnet node (interactive login supported) without
@@ -166,6 +171,7 @@ public final class TsnetTransport {
         await auth.checkAuthStatus(node: node)
         let identity = auth.userProfile?.loginName ?? "unknown account"
         logger.log("▶ Connected as \(identity) — node \(hostName) @ \(ips.ip4 ?? ips.ip6 ?? "?")")
+        accountIdentity = auth.userProfile?.loginName
 
         preparedNode = node
     }
@@ -205,6 +211,7 @@ public final class TsnetTransport {
             try? await node.down()
         }
         preparedNode = nil
+        accountIdentity = nil
     }
 
     /// Connect and run until the sharer says goodbye or `shouldClose` fires.

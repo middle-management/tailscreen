@@ -200,15 +200,23 @@ guarantee the SDL path never had.
   the mac hub's `PeerDetailView`). Reproduced from swift-cross-ui primitives
   (`Circle`/`RoundedRectangle` fills, translucent-gray tints that read on both
   light and dark GTK themes, `.onTapGesture` rows since `Button` takes only a
-  String label; no SF Symbols). Sharer-only hub chrome (Choose-what-to-share,
-  approval toggle, filter menu, account avatar) is deliberately absent — this is a
-  viewer. `ViewerChrome.swift` holds the reusable views; the `GtkVideoView` is
-  mounted only once frames flow, so the chrome sits on the native window
-  background, not over a black GL surface. A `--ui-preview` flag renders the hub
-  with seeded fake sharers and no networking, so the chrome is screenshot-
-  reviewable headless under Xvfb.
-- **Follow-up:** live IPN-bus refresh of the list + a header Refresh button
-  (today's discovery is a one-shot `backendStatus` seed); reconnect/back-to-picker
+  String label; no SF Symbols). The header also carries a **Refresh** button
+  (re-lists via `discoverPeers` without re-login) and a **multi-account menu**
+  (`ProfileStore`: per-profile tsnet state dirs persisted under
+  `$XDG_CONFIG_HOME/tailscreen-viewer-gtk`; switching tears the node down and
+  brings it up under the chosen profile's state dir, Add Account seeds a fresh
+  dir → interactive login, and a profile auto-renames to its resolved Tailscale
+  login) — the viewer's cut of the mac hub's account switcher. Rows show a green
+  **sharing chip** + a `name · WxH · codec` detail caption from a lazy
+  `TailscreenMetadataClient` sweep (`TsnetTransport.fetchMetadata`). Sharer-only
+  hub chrome (Choose-what-to-share, approval toggle, filter menu) is deliberately
+  absent — this is a viewer. `ViewerChrome.swift` holds the reusable views; the
+  `GtkVideoView` is mounted only once frames flow, so the chrome sits on the
+  native window background, not over a black GL surface. A `--ui-preview` flag
+  renders the hub with seeded fake sharers and no networking, so the chrome is
+  screenshot-reviewable headless under Xvfb.
+- **Follow-up:** live IPN-bus refresh of the list (today's discovery is a
+  one-shot `backendStatus` seed); reconnect/back-to-picker
   after a session ends. Picker + login are live-only (a real tailnet with
   sharers), so compile + render-self-test verified; a live run needs a tailnet.
 

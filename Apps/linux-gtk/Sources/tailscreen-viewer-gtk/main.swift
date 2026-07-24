@@ -31,6 +31,10 @@ let gUIState = ViewerUIState()
 let gControls = ViewerControls(ui: gUIState)
 let gInput = InputForwarder(ui: gUIState)
 let gPicker = PickerModel()
+let gProfiles = ProfileStore()
+// Account-menu actions, wired in picker mode (nil elsewhere → menu hidden).
+var gSwitchProfile: (@MainActor @Sendable (String) -> Void)?
+var gAddAccount: (@MainActor @Sendable () -> Void)?
 let gArgs = Array(CommandLine.arguments.dropFirst())
 let gSelfTest = gArgs.contains("--render-self-test")
 // Headless chrome preview: render the hub with fake data and no networking, for
@@ -49,11 +53,12 @@ func fail(_ message: String) -> Never {
 /// Parse the live-run arguments. The host is OPTIONAL — its absence selects
 /// picker mode. The returned `ViewerConfig` carries an empty hostname then
 /// (`prepare` ignores hostname; the chosen sharer's IP fills it in before `run`).
-func parseConfig() -> (config: ViewerConfig, host: String?, wantAudio: Bool) {
+func parseConfig() -> (config: ViewerConfig, host: String?, wantAudio: Bool, explicitStateDir: Bool) {
     var args = gArgs
     var host: String?
     var port: UInt16 = 7447
     var wantAudio = true
+    var explicitStateDir = false
     var statePath = FileManager.default.currentDirectoryPath + "/.tailscreen-viewer-gtk-state"
     let env = ProcessInfo.processInfo.environment
     var controlURL = env["TAILSCREEN_TS_CONTROL_URL"]
@@ -71,6 +76,7 @@ func parseConfig() -> (config: ViewerConfig, host: String?, wantAudio: Bool) {
         case "--state-dir":
             guard let value = args.first else { fail("--state-dir needs a path") }
             statePath = value
+            explicitStateDir = true
             args.removeFirst()
         case "--control-url":
             guard let value = args.first else { fail("--control-url needs a URL") }
@@ -86,7 +92,7 @@ func parseConfig() -> (config: ViewerConfig, host: String?, wantAudio: Bool) {
 
     var config = ViewerConfig(hostname: host ?? "", port: port, authKey: authKey, statePath: statePath)
     if let controlURL { config.controlURL = controlURL }
-    return (config, host, wantAudio)
+    return (config, host, wantAudio, explicitStateDir)
 }
 
 if gSelfTest {
@@ -109,12 +115,15 @@ if gSelfTest {
             screenResolution: .init(width: 1920, height: 1080),
             isSharing: true, timestamp: Date(), videoCodec: .hevc),
     ]
+    // Show the account menu in the preview (no-op actions).
+    gSwitchProfile = { _ in }
+    gAddAccount = {}
 } else {
     // Live path: reuse the tsnet transport, driving decoded frames into the
     // shared store. The transport is @MainActor; started as a Task here, it
     // runs interleaved with the GTK loop (swift-cross-ui ticks RunLoop.main),
     // so `present` — and thus the GLArea repaint — happens on the main thread.
-    let (baseConfig, host, wantAudio) = parseConfig()
+    let (baseConfig, host, wantAudio, explicitStateDir) = parseConfig()
     let sink = GtkVideoSink(store: gStore, uiState: gUIState)
     let decoder = FFmpegVideoDecoder()
     let transport = TsnetTransport()
@@ -203,19 +212,52 @@ if gSelfTest {
         }
         gPicker.onRefresh = { discoverAndSweep() }
 
-        Task { @MainActor in
-            do {
-                gPicker.phase = .startingNode
-                try await transport.prepare(config: baseConfig, onLoginURL: { url in
-                    Task { @MainActor in gPicker.loginURL = url.absoluteString }
-                })
+        // Each profile owns a tsnet state dir (its own identity/keys), unless the
+        // user forced one with --state-dir.
+        @Sendable func stateDir(for profile: ViewerProfile) -> String {
+            explicitStateDir ? baseConfig.statePath : profile.statePath
+        }
+
+        // Bring up (or switch to) a profile: tear the current node down, reset
+        // the picker, prepare under the profile's state dir, then discover. A
+        // fresh profile's empty state dir triggers interactive login.
+        @Sendable func bringUp(profile: ViewerProfile) {
+            Task { @MainActor in
+                await transport.teardown()
                 gPicker.loginURL = nil
-                discoverAndSweep()
-            } catch {
-                FileHandle.standardError.write(Data("node bring-up failed: \(error)\n".utf8))
-                gPicker.phase = .picking
+                gPicker.sharers = []
+                gPicker.shareInfo = [:]
+                gPicker.phase = .startingNode
+                var config = baseConfig
+                config.statePath = stateDir(for: profile)
+                do {
+                    try await transport.prepare(config: config, onLoginURL: { url in
+                        Task { @MainActor in gPicker.loginURL = url.absoluteString }
+                    })
+                    gPicker.loginURL = nil
+                    // Label the account by its resolved login once known.
+                    if let identity = transport.accountIdentity {
+                        gProfiles.rename(profile.id, to: identity)
+                    }
+                    discoverAndSweep()
+                } catch {
+                    FileHandle.standardError.write(Data("node bring-up failed: \(error)\n".utf8))
+                    gPicker.phase = .picking
+                }
             }
         }
+
+        // Account-menu actions.
+        gSwitchProfile = { id in
+            guard id != gProfiles.activeID else { return }
+            gProfiles.setActive(id)
+            bringUp(profile: gProfiles.active)
+        }
+        gAddAccount = {
+            bringUp(profile: gProfiles.addProfile())
+        }
+
+        bringUp(profile: gProfiles.active)
     }
 }
 
@@ -224,6 +266,8 @@ struct ViewerApp: App {
     // flows (swift-cross-ui @State tracks the ObservableObject's @Published).
     @State var ui = gUIState
     @State var picker = gPicker
+    // Observed so the account menu re-renders on switch / add / rename.
+    @State var profileStore = gProfiles
 
     // Toolbar button label reflects the remote-control state machine.
     private var controlButtonLabel: String {
@@ -307,7 +351,12 @@ struct ViewerApp: App {
                 ViewerHeader(
                     subtitle: headerSubtitle,
                     showSpinner: headerShowsSpinner,
-                    onRefresh: headerOnRefresh)
+                    onRefresh: headerOnRefresh,
+                    accountName: gPickerMode ? profileStore.active.name : nil,
+                    profiles: profileStore.profiles,
+                    activeProfileID: profileStore.activeID,
+                    onSelectProfile: gSwitchProfile,
+                    onAddAccount: gAddAccount)
                 Divider()
                 if gPickerMode {
                     PickerContent(

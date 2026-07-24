@@ -54,6 +54,13 @@ struct ViewerHeader: View {
     let subtitle: String
     var showSpinner = false
     var onRefresh: (@MainActor @Sendable () -> Void)?
+    /// Multi-account menu (nil ⇒ hidden). `accountName` labels the menu button;
+    /// the menu lists `profiles` (active marked) + Add Account.
+    var accountName: String?
+    var profiles: [ViewerProfile] = []
+    var activeProfileID = ""
+    var onSelectProfile: (@MainActor @Sendable (String) -> Void)?
+    var onAddAccount: (@MainActor @Sendable () -> Void)?
 
     var body: some View {
         HStack(spacing: 12) {
@@ -72,6 +79,17 @@ struct ViewerHeader: View {
             }
             if let onRefresh {
                 Button("Refresh", action: onRefresh)
+            }
+            if let accountName, let onSelectProfile, let onAddAccount {
+                Menu(accountName) {
+                    ForEach(profiles, id: \.id) { profile in
+                        Button((profile.id == activeProfileID ? "● " : "   ") + profile.name) {
+                            onSelectProfile(profile.id)
+                        }
+                    }
+                    Divider()
+                    Button("Add Account…") { onAddAccount() }
+                }
             }
         }
         .padding(.horizontal, 16)
