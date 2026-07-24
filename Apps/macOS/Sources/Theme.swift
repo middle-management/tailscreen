@@ -18,6 +18,80 @@ enum TSTheme {
     }
 }
 
+/// Fetches and caches account avatars (Tailscale profile pictures, e.g.
+/// GitHub avatars) keyed by URL string. In-memory only — a relaunch
+/// refetches, which also picks up changed pictures. Misses render as
+/// monograms, so a failed or slow fetch degrades invisibly.
+@MainActor
+final class AvatarStore: ObservableObject {
+    static let shared = AvatarStore()
+
+    @Published private(set) var images: [String: NSImage] = [:]
+    private var inFlight: Set<String> = []
+
+    /// Cached avatar for `urlString`, kicking a background fetch on the
+    /// first miss. Publishes when the fetch lands so observing views
+    /// re-render with the real picture.
+    func avatar(for urlString: String?) -> NSImage? {
+        guard let urlString, !urlString.isEmpty else { return nil }
+        if let cached = images[urlString] { return cached }
+        fetch(urlString)
+        return nil
+    }
+
+    private func fetch(_ urlString: String) {
+        guard !inFlight.contains(urlString), let url = URL(string: urlString) else { return }
+        inFlight.insert(urlString)
+        Task {
+            defer { inFlight.remove(urlString) }
+            guard let (data, response) = try? await URLSession.shared.data(from: url),
+                (response as? HTTPURLResponse)?.statusCode == 200,
+                let image = NSImage(data: data)
+            else { return }
+            images[urlString] = image
+        }
+    }
+
+    /// Aspect-fill `image` into a circle of `size` points — for
+    /// `NSMenuItem.image`, which can't be clipped by SwiftUI.
+    nonisolated static func circular(_ image: NSImage, size: CGFloat) -> NSImage {
+        NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
+            let source = image.size
+            guard source.width > 0, source.height > 0 else { return false }
+            NSBezierPath(ovalIn: rect).addClip()
+            let scale = max(rect.width / source.width, rect.height / source.height)
+            let drawSize = NSSize(width: source.width * scale, height: source.height * scale)
+            let origin = NSPoint(
+                x: rect.midX - drawSize.width / 2, y: rect.midY - drawSize.height / 2)
+            image.draw(in: NSRect(origin: origin, size: drawSize))
+            return true
+        }
+    }
+}
+
+/// Account avatar: the fetched profile picture when available, else the
+/// deterministic monogram. Observing the store means the monogram swaps
+/// to the real picture the moment its fetch lands.
+struct AccountAvatar: View {
+    @ObservedObject private var store = AvatarStore.shared
+    let name: String
+    let pictureURL: String?
+    var size: CGFloat = 24
+
+    var body: some View {
+        if let image = store.avatar(for: pictureURL) {
+            Image(nsImage: image)
+                .resizable()
+                .scaledToFill()
+                .frame(width: size, height: size)
+                .clipShape(Circle())
+                .accessibilityHidden(true)
+        } else {
+            MonogramAvatar(name: name, size: size)
+        }
+    }
+}
+
 /// Circular monogram avatar — first character of the display name over the
 /// name's deterministic color. Used by the main window's toolbar account
 /// menu; sized by the caller.

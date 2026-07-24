@@ -180,6 +180,9 @@ private struct AccountMenu: View {
 /// pattern).
 private struct AccountMenuButton: NSViewRepresentable {
     let appState: AppState
+    /// Observed so a landed avatar fetch re-runs `updateNSView` and swaps
+    /// the monogram for the real picture.
+    @ObservedObject private var avatars = AvatarStore.shared
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -199,7 +202,11 @@ private struct AccountMenuButton: NSViewRepresentable {
     func updateNSView(_ button: NSButton, context: Context) {
         context.coordinator.appState = appState
         if let profile = appState.tailscaleAuth.userProfile {
-            button.image = MonogramAvatar.nsImage(name: profile.displayName, size: 26)
+            if let picture = avatars.avatar(for: profile.profilePicURL) {
+                button.image = AvatarStore.circular(picture, size: 26)
+            } else {
+                button.image = MonogramAvatar.nsImage(name: profile.displayName, size: 26)
+            }
         } else {
             // Signed out but other profiles exist: neutral glyph, the
             // menu is the way back in.
@@ -227,9 +234,16 @@ private struct AccountMenuButton: NSViewRepresentable {
                     keyEquivalent: "")
                 item.target = self
                 item.attributedTitle = Self.rowTitle(for: profile)
-                item.image = MonogramAvatar.nsImage(
-                    name: profile.displayName.isEmpty ? profile.loginName : profile.displayName,
-                    size: 24)
+                // Real profile picture when its fetch has landed (kicked
+                // here on the miss, so the next open has it), else the
+                // monogram.
+                if let picture = AvatarStore.shared.avatar(for: profile.profilePicURL) {
+                    item.image = AvatarStore.circular(picture, size: 24)
+                } else {
+                    item.image = MonogramAvatar.nsImage(
+                        name: profile.displayName.isEmpty ? profile.loginName : profile.displayName,
+                        size: 24)
+                }
                 item.state = isActive ? .on : .off
                 item.representedObject = profile.id
                 menu.addItem(item)

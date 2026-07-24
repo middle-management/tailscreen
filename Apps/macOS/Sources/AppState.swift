@@ -2604,7 +2604,7 @@ class AppState: ObservableObject {
         guard tailscaleAuth.isAuthenticated, let profile = tailscaleAuth.userProfile else { return }
         profileStore.updateActiveIdentity(
             displayName: profile.displayName, loginName: profile.loginName,
-            tailnetName: profile.tailnetName)
+            tailnetName: profile.tailnetName, profilePicURL: profile.profilePicURL ?? "")
     }
 
     /// Tear down the live node and everything hanging off it WITHOUT

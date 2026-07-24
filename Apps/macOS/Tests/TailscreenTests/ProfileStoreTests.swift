@@ -71,10 +71,12 @@ final class ProfileStoreTests: XCTestCase {
         let store = ProfileStore(defaults: try makeSuite(#function))
         let added = store.addProfile()
         store.updateActiveIdentity(
-            displayName: "Robert", loginName: "robert@github", tailnetName: "slaskis.github")
+            displayName: "Robert", loginName: "robert@github", tailnetName: "slaskis.github",
+            profilePicURL: "https://example.com/avatar.png")
         XCTAssertEqual(store.activeProfile.displayName, "Robert")
         XCTAssertEqual(store.activeProfile.loginName, "robert@github")
         XCTAssertEqual(store.activeProfile.tailnetName, "slaskis.github")
+        XCTAssertEqual(store.activeProfile.profilePicURL, "https://example.com/avatar.png")
         XCTAssertTrue(store.activeProfile.hasSignedIn)
         XCTAssertEqual(
             store.profiles.first { $0.id == added.id }?.loginName, "",
@@ -124,6 +126,7 @@ final class ProfileStoreTests: XCTestCase {
         XCTAssertEqual(store.profiles[0].id, id)
         XCTAssertEqual(store.profiles[0].loginName, "robert@github")
         XCTAssertEqual(store.profiles[0].tailnetName, "")
+        XCTAssertEqual(store.profiles[0].profilePicURL, "", "missing pic key must default empty")
         XCTAssertEqual(store.activeProfileID, id)
     }
 
