@@ -103,6 +103,12 @@ if gSelfTest {
         DiscoveredSharer(id: "2", hostname: "studio-imac", tailscaleIP: "100.64.0.31", isOnline: true),
         DiscoveredSharer(id: "3", hostname: "living-room-tv", tailscaleIP: "100.64.0.44", isOnline: false),
     ]
+    gPicker.shareInfo = [
+        "1": TailscreenMetadata(
+            shareName: "robert's Screen", hostname: "robert-macbook",
+            screenResolution: .init(width: 1920, height: 1080),
+            isSharing: true, timestamp: Date(), videoCodec: .hevc),
+    ]
 } else {
     // Live path: reuse the tsnet transport, driving decoded frames into the
     // shared store. The transport is @MainActor; started as a Task here, it
@@ -168,6 +174,35 @@ if gSelfTest {
         // also sidesteps the `from == dest` hostname-match limitation.
         gPickerMode = true
         gPicker.onSelect = { sharer in startSession(host: sharer.tailscaleIP) }
+
+        // Discover sharers on the live node, then sweep their live share status
+        // (name / resolution) concurrently. Reused by the initial bring-up and
+        // the header Refresh, so the list can be re-listed without re-login.
+        @Sendable func discoverAndSweep() {
+            Task { @MainActor in
+                do {
+                    gPicker.phase = .discovering
+                    let peers = try await transport.discoverPeers()
+                    let online = peers.filter { $0.isOnline }
+                    gPicker.sharers = online
+                    gPicker.phase = .picking
+                    // Lazy per-sharer metadata sweep (the sharing chip + res).
+                    await withTaskGroup(of: (String, TailscreenMetadata?).self) { group in
+                        for sharer in online {
+                            group.addTask { (sharer.id, await transport.fetchMetadata(ip: sharer.tailscaleIP)) }
+                        }
+                        for await (id, meta) in group {
+                            if let meta { gPicker.shareInfo[id] = meta } else { gPicker.shareInfo[id] = nil }
+                        }
+                    }
+                } catch {
+                    FileHandle.standardError.write(Data("discovery failed: \(error)\n".utf8))
+                    gPicker.phase = .picking  // renders "No screens found"
+                }
+            }
+        }
+        gPicker.onRefresh = { discoverAndSweep() }
+
         Task { @MainActor in
             do {
                 gPicker.phase = .startingNode
@@ -175,13 +210,10 @@ if gSelfTest {
                     Task { @MainActor in gPicker.loginURL = url.absoluteString }
                 })
                 gPicker.loginURL = nil
-                gPicker.phase = .discovering
-                let peers = try await transport.discoverPeers()
-                gPicker.sharers = peers.filter { $0.isOnline }
-                gPicker.phase = .picking
+                discoverAndSweep()
             } catch {
-                FileHandle.standardError.write(Data("discovery failed: \(error)\n".utf8))
-                gPicker.phase = .picking  // renders "No screens found"
+                FileHandle.standardError.write(Data("node bring-up failed: \(error)\n".utf8))
+                gPicker.phase = .picking
             }
         }
     }
@@ -217,6 +249,23 @@ struct ViewerApp: App {
     // Header subtitle: the picker's progress line, or the direct-connect status.
     private var headerSubtitle: String {
         gPickerMode ? picker.statusLine : ui.status
+    }
+
+    // A spinner rides the header while the node is coming up / discovering.
+    private var headerShowsSpinner: Bool {
+        guard gPickerMode else { return false }
+        switch picker.phase {
+        case .startingNode, .discovering: return true
+        case .picking, .connecting: return false
+        }
+    }
+
+    // Refresh is offered only from the settled picking state. Captures the
+    // module-global `gPicker` (Sendable) rather than `self` so the closure can
+    // satisfy the Button action's `@MainActor @Sendable` type.
+    private var headerOnRefresh: (@MainActor @Sendable () -> Void)? {
+        guard gPickerMode && showingPickerList else { return nil }
+        return { gPicker.refresh() }
     }
 
     var body: some Scene {
@@ -255,13 +304,17 @@ struct ViewerApp: App {
             }
         } else {
             VStack(spacing: 0) {
-                ViewerHeader(subtitle: headerSubtitle)
+                ViewerHeader(
+                    subtitle: headerSubtitle,
+                    showSpinner: headerShowsSpinner,
+                    onRefresh: headerOnRefresh)
                 Divider()
                 if gPickerMode {
                     PickerContent(
                         statusLine: picker.statusLine,
                         isPicking: showingPickerList,
                         sharers: picker.sharers,
+                        shareInfo: picker.shareInfo,
                         loginURL: picker.loginURL,
                         autoExpandFirst: gUIPreview,
                         onSelect: { picker.select($0) })

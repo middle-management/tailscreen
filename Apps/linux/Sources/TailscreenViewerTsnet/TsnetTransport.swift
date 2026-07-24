@@ -185,6 +185,28 @@ public final class TsnetTransport {
         }
     }
 
+    /// Fetch a discovered sharer's live share metadata (name / resolution /
+    /// `isSharing`) over TCP/7447 using the prepared node — the fetch half of the
+    /// picker's "which screens are actually being shared" annotations. Lazy: the
+    /// caller decides when to dial (typically right after discovery + on refresh).
+    /// All failure modes (no node, dial/connect failure, timeout, legacy peer)
+    /// collapse to nil = status-unknown, never "not sharing".
+    public func fetchMetadata(ip: String) async -> TailscreenMetadata? {
+        guard let node = preparedNode else { return nil }
+        return await TailscreenMetadataClient.fetchMetadata(fromIP: ip, via: node)
+    }
+
+    /// Bring the current node down and clear it so a later `prepare` can bring up
+    /// a fresh one — e.g. under a different state directory when switching
+    /// profiles. A no-op if no node is up. (`run`'s own `defer` clears the node
+    /// on session exit; this is the picker-idle teardown path.)
+    public func teardown() async {
+        if let node = preparedNode {
+            try? await node.down()
+        }
+        preparedNode = nil
+    }
+
     /// Connect and run until the sharer says goodbye or `shouldClose` fires.
     ///
     /// If `config.authKey` is nil, brings the node up via interactive browser

@@ -1,4 +1,5 @@
 import SwiftCrossUI
+import TailscreenProtocol
 import TailscreenViewerTsnet
 
 // Hub-styled chrome for the GTK viewer, mirroring the macOS app's docked-window
@@ -30,6 +31,8 @@ enum HubStyle {
     static let detailFill = Color(white: 0.5, opacity: 0.06)
     static let online = Color.green
     static let offline = Color(white: 0.5, opacity: 0.55)
+    static let chipFill = Color(red: 0.2, green: 0.7, blue: 0.35, opacity: 0.18)
+    static let chipText = Color(red: 0.13, green: 0.55, blue: 0.27)
 }
 
 extension View {
@@ -87,6 +90,10 @@ struct SharerRow: View {
     let subtitle: String
     let isOnline: Bool
     let isExpanded: Bool
+    /// The sharer's live share name when it's actively sharing (from the
+    /// metadata sweep) — shown as a green capsule chip. Nil ⇒ not sharing /
+    /// status unknown, no chip.
+    let sharingName: String?
     let onTap: () -> Void
 
     var body: some View {
@@ -95,9 +102,20 @@ struct SharerRow: View {
                 .fill(isOnline ? HubStyle.online : HubStyle.offline)
                 .frame(width: 9, height: 9)
             VStack(alignment: .leading, spacing: 2) {
-                Text(hostname)
-                    .fontWeight(.medium)
-                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(hostname)
+                        .fontWeight(.medium)
+                        .lineLimit(1)
+                    if let sharingName {
+                        Text(sharingName)
+                            .font(.caption)
+                            .foregroundColor(HubStyle.chipText)
+                            .lineLimit(1)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Capsule().fill(HubStyle.chipFill))
+                    }
+                }
                 Text(subtitle)
                     .font(.subheadline)
                     .foregroundColor(HubStyle.secondaryText)
@@ -125,10 +143,24 @@ struct SharerDetail: View {
     let hostname: String
     let ip: String
     let isOnline: Bool
+    /// "Sharing · 1920 × 1080 · HEVC" when the sharer is live, else nil.
+    let sharingCaption: String?
     let onView: @MainActor @Sendable () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            if let sharingCaption {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(HubStyle.online)
+                        .frame(width: 6, height: 6)
+                    Text(sharingCaption)
+                        .font(.caption)
+                        .foregroundColor(HubStyle.chipText)
+                        .lineLimit(1)
+                    Spacer()
+                }
+            }
             if isOnline {
                 Button("View Screen", action: onView)
             }
@@ -206,6 +238,7 @@ struct PickerContent: View {
     let statusLine: String
     let isPicking: Bool
     let sharers: [DiscoveredSharer]
+    let shareInfo: [String: TailscreenMetadata]
     let loginURL: String?
     let onSelect: @MainActor @Sendable (DiscoveredSharer) -> Void
 
@@ -218,6 +251,7 @@ struct PickerContent: View {
         statusLine: String,
         isPicking: Bool,
         sharers: [DiscoveredSharer],
+        shareInfo: [String: TailscreenMetadata],
         loginURL: String?,
         autoExpandFirst: Bool = false,
         onSelect: @escaping @MainActor @Sendable (DiscoveredSharer) -> Void
@@ -225,11 +259,30 @@ struct PickerContent: View {
         self.statusLine = statusLine
         self.isPicking = isPicking
         self.sharers = sharers
+        self.shareInfo = shareInfo
         self.loginURL = loginURL
         self.onSelect = onSelect
         // Preview/screenshot affordance: open the first row's detail pane so the
         // expanded state is visible without a click.
         _expandedID = State(wrappedValue: autoExpandFirst ? sharers.first?.id : nil)
+    }
+
+    /// The green chip label for a row: the sharer's share name (or a generic
+    /// "Sharing") when it's actively sharing, else nil (no chip).
+    private func sharingName(_ sharer: DiscoveredSharer) -> String? {
+        guard let meta = shareInfo[sharer.id], meta.isSharing else { return nil }
+        return meta.shareName.isEmpty ? "Sharing" : meta.shareName
+    }
+
+    /// The detail-pane caption: "Sharing · 1920 × 1080 · HEVC", or nil.
+    private func sharingCaption(_ sharer: DiscoveredSharer) -> String? {
+        guard let meta = shareInfo[sharer.id], meta.isSharing else { return nil }
+        var caption = meta.shareName.isEmpty ? "Sharing" : meta.shareName
+        caption += " · \(meta.screenResolution.width) × \(meta.screenResolution.height)"
+        if let codec = meta.videoCodec {
+            caption += " · \(codec == .hevc ? "HEVC" : "H.264")"
+        }
+        return caption
     }
 
     /// `sharers` narrowed by the search text (hostname or IP substring).
@@ -291,12 +344,14 @@ struct PickerContent: View {
                         subtitle: sharer.isOnline ? sharer.tailscaleIP : "Offline",
                         isOnline: sharer.isOnline,
                         isExpanded: expandedID == sharer.id,
+                        sharingName: sharingName(sharer),
                         onTap: { expandedID = (expandedID == sharer.id) ? nil : sharer.id })
                     if expandedID == sharer.id {
                         SharerDetail(
                             hostname: sharer.hostname,
                             ip: sharer.tailscaleIP,
                             isOnline: sharer.isOnline,
+                            sharingCaption: sharingCaption(sharer),
                             onView: { onSelect(sharer) })
                     }
                 }
