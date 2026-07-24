@@ -123,6 +123,23 @@ class TailscreenMetadataService: ObservableObject {
         pendingRequests.removeAll()
     }
 
+    /// The metadata served to a peer's `.metadataRequest` (the sharing-
+    /// status filter's fetch half). Falls back to an idle, not-sharing
+    /// snapshot when no share has run this session (`currentMetadata` is
+    /// nil until the first `updateMetadata` call) — answering is what lets
+    /// a requester distinguish "reachable but not sharing" from "no
+    /// answer" (offline / legacy build).
+    func wireMetadata() -> TailscreenMetadata {
+        if let current = currentMetadata { return current }
+        return TailscreenMetadata(
+            shareName: "",
+            hostname: Host.current().localizedName ?? "Unknown",
+            screenResolution: getCurrentScreenResolution(),
+            isSharing: false,
+            timestamp: Date()
+        )
+    }
+
     /// Create metadata JSON for API response
     func getMetadataJSON() throws -> Data {
         guard let metadata = currentMetadata else {

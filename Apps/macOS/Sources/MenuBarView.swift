@@ -1055,6 +1055,8 @@ private struct DevicesSection: View {
 
                 Spacer()
 
+                PeerFilterMenu()
+
                 Button {
                     Task { await appState.discoverPeers() }
                 } label: {
@@ -1088,7 +1090,7 @@ private struct DevicesSection: View {
         // `animateChanges`).
         .animation(
             animateChanges ? .easeInOut(duration: 0.2) : nil,
-            value: appState.availablePeers
+            value: appState.filteredPeers
         )
         .animation(
             animateChanges ? .easeInOut(duration: 0.2) : nil,
@@ -1108,7 +1110,7 @@ private struct DevicesSection: View {
             // all. `onChange` runs after the view updated for the change.
             if !discovering { animateChanges = true }
         }
-        .onChange(of: appState.availablePeers.count) { _, count in
+        .onChange(of: appState.filteredPeers.count) { _, count in
             if count > 0 { lastPeerRowCount = min(count, Self.maxRows) }
         }
     }
@@ -1148,6 +1150,15 @@ private struct DevicesSection: View {
                 .frame(height: 28)
                 .padding(.horizontal, 14)
                 .transition(.opacity)
+        } else if appState.filteredPeers.isEmpty {
+            // Devices exist but the filter hides them all — say so rather
+            // than showing the misleading "no devices" empty state.
+            Text(L("No screens match your filters"))
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .frame(height: 28)
+                .padding(.horizontal, 14)
+                .transition(.opacity)
         } else {
             // `.frame(height:)` (not `maxHeight:`) commits to the
             // row count's height so SwiftUI's intrinsic sizing can't
@@ -1156,7 +1167,7 @@ private struct DevicesSection: View {
             // section even though discovery had 1+ peers.
             ScrollView {
                 VStack(spacing: 0) {
-                    ForEach(appState.availablePeers) { peer in
+                    ForEach(appState.filteredPeers) { peer in
                         PeerMenuRow(peer: peer) {
                             Task { await appState.connectToPeer(peer) }
                         }
@@ -1165,10 +1176,110 @@ private struct DevicesSection: View {
             }
             .frame(
                 height: Self.rowHeight
-                    * CGFloat(min(appState.availablePeers.count, Self.maxRows))
+                    * CGFloat(min(appState.filteredPeers.count, Self.maxRows))
             )
             .transition(.opacity)
+
+            let hidden = appState.availablePeers.count - appState.filteredPeers.count
+            if hidden > 0 {
+                Text(L("\(hidden) hidden by filters"))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .padding(.horizontal, 14)
+                    .padding(.top, 2)
+                    .transition(.opacity)
+            }
         }
+    }
+}
+
+/// Header affordance for `PeerListFilter`: a funnel button whose menu
+/// carries the hide-offline toggle and one toggle per known ACL tag (plus
+/// the explicit Untagged bucket while a tag filter is active). Writes go
+/// through `appState.peerFilter` so its `didSet` persists every change.
+private struct PeerFilterMenu: View {
+    @EnvironmentObject var appState: AppState
+
+    var body: some View {
+        Menu {
+            Toggle(
+                L("Hide offline devices"),
+                isOn: binding(
+                    get: { $0.hideOffline },
+                    set: { $0.hideOffline = $1 }))
+
+            Toggle(
+                L("Only screens being shared"),
+                isOn: binding(
+                    get: { $0.onlySharing },
+                    set: { $0.onlySharing = $1 }))
+
+            let tags = appState.knownPeerTags
+            if !tags.isEmpty {
+                Section(L("Filter by Tag")) {
+                    ForEach(tags, id: \.self) { tag in
+                        Toggle(
+                            PeerListFilter.displayName(forTag: tag),
+                            isOn: binding(
+                                get: { $0.selectedTags.contains(tag) },
+                                set: { filter, isOn in
+                                    if isOn {
+                                        filter.selectedTags.insert(tag)
+                                    } else {
+                                        filter.selectedTags.remove(tag)
+                                    }
+                                }))
+                    }
+                    if !appState.peerFilter.selectedTags.isEmpty {
+                        Toggle(
+                            L("Untagged"),
+                            isOn: binding(
+                                get: { $0.includeUntagged },
+                                set: { $0.includeUntagged = $1 }))
+                    }
+                }
+            }
+
+            if appState.peerFilter.isActive {
+                Divider()
+                Button(L("Clear Filters")) { appState.peerFilter = .default }
+            }
+        } label: {
+            Image(
+                systemName: appState.peerFilter.isActive
+                    ? "line.3.horizontal.decrease.circle.fill"
+                    : "line.3.horizontal.decrease.circle"
+            )
+            .font(.caption.weight(.medium))
+            .foregroundStyle(
+                appState.peerFilter.isActive
+                    ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.tertiary)
+            )
+            .frame(width: 14, height: 14)
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help(L("Filter screens"))
+        .accessibilityLabel(L("Filter available screens"))
+    }
+
+    /// Binding into `appState.peerFilter` that mutates a copy and writes
+    /// the whole struct back, so the `@Published` setter (and its
+    /// persistence `didSet`) fires exactly once per toggle.
+    private func binding<T>(
+        get: @escaping (PeerListFilter) -> T,
+        set: @escaping (inout PeerListFilter, T) -> Void
+    ) -> Binding<T> {
+        Binding(
+            get: { get(appState.peerFilter) },
+            set: { newValue in
+                var filter = appState.peerFilter
+                set(&filter, newValue)
+                appState.peerFilter = filter
+            }
+        )
     }
 }
 
@@ -1274,6 +1385,16 @@ private struct PeerMenuRow: View {
                             Text(L("Offline"))
                                 .font(.caption)
                                 .foregroundStyle(.tertiary)
+                        } else if let share = appState.peerShareInfo[peer.id], share.isSharing {
+                            // Fetched share status (`.metadataResponse`) —
+                            // the share name is peer data, shown as-is
+                            // (parser-clamped); fall back to a generic
+                            // caption when the peer didn't name its share.
+                            Text(share.shareName.isEmpty ? L("Sharing") : share.shareName)
+                                .font(.caption)
+                                .foregroundStyle(.green)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
                         }
                     }
 
