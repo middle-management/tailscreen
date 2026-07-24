@@ -135,7 +135,9 @@ private struct PopoverIdentityHeader: View {
                 appState.presentMainWindow()
             } label: {
                 HStack(spacing: 8) {
-                    MonogramAvatar(name: profile.displayName, size: 24)
+                    AccountAvatar(
+                        name: profile.displayName, pictureURL: profile.profilePicURL,
+                        size: 24)
                     VStack(alignment: .leading, spacing: 0) {
                         Text(
                             verbatim: profile.tailnetName.isEmpty

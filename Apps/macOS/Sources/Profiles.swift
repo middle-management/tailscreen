@@ -13,6 +13,11 @@ struct TailscreenProfile: Codable, Identifiable, Equatable, Sendable {
     /// while it's inactive. Empty until then.
     var displayName: String
     var loginName: String
+    /// Profile-picture URL from the signed-in identity (e.g. a GitHub
+    /// avatar). Empty when unknown; the UI falls back to a monogram.
+    /// Stored per profile so inactive accounts keep their picture in the
+    /// account menu.
+    var profilePicURL: String
     /// Tailnet (organization) name, e.g. "example.com" or "slaskis.github".
     /// The disambiguator when two profiles share a login name — a GitHub
     /// identity used across orgs yields the identical `loginName` on every
@@ -36,16 +41,17 @@ struct TailscreenProfile: Codable, Identifiable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, displayName, loginName, tailnetName, stateDirectory
+        case id, displayName, loginName, profilePicURL, tailnetName, stateDirectory
     }
 
     init(
         id: UUID, displayName: String, loginName: String, tailnetName: String = "",
-        stateDirectory: String
+        profilePicURL: String = "", stateDirectory: String
     ) {
         self.id = id
         self.displayName = displayName
         self.loginName = loginName
+        self.profilePicURL = profilePicURL
         self.tailnetName = tailnetName
         self.stateDirectory = stateDirectory
     }
@@ -60,6 +66,7 @@ struct TailscreenProfile: Codable, Identifiable, Equatable, Sendable {
         displayName = try container.decode(String.self, forKey: .displayName)
         loginName = try container.decode(String.self, forKey: .loginName)
         tailnetName = try container.decodeIfPresent(String.self, forKey: .tailnetName) ?? ""
+        profilePicURL = try container.decodeIfPresent(String.self, forKey: .profilePicURL) ?? ""
         stateDirectory = try container.decode(String.self, forKey: .stateDirectory)
     }
 
@@ -140,15 +147,19 @@ final class ProfileStore: ObservableObject {
 
     /// Copy the signed-in identity onto the active profile. No-op when
     /// nothing changed, so callers can invoke it after every login/restore.
-    func updateActiveIdentity(displayName: String, loginName: String, tailnetName: String) {
+    func updateActiveIdentity(
+        displayName: String, loginName: String, tailnetName: String, profilePicURL: String = ""
+    ) {
         guard let idx = profiles.firstIndex(where: { $0.id == activeProfileID }) else { return }
         guard
             profiles[idx].displayName != displayName || profiles[idx].loginName != loginName
                 || profiles[idx].tailnetName != tailnetName
+                || profiles[idx].profilePicURL != profilePicURL
         else { return }
         profiles[idx].displayName = displayName
         profiles[idx].loginName = loginName
         profiles[idx].tailnetName = tailnetName
+        profiles[idx].profilePicURL = profilePicURL
         persist()
     }
 
