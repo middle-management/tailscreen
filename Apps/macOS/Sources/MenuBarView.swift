@@ -775,9 +775,9 @@ private struct RemoteControlGranteeBanner: View {
 
 /// Compact toggle for the "Require approval for new viewers" preference.
 /// Backed by `AppState.requireViewerApproval` (persisted in UserDefaults
-/// and propagated to the live server). Rendered inside the SharingCard,
-/// the idle DisplayPickerSection, and the main window's share section so
-/// the user can flip it from any of those contexts.
+/// and propagated to the live server). Rendered inside the SharingCard
+/// and the main window's idle share section (plus Settings) — the
+/// popover's idle picker row deliberately omits it to stay lean.
 struct ApprovalToggle: View {
     @EnvironmentObject var appState: AppState
 
@@ -974,10 +974,6 @@ private struct DisplayPickerSection: View {
                 .buttonStyle(.plain)
                 .background(MenuRowHoverBackground(isHovered: isHovered))
                 .onHover { isHovered = $0 }
-
-                ApprovalToggle()
-                    .padding(.horizontal, 14)
-                    .padding(.top, 4)
             }
         }
         .padding(.bottom, 6)
