@@ -162,12 +162,21 @@ guarantee the SDL path never had.
   sharer's caps (`onAdmitted`) so chrome is caps-gated exactly like the mac
   viewer.
 - Annotation toolbar (native buttons, caps-gated) + remote-control request
-  affordance. **Done (partial):** a caps-gated Request/Release-Control button
-  wired to the back-channel with grant/revoke status. **Follow-up:** the input
-  *capture* (GTK pointer/keyboard event controllers → `sendInputEvent`) and the
-  annotation *drawing surface* (both directions) — GTK event-controller work not
-  verifiable in the headless CI container, same boundary as L1's interactive
-  zoom input. Mic toggle deferred until ALSA **capture** exists (playback-only
+  affordance. **Done:** a caps-gated Request/Release-Control button wired to the
+  back-channel with grant/revoke status, **plus input capture** — once control
+  is granted, `GtkVideoView` attaches `EventControllerMotion` /
+  `EventControllerKey` / three `GestureClick`s and translates pointer + keyboard
+  events to neutral `InputEvent`s via the pure, unit-tested `ViewerInputMapping`
+  (Core: aspect-fit pointer normalization, GDK button/modifier decode, evdev→USB-
+  HID keycode table). `InputForwarder` gates them on a live grant and funnels
+  them through one `AsyncStream` drained by a single consumer, honouring
+  `ViewerBackChannel.sendInputEvent`'s ordering contract (never one `Task` per
+  event, so a down/up pair can't invert). The mapping logic is CI-tested by the
+  `linux-viewer` job; the GTK event-controller wiring is compile-gated (not
+  verifiable headless, same boundary as L1's interactive zoom input). **Follow-
+  up:** scroll capture (swift-cross-ui exposes no `EventControllerScroll` binding
+  yet — needs a small C shim), and the annotation *drawing surface* (both
+  directions). Mic toggle deferred until ALSA **capture** exists (playback-only
   today).
 
 ### L4 — Sharer picker + login polish

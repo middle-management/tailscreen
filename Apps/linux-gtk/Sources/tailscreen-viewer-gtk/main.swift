@@ -29,6 +29,7 @@ import TailscreenViewerTsnet
 let gStore = FrameStore()
 let gUIState = ViewerUIState()
 let gControls = ViewerControls(ui: gUIState)
+let gInput = InputForwarder(ui: gUIState)
 let gPicker = PickerModel()
 let gArgs = Array(CommandLine.arguments.dropFirst())
 let gSelfTest = gArgs.contains("--render-self-test")
@@ -129,7 +130,10 @@ if gSelfTest {
                     config: config, decoder: decoder, videoSink: sink,
                     audioSink: audioSink, shouldClose: { false },
                     backChannelHandlers: backChannelHandlers,
-                    onBackChannelReady: { channel in gControls.attach(channel) },
+                    onBackChannelReady: { channel in
+                        gControls.attach(channel)
+                        gInput.attach(channel)
+                    },
                     onAdmitted: { caps in
                         gUIState.setCaps(
                             remoteControl: caps.contains(.remoteControl),
@@ -200,7 +204,11 @@ struct ViewerApp: App {
     var body: some Scene {
         WindowGroup("Tailscreen viewer") {
             ZStack {
-                GtkVideoView(store: gStore, selfTest: gSelfTest)
+                // Capture input only in a live session — never in the headless
+                // render self-test. The forwarder gates on a live control grant.
+                GtkVideoView(
+                    store: gStore, selfTest: gSelfTest,
+                    onInputEvent: gSelfTest ? nil : { gInput.submit($0) })
                 // Pre-video chrome (never in self-test). In picker mode this is
                 // the sharer list + status; otherwise the connection placard.
                 if !gSelfTest && !ui.hasVideo {
@@ -227,8 +235,9 @@ struct ViewerApp: App {
                 }
                 // Remote-control toolbar, pinned to the bottom. Shown only when
                 // the sharer advertised `.remoteControl` (caps-gated, like the
-                // mac viewer). Input capture (pointer/keyboard → `sendInputEvent`)
-                // is the follow-up; this delivers the request/grant handshake.
+                // mac viewer). Once control is granted, `GtkVideoView` captures
+                // pointer/keyboard and `gInput` forwards them to the sharer;
+                // this toolbar owns the request/grant/release handshake.
                 if !gSelfTest && ui.remoteControlAvailable {
                     VStack {
                         Spacer()

@@ -49,6 +49,11 @@ let package = Package(
                 .product(name: "Gtk", package: "swift-cross-ui"),
                 .product(name: "TailscreenViewer", package: "TailscreenKit"),
                 .product(name: "TailscreenProtocol", package: "TailscreenKit"),
+                // The pure GTK→InputEvent capture mapping (`ViewerInputMapping`)
+                // lives in Core so it's unit-tested by the linux-viewer job;
+                // GtkVideoView feeds it raw GDK integers. Already linked by the
+                // executable target, so no new system dependency.
+                .product(name: "TailscreenViewerCore", package: "linux"),
             ]
         ),
         .executableTarget(
