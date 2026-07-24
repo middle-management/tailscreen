@@ -172,6 +172,27 @@ final class ColorInfoTests: XCTestCase {
         XCTAssertEqual(attempts.map { $0.colorInfo.bitDepth }, [10, 8, 8])
     }
 
+    func testSessionAttemptsStrictHEVCOmitsH264Rung() {
+        // Explicit HEVC preference: the ladder keeps its HEVC rungs
+        // (Main 10 → 8-bit) but must never end on H.264 — an encoder that
+        // can't do HEVC fails the share instead of silently downgrading.
+        let sdr = VideoEncoder.sessionAttempts(
+            preferredCodec: .hevc, colorInfo: .bt709FullRange8, allowH264Fallback: false)
+        XCTAssertEqual(sdr.map { $0.codec }, [.hevc])
+
+        let hdr = ColorInfo.forDisplay(wideGamut: true, hdrCapable: true, bitDepth: 10)
+        let attempts = VideoEncoder.sessionAttempts(
+            preferredCodec: .hevc, colorInfo: hdr, allowH264Fallback: false)
+        XCTAssertEqual(attempts.map { $0.codec }, [.hevc, .hevc])
+        XCTAssertEqual(attempts.map { $0.colorInfo.bitDepth }, [10, 8])
+
+        // An H.264 *preference* is its own single-rung ladder — the flag
+        // must not touch it.
+        let h264 = VideoEncoder.sessionAttempts(
+            preferredCodec: .h264, colorInfo: hdr, allowH264Fallback: false)
+        XCTAssertEqual(h264.map { $0.codec }, [.h264])
+    }
+
     func testSessionAttemptsH264PreferredNeverEmits10Bit() {
         let tenBit = ColorInfo.forDisplay(wideGamut: true, hdrCapable: true, bitDepth: 10)
         let attempts = VideoEncoder.sessionAttempts(preferredCodec: .h264, colorInfo: tenBit)

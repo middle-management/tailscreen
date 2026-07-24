@@ -201,6 +201,7 @@
 "Limit bandwidth" = "Limit bandwidth";
 "%lld Mbps" = "%lld Mbps";
 "Frame rate and codec changes apply the next time you start sharing." = "Frame rate and codec changes apply the next time you start sharing.";
+"HEVC never falls back to H.264 — viewers that can only decode H.264 won't be able to watch. Choose Automatic to fall back when needed." = "HEVC never falls back to H.264 — viewers that can only decode H.264 won't be able to watch. Choose Automatic to fall back when needed.";
 "Audio" = "Audio";
 "Speaker" = "Speaker";
 "About" = "About";

@@ -22,16 +22,23 @@ import Foundation
 /// ceiling beyond the encoder's bits-per-pixel formula. Pinned by
 /// `QualitySettingsTests`.
 public struct QualitySettings: Codable, Equatable, Sendable {
-    /// Which codec the helper's encoder should prefer. `.auto` tries HEVC
-    /// first and falls back to H.264 when VideoToolbox refuses; `.h264`
-    /// skips HEVC entirely. A viewer-reported decode failure
-    /// (`TAILSCREEN_FORCE_H264`) overrides both — codec fallback is a
-    /// correctness mechanism, not a preference. There is deliberately no
-    /// `.hevc` case: it would behave identically to `.auto` (both try
-    /// HEVC first); a persisted `"hevc"` blob from an older build decodes
-    /// as `.auto`.
+    /// Which codec the helper's encoder should use. `.auto` tries HEVC
+    /// first and falls back to H.264 — both when VideoToolbox refuses an
+    /// HEVC session and when a viewer reports it can't decode the stream
+    /// (CODEC_NO). `.hevc` is the explicit, no-safety-net variant: the
+    /// encoder ladder drops its H.264 rung and the sharer ignores
+    /// CODEC_NO, so viewers that only decode H.264 simply can't watch —
+    /// Settings states that trade-off next to the picker. `.h264` skips
+    /// HEVC entirely. The manual `TAILSCREEN_FORCE_H264=1` escape hatch
+    /// still overrides every preference (it exists precisely to un-wedge
+    /// a share by hand); the *automatic* CODEC_NO latch is what explicit
+    /// HEVC opts out of. A persisted `"hevc"` blob from the oldest builds
+    /// (which offered the option when it still meant "prefer") now decodes
+    /// as this explicit case — closest to the preference those users
+    /// expressed.
     public enum CodecPreference: String, CaseIterable, Codable, Sendable {
         case auto
+        case hevc
         case h264
     }
 
@@ -196,7 +203,7 @@ public struct QualitySettings: Codable, Equatable, Sendable {
         if forceH264 { return .h264 }
         switch codecPreference {
         case .h264: return .h264
-        case .auto: return .hevc
+        case .auto, .hevc: return .hevc
         }
     }
 

@@ -94,7 +94,9 @@ final class VideoEncoder: @unchecked Sendable {
         bitsPerPixel: Double? = nil
     ) throws {
         let requested = colorInfo
-        let attempts = Self.sessionAttempts(preferredCodec: preferredCodec, colorInfo: requested)
+        let attempts = Self.sessionAttempts(
+            preferredCodec: preferredCodec, colorInfo: requested,
+            allowH264Fallback: allowsH264Fallback)
         var lastError: OSStatus = noErr
         for attempt in attempts {
             let bpp = bitsPerPixel ?? Self.defaultBitsPerPixel(for: attempt.codec)
@@ -119,12 +121,23 @@ final class VideoEncoder: @unchecked Sendable {
         throw VideoEncoderError.sessionCreationFailed(lastError)
     }
 
+    /// Whether the fallback ladder may end on an H.264 rung. `false` for
+    /// the explicit-HEVC codec preference: the user opted out of the
+    /// safety net, so an encoder that can't do HEVC fails the share
+    /// honestly instead of silently downgrading. A property (like
+    /// `colorInfo` / `encoderQuality`) rather than a `setup` parameter to
+    /// stay within the 5-parameter lint ceiling.
+    var allowsH264Fallback = true
+
     /// Ordered (codec, colorInfo) attempts for the fallback ladder. HEVC
     /// Main 10 falls back to HEVC 8-bit before H.264 (mirroring the shipped
     /// HEVC→H.264 ladder), so a Mac that can't encode 10-bit still gets HEVC;
-    /// H.264 never carries 10-bit here. Pure and CI-tested.
+    /// H.264 never carries 10-bit here. `allowH264Fallback: false` (the
+    /// explicit-HEVC preference) drops the trailing H.264 rung — but never
+    /// affects an H.264 *preference*, which is its own single-rung ladder.
+    /// Pure and CI-tested.
     static func sessionAttempts(
-        preferredCodec: VideoCodec, colorInfo: ColorInfo
+        preferredCodec: VideoCodec, colorInfo: ColorInfo, allowH264Fallback: Bool = true
     ) -> [(codec: VideoCodec, colorInfo: ColorInfo)] {
         guard preferredCodec == .hevc else {
             let ci = colorInfo.bitDepth >= 10 ? colorInfo.downgradedTo8Bit() : colorInfo
@@ -137,7 +150,9 @@ final class VideoEncoder: @unchecked Sendable {
         } else {
             attempts.append((.hevc, colorInfo))
         }
-        attempts.append((.h264, colorInfo.downgradedTo8Bit()))
+        if allowH264Fallback {
+            attempts.append((.h264, colorInfo.downgradedTo8Bit()))
+        }
         return attempts
     }
 

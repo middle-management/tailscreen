@@ -208,6 +208,7 @@
 "Limit bandwidth" = "Begränsa bandbredd";
 "%lld Mbps" = "%lld Mbps";
 "Frame rate and codec changes apply the next time you start sharing." = "Ändringar av bildfrekvens och codec gäller nästa gång du börjar dela.";
+"HEVC never falls back to H.264 — viewers that can only decode H.264 won't be able to watch. Choose Automatic to fall back when needed." = "HEVC faller aldrig tillbaka till H.264 — tittare som bara kan avkoda H.264 kommer inte att kunna titta. Välj Automatisk för att falla tillbaka vid behov.";
 "Audio" = "Ljud";
 "Speaker" = "Högtalare";
 "About" = "Om";
