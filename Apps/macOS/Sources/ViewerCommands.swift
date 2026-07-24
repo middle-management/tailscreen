@@ -57,10 +57,15 @@ final class ViewerCommands: NSObject {
     // MARK: - Application
 
     /// App menu → Settings… (⌘,). Opens the preferences window; `AppState`
-    /// owns the `NSWindow` + hosting controller and the activation-policy
-    /// promotion an `.accessory` app needs to key it.
+    /// owns the `NSWindow` + hosting controller.
     @objc func openSettings(_ sender: Any?) {
         appState?.presentSettings()
+    }
+
+    /// Window → Tailscreen (also the menubar popover's "Open Tailscreen"
+    /// row). Opens or re-focuses the docked main window.
+    @objc func showMainWindow(_ sender: Any?) {
+        appState?.presentMainWindow()
     }
 
     // MARK: - Window

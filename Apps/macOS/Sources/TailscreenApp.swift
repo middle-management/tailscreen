@@ -47,7 +47,29 @@ enum MenubarIconState: Equatable {
 struct TailscreenApp: App {
     @StateObject private var appState = AppState()
 
+    /// Scene id of the docked main window. `AppState.presentMainWindow`
+    /// re-opens the scene through the stashed `openWindow` action and, as a
+    /// fallback, matches `NSWindow.identifier` prefixes against this.
+    /// `nonisolated` (SE-0434) so non-MainActor contexts could read the
+    /// constant too.
+    nonisolated static let mainWindowID = "main"
+
     var body: some Scene {
+        // The docked main window — the app's hub (sign-in, peer list,
+        // identity). Presented at launch like a normal Mac app; closing it
+        // leaves the app running in the menubar. The MenuBarExtra below
+        // stays focused on the sharing session ("the sharer tool").
+        Window("Tailscreen", id: Self.mainWindowID) {
+            MainWindowView()
+                .environmentObject(appState)
+        }
+        .defaultSize(width: 400, height: 580)
+        .windowResizability(.contentMinSize)
+        .defaultLaunchBehavior(.presented)
+        // The toolbar carries the identity block ("Tailscreen" + tailnet
+        // login) instead of a window title — the Tailscale-app look.
+        .windowStyle(.hiddenTitleBar)
+
         // The menubar icon shows the brand mark at idle and switches to
         // state-conveying SF Symbols while sharing or viewing — the
         // brand glyph alone wouldn't tell the user *what* the app is

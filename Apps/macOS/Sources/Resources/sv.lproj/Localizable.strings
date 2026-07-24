@@ -32,12 +32,43 @@
 "Low-latency, encrypted peer-to-peer screen sharing over Tailscale.\n" = "Krypterad peer-to-peer-skärmdelning med låg latens över Tailscale.\n";
 "Captures with ScreenCaptureKit, encodes H.264/HEVC with VideoToolbox, renders with Metal, and tunnels via tsnet ephemeral nodes — no manual device registration.\n" = "Fångar med ScreenCaptureKit, kodar H.264/HEVC med VideoToolbox, renderar med Metal och tunnlar via tillfälliga tsnet-noder – ingen manuell enhetsregistrering.\n";
 
-/* MARK: - Welcome / sign-in (MenuBarView.swift) */
+/* MARK: - Welcome / sign-in (MainWindowView.swift) */
 "Welcome to Tailscreen" = "Välkommen till Tailscreen";
 "Sign in with Tailscale to share and view screens with your peers." = "Logga in med Tailscale för att dela och visa skärmar med andra.";
 "Signing in…" = "Loggar in…";
 "Sign in with Tailscale" = "Logga in med Tailscale";
 "Opens Tailscale sign-in in your browser" = "Öppnar Tailscale-inloggning i din webbläsare";
+
+/* MARK: - Main window hub (MainWindowView.swift) */
+"Viewer approvals and sharing controls live in the menu bar icon." = "Tittargodkännanden och delningskontroller finns i menyradsikonen.";
+"Share your screen" = "Dela din skärm";
+"Pick a display, window, or app to share with your tailnet." = "Välj en skärm, ett fönster eller en app att dela med ditt tailnet.";
+"Screens" = "Skärmar";
+"Search screens" = "Sök skärmar";
+"Account" = "Konto";
+"View Screen" = "Visa skärm";
+"Ask to Share" = "Be om att dela";
+"Copy" = "Kopiera";
+"Tags" = "Taggar";
+"Last seen %@" = "Senast sedd %@";
+"Shows details and actions" = "Visar detaljer och åtgärder";
+
+/* MARK: - Signed-out popover (MenuBarView.swift) */
+"Not signed in" = "Inte inloggad";
+"Open Tailscreen to sign in with Tailscale." = "Öppna Tailscreen för att logga in med Tailscale.";
+"Open Tailscreen" = "Öppna Tailscreen";
+
+/* MARK: - Peer list filter (MainWindowView.swift) */
+"Hide offline devices" = "Dölj offline-enheter";
+"Only screens being shared" = "Endast skärmar som delas";
+"Filter by Tag" = "Filtrera efter tagg";
+"Untagged" = "Otaggade";
+"Clear Filters" = "Rensa filter";
+"Filter screens" = "Filtrera skärmar";
+"Filter available screens" = "Filtrera tillgängliga skärmar";
+"No screens match your filters" = "Inga skärmar matchar dina filter";
+"Sharing" = "Delar";
+"%lld hidden by filters" = "%lld dolda av filter";
 
 /* MARK: - Pending request-to-share banner (MenuBarView.swift) */
 "%@ wants you to share" = "%@ vill att du delar";

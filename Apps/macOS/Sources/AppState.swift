@@ -296,6 +296,14 @@ class AppState: ObservableObject {
     /// Preferences window, lazily created on first ⌘, and kept for the
     /// process lifetime so reopening is instant and edits stay put.
     private var settingsWindow: NSWindow?
+    /// Opens (or re-focuses) the docked main window scene. Stashed by the
+    /// SwiftUI layer (`MainWindowView` / `MenuBarView` onAppear) because
+    /// the `openWindow` environment action is only reachable from view
+    /// context, while the callers here are AppKit menu items and popover
+    /// rows. `@MainActor` on the function type because the stashed closure
+    /// calls SwiftUI's MainActor-isolated `OpenWindowAction`. See
+    /// `presentMainWindow()`.
+    var openMainWindowAction: (@MainActor () -> Void)?
     private var viewerRenderer: MetalViewerRenderer?
     private var viewerOverlay: AnnotationOverlayHostView?
     /// Input-capture layer above the annotation overlay, active only while
@@ -366,7 +374,7 @@ class AppState: ObservableObject {
     @Published private(set) var peerShareInfo: [String: TailscreenMetadata] = [:]
     private var shareStatusRefreshInFlight = false
 
-    /// The peers the menubar's AVAILABLE SCREENS section renders: the raw
+    /// The peers the main window's Screens list renders: the raw
     /// list projected through `peerFilter` (pure decision, covered by
     /// `PeerListFilterTests` in the protocol package).
     var filteredPeers: [TailscreenPeer] {
@@ -1681,12 +1689,6 @@ class AppState: ObservableObject {
             connectionState = .viewing
             connectedHostname = host
             viewerWindow?.title = L("Viewing \(host)")
-            // Order matters: with the app at .accessory activation policy
-            // (MenuBarExtra-only), makeKeyAndOrderFront silently no-ops
-            // because non-regular apps can't make a window key. Promote
-            // to .regular first, then activate, then bring the window
-            // up — same idea as AppMenu's activation policy toggle.
-            NSApp.setActivationPolicy(.regular)
             NSApp.activate(ignoringOtherApps: true)
             viewerWindow?.orderFrontRegardless()
             viewerWindow?.makeKeyAndOrderFront(nil)
@@ -2037,9 +2039,6 @@ class AppState: ObservableObject {
         userResizedViewer = false
         // Allow the next session to re-emit the E2E_MARKER on its first frame.
         didLogFirstViewerFrame = false
-        // Drop back to .accessory so the Dock icon goes away when there's
-        // no viewer window up. connect() will promote back to .regular.
-        NSApp.setActivationPolicy(.accessory)
     }
 
     func discoverPeers() async {
@@ -2219,6 +2218,23 @@ class AppState: ObservableObject {
         // removed node can't pin a stale "sharing" row forever.
         let known = Set(availablePeers.map(\.id))
         peerShareInfo = peerShareInfo.filter { known.contains($0.key) }
+    }
+
+    /// Single-peer variant of `refreshPeerShareStatus`, fired when the main
+    /// window's peer-detail pane expands so its share info reflects *now*
+    /// rather than whenever the last full sweep ran. Same rule as the
+    /// sweep: no answer removes the entry, so the pane can never show a
+    /// stale "sharing" state.
+    func refreshShareStatus(for peer: TailscreenPeer) async {
+        guard peer.isOnline, !peer.tailscaleIP.isEmpty else { return }
+        guard let node = server?.node ?? client?.node ?? self.node else { return }
+        let metadata = await TailscreenMetadataClient.fetchMetadata(
+            fromIP: peer.tailscaleIP, via: node)
+        if let metadata {
+            peerShareInfo[peer.id] = metadata
+        } else {
+            peerShareInfo.removeValue(forKey: peer.id)
+        }
     }
 
     /// Initialize Tailscale and trigger login flow
@@ -2634,11 +2650,7 @@ class AppState: ObservableObject {
     }
 
     /// Open (or re-focus) the preferences window. A real titled `NSWindow`
-    /// hosting `SettingsView`, kept around for the process lifetime. Promote
-    /// to `.regular` first for the same reason the viewer window does — an
-    /// `.accessory` app (the `MenuBarExtra` default) can't make a window key,
-    /// so `makeKeyAndOrderFront` would silently no-op. `AppMenu`'s window
-    /// observers drop the policy back to `.accessory` once it closes.
+    /// hosting `SettingsView`, kept around for the process lifetime.
     func presentSettings() {
         if settingsWindow == nil {
             let hosting = NSHostingController(rootView: SettingsView(appState: self))
@@ -2649,9 +2661,24 @@ class AppState: ObservableObject {
             win.center()
             settingsWindow = win
         }
-        NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    /// Open (or re-focus) the docked main window. Routes through the
+    /// SwiftUI `openWindow` action stashed in `openMainWindowAction` so the
+    /// `Window` scene owns the NSWindow; the identifier-prefix fallback
+    /// covers the theoretical gap where no SwiftUI view has appeared yet
+    /// but the scene's window already exists.
+    func presentMainWindow() {
+        NSApp.activate(ignoringOtherApps: true)
+        if let openMainWindowAction {
+            openMainWindowAction()
+        } else if let win = NSApp.windows.first(where: {
+            $0.identifier?.rawValue.hasPrefix(TailscreenApp.mainWindowID) == true
+        }) {
+            win.makeKeyAndOrderFront(nil)
+        }
     }
 
     /// Surface an error to the user as an `NSAlert`. Using AppKit
