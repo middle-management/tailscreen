@@ -70,6 +70,10 @@
 "Remove this account?" = "Remove this account?";
 "Removes its sign-in state from this Mac. The device may remain listed in the tailnet admin console until it expires." = "Removes its sign-in state from this Mac. The device may remain listed in the tailnet admin console until it expires.";
 
+/* MARK: - Popover identity strip (MenuBarView.swift) */
+"Signed in as %@" = "Signed in as %@";
+"Opens the Tailscreen window" = "Opens the Tailscreen window";
+
 /* MARK: - Signed-out popover (MenuBarView.swift) */
 "Not signed in" = "Not signed in";
 "Open Tailscreen to sign in with Tailscale." = "Open Tailscreen to sign in with Tailscale.";

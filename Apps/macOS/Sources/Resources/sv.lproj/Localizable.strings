@@ -65,6 +65,10 @@
 "Remove this account?" = "Ta bort det här kontot?";
 "Removes its sign-in state from this Mac. The device may remain listed in the tailnet admin console until it expires." = "Tar bort dess inloggningsuppgifter från den här datorn. Enheten kan finnas kvar i tailnetets adminkonsol tills den löper ut.";
 
+/* MARK: - Popover identity strip (MenuBarView.swift) */
+"Signed in as %@" = "Inloggad som %@";
+"Opens the Tailscreen window" = "Öppnar Tailscreen-fönstret";
+
 /* MARK: - Signed-out popover (MenuBarView.swift) */
 "Not signed in" = "Inte inloggad";
 "Open Tailscreen to sign in with Tailscale." = "Öppna Tailscreen för att logga in med Tailscale.";
