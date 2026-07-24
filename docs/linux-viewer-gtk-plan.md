@@ -126,6 +126,13 @@ guarantee the SDL path never had.
 - **CI:** new `linux-gtk-viewer` job (apt `libgtk-4-dev libepoxy-dev
   libgl1-mesa-dri xvfb`); build the app; run the **YUV-readback render test**
   under Xvfb. Deterministic pixel assertions gate the render path.
+- **Audio (done, post-L5):** the reused `ALSAAudioSink` is now wired into the
+  GTK viewer's `transport.run` (`--no-audio` to disable). Because the transport
+  loop runs on the GTK main thread, the sink is fronted by a `ThreadedAudioSink`
+  (in `TailscreenViewerCore`) so ALSA's blocking device write happens off the
+  main thread — otherwise ~50 audio writes/s would stall video. Best-effort: a
+  missing/busy device drops to video-only. Mic **capture** still needs an ALSA
+  input path (not built yet).
 
 ### L1 — Aspect-fit, zoom/pan, window behavior
 - Letterbox aspect-fit in the GLArea viewport (port the mac `aspectFitRect`

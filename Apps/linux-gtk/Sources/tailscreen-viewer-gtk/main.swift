@@ -38,17 +38,18 @@ var gPickerMode = false
 func fail(_ message: String) -> Never {
     FileHandle.standardError.write(Data("error: \(message)\n".utf8))
     FileHandle.standardError.write(
-        Data("usage: tailscreen-viewer-gtk [<sharer-host>] [--port N] [--state-dir PATH] [--control-url URL]\n".utf8))
+        Data("usage: tailscreen-viewer-gtk [<sharer-host>] [--port N] [--no-audio] [--state-dir PATH] [--control-url URL]\n".utf8))
     exit(2)
 }
 
 /// Parse the live-run arguments. The host is OPTIONAL — its absence selects
 /// picker mode. The returned `ViewerConfig` carries an empty hostname then
 /// (`prepare` ignores hostname; the chosen sharer's IP fills it in before `run`).
-func parseConfig() -> (config: ViewerConfig, host: String?) {
+func parseConfig() -> (config: ViewerConfig, host: String?, wantAudio: Bool) {
     var args = gArgs
     var host: String?
     var port: UInt16 = 7447
+    var wantAudio = true
     var statePath = FileManager.default.currentDirectoryPath + "/.tailscreen-viewer-gtk-state"
     let env = ProcessInfo.processInfo.environment
     var controlURL = env["TAILSCREEN_TS_CONTROL_URL"]
@@ -61,6 +62,8 @@ func parseConfig() -> (config: ViewerConfig, host: String?) {
             guard let raw = args.first, let value = UInt16(raw) else { fail("--port needs a number") }
             port = value
             args.removeFirst()
+        case "--no-audio":
+            wantAudio = false
         case "--state-dir":
             guard let value = args.first else { fail("--state-dir needs a path") }
             statePath = value
@@ -79,7 +82,7 @@ func parseConfig() -> (config: ViewerConfig, host: String?) {
 
     var config = ViewerConfig(hostname: host ?? "", port: port, authKey: authKey, statePath: statePath)
     if let controlURL { config.controlURL = controlURL }
-    return (config, host)
+    return (config, host, wantAudio)
 }
 
 if gSelfTest {
@@ -91,10 +94,22 @@ if gSelfTest {
     // shared store. The transport is @MainActor; started as a Task here, it
     // runs interleaved with the GTK loop (swift-cross-ui ticks RunLoop.main),
     // so `present` — and thus the GLArea repaint — happens on the main thread.
-    let (baseConfig, host) = parseConfig()
+    let (baseConfig, host, wantAudio) = parseConfig()
     let sink = GtkVideoSink(store: gStore, uiState: gUIState)
     let decoder = FFmpegVideoDecoder()
     let transport = TsnetTransport()
+    // Audio out: an ALSA sink fronted by a background thread so its blocking
+    // device write never runs on the GTK main thread (the transport loop is
+    // serviced by RunLoop.main). Best-effort — a missing/busy device (or a
+    // headless box) shouldn't block viewing, so failure just drops to video-only.
+    var audioSink: AudioSink?
+    if wantAudio {
+        do {
+            audioSink = try makeThreadedALSAAudioSink()
+        } catch {
+            FileHandle.standardError.write(Data("warning: audio disabled (\(error))\n".utf8))
+        }
+    }
     // Inbound back-channel handlers: control grant/revoke drive the toolbar's
     // state machine. Inbound annotation *rendering* (drawing relayed strokes on
     // an overlay canvas) is a follow-up — the plumbing already carries the ops.
@@ -110,10 +125,9 @@ if gSelfTest {
         config.hostname = dialHost
         Task { @MainActor in
             do {
-                // audio (ALSA) wiring is deferred to a later phase; video first.
                 try await transport.run(
                     config: config, decoder: decoder, videoSink: sink,
-                    audioSink: nil, shouldClose: { false },
+                    audioSink: audioSink, shouldClose: { false },
                     backChannelHandlers: backChannelHandlers,
                     onBackChannelReady: { channel in gControls.attach(channel) },
                     onAdmitted: { caps in
