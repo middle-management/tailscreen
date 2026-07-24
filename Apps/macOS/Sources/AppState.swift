@@ -340,6 +340,51 @@ class AppState: ObservableObject {
     // Peer discovery
     @Published var availablePeers: [TailscreenPeer] = []
     @Published var isDiscovering = false
+    /// User's peer-list filter (hide offline / by ACL tag), persisted like
+    /// the quality settings so it survives relaunch. `availablePeers` stays
+    /// the raw netmap-derived list — the filter UI needs it to enumerate
+    /// every known tag and count hidden rows, and the
+    /// `TAILSCREEN_AUTOCONNECT_TO` automation path must not be filtered.
+    @Published var peerFilter: PeerListFilter = PeerListFilterStore.load() {
+        didSet {
+            guard peerFilter != oldValue else { return }
+            PeerListFilterStore.save(peerFilter)
+            // Turning the sharing-status axis on makes stale/missing
+            // answers user-visible immediately — kick a fresh sweep so
+            // rows fill in rather than sit hidden until the next open.
+            if peerFilter.onlySharing && !oldValue.onlySharing {
+                Task { @MainActor [weak self] in await self?.refreshPeerShareStatus() }
+            }
+        }
+    }
+
+    /// Fetched share status per peer (`TailscreenPeer.id` →
+    /// `.metadataResponse` payload). Peers with no entry are
+    /// status-unknown: never fetched, offline, no answer, or a legacy
+    /// build. Refreshed by `refreshPeerShareStatus()`; entries for peers
+    /// that answered nothing are removed rather than left stale.
+    @Published private(set) var peerShareInfo: [String: TailscreenMetadata] = [:]
+    private var shareStatusRefreshInFlight = false
+
+    /// The peers the menubar's AVAILABLE SCREENS section renders: the raw
+    /// list projected through `peerFilter` (pure decision, covered by
+    /// `PeerListFilterTests` in the protocol package).
+    var filteredPeers: [TailscreenPeer] {
+        availablePeers.filter {
+            peerFilter.matches(
+                isOnline: $0.isOnline, tags: $0.tags,
+                sharing: PeerSharingState(fetched: peerShareInfo[$0.id]))
+        }
+    }
+
+    /// Tags offered by the filter menu: the union of every discovered
+    /// peer's tags plus any currently-selected tags — a selected tag whose
+    /// peers left the tailnet must stay listed so it can be unselected.
+    var knownPeerTags: [String] {
+        var union = peerFilter.selectedTags
+        for peer in availablePeers { union.formUnion(peer.tags) }
+        return union.sorted()
+    }
     /// True once any discovery pass has finished (successfully or not).
     /// The menubar devices section shows its loading skeleton until this
     /// flips — an empty `availablePeers` before the first pass means "no
@@ -2030,6 +2075,9 @@ class AppState: ObservableObject {
                 Task { @MainActor in
                     try? await discovery.startRealTimeMonitoring(node: node)
                 }
+                // Sweep share statuses off the fresh roster. Fire-and-forget
+                // so N metadata dials never delay the "done" spinner flip.
+                Task { @MainActor [weak self] in await self?.refreshPeerShareStatus() }
             } catch {
                 logger.log("Discovery: reseed failed with \(error)")
                 presentError(.discoveryFailed(error))
@@ -2050,6 +2098,10 @@ class AppState: ObservableObject {
             try await discovery.startDiscovery(node: node)
             setAvailablePeers(discovery.availablePeers)
             logger.log("Discovery: returned with \(self.availablePeers.count) peer(s)")
+
+            // Sweep share statuses off the fresh roster. Fire-and-forget
+            // so N metadata dials never delay the "done" spinner flip.
+            Task { @MainActor [weak self] in await self?.refreshPeerShareStatus() }
 
             // Real-time IPN monitoring runs fire-and-forget so it never
             // blocks the user-visible "done" signal. The first attempt
@@ -2128,6 +2180,45 @@ class AppState: ObservableObject {
         if !peers.isEmpty { hasCompletedInitialDiscovery = true }
         guard peers != availablePeers else { return }
         availablePeers = peers
+    }
+
+    /// Query each online Tailscreen peer's TCP/7447 listener for its
+    /// share status (`.metadataRequest` → `.metadataResponse`) and cache
+    /// the answers for the sharing-status filter + the peer rows' share
+    /// captions. Deliberately lazy — it runs off `discoverPeers()` (menu
+    /// open / manual refresh) and when the "only sharing" filter turns on,
+    /// so a large tailnet pays N short-lived dials only while the user is
+    /// actually looking. Answers land incrementally as each dial resolves;
+    /// a peer that gives no answer (offline, legacy build, timeout) has
+    /// its entry removed so the filter treats it as unknown, never stale.
+    func refreshPeerShareStatus() async {
+        if shareStatusRefreshInFlight { return }
+        guard let node = server?.node ?? client?.node ?? self.node else { return }
+        shareStatusRefreshInFlight = true
+        defer { shareStatusRefreshInFlight = false }
+
+        let targets = availablePeers.filter { $0.isOnline && !$0.tailscaleIP.isEmpty }
+        await withTaskGroup(of: (String, TailscreenMetadata?).self) { group in
+            for peer in targets {
+                let ip = peer.tailscaleIP
+                let id = peer.id
+                group.addTask {
+                    (id, await TailscreenMetadataClient.fetchMetadata(fromIP: ip, via: node))
+                }
+            }
+            for await (id, metadata) in group {
+                if let metadata {
+                    peerShareInfo[id] = metadata
+                } else {
+                    peerShareInfo.removeValue(forKey: id)
+                }
+            }
+        }
+
+        // Prune entries for peers that left the roster entirely so a
+        // removed node can't pin a stale "sharing" row forever.
+        let known = Set(availablePeers.map(\.id))
+        peerShareInfo = peerShareInfo.filter { known.contains($0.key) }
     }
 
     /// Initialize Tailscale and trigger login flow
@@ -2328,6 +2419,17 @@ class AppState: ObservableObject {
                     from: fromHostname, sourceAddr: peerAddress, connectionID: connectionID)
             }
         }
+        // Answer peer metadata queries (the sharing-status filter's fetch
+        // half) on the same connection they arrived on. Exposes nothing
+        // the tailnet can't already see (hostname is in the netmap) plus
+        // the share state any admitted viewer would learn by connecting.
+        l.onMetadataRequest = { [weak self, weak l] connectionID in
+            Task { @MainActor [weak self, weak l] in
+                guard let self, let l else { return }
+                let metadata = self.metadataService.wireMetadata()
+                Task { await l.send(.metadataResponse(metadata), to: connectionID) }
+            }
+        }
         try await l.start(node: node)
         controlListener = l
         logger.log("Control listener bound on TCP/\(NetworkConfig.tailscreenPort)")
@@ -2438,6 +2540,7 @@ class AppState: ObservableObject {
             peerDiscovery = nil
             peerDiscoveryNode = nil
             availablePeers = []
+            peerShareInfo = [:]
             hasCompletedInitialDiscovery = false
             tailscaleIPs = []
 

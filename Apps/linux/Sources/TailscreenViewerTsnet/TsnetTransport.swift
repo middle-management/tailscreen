@@ -143,7 +143,16 @@ public final class TsnetTransport {
         }
 
         logger.log("Bringing up tsnet node \(hostName)…")
-        try await node.up()
+        // Stop the auth watcher on failure too: it subscribed the IPN bus
+        // before `up()`, and its MessageProcessor keeps running (retaining the
+        // node) unless `stopWatching()` cancels it — a leak on the interactive-
+        // login path if `up()` throws.
+        do {
+            try await node.up()
+        } catch {
+            authWatcher?.stopWatching()
+            throw error
+        }
         authWatcher?.stopWatching()
 
         let ips = try await node.addrs()
@@ -210,6 +219,13 @@ public final class TsnetTransport {
         // the live node (this is a no-op then).
         try await prepare(config: config)
         guard let node = preparedNode else { throw TailscaleError.badInterfaceHandle }
+        // Clear the node reference on EVERY exit path, not just the clean loop
+        // exit below. `preparedNode` lives on the process-lifetime transport, so
+        // a throw between here and that tail (addrs / tailscale / listener bind /
+        // back-channel start) would otherwise pin the node forever — its last
+        // reference never drops, so `deinit` (the real `tailscale_close`) never
+        // runs, leaking the tsnet node and wedging any retry on the stale one.
+        defer { preparedNode = nil }
 
         let ips = try await node.addrs()
         guard let tailscale = await node.tailscale else {
@@ -341,7 +357,8 @@ public final class TsnetTransport {
         }
         await listener.close()
         try? await node.down()
-        preparedNode = nil
+        // `preparedNode = nil` is handled by the `defer` above (which also
+        // covers the throwing exit paths).
     }
 
     /// Surface an interactive-login URL: print it prominently on stderr (so it

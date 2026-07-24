@@ -37,6 +37,17 @@ import Foundation
 ///         one ``InputEvent`` (mouse/scroll/key) to inject on the sharer's
 ///         machine. payload = JSON-encoded ``InputEvent``. Honoured only
 ///         from the current grantee's connection; dropped otherwise.
+///     .metadataRequest (0x0B) — peer→peer
+///         "describe yourself" — drives the peer list's sharing-status
+///         filter. Empty payload; answered with `.metadataResponse` on the
+///         SAME TCP connection (like `.shareResponse` — no dial-back). Old
+///         peers drop the unknown byte, so the requester just times out
+///         and the peer reads as status-unknown.
+///     .metadataResponse (0x0C) — request receiver→requester
+///         payload = JSON-encoded ``TailscreenMetadata`` (share name,
+///         resolution, `isSharing`). Exposes nothing the tailnet can't
+///         already see (the hostname is in the netmap) plus the share
+///         state a viewer would learn by connecting.
 public enum ScreenShareMessage {
     case annotation(AnnotationOp)
     case requestToShare(fromHostname: String)
@@ -46,6 +57,8 @@ public enum ScreenShareMessage {
     case controlRevoked(reason: String)
     case inputEvent(InputEvent)
     case controlReleased
+    case metadataRequest
+    case metadataResponse(TailscreenMetadata)
 
     public static let headerSize = 5
 
@@ -70,9 +83,13 @@ public enum ScreenShareMessage {
         case controlGranted = 0x07
         case controlRevoked = 0x08
         case inputEvent = 0x09
-        // 0x0A–0x0C are used by the UDP control byte space (NACK/RR/PING);
-        // this is the disjoint TCP message-type space, so 0x0A is free here.
+        // 0x0A–0x0C are also used by the UDP control byte space
+        // (NACK/RR/PING); this is the disjoint TCP message-type space, so
+        // they're free here — see WireByteRegistryTests'
+        // testTCPAndUDPSpacesAreDisjointOnPurpose.
         case controlReleased = 0x0A
+        case metadataRequest = 0x0B
+        case metadataResponse = 0x0C
     }
 
     /// Serialize this message as a wire-format packet (header + payload).
@@ -103,6 +120,11 @@ public enum ScreenShareMessage {
             return Self.frame(type: .inputEvent, payload: payload)
         case .controlReleased:
             return Self.frame(type: .controlReleased, payload: Data())
+        case .metadataRequest:
+            return Self.frame(type: .metadataRequest, payload: Data())
+        case .metadataResponse(let metadata):
+            let payload = (try? JSONEncoder().encode(metadata)) ?? Data()
+            return Self.frame(type: .metadataResponse, payload: payload)
         }
     }
 
@@ -178,6 +200,10 @@ public struct ScreenShareMessageParser {
             return decodeInputEvent(payload)
         case .controlReleased:
             return .controlReleased
+        case .metadataRequest:
+            return .metadataRequest
+        case .metadataResponse:
+            return decodeMetadataResponse(payload)
         }
     }
 
@@ -221,6 +247,23 @@ public struct ScreenShareMessageParser {
         else { return .controlRevoked(reason: "") }
         let clamped = String(decoded.reason.prefix(ControlRevokedPayload.maxReasonLength))
         return .controlRevoked(reason: clamped)
+    }
+
+    private func decodeMetadataResponse(_ payload: Data) -> ScreenShareMessage? {
+        guard
+            let metadata = try? JSONDecoder().decode(TailscreenMetadata.self, from: Data(payload))
+        else { return nil }
+        // The strings are peer-controlled and rendered in the popover's
+        // peer rows; clamp before propagating so a hostile peer can't
+        // bloat the UI (same rule as `.requestToShare`'s hostname).
+        let clamped = TailscreenMetadata(
+            shareName: String(metadata.shareName.prefix(TailscreenMetadata.maxDisplayStringLength)),
+            hostname: String(metadata.hostname.prefix(TailscreenMetadata.maxDisplayStringLength)),
+            screenResolution: metadata.screenResolution,
+            isSharing: metadata.isSharing,
+            timestamp: metadata.timestamp,
+            videoCodec: metadata.videoCodec)
+        return .metadataResponse(clamped)
     }
 
     private func decodeInputEvent(_ payload: Data) -> ScreenShareMessage? {
