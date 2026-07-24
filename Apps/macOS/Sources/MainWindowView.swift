@@ -70,9 +70,9 @@ private struct TitlebarConfigurator: NSViewRepresentable {
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         if window.toolbar == nil {
-            let toolbar = NSToolbar(identifier: "TailscreenTitlebarSpacer")
-            toolbar.showsBaselineSeparator = false
-            window.toolbar = toolbar
+            // No `showsBaselineSeparator = false` — deprecated (and a
+            // no-op) since macOS 15; unified style draws no separator.
+            window.toolbar = NSToolbar(identifier: "TailscreenTitlebarSpacer")
         }
         window.toolbarStyle = .unified
     }
