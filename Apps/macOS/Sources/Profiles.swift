@@ -13,6 +13,12 @@ struct TailscreenProfile: Codable, Identifiable, Equatable, Sendable {
     /// while it's inactive. Empty until then.
     var displayName: String
     var loginName: String
+    /// Tailnet (organization) name, e.g. "example.com" or "slaskis.github".
+    /// The disambiguator when two profiles share a login name — a GitHub
+    /// identity used across orgs yields the identical `loginName` on every
+    /// tailnet. Empty until known; blobs stored before this field existed
+    /// decode to empty via the custom decoder below.
+    var tailnetName: String
     /// State-dir path relative to the Tailscreen app-support directory,
     /// WITHOUT the `TAILSCREEN_INSTANCE` suffix. The migrated default
     /// profile owns the pre-profiles `"tailscale"` root; new profiles get
@@ -21,6 +27,41 @@ struct TailscreenProfile: Codable, Identifiable, Equatable, Sendable {
 
     /// Whether this profile has completed a login at least once.
     var hasSignedIn: Bool { !loginName.isEmpty }
+
+    /// Menu row title: tailnet-qualified once known, since the login name
+    /// alone can collide across profiles.
+    var menuTitle: String {
+        guard hasSignedIn else { return "" }
+        return tailnetName.isEmpty ? loginName : "\(loginName) — \(tailnetName)"
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, displayName, loginName, tailnetName, stateDirectory
+    }
+
+    init(
+        id: UUID, displayName: String, loginName: String, tailnetName: String = "",
+        stateDirectory: String
+    ) {
+        self.id = id
+        self.displayName = displayName
+        self.loginName = loginName
+        self.tailnetName = tailnetName
+        self.stateDirectory = stateDirectory
+    }
+
+    /// Custom decode solely for `tailnetName`'s missing-key default —
+    /// registries persisted by builds predating the field must keep
+    /// decoding (the store's corrupt-blob fallback would otherwise reset
+    /// the profile list). Encoding stays synthesized.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        displayName = try container.decode(String.self, forKey: .displayName)
+        loginName = try container.decode(String.self, forKey: .loginName)
+        tailnetName = try container.decodeIfPresent(String.self, forKey: .tailnetName) ?? ""
+        stateDirectory = try container.decode(String.self, forKey: .stateDirectory)
+    }
 
     /// Absolute tsnet state path:
     /// `<appSupport>/Tailscreen/<stateDirectory><instanceSuffix>`.
@@ -99,13 +140,15 @@ final class ProfileStore: ObservableObject {
 
     /// Copy the signed-in identity onto the active profile. No-op when
     /// nothing changed, so callers can invoke it after every login/restore.
-    func updateActiveIdentity(displayName: String, loginName: String) {
+    func updateActiveIdentity(displayName: String, loginName: String, tailnetName: String) {
         guard let idx = profiles.firstIndex(where: { $0.id == activeProfileID }) else { return }
         guard
             profiles[idx].displayName != displayName || profiles[idx].loginName != loginName
+                || profiles[idx].tailnetName != tailnetName
         else { return }
         profiles[idx].displayName = displayName
         profiles[idx].loginName = loginName
+        profiles[idx].tailnetName = tailnetName
         persist()
     }
 

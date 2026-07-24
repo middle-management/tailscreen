@@ -43,7 +43,8 @@ public class TailscaleAuth: ObservableObject {
                 self.userProfile = TailscaleUserProfile(
                     displayName: profile.UserProfile.DisplayName,
                     loginName: profile.UserProfile.LoginName,
-                    profilePicURL: profile.UserProfile.ProfilePicURL
+                    profilePicURL: profile.UserProfile.ProfilePicURL,
+                    tailnetName: profile.NetworkProfile?.DomainName ?? ""
                 )
                 self.isAuthenticated = true
                 logger.log("✓ Authenticated as \(profile.UserProfile.DisplayName)")
@@ -85,7 +86,8 @@ public class TailscaleAuth: ObservableObject {
                 self.userProfile = TailscaleUserProfile(
                     displayName: profile.UserProfile.DisplayName,
                     loginName: profile.UserProfile.LoginName,
-                    profilePicURL: profile.UserProfile.ProfilePicURL
+                    profilePicURL: profile.UserProfile.ProfilePicURL,
+                    tailnetName: profile.NetworkProfile?.DomainName ?? ""
                 )
                 self.isAuthenticated = true
                 logger.log("✓ Already authenticated as \(profile.UserProfile.DisplayName)")
@@ -180,7 +182,8 @@ public class TailscaleAuth: ObservableObject {
                     self.userProfile = TailscaleUserProfile(
                         displayName: profile.UserProfile.DisplayName,
                         loginName: profile.UserProfile.LoginName,
-                        profilePicURL: profile.UserProfile.ProfilePicURL
+                        profilePicURL: profile.UserProfile.ProfilePicURL,
+                        tailnetName: profile.NetworkProfile?.DomainName ?? ""
                     )
                     self.isAuthenticated = true
                     self.authURL = nil
@@ -201,11 +204,22 @@ public struct TailscaleUserProfile: Sendable {
     public let displayName: String
     public let loginName: String
     public let profilePicURL: String?
+    /// Tailnet (organization) name from the login profile's
+    /// `NetworkProfile.DomainName`, e.g. "example.com" or "slaskis.github".
+    /// This is what tells two logins apart when the login name itself is
+    /// identical — a GitHub identity used across several orgs yields the
+    /// same `loginName` on every tailnet. Empty when the backend didn't
+    /// report one.
+    public let tailnetName: String
 
-    public init(displayName: String, loginName: String, profilePicURL: String?) {
+    public init(
+        displayName: String, loginName: String, profilePicURL: String?,
+        tailnetName: String = ""
+    ) {
         self.displayName = displayName
         self.loginName = loginName
         self.profilePicURL = profilePicURL
+        self.tailnetName = tailnetName
     }
 }
 

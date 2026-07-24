@@ -98,12 +98,18 @@ private struct HubHeader: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(verbatim: "Tailscreen")
                     .font(.system(.headline, design: .rounded, weight: .bold))
-                if let login = appState.tailscaleAuth.userProfile?.loginName {
-                    Text(verbatim: login)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                if let profile = appState.tailscaleAuth.userProfile {
+                    // Prefer the tailnet (org) name, like Tailscale's own
+                    // title bar — it's the distinguishing fact when the
+                    // same login is used across several tailnets.
+                    Text(
+                        verbatim: profile.tailnetName.isEmpty
+                            ? profile.loginName : profile.tailnetName
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
                 }
             }
 
@@ -163,6 +169,9 @@ private struct AccountMenu: View {
                 if let profile = appState.tailscaleAuth.userProfile {
                     Text(verbatim: profile.displayName)
                     Text(verbatim: profile.loginName)
+                    if !profile.tailnetName.isEmpty {
+                        Text(verbatim: profile.tailnetName)
+                    }
                     Divider()
                 }
                 ForEach(appState.profileStore.profiles) { profile in
@@ -214,10 +223,11 @@ private struct AccountMenu: View {
         }
     }
 
-    /// Menu title for a profile row: its login once it has signed in,
-    /// else a placeholder.
+    /// Menu title for a profile row: tailnet-qualified login once it has
+    /// signed in ("login — tailnet", since GitHub logins collide across
+    /// orgs), else a placeholder.
     private func title(for profile: TailscreenProfile) -> String {
-        profile.hasSignedIn ? profile.loginName : L("New account")
+        profile.hasSignedIn ? profile.menuTitle : L("New account")
     }
 }
 
@@ -247,7 +257,7 @@ private struct ProfileSwitchingPane: View {
     private var switchingText: String {
         let target = appState.profileStore.activeProfile
         return target.hasSignedIn
-            ? L("Switching to \(target.loginName)…")
+            ? L("Switching to \(target.menuTitle)…")
             : L("Switching accounts…")
     }
 }

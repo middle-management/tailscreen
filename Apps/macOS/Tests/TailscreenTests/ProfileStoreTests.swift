@@ -70,13 +70,28 @@ final class ProfileStoreTests: XCTestCase {
     func testUpdateActiveIdentityLabelsActiveProfileOnly() {
         let store = ProfileStore(defaults: makeSuite(#function))
         let added = store.addProfile()
-        store.updateActiveIdentity(displayName: "Robert", loginName: "robert@github")
+        store.updateActiveIdentity(
+            displayName: "Robert", loginName: "robert@github", tailnetName: "slaskis.github")
         XCTAssertEqual(store.activeProfile.displayName, "Robert")
         XCTAssertEqual(store.activeProfile.loginName, "robert@github")
+        XCTAssertEqual(store.activeProfile.tailnetName, "slaskis.github")
         XCTAssertTrue(store.activeProfile.hasSignedIn)
         XCTAssertEqual(
             store.profiles.first { $0.id == added.id }?.loginName, "",
             "inactive profile must be untouched")
+    }
+
+    func testMenuTitleQualifiesLoginWithTailnet() {
+        // Two GitHub logins on different orgs are identical by loginName —
+        // the tailnet name is the disambiguator.
+        var profile = TailscreenProfile(
+            id: UUID(), displayName: "Robert", loginName: "robert@github",
+            tailnetName: "slaskis.github", stateDirectory: "tailscale")
+        XCTAssertEqual(profile.menuTitle, "robert@github — slaskis.github")
+        profile.tailnetName = ""
+        XCTAssertEqual(profile.menuTitle, "robert@github", "no tailnet → plain login")
+        profile.loginName = ""
+        XCTAssertEqual(profile.menuTitle, "", "never signed in → caller supplies placeholder")
     }
 
     func testRoundTripAcrossInstances() {
@@ -84,11 +99,32 @@ final class ProfileStoreTests: XCTestCase {
         let store = ProfileStore(defaults: suite)
         let added = store.addProfile()
         store.setActive(added.id)
-        store.updateActiveIdentity(displayName: "Work", loginName: "work@example")
+        store.updateActiveIdentity(
+            displayName: "Work", loginName: "work@example", tailnetName: "example.com")
 
         let reloaded = ProfileStore(defaults: suite)
         XCTAssertEqual(reloaded.profiles, store.profiles)
         XCTAssertEqual(reloaded.activeProfileID, added.id)
+    }
+
+    func testBlobWithoutTailnetNameStillDecodes() throws {
+        // Registries persisted by builds predating `tailnetName` must keep
+        // decoding (missing key → empty), not trip the corrupt-blob reset.
+        let suite = makeSuite(#function)
+        let id = UUID()
+        let legacyJSON = """
+            [{"id":"\(id.uuidString)","displayName":"Robert",\
+            "loginName":"robert@github","stateDirectory":"tailscale"}]
+            """
+        suite.set(Data(legacyJSON.utf8), forKey: "tailscreenProfiles")
+        suite.set(id.uuidString, forKey: "tailscreenActiveProfileID")
+
+        let store = ProfileStore(defaults: suite)
+        XCTAssertEqual(store.profiles.count, 1)
+        XCTAssertEqual(store.profiles[0].id, id)
+        XCTAssertEqual(store.profiles[0].loginName, "robert@github")
+        XCTAssertEqual(store.profiles[0].tailnetName, "")
+        XCTAssertEqual(store.activeProfileID, id)
     }
 
     func testStoredActiveIDPointingNowhereFallsBackToFirstProfile() {
