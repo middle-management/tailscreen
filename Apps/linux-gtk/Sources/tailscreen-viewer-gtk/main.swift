@@ -23,6 +23,7 @@ import TailscreenViewerTsnet
 // swift-cross-ui's `App.main()` default-constructs the app, so shared state
 // lives at module scope.
 let gStore = FrameStore()
+let gUIState = ViewerUIState()
 let gArgs = Array(CommandLine.arguments.dropFirst())
 let gSelfTest = gArgs.contains("--render-self-test")
 
@@ -82,7 +83,7 @@ if gSelfTest {
     // runs interleaved with the GTK loop (swift-cross-ui ticks RunLoop.main),
     // so `present` — and thus the GLArea repaint — happens on the main thread.
     let config = parseConfig()
-    let sink = GtkVideoSink(store: gStore)
+    let sink = GtkVideoSink(store: gStore, uiState: gUIState)
     let decoder = FFmpegVideoDecoder()
     let transport = TsnetTransport()
     Task { @MainActor in
@@ -99,9 +100,19 @@ if gSelfTest {
 }
 
 struct ViewerApp: App {
+    // Observe the shared UI state so the placard reactively hides once video
+    // flows (swift-cross-ui @State tracks the ObservableObject's @Published).
+    @State var ui = gUIState
+
     var body: some Scene {
         WindowGroup("Tailscreen viewer") {
-            GtkVideoView(store: gStore, selfTest: gSelfTest)
+            ZStack {
+                GtkVideoView(store: gStore, selfTest: gSelfTest)
+                // Connection placard before the first frame (never in self-test).
+                if !gSelfTest && !ui.hasVideo {
+                    Text(ui.status)
+                }
+            }
         }
         .defaultSize(width: 960, height: 540)
     }
