@@ -3,7 +3,9 @@ import Foundation
 import Gtk
 import GtkBackend
 import SwiftCrossUI
+import TailscreenProtocol
 import TailscreenViewer
+import TailscreenViewerCore
 
 /// A video surface implemented as a *downstream* swift-cross-ui `View` — no
 /// fork. It conforms to the public `View` protocol directly (the tidy
@@ -12,13 +14,25 @@ import TailscreenViewer
 /// draws the latest `FrameStore` frame with an OpenGL YUV→RGB shader
 /// (`CGtkVideo`). Proven end-to-end (correct pixels via `glReadPixels`) — see
 /// docs/linux-viewer-gtk-plan.md.
+///
+/// When `onInputEvent` is supplied it also captures opt-in remote-control input:
+/// pointer motion, three mouse buttons, and keyboard, translated to neutral
+/// ``InputEvent``s via `ViewerInputMapping` (the pure, unit-tested Core mapper).
+/// Scroll is not yet captured — swift-cross-ui exposes no `EventControllerScroll`
+/// binding, so it awaits a small C shim (tracked in the GTK viewer plan).
 public struct GtkVideoView: View {
     let store: FrameStore
     let selfTest: Bool
+    let onInputEvent: ((InputEvent) -> Void)?
 
-    public init(store: FrameStore, selfTest: Bool = false) {
+    public init(
+        store: FrameStore,
+        selfTest: Bool = false,
+        onInputEvent: ((InputEvent) -> Void)? = nil
+    ) {
         self.store = store
         self.selfTest = selfTest
+        self.onInputEvent = onInputEvent
     }
 
     public var body: some View { EmptyView() }
@@ -81,9 +95,100 @@ public struct GtkVideoView: View {
                 exit(cgtkvideo_selftest_check() == 1 ? 0 : 3)
             }
         }
+        if let onInputEvent {
+            Self.attachInputCapture(to: area, store: store, emit: onInputEvent)
+        }
         // GtkGLArea is a Gtk.Widget; GtkBackend.Widget == Gtk.Widget, so this
         // runtime cast is safe whenever `backend is GtkBackend`.
         return (area as Any) as! Backend.Widget
+    }
+
+    /// Holds the current modifier-key state so pointer events — whose GTK
+    /// signals carry no modifier snapshot — can be tagged with the live
+    /// modifiers. Updated from the key controller's `modifiers` signal and from
+    /// every key event's state. A reference type so all the event closures share
+    /// one instance (retained for the widget's lifetime via its controllers).
+    private final class ModifierState {
+        var modifiers: KeyModifiers = []
+    }
+
+    /// Attach the GTK event controllers that turn raw GDK pointer/key events
+    /// into neutral ``InputEvent``s (via the unit-tested `ViewerInputMapping`)
+    /// and hand them to `emit`. All signals fire on the GTK main thread; `emit`
+    /// is responsible for gating (control must be granted) and forwarding.
+    private static func attachInputCapture(
+        to area: Gtk.GLArea,
+        store: FrameStore,
+        emit: @escaping (InputEvent) -> Void
+    ) {
+        let widget = UnsafeMutableRawPointer(area.widgetPointer)
+        // A GLArea isn't focusable by default; without focus it never receives
+        // key events. Make it focusable and grab focus on press.
+        cgtkvideo_widget_make_focusable(widget)
+        let mods = ModifierState()
+
+        // Normalize a widget-space pointer position to [0,1] over the video
+        // content rect. Reads the live widget + frame sizes at event time.
+        func normalize(_ px: Double, _ py: Double) -> (x: Double, y: Double) {
+            var w: Int32 = 0
+            var h: Int32 = 0
+            cgtkvideo_widget_size(widget, &w, &h)
+            let frame = store.current()
+            return ViewerInputMapping.normalizePointer(
+                px: px, py: py,
+                widgetW: Double(w), widgetH: Double(h),
+                videoW: frame?.width ?? 0, videoH: frame?.height ?? 0)
+        }
+
+        // Pointer motion.
+        let motion = EventControllerMotion()
+        motion.motion = { _, x, y in
+            let p = normalize(x, y)
+            emit(.mouseMove(x: p.x, y: p.y))
+        }
+        area.addEventController(motion)
+
+        // Mouse buttons — one GestureClick per button (GTK's GestureSingle
+        // listens to a single button number). GDK numbers: 1 left, 2 middle,
+        // 3 right; the mapper drops anything else.
+        for gdkButton in [1, 2, 3] {
+            guard let button = ViewerInputMapping.mouseButton(fromGdk: gdkButton) else { continue }
+            let click = GestureClick()
+            click.button = UInt(gdkButton)
+            click.pressed = { _, _, x, y in
+                cgtkvideo_widget_grab_focus(widget)  // direct keystrokes here
+                let p = normalize(x, y)
+                emit(.mouseDown(x: p.x, y: p.y, button: button, modifiers: mods.modifiers))
+            }
+            click.released = { _, _, x, y in
+                let p = normalize(x, y)
+                emit(.mouseUp(x: p.x, y: p.y, button: button, modifiers: mods.modifiers))
+            }
+            area.addEventController(click)
+        }
+
+        // Keyboard.
+        let keys = EventControllerKey()
+        keys.modifiers = { _, state in
+            mods.modifiers = ViewerInputMapping.keyModifiers(fromGdkState: UInt(state.rawValue))
+        }
+        keys.keyPressed = { _, _, keycode, state in
+            let m = ViewerInputMapping.keyModifiers(fromGdkState: UInt(state.rawValue))
+            mods.modifiers = m
+            guard let usage = ViewerInputMapping.hidUsage(fromGdkHardwareKeycode: Int(keycode)),
+                !ViewerInputMapping.isModifierUsage(usage)
+            else { return }  // unmapped or a modifier key (state rides every event)
+            emit(.keyDown(key: usage, modifiers: m))
+        }
+        keys.keyReleased = { _, _, keycode, state in
+            let m = ViewerInputMapping.keyModifiers(fromGdkState: UInt(state.rawValue))
+            mods.modifiers = m
+            guard let usage = ViewerInputMapping.hidUsage(fromGdkHardwareKeycode: Int(keycode)),
+                !ViewerInputMapping.isModifierUsage(usage)
+            else { return }
+            emit(.keyUp(key: usage, modifiers: m))
+        }
+        area.addEventController(keys)
     }
 
     public func computeLayout<Backend: BaseAppBackend>(

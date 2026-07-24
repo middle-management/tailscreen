@@ -186,3 +186,25 @@ void cgtkvideo_queue_render(void *gl_area_widget) {
     // lock + value-type copy.)
     if (gl_area_widget) g_idle_add(cgtkvideo_render_idle, gl_area_widget);
 }
+
+// Forward-declare the few widget accessors the input layer needs (resolved at
+// final link against libgtk-4, as with the queue-render symbols above). A
+// GtkWidget* is opaque here; passing the area's widget pointer through as void*
+// is ABI-compatible (C ignores parameter types for symbol resolution).
+extern int gtk_widget_get_width(void *widget);
+extern int gtk_widget_get_height(void *widget);
+extern void gtk_widget_set_focusable(void *widget, gboolean focusable);
+extern void gtk_widget_grab_focus(void *widget);
+
+void cgtkvideo_widget_size(void *widget, int32_t *out_w, int32_t *out_h) {
+    if (out_w) *out_w = widget ? (int32_t)gtk_widget_get_width(widget) : 0;
+    if (out_h) *out_h = widget ? (int32_t)gtk_widget_get_height(widget) : 0;
+}
+
+void cgtkvideo_widget_make_focusable(void *widget) {
+    if (widget) gtk_widget_set_focusable(widget, 1);
+}
+
+void cgtkvideo_widget_grab_focus(void *widget) {
+    if (widget) gtk_widget_grab_focus(widget);
+}

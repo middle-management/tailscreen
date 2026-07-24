@@ -34,4 +34,18 @@ int32_t cgtkvideo_selftest_check(void);
 // the one gtk symbol it needs so this GL-only target pulls no gtk headers.
 void cgtkvideo_queue_render(void *gl_area_widget);
 
+// Current allocated logical size of a GtkWidget (pass its GtkWidget*). Used by
+// the input layer to normalize pointer coordinates against the live widget size
+// — logical units, matching the logical coords GTK reports for motion/click, so
+// the aspect-fit ratio math is HiDPI-independent. Writes 0 for a NULL widget.
+void cgtkvideo_widget_size(void *widget, int32_t *out_w, int32_t *out_h);
+
+// Make a widget focusable so an EventControllerKey attached to it receives key
+// events. Call once at wiring time.
+void cgtkvideo_widget_make_focusable(void *widget);
+
+// Grab keyboard focus for a widget. Wire this to pointer-press so clicking the
+// video surface directs subsequent keystrokes to it.
+void cgtkvideo_widget_grab_focus(void *widget);
+
 #endif
