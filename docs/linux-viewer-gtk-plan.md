@@ -192,10 +192,21 @@ guarantee the SDL path never had.
   `xdg-open`). **Done:** `prepare(onLoginURL:)` routes the URL to the picker
   placard (`PickerModel.loginURL`); the stderr banner + `xdg-open` remain the
   default when no handler is supplied (the SDL CLI).
-- **Follow-up:** live IPN-bus refresh of the list (today's discovery is a
-  one-shot `backendStatus` seed); reconnect/back-to-picker after a session ends.
-  Picker + login are live-only (a real tailnet with sharers), so compile +
-  render-self-test verified; a live run needs a tailnet.
+- **Hub-styled chrome.** The picker + placards now follow the macOS docked-
+  window hub (`MainWindowView`): a thick header (wordmark + a status subtitle), a
+  centered content column, a rounded login/status card, and a "Screens" list of
+  presence-dot + hostname + IP rows — reproduced from swift-cross-ui primitives
+  (`Circle`/`RoundedRectangle` fills, translucent-gray tints that read on both
+  light and dark GTK themes, `.onTapGesture` rows since `Button` takes only a
+  String label; no SF Symbols). `ViewerChrome.swift` holds the reusable views; the
+  `GtkVideoView` is mounted only once frames flow, so the chrome sits on the
+  native window background, not over a black GL surface. A `--ui-preview` flag
+  renders the hub with seeded fake sharers and no networking, so the chrome is
+  screenshot-reviewable headless under Xvfb.
+- **Follow-up:** live IPN-bus refresh of the list + a header Refresh button
+  (today's discovery is a one-shot `backendStatus` seed); reconnect/back-to-picker
+  after a session ends. Picker + login are live-only (a real tailnet with
+  sharers), so compile + render-self-test verified; a live run needs a tailnet.
 
 ### L5 — Windows (later, separate)
 - The same `GtkVideoView` *feature* on `WinUIBackend` becomes a WinUI video view

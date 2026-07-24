@@ -33,6 +33,9 @@ let gInput = InputForwarder(ui: gUIState)
 let gPicker = PickerModel()
 let gArgs = Array(CommandLine.arguments.dropFirst())
 let gSelfTest = gArgs.contains("--render-self-test")
+// Headless chrome preview: render the hub with fake data and no networking, for
+// screenshots / visual review under Xvfb. Never used in a real run.
+let gUIPreview = gArgs.contains("--ui-preview")
 // True when launched with no host arg → the picker drives host selection.
 var gPickerMode = false
 
@@ -90,6 +93,16 @@ if gSelfTest {
     // Headless render gate: a colour-bars frame the GtkVideoView renders and
     // the self-test verifies via glReadPixels. No transport.
     gStore.set(makeColorBarsFrame())
+} else if gUIPreview {
+    // Headless chrome preview: seed the picker with fake sharers and render the
+    // hub without any networking, so the UI can be screenshotted / reviewed.
+    gPickerMode = true
+    gPicker.phase = .picking
+    gPicker.sharers = [
+        DiscoveredSharer(id: "1", hostname: "robert-macbook", tailscaleIP: "100.64.0.12", isOnline: true),
+        DiscoveredSharer(id: "2", hostname: "studio-imac", tailscaleIP: "100.64.0.31", isOnline: true),
+        DiscoveredSharer(id: "3", hostname: "living-room-tv", tailscaleIP: "100.64.0.44", isOnline: false),
+    ]
 } else {
     // Live path: reuse the tsnet transport, driving decoded frames into the
     // shared store. The transport is @MainActor; started as a Task here, it
@@ -201,57 +214,61 @@ struct ViewerApp: App {
         return false
     }
 
+    // Header subtitle: the picker's progress line, or the direct-connect status.
+    private var headerSubtitle: String {
+        gPickerMode ? picker.statusLine : ui.status
+    }
+
     var body: some Scene {
         WindowGroup("Tailscreen viewer") {
+            rootView
+        }
+        .defaultSize(width: 960, height: 540)
+    }
+
+    /// The window's content: the headless render self-test surface, live video
+    /// (once frames flow) with its remote-control bar, or the hub chrome
+    /// (header + picker / connecting placard) before video. The `GtkVideoView`
+    /// is mounted only when there's something to show, so the hub chrome sits on
+    /// the native GTK window background rather than over a black GL surface — the
+    /// first frame is stored before `hasVideo` flips, so mounting renders it.
+    @ViewBuilder private var rootView: some View {
+        if gSelfTest {
+            GtkVideoView(store: gStore, selfTest: true)
+        } else if ui.hasVideo {
             ZStack {
-                // Capture input only in a live session — never in the headless
-                // render self-test. The forwarder gates on a live control grant.
-                GtkVideoView(
-                    store: gStore, selfTest: gSelfTest,
-                    onInputEvent: gSelfTest ? nil : { gInput.submit($0) })
-                // Pre-video chrome (never in self-test). In picker mode this is
-                // the sharer list + status; otherwise the connection placard.
-                if !gSelfTest && !ui.hasVideo {
-                    if gPickerMode {
-                        VStack {
-                            Text(picker.statusLine)
-                            if let login = picker.loginURL {
-                                Text("Open this URL in a browser to log in:")
-                                Text(login)
-                            }
-                            if showingPickerList {
-                                ScrollView {
-                                    VStack {
-                                        ForEach(picker.sharers, id: \.id) { sharer in
-                                            Button(sharer.hostname) { picker.select(sharer) }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    } else {
-                        Text(ui.status)
-                    }
-                }
+                GtkVideoView(store: gStore, onInputEvent: { gInput.submit($0) })
                 // Remote-control toolbar, pinned to the bottom. Shown only when
                 // the sharer advertised `.remoteControl` (caps-gated, like the
                 // mac viewer). Once control is granted, `GtkVideoView` captures
-                // pointer/keyboard and `gInput` forwards them to the sharer;
-                // this toolbar owns the request/grant/release handshake.
-                if !gSelfTest && ui.remoteControlAvailable {
+                // pointer/keyboard and `gInput` forwards them; this bar owns the
+                // request/grant/release handshake.
+                if ui.remoteControlAvailable {
                     VStack {
                         Spacer()
-                        HStack {
-                            Button(controlButtonLabel) { gControls.toggleControl() }
-                            if let reason = revokedReason {
-                                Text("Control declined: \(reason)")
-                            }
-                        }
+                        RemoteControlBar(
+                            buttonLabel: controlButtonLabel,
+                            declinedReason: revokedReason,
+                            onToggle: { gControls.toggleControl() })
                     }
                 }
             }
+        } else {
+            VStack(spacing: 0) {
+                ViewerHeader(subtitle: headerSubtitle)
+                Divider()
+                if gPickerMode {
+                    PickerContent(
+                        statusLine: picker.statusLine,
+                        isPicking: showingPickerList,
+                        sharers: picker.sharers,
+                        loginURL: picker.loginURL,
+                        onSelect: { picker.select($0) })
+                } else {
+                    HubStatusPane(status: ui.status)
+                }
+            }
         }
-        .defaultSize(width: 960, height: 540)
     }
 }
 
