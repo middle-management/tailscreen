@@ -263,6 +263,7 @@ struct ViewerApp: App {
                         isPicking: showingPickerList,
                         sharers: picker.sharers,
                         loginURL: picker.loginURL,
+                        autoExpandFirst: gUIPreview,
                         onSelect: { picker.select($0) })
                 } else {
                     HubStatusPane(status: ui.status)

@@ -25,6 +25,9 @@ enum HubStyle {
     static let cardFill = Color(white: 0.5, opacity: 0.10)
     static let cardStroke = Color(white: 0.5, opacity: 0.22)
     static let rowFill = Color(white: 0.5, opacity: 0.10)
+    static let rowFillSelected = Color(white: 0.5, opacity: 0.18)
+    static let searchFill = Color(white: 0.5, opacity: 0.12)
+    static let detailFill = Color(white: 0.5, opacity: 0.06)
     static let online = Color.green
     static let offline = Color(white: 0.5, opacity: 0.55)
 }
@@ -76,13 +79,15 @@ struct ViewerHeader: View {
 }
 
 /// One tailnet screen: a presence dot, the hostname over its IP (or "Offline"),
-/// and a chevron — the mac hub's `PeerMenuRow` idiom. The whole row is tappable
-/// (swift-cross-ui `Button` can't host this layout).
+/// and a disclosure chevron — the mac hub's `PeerMenuRow` idiom. Tapping toggles
+/// the inline `SharerDetail` pane (swift-cross-ui `Button` can't host this rich
+/// layout, so the whole row is a `.onTapGesture`).
 struct SharerRow: View {
     let hostname: String
     let subtitle: String
     let isOnline: Bool
-    let onTap: @MainActor @Sendable () -> Void
+    let isExpanded: Bool
+    let onTap: () -> Void
 
     var body: some View {
         HStack(spacing: 10) {
@@ -99,14 +104,56 @@ struct SharerRow: View {
                     .lineLimit(1)
             }
             Spacer()
-            Text("›")
+            Text(isExpanded ? "⌄" : "›")
                 .foregroundColor(HubStyle.tertiaryText)
         }
         .padding(.horizontal, 12)
         .frame(height: 46)
         .frame(maxWidth: .infinity)
-        .background(RoundedRectangle(cornerRadius: HubStyle.rowRadius).fill(HubStyle.rowFill))
+        .background(
+            RoundedRectangle(cornerRadius: HubStyle.rowRadius)
+                .fill(isExpanded ? HubStyle.rowFillSelected : HubStyle.rowFill))
         .onTapGesture { onTap() }
+    }
+}
+
+/// The inline detail pane under an expanded `SharerRow` — the mac hub's
+/// `PeerDetailView` idiom, pared to what the viewer knows about a discovered
+/// sharer: the primary **View Screen** action plus its host / IP. Indented under
+/// the row's text column so it reads as the row's expansion.
+struct SharerDetail: View {
+    let hostname: String
+    let ip: String
+    let isOnline: Bool
+    let onView: @MainActor @Sendable () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if isOnline {
+                Button("View Screen", action: onView)
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                detailRow(label: "Host", value: hostname)
+                detailRow(label: "IP", value: ip)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 8).fill(HubStyle.detailFill))
+        .padding(.leading, 20)
+    }
+
+    private func detailRow(label: String, value: String) -> some View {
+        HStack(spacing: 8) {
+            Text(label)
+                .font(.caption)
+                .foregroundColor(HubStyle.tertiaryText)
+                .frame(width: 32, alignment: .leading)
+            Text(value)
+                .font(.caption)
+                .textSelectionEnabled()
+            Spacer()
+        }
     }
 }
 
@@ -162,6 +209,38 @@ struct PickerContent: View {
     let loginURL: String?
     let onSelect: @MainActor @Sendable (DiscoveredSharer) -> Void
 
+    /// Transient search text narrowing the list (the mac hub's search field).
+    @State private var searchText = ""
+    /// The row whose inline detail pane is open, if any.
+    @State private var expandedID: String?
+
+    init(
+        statusLine: String,
+        isPicking: Bool,
+        sharers: [DiscoveredSharer],
+        loginURL: String?,
+        autoExpandFirst: Bool = false,
+        onSelect: @escaping @MainActor @Sendable (DiscoveredSharer) -> Void
+    ) {
+        self.statusLine = statusLine
+        self.isPicking = isPicking
+        self.sharers = sharers
+        self.loginURL = loginURL
+        self.onSelect = onSelect
+        // Preview/screenshot affordance: open the first row's detail pane so the
+        // expanded state is visible without a click.
+        _expandedID = State(wrappedValue: autoExpandFirst ? sharers.first?.id : nil)
+    }
+
+    /// `sharers` narrowed by the search text (hostname or IP substring).
+    private var visibleSharers: [DiscoveredSharer] {
+        guard !searchText.isEmpty else { return sharers }
+        let query = searchText.lowercased()
+        return sharers.filter {
+            $0.hostname.lowercased().contains(query) || $0.tailscaleIP.contains(query)
+        }
+    }
+
     var body: some View {
         ScrollView {
             VStack(spacing: 14) {
@@ -169,26 +248,16 @@ struct PickerContent: View {
                     HubLoginCard(url: loginURL)
                 }
                 if isPicking {
-                    VStack(alignment: .leading, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 10) {
                         Text("Screens")
                             .font(.title2)
                             .fontWeight(.bold)
-                        if sharers.isEmpty {
-                            Text("No Tailscreen screens found on your tailnet.")
-                                .font(.callout)
-                                .foregroundColor(HubStyle.secondaryText)
-                                .padding(8)
-                        } else {
-                            VStack(spacing: 6) {
-                                ForEach(sharers, id: \.id) { sharer in
-                                    SharerRow(
-                                        hostname: sharer.hostname,
-                                        subtitle: sharer.isOnline ? sharer.tailscaleIP : "Offline",
-                                        isOnline: sharer.isOnline,
-                                        onTap: { onSelect(sharer) })
-                                }
-                            }
-                        }
+                        TextField("Search screens", text: $searchText)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 7)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8).fill(HubStyle.searchFill))
+                        listContent
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
@@ -201,6 +270,38 @@ struct PickerContent: View {
             .frame(maxWidth: .infinity, alignment: .center)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    @ViewBuilder private var listContent: some View {
+        if sharers.isEmpty {
+            Text("No Tailscreen screens found on your tailnet.")
+                .font(.callout)
+                .foregroundColor(HubStyle.secondaryText)
+                .padding(8)
+        } else if visibleSharers.isEmpty {
+            Text("No screens match your search.")
+                .font(.callout)
+                .foregroundColor(HubStyle.secondaryText)
+                .padding(8)
+        } else {
+            VStack(spacing: 6) {
+                ForEach(visibleSharers, id: \.id) { sharer in
+                    SharerRow(
+                        hostname: sharer.hostname,
+                        subtitle: sharer.isOnline ? sharer.tailscaleIP : "Offline",
+                        isOnline: sharer.isOnline,
+                        isExpanded: expandedID == sharer.id,
+                        onTap: { expandedID = (expandedID == sharer.id) ? nil : sharer.id })
+                    if expandedID == sharer.id {
+                        SharerDetail(
+                            hostname: sharer.hostname,
+                            ip: sharer.tailscaleIP,
+                            isOnline: sharer.isOnline,
+                            onView: { onSelect(sharer) })
+                    }
+                }
+            }
+        }
     }
 }
 

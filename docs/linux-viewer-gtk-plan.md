@@ -194,15 +194,19 @@ guarantee the SDL path never had.
   default when no handler is supplied (the SDL CLI).
 - **Hub-styled chrome.** The picker + placards now follow the macOS docked-
   window hub (`MainWindowView`): a thick header (wordmark + a status subtitle), a
-  centered content column, a rounded login/status card, and a "Screens" list of
-  presence-dot + hostname + IP rows — reproduced from swift-cross-ui primitives
+  centered content column, a rounded login/status card, a **search field**, and a
+  "Screens" list of presence-dot + hostname + IP rows that **expand** into an
+  inline detail pane (a **View Screen** action + Host / IP, the viewer's cut of
+  the mac hub's `PeerDetailView`). Reproduced from swift-cross-ui primitives
   (`Circle`/`RoundedRectangle` fills, translucent-gray tints that read on both
   light and dark GTK themes, `.onTapGesture` rows since `Button` takes only a
-  String label; no SF Symbols). `ViewerChrome.swift` holds the reusable views; the
-  `GtkVideoView` is mounted only once frames flow, so the chrome sits on the
-  native window background, not over a black GL surface. A `--ui-preview` flag
-  renders the hub with seeded fake sharers and no networking, so the chrome is
-  screenshot-reviewable headless under Xvfb.
+  String label; no SF Symbols). Sharer-only hub chrome (Choose-what-to-share,
+  approval toggle, filter menu, account avatar) is deliberately absent — this is a
+  viewer. `ViewerChrome.swift` holds the reusable views; the `GtkVideoView` is
+  mounted only once frames flow, so the chrome sits on the native window
+  background, not over a black GL surface. A `--ui-preview` flag renders the hub
+  with seeded fake sharers and no networking, so the chrome is screenshot-
+  reviewable headless under Xvfb.
 - **Follow-up:** live IPN-bus refresh of the list + a header Refresh button
   (today's discovery is a one-shot `backendStatus` seed); reconnect/back-to-picker
   after a session ends. Picker + login are live-only (a real tailnet with
