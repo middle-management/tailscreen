@@ -37,12 +37,20 @@
 "Low-latency, encrypted peer-to-peer screen sharing over Tailscale.\n" = "Low-latency, encrypted peer-to-peer screen sharing over Tailscale.\n";
 "Captures with ScreenCaptureKit, encodes H.264/HEVC with VideoToolbox, renders with Metal, and tunnels via tsnet ephemeral nodes — no manual device registration.\n" = "Captures with ScreenCaptureKit, encodes H.264/HEVC with VideoToolbox, renders with Metal, and tunnels via tsnet ephemeral nodes — no manual device registration.\n";
 
-/* MARK: - Welcome / sign-in (MenuBarView.swift) */
+/* MARK: - Welcome / sign-in (MainWindowView.swift) */
 "Welcome to Tailscreen" = "Welcome to Tailscreen";
 "Sign in with Tailscale to share and view screens with your peers." = "Sign in with Tailscale to share and view screens with your peers.";
 "Signing in…" = "Signing in…";
 "Sign in with Tailscale" = "Sign in with Tailscale";
 "Opens Tailscale sign-in in your browser" = "Opens Tailscale sign-in in your browser";
+
+/* MARK: - Main window hub (MainWindowView.swift) */
+"Viewer approvals and sharing controls live in the menu bar icon." = "Viewer approvals and sharing controls live in the menu bar icon.";
+
+/* MARK: - Signed-out popover (MenuBarView.swift) */
+"Not signed in" = "Not signed in";
+"Open Tailscreen to sign in with Tailscale." = "Open Tailscreen to sign in with Tailscale.";
+"Open Tailscreen" = "Open Tailscreen";
 
 /* MARK: - Pending request-to-share banner (MenuBarView.swift) */
 "%@ wants you to share" = "%@ wants you to share";

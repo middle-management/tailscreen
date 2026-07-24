@@ -1,21 +1,16 @@
 import AppKit
 
-/// Builds and installs the app's standard NSMenu bar. With only a
-/// MenuBarExtra scene (no SwiftUI Window), AppKit auto-hides the menu
-/// bar entirely, so users can't find an obvious place for shortcuts
-/// like ⌘1–⌘5 (tools), ⌘Z (undo), ⇧⌘⌫ (clear all). Building a real
-/// NSMenu and assigning it to `NSApp.mainMenu` makes the menu bar
-/// appear whenever any of our windows is key — typically the viewer
-/// window or the sharer's annotation panel.
+/// Builds and installs the app's standard NSMenu bar. SwiftUI's scenes
+/// install their own minimal mainMenu (Tailscreen / View / Window / Help)
+/// and re-assert it across scene updates; building a real NSMenu and
+/// assigning it to `NSApp.mainMenu` gives shortcuts like ⌘1–⌘5 (tools),
+/// ⌘Z (undo), ⇧⌘⌫ (clear all) an obvious, discoverable home. The app runs
+/// at `.regular` activation policy (docked main window + Dock icon — set
+/// once in `AppEntry`), so the menu bar is visible whenever Tailscreen is
+/// frontmost.
 @MainActor
 enum AppMenu {
     private static var installed = false
-    /// Tokens from the most recent `wireActivationPolicy` registration.
-    /// Reassigned (not appended to) on each call: the old tokens are
-    /// removed first, then a fresh batch is stored, so this slot is
-    /// bounded by the number of notification names we observe — never
-    /// grows across calls.
-    private static var activationObservers: [NSObjectProtocol] = []
     /// Target for the About menu item. Needs to be an NSObject instance
     /// so AppKit can dispatch the selector; AppMenu itself is an enum.
     private static let aboutTarget = AboutPanelTarget()
@@ -24,60 +19,13 @@ enum AppMenu {
         guard !installed else { return }
         installed = true
         install()
-        wireActivationPolicy()
     }
 
-    /// Re-apply `NSApp.mainMenu` without rebuilding the activation-policy
-    /// observers. Called from the app delegate's
+    /// Re-apply `NSApp.mainMenu`. Called from the app delegate's
     /// `applicationDidBecomeActive` to recover from SwiftUI's
-    /// `MenuBarExtra` resetting the menu after a scene update.
+    /// scene machinery resetting the menu after a scene update.
     static func reinstall() {
         install()
-    }
-
-    /// Without this, Tailscreen stays at `.accessory` activation policy (the
-    /// MenuBarExtra default). When the viewer/sharer window becomes key
-    /// macOS keeps showing whatever `.regular` app's menu bar was last
-    /// up — observed: "Zed" sitting above a Tailscale Screen Share
-    /// window. Promote to `.regular` while any of our windows is key,
-    /// drop back to `.accessory` when they aren't, so the Dock icon
-    /// stays absent in the idle state.
-    private static func wireActivationPolicy() {
-        let nc = NotificationCenter.default
-        // Idempotent: tear down any prior registration so a repeat call
-        // (today guarded by `installed`, but defensively bounded here)
-        // can't accumulate stale observers leaking closures onto the
-        // notification center. Empty == "nothing to remove".
-        for obs in activationObservers { nc.removeObserver(obs) }
-        activationObservers.removeAll()
-        let updatePolicy: @Sendable @MainActor () -> Void = {
-            let hasVisibleWindow = NSApp.windows.contains { w in
-                w.isVisible && w.canBecomeKey
-            }
-            let target: NSApplication.ActivationPolicy = hasVisibleWindow ? .regular : .accessory
-            if NSApp.activationPolicy() != target {
-                NSApp.setActivationPolicy(target)
-                if target == .regular {
-                    NSApp.activate(ignoringOtherApps: true)
-                }
-            }
-        }
-        let names: [Notification.Name] = [
-            NSWindow.didBecomeKeyNotification,
-            NSWindow.didResignKeyNotification,
-            NSWindow.didBecomeMainNotification,
-            NSWindow.willCloseNotification,
-            NSWindow.didChangeOcclusionStateNotification
-        ]
-        var fresh: [NSObjectProtocol] = []
-        fresh.reserveCapacity(names.count)
-        for n in names {
-            let obs = nc.addObserver(forName: n, object: nil, queue: .main) { _ in
-                Task { @MainActor in updatePolicy() }
-            }
-            fresh.append(obs)
-        }
-        activationObservers = fresh
     }
 
     static func install() {
@@ -265,6 +213,19 @@ enum AppMenu {
         let windowItem = NSMenuItem(title: "Window", action: nil, keyEquivalent: "")
         let windowMenu = NSMenu(title: "Window")
         windowItem.submenu = windowMenu
+
+        // Re-open the docked main window after the user closed it —
+        // otherwise the only ways back are the Dock icon and the menubar
+        // popover's "Open Tailscreen" row. "Tailscreen" is a brand noun,
+        // deliberately unlocalized.
+        let mainWindow = NSMenuItem(
+            title: "Tailscreen",
+            action: #selector(ViewerCommands.showMainWindow(_:)),
+            keyEquivalent: "")
+        mainWindow.target = ViewerCommands.shared
+        windowMenu.addItem(mainWindow)
+        windowMenu.addItem(.separator())
+
         windowMenu.addItem(
             .init(
                 title: L("Minimize"),

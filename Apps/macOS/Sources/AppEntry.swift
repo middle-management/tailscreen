@@ -2,7 +2,8 @@ import AppKit
 import Foundation
 
 /// Single entry point for both Tailscreen modes:
-///   - Main: the menubar SwiftUI app (default).
+///   - Main: the SwiftUI app — docked main window + menubar sharer
+///     tool (default).
 ///   - Capture helper: a headless child process that owns the
 ///     `SCStream` + `VideoEncoder` pipeline and feeds encoded access
 ///     units back to the main process over stdout. Selected by
@@ -53,6 +54,11 @@ enum TailscreenEntry {
             object: nil, queue: .main
         ) { _ in
             MainActor.assumeIsolated {
+                // Tailscreen is a regular docked app (main window + Dock
+                // icon + ⌘Tab). Assert `.regular` once, after SwiftUI's
+                // own launch setup, so a MenuBarExtra-bearing app can't
+                // drift to the `.accessory` default on any launch path.
+                NSApp.setActivationPolicy(.regular)
                 AppMenu.installIfNeeded()
                 AppMenu.reinstall()
             }
