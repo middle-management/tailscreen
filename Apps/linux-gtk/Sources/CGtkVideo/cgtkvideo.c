@@ -208,3 +208,15 @@ void cgtkvideo_widget_make_focusable(void *widget) {
 void cgtkvideo_widget_grab_focus(void *widget) {
     if (widget) gtk_widget_grab_focus(widget);
 }
+
+// GtkRoot* gtk_widget_get_root(GtkWidget*) — the widget's toplevel (a GtkWindow
+// for a normal window); GtkWindow implements GtkRoot, so the pointer is a valid
+// GtkWindow*. gtk_window_set_default_size resizes it (GTK4 has no gtk_window_resize).
+extern void *gtk_widget_get_root(void *widget);
+extern void gtk_window_set_default_size(void *window, int width, int height);
+
+void cgtkvideo_resize_toplevel(void *widget, int32_t w, int32_t h) {
+    if (!widget || w <= 0 || h <= 0) return;
+    void *root = gtk_widget_get_root(widget);
+    if (root) gtk_window_set_default_size(root, (int)w, (int)h);
+}

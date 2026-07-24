@@ -62,8 +62,15 @@ public struct GtkVideoView: View {
             return backend.createContainer()
         }
         let area = Gtk.GLArea()
+        // Fill the window: without this the GLArea collapses to its (zero)
+        // natural size and a sibling (the control bar) drives the window width.
+        // The GL shader letterboxes the frame to the allotted rectangle.
+        area.expandHorizontally = true
+        area.expandVertically = true
         let store = self.store
         let selfTest = self.selfTest
+        // One-shot: grow the (hub-sized) window to the video on the first frame.
+        let sizedToVideo = ResizeLatch()
         // GL object names are per-context; if the area's context is torn down
         // and recreated (unrealize→realize, reparent), re-init on the next draw.
         area.createContext = { _ in cgtkvideo_reset() }
@@ -79,6 +86,15 @@ public struct GtkVideoView: View {
             // overwrites the store mid-draw. This safety depends on
             // `DecodedVideoFrame` remaining a value type.
             if let frame = store.current() {
+                // First real frame: grow the hub-sized window to the video's
+                // dimensions (aspect-preserved, capped), so a share opens at a
+                // sensible size instead of the narrow picker window. Not in the
+                // self-test (it renders synthetic bars and exits).
+                if !selfTest, !sizedToVideo.done {
+                    sizedToVideo.done = true
+                    let (w, h) = Self.windowSize(forVideoWidth: frame.width, height: frame.height)
+                    cgtkvideo_resize_toplevel(UnsafeMutableRawPointer(area.widgetPointer), Int32(w), Int32(h))
+                }
                 frame.yPlane.withUnsafeBufferPointer { yb in
                     frame.uPlane.withUnsafeBufferPointer { ub in
                         frame.vPlane.withUnsafeBufferPointer { vb in
@@ -110,6 +126,29 @@ public struct GtkVideoView: View {
     /// one instance (retained for the widget's lifetime via its controllers).
     private final class ModifierState {
         var modifiers: KeyModifiers = []
+    }
+
+    /// One-shot latch so the window is grown to the video size exactly once (the
+    /// render callback fires every frame).
+    private final class ResizeLatch {
+        var done = false
+    }
+
+    /// The window size to request for a video of `width`×`height`: the frame's
+    /// aspect, clamped so the window is neither a sliver nor larger than a
+    /// sensible cap (width in [640, 1280], height ≤ 800). The user can resize
+    /// freely afterwards.
+    static func windowSize(forVideoWidth width: Int, height: Int) -> (width: Int, height: Int) {
+        guard width > 0, height > 0 else { return (960, 540) }
+        let minW = 640.0, maxW = 1280.0, maxH = 800.0
+        let aspect = Double(width) / Double(height)
+        var w = min(max(Double(width), minW), maxW)
+        var h = w / aspect
+        if h > maxH {
+            h = maxH
+            w = h * aspect
+        }
+        return (max(1, Int(w.rounded())), max(1, Int(h.rounded())))
     }
 
     /// Attach the GTK event controllers that turn raw GDK pointer/key events

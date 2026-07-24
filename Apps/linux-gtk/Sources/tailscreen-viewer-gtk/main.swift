@@ -118,6 +118,13 @@ if gSelfTest {
     // Show the account menu in the preview (no-op actions).
     gSwitchProfile = { _ in }
     gAddAccount = {}
+    // `--ui-preview-video` jumps straight to the video state (a color-bars
+    // frame) so the window-grows-to-video behaviour is screenshot-reviewable.
+    if gArgs.contains("--ui-preview-video") {
+        gStore.set(makeColorBarsFrame())
+        gUIState.remoteControlAvailable = true
+        gUIState.hasVideo = true
+    }
 } else {
     // Live path: reuse the tsnet transport, driving decoded frames into the
     // shared store. The transport is @MainActor; started as a Task here, it
@@ -316,7 +323,9 @@ struct ViewerApp: App {
         WindowGroup("Tailscreen viewer") {
             rootView
         }
-        .defaultSize(width: 960, height: 540)
+        // Opens hub-narrow (the picker is a single column, like the mac hub);
+        // GtkVideoView grows the window to the video's size on the first frame.
+        .defaultSize(width: 460, height: 680)
     }
 
     /// The window's content: the headless render self-test surface, live video

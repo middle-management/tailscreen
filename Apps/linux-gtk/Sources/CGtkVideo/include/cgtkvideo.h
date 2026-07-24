@@ -48,4 +48,11 @@ void cgtkvideo_widget_make_focusable(void *widget);
 // video surface directs subsequent keystrokes to it.
 void cgtkvideo_widget_grab_focus(void *widget);
 
+// Resize the widget's toplevel window to w×h (logical px). Walks up to the
+// GtkRoot (the GtkWindow) and calls gtk_window_set_default_size — in GTK4 the
+// sanctioned way to resize a mapped window. Used to grow the hub-sized window to
+// the video's dimensions when the first frame arrives. No-op if the widget
+// isn't in a window yet (call it from a render callback, where it is).
+void cgtkvideo_resize_toplevel(void *widget, int32_t w, int32_t h);
+
 #endif
