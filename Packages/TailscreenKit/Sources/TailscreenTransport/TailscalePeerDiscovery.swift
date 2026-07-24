@@ -30,11 +30,21 @@ public struct TailscreenPeer: Identifiable, Sendable, Equatable {
     /// direct once traffic flows.
     public var relay: String?
     public var curAddr: String?
+    /// Every Tailscale address of the node (v4 + v6), for the detail
+    /// pane; `tailscaleIP` remains the preferred (v4-first) dial target.
+    public var tailscaleIPs: [String]
+    /// Tailscale StableNodeID — the key `ViewerAccessPolicyStore` uses,
+    /// so the UI can show a remembered allow/block. Only the LocalAPI
+    /// seed reports it (the netmap watcher carries the *numeric* NodeID,
+    /// a different namespace), so like the path fields it's seed-only
+    /// and carried across watcher merges. Nil = not yet known.
+    public var stableID: String?
 
     public init(
         id: String, hostname: String, dnsName: String, tailscaleIP: String,
         isOnline: Bool, tags: [String] = [], metadata: TailscreenMetadata? = nil,
-        lastSeen: String? = nil, relay: String? = nil, curAddr: String? = nil
+        lastSeen: String? = nil, relay: String? = nil, curAddr: String? = nil,
+        tailscaleIPs: [String] = [], stableID: String? = nil
     ) {
         self.id = id
         self.hostname = hostname
@@ -46,6 +56,8 @@ public struct TailscreenPeer: Identifiable, Sendable, Equatable {
         self.lastSeen = lastSeen
         self.relay = relay
         self.curAddr = curAddr
+        self.tailscaleIPs = tailscaleIPs
+        self.stableID = stableID
     }
 }
 
@@ -118,7 +130,9 @@ public class TailscalePeerDiscovery: ObservableObject {
                 metadata: nil,
                 lastSeen: nil,
                 relay: peerStatus.Relay,
-                curAddr: peerStatus.CurAddr
+                curAddr: peerStatus.CurAddr,
+                tailscaleIPs: peerStatus.TailscaleIPs ?? [],
+                stableID: String(peerStatus.ID)
             )
         }
 
@@ -181,7 +195,8 @@ public class TailscalePeerDiscovery: ObservableObject {
                 isOnline: ps.online,
                 tags: ps.tags,
                 metadata: nil,
-                lastSeen: ps.lastSeen
+                lastSeen: ps.lastSeen,
+                tailscaleIPs: ps.tailscaleIPs
             )
         }
         watcherPeers = next
@@ -197,6 +212,7 @@ public class TailscalePeerDiscovery: ObservableObject {
             var peer = fromWatcher
             peer.relay = fromSeed.relay
             peer.curAddr = fromSeed.curAddr
+            peer.stableID = fromSeed.stableID
             return peer
         }
         publishIfChanged(Self.sortPeers(Array(merged.values)))
