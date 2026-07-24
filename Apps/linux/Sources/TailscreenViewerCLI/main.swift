@@ -6,6 +6,8 @@ import TailscaleKit
 import TailscreenProtocol
 import TailscreenViewer
 import TailscreenViewerCore
+import TailscreenViewerSDL
+import TailscreenViewerTsnet
 
 // tailscreen-viewer — the portable screen-share viewer entry point. It wires
 // the FFmpeg decoder, SDL renderer, and ALSA audio sink into the portable

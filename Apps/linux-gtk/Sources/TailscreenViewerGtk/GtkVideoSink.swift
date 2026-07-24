@@ -15,10 +15,11 @@ public final class GtkVideoSink: VideoSink, @unchecked Sendable {
 
     public func present(_ frame: any DecodedFrame) {
         guard let frame = frame as? DecodedVideoFrame else { return }
+        // `set` stores the frame (lock-guarded) and requests a GLArea repaint.
+        // The repaint is marshalled onto the GTK main thread inside CGtkVideo
+        // (g_idle_add), so `present` is safe to call from any thread — it does
+        // not itself touch GTK. The transport currently drives it on the main
+        // actor, but this does not depend on that.
         store.set(frame)
-        // L0b: marshal gtk_gl_area_queue_render onto the GTK main thread here so
-        // frames arriving on the (off-main) transport thread repaint promptly.
-        // In L0a the frame is set before the app runs, so the GLArea's first
-        // realize-render shows it with no cross-thread hand-off.
     }
 }

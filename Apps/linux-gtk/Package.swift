@@ -9,6 +9,11 @@ import PackageDescription
 // a `GtkGLArea` with an OpenGL YUV→RGB renderer); chrome is declarative
 // swift-cross-ui. See docs/linux-viewer-gtk-plan.md.
 //
+// It reuses Apps/linux's `TailscreenViewerCore` (FFmpeg decoder + ALSA sink)
+// and `TailscreenViewerTsnet` (the shared tsnet transport) — but NOT the SDL
+// target, so the GTK viewer never links libSDL2. Pulling Tsnet brings
+// TailscaleKit (→ libtailscale.a), so a live run needs the built c-archive.
+//
 // swift-cross-ui is pinned to an exact revision for reproducibility — its `View`
 // protocol is young and can reshape across versions, and our only coupling to it
 // is the small `GtkVideoView`.
@@ -19,13 +24,19 @@ let package = Package(
             url: "https://github.com/stackotter/swift-cross-ui",
             revision: "199a85614e3b2346aa10736b12f969af14a1f1ea"),
         .package(path: "../../Packages/TailscreenKit"),
+        .package(path: "../linux"),
     ],
     targets: [
         // OpenGL YUV→RGB renderer for the GLArea. C so it can call GL (via
-        // epoxy) directly; the Swift side just hands it plane pointers.
+        // epoxy) directly; the Swift side just hands it plane pointers. Links
+        // gtk-4 for the one forward-declared queue-render entry point.
         .target(
             name: "CGtkVideo",
-            linkerSettings: [.linkedLibrary("epoxy")]
+            linkerSettings: [
+                .linkedLibrary("epoxy"),
+                .linkedLibrary("gtk-4"),
+                .linkedLibrary("glib-2.0"),
+            ]
         ),
         // GtkVideoView + the video sink + frame store: the downstream video
         // surface, reusable by the live app and the render self-test.
@@ -48,6 +59,16 @@ let package = Package(
                 .product(name: "DefaultBackend", package: "swift-cross-ui"),
                 .product(name: "TailscreenViewer", package: "TailscreenKit"),
                 .product(name: "TailscreenProtocol", package: "TailscreenKit"),
+                // FFmpeg decoder + the shared tsnet transport, reused from the
+                // SDL viewer package (SDL target intentionally not depended on).
+                // The path dependency's identity is its directory name, `linux`.
+                .product(name: "TailscreenViewerCore", package: "linux"),
+                .product(name: "TailscreenViewerTsnet", package: "linux"),
+            ],
+            linkerSettings: [
+                // Resolve libtailscale.a for the tsnet transport (same relative
+                // path the SDL viewer uses).
+                .unsafeFlags(["-L", "../../Packages/TailscaleKit/lib"])
             ]
         ),
     ]

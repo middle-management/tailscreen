@@ -23,4 +23,10 @@ void cgtkvideo_reset(void);
 // match within tolerance, else 0. Prints each sampled RGB + a PASS/FAIL marker.
 int32_t cgtkvideo_selftest_check(void);
 
+
+// Request a repaint of the given GtkGLArea (pass its GtkWidget* — the GObject
+// pointer is the same). Must be called on the GTK main thread. Forward-declares
+// the one gtk symbol it needs so this GL-only target pulls no gtk headers.
+void cgtkvideo_queue_render(void *gl_area_widget);
+
 #endif

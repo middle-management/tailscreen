@@ -1,35 +1,38 @@
 // swift-tools-version: 6.0
 import PackageDescription
 
-// tailscreen-viewer — the portable (Linux/Windows) screen-share viewer
-// executable. It's the host that finally plugs the concrete backends into the
-// portable `ViewerSession` data-plane core (Packages/TailscreenKit's
-// TailscreenViewer target):
+// tailscreen-viewer — the portable (Linux/Windows) screen-share viewer.
+// It plugs concrete backends into the portable `ViewerSession` data-plane core
+// (Packages/TailscreenKit's TailscreenViewer target):
 //
 //   • video decode  — FFmpegKit (libavcodec)      → VideoDecoding
 //   • video render   — SDLKit (SDL2 YUV window)    → VideoSink
 //   • audio output   — ALSAKit (libasound)         → AudioSink
 //   • transport      — TailscaleKit (tsnet UDP)    → receiveRTP / onControlToSend / tick
 //
-// The package is split so the decode→render→audio pipeline is CI-testable
-// without the tsnet/Go dependency:
+// Split into small targets so (a) the decode→render→audio pipeline is
+// CI-testable without the tsnet/Go dependency, and (b) the render backend is
+// isolated — the native GTK viewer (Apps/linux-gtk) reuses Core + Tsnet without
+// linking SDL:
 //
-//   • `TailscreenViewerCore` (library): the three adapters + `ViewerPipeline`.
-//     Depends only on FFmpegKit / SDLKit / ALSAKit / TailscreenViewer —
-//     Foundation + system A/V libs, no libtailscale, so `swift test` builds
-//     it with just apt ffmpeg/sdl2/alsa/opus (no Go build). This is where the
-//     real-decode integration test lives.
-//   • `tailscreen-viewer` (executable): `main` + the tsnet transport. Adds the
-//     TailscaleKit dependency (and thus the built `libtailscale.a`), so it's a
-//     separate compile gate; a *live* run needs a tailnet and is local-only.
+//   • `TailscreenViewerCore` (library): FFmpeg decoder + ALSA sink + the
+//     `ViewerPipeline`. Foundation + FFmpeg/ALSA/Opus only — no SDL, no
+//     libtailscale — so `swift test` builds it with just apt ffmpeg/alsa/opus.
+//   • `TailscreenViewerSDL` (library): the SDL YUV window `VideoSink`. Adds
+//     SDLKit; kept apart so a non-SDL host (the GTK viewer) needn't link it.
+//   • `TailscreenViewerTsnet` (library): the tsnet transport. Adds TailscaleKit
+//     (→ libtailscale.a) + TailscreenTransport. Shared by the SDL CLI and the
+//     GTK viewer.
+//   • `tailscreen-viewer` (executable): `main` wiring the SDL viewer.
+//
 // No `platforms:` clause on purpose — this is the Linux/Windows viewer.
-// ALSAKit (libasound) has no macOS backend, so the package is not meant to
-// build on macOS; on Linux SwiftPM ignores the platforms field entirely.
 let package = Package(
     name: "tailscreen-viewer",
     products: [
         .executable(name: "tailscreen-viewer", targets: ["TailscreenViewerCLI"]),
         .library(name: "TailscreenViewerCore", targets: ["TailscreenViewerCore"]),
+        .library(name: "TailscreenViewerSDL", targets: ["TailscreenViewerSDL"]),
+        .library(name: "TailscreenViewerTsnet", targets: ["TailscreenViewerTsnet"]),
     ],
     dependencies: [
         .package(path: "../../Packages/FFmpegKit"),
@@ -39,37 +42,54 @@ let package = Package(
         .package(path: "../../Packages/TailscaleKit"),
     ],
     targets: [
-        // The host-agnostic pipeline: adapters bridging the concrete A/V
-        // backends to the portable ViewerSession seam, plus the object that
-        // owns a session + its sinks. No tsnet here, so it builds and tests
-        // without libtailscale.
+        // FFmpeg decoder + ALSA sink + ViewerPipeline. No SDL, no tsnet, so it
+        // builds and tests without libsdl2 or libtailscale.
         .target(
             name: "TailscreenViewerCore",
             dependencies: [
                 .product(name: "FFmpegKit", package: "FFmpegKit"),
-                .product(name: "SDLKit", package: "SDLKit"),
                 .product(name: "ALSAKit", package: "ALSAKit"),
                 .product(name: "TailscreenViewer", package: "TailscreenKit"),
                 .product(name: "TailscreenProtocol", package: "TailscreenKit"),
             ],
             path: "Sources/TailscreenViewerCore"
         ),
-        // The executable: tsnet transport + argument parsing + run loop. Pulls
-        // in TailscaleKit (libtailscale.a), so build it as its own gate.
+        // The SDL YUV-window video sink — isolated so non-SDL hosts skip it.
+        .target(
+            name: "TailscreenViewerSDL",
+            dependencies: [
+                .product(name: "SDLKit", package: "SDLKit"),
+                .product(name: "TailscreenViewer", package: "TailscreenKit"),
+                .product(name: "TailscreenProtocol", package: "TailscreenKit"),
+            ],
+            path: "Sources/TailscreenViewerSDL"
+        ),
+        // The tsnet transport (shared by the SDL CLI and the GTK viewer). Pulls
+        // TailscaleKit (libtailscale.a) + TailscreenTransport (IPN watcher/auth).
+        .target(
+            name: "TailscreenViewerTsnet",
+            dependencies: [
+                "TailscreenViewerCore",
+                .product(name: "TailscreenProtocol", package: "TailscreenKit"),
+                .product(name: "TailscreenTransport", package: "TailscreenKit"),
+                .product(name: "TailscaleKit", package: "TailscaleKit"),
+            ],
+            path: "Sources/TailscreenViewerTsnet",
+            linkerSettings: [
+                .unsafeFlags(["-L", "../../Packages/TailscaleKit/lib"])
+            ]
+        ),
+        // The executable: SDL viewer entry point.
         .executableTarget(
             name: "TailscreenViewerCLI",
             dependencies: [
                 "TailscreenViewerCore",
+                "TailscreenViewerSDL",
+                "TailscreenViewerTsnet",
                 .product(name: "TailscreenProtocol", package: "TailscreenKit"),
-                // TailscaleIPNWatcher — surfaces the interactive-login
-                // BrowseToURL so a keyless run can log in via a browser.
-                .product(name: "TailscreenTransport", package: "TailscreenKit"),
-                .product(name: "TailscaleKit", package: "TailscaleKit"),
             ],
             path: "Sources/TailscreenViewerCLI",
             linkerSettings: [
-                // Same relative -L the app uses so the CFFmpeg/… link flags
-                // resolve libtailscale.a. Kept relative for portability/CI.
                 .unsafeFlags(["-L", "../../Packages/TailscaleKit/lib"])
             ]
         ),
@@ -80,7 +100,6 @@ let package = Package(
             dependencies: [
                 "TailscreenViewerCore",
                 .product(name: "FFmpegKit", package: "FFmpegKit"),
-                // Raw libavcodec, to encode real H.264 to feed the pipeline.
                 .product(name: "CFFmpeg", package: "FFmpegKit"),
                 .product(name: "TailscreenProtocol", package: "TailscreenKit"),
             ],

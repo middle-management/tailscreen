@@ -6,19 +6,35 @@ import TailscreenViewer
 import TailscreenViewerCore
 
 /// Connection parameters for the tsnet-backed viewer transport.
-struct ViewerConfig {
+public struct ViewerConfig {
     /// Sharer host to dial — a Tailscale hostname or tailnet IP.
-    var hostname: String
+    public var hostname: String
     /// UDP/TCP port the sharer listens on.
-    var port: UInt16 = 7447
+    public var port: UInt16 = 7447
     /// Tailscale pre-auth key (or nil for interactive/existing login).
-    var authKey: String?
+    public var authKey: String?
     /// Control server URL (headscale for local dev, else Tailscale's).
-    var controlURL: String = kDefaultControlURL
+    public var controlURL: String = kDefaultControlURL
     /// tsnet state directory (ephemeral node key + config).
-    var statePath: String
+    public var statePath: String
     /// Capabilities this viewer advertises in its HELLO.
-    var caps: ScreenShareCaps = [.nack, .receiverReport, .fec]
+    public var caps: ScreenShareCaps = [.nack, .receiverReport, .fec]
+
+    public init(
+        hostname: String,
+        port: UInt16 = 7447,
+        authKey: String? = nil,
+        controlURL: String = kDefaultControlURL,
+        statePath: String,
+        caps: ScreenShareCaps = [.nack, .receiverReport, .fec]
+    ) {
+        self.hostname = hostname
+        self.port = port
+        self.authKey = authKey
+        self.controlURL = controlURL
+        self.statePath = statePath
+        self.caps = caps
+    }
 }
 
 /// A minimal `LogSink` that writes both the Swift wrapper's logs and the Go
@@ -48,8 +64,10 @@ struct StderrLogger: LogSink {
 /// sink call run on one executor, matching the non-`Sendable` contract of
 /// `ViewerSession`.
 @MainActor
-final class TsnetTransport {
+public final class TsnetTransport {
     private let logger = StderrLogger()
+
+    public init() {}
 
     /// Connect and run until the sharer says goodbye or `shouldClose` fires.
     ///
@@ -64,7 +82,7 @@ final class TsnetTransport {
     ///   - audioSink: where decoded audio goes (ALSA), or nil.
     ///   - shouldClose: polled each loop; returning true ends the session (the
     ///     SDL window close hook).
-    func run(
+    public func run(
         config: ViewerConfig,
         decoder: VideoDecoding,
         videoSink: VideoSink,
@@ -201,6 +219,11 @@ final class TsnetTransport {
                 guard !datagram.isEmpty else { continue }
                 // The sharer is the only expected sender (it learned our addr
                 // from the HELLO); ignore anything else.
+                // KNOWN LIMITATION (pre-existing; affects the SDL viewer too):
+                // `dest` is the dialed string, so if `config.hostname` is a
+                // Tailscale *hostname* rather than a tailnet IP, `from` (the
+                // sharer's resolved IP) won't string-match and video is dropped.
+                // Dial by tailnet IP until this matches on the resolved peer.
                 guard from == dest else { continue }
                 pipeline.receive(datagram)
             } catch {
