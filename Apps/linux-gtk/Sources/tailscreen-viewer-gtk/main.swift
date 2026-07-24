@@ -24,6 +24,7 @@ import TailscreenViewerTsnet
 // lives at module scope.
 let gStore = FrameStore()
 let gUIState = ViewerUIState()
+let gControls = ViewerControls(ui: gUIState)
 let gArgs = Array(CommandLine.arguments.dropFirst())
 let gSelfTest = gArgs.contains("--render-self-test")
 
@@ -86,12 +87,26 @@ if gSelfTest {
     let sink = GtkVideoSink(store: gStore, uiState: gUIState)
     let decoder = FFmpegVideoDecoder()
     let transport = TsnetTransport()
+    // Inbound back-channel handlers: control grant/revoke drive the toolbar's
+    // state machine. Inbound annotation *rendering* (drawing relayed strokes on
+    // an overlay canvas) is a follow-up — the plumbing already carries the ops.
+    let backChannelHandlers = ViewerBackChannel.Handlers(
+        onAnnotation: { _ in },
+        onControlGranted: { gUIState.setControlState(.active) },
+        onControlRevoked: { reason in gUIState.setControlState(.revoked(reason: reason)) })
     Task { @MainActor in
         do {
             // audio (ALSA) wiring is deferred to a later phase; video first.
             try await transport.run(
                 config: config, decoder: decoder, videoSink: sink,
-                audioSink: nil, shouldClose: { false })
+                audioSink: nil, shouldClose: { false },
+                backChannelHandlers: backChannelHandlers,
+                onBackChannelReady: { channel in gControls.attach(channel) },
+                onAdmitted: { caps in
+                    gUIState.setCaps(
+                        remoteControl: caps.contains(.remoteControl),
+                        annotations: caps.contains(.annotations))
+                })
             FileHandle.standardError.write(Data("session ended\n".utf8))
         } catch {
             FileHandle.standardError.write(Data("session failed: \(error)\n".utf8))
@@ -104,6 +119,21 @@ struct ViewerApp: App {
     // flows (swift-cross-ui @State tracks the ObservableObject's @Published).
     @State var ui = gUIState
 
+    // Toolbar button label reflects the remote-control state machine.
+    private var controlButtonLabel: String {
+        switch ui.controlState {
+        case .idle, .revoked: return "Request Control"
+        case .requested: return "Requesting Control…"
+        case .active: return "Release Control"
+        }
+    }
+
+    // A revoke/decline reason to surface beside the button, if any.
+    private var revokedReason: String? {
+        if case .revoked(let reason) = ui.controlState, !reason.isEmpty { return reason }
+        return nil
+    }
+
     var body: some Scene {
         WindowGroup("Tailscreen viewer") {
             ZStack {
@@ -111,6 +141,21 @@ struct ViewerApp: App {
                 // Connection placard before the first frame (never in self-test).
                 if !gSelfTest && !ui.hasVideo {
                     Text(ui.status)
+                }
+                // Remote-control toolbar, pinned to the bottom. Shown only when
+                // the sharer advertised `.remoteControl` (caps-gated, like the
+                // mac viewer). Input capture (pointer/keyboard → `sendInputEvent`)
+                // is the follow-up; this delivers the request/grant handshake.
+                if !gSelfTest && ui.remoteControlAvailable {
+                    VStack {
+                        Spacer()
+                        HStack {
+                            Button(controlButtonLabel) { gControls.toggleControl() }
+                            if let reason = revokedReason {
+                                Text("Control declined: \(reason)")
+                            }
+                        }
+                    }
                 }
             }
         }
