@@ -46,6 +46,11 @@
 
 /* MARK: - Main window hub (MainWindowView.swift) */
 "Viewer approvals and sharing controls live in the menu bar icon." = "Viewer approvals and sharing controls live in the menu bar icon.";
+"Share your screen" = "Share your screen";
+"Pick a display, window, or app to share with your tailnet." = "Pick a display, window, or app to share with your tailnet.";
+"Screens" = "Screens";
+"Search screens" = "Search screens";
+"Account" = "Account";
 
 /* MARK: - Signed-out popover (MenuBarView.swift) */
 "Not signed in" = "Not signed in";

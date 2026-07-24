@@ -66,6 +66,9 @@ struct TailscreenApp: App {
         .defaultSize(width: 400, height: 580)
         .windowResizability(.contentMinSize)
         .defaultLaunchBehavior(.presented)
+        // The toolbar carries the identity block ("Tailscreen" + tailnet
+        // login) instead of a window title — the Tailscale-app look.
+        .windowStyle(.hiddenTitleBar)
 
         // The menubar icon shows the brand mark at idle and switches to
         // state-conveying SF Symbols while sharing or viewing — the

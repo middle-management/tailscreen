@@ -1,20 +1,17 @@
 import AppKit
 import SwiftUI
 
-/// Corner radius for the main window's card surfaces — mirrors the popover's
-/// `PopoverRadius` tiers so the two surfaces stay visually coherent.
-private enum HubRadius {
-    static let card: CGFloat = 10
-}
-
 /// Root view of the docked main window — the app's hub. Discovery (the peer
 /// list), sign-in, incoming share requests, and identity live here; the
 /// menubar popover stays focused on the *sharing session*: status cards,
 /// start/stop, viewer approvals, and control requests.
 ///
-/// The window is a regular SwiftUI `Window` scene (see `TailscreenApp`), so
-/// the app behaves like a normal Mac citizen: Dock icon, ⌘Tab, menu bar,
-/// full keyboard/VoiceOver reachability without hunting for a popover.
+/// Layout follows the Tailscale mac app's lead (minus the sidebar — we have
+/// exactly one section, so a sidebar would be empty chrome): a hidden title
+/// bar whose toolbar carries the app identity on the left and
+/// filter / refresh / account on the right, over a single clean content
+/// column — share card, a large "Screens" heading with search, and
+/// dot + name + IP peer rows.
 struct MainWindowView: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.openWindow) private var openWindow
@@ -27,12 +24,74 @@ struct MainWindowView: View {
                 WelcomePane()
             }
         }
-        .frame(minWidth: 320, minHeight: 460)
+        .frame(minWidth: 340, minHeight: 460)
+        .background(Color(nsColor: .textBackgroundColor))
+        .toolbar { toolbarContent }
         .onAppear {
             // Environment actions are only reachable from view context, so
             // stash the scene-opening closure where AppKit callers (menu
             // items, the menubar popover) can invoke it.
             appState.openMainWindowAction = { openWindow(id: TailscreenApp.mainWindowID) }
+        }
+    }
+
+    /// Window chrome: identity block on the left (the window title is
+    /// hidden — see the `Window` scene's `.windowStyle(.hiddenTitleBar)`),
+    /// list controls + account menu on the right. The account menu replaces
+    /// the old bottom identity footer, mirroring Tailscale's top-right
+    /// avatar.
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .navigation) {
+            VStack(alignment: .leading, spacing: 0) {
+                Text(verbatim: "Tailscreen")
+                    .font(.system(.subheadline, design: .rounded, weight: .bold))
+                if let login = appState.tailscaleAuth.userProfile?.loginName {
+                    Text(verbatim: login)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
+        }
+        if appState.tailscaleAuth.isAuthenticated {
+            ToolbarItemGroup(placement: .primaryAction) {
+                PeerFilterMenu()
+
+                Button {
+                    Task { await appState.discoverPeers() }
+                } label: {
+                    if appState.isDiscovering {
+                        ProgressView()
+                            .controlSize(.small)
+                            .scaleEffect(0.7)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                }
+                .disabled(appState.isDiscovering)
+                .help(L("Refresh screens"))
+                .accessibilityLabel(L("Refresh available screens"))
+
+                if let profile = appState.tailscaleAuth.userProfile {
+                    Menu {
+                        Text(verbatim: profile.displayName)
+                        Text(verbatim: profile.loginName)
+                        Divider()
+                        Button(L("Settings…")) { appState.presentSettings() }
+                        Divider()
+                        Button(L("Sign out")) {
+                            Task { await appState.signOut() }
+                        }
+                    } label: {
+                        MonogramAvatar(name: profile.displayName, size: 22)
+                    }
+                    .menuIndicator(.hidden)
+                    .help(L("Sign out of Tailscale, signed in as \(profile.displayName)"))
+                    .accessibilityLabel(L("Account"))
+                }
+            }
         }
     }
 }
@@ -72,7 +131,7 @@ private struct WelcomePane: View {
             .frame(width: 80, height: 80)
 
             Text(L("Welcome to Tailscreen"))
-                .font(.title2.weight(.semibold))
+                .font(.system(.title2, design: .rounded, weight: .semibold))
 
             Text(L("Sign in with Tailscale to share and view screens with your peers."))
                 .font(.callout)
@@ -113,29 +172,26 @@ private struct WelcomePane: View {
 
 // MARK: - Hub (authenticated)
 
+/// One scrolling content column, Tailscale-style: share card up top, then
+/// the screens list with its heading and search field.
 private struct HubView: View {
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            PendingRequestsBanner()
-                .padding(.top, 10)
-            ShareStatusSection()
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-            Divider()
-            // The peer list absorbs all remaining height (its own frame is
-            // greedy) so the identity footer stays pinned to the bottom in
-            // every list state — skeleton, empty, and populated alike.
-            PeerListSection()
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            IdentityFooter()
-                .padding(.bottom, 6)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                PendingRequestsBanner()
+                ShareStatusSection()
+                PeerListSection()
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 16)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 }
 
 // MARK: - Share section (window-side status + start)
 
-/// The window's share module: a prominent "Choose what to share…" button at
+/// The window's share module: a titled card with the primary action at
 /// idle, and a compact status row while a session is up. Detailed session
 /// controls (mic, audio devices, viewer approvals, remote-control requests)
 /// deliberately stay in the menubar popover — the sharer tool — so this
@@ -144,7 +200,7 @@ private struct ShareStatusSection: View {
     @EnvironmentObject var appState: AppState
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             switch (appState.sharingState, appState.connectionState) {
             case (.active, _):
                 HStack(alignment: .top, spacing: 10) {
@@ -154,7 +210,7 @@ private struct ShareStatusSection: View {
                         .padding(.top, 5)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(L("Sharing your screen"))
-                            .font(.headline)
+                            .font(.system(.headline, design: .rounded))
                         Text(viewersText)
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
@@ -174,7 +230,7 @@ private struct ShareStatusSection: View {
                     ProgressView().controlSize(.small)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(L("Starting share…"))
-                            .font(.headline)
+                            .font(.system(.headline, design: .rounded))
                         Text(L("Bringing up screen capture. macOS may take a few seconds."))
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
@@ -190,7 +246,7 @@ private struct ShareStatusSection: View {
                         .padding(.top, 5)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(L("Viewing \(appState.connectedHostname ?? L("peer"))"))
-                            .font(.headline)
+                            .font(.system(.headline, design: .rounded))
                             .lineLimit(1)
                             .truncationMode(.middle)
                         Text(L("Connected over Tailscale"))
@@ -207,7 +263,7 @@ private struct ShareStatusSection: View {
                 HStack(spacing: 10) {
                     ProgressView().controlSize(.small)
                     Text(appState.connectedHostname.map { L("Connecting to \($0)…") } ?? L("Connecting…"))
-                        .font(.headline)
+                        .font(.system(.headline, design: .rounded))
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Spacer(minLength: 0)
@@ -231,30 +287,42 @@ private struct ShareStatusSection: View {
                     }
                     .opacity(0.8)
                 } else {
+                    Text(L("Share your screen"))
+                        .font(.system(.headline, design: .rounded))
+                    Text(L("Pick a display, window, or app to share with your tailnet."))
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                     Button {
                         Task { await appState.presentNativePicker() }
                     } label: {
                         Label(L("Choose what to share…"), systemImage: "macwindow.on.rectangle")
-                            .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
+                    .padding(.top, 2)
                     ApprovalToggle()
+                        .padding(.top, 4)
                 }
             }
         }
-        .padding(12)
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: HubRadius.card, style: .continuous)
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(backgroundTint)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(.separator.opacity(0.4), lineWidth: 1)
         )
     }
 
     private var backgroundTint: Color {
         switch (appState.sharingState, appState.connectionState) {
         case (.active, _): return Color.green.opacity(0.12)
-        case (_, .viewing): return Color.accentColor.opacity(0.12)
-        default: return Color.secondary.opacity(0.08)
+        case (_, .viewing): return Color.accentColor.opacity(0.10)
+        default: return Color.secondary.opacity(0.06)
         }
     }
 
@@ -267,13 +335,13 @@ private struct ShareStatusSection: View {
 
 // MARK: - Peer list
 
-/// The tailnet peer list ("Available screens"), moved here from the menubar
-/// popover when the docked window became the app's hub. Unlike the popover
-/// variant it isn't row-capped — the scroll area takes whatever height the
-/// window gives it.
+/// The tailnet screens list: a large heading, a search field, then
+/// dot + name + IP rows (the Tailscale device-list idiom). Filter and
+/// refresh live in the window toolbar.
 private struct PeerListSection: View {
     @EnvironmentObject var appState: AppState
     @State private var didAutoDiscover = false
+    @State private var searchText = ""
 
     /// Off until the initial seed has landed: the initial population snaps
     /// into place, and only changes that happen while the user is actually
@@ -290,44 +358,15 @@ private struct PeerListSection: View {
     private static let maxSkeletonRows = 6
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 8) {
-                Text(L("AVAILABLE SCREENS"))
-                    .font(.caption2.weight(.semibold))
-                    .tracking(0.6)
-                    .foregroundStyle(.tertiary)
+        VStack(alignment: .leading, spacing: 10) {
+            Text(L("Screens"))
+                .font(.system(.title2, design: .rounded, weight: .bold))
+                .padding(.top, 6)
 
-                Spacer()
-
-                PeerFilterMenu()
-
-                Button {
-                    Task { await appState.discoverPeers() }
-                } label: {
-                    if appState.isDiscovering {
-                        ProgressView()
-                            .controlSize(.small)
-                            .scaleEffect(0.6)
-                            .frame(width: 14, height: 14)
-                    } else {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(.tertiary)
-                            .frame(width: 14, height: 14)
-                    }
-                }
-                .buttonStyle(.plain)
-                .disabled(appState.isDiscovering)
-                .help(L("Refresh screens"))
-                .accessibilityLabel(L("Refresh available screens"))
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 10)
-            .padding(.bottom, 2)
+            searchField
 
             content
         }
-        .padding(.bottom, 4)
         // Glide between skeleton → list → empty (and between row counts as
         // IPN updates trickle in) — but only after the initial population
         // has settled (see `animateChanges`).
@@ -353,6 +392,34 @@ private struct PeerListSection: View {
         }
         .onChange(of: appState.filteredPeers.count) { _, count in
             if count > 0 { lastPeerRowCount = min(count, Self.maxSkeletonRows) }
+        }
+    }
+
+    private var searchField: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+            TextField(L("Search screens"), text: $searchText)
+                .textFieldStyle(.plain)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(.quaternary.opacity(0.6))
+        )
+        .accessibilityElement(children: .contain)
+    }
+
+    /// `appState.filteredPeers` (the persisted filter axes) narrowed
+    /// further by the transient search text.
+    private var visiblePeers: [TailscreenPeer] {
+        guard !searchText.isEmpty else { return appState.filteredPeers }
+        return appState.filteredPeers.filter {
+            $0.hostname.localizedCaseInsensitiveContains(searchText)
+                || $0.dnsName.localizedCaseInsensitiveContains(searchText)
+                || $0.tailscaleIP.contains(searchText)
         }
     }
 
@@ -386,37 +453,30 @@ private struct PeerListSection: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .frame(height: 28)
-                .padding(.horizontal, 16)
                 .transition(.opacity)
-        } else if appState.filteredPeers.isEmpty {
-            // Devices exist but the filter hides them all — say so rather
-            // than showing the misleading "no devices" empty state.
+        } else if visiblePeers.isEmpty {
+            // Devices exist but the filter/search hides them all — say so
+            // rather than showing the misleading "no devices" empty state.
             Text(L("No screens match your filters"))
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .frame(height: 28)
-                .padding(.horizontal, 16)
                 .transition(.opacity)
         } else {
-            ScrollView {
-                VStack(spacing: 0) {
-                    ForEach(appState.filteredPeers) { peer in
-                        PeerMenuRow(peer: peer) {
-                            Task { await appState.connectToPeer(peer) }
-                        }
+            VStack(spacing: 2) {
+                ForEach(visiblePeers) { peer in
+                    PeerMenuRow(peer: peer) {
+                        Task { await appState.connectToPeer(peer) }
                     }
                 }
-                .padding(.horizontal, 6)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .transition(.opacity)
 
             let hidden = appState.availablePeers.count - appState.filteredPeers.count
-            if hidden > 0 {
+            if hidden > 0 && searchText.isEmpty {
                 Text(L("\(hidden) hidden by filters"))
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
-                    .padding(.horizontal, 16)
                     .padding(.top, 2)
                     .transition(.opacity)
             }
@@ -428,6 +488,7 @@ private struct PeerListSection: View {
 /// carries the hide-offline toggle and one toggle per known ACL tag (plus
 /// the explicit Untagged bucket while a tag filter is active). Writes go
 /// through `appState.peerFilter` so its `didSet` persists every change.
+/// Lives in the main window's toolbar.
 private struct PeerFilterMenu: View {
     @EnvironmentObject var appState: AppState
 
@@ -481,17 +542,12 @@ private struct PeerFilterMenu: View {
                     ? "line.3.horizontal.decrease.circle.fill"
                     : "line.3.horizontal.decrease.circle"
             )
-            .font(.caption.weight(.medium))
             .foregroundStyle(
                 appState.peerFilter.isActive
-                    ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.tertiary)
+                    ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.primary)
             )
-            .frame(width: 14, height: 14)
         }
-        .menuStyle(.button)
-        .buttonStyle(.plain)
         .menuIndicator(.hidden)
-        .fixedSize()
         .help(L("Filter screens"))
         .accessibilityLabel(L("Filter available screens"))
     }
@@ -514,8 +570,8 @@ private struct PeerFilterMenu: View {
     }
 }
 
-/// Placeholder mirroring `PeerMenuRow`'s geometry (same height, icon slot,
-/// and horizontal padding) shown while the peer list is seeding. Matching
+/// Placeholder mirroring `PeerMenuRow`'s geometry (same two-line height,
+/// dot slot, and padding) shown while the peer list is seeding. Matching
 /// the real row's layout means the fade from skeleton to content happens
 /// in place with no reflow. The name bar pulses gently so the section
 /// reads as "loading" rather than frozen.
@@ -528,22 +584,26 @@ private struct PeerRowSkeleton: View {
     private static let widthFractions: [CGFloat] = [1.0, 0.72, 0.86, 0.64, 0.9, 0.78]
 
     var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "desktopcomputer")
-                .font(.body)
-                .frame(width: 16, alignment: .center)
-                .foregroundStyle(.quaternary)
-
-            RoundedRectangle(cornerRadius: 4, style: .continuous)
+        HStack(spacing: 10) {
+            Circle()
                 .fill(Color(nsColor: .quaternaryLabelColor))
-                .frame(
-                    width: 130 * Self.widthFractions[index % Self.widthFractions.count],
-                    height: 10)
+                .frame(width: 8, height: 8)
+
+            VStack(alignment: .leading, spacing: 5) {
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .fill(Color(nsColor: .quaternaryLabelColor))
+                    .frame(
+                        width: 120 * Self.widthFractions[index % Self.widthFractions.count],
+                        height: 10)
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .fill(Color(nsColor: .quaternaryLabelColor).opacity(0.6))
+                    .frame(width: 90, height: 8)
+            }
 
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 12)
-        .frame(height: 36)
+        .padding(.horizontal, 8)
+        .frame(height: 44)
         .opacity(pulsing ? 0.45 : 1.0)
         // Scoped `.animation(value:)`, NOT a global `withAnimation` in
         // onAppear, so the repeat-forever curve can't leak onto the
@@ -558,6 +618,9 @@ private struct PeerRowSkeleton: View {
     }
 }
 
+/// One screens-list row: presence dot + hostname (+ green sharing chip)
+/// over the peer's Tailscale IP, with the connect affordance on hover —
+/// the Tailscale device-row idiom.
 private struct PeerMenuRow: View {
     @EnvironmentObject var appState: AppState
     let peer: TailscreenPeer
@@ -580,51 +643,49 @@ private struct PeerMenuRow: View {
             && appState.connectionState == .idle
     }
 
+    private var shareInfo: TailscreenMetadata? {
+        guard let info = appState.peerShareInfo[peer.id], info.isSharing else { return nil }
+        return info
+    }
+
     var body: some View {
         ZStack {
             Button(action: onConnect) {
-                HStack(spacing: 8) {
-                    Image(systemName: "desktopcomputer")
-                        .font(.body)
-                        .frame(width: 16, alignment: .center)
-                        .foregroundStyle(peer.isOnline ? .secondary : .tertiary)
+                HStack(spacing: 10) {
+                    Circle()
+                        .fill(
+                            peer.isOnline
+                                ? Color.green : Color(nsColor: .tertiaryLabelColor)
+                        )
+                        .frame(width: 8, height: 8)
                         .accessibilityHidden(true)
 
-                    VStack(alignment: .leading, spacing: 1) {
-                        // The status dot lives on the hostname line, not in
-                        // the outer HStack — there it would center against
-                        // the whole two-line block on offline rows and
-                        // float between the name and the "Offline" caption,
-                        // at a visibly different height than on single-line
-                        // online rows.
+                    VStack(alignment: .leading, spacing: 2) {
                         HStack(spacing: 6) {
                             Text(peer.hostname)
-                                .font(.body)
+                                .font(.body.weight(.medium))
                                 .lineLimit(1)
                                 .truncationMode(.middle)
-                            Circle()
-                                .fill(
-                                    peer.isOnline
-                                        ? Color.green : Color(nsColor: .tertiaryLabelColor)
-                                )
-                                .frame(width: 6, height: 6)
-                                .accessibilityHidden(true)
+                            if let share = shareInfo {
+                                // Fetched share status (`.metadataResponse`)
+                                // — the share name is peer data, shown as-is
+                                // (parser-clamped); fall back to a generic
+                                // caption when the peer didn't name its
+                                // share.
+                                Text(share.shareName.isEmpty ? L("Sharing") : share.shareName)
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.green)
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(Capsule().fill(Color.green.opacity(0.14)))
+                            }
                         }
-                        if !peer.isOnline {
-                            Text(L("Offline"))
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
-                        } else if let share = appState.peerShareInfo[peer.id], share.isSharing {
-                            // Fetched share status (`.metadataResponse`) —
-                            // the share name is peer data, shown as-is
-                            // (parser-clamped); fall back to a generic
-                            // caption when the peer didn't name its share.
-                            Text(share.shareName.isEmpty ? L("Sharing") : share.shareName)
-                                .font(.caption)
-                                .foregroundStyle(.green)
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                        }
+                        Text(peer.isOnline ? peer.tailscaleIP : L("Offline"))
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
 
                     Spacer(minLength: 0)
@@ -633,8 +694,8 @@ private struct PeerMenuRow: View {
                     // hover-driven appearance doesn't shift the row.
                     Color.clear.frame(width: trailingReservedWidth, height: 1)
                 }
-                .padding(.horizontal, 10)
-                .frame(height: 36)
+                .padding(.horizontal, 8)
+                .frame(height: 44)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -667,7 +728,7 @@ private struct PeerMenuRow: View {
                         .accessibilityHidden(true)
                 }
             }
-            .padding(.trailing, 10)
+            .padding(.trailing, 8)
             .allowsHitTesting(isHovered && canRequestShare)
         }
         .onHover { isHovered = $0 }
@@ -681,61 +742,6 @@ private struct PeerMenuRow: View {
         case (true, _): return 36  // hand-wave + chevron
         case (_, true): return 14  // chevron only
         default: return 0
-        }
-    }
-}
-
-// MARK: - Identity footer
-
-private struct IdentityFooter: View {
-    @EnvironmentObject var appState: AppState
-    @State private var isHovered = false
-
-    var body: some View {
-        if let profile = appState.tailscaleAuth.userProfile {
-            VStack(alignment: .leading, spacing: 2) {
-                Divider().padding(.vertical, 4)
-
-                Button {
-                    Task { await appState.signOut() }
-                } label: {
-                    HStack(spacing: 8) {
-                        Image(
-                            systemName: isHovered
-                                ? "rectangle.portrait.and.arrow.right"
-                                : "person.crop.circle.fill"
-                        )
-                        .font(.system(size: 18))
-                        .frame(width: 22, height: 22)
-                        .foregroundStyle(isHovered ? .primary : .secondary)
-
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(isHovered ? L("Sign out") : profile.displayName)
-                                .font(.callout.weight(.medium))
-                                .lineLimit(1)
-                            Text(
-                                isHovered
-                                    ? L("End your Tailscale session")
-                                    : profile.loginName
-                            )
-                            .font(.subheadline)
-                            .foregroundStyle(.tertiary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        }
-
-                        Spacer(minLength: 0)
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 4)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .background(MenuRowHoverBackground(isHovered: isHovered))
-                .onHover { isHovered = $0 }
-                .help(L("Sign out of Tailscale"))
-                .accessibilityLabel(L("Sign out of Tailscale, signed in as \(profile.displayName)"))
-            }
         }
     }
 }

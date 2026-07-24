@@ -374,7 +374,7 @@ class AppState: ObservableObject {
     @Published private(set) var peerShareInfo: [String: TailscreenMetadata] = [:]
     private var shareStatusRefreshInFlight = false
 
-    /// The peers the menubar's AVAILABLE SCREENS section renders: the raw
+    /// The peers the main window's Screens list renders: the raw
     /// list projected through `peerFilter` (pure decision, covered by
     /// `PeerListFilterTests` in the protocol package).
     var filteredPeers: [TailscreenPeer] {
