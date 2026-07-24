@@ -508,7 +508,18 @@ private struct ShareStatusSection: View {
                     }
                     .accessibilityHint(L("Disconnects all viewers and ends the screen share"))
                 }
-                Text(L("Viewer approvals and sharing controls live in the menu bar icon."))
+                // The sharer's decision surfaces, shared with the menubar
+                // popover — approvals shouldn't require leaving the window.
+                if !appState.pendingViewers.isEmpty {
+                    PendingViewersList(viewers: appState.pendingViewers)
+                }
+                if let grantee = appState.controlGrantee {
+                    RemoteControlGranteeBanner(grantee: grantee)
+                }
+                if !appState.controlRequests.isEmpty {
+                    ControlRequestsList(requests: appState.controlRequests)
+                }
+                Text(L("Mic, system audio, and drawing controls live in the menu bar icon."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

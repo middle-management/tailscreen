@@ -46,6 +46,7 @@
 
 /* MARK: - Main window hub (MainWindowView.swift) */
 "Viewer approvals and sharing controls live in the menu bar icon." = "Viewer approvals and sharing controls live in the menu bar icon.";
+"Mic, system audio, and drawing controls live in the menu bar icon." = "Mic, system audio, and drawing controls live in the menu bar icon.";
 "Share your screen" = "Share your screen";
 "Pick a display, window, or app to share with your tailnet." = "Pick a display, window, or app to share with your tailnet.";
 "Screens" = "Screens";

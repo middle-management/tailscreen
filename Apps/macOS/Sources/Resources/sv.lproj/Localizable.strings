@@ -41,6 +41,7 @@
 
 /* MARK: - Main window hub (MainWindowView.swift) */
 "Viewer approvals and sharing controls live in the menu bar icon." = "Tittargodkännanden och delningskontroller finns i menyradsikonen.";
+"Mic, system audio, and drawing controls live in the menu bar icon." = "Kontroller för mikrofon, systemljud och ritning finns i menyradsikonen.";
 "Share your screen" = "Dela din skärm";
 "Pick a display, window, or app to share with your tailnet." = "Välj en skärm, ett fönster eller en app att dela med ditt tailnet.";
 "Screens" = "Skärmar";
