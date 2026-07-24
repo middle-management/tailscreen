@@ -1,16 +1,16 @@
 name: Build (docs-only)
 
-# Companion to build.yml. That workflow's `paths-ignore` (**.md, LICENSE,
-# .gitignore) makes it — and its REQUIRED `build` check — skip entirely on a
+# Companion to build.yml. That workflow's paths-ignore (**.md, LICENSE,
+# .gitignore) makes it — and its REQUIRED build check — skip entirely on a
 # docs-only pull request. The required check then stays permanently "expected"
 # and the ruleset blocks the merge (there is no way for a docs-only PR to ever
 # satisfy it). This workflow triggers on exactly those ignored paths and
-# reports a passing `build` check with the SAME context name, so a docs-only PR
+# reports a passing build check with the SAME context name, so a docs-only PR
 # is mergeable — without weakening the gate for any PR that touches code.
 #
 # On a mixed docs+code PR, both fire: build.yml runs the real macOS build
 # (minutes) while this no-op finishes in seconds, so the real build is the
-# most-recently-completed `build` check and remains authoritative — this no-op
+# most-recently-completed build check and remains authoritative — this no-op
 # cannot mask a genuine build failure.
 on:
   pull_request:
@@ -26,9 +26,10 @@ concurrency:
 
 jobs:
   # Job id MUST stay `build` so the produced status-check context matches the
-  # `build` context required by branch protection.
+  # build context required by branch protection.
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Docs-only change — no build required
-        run: echo "Docs-only PR: build.yml is path-skipped; satisfying the required 'build' check."
+      - name: No build needed for docs-only changes
+        run: |
+          echo "Docs-only PR. build.yml is path-skipped, so this companion satisfies the required build check."
