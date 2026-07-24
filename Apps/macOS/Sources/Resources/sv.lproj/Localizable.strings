@@ -53,6 +53,16 @@
 "Last seen %@" = "Senast sedd %@";
 "Shows details and actions" = "Visar detaljer och åtgärder";
 
+/* MARK: - Account profiles (MainWindowView.swift / AppState.swift) */
+"Add Account…" = "Lägg till konto…";
+"Switch to This Account" = "Byt till det här kontot";
+"Remove Account…" = "Ta bort konto…";
+"New account" = "Nytt konto";
+"Finish Your Session First" = "Avsluta din session först";
+"Stop sharing or disconnect before switching accounts." = "Sluta dela eller koppla från innan du byter konto.";
+"Remove this account?" = "Ta bort det här kontot?";
+"Removes its sign-in state from this Mac. The device may remain listed in the tailnet admin console until it expires." = "Tar bort dess inloggningsuppgifter från den här datorn. Enheten kan finnas kvar i tailnetets adminkonsol tills den löper ut.";
+
 /* MARK: - Signed-out popover (MenuBarView.swift) */
 "Not signed in" = "Inte inloggad";
 "Open Tailscreen to sign in with Tailscale." = "Öppna Tailscreen för att logga in med Tailscale.";

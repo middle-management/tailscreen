@@ -199,6 +199,10 @@ class AppState: ObservableObject {
     /// it gets a value snapshot via `setAccessPolicies` at share start and
     /// on every change (see the `$entries` subscription in `init`).
     let viewerAccessPolicies = ViewerAccessPolicyStore()
+    /// Multi-account profile registry (Tailscale-style): each profile owns
+    /// a tsnet state directory; exactly one is active per process. See
+    /// `switchProfile(to:)` / `addAccountAndSignIn()`.
+    let profileStore = ProfileStore()
 
     /// Persistent Cloaked Apps list behind the Settings "Cloaked Apps" section:
     /// apps whose windows are hidden from viewers whenever a whole display
@@ -483,6 +487,12 @@ class AppState: ObservableObject {
     init() {
         // Observe changes in tailscaleAuth and propagate them
         tailscaleAuth.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }.store(in: &cancellables)
+
+        // Same forwarding for the profile registry, so the header's
+        // account menu re-renders on add/switch/remove/identity updates.
+        profileStore.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }.store(in: &cancellables)
 
@@ -2249,21 +2259,13 @@ class AppState: ObservableObject {
     /// BrowseToURL is dropped silently and the user still sees the
     /// "Sign in with Tailscale" CTA.
     private func attemptSessionRestore() async {
-        // Skip when the state directory is empty — the very first launch
-        // has nothing to restore, and bringing the node up would just
-        // emit a BrowseToURL we're going to drop anyway.
-        guard
-            let appSupport = FileManager.default.urls(
-                for: .applicationSupportDirectory, in: .userDomainMask
-            ).first
-        else {
-            logger.log("No Application Support URL available; skipping silent restore")
-            return
-        }
-        let statePath =
-            appSupport
-            .appendingPathComponent("Tailscreen/tailscale\(TailscreenInstance.stateSuffix)")
-            .path
+        // Skip when the active profile's state directory is empty — the
+        // very first launch (or a just-added profile) has nothing to
+        // restore, and bringing the node up would just emit a BrowseToURL
+        // we're going to drop anyway.
+        let statePath = profileStore.activeProfile.statePath(
+            appSupport: Self.appSupportDirectory(),
+            instanceSuffix: TailscreenInstance.stateSuffix)
         let contents = (try? FileManager.default.contentsOfDirectory(atPath: statePath)) ?? []
         guard !contents.isEmpty else {
             logger.log("No saved Tailscale state at \(statePath); skipping silent restore")
@@ -2281,6 +2283,7 @@ class AppState: ObservableObject {
             if tailscaleAuth.isAuthenticated {
                 let ips = try await node.addrs()
                 self.tailscaleIPs = [ips.ip4, ips.ip6].compactMap { $0 }
+                noteProfileIdentityFromAuth()
                 logger.log("Restored signed-in Tailscale session")
             } else {
                 logger.log("No valid saved session; awaiting explicit sign-in")
@@ -2322,6 +2325,10 @@ class AppState: ObservableObject {
             let ips = try await node.addrs()
             self.tailscaleIPs = [ips.ip4, ips.ip6].compactMap { $0 }
 
+            // Label the active profile with the identity that just signed
+            // in, so the account menu can name it while it's inactive.
+            noteProfileIdentityFromAuth()
+
             // Login success is visible via the menu's user profile section;
             // a popup just interrupts the flow the user was already in.
             _ = silent
@@ -2343,24 +2350,11 @@ class AppState: ObservableObject {
         // (separate "-auth" node + per-feature ephemeral nodes) made every
         // share + every connect pop a second / third browser login,
         // because each tsnet node = a distinct machine in the tailnet.
-        // FileManager almost always returns Application Support under
-        // .userDomainMask, but fall back to the conventional home-relative
-        // path rather than force-unwrap so a missing-URL edge case
-        // (sandboxing quirk, unusual environment) lands in a recoverable
-        // directory creation below instead of trapping.
-        let statePath = {
-            let appSupport: URL
-            if let url = FileManager.default.urls(
-                for: .applicationSupportDirectory, in: .userDomainMask
-            ).first {
-                appSupport = url
-            } else {
-                logger.log("No Application Support URL; falling back to ~/Library/Application Support")
-                appSupport = URL(fileURLWithPath: NSHomeDirectory())
-                    .appendingPathComponent("Library/Application Support")
-            }
-            return appSupport.appendingPathComponent("Tailscreen/tailscale\(TailscreenInstance.stateSuffix)").path
-        }()
+        // The state dir is the ACTIVE PROFILE's — identity lives entirely
+        // in tsnet's on-disk state, so a profile is just a directory.
+        let statePath = profileStore.activeProfile.statePath(
+            appSupport: Self.appSupportDirectory(),
+            instanceSuffix: TailscreenInstance.stateSuffix)
 
         // Create directory if needed
         try? FileManager.default.createDirectory(
@@ -2562,6 +2556,120 @@ class AppState: ObservableObject {
 
         } catch {
             presentError(.signOutFailed(error))
+        }
+    }
+
+    // MARK: - Account profiles
+
+    /// Application Support root. FileManager almost always returns it
+    /// under `.userDomainMask`; fall back to the conventional
+    /// home-relative path rather than force-unwrap so a missing-URL edge
+    /// case (sandboxing quirk, unusual environment) stays recoverable.
+    nonisolated static func appSupportDirectory() -> URL {
+        if let url = FileManager.default.urls(
+            for: .applicationSupportDirectory, in: .userDomainMask
+        ).first {
+            return url
+        }
+        return URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent("Library/Application Support")
+    }
+
+    /// Copy the signed-in identity onto the active profile record so the
+    /// account menu can label profiles while they're inactive.
+    private func noteProfileIdentityFromAuth() {
+        guard tailscaleAuth.isAuthenticated, let profile = tailscaleAuth.userProfile else { return }
+        profileStore.updateActiveIdentity(
+            displayName: profile.displayName, loginName: profile.loginName)
+    }
+
+    /// Tear down the live node and everything hanging off it WITHOUT
+    /// logging out — the profile's on-disk tsnet state stays valid, so
+    /// switching back later restores the session silently. This is
+    /// `signOut()`'s teardown half minus `tailscaleAuth.signOut()`.
+    private func teardownNodeKeepingLogin() async {
+        await server?.stop()
+        server = nil
+        await controlListener?.stop()
+        controlListener = nil
+        try? await node?.close()
+        node = nil
+        authIPNWatcher?.stopWatching()
+        authIPNWatcher = nil
+        peerDiscovery?.stopRealTimeMonitoring()
+        peerDiscovery = nil
+        peerDiscoveryNode = nil
+        availablePeers = []
+        peerShareInfo = [:]
+        hasCompletedInitialDiscovery = false
+        tailscaleIPs = []
+        tailscaleAuth.isAuthenticated = false
+        tailscaleAuth.userProfile = nil
+    }
+
+    /// True while a session is active enough that yanking the node out
+    /// from under it on a menu click would be worse than asking the user
+    /// to finish first.
+    private var isBusyForProfileSwitch: Bool {
+        sharingState != .idle || connectionState != .idle
+    }
+
+    /// Switch the active account profile, Tailscale-style: one node at a
+    /// time, other profiles stay logged in on disk. Refuses mid-session;
+    /// otherwise closes the current node locally and brings the selected
+    /// profile up — silently when its saved state still authenticates,
+    /// else the window falls back to the sign-in pane.
+    func switchProfile(to id: UUID) async {
+        guard id != profileStore.activeProfileID else { return }
+        guard !isBusyForProfileSwitch else {
+            presentNotice(
+                title: L("Finish Your Session First"),
+                message: L("Stop sharing or disconnect before switching accounts."))
+            return
+        }
+        await teardownNodeKeepingLogin()
+        profileStore.setActive(id)
+        await attemptSessionRestore()
+    }
+
+    /// "Add Account…": create a fresh profile (its own tsnet state dir),
+    /// switch to it, and go straight into the interactive login flow.
+    func addAccountAndSignIn() async {
+        guard !isBusyForProfileSwitch else {
+            presentNotice(
+                title: L("Finish Your Session First"),
+                message: L("Stop sharing or disconnect before switching accounts."))
+            return
+        }
+        let profile = profileStore.addProfile()
+        await teardownNodeKeepingLogin()
+        profileStore.setActive(profile.id)
+        await login(silent: false)
+    }
+
+    /// Confirm and remove a non-active profile, deleting its on-disk node
+    /// state. Removal is local: the machine may remain listed in that
+    /// tailnet's admin console until it expires. Only directories under
+    /// `profiles/` are ever deleted — never the legacy shared root.
+    func confirmRemoveProfile(_ profile: TailscreenProfile) {
+        let alert = NSAlert()
+        alert.messageText = L("Remove this account?")
+        alert.informativeText = L(
+            "Removes its sign-in state from this Mac. The device may remain listed in the tailnet admin console until it expires."
+        )
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: L("Remove"))
+        alert.addButton(withTitle: L("Cancel"))
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        guard let removed = profileStore.remove(profile.id) else { return }
+        if removed.stateDirectory.hasPrefix("profiles/") {
+            let stateURL = URL(
+                fileURLWithPath: removed.statePath(
+                    appSupport: Self.appSupportDirectory(),
+                    instanceSuffix: TailscreenInstance.stateSuffix))
+            // Remove the whole per-profile folder (profiles/<uuid>), which
+            // holds the suffixed state dir(s) of every local instance.
+            try? FileManager.default.removeItem(at: stateURL.deletingLastPathComponent())
         }
     }
 

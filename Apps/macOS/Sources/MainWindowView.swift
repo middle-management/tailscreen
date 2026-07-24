@@ -132,29 +132,9 @@ private struct HubHeader: View {
                 .help(L("Refresh screens"))
                 .accessibilityLabel(L("Refresh available screens"))
 
-                if let profile = appState.tailscaleAuth.userProfile {
-                    Menu {
-                        Text(verbatim: profile.displayName)
-                        Text(verbatim: profile.loginName)
-                        Divider()
-                        Button(L("Settings…")) { appState.presentSettings() }
-                        Divider()
-                        Button(L("Sign out")) {
-                            Task { await appState.signOut() }
-                        }
-                    } label: {
-                        MonogramAvatar(name: profile.displayName, size: 28)
-                            .overlay(
-                                Circle().strokeBorder(.separator.opacity(0.5), lineWidth: 1)
-                            )
-                    }
-                    .buttonStyle(.plain)
-                    .menuIndicator(.hidden)
-                    .fixedSize()
-                    .help(L("Sign out of Tailscale, signed in as \(profile.displayName)"))
-                    .accessibilityLabel(L("Account"))
-                }
             }
+
+            AccountMenu()
         }
         // Clear the traffic lights, which float over the header's left edge.
         .padding(.leading, 84)
@@ -163,6 +143,79 @@ private struct HubHeader: View {
         .frame(maxWidth: .infinity)
         .background(.bar)
         .gesture(WindowDragGesture())
+    }
+}
+
+/// The header's account control: signed-in identity, the profile list
+/// (Tailscale-style multi-account — switch, add, remove), Settings, and
+/// Sign out. Visible whenever there's something to act on: signed in, or
+/// signed out with other profiles to switch back to. A first-launch
+/// single signed-out profile hides it — the welcome pane's CTA is the
+/// only sensible action then.
+private struct AccountMenu: View {
+    @EnvironmentObject var appState: AppState
+
+    var body: some View {
+        if appState.tailscaleAuth.userProfile != nil || appState.profileStore.profiles.count > 1 {
+            Menu {
+                if let profile = appState.tailscaleAuth.userProfile {
+                    Text(verbatim: profile.displayName)
+                    Text(verbatim: profile.loginName)
+                    Divider()
+                }
+                ForEach(appState.profileStore.profiles) { profile in
+                    if profile.id == appState.profileStore.activeProfileID {
+                        // The active profile is a fact, not an action.
+                        Label(title(for: profile), systemImage: "checkmark")
+                    } else {
+                        Menu(title(for: profile)) {
+                            Button(L("Switch to This Account")) {
+                                Task { await appState.switchProfile(to: profile.id) }
+                            }
+                            Divider()
+                            Button(L("Remove Account…"), role: .destructive) {
+                                appState.confirmRemoveProfile(profile)
+                            }
+                        }
+                    }
+                }
+                Button(L("Add Account…")) {
+                    Task { await appState.addAccountAndSignIn() }
+                }
+                Divider()
+                Button(L("Settings…")) { appState.presentSettings() }
+                if appState.tailscaleAuth.isAuthenticated {
+                    Divider()
+                    Button(L("Sign out")) {
+                        Task { await appState.signOut() }
+                    }
+                }
+            } label: {
+                if let profile = appState.tailscaleAuth.userProfile {
+                    MonogramAvatar(name: profile.displayName, size: 28)
+                        .overlay(
+                            Circle().strokeBorder(.separator.opacity(0.5), lineWidth: 1)
+                        )
+                } else {
+                    // Signed out but other profiles exist: neutral glyph,
+                    // the menu is the way back in.
+                    Image(systemName: "person.crop.circle")
+                        .font(.system(size: 22))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 28, height: 28)
+                }
+            }
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .accessibilityLabel(L("Account"))
+        }
+    }
+
+    /// Menu title for a profile row: its login once it has signed in,
+    /// else a placeholder.
+    private func title(for profile: TailscreenProfile) -> String {
+        profile.hasSignedIn ? profile.loginName : L("New account")
     }
 }
 
