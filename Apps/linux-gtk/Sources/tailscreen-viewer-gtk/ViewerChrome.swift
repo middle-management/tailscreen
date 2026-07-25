@@ -17,6 +17,7 @@ import TailscreenViewerTsnet
 /// text is left uncolored so it follows the theme's foreground.
 enum HubStyle {
     static let headerHeight = 52
+    static let toolbarHeight = 44
     static let contentMaxWidth = 460.0
     static let cardRadius = 12.0
     static let rowRadius = 10.0
@@ -307,41 +308,72 @@ struct SessionPlacard: View {
     }
 }
 
-/// Annotation toolbar over the video (shown only when the sharer advertised
-/// `ScreenShareCaps.annotations`): a Pen toggle, a row of color swatches, and
-/// Undo / Clear. Strokes are drawn on the video and relayed to the sharer.
+/// Annotation toolbar pinned to the TOP of the viewer window, mirroring the mac
+/// viewer's `NSToolbar` (`ViewerToolbar.swift`): a radio-selected tool group in
+/// the same order — pen, line, arrow, rect, oval, click — then Undo, Clear and
+/// a Stats toggle. Shown only when the sharer advertised
+/// `ScreenShareCaps.annotations`.
+///
+/// Differences from the mac toolbar, and why:
+///   • Unicode geometric glyphs instead of SF Symbols (Apple-only). GTK's own
+///     named icon theme (Adwaita) was the first choice — it's the real
+///     equivalent, and swift-cross-ui's `Gtk.Button` even takes an `iconName` —
+///     but Adwaita is an app-chrome set with no line / rectangle / oval /
+///     pointer icons, so half the tool group would have had to fall back
+///     anyway. These glyphs render from the system font and cover all nine
+///     items consistently. The armed tool is bracketed, since swift-cross-ui
+///     has no segmented control to show radio selection.
+///   • No color picker — like the mac, each participant's color is assigned
+///     from their identity (see `AnnotationStore.color`); the swatch beside the
+///     tools just shows which color this viewer draws in.
+///   • No mic item — the viewer has no ALSA capture path yet.
 struct AnnotationToolbar: View {
-    let penActive: Bool
-    let colors: [Annotation.RGBA]
-    let selectedColor: Int
-    let onTogglePen: @MainActor @Sendable () -> Void
-    let onSelectColor: @MainActor @Sendable (Int) -> Void
+    /// Tool order — matches the mac `ViewerToolbar.toolOrder` exactly.
+    /// Glyphs: pencil, diagonal, arrow, rectangle, ellipse, target.
+    static let tools: [(tool: AnnotationTool, glyph: String, name: String)] = [
+        (.pen, "✎", "Pen"), (.line, "╱", "Line"), (.arrow, "↗", "Arrow"),
+        (.rectangle, "▭", "Rect"), (.oval, "◯", "Oval"), (.click, "◎", "Click"),
+    ]
+
+    /// The armed tool, or nil when drawing is off (pointer drags then zoom/pan
+    /// or drive remote control).
+    let activeTool: AnnotationTool?
+    /// This viewer's assigned stroke color (identity-derived, not chosen).
+    let inkColor: Annotation.RGBA
+    let statsShown: Bool
+    let onSelectTool: @MainActor @Sendable (AnnotationTool) -> Void
     let onUndo: @MainActor @Sendable () -> Void
     let onClear: @MainActor @Sendable () -> Void
+    let onToggleStats: @MainActor @Sendable () -> Void
 
     var body: some View {
-        HStack(spacing: 10) {
-            Button(penActive ? "✓ Pen" : "Pen", action: onTogglePen)
-            ForEach(Array(colors.enumerated()), id: \.offset) { item in
-                Circle()
-                    .fill(Color(
-                        red: item.element.r, green: item.element.g,
-                        blue: item.element.b, opacity: item.element.a))
-                    .frame(width: 18, height: 18)
-                    .overlay {
-                        Circle().stroke(
-                            item.offset == selectedColor ? Color.white : Color(white: 0, opacity: 0),
-                            style: StrokeStyle(width: 2))
-                    }
-                    .onTapGesture { onSelectColor(item.offset) }
+        HStack(spacing: 6) {
+            ForEach(Array(Self.tools.enumerated()), id: \.offset) { item in
+                let isActive = activeTool == item.element.tool
+                Button(isActive ? "[\(item.element.glyph)]" : " \(item.element.glyph) ") {
+                    onSelectTool(item.element.tool)
+                }
             }
-            Button("Undo", action: onUndo)
-            Button("Clear", action: onClear)
+            Divider()
+            // Read-only swatch: the color this viewer's strokes appear in.
+            Circle()
+                .fill(Color(
+                    red: inkColor.r, green: inkColor.g, blue: inkColor.b,
+                    opacity: inkColor.a))
+                .frame(width: 16, height: 16)
+            Divider()
+            Button("↶", action: onUndo)
+            Button("✕", action: onClear)
+            Button(statsShown ? "[▤]" : " ▤ ", action: onToggleStats)
+            Spacer()
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .hubCard(radius: 10)
-        .padding(12)
+        // Fixed height so the row hugs its buttons; without it the enclosing
+        // VStack hands the toolbar an equal share of the window and squeezes
+        // the video.
+        .frame(height: Double(HubStyle.toolbarHeight))
+        .frame(maxWidth: .infinity)
+        .background(HubStyle.barFill)
     }
 }
 

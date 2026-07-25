@@ -34,8 +34,6 @@ let gPicker = PickerModel()
 let gProfiles = ProfileStore()
 let gAnnotations = AnnotationStore()
 let gAnnoForwarder = AnnotationForwarder()
-// The annotation toolbar's color choices (a subset of the shared palette).
-let gPalette = Array(Annotation.RGBA.palette.prefix(6))
 // Account-menu actions, wired in picker mode (nil elsewhere → menu hidden).
 var gSwitchProfile: (@MainActor @Sendable (String) -> Void)?
 var gAddAccount: (@MainActor @Sendable () -> Void)?
@@ -129,23 +127,31 @@ if gSelfTest {
     // `--ui-preview-video` jumps straight to the video state (a color-bars
     // frame) so the window-grows-to-video behaviour is screenshot-reviewable.
     if gArgs.contains("--ui-preview-video") {
-        gStore.set(makeColorBarsFrame())
+        // A 16:9 gradient stand-in for real video — big enough that the
+        // annotation overlay is legible in a screenshot. (The CI render
+        // self-test keeps using the small colour-bars frame, which its pixel
+        // assertions are calibrated against.)
+        gStore.set(makePreviewFrame(width: 960, height: 540))
         gUIState.remoteControlAvailable = true
         gUIState.annotationsAvailable = true
         gUIState.hasVideo = true
         gUIState.videoWidth = 1920
         gUIState.videoHeight = 1080
         gUIState.fps = 30
-        gUIState.penActive = true
-        // A couple of sample strokes so the annotation overlay is visible.
-        gAnnotations.apply(.add(Annotation(
-            id: UUID(), tool: .pen,
-            points: [CGPoint(x: 0.15, y: 0.3), CGPoint(x: 0.35, y: 0.55), CGPoint(x: 0.25, y: 0.7)],
-            color: Annotation.RGBA.palette[0], width: 4)))
-        gAnnotations.apply(.add(Annotation(
-            id: UUID(), tool: .pen,
-            points: [CGPoint(x: 0.55, y: 0.4), CGPoint(x: 0.8, y: 0.4)],
-            color: Annotation.RGBA.palette[1], width: 4)))
+        gUIState.showStats = true
+        gUIState.activeTool = .pen
+        // One stroke per tool so the overlay + shape geometry are both visible.
+        func seed(_ tool: AnnotationTool, _ points: [CGPoint], _ colorIndex: Int) {
+            gAnnotations.apply(.add(Annotation(
+                id: UUID(), tool: tool, points: points,
+                color: Annotation.RGBA.palette[colorIndex], width: 4)))
+        }
+        seed(.pen, [CGPoint(x: 0.08, y: 0.30), CGPoint(x: 0.20, y: 0.55), CGPoint(x: 0.14, y: 0.72)], 0)
+        seed(.line, [CGPoint(x: 0.28, y: 0.30), CGPoint(x: 0.40, y: 0.72)], 1)
+        seed(.arrow, [CGPoint(x: 0.46, y: 0.72), CGPoint(x: 0.58, y: 0.30)], 2)
+        seed(.rectangle, [CGPoint(x: 0.62, y: 0.34), CGPoint(x: 0.76, y: 0.66)], 3)
+        seed(.oval, [CGPoint(x: 0.80, y: 0.34), CGPoint(x: 0.94, y: 0.66)], 4)
+        seed(.click, [CGPoint(x: 0.50, y: 0.85)], 5)
     }
     if gArgs.contains("--ui-preview-placard") {
         gUIState.inSession = true
@@ -446,47 +452,55 @@ struct ViewerApp: App {
         if gSelfTest {
             GtkVideoView(store: gStore, selfTest: true)
         } else if ui.hasVideo {
-            ZStack {
-                GtkVideoView(
-                    store: gStore, onInputEvent: { gInput.submit($0) },
-                    annotations: gAnnotations)
-                // Stats HUD, pinned top-left over the video.
-                VStack {
-                    HStack {
-                        StatsHUD(width: ui.videoWidth, height: ui.videoHeight, fps: ui.fps)
-                        Spacer()
-                    }
-                    Spacer()
+            // Toolbar ROW above the video (the mac viewer puts its annotation
+            // NSToolbar in the window's title bar, not floating over the
+            // content), then the video with its overlays beneath it.
+            VStack(spacing: 0) {
+                if ui.annotationsAvailable {
+                    AnnotationToolbar(
+                        activeTool: ui.activeTool,
+                        inkColor: gAnnotations.color,
+                        statsShown: ui.showStats,
+                        onSelectTool: { tool in
+                            // Radio behaviour like the mac tool group, plus
+                            // click-the-selected-tool to disarm — a Linux viewer
+                            // still needs plain drags for zoom/pan + control.
+                            let disarm = gUIState.activeTool == tool
+                            gUIState.activeTool = disarm ? nil : tool
+                            gAnnotations.mode = disarm ? .off : .drawing(tool)
+                        },
+                        onUndo: { gAnnotations.undo() },
+                        onClear: { gAnnotations.clearAll() },
+                        onToggleStats: { gUIState.showStats.toggle() })
+                    Divider()
                 }
-                .padding(10)
-                // Bottom toolbars: annotation tools (caps-gated) above the
-                // remote-control bar (caps-gated). Once control is granted,
-                // `GtkVideoView` captures pointer/keyboard and `gInput` forwards
-                // them; the control bar owns the request/grant/release handshake.
-                VStack {
-                    Spacer()
-                    if ui.annotationsAvailable {
-                        AnnotationToolbar(
-                            penActive: ui.penActive,
-                            colors: gPalette,
-                            selectedColor: ui.annotationColorIndex,
-                            onTogglePen: {
-                                let on = gAnnotations.mode != .pen
-                                gAnnotations.mode = on ? .pen : .off
-                                gUIState.penActive = on
-                            },
-                            onSelectColor: { index in
-                                gUIState.annotationColorIndex = index
-                                gAnnotations.color = gPalette[index]
-                            },
-                            onUndo: { gAnnotations.undo() },
-                            onClear: { gAnnotations.clearAll() })
+                ZStack {
+                    GtkVideoView(
+                        store: gStore, onInputEvent: { gInput.submit($0) },
+                        annotations: gAnnotations,
+                        chromeHeight: ui.annotationsAvailable ? HubStyle.toolbarHeight : 0)
+                    // Stats HUD, pinned top-left over the video (toggleable from
+                    // the toolbar, like the mac viewer's Stats item).
+                    if ui.showStats {
+                        VStack {
+                            HStack {
+                                StatsHUD(width: ui.videoWidth, height: ui.videoHeight, fps: ui.fps)
+                                Spacer()
+                            }
+                            Spacer()
+                        }
+                        .padding(10)
                     }
+                    // Remote-control bar stays pinned at the bottom: it's a
+                    // session affordance, not a drawing tool.
                     if ui.remoteControlAvailable {
-                        RemoteControlBar(
-                            buttonLabel: controlButtonLabel,
-                            declinedReason: revokedReason,
-                            onToggle: { gControls.toggleControl() })
+                        VStack {
+                            Spacer()
+                            RemoteControlBar(
+                                buttonLabel: controlButtonLabel,
+                                declinedReason: revokedReason,
+                                onToggle: { gControls.toggleControl() })
+                        }
                     }
                 }
             }
