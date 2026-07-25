@@ -635,6 +635,9 @@ private struct ShareStatusSection: View {
 /// refresh live in the window toolbar.
 private struct PeerListSection: View {
     @EnvironmentObject var appState: AppState
+    /// Suppresses the list's glide/expand animations when the user has
+    /// asked the system to reduce motion.
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var didAutoDiscover = false
     @State private var searchText = ""
 
@@ -670,14 +673,8 @@ private struct PeerListSection: View {
         // Glide between skeleton → list → empty (and between row counts as
         // IPN updates trickle in) — but only after the initial population
         // has settled (see `animateChanges`).
-        .animation(
-            animateChanges ? .easeInOut(duration: 0.2) : nil,
-            value: appState.filteredPeers
-        )
-        .animation(
-            animateChanges ? .easeInOut(duration: 0.2) : nil,
-            value: appState.isDiscovering
-        )
+        .animation(listAnimation, value: appState.filteredPeers)
+        .animation(listAnimation, value: appState.isDiscovering)
         .onAppear {
             guard !didAutoDiscover else { return }
             didAutoDiscover = true
@@ -695,12 +692,20 @@ private struct PeerListSection: View {
         }
     }
 
+    /// Glide curve for list changes: off until the initial population has
+    /// settled (see `animateChanges`), and off entirely under Reduce
+    /// Motion.
+    private var listAnimation: Animation? {
+        guard animateChanges, !reduceMotion else { return nil }
+        return .easeInOut(duration: 0.2)
+    }
+
     /// Expand/collapse a peer's detail pane. Expanding kicks a one-peer
     /// share-status fetch so the pane shows the peer's *current* share,
     /// not the last sweep's snapshot.
     private func toggleSelection(_ peer: TailscreenPeer) {
         let expanding = selectedPeerID != peer.id
-        withAnimation(.easeInOut(duration: 0.15)) {
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.15)) {
             selectedPeerID = expanding ? peer.id : nil
         }
         if expanding {
@@ -904,6 +909,9 @@ private struct PeerRowSkeleton: View {
     /// Row position — used to vary the fake-hostname width so a stack of
     /// skeletons looks like a list of different names, not a repeated tile.
     let index: Int
+    /// A perpetually pulsing placeholder is exactly what Reduce Motion
+    /// exists to suppress — hold it static instead.
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var pulsing = false
 
     private static let widthFractions: [CGFloat] = [1.0, 0.72, 0.86, 0.64, 0.9, 0.78]
@@ -935,10 +943,12 @@ private struct PeerRowSkeleton: View {
         // mounting transaction. The delay keeps the placeholder fully
         // static through a fast seed (the common case).
         .animation(
-            .easeInOut(duration: 0.8).repeatForever(autoreverses: true).delay(0.35),
+            reduceMotion
+                ? nil
+                : .easeInOut(duration: 0.8).repeatForever(autoreverses: true).delay(0.35),
             value: pulsing
         )
-        .onAppear { pulsing = true }
+        .onAppear { pulsing = !reduceMotion }
         .accessibilityHidden(true)
     }
 }
@@ -1145,6 +1155,11 @@ private struct PeerDetailView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
+                            // The dot beside this is decorative; fold its
+                            // meaning into the spoken label so the tier
+                            // isn't conveyed by color alone.
+                            .accessibilityLabel(
+                                qualityDescription.map { L("\(route), \($0)") } ?? route)
                         Spacer(minLength: 0)
                     }
                     .help(
@@ -1203,6 +1218,17 @@ private struct PeerDetailView: View {
             parts.append(L("~\(ms) ms"))
         }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    /// Spoken form of the latency tier, so VoiceOver and colorblind users
+    /// get what the quality dot conveys visually.
+    private var qualityDescription: String? {
+        guard let ms = appState.peerLatencyMs[peer.id] else { return nil }
+        switch ConnectionQualityTier.forLatency(ms: ms) {
+        case .good: return L("Good connection")
+        case .fair: return L("Fair connection")
+        case .poor: return L("Poor connection")
+        }
     }
 
     /// Traffic-light latency tier for the quality dot; nil (no dot) until
