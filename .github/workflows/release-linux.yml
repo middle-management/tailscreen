@@ -1,0 +1,160 @@
+name: Release (Linux)
+
+# Builds the Linux desktop app (Apps/linux-gtk — the swift-cross-ui/GTK4 app
+# that both views and shares) and uploads an AppImage to the GitHub Release
+# that triggered the run. The mirror of release.yml, which does the same for
+# the macOS .app.
+#
+# Only the GTK app is packaged. The other Linux executables
+# (tailscreen-sharer-linux, tailscreen-viewer-probe, TailscreenTestSharer) are
+# development and test tools, not products, and are deliberately left out of
+# the artifact.
+#
+# Three triggers:
+#   • release published  — the real thing, same as macOS
+#   • pull_request labeled `build-linux-package` — an on-demand packaging build
+#     for a PR, because packaging can't be a required gate (it needs a desktop
+#     toolchain the normal CI container doesn't have) but still wants to be
+#     runnable before a release rather than only discovered to be broken at
+#     tag time
+#   • workflow_dispatch — manual, against an existing tag
+on:
+  release:
+    types: [published]
+  pull_request:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag to upload assets to (e.g., v1.0.0)'
+        required: true
+
+permissions:
+  contents: write   # required for `gh release upload`
+
+jobs:
+  appimage:
+    name: Build AppImage
+    # Skip every label except ours — `pull_request: [labeled]` fires for all of
+    # them, and a packaging build is far too slow to run on an unrelated label.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.label.name == 'build-linux-package'
+    runs-on: ubuntu-latest
+
+    env:
+      APP_ID: dev.tailscreen.Tailscreen
+      PRODUCT: tailscreen-viewer-gtk
+
+    steps:
+      - name: Resolve version
+        id: version
+        run: |
+          case "${{ github.event_name }}" in
+            workflow_dispatch) tag="${{ github.event.inputs.tag }}" ;;
+            release)           tag="${{ github.event.release.tag_name }}" ;;
+            # A PR build has no tag; name the artifact after the PR so it's
+            # obviously not a release build.
+            *)                 tag="pr-${{ github.event.pull_request.number }}" ;;
+          esac
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          # For a release/dispatch build, build the tag exactly. For a PR build,
+          # take the PR head (the default checkout ref).
+          ref: ${{ github.event_name == 'pull_request' && github.ref || steps.version.outputs.tag }}
+          submodules: recursive
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Install Swift + build dependencies
+        # The GTK app's own deps (see the linux-gtk-viewer CI job) plus the
+        # sharer's capture/encode libs (libxcb, libavcodec), plus librsvg so the
+        # AppImage script renders a real icon rather than its 1x1 placeholder,
+        # plus FUSE for appimagetool.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-4-dev gir1.2-gtk-4.0 libgirepository1.0-dev libepoxy-dev \
+            libglib2.0-dev libgl1-mesa-dri libopus-dev pkg-config make gcc \
+            libc6-dev libavcodec-dev libavutil-dev libasound2-dev \
+            libxcb1-dev libxcb-shm0-dev librsvg2-bin file desktop-file-utils \
+            libfuse2 curl
+
+      - name: Setup Swift
+        uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: '6.1'
+
+      - name: Install linuxdeploy + appimagetool
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          base=https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous
+          curl -fsSL "$base/linuxdeploy-x86_64.AppImage" -o "$HOME/.local/bin/linuxdeploy"
+          curl -fsSL "https://github.com/linuxdeploy/linuxdeploy-plugin-gtk/raw/master/linuxdeploy-plugin-gtk.sh" \
+            -o "$HOME/.local/bin/linuxdeploy-plugin-gtk.sh"
+          curl -fsSL "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage" \
+            -o "$HOME/.local/bin/appimagetool"
+          chmod +x "$HOME/.local/bin/linuxdeploy" "$HOME/.local/bin/linuxdeploy-plugin-gtk.sh" "$HOME/.local/bin/appimagetool"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Build libtailscale (Go c-archive)
+        env:
+          GOFLAGS: -buildvcs=false
+        run: make -C Packages/TailscaleKit
+
+      - name: Build the AppImage
+        env:
+          # appimagetool needs this on runners without a usable FUSE mount.
+          APPIMAGE_EXTRACT_AND_RUN: '1'
+          OUTPUT: Tailscreen-${{ steps.version.outputs.version }}-x86_64.AppImage
+        run: Apps/linux-gtk/packaging/appimage/build-appimage.sh
+
+      - name: Checksums
+        id: pkg
+        run: |
+          FILE="Tailscreen-${{ steps.version.outputs.version }}-x86_64.AppImage"
+          sha256sum "$FILE" > checksums-linux.txt
+          echo "file=$FILE" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(awk '{print $1}' checksums-linux.txt)" >> "$GITHUB_OUTPUT"
+          cat checksums-linux.txt
+
+      # A PR build proves the packaging still works; it deliberately does NOT
+      # upload to a release (there isn't one). The artifact is downloadable from
+      # the run for a human to try.
+      - name: Upload build artifact (PR builds)
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.pkg.outputs.file }}
+          path: |
+            ${{ steps.pkg.outputs.file }}
+            checksums-linux.txt
+          retention-days: 14
+
+      - name: Upload to the release
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ steps.version.outputs.tag }}" \
+            "${{ steps.pkg.outputs.file }}" checksums-linux.txt --clobber
+
+      - name: Summary
+        run: |
+          {
+            echo "## Linux package"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| File | \`${{ steps.pkg.outputs.file }}\` |"
+            echo "| SHA-256 | \`${{ steps.pkg.outputs.sha256 }}\` |"
+            echo ""
+            echo "The SHA-256 is what the tap's cask needs in its \`on_linux\` block."
+          } >> "$GITHUB_STEP_SUMMARY"

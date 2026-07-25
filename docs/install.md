@@ -10,19 +10,24 @@ permalink: /install/
 1. TOC
 {:toc}
 
-Three ways in: Homebrew, a release download, or building from source. All
-end up with `Tailscreen.app`.
+Three ways in: Homebrew, a release download, or building from source.
+
+Most of this page is about the macOS app. There's also a **Linux desktop
+app** — the GTK build, which both views and shares — with its own section
+[below](#linux).
 
 ## Homebrew
 
 ```bash
-brew install middle-management/tap/tailscreen
+brew install --cask middle-management/tap/tailscreen
 ```
 
-The cask drops `Tailscreen.app` into `/Applications` — the same signed,
-notarized universal binary the release page hosts. The formula lives in
+On macOS the cask drops `Tailscreen.app` into `/Applications` — the same
+signed, notarized universal binary the release page hosts. On Linux the
+*same* cask links the release AppImage instead: one cask carries both
+artifacts, branched on `on_macos` / `on_linux`. It lives in
 [middle-management/homebrew-tap](https://github.com/middle-management/homebrew-tap)
-and is bumped automatically on each release.
+and is bumped on each release.
 
 To upgrade later:
 
@@ -47,7 +52,41 @@ codesigned and notarized by CI. If the build secrets aren't configured
 (forks, dry runs), you'll get an unsigned `.app` instead — Gatekeeper will
 yell at you the first time you open it.
 
+## Linux
+
+The Linux app is the GTK build under `Apps/linux-gtk` — one window that both
+views a peer's screen and shares this machine's. It ships as an **x86_64
+AppImage** attached to the same GitHub release as the Mac app:
+
+```bash
+chmod +x Tailscreen-<version>-x86_64.AppImage
+./Tailscreen-<version>-x86_64.AppImage
+```
+
+Or through Homebrew, which links the same AppImage:
+
+```bash
+brew install --cask middle-management/tap/tailscreen
+```
+
+Two things to know:
+
+- **AppImages need FUSE** to self-mount. Desktop distros generally have it;
+  minimal containers often don't. If it fails with a `libfuse.so.2` error,
+  install your distro's `fuse`/`libfuse2` package or run it with
+  `APPIMAGE_EXTRACT_AND_RUN=1`.
+- **Sharing needs X11.** Capture goes through XCB + MIT-SHM, so a Wayland
+  session can view but not yet share — that needs the ScreenCast portal
+  backend, which isn't written. The app detects this and says so rather than
+  offering a button that always fails.
+
+A Flatpak manifest exists under `Apps/linux-gtk/packaging/flatpak` but isn't
+published yet; it needs a Swift SDK extension.
+
 ## From source
+
+This section builds the **macOS** app; for the Linux one see
+`Apps/linux-gtk` and `Apps/linux/README.md` in the repository.
 
 The project is Swift Package Manager only — no Xcode project, none
 planned. Builds go through the top-level

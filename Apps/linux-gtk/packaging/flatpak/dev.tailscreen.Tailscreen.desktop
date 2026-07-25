@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Tailscreen
+GenericName=Screen Sharing
+Comment=Share and view screens peer-to-peer over Tailscale
+Exec=tailscreen-viewer-gtk
+Icon=dev.tailscreen.Tailscreen
+Terminal=false
+Categories=Network;RemoteAccess;Utility;
+Keywords=screen;share;remote;tailscale;viewer;sharing;
+StartupNotify=true

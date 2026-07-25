@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# build-appimage.sh — assemble a Tailscreen Viewer AppImage from a release build
+# build-appimage.sh — assemble a Tailscreen AppImage from a release build
 # of the swift-cross-ui/GTK viewer (Apps/linux-gtk).
 #
 # STATUS: structurally complete, NOT verified end-to-end in CI (needs a real GTK4
@@ -24,7 +24,7 @@
 #
 # Usage:
 #   Apps/linux-gtk/packaging/appimage/build-appimage.sh
-#   OUTPUT=/tmp/Tailscreen-Viewer.AppImage Apps/linux-gtk/packaging/appimage/build-appimage.sh
+#   OUTPUT=/tmp/Tailscreen.AppImage Apps/linux-gtk/packaging/appimage/build-appimage.sh
 #
 set -euo pipefail
 
@@ -33,12 +33,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
 cd "$REPO_ROOT"
 
-APP_ID="org.tailscreen.Viewer"
+APP_ID="dev.tailscreen.Tailscreen"
 BIN_NAME="tailscreen-viewer-gtk"
-ICON_NAME="tailscreen-viewer"          # AppImage icon basename (matches Icon= below)
+ICON_NAME="tailscreen"                 # AppImage icon basename (matches Icon= below)
 BUILD_DIR="Apps/linux-gtk/.build/release"
 APPDIR="${APPDIR:-$REPO_ROOT/Apps/linux-gtk/.build/AppDir}"
-OUTPUT="${OUTPUT:-$REPO_ROOT/Tailscreen-Viewer-x86_64.AppImage}"
+OUTPUT="${OUTPUT:-$REPO_ROOT/Tailscreen-x86_64.AppImage}"
 
 echo "==> Checking required tools"
 missing=0
@@ -73,14 +73,14 @@ install -d "$APPDIR/usr/share/applications"
 cat > "$APPDIR/usr/share/applications/$APP_ID.desktop" <<EOF
 [Desktop Entry]
 Type=Application
-Name=Tailscreen Viewer
-GenericName=Screen Share Viewer
-Comment=View encrypted peer-to-peer screen shares over Tailscale
+Name=Tailscreen
+GenericName=Screen Sharing
+Comment=Share and view screens peer-to-peer over Tailscale
 Exec=$BIN_NAME
 Icon=$ICON_NAME
 Terminal=false
 Categories=Network;RemoteAccess;Utility;
-Keywords=screen;share;remote;tailscale;viewer;
+Keywords=screen;share;remote;tailscale;viewer;sharing;
 StartupNotify=true
 EOF
 

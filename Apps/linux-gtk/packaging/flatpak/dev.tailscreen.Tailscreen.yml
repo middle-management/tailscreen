@@ -9,12 +9,12 @@
 # Build (from the repo root, once a Swift toolchain is available to the SDK):
 #   flatpak install flathub org.gnome.Platform//47 org.gnome.Sdk//47
 #   flatpak-builder --user --install --force-clean build-flatpak \
-#       Apps/linux-gtk/packaging/flatpak/org.tailscreen.Viewer.yml
-#   flatpak run org.tailscreen.Viewer
+#       Apps/linux-gtk/packaging/flatpak/dev.tailscreen.Tailscreen.yml
+#   flatpak run dev.tailscreen.Tailscreen
 #
-# Run: flatpak run org.tailscreen.Viewer [<sharer-host>]
+# Run: flatpak run dev.tailscreen.Tailscreen [<sharer-host>]
 
-app-id: org.tailscreen.Viewer
+app-id: dev.tailscreen.Tailscreen
 runtime: org.gnome.Platform
 runtime-version: '47'
 sdk: org.gnome.Sdk
@@ -66,13 +66,13 @@ modules:
       #    install is skipped so the build does not fail on the missing asset.
       - install -Dm755 Apps/linux-gtk/.build/release/tailscreen-viewer-gtk
         /app/bin/tailscreen-viewer-gtk
-      - install -Dm644 Apps/linux-gtk/packaging/flatpak/org.tailscreen.Viewer.desktop
-        /app/share/applications/org.tailscreen.Viewer.desktop
-      - install -Dm644 Apps/linux-gtk/packaging/flatpak/org.tailscreen.Viewer.metainfo.xml
-        /app/share/metainfo/org.tailscreen.Viewer.metainfo.xml
-      - if [ -f Apps/linux-gtk/packaging/icons/org.tailscreen.Viewer.png ]; then
-        install -Dm644 Apps/linux-gtk/packaging/icons/org.tailscreen.Viewer.png
-        /app/share/icons/hicolor/256x256/apps/org.tailscreen.Viewer.png; fi
+      - install -Dm644 Apps/linux-gtk/packaging/flatpak/dev.tailscreen.Tailscreen.desktop
+        /app/share/applications/dev.tailscreen.Tailscreen.desktop
+      - install -Dm644 Apps/linux-gtk/packaging/flatpak/dev.tailscreen.Tailscreen.metainfo.xml
+        /app/share/metainfo/dev.tailscreen.Tailscreen.metainfo.xml
+      - if [ -f Apps/linux-gtk/packaging/icons/dev.tailscreen.Tailscreen.png ]; then
+        install -Dm644 Apps/linux-gtk/packaging/icons/dev.tailscreen.Tailscreen.png
+        /app/share/icons/hicolor/256x256/apps/dev.tailscreen.Tailscreen.png; fi
     sources:
       # The whole repo is the build context (submodules included). flatpak-builder
       # copies this directory into the build sandbox. Run flatpak-builder from the
