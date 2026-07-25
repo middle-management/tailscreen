@@ -1,18 +1,18 @@
 import Foundation
 import TailscreenProtocol
 
-/// The two host-supplied backends the sharer data plane runs on: something
-/// that captures and encodes the screen, and (optionally) something that can
-/// inject a remote viewer's input.
-///
-/// `TailscaleScreenShareServer` owns everything *between* them — admission,
-/// fan-out, NACK/FEC/retransmit, congestion and fairness control, the idle
-/// sweep, the grant gate — and none of that is platform-specific. These
-/// protocols are the whole platform surface, and they're deliberately shaped
-/// like ``CaptureHelperWire``'s `OutType`/`InType`, which is what the macOS
-/// capture helper already speaks over its pipe. The seam isn't new; it was
-/// designed years ago as an IPC wire and simply never named as a portability
-/// boundary.
+// The two host-supplied backends the sharer data plane runs on: something
+// that captures and encodes the screen, and (optionally) something that can
+// inject a remote viewer's input.
+//
+// `TailscaleScreenShareServer` owns everything *between* them — admission,
+// fan-out, NACK/FEC/retransmit, congestion and fairness control, the idle
+// sweep, the grant gate — and none of that is platform-specific. These
+// protocols are the whole platform surface, and they're deliberately shaped
+// like ``CaptureHelperWire``'s `OutType`/`InType`, which is what the macOS
+// capture helper already speaks over its pipe. The seam isn't new; it was
+// designed years ago as an IPC wire and simply never named as a portability
+// boundary.
 
 // MARK: - Capture + encode
 

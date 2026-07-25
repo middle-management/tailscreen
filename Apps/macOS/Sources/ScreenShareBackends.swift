@@ -1,12 +1,12 @@
 import Foundation
 
-/// macOS's implementations of the two seams the portable sharer data plane
-/// (`TailscreenSharer`) runs on.
-///
-/// `TailscaleScreenShareServer` lives in `Packages/TailscreenKit` and knows
-/// nothing about ScreenCaptureKit, VideoToolbox, or `CGEvent`. Everything
-/// platform-specific about being a *sharer* on this OS is behind these two
-/// conformances plus the convenience initializer that wires them together.
+// macOS's implementations of the two seams the portable sharer data plane
+// (`TailscreenSharer`) runs on.
+//
+// `TailscaleScreenShareServer` lives in `Packages/TailscreenKit` and knows
+// nothing about ScreenCaptureKit, VideoToolbox, or `CGEvent`. Everything
+// platform-specific about being a *sharer* on this OS is behind these two
+// conformances plus the convenience initializer that wires them together.
 
 // MARK: - Capture + encode
 

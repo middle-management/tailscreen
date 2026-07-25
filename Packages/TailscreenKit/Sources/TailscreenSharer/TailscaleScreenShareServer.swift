@@ -741,8 +741,13 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             let statePath =
                 path
                 ?? {
-                    let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
-                        .first!
+                    // `.first` rather than a force-unwrap: the URL list is
+                    // documented as non-empty on Apple platforms but isn't
+                    // guaranteed anywhere else now that this file is portable,
+                    // and a crash at share start is a poor way to find out.
+                    let appSupport =
+                        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+                        ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".local/share")
                     return appSupport.appendingPathComponent("Tailscreen/tailscale\(TailscreenInstance.stateSuffix)")
                         .path
                 }()
