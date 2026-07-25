@@ -1053,7 +1053,8 @@ private struct PeerMenuRow: View {
                     // infinite height; this keeps the tap target matched
                     // to the row's floor and lets the HStack center it
                     // when the text lines grow.
-                    .frame(width: 32, minHeight: 48)
+                    .frame(width: 32)
+                    .frame(minHeight: 48)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
