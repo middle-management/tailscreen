@@ -258,7 +258,10 @@ stays dependency-free; the `linux-protocol` job installs `libopus-dev` +
 
 And a fourth tier: target **`TailscreenViewer`** (`ViewerSession` + the
 `VideoDecoding` / `VideoSink` / `AudioSink` protocols and the
-`DecodedVideoFrame` value type). This is the portable, host-agnostic viewer
+`DecodedVideoFrame` value type, plus `ViewerPipeline` — the host-supplied-
+factory assembler that wires a decoder + sinks into a session — and
+`FrameStore`, the lock + value-type-COW frame hand-off any renderer backend
+polls from its UI thread). This is the portable, host-agnostic viewer
 data-plane core: it turns inbound RTP datagrams + a host-supplied clock into
 decoded video frames, decoded audio, and outbound feedback control bytes
 (HELLO / NACK / PLI / receiver reports), reusing `TailscreenProtocol`

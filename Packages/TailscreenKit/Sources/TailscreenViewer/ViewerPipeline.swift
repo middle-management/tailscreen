@@ -1,6 +1,5 @@
 import Foundation
 import TailscreenProtocol
-import TailscreenViewer
 
 /// Assembles a portable `ViewerSession` with a concrete decoder and sinks, and
 /// gives the host (the tsnet CLI, or a test) one object to drive: `start()`,

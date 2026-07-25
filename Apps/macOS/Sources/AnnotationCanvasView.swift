@@ -154,23 +154,17 @@ private struct AnnotationShape: Shape {
             path.move(to: first)
             path.addLine(to: last)
             // Arrowhead: two short segments at ±150° from the shaft direction.
-            let dx = last.x - first.x
-            let dy = last.y - first.y
-            let ang = atan2(dy, dx)
-            let headLen = max(12.0, CGFloat(annotation.width) * 4)
-            let headAng = CGFloat.pi * 5 / 6
+            // Geometry comes from the portable `AnnotationGeometry` so the
+            // Linux/GTK viewer derives an identical head — both ends render
+            // each other's relayed strokes, and this used to drift.
+            let barbs = AnnotationGeometry.arrowBarbs(
+                from: first, to: last,
+                headLength: AnnotationGeometry.arrowHeadLength(
+                    strokeWidth: Double(annotation.width)))
             path.move(to: last)
-            path.addLine(
-                to: CGPoint(
-                    x: last.x + cos(ang + headAng) * headLen,
-                    y: last.y + sin(ang + headAng) * headLen
-                ))
+            path.addLine(to: barbs.left)
             path.move(to: last)
-            path.addLine(
-                to: CGPoint(
-                    x: last.x + cos(ang - headAng) * headLen,
-                    y: last.y + sin(ang - headAng) * headLen
-                ))
+            path.addLine(to: barbs.right)
 
         case .rectangle:
             guard let last = pts.last, pts.count >= 2 else { return path }
@@ -209,8 +203,10 @@ private struct ClickMarker: View {
 
     var body: some View {
         let lineWidth = CGFloat(annotation.width)
-        let outerR = max(14.0, lineWidth * 6)
-        let innerR = max(3.0, lineWidth * 1.2)
+        // Radii from the portable `AnnotationGeometry`, shared with the
+        // Linux/GTK viewer so a relayed click marker is the same size on both.
+        let outerR = CGFloat(AnnotationGeometry.clickOuterRadius(strokeWidth: annotation.width))
+        let innerR = CGFloat(AnnotationGeometry.clickInnerRadius(strokeWidth: annotation.width))
         let color = annotation.color.swiftUI
         let center = annotation.points.first ?? .zero
 
