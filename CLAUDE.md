@@ -292,7 +292,16 @@ types live entirely in `TailscreenProtocol`/`TailscreenAudio`
 `RTPBufferPoolTests`, `RTPAudioTests`, `ReceiveLoopPolicyTests`,
 `CaptureHelperWireTests`, `ScreenShareProtocolTests`,
 `ShareResponseProtocolTests`, `ShareLockTests`, `QualitySettingsTests`,
-`TailscreenInstanceTests`, `ViewerZoomMathTests`, `OpusAudioCodecTests`),
+`TailscreenInstanceTests`, `ViewerZoomMathTests`, `OpusAudioCodecTests`,
+`AnnotationGeometryTests` — the latter covering `AnnotationGeometry`, the
+**shared** derivation of a stroke's outline from its stored anchor+current
+points (rectangle corners, ellipse arc, arrowhead barbs, click ring). It lives
+in the portable tier on purpose: both endpoints render each other's relayed
+strokes, so the constants (`arrowHeadLength` = mac's `max(12, width*4)`,
+`arrowHeadAngle` = ±150°, the `ClickMarker` radii) must agree or the same
+`.arrow` looks different depending on who drew it. The Linux/GTK viewer
+consumes it today; the macOS overlay still has its own inline copy of the same
+formulas, and adopting this one is a queued follow-up),
 so they run on Linux CI (`linux-protocol`) instead of only in the mac
 build. Suites that touch mac-only symbols stay in
 `Apps/macOS/Tests/TailscreenTests`: anything importing an Apple framework,

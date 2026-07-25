@@ -1,6 +1,5 @@
 import Foundation
 import TailscreenProtocol
-import TailscreenViewerCore
 
 /// What a pointer drag over the video does.
 public enum AnnotationMode: Sendable, Equatable {
@@ -177,10 +176,16 @@ public final class AnnotationStore: @unchecked Sendable {
     /// x,y pairs, per-stroke vertex counts, per-stroke rgba (4 each), per-stroke
     /// pixel widths. Includes the in-progress live stroke last (in the current
     /// color) so drawing is visible mid-drag.
-    /// - Parameter aspect: the video's width÷height, so the `click` marker
-    ///   renders as a circle rather than an ellipse on non-square video.
+    /// - Parameters:
+    ///   - aspect: the video's width÷height, so the `click` marker renders as a
+    ///     circle rather than an ellipse on non-square video.
+    ///   - renderHeight: the surface height in pixels. Arrowheads and the click
+    ///     ring are FIXED pixel sizes shared with the mac
+    ///     (`AnnotationGeometry.arrowHeadLength` / `clickOuterRadius`), so they
+    ///     are converted into this store's normalized space here.
     public func renderData(
-        aspect: Double = 1
+        aspect: Double = 1,
+        renderHeight: Double = 540
     ) -> (xy: [Float], counts: [Int32], rgba: [Float], widths: [Float]) {
         lock.lock()
         let committed = strokes
@@ -196,8 +201,13 @@ public final class AnnotationStore: @unchecked Sendable {
 
         // Each stroke's stored points are expanded to its renderable outline
         // (shape tools store only anchor+current — see `AnnotationGeometry`).
+        let scale = renderHeight > 0 ? renderHeight : 540
         func append(tool: AnnotationTool, raw: [CGPoint], color: Annotation.RGBA, width: Double) {
-            let points = AnnotationGeometry.polyline(tool: tool, points: raw, aspect: aspect)
+            let points = AnnotationGeometry.polyline(
+                tool: tool, points: raw,
+                headLength: AnnotationGeometry.arrowHeadLength(strokeWidth: width) / scale,
+                clickRadius: AnnotationGeometry.clickOuterRadius(strokeWidth: width) / scale,
+                aspect: aspect)
             guard !points.isEmpty else { return }
             for p in points {
                 xy.append(Float(p.x))
