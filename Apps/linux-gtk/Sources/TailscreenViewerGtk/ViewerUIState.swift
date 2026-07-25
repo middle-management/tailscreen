@@ -1,6 +1,11 @@
 import Foundation
 import SwiftCrossUI
 
+// Targeted import: all of TailscreenProtocol would collide with SwiftCrossUI's
+// own `Published` / `ObservableObject` (both ship reactive shims on Linux, where
+// Combine is absent). Only the tool enum is needed here.
+import enum TailscreenProtocol.AnnotationTool
+
 /// Observable UI state for the viewer chrome (placards, and later the stats
 /// overlay). Updated from the transport/sink; the swift-cross-ui view tree
 /// observes it and re-renders. Marked to update on the main thread — swift-cross-ui
@@ -58,9 +63,10 @@ public final class ViewerUIState: ObservableObject, @unchecked Sendable {
     @Published public var showStats = false
 
     /// Annotation toolbar state (shown only when the sharer advertised
-    /// `ScreenShareCaps.annotations`): whether pen mode is active + the selected
-    /// palette color index.
-    @Published public var penActive = false
+    /// `ScreenShareCaps.annotations`): the armed drawing tool (nil ⇒ drawing
+    /// off, so drags zoom/pan or drive remote control) + the selected palette
+    /// color index.
+    @Published public var activeTool: AnnotationTool?
     @Published public var annotationColorIndex = 0
 
     public init() {}
@@ -103,7 +109,7 @@ public final class ViewerUIState: ObservableObject, @unchecked Sendable {
             self.fps = 0
             self.videoWidth = 0
             self.videoHeight = 0
-            self.penActive = false
+            self.activeTool = nil
             self.annotationColorIndex = 0
         }
     }

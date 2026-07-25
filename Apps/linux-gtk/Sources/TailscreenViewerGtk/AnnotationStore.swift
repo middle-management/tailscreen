@@ -1,12 +1,20 @@
 import Foundation
 import TailscreenProtocol
+import TailscreenViewerCore
 
-/// Whether the viewer is currently drawing annotations.
+/// What a pointer drag over the video does.
 public enum AnnotationMode: Sendable, Equatable {
-    /// Not drawing — pointer drags pan/zoom or (if granted) drive remote control.
+    /// Not drawing — pointer drags zoom/pan or (if granted) drive remote control.
     case off
-    /// Freehand pen — pointer drags draw strokes over the video.
-    case pen
+    /// Drawing with `tool` — pointer drags annotate. Mirrors the mac viewer's
+    /// toolbar tool group (pen / line / arrow / rectangle / oval / click).
+    case drawing(AnnotationTool)
+
+    /// The active tool, or nil when drawing is off.
+    public var tool: AnnotationTool? {
+        if case .drawing(let tool) = self { return tool }
+        return nil
+    }
 }
 
 /// Holds the shared annotation canvas for the GTK viewer: committed strokes
@@ -23,6 +31,9 @@ public final class AnnotationStore: @unchecked Sendable {
     private let lock = NSLock()
     private var strokes: [Annotation] = []
     private var live: [CGPoint] = []
+    /// Tool the in-progress stroke was started with — latched at `beginStroke`
+    /// so switching tools mid-drag can't reshape the stroke under way.
+    private var liveTool: AnnotationTool = .pen
     private var requestRedraw: (() -> Void)?
 
     /// Current drawing mode (main-thread only: the toolbar sets it, capture
@@ -82,29 +93,43 @@ public final class AnnotationStore: @unchecked Sendable {
     public func beginStroke(at point: CGPoint) {
         lock.lock()
         live = [point]
+        liveTool = mode.tool ?? .pen
         lock.unlock()
         redraw()
     }
 
+    /// Extend the in-progress stroke. Freehand (`pen`) accumulates a trail;
+    /// anchored shape tools keep the anchor and REPLACE the moving point, so a
+    /// rectangle/oval/line/arrow rubber-bands from where the drag started.
     public func extendStroke(to point: CGPoint) {
         lock.lock()
-        if !live.isEmpty { live.append(point) }
+        if !live.isEmpty {
+            if AnnotationGeometry.isAnchored(liveTool) {
+                if live.count == 1 { live.append(point) } else { live[live.count - 1] = point }
+            } else {
+                live.append(point)
+            }
+        }
         lock.unlock()
         redraw()
     }
 
-    /// Commit the in-progress stroke as an `Annotation`, emit `.add` locally,
-    /// and hand it to `onLocalOp` for relay. A tap (single point) still commits
-    /// as a one-point stroke.
+    /// Commit the in-progress stroke as an `Annotation`, add it locally, and
+    /// hand it to `onLocalOp` for relay. A tap (single point) still commits —
+    /// that's exactly what the `click` marker is.
     public func endStroke() {
         lock.lock()
         let points = live
+        let tool = liveTool
         live = []
         let color = self.color
         lock.unlock()
         guard !points.isEmpty else { return }
+        // Shape tools that never moved (a click with, say, the rectangle tool)
+        // would render as a degenerate dot — drop them rather than relay noise.
+        if AnnotationGeometry.isAnchored(tool), tool != .click, points.count < 2 { return }
         let annotation = Annotation(
-            id: UUID(), tool: .pen, points: points, color: color,
+            id: UUID(), tool: tool, points: points, color: color,
             width: Annotation.defaultWidth)
         lock.lock()
         strokes.append(annotation)
@@ -138,10 +163,15 @@ public final class AnnotationStore: @unchecked Sendable {
     /// x,y pairs, per-stroke vertex counts, per-stroke rgba (4 each), per-stroke
     /// pixel widths. Includes the in-progress live stroke last (in the current
     /// color) so drawing is visible mid-drag.
-    public func renderData() -> (xy: [Float], counts: [Int32], rgba: [Float], widths: [Float]) {
+    /// - Parameter aspect: the video's width÷height, so the `click` marker
+    ///   renders as a circle rather than an ellipse on non-square video.
+    public func renderData(
+        aspect: Double = 1
+    ) -> (xy: [Float], counts: [Int32], rgba: [Float], widths: [Float]) {
         lock.lock()
         let committed = strokes
         let livePoints = live
+        let liveShape = liveTool
         let liveColor = color
         lock.unlock()
 
@@ -150,7 +180,10 @@ public final class AnnotationStore: @unchecked Sendable {
         var rgba: [Float] = []
         var widths: [Float] = []
 
-        func append(points: [CGPoint], color: Annotation.RGBA, width: Double) {
+        // Each stroke's stored points are expanded to its renderable outline
+        // (shape tools store only anchor+current — see `AnnotationGeometry`).
+        func append(tool: AnnotationTool, raw: [CGPoint], color: Annotation.RGBA, width: Double) {
+            let points = AnnotationGeometry.polyline(tool: tool, points: raw, aspect: aspect)
             guard !points.isEmpty else { return }
             for p in points {
                 xy.append(Float(p.x))
@@ -164,8 +197,10 @@ public final class AnnotationStore: @unchecked Sendable {
             widths.append(Float(width))
         }
 
-        for stroke in committed { append(points: stroke.points, color: stroke.color, width: stroke.width) }
-        append(points: livePoints, color: liveColor, width: Annotation.defaultWidth)
+        for stroke in committed {
+            append(tool: stroke.tool, raw: stroke.points, color: stroke.color, width: stroke.width)
+        }
+        append(tool: liveShape, raw: livePoints, color: liveColor, width: Annotation.defaultWidth)
         return (xy, counts, rgba, widths)
     }
 }

@@ -31,17 +31,23 @@ public struct GtkVideoView: View {
     let selfTest: Bool
     let onInputEvent: ((InputEvent) -> Void)?
     let annotations: AnnotationStore?
+    /// Height of sibling chrome (e.g. the annotation toolbar row) stacked above
+    /// this view. Added to the window size requested on the first frame so the
+    /// chrome doesn't eat into the video's area.
+    let chromeHeight: Int
 
     public init(
         store: FrameStore,
         selfTest: Bool = false,
         onInputEvent: ((InputEvent) -> Void)? = nil,
-        annotations: AnnotationStore? = nil
+        annotations: AnnotationStore? = nil,
+        chromeHeight: Int = 0
     ) {
         self.store = store
         self.selfTest = selfTest
         self.onInputEvent = onInputEvent
         self.annotations = annotations
+        self.chromeHeight = chromeHeight
     }
 
     public var body: some View { EmptyView() }
@@ -79,6 +85,7 @@ public struct GtkVideoView: View {
         let store = self.store
         let selfTest = self.selfTest
         let annotations = self.annotations
+        let chromeHeight = self.chromeHeight
         // One-shot: grow the (hub-sized) window to the video on the first frame.
         let sizedToVideo = ResizeLatch()
         // Repaint when a stroke is drawn or a relayed op arrives.
@@ -114,7 +121,8 @@ public struct GtkVideoView: View {
                 if !selfTest, !sizedToVideo.done {
                     sizedToVideo.done = true
                     let (w, h) = Self.windowSize(forVideoWidth: frame.width, height: frame.height)
-                    cgtkvideo_resize_toplevel(UnsafeMutableRawPointer(area.widgetPointer), Int32(w), Int32(h))
+                    cgtkvideo_resize_toplevel(
+                        UnsafeMutableRawPointer(area.widgetPointer), Int32(w), Int32(h + chromeHeight))
                 }
                 // A new video size (resolution change) invalidates the current
                 // zoom/pan — its offset was clamped against the old fit rect — so
@@ -134,7 +142,8 @@ public struct GtkVideoView: View {
                 }
                 // Overlay annotation strokes (mapped through the same transform).
                 if let annotations {
-                    let data = annotations.renderData()
+                    let data = annotations.renderData(
+                        aspect: Double(frame.width) / Double(max(1, frame.height)))
                     if !data.counts.isEmpty {
                         data.xy.withUnsafeBufferPointer { xy in
                             data.counts.withUnsafeBufferPointer { counts in
@@ -195,7 +204,7 @@ public struct GtkVideoView: View {
 
     /// Attach freehand annotation drawing: a button-1 press in pen mode starts a
     /// stroke, pointer motion extends it, release commits it (relayed via the
-    /// store's `onLocalOp`). A no-op unless `annotations.mode == .pen`, so it
+    /// store's `onLocalOp`). A no-op unless a tool is selected, so it
     /// coexists with zoom/pan + remote-control capture (pen mode is the viewer's
     /// explicit choice). Never attached in the render self-test.
     private static func attachAnnotationDrawing(
@@ -218,7 +227,7 @@ public struct GtkVideoView: View {
         let click = GestureClick()
         click.button = 1
         click.pressed = { _, _, x, y in
-            guard annotations.mode == .pen else { return }
+            guard annotations.mode.tool != nil else { return }
             draw.drawing = true
             annotations.beginStroke(at: normalized(x, y))
         }
@@ -232,7 +241,7 @@ public struct GtkVideoView: View {
 
         let motion = EventControllerMotion()
         motion.motion = { _, x, y in
-            guard draw.drawing, annotations.mode == .pen else { return }
+            guard draw.drawing, annotations.mode.tool != nil else { return }
             annotations.extendStroke(to: normalized(x, y))
         }
         area.addEventController(motion)
