@@ -34,8 +34,6 @@ let gPicker = PickerModel()
 let gProfiles = ProfileStore()
 let gAnnotations = AnnotationStore()
 let gAnnoForwarder = AnnotationForwarder()
-// The annotation toolbar's color choices (a subset of the shared palette).
-let gPalette = Array(Annotation.RGBA.palette.prefix(6))
 // Account-menu actions, wired in picker mode (nil elsewhere → menu hidden).
 var gSwitchProfile: (@MainActor @Sendable (String) -> Void)?
 var gAddAccount: (@MainActor @Sendable () -> Void)?
@@ -461,8 +459,7 @@ struct ViewerApp: App {
                 if ui.annotationsAvailable {
                     AnnotationToolbar(
                         activeTool: ui.activeTool,
-                        colors: gPalette,
-                        selectedColor: ui.annotationColorIndex,
+                        inkColor: gAnnotations.color,
                         statsShown: ui.showStats,
                         onSelectTool: { tool in
                             // Radio behaviour like the mac tool group, plus
@@ -471,10 +468,6 @@ struct ViewerApp: App {
                             let disarm = gUIState.activeTool == tool
                             gUIState.activeTool = disarm ? nil : tool
                             gAnnotations.mode = disarm ? .off : .drawing(tool)
-                        },
-                        onSelectColor: { index in
-                            gUIState.annotationColorIndex = index
-                            gAnnotations.color = gPalette[index]
                         },
                         onUndo: { gAnnotations.undo() },
                         onClear: { gAnnotations.clearAll() },

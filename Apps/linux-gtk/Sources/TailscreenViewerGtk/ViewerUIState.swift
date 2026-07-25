@@ -63,11 +63,11 @@ public final class ViewerUIState: ObservableObject, @unchecked Sendable {
     @Published public var showStats = false
 
     /// Annotation toolbar state (shown only when the sharer advertised
-    /// `ScreenShareCaps.annotations`): the armed drawing tool (nil ⇒ drawing
-    /// off, so drags zoom/pan or drive remote control) + the selected palette
-    /// color index.
+    /// `ScreenShareCaps.annotations`): the armed drawing tool, or nil when
+    /// drawing is off (so drags zoom/pan or drive remote control). The stroke
+    /// COLOR isn't here — like the mac, it's assigned from the local identity
+    /// (`AnnotationStore.color`), not chosen.
     @Published public var activeTool: AnnotationTool?
-    @Published public var annotationColorIndex = 0
 
     public init() {}
 
@@ -110,7 +110,6 @@ public final class ViewerUIState: ObservableObject, @unchecked Sendable {
             self.videoWidth = 0
             self.videoHeight = 0
             self.activeTool = nil
-            self.annotationColorIndex = 0
         }
     }
 

@@ -39,8 +39,23 @@ public final class AnnotationStore: @unchecked Sendable {
     /// Current drawing mode (main-thread only: the toolbar sets it, capture
     /// reads it).
     public var mode: AnnotationMode = .off
-    /// Current stroke color (main-thread only).
-    public var color: Annotation.RGBA = Annotation.defaultColor
+    /// This participant's stroke color. Assigned once from the local identity —
+    /// exactly like the mac viewer, which sets
+    /// `paletteColor(forIdentity: localIdentity())` rather than offering a
+    /// picker — so each participant always draws in the same color, and the
+    /// same machine keeps its color across reconnects and relaunches.
+    public var color: Annotation.RGBA = Annotation.RGBA.paletteColor(
+        forIdentity: AnnotationStore.localIdentity())
+
+    /// Stable per-machine drawing identity, mirroring the mac's
+    /// `Host.current().localizedName + TailscreenInstance.hostnameSuffix`.
+    /// Deliberately NOT the tsnet node name: that carries a fresh UUID each
+    /// launch, which would reshuffle this viewer's color every run.
+    public static func localIdentity() -> String {
+        let host = ProcessInfo.processInfo.hostName
+        let name = host.isEmpty ? "tailscreen-viewer" : host
+        return "\(name)\(TailscreenInstance.hostnameSuffix)"
+    }
     /// Invoked on the main thread with each finalized LOCAL op so the host can
     /// relay it to the sharer. Remote ops (via `apply`) do NOT re-fire this.
     public var onLocalOp: ((AnnotationOp) -> Void)?
@@ -55,7 +70,6 @@ public final class AnnotationStore: @unchecked Sendable {
         live = []
         lock.unlock()
         mode = .off
-        color = Annotation.defaultColor
         redraw()
     }
 

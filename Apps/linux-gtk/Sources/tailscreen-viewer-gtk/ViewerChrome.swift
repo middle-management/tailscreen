@@ -315,28 +315,33 @@ struct SessionPlacard: View {
 /// `ScreenShareCaps.annotations`.
 ///
 /// Differences from the mac toolbar, and why:
-///   • Text labels, not SF Symbols — those are Apple-only, and swift-cross-ui's
-///     `Button` takes a String label. The selected tool is marked with a bullet
-///     since there's no segmented-control binding either.
-///   • A color-swatch row the mac lacks (it auto-assigns a per-author palette
-///     color). Kept because a Linux viewer drawing on someone else's screen
-///     benefits from picking a color, and it costs one row.
+///   • Unicode geometric glyphs instead of SF Symbols (Apple-only). GTK's own
+///     named icon theme (Adwaita) was the first choice — it's the real
+///     equivalent, and swift-cross-ui's `Gtk.Button` even takes an `iconName` —
+///     but Adwaita is an app-chrome set with no line / rectangle / oval /
+///     pointer icons, so half the tool group would have had to fall back
+///     anyway. These glyphs render from the system font and cover all nine
+///     items consistently. The armed tool is bracketed, since swift-cross-ui
+///     has no segmented control to show radio selection.
+///   • No color picker — like the mac, each participant's color is assigned
+///     from their identity (see `AnnotationStore.color`); the swatch beside the
+///     tools just shows which color this viewer draws in.
 ///   • No mic item — the viewer has no ALSA capture path yet.
 struct AnnotationToolbar: View {
     /// Tool order — matches the mac `ViewerToolbar.toolOrder` exactly.
-    static let tools: [(tool: AnnotationTool, label: String)] = [
-        (.pen, "Pen"), (.line, "Line"), (.arrow, "Arrow"),
-        (.rectangle, "Rect"), (.oval, "Oval"), (.click, "Click"),
+    /// Glyphs: pencil, diagonal, arrow, rectangle, ellipse, target.
+    static let tools: [(tool: AnnotationTool, glyph: String, name: String)] = [
+        (.pen, "✎", "Pen"), (.line, "╱", "Line"), (.arrow, "↗", "Arrow"),
+        (.rectangle, "▭", "Rect"), (.oval, "◯", "Oval"), (.click, "◎", "Click"),
     ]
 
     /// The armed tool, or nil when drawing is off (pointer drags then zoom/pan
     /// or drive remote control).
     let activeTool: AnnotationTool?
-    let colors: [Annotation.RGBA]
-    let selectedColor: Int
+    /// This viewer's assigned stroke color (identity-derived, not chosen).
+    let inkColor: Annotation.RGBA
     let statsShown: Bool
     let onSelectTool: @MainActor @Sendable (AnnotationTool) -> Void
-    let onSelectColor: @MainActor @Sendable (Int) -> Void
     let onUndo: @MainActor @Sendable () -> Void
     let onClear: @MainActor @Sendable () -> Void
     let onToggleStats: @MainActor @Sendable () -> Void
@@ -345,29 +350,21 @@ struct AnnotationToolbar: View {
         HStack(spacing: 6) {
             ForEach(Array(Self.tools.enumerated()), id: \.offset) { item in
                 let isActive = activeTool == item.element.tool
-                Button(isActive ? "• \(item.element.label)" : item.element.label) {
+                Button(isActive ? "[\(item.element.glyph)]" : " \(item.element.glyph) ") {
                     onSelectTool(item.element.tool)
                 }
             }
             Divider()
-            ForEach(Array(colors.enumerated()), id: \.offset) { item in
-                Circle()
-                    .fill(Color(
-                        red: item.element.r, green: item.element.g,
-                        blue: item.element.b, opacity: item.element.a))
-                    .frame(width: 16, height: 16)
-                    .overlay {
-                        Circle().stroke(
-                            item.offset == selectedColor
-                                ? Color(white: 1) : Color(white: 0, opacity: 0),
-                            style: StrokeStyle(width: 2))
-                    }
-                    .onTapGesture { onSelectColor(item.offset) }
-            }
+            // Read-only swatch: the color this viewer's strokes appear in.
+            Circle()
+                .fill(Color(
+                    red: inkColor.r, green: inkColor.g, blue: inkColor.b,
+                    opacity: inkColor.a))
+                .frame(width: 16, height: 16)
             Divider()
-            Button("Undo", action: onUndo)
-            Button("Clear", action: onClear)
-            Button(statsShown ? "• Stats" : "Stats", action: onToggleStats)
+            Button("↶", action: onUndo)
+            Button("✕", action: onClear)
+            Button(statsShown ? "[▤]" : " ▤ ", action: onToggleStats)
             Spacer()
         }
         .padding(.horizontal, 12)
