@@ -134,6 +134,10 @@ let package = Package(
             name: "TailscreenViewerCoreTests",
             dependencies: [
                 "TailscreenViewerCore",
+                // The node-identity test reaches into the tsnet transport for
+                // its (pure) naming decision — the transport itself still
+                // can't run in CI, but that decision can.
+                "TailscreenViewerTsnet",
                 .product(name: "FFmpegKit", package: "FFmpegKit"),
                 .product(name: "CFFmpeg", package: "FFmpegKit"),
                 .product(name: "TailscreenProtocol", package: "TailscreenKit"),

@@ -24,6 +24,7 @@ let package = Package(
             revision: "199a85614e3b2346aa10736b12f969af14a1f1ea"),
         .package(path: "../../Packages/TailscreenKit"),
         .package(path: "../linux"),
+        .package(path: "../../Packages/TailscaleKit"),
     ],
     targets: [
         // OpenGL YUV→RGB renderer for the GLArea. C so it can call GL (via
@@ -58,6 +59,9 @@ let package = Package(
         .executableTarget(
             name: "tailscreen-viewer-gtk",
             dependencies: [
+                .product(name: "TailscreenSharer", package: "TailscreenKit"),
+                .product(name: "TailscaleKit", package: "TailscaleKit"),
+                .product(name: "TailscreenSharerLinux", package: "linux"),
                 "TailscreenViewerGtk",
                 .product(name: "SwiftCrossUI", package: "swift-cross-ui"),
                 .product(name: "DefaultBackend", package: "swift-cross-ui"),

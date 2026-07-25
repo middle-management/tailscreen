@@ -399,6 +399,63 @@ struct StatsHUD: View {
 /// list (picking phase) or a centered status pane (node bring-up / discovery /
 /// connecting). Values are passed in so reactivity stays anchored to the App's
 /// observed state.
+/// The sharing half of the hub: start/stop sharing this screen, and show who's
+/// watching. The macOS app puts this in a menubar popover; on Linux it sits at
+/// the top of the hub window, above the screen list, so one window covers both
+/// directions (a tray item is the eventual menubar analogue).
+struct ShareCard: View {
+    let statusLine: String
+    let isSharing: Bool
+    let canShare: Bool
+    let viewerIPs: [String]
+    let pendingIPs: [String]
+    let onStart: @MainActor @Sendable () -> Void
+    let onStop: @MainActor @Sendable () -> Void
+    let onApprove: @MainActor @Sendable (String) -> Void
+    let onDeny: @MainActor @Sendable (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("My screen")
+                .font(.title2)
+                .fontWeight(.bold)
+            VStack(alignment: .leading, spacing: 8) {
+                Text(statusLine)
+                    .font(.callout)
+                    .foregroundColor(isSharing ? HubStyle.chipText : HubStyle.secondaryText)
+                if canShare {
+                    if isSharing {
+                        Button("Stop sharing", action: onStop)
+                    } else {
+                        Button("Share my screen", action: onStart)
+                    }
+                }
+                // Approval gate: viewers park here until admitted. Rendered as
+                // explicit rows rather than a notification because this window
+                // is the only surface the Linux app has — there's no menubar to
+                // fall back to, so a missed prompt would strand the viewer.
+                ForEach(pendingIPs, id: \.self) { ip in
+                    HStack(spacing: 8) {
+                        Text("\(ip) wants to watch")
+                            .font(.caption)
+                        Button("Allow") { onApprove(ip) }
+                        Button("Deny") { onDeny(ip) }
+                    }
+                }
+                ForEach(viewerIPs, id: \.self) { ip in
+                    Text("• \(ip) watching")
+                        .font(.caption)
+                        .foregroundColor(HubStyle.secondaryText)
+                }
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 10).fill(HubStyle.cardFill))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
 struct PickerContent: View {
     let statusLine: String
     let isPicking: Bool
@@ -407,6 +464,10 @@ struct PickerContent: View {
     let loginURL: String?
     let onSelect: @MainActor @Sendable (DiscoveredSharer) -> Void
     var onOpenLogin: (@MainActor @Sendable () -> Void)?
+    /// The sharing half of the hub, when this host can share. `nil` renders a
+    /// viewer-only hub (the `--ui-preview` screenshots, and any build without a
+    /// capture backend).
+    var shareCard: ShareCard?
 
     /// Transient search text narrowing the list (the mac hub's search field).
     @State private var searchText = ""
@@ -421,7 +482,8 @@ struct PickerContent: View {
         loginURL: String?,
         autoExpandFirst: Bool = false,
         onSelect: @escaping @MainActor @Sendable (DiscoveredSharer) -> Void,
-        onOpenLogin: (@MainActor @Sendable () -> Void)? = nil
+        onOpenLogin: (@MainActor @Sendable () -> Void)? = nil,
+        shareCard: ShareCard? = nil
     ) {
         self.statusLine = statusLine
         self.isPicking = isPicking
@@ -430,6 +492,7 @@ struct PickerContent: View {
         self.loginURL = loginURL
         self.onSelect = onSelect
         self.onOpenLogin = onOpenLogin
+        self.shareCard = shareCard
         // Preview/screenshot affordance: open the first row's detail pane so the
         // expanded state is visible without a click.
         _expandedID = State(wrappedValue: autoExpandFirst ? sharers.first?.id : nil)
@@ -467,6 +530,9 @@ struct PickerContent: View {
             VStack(spacing: 14) {
                 if let loginURL {
                     HubLoginCard(url: loginURL, onOpen: onOpenLogin)
+                }
+                if let shareCard {
+                    shareCard
                 }
                 if isPicking {
                     VStack(alignment: .leading, spacing: 10) {

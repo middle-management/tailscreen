@@ -34,6 +34,7 @@ let gPicker = PickerModel()
 let gProfiles = ProfileStore()
 let gAnnotations = AnnotationStore()
 let gAnnoForwarder = AnnotationForwarder()
+let gSharer = SharerModel()
 // Account-menu actions, wired in picker mode (nil elsewhere → menu hidden).
 var gSwitchProfile: (@MainActor @Sendable (String) -> Void)?
 var gAddAccount: (@MainActor @Sendable () -> Void)?
@@ -187,6 +188,13 @@ if gSelfTest {
         onAnnotation: { op in gAnnotations.apply(op) },
         onControlGranted: { gUIState.setControlState(.active) },
         onControlRevoked: { reason in gUIState.setControlState(.revoked(reason: reason)) })
+
+    // The sharer borrows this transport's node rather than bringing up its own
+    // — one app, one tailnet identity. `retainsNodeAcrossSessions` is what
+    // makes that safe: without it the node goes down when a viewing session
+    // ends, which would silently kill an in-progress share.
+    transport.retainsNodeAcrossSessions = gPickerMode
+    gSharer.nodeProvider = { transport.liveNode }
 
     // Run a viewing session against a chosen host/IP. Shared by the direct-host
     // path and the picker's selection callback (both on the main actor). Drives
@@ -344,6 +352,15 @@ if gSelfTest {
                 gPicker.phase = .startingNode
                 var config = baseConfig
                 config.statePath = stateDir(for: profile)
+                // Register under a discoverable name when this host can share:
+                // `isTailscreenServerHostname` excludes the viewer prefix, so a
+                // viewer-named node could never be picked by anyone. The cost
+                // is that the app appears in peers' lists while idle — which is
+                // exactly what the macOS app does, with the "only screens being
+                // shared" filter (a metadata probe) telling idle from sharing.
+                if gSharer.canShare {
+                    config.nodeRole = .shareCapable(name: localShareName())
+                }
                 do {
                     try await transport.prepare(config: config, onLoginURL: { url in
                         Task { @MainActor in gPicker.loginURL = url.absoluteString }
@@ -382,6 +399,8 @@ struct ViewerApp: App {
     @State var picker = gPicker
     // Observed so the account menu re-renders on switch / add / rename.
     @State var profileStore = gProfiles
+    // Observed so the share card re-renders as viewers join / leave.
+    @State var sharer = gSharer
 
     // Toolbar button label reflects the remote-control state machine.
     private var controlButtonLabel: String {
@@ -446,6 +465,23 @@ struct ViewerApp: App {
     private var sessionHost: String {
         if case .connecting(let host) = picker.phase { return host }
         return ""
+    }
+
+    /// The hub's sharing card. Only offered in picker mode: the direct-host
+    /// path (`tailscreen-viewer-gtk <host>`) is a one-shot viewer invocation,
+    /// and growing a share button onto it would be surprising.
+    private var shareCard: ShareCard? {
+        guard gPickerMode else { return nil }
+        return ShareCard(
+            statusLine: sharer.statusLine,
+            isSharing: sharer.phase == .sharing,
+            canShare: sharer.canShare,
+            viewerIPs: sharer.viewerIPs,
+            pendingIPs: sharer.pendingIPs,
+            onStart: { gSharer.startSharing() },
+            onStop: { gSharer.stopSharing() },
+            onApprove: { gSharer.approve($0) },
+            onDeny: { gSharer.deny($0) })
     }
 
     @ViewBuilder private var rootView: some View {
@@ -533,7 +569,8 @@ struct ViewerApp: App {
                         loginURL: picker.loginURL,
                         autoExpandFirst: gUIPreview,
                         onSelect: { picker.select($0) },
-                        onOpenLogin: gOpenLogin)
+                        onOpenLogin: gOpenLogin,
+                        shareCard: shareCard)
                 } else {
                     HubStatusPane(status: ui.status)
                 }

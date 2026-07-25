@@ -20,13 +20,34 @@ public struct ViewerConfig: Sendable {
     /// Capabilities this viewer advertises in its HELLO.
     public var caps: ScreenShareCaps = [.nack, .receiverReport, .fec]
 
+    /// What this node is *for*, which decides the hostname it registers under
+    /// and therefore whether other peers can discover it.
+    ///
+    /// `isTailscreenServerHostname` admits `tailscreen-…` but excludes
+    /// `tailscreen-client-…`, so a pure viewer is deliberately invisible in
+    /// everyone's screen list. An app that can also *share* has to be visible,
+    /// or nobody could ever pick it.
+    public enum NodeRole: Sendable {
+        /// Ephemeral, undiscoverable — a viewer that only ever watches.
+        case viewerOnly
+        /// Discoverable as a long-lived instance, under
+        /// `TailscreenInstance.serverHostnamePrefix + name`. Use for a host that
+        /// can share. Note the consequence: it appears in other peers' lists
+        /// even while idle, exactly as the macOS app does — the "only screens
+        /// being shared" filter is what distinguishes idle from sharing, via the
+        /// metadata probe rather than by hiding the node.
+        case shareCapable(name: String)
+    }
+    public var nodeRole: NodeRole = .viewerOnly
+
     public init(
         hostname: String,
         port: UInt16 = 7447,
         authKey: String? = nil,
         controlURL: String = kDefaultControlURL,
         statePath: String,
-        caps: ScreenShareCaps = [.nack, .receiverReport, .fec]
+        caps: ScreenShareCaps = [.nack, .receiverReport, .fec],
+        nodeRole: NodeRole = .viewerOnly
     ) {
         self.hostname = hostname
         self.port = port
@@ -34,6 +55,7 @@ public struct ViewerConfig: Sendable {
         self.controlURL = controlURL
         self.statePath = statePath
         self.caps = caps
+        self.nodeRole = nodeRole
     }
 }
 
@@ -99,6 +121,43 @@ public final class TsnetTransport {
 
     public init() {}
 
+    /// Keep the tsnet node up when a viewing session ends, instead of taking it
+    /// down with the session.
+    ///
+    /// A viewer-only app wants the default: the node exists for exactly as long
+    /// as the session that needs it. An app that *also shares* can't work that
+    /// way — its sharer must stay reachable between viewing sessions, and both
+    /// halves must ride ONE node so the app presents a single tailnet identity
+    /// (the macOS app does this by owning the node in `AppState` and passing it
+    /// to both the server and the client). Set this before `run`.
+    public var retainsNodeAcrossSessions = false
+
+    /// The tsnet hostname and ephemerality a role implies. Pure, so the
+    /// discovery-visibility contract can be tested without a tailnet: a
+    /// viewer-only node MUST fail `isTailscreenServerHostname` (else transient
+    /// watchers clutter every peer's screen list) and a share-capable one MUST
+    /// pass it (else nobody can ever pick this host).
+    /// `nonisolated` because it's pure — the transport is `@MainActor` for its
+    /// loop, but this decision needs no actor and shouldn't force tests onto one.
+    nonisolated static func nodeIdentity(
+        for role: ViewerConfig.NodeRole, uniqueSuffix: String
+    ) -> (hostName: String, ephemeral: Bool) {
+        switch role {
+        case .viewerOnly:
+            return ("\(TailscreenInstance.viewerHostnamePrefix)\(uniqueSuffix.prefix(8))", true)
+        case .shareCapable(let name):
+            // Non-ephemeral on purpose: an ephemeral node vanishes from the
+            // tailnet the moment it goes down, which is wrong for a host a peer
+            // may come back to.
+            return ("\(TailscreenInstance.serverHostnamePrefix)\(name)", false)
+        }
+    }
+
+    /// The live node, for a host that needs to lend it to something else —
+    /// notably `TailscaleScreenShareServer(existingNode:)`. Non-nil only
+    /// between `prepare` and `teardown`.
+    public var liveNode: TailscaleNode? { preparedNode }
+
     /// Bring up the ephemeral tsnet node (interactive login supported) without
     /// starting a session. Idempotent — a second call while a node is live is a
     /// no-op. Lets a host bring the node up, discover sharers, and only then
@@ -116,17 +175,23 @@ public final class TsnetTransport {
         try? FileManager.default.createDirectory(
             atPath: config.statePath, withIntermediateDirectories: true)
 
-        // Bring up an ephemeral node (no manual device registration).
-        // `viewerHostnamePrefix` is excluded from peer discovery, so this
-        // ephemeral viewer node never shows up as a connectable screen.
-        let hostName = "\(TailscreenInstance.viewerHostnamePrefix)\(UUID().uuidString.prefix(8))"
+        // Node identity follows the role. A viewer-only node is ephemeral and
+        // named with `viewerHostnamePrefix`, which peer discovery excludes, so
+        // a transient watcher never shows up as a connectable screen. A
+        // share-capable node must be discoverable, so it registers under
+        // `serverHostnamePrefix` instead — and stays non-ephemeral, since an
+        // ephemeral node disappears from the tailnet the moment it goes down,
+        // which is wrong for something a peer may reconnect to.
+        let nodeID = Self.nodeIdentity(for: config.nodeRole, uniqueSuffix: UUID().uuidString)
+        let hostName = nodeID.hostName
+        let ephemeral = nodeID.ephemeral
         let node = try TailscaleNode(
             config: Configuration(
                 hostName: hostName,
                 path: config.statePath,
                 authKey: config.authKey,
                 controlURL: config.controlURL,
-                ephemeral: true
+                ephemeral: ephemeral
             ),
             logger: logger
         )
@@ -255,7 +320,20 @@ public final class TsnetTransport {
         // back-channel start) would otherwise pin the node forever — its last
         // reference never drops, so `deinit` (the real `tailscale_close`) never
         // runs, leaking the tsnet node and wedging any retry on the stale one.
-        defer { preparedNode = nil }
+        // Clearing `preparedNode` on every exit path is what stops a throw
+        // between here and the tail from pinning the node forever. When the
+        // host retains the node, `retainedNode` carries it back across that
+        // same defer rather than defeating it.
+        var retainedNode: TailscaleNode?
+        defer { preparedNode = retainedNode }
+        // Claim the node for retention immediately, not at the clean exit:
+        // a throw partway through a session must not orphan a node that a
+        // sharer on this same host is still serving from. Dropping it here
+        // would leave `preparedNode == nil` while the node object stays alive
+        // behind the sharer's reference, so the next `prepare()` would bring up
+        // a SECOND node — two tailnet identities for one app, which is exactly
+        // what sharing one node is meant to avoid.
+        if retainsNodeAcrossSessions { retainedNode = node }
 
         let ips = try await node.addrs()
         guard let tailscale = await node.tailscale else {
@@ -389,7 +467,11 @@ public final class TsnetTransport {
             logger.log("▶ Viewer window closed.")
         }
         await listener.close()
-        try? await node.down()
+        // When retaining, `teardown()` is the only thing that takes the node
+        // down — `retainedNode` was claimed at entry, so nothing to do here.
+        if !retainsNodeAcrossSessions {
+            try? await node.down()
+        }
         // `preparedNode = nil` is handled by the `defer` above (which also
         // covers the throwing exit paths).
     }
