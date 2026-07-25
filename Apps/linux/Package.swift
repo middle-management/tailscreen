@@ -63,6 +63,22 @@ let package = Package(
                 .unsafeFlags(["-L", "../../Packages/TailscaleKit/lib"])
             ]
         ),
+        // Synthetic sharer for local end-to-end runs (see its main.swift): a
+        // second tsnet node speaking the sharer half of the wire protocol, so
+        // the Linux viewer can be exercised without a Mac. Development/test
+        // tool, not a product sharer — it captures nothing.
+        .executableTarget(
+            name: "TailscreenTestSharer",
+            dependencies: [
+                .product(name: "CFFmpeg", package: "FFmpegKit"),
+                .product(name: "TailscreenProtocol", package: "TailscreenKit"),
+                .product(name: "TailscaleKit", package: "TailscaleKit"),
+            ],
+            path: "Sources/TailscreenTestSharer",
+            linkerSettings: [
+                .unsafeFlags(["-L", "../../Packages/TailscaleKit/lib"])
+            ]
+        ),
         // Real-decode pipeline test: encode H.264 → RTP → ViewerSession →
         // FFmpeg decode → collecting sinks. No tsnet, runs on Linux CI.
         .testTarget(

@@ -68,11 +68,44 @@ for the tsnet transport. The `linux-viewer` CI job runs exactly this.
 
 ## Running the viewer
 
-There is no executable here — build and run **[`Apps/linux-gtk`](../linux-gtk)**
-(the native GTK viewer). See its README for the run instructions, including the
-OrbStack-from-a-Mac setup. A live session needs a real tailnet (or a local
-headscale), the same constraint as every tsnet path in this repo, so it can't
-run in CI.
+The viewer executable is **[`Apps/linux-gtk`](../linux-gtk)** (the native GTK
+app). See its README for the run instructions, including the OrbStack-from-a-Mac
+setup. A live session needs a real tailnet (or a local headscale), the same
+constraint as every tsnet path in this repo, so it can't run in CI.
+
+## `TailscreenTestSharer` — synthetic sharer for end-to-end runs
+
+The real sharer is macOS-only (ScreenCaptureKit), which used to make the Linux
+viewer end-to-end-untestable: everything past "the node comes up" was only
+compile-gated. `TailscreenTestSharer` stands in for it — a second tsnet node
+speaking the **sharer half** of the wire protocol, so the whole viewer path runs
+on one Linux box. It serves **real H.264** (libavcodec, a moving test pattern),
+so the viewer's FFmpeg decode and GL render do genuine work.
+
+It is a development/test tool, **not** a product sharer: it captures nothing and
+admits every viewer (no approval gate, allow/deny store, or SSRC anti-spoof —
+all of which the macOS sharer implements and its own suites cover).
+
+```bash
+# 1. local control plane (writes the env exports)
+eval "$(./scripts/e2e-up-native.sh)"
+
+# 2. synthetic sharer — note the 100.64.x.y address it prints
+swift run --package-path Apps/linux TailscreenTestSharer --fps 10 --size 640x360
+
+# 3. viewer, dialing that address (separate state dir!)
+cd Apps/linux-gtk && swift run tailscreen-viewer-gtk 100.64.0.2 \
+    --state-dir /tmp/viewer-state
+
+./scripts/e2e-down-native.sh   # when done
+```
+
+Each node needs its **own** `--state-dir`: two tsnet nodes sharing one directory
+reuse a machine key and won't see each other. Verified this way: discovery,
+metadata (the sharing chip), HELLO/admission, RTP video → decode → GL render,
+window-grow-to-video, the caps-gated toolbars, and the annotation / control /
+input back-channel paths (the sharer logs each inbound op and relays annotations
+back). Still local-only — it can't run in CI for the usual tsnet reason.
 
 ## Not here yet
 
