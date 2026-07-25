@@ -1194,10 +1194,10 @@ private struct PeerDetailView: View {
     /// Either half renders alone when the other is unknown.
     private var routeText: String? {
         var parts: [String] = []
-        if let cur = peer.curAddr, !cur.isEmpty {
-            parts.append(L("Direct"))
-        } else if let relay = peer.relay, !relay.isEmpty {
-            parts.append(L("DERP (\(relay))"))
+        switch PeerRoute.from(curAddr: peer.curAddr, relay: peer.relay) {
+        case .direct: parts.append(L("Direct"))
+        case .relay(let region): parts.append(L("DERP (\(region))"))
+        case .unknown: break
         }
         if let ms = appState.peerLatencyMs[peer.id] {
             parts.append(L("~\(ms) ms"))
@@ -1209,9 +1209,11 @@ private struct PeerDetailView: View {
     /// a measurement lands.
     private var qualityColor: Color? {
         guard let ms = appState.peerLatencyMs[peer.id] else { return nil }
-        if ms < 60 { return .green }
-        if ms < 150 { return .yellow }
-        return .orange
+        switch ConnectionQualityTier.forLatency(ms: ms) {
+        case .good: return .green
+        case .fair: return .yellow
+        case .poor: return .orange
+        }
     }
 
     /// "3456 × 2234 · HEVC" — resolution and codec are numbers/brand nouns,
