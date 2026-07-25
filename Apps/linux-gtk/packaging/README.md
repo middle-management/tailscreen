@@ -1,14 +1,29 @@
-# Packaging the Tailscreen GTK viewer
+# Packaging the Tailscreen Linux app
 
-Installable-package recipes for the native Linux desktop viewer
-(`Apps/linux-gtk`, the swift-cross-ui / GTK4 app whose executable product is
-`tailscreen-viewer-gtk`). Two paths are provided:
+Installable-package recipes for the native Linux desktop app (`Apps/linux-gtk`,
+the swift-cross-ui / GTK4 app whose executable product is
+`tailscreen-viewer-gtk`). Three paths:
 
-- **Flatpak** — `flatpak/org.tailscreen.Viewer.yml` (+ `.desktop` + `.metainfo.xml`)
-- **AppImage** — `appimage/build-appimage.sh`
+- **AppImage** — `appimage/build-appimage.sh` — built and uploaded by the
+  `Release (Linux)` workflow, so this is the shipping channel today
+- **Flatpak** — `flatpak/dev.tailscreen.Tailscreen.yml` (+ `.desktop` +
+  `.metainfo.xml`) — the better long-term desktop channel, blocked on a Swift
+  toolchain in the build sandbox (see below)
+- **Homebrew** — `homebrew/` — a formula template plus an honest account of why
+  Homebrew is a poor primary channel for a GTK app
 
-Both target the same app: id `org.tailscreen.Viewer`, name **Tailscreen Viewer**,
+All target the same app: id `dev.tailscreen.Tailscreen`, name **Tailscreen**,
 command `tailscreen-viewer-gtk`.
+
+**Only the GTK app is packaged.** `Apps/linux` also builds
+`tailscreen-sharer-linux`, `tailscreen-viewer-probe` and `TailscreenTestSharer`
+— development and test tools, not products — and they are deliberately absent
+from every artifact here.
+
+The executable is still named `tailscreen-viewer-gtk` for continuity, though
+the app both views *and* shares since it gained a sharing card. Renaming the
+product is a follow-up that would touch the CI job names, the packaging
+recipes, and anyone's muscle memory, so it hasn't been done casually.
 
 ## Honest status
 
@@ -26,9 +41,13 @@ self-test in the `linux-gtk-viewer` CI job (see `.github/workflows/build.yml`).
 The packaging wrappers here drive that same `swift build` and then bundle the
 resulting binary — the wrapping/bundling steps are what remain unverified.
 
-Deliberately **no CI job** gates merges on packaging (it can't fully run in the
-container). If a packaging workflow is ever added it must be `workflow_dispatch`
--only / non-required.
+Packaging deliberately **does not gate merges** — it can't run in the normal CI
+container. `.github/workflows/release-linux.yml` runs it instead on three
+triggers: a published release (the real thing), `workflow_dispatch` against an
+existing tag, and a pull request labelled **`build-linux-package`**, which
+builds the AppImage and attaches it to the run as an artifact without uploading
+to any release. The label exists so packaging breakage is discoverable before a
+tag rather than at one.
 
 ## Prerequisites (both paths)
 
@@ -44,7 +63,7 @@ plus a Swift 6 toolchain (swift.org).
 
 ## Flatpak
 
-`flatpak/org.tailscreen.Viewer.yml` builds from the repo source against the
+`flatpak/dev.tailscreen.Tailscreen.yml` builds from the repo source against the
 GNOME runtime (`org.gnome.Platform//47` / `org.gnome.Sdk//47`), which supplies
 GTK4. It compiles `libtailscale.a` (Go, via the `org.freedesktop.Sdk.Extension.golang`
 SDK extension) and then `swift build -c release --product tailscreen-viewer-gtk`.
@@ -68,15 +87,15 @@ Run (from the repo root, once Swift is available to the SDK):
 flatpak install flathub org.gnome.Platform//47 org.gnome.Sdk//47 \
   org.freedesktop.Sdk.Extension.golang//24.08
 flatpak-builder --user --install --force-clean build-flatpak \
-  Apps/linux-gtk/packaging/flatpak/org.tailscreen.Viewer.yml
-flatpak run org.tailscreen.Viewer            # picker mode
-flatpak run org.tailscreen.Viewer my-sharer  # dial a host directly
+  Apps/linux-gtk/packaging/flatpak/dev.tailscreen.Tailscreen.yml
+flatpak run dev.tailscreen.Tailscreen            # picker mode
+flatpak run dev.tailscreen.Tailscreen my-sharer  # dial a host directly
 ```
 
 `finish-args` grants: Wayland + fallback-X11 + `dri` (the GTK4/OpenGL video
 surface), PulseAudio (audio playback), and `network` (the tsnet transport dials
 the tailnet). Validate the metadata with
-`appstreamcli validate flatpak/org.tailscreen.Viewer.metainfo.xml`.
+`appstreamcli validate flatpak/dev.tailscreen.Tailscreen.metainfo.xml`.
 
 ## AppImage
 
@@ -90,7 +109,7 @@ bundle shared libraries and emit the AppImage via
 
 ```bash
 Apps/linux-gtk/packaging/appimage/build-appimage.sh
-# → Tailscreen-Viewer-x86_64.AppImage in the repo root
+# → Tailscreen-x86_64.AppImage in the repo root
 # Override the output path: OUTPUT=/tmp/tv.AppImage Apps/.../build-appimage.sh
 ```
 
@@ -109,14 +128,14 @@ documented follow-up:
   at build time if `rsvg-convert` (librsvg) is installed; otherwise it writes a
   1×1 placeholder so the build still completes.
 - The **Flatpak** manifest installs
-  `Apps/linux-gtk/packaging/icons/org.tailscreen.Viewer.png` **if present** and
+  `Apps/linux-gtk/packaging/icons/dev.tailscreen.Tailscreen.png` **if present** and
   skips it otherwise.
 
 To finish this properly, add a real
-`Apps/linux-gtk/packaging/icons/org.tailscreen.Viewer.png` (256×256, ideally plus
+`Apps/linux-gtk/packaging/icons/dev.tailscreen.Tailscreen.png` (256×256, ideally plus
 128/64 sizes) generated from `docs/assets/app-icon.svg`, e.g.:
 
 ```bash
 rsvg-convert -w 256 -h 256 docs/assets/app-icon.svg \
-  -o Apps/linux-gtk/packaging/icons/org.tailscreen.Viewer.png
+  -o Apps/linux-gtk/packaging/icons/dev.tailscreen.Tailscreen.png
 ```
