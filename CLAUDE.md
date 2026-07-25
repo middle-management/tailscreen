@@ -228,11 +228,11 @@ retransmit/FEC/RR loss recovery, policy/tuning types — 30 files, Foundation +
 `Synchronization` only) lives in a standalone SwiftPM package that builds
 **on Linux**: `TailscreenKit`. The app consumes it as a real
 dependency — the files exist only in the package, and
-`Apps/macOS/Sources/ProtocolReexports.swift` `@_exported import`s both products so app
+`Apps/macOS/Sources/ProtocolReexports.swift` `@_exported import`s the products so app
 code uses the types unqualified. Everything the app touches is `public`
 (incl. explicit memberwise inits); test-only seams stay `internal` and the
 test suite reaches them via `@testable import TailscreenProtocol` /
-`TailscreenTransport` / `TailscreenAudio`. CI's `linux-protocol` job (and
+`TailscreenTransport` / `TailscreenAudio` / `TailscreenSharer`. CI's `linux-protocol` job (and
 `make test-protocol` locally, macOS or Linux) enforces the boundary.
 
 The package has a second tier: target **`TailscreenTransport`**
@@ -283,6 +283,37 @@ now drains all ready AUs after each ingest (`MultiCodecDepacketizer.drainReady`)
 so a gap fill — reorder completion or an FEC-recovered tail packet with no
 trailing traffic — surfaces every unblocked frame immediately. Tests:
 `TailscreenViewerTests`.
+
+And a fifth tier: target **`TailscreenSharer`** — the host-agnostic *sharer*
+data plane, i.e. `TailscaleScreenShareServer` itself. Despite being the
+biggest file in the repo and reading as deeply macOS-bound, it turned out to
+contain exactly **two** genuine Apple API usages (an `NSImage` preview
+callback and one `SCStreamError`); the rest was portable logic — viewer
+admission + the access-policy gate, RTP fan-out, NACK/retransmit/FEC, the
+congestion and per-viewer fairness controllers, the idle sweep, the
+capture-restart budget + hung-backend watchdog, the remote-control grant
+gate — that merely lived in a mac target. Moving it needed no redesign: the
+`os` locks became `Synchronization.Mutex`, the preview callback became
+opaque `Data` (the host decodes at the point of display), and the
+`SCStreamError.userStopped` signal became
+`TailscaleScreenShareServer.userStoppedErrorDomain`.
+
+The platform surface is two protocols in `SharerBackends.swift`:
+**`CaptureEncoding`** (capture + encode — callbacks for access units /
+parameter sets / system audio / preview / exit, commands for
+`requestKeyframe` / `setBitrate` / `setFrameInterval` / `setAudioEnabled`)
+and **`InputInjecting`** (remote-control injection). `CaptureEncoding` is
+deliberately shaped like `CaptureHelperWire`'s `OutType`/`InType`: the seam
+already existed as an IPC wire and had simply never been named as a
+portability boundary, which is why `HelperScreenCapture` and
+`RemoteControlInjector` conform with *empty* extensions
+(`Apps/macOS/Sources/ScreenShareBackends.swift`). The server takes a capture
+**factory**, not an instance, because macOS restart semantics require a
+brand-new helper process each time. One behaviour genuinely changed:
+`ScreenShareCaps.remoteControl` is now advertised **iff** the host supplied
+an `InputInjecting` backend — the mac-only server could hard-code "this
+platform can inject" and a portable one can't, so a host without injection
+correctly withholds the bit instead of inviting requests it can't serve.
 
 The rules for package files (no Apple frameworks; how to move a file in;
 what must be `public`) live canonically in

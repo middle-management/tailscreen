@@ -6,6 +6,7 @@ import XCTest
 
 @testable import Tailscreen
 @testable import TailscreenProtocol
+@testable import TailscreenSharer
 @testable import TailscreenTransport
 
 /// End-to-end with TWO viewers on one server over real tsnet (local

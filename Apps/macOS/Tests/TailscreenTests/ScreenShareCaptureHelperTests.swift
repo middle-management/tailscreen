@@ -6,6 +6,7 @@ import os
 
 @testable import Tailscreen
 @testable import TailscreenProtocol
+@testable import TailscreenSharer
 @testable import TailscreenTransport
 
 /// Local-only end-to-end: spawns the real `--capture-helper` child against the

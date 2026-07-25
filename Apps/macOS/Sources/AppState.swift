@@ -1139,7 +1139,11 @@ class AppState: ObservableObject {
                         }
                     }
                 }
-                srv.onPreviewImage = { [weak self] image in
+                srv.onPreviewImage = { [weak self] jpeg in
+                    // The portable server hands up the capture backend's
+                    // encoded bytes; decoding to an `NSImage` is this host's
+                    // job and happens here, at the point of display.
+                    guard let image = NSImage(data: jpeg) else { return }
                     Task { @MainActor [weak self] in
                         guard let self else { return }
                         self.previewImage = image
@@ -1434,6 +1438,10 @@ class AppState: ObservableObject {
     /// decision logic is unit-testable without standing up a stream.
     nonisolated static func isUserInitiatedCaptureStop(_ error: Error?) -> Bool {
         guard let nsErr = error as NSError? else { return false }
+        // The portable server raises its own domain (it can't depend on
+        // ScreenCaptureKit); a real `SCStreamError` can still reach us from
+        // elsewhere in the mac capture stack, so both count.
+        if nsErr.domain == TailscaleScreenShareServer.userStoppedErrorDomain { return true }
         return nsErr.domain == SCStreamError.errorDomain
             && nsErr.code == SCStreamError.Code.userStopped.rawValue
     }

@@ -1,8 +1,8 @@
-import AppKit
 import Foundation
-import ScreenCaptureKit
+import Synchronization
 import TailscaleKit
-import os
+import TailscreenProtocol
+import TailscreenTransport
 
 /// Screen-share server. Owns the UDP video path and registers handlers on
 /// the long-lived `TailscreenControlListener` for the duration of a share:
@@ -30,7 +30,7 @@ import os
 ///  - `good`: no meaningful loss.
 ///  - `degraded`: over the loss threshold this window (but not throttled).
 ///  - `throttled`: keyframe-only mode — its link is isolating the session.
-enum ViewerHealth: String, Sendable, Hashable {
+public enum ViewerHealth: String, Sendable, Hashable {
     case good
     case degraded
     case throttled
@@ -41,20 +41,20 @@ enum ViewerHealth: String, Sendable, Hashable {
 /// to translate the source IP into a friendly hostname. `hostname` is `nil`
 /// until the lookup completes (or if the peer isn't in the netmap), in
 /// which case the UI should fall back to `tailscaleIP`.
-struct ViewerInfo: Sendable, Identifiable, Hashable {
-    let id: String  // matches the server's internal viewer key ("ip:port")
-    let tailscaleIP: String
-    var hostname: String?
+public struct ViewerInfo: Sendable, Identifiable, Hashable {
+    public let id: String  // matches the server's internal viewer key ("ip:port")
+    public let tailscaleIP: String
+    public var hostname: String?
     /// Connection health for the sharer's roster dot. Defaults to `good`
     /// at join; updated in place by the adaptive sweep.
-    var health: ViewerHealth = .good
+    public var health: ViewerHealth = .good
     /// Tailscale StableNodeID (LocalAPI `PeerStatus.ID`) resolved from the
     /// same netmap lookup that fills `hostname`. nil until resolution
     /// completes (or if the peer isn't in the netmap). This is the key the
     /// persistent allow/deny store uses — never key policy on hostname or
     /// any other wire-supplied claim.
-    var stableID: String?
-    let connectedAt: Date
+    public var stableID: String?
+    public let connectedAt: Date
 }
 
 /// A viewer that sent HELLO while `requireApproval` was on and is waiting
@@ -63,20 +63,20 @@ struct ViewerInfo: Sendable, Identifiable, Hashable {
 /// polluting the connected-viewer roster. `id` matches the same
 /// `"ip:port"` key the server uses internally, so the AppState pass-through
 /// to `approveViewer`/`denyViewer` is trivial.
-struct PendingViewerInfo: Sendable, Identifiable, Hashable {
-    let id: String  // "ip:port"
-    let tailscaleIP: String
-    var hostname: String?
+public struct PendingViewerInfo: Sendable, Identifiable, Hashable {
+    public let id: String  // "ip:port"
+    public let tailscaleIP: String
+    public var hostname: String?
     /// Tailscale StableNodeID — see `ViewerInfo.stableID`. Carried here so
     /// "Always Allow" / "Deny & Block" on a pending row can persist the
     /// decision under the spoof-resistant key.
-    var stableID: String?
-    let arrivedAt: Date
+    public var stableID: String?
+    public let arrivedAt: Date
 }
 
-final class TailscaleScreenShareServer: @unchecked Sendable {
+public final class TailscaleScreenShareServer: @unchecked Sendable {
     private let port: UInt16
-    var node: TailscaleNode?
+    public var node: TailscaleNode?
     /// True when this server created the tsnet node itself; false when it
     /// borrowed a node owned by AppState. Controls whether `stop()` tears
     /// the node down or just releases its reference.
@@ -156,8 +156,8 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         var throttledUntilNs: UInt64 = 0
     }
 
-    private let viewers = OSAllocatedUnfairLock<[String: Viewer]>(initialState: [:])
-    private let parameterSets = OSAllocatedUnfairLock<CodecParameterSets?>(initialState: nil)
+    private let viewers = Mutex<[String: Viewer]>([:])
+    private let parameterSets = Mutex<CodecParameterSets?>(nil)
     /// Per-connection set of annotation UUIDs the viewer has produced.
     /// Keyed by the control-listener's connection UUID; the value is every
     /// annotation `.id` that's still considered live on this viewer's
@@ -171,7 +171,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// UUID so the sharer's overlay (and every other viewer, via
     /// `broadcastAnnotation`) stops showing strokes nobody is around to
     /// clean up.
-    private let annotationsByConnection = OSAllocatedUnfairLock<[UUID: Set<UUID>]>(initialState: [:])
+    private let annotationsByConnection = Mutex<[UUID: Set<UUID>]>([:])
 
     /// Maps a TCP annotation connection's `UUID` to the peer IP it dialed
     /// from (stripped of the ephemeral port). Populated on the first
@@ -181,7 +181,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// UDP, so without this a pending/denied/blocked peer could still inject
     /// annotations over TCP), and lets `expelViewer` sever a blocked peer's
     /// back-channel by IP.
-    private let annotationConnectionIP = OSAllocatedUnfairLock<[UUID: String]>(initialState: [:])
+    private let annotationConnectionIP = Mutex<[UUID: String]>([:])
 
     // MARK: - Remote control
 
@@ -190,7 +190,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// `RemoteControlPolicy.shouldInject`), so a NAT rebind can't inherit it
     /// and a non-grantee can't inject. At most one grant exists — granting a
     /// new viewer implicitly revokes the old.
-    private let controlGrant = OSAllocatedUnfairLock<GrantState>(initialState: GrantState())
+    private let controlGrant = Mutex<GrantState>(GrantState())
 
     /// Grant + a monotonic mutation counter, mutated under one lock so
     /// `notifyControlGrantChanged` can hand callbacks a `(generation,
@@ -206,32 +206,36 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     }
     /// Viewers that asked for control and are awaiting the sharer's Grant /
     /// Deny, keyed by their TCP control connection's `UUID`.
-    private let controlRequests = OSAllocatedUnfairLock<[UUID: ControlRequestInfo]>(initialState: [:])
+    private let controlRequests = Mutex<[UUID: ControlRequestInfo]>([:])
     /// Per-share event-rate ceiling on injected input (defense against a
     /// malicious grantee flooding the injector). Reset in `stop()`.
-    private let inputRateLimiter = OSAllocatedUnfairLock<EventRateLimiter>(initialState: EventRateLimiter())
-    /// Injects the grantee's events on this (main) process via `CGEvent`.
-    private let remoteControlInjector = RemoteControlInjector()
+    private let inputRateLimiter = Mutex<EventRateLimiter>(EventRateLimiter())
+    /// Injects the grantee's events on this host, if this host can inject at
+    /// all. Supplied by the embedder (macOS passes its `CGEvent` injector);
+    /// `nil` means no remote control — the `.remoteControl` capability is then
+    /// withheld from HELLO_ACK, so viewers hide Request Control rather than
+    /// sending requests nothing can serve.
+    private let remoteControlInjector: (any InputInjecting)?
     /// Log a dropped (non-grantee) input event at most once per share.
-    private let droppedInputLogged = OSAllocatedUnfairLock<Bool>(initialState: false)
+    private let droppedInputLogged = Mutex<Bool>(false)
     /// Sharer preference gate on `.controlRequest` (see
     /// `setAllowControlRequests`). Defaults on; when off, requests are
     /// declined immediately with `.controlRevoked` so the viewer's UI clears.
-    private let controlRequestsAllowed = OSAllocatedUnfairLock<Bool>(initialState: true)
+    private let controlRequestsAllowed = Mutex<Bool>(true)
 
     /// Fires whenever the set of pending control requests changes. Snapshot;
     /// replace the UI list wholesale. Runs on any thread — bounce to MainActor.
-    var onControlRequestsChanged: (@Sendable ([ControlRequestInfo]) -> Void)?
+    public var onControlRequestsChanged: (@Sendable ([ControlRequestInfo]) -> Void)?
     /// Fires whenever the live grant changes (granted, revoked, auto-revoked).
     /// `nil` means nobody holds control now. The `UInt64` is a monotonic
     /// generation captured atomically with the snapshot — consumers that hop
     /// actors before applying it MUST drop notifications whose generation is
     /// below the last one they applied (see `GrantState`).
-    var onControlGrantChanged: (@Sendable (UInt64, ControlGrantInfo?) -> Void)?
+    public var onControlGrantChanged: (@Sendable (UInt64, ControlGrantInfo?) -> Void)?
     /// Fires when a grant is refused because the process lacks the
     /// Accessibility TCC grant `CGEvent` injection needs. AppState surfaces
     /// the prompt + deep-link to Privacy → Accessibility.
-    var onControlAccessibilityRequired: (@Sendable () -> Void)?
+    public var onControlAccessibilityRequired: (@Sendable () -> Void)?
     /// Test-only: fires with every input event that passes the grant gate,
     /// before injection. Lets an E2E test assert the gate admits the grantee's
     /// events and drops non-grantee ones without a real `CGEventPost`.
@@ -248,7 +252,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// the same lifecycle hooks (`registerOrRefresh`, `removeViewer`,
     /// `sweepIdleViewers`, `stop`). `Viewer` is intentionally not Sendable —
     /// `ViewerInfo` is the safe, value-type snapshot.
-    private let viewerInfos = OSAllocatedUnfairLock<[String: ViewerInfo]>(initialState: [:])
+    private let viewerInfos = Mutex<[String: ViewerInfo]>([:])
 
     /// Per-pending-viewer state for the approval gate (see
     /// `requireApproval`). Kept separate from `viewers` so a pending viewer
@@ -261,26 +265,26 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         let audioSSRC: UInt32
         var lastSeenNs: UInt64
     }
-    private let pendingViewers = OSAllocatedUnfairLock<[String: PendingViewer]>(initialState: [:])
+    private let pendingViewers = Mutex<[String: PendingViewer]>([:])
     /// Hard cap on the pending-approval set. A peer that HELLOs while the
     /// gate is on pins server state (and a LocalAPI resolver) until the
     /// sharer answers or the 60 s sweep collects it; without a cap a flood
     /// of spoofed HELLO source addresses could exhaust memory and amplify
     /// LocalAPI traffic. New HELLOs past the cap are dropped (logged once).
-    static let maxPendingViewers = 32
+    public static let maxPendingViewers = 32
     /// One-shot latch so the "pending set full" line logs at most once per
     /// saturation episode instead of on every dropped HELLO.
-    private let pendingCapLogged = OSAllocatedUnfairLock<Bool>(initialState: false)
+    private let pendingCapLogged = Mutex<Bool>(false)
 
     /// Pure pending-cap gate: a HELLO is admitted to the pending set when it
     /// refreshes an existing slot, or when the set is below `cap`. Extracted
     /// so the DoS bound is unit testable.
-    static func canAcceptPending(currentCount: Int, isExisting: Bool, cap: Int = maxPendingViewers) -> Bool {
+    public static func canAcceptPending(currentCount: Int, isExisting: Bool, cap: Int = maxPendingViewers) -> Bool {
         isExisting || currentCount < cap
     }
     /// Public projection of `pendingViewers` — built alongside it in the
     /// same critical sections, surfaced via `onPendingViewersChanged`.
-    private let pendingViewerInfos = OSAllocatedUnfairLock<[String: PendingViewerInfo]>(initialState: [:])
+    private let pendingViewerInfos = Mutex<[String: PendingViewerInfo]>([:])
 
     /// When true, a HELLO from a previously-unseen viewer parks them in
     /// `pendingViewers` and fires `onPendingViewersChanged` instead of
@@ -288,7 +292,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// `denyViewer` to resolve the request. Set via `setRequireApproval`
     /// while a share is live; defaults off so test fixtures and existing
     /// callers see unchanged behavior.
-    private let requireApproval = OSAllocatedUnfairLock<Bool>(initialState: false)
+    private let requireApproval = Mutex<Bool>(false)
     /// Pending viewers go stale eventually too — pruned by the same idle
     /// sweep as connected viewers, using a longer timeout so the sharer
     /// has plausibly enough time to react. Matches the typical macOS
@@ -298,7 +302,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// IP → hostname cache. Filled lazily by the resolve tasks from the
     /// LocalAPI backend status. Avoids re-querying tsnet on every
     /// reconnect / KEEPALIVE storm. Cleared in `stop()`.
-    private let peerNameCache = OSAllocatedUnfairLock<[String: String]>(initialState: [:])
+    private let peerNameCache = Mutex<[String: String]>([:])
     /// IP → StableNodeID cache, filled alongside `peerNameCache`. A cached
     /// ID lets `registerOrRefresh` apply the remembered allow/deny policy
     /// synchronously on a re-HELLO instead of re-parking the peer behind
@@ -311,7 +315,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// rare consent-bypass. Accepted for now (ephemeral-IP churn on a live
     /// share is uncommon and the share is short-lived); a short TTL on cache
     /// entries would close it if it ever bites.
-    private let peerStableIDCache = OSAllocatedUnfairLock<[String: String]>(initialState: [:])
+    private let peerStableIDCache = Mutex<[String: String]>([:])
 
     /// Remembered per-peer policies, keyed by StableNodeID. The server is
     /// `@unchecked Sendable` and must never reach into `UserDefaults` or
@@ -319,7 +323,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// `setAccessPolicies` — at share start and on every store change.
     /// Empty when no policies exist (tests, standalone callers), in which
     /// case every path below degrades to the pre-policy behavior.
-    private let accessPolicies = OSAllocatedUnfairLock<[String: PeerPolicy]>(initialState: [:])
+    private let accessPolicies = Mutex<[String: PeerPolicy]>([:])
 
     /// One-time admit list keyed by peer IP. After the sharer accepts a
     /// named request-to-share (explicit per-peer consent), AppState
@@ -327,7 +331,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// immediately instead of parking behind a second approval prompt.
     /// Consumed on first matching HELLO. A remembered `deny` still outranks
     /// it — a pre-approval never un-blocks a blocked peer.
-    private let preApprovedIPs = OSAllocatedUnfairLock<Set<String>>(initialState: [])
+    private let preApprovedIPs = Mutex<Set<String>>([])
 
     /// Addrs kicked by `expelViewer`, with the expel time. A straggler
     /// KEEPALIVE/PLI from a kicked client (its HELLO_DENY still in flight,
@@ -339,7 +343,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// additionally covered by its remembered-deny policy; the one-time
     /// `disconnectViewer` kick has only this. Entries age out after
     /// `expelledQuietNs` so the map stays bounded.
-    private let expelledAddrs = OSAllocatedUnfairLock<[String: UInt64]>(initialState: [:])
+    private let expelledAddrs = Mutex<[String: UInt64]>([:])
 
     /// How long a kicked addr's KEEPALIVEs are ignored (and re-answered
     /// with denial datagrams) before the entry ages out. Generous vs. the
@@ -354,14 +358,14 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// snapshot so respawns spawn with the ceiling the user last set.
     /// Locked: written from `start()`/`updateQualityCeiling` (MainActor)
     /// and read from `startHelperCapture` and the helper's reader thread.
-    private let sessionQuality = OSAllocatedUnfairLock<QualitySettings>(initialState: .default)
+    private let sessionQuality = Mutex<QualitySettings>(.default)
 
     /// Raw encoder-formula baseline (`w × h × bpp × fpsCap`) anchored on
     /// each parameter-sets emit, *before* the user ceiling is applied.
     /// Kept separate from `baselineBitrate` so raising or removing the
     /// ceiling mid-share can recompute the effective baseline without
     /// waiting for the next encoder reinit.
-    private let anchoredBaselineBitrate = OSAllocatedUnfairLock<Int>(initialState: 0)
+    private let anchoredBaselineBitrate = Mutex<Int>(0)
 
     /// Inputs that produced the current adaptive-bitrate anchor. Parameter
     /// sets — and therefore `onEncoderResolution` — re-emit on *every* IDR
@@ -381,19 +385,19 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         let fpsCap: Int
         var ceilingBps: Int?
     }
-    private let lastAnchorInputs = OSAllocatedUnfairLock<AnchorInputs?>(initialState: nil)
+    private let lastAnchorInputs = Mutex<AnchorInputs?>(nil)
 
     /// Effective adaptive-sweep ceiling: the anchored formula baseline
     /// clamped by the user's bandwidth ceiling. The sweep never raises
     /// above it. Recomputed on every encoder reinit (resolution change)
     /// and on `updateQualityCeiling`.
-    private let baselineBitrate = OSAllocatedUnfairLock<Int>(initialState: 0)
+    private let baselineBitrate = Mutex<Int>(0)
     /// Current applied bitrate. Set equal to baseline at encoder setup,
     /// then cut/raised by the adaptive sweep.
-    private let currentBitrate = OSAllocatedUnfairLock<Int>(initialState: 0)
+    private let currentBitrate = Mutex<Int>(0)
     /// Last time the sweep changed the bitrate. Used for hysteresis so we
     /// don't oscillate.
-    private let lastBitrateChangeNs = OSAllocatedUnfairLock<UInt64>(initialState: 0)
+    private let lastBitrateChangeNs = Mutex<UInt64>(0)
 
     /// Per-viewer video send chain: the tail send `Task` plus a count of
     /// frames queued behind it. Each viewer's frame N+1 awaits only its own
@@ -413,7 +417,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         var droppedFrames: Int = 0
     }
     /// Keyed by viewer addr; pruned to the live viewer set on each broadcast.
-    private let videoSendTails = OSAllocatedUnfairLock<[String: ViewerSendChain]>(initialState: [:])
+    private let videoSendTails = Mutex<[String: ViewerSendChain]>([:])
     /// Drop a viewer's frame once this many are already queued behind a stalled
     /// send, so a viewer that can't keep up sheds frames (UDP video tolerates
     /// loss; a PLI recovers) rather than accumulating unbounded latency/memory.
@@ -429,7 +433,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// prune (that would drop a non-recipient's live chain and break its
     /// order); they're pruned at viewer-removal points instead
     /// (`removeViewer` / `expelViewer` / idle sweep / `stop`).
-    private let audioSendTails = OSAllocatedUnfairLock<[String: ViewerSendChain]>(initialState: [:])
+    private let audioSendTails = Mutex<[String: ViewerSendChain]>([:])
     /// Drop a viewer's audio packet once this many are already queued behind
     /// a stalled send (drop-newest, matching video). ~0.5 s at one AU/21.3 ms.
     private static let maxQueuedAudioPacketsPerViewer = TransportTuning.maxQueuedAudioPacketsPerViewer
@@ -446,8 +450,11 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// — both are defined in `TransportTuning` to keep them coupled.
     private let viewerIdleTimeoutNs = TransportTuning.viewerIdleTimeoutNs
 
-    var onCaptureStopped: ((Error?) -> Void)?
-    var onPreviewImage: ((NSImage) -> Void)?
+    public var onCaptureStopped: ((Error?) -> Void)?
+    /// A preview thumbnail for the sharer's own UI, as the capture backend's
+    /// **encoded bytes** (JPEG from the macOS helper). Kept opaque so this
+    /// tier needs no image type; the host decodes at the point of display.
+    public var onPreviewImage: ((Data) -> Void)?
 
     /// JSON-encoded `PickerSelection` describing what the user picked —
     /// set by `start()` and replaced by the most recent `changeSource`.
@@ -458,12 +465,26 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// Locked: written from `start()` and the nonisolated-async
     /// `changeSource`, read inside the detached restart tasks — cross-thread
     /// like the class's other locked mutables.
-    private let lastFilterData = OSAllocatedUnfairLock<Data?>(initialState: nil)
+    private let lastFilterData = Mutex<Data?>(nil)
 
-    /// Helper-process wrapper. Owns the child Tailscreen process
-    /// running `--capture-helper`, which holds the SCStream and
-    /// VideoEncoder.
-    private var helperCapture: HelperScreenCapture?
+    /// The live capture+encode backend for this share, built by
+    /// ``captureFactory`` at share start and rebuilt on every restart. On
+    /// macOS this is the wrapper around the `--capture-helper` child process
+    /// (which holds the SCStream and VideoToolbox session); the field is
+    /// still named `helperCapture` because every restart/watchdog path around
+    /// it is written in those terms.
+    private var helperCapture: (any CaptureEncoding)?
+
+    /// Builds a fresh capture backend per share and per restart. `nil` means
+    /// this host has no capture backend wired — the headless mode the
+    /// network/audio tests use (`filterData: nil`), and the state a
+    /// viewer-only build would sit in.
+    ///
+    /// A *factory* rather than an instance because restart semantics require
+    /// a brand-new backend each time: on macOS, process death is the only
+    /// thing that reliably clears `replayd`'s per-bundle slot, so reusing one
+    /// object across restarts would defeat the entire helper architecture.
+    private let captureFactory: (@Sendable () -> any CaptureEncoding)?
 
     /// Codec the helper's encoder is producing. Set when the helper
     /// sends its first parameter-sets blob; consumed by `broadcast()`
@@ -478,7 +499,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// on a black screen forever; falling the *whole* share back to H.264 is
     /// the safe recovery. Locked: read in `startHelperCapture` on the
     /// cooperative pool, written from the control-receive loop.
-    private let forceH264 = OSAllocatedUnfairLock<Bool>(initialState: false)
+    private let forceH264 = Mutex<Bool>(false)
 
     /// Latched on when a viewer reports (via PROFILE_NO) that it can decode
     /// the codec but not its bit depth — a 10-bit HEVC Main 10 stream reaching
@@ -487,7 +508,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// capture-helper pins its `ColorInfo` to 8-bit (staying on HEVC). A
     /// lighter fallback than `forceH264`: we keep HEVC's efficiency, just drop
     /// the extra two bits. Locked for the same reason as `forceH264`.
-    private let force8bit = OSAllocatedUnfairLock<Bool>(initialState: false)
+    private let force8bit = Mutex<Bool>(false)
 
     /// Whether the sharer is sharing system/computer audio to viewers. Gates
     /// *emission* in the helper (the audio SCStream output is always configured
@@ -495,7 +516,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// MainActor via `setShareSystemAudio`, read in `startHelperCapture` to
     /// re-send the latch after each (re)spawn — mirrors the `forceH264` pattern
     /// so helper restarts preserve the toggle.
-    private let shareSystemAudio = OSAllocatedUnfairLock<Bool>(initialState: false)
+    private let shareSystemAudio = Mutex<Bool>(false)
 
     /// Packetizes helper-produced system-audio AUs into RTP with the reserved
     /// system SSRC + PT 99. Not thread-safe; the helper's reader thread is the
@@ -523,39 +544,50 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// addr so it survives the pending→approve promotion. Governs whether the
     /// server sends an extended HELLO_ACK, records retransmit ranges for it,
     /// and pings it for RTT. Empty (legacy 1-byte HELLO) keeps the PLI path.
-    private let viewerCaps = OSAllocatedUnfairLock<[String: ScreenShareCaps]>(initialState: [:])
+    private let viewerCaps = Mutex<[String: ScreenShareCaps]>([:])
 
-    /// What the server supports and advertises back to cap-aware viewers.
-    /// `.remoteControl` advertises that this build/platform can inject viewer
-    /// input at all (always true on macOS — the CGEvent injector exists), so
-    /// the viewer offers its Request Control affordance. Runtime gates (the
-    /// "Allow control requests" toggle, the Accessibility grant) still decline
-    /// a live request with `.controlRevoked`; this bit is only the static
-    /// "is the feature present here" signal.
-    private static let serverCaps: ScreenShareCaps = [.nack, .receiverReport, .fec, .remoteControl, .annotations]
+    /// Transport capabilities every build advertises back to cap-aware
+    /// viewers. Platform-independent: all three ride the portable
+    /// loss-recovery core.
+    private static let baseServerCaps: ScreenShareCaps = [.nack, .receiverReport, .fec, .annotations]
+
+    /// What *this* server advertises. `.remoteControl` is added only when the
+    /// host supplied an ``InputInjecting`` backend — the bit means "this
+    /// build/platform can inject viewer input at all", so the viewer offers
+    /// its Request Control affordance. Runtime gates (the "Allow control
+    /// requests" toggle, the platform permission) still decline a live
+    /// request with `.controlRevoked`; this bit is only the static "is the
+    /// feature present here" signal.
+    ///
+    /// On macOS the injector is always supplied, so this is the same set the
+    /// mac-only server hard-coded. A host without injection now correctly
+    /// omits the bit instead of advertising a capability it can't honour.
+    private var serverCaps: ScreenShareCaps {
+        remoteControlInjector == nil ? Self.baseServerCaps : Self.baseServerCaps.union(.remoteControl)
+    }
 
     /// Adaptive FEC state (group size + off-gate hysteresis), stepped once
     /// per sweep window by `fecSweepDecision`. `groupSize == 0` means FEC
     /// is off (clean links pay zero overhead). Locked: written by the sweep,
     /// read by `broadcast` and `applyAdaptiveBitrate`.
-    private let fecState = OSAllocatedUnfairLock<FECState>(initialState: FECState())
+    private let fecState = Mutex<FECState>(FECState())
 
     /// Viewers currently gated for parity delivery: `.fec`-negotiated AND
     /// their own decayed loss/RTT pass the on-gate this window. Per-viewer so
     /// a clean-link viewer pays zero overhead even mid-share with a lossy
     /// peer — the same isolate-don't-globalize stance as `congestionInputs`.
     /// Rebuilt by every sweep; read by `broadcast`.
-    private let fecGatedAddrs = OSAllocatedUnfairLock<Set<String>>(initialState: [])
+    private let fecGatedAddrs = Mutex<Set<String>>([])
 
     /// Current capture frame-rate tier (60 / 30 / 15), the second congestion
     /// lever below the bitrate floor. Seeded from the session fps cap at
     /// `start()`; stepped by the adaptive sweep's `nextCongestionDecision`.
-    private let currentFpsTier = OSAllocatedUnfairLock<Int>(initialState: 60)
+    private let currentFpsTier = Mutex<Int>(60)
 
     /// Total non-timeout receive-loop errors survived this session. Feeds
     /// the give-up log line and `stop()`'s summary. Locked: bumped from the
     /// receive task, read from `stop()`.
-    private let receiveLoopErrorTotal = OSAllocatedUnfairLock<Int>(initialState: 0)
+    private let receiveLoopErrorTotal = Mutex<Int>(0)
 
     /// Sliding-window restart counter for helper-process crashes.
     /// Each unexpected exit pushes its timestamp; we tolerate up to
@@ -564,13 +596,13 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// it's mutated from the helper's `terminationHandler` queue *and*
     /// the restart `Task` on the cooperative pool — concurrent
     /// `append`/`removeAll` on a bare `Array` is heap corruption.
-    private let helperCrashTimestampsNs = OSAllocatedUnfairLock<[UInt64]>(initialState: [])
+    private let helperCrashTimestampsNs = Mutex<[UInt64]>([])
 
     /// Uptime-ns of the last message received from the capture helper — AUs,
     /// params, logs, or the ~1 Hz heartbeat. The hung-helper watchdog compares
     /// `now` against this. Seeded to "now" when a helper spawns so SCStream
     /// bring-up gets a full grace window; 0 means no helper is running.
-    private let lastHelperActivityNs = OSAllocatedUnfairLock<UInt64>(initialState: 0)
+    private let lastHelperActivityNs = Mutex<UInt64>(0)
     /// If the helper emits nothing for this long while a share is live, the
     /// watchdog assumes capture wedged — SCStream stopped delivering without
     /// the process exiting, which process-death detection can't catch — and
@@ -600,28 +632,28 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// nulled out `helperCapture`, leaving an orphaned child process
     /// holding replayd's slot — visible as the macOS screen-recording
     /// badge stuck on after the user clicked Stop Sharing.
-    private let restartTask = OSAllocatedUnfairLock<Task<Error?, Never>?>(initialState: nil)
+    private let restartTask = Mutex<Task<Error?, Never>?>(nil)
 
     /// Fires when a viewer sends an annotation op over the back-channel.
     /// AppState routes these into the sharer's overlay window; the drawings
     /// get captured into the video stream and distributed to every viewer.
-    var onAnnotationReceived: ((AnnotationOp) -> Void)?
+    public var onAnnotationReceived: ((AnnotationOp) -> Void)?
 
     /// Fires whenever the connected-viewer set changes — join, BYE, idle
     /// timeout, hostname resolved, or `stop()`. The argument is a snapshot
     /// of the current roster; replace the UI's list wholesale rather than
     /// diffing. Callback may run on any thread; bounce to `@MainActor`.
-    var onViewersChanged: (@Sendable ([ViewerInfo]) -> Void)?
+    public var onViewersChanged: (@Sendable ([ViewerInfo]) -> Void)?
 
     /// Fires whenever the pending-approval set changes — new HELLO under
     /// `requireApproval`, `approveViewer` / `denyViewer`, idle sweep, or
     /// `stop()`. Same shape and bounce rules as `onViewersChanged`.
-    var onPendingViewersChanged: (@Sendable ([PendingViewerInfo]) -> Void)?
+    public var onPendingViewersChanged: (@Sendable ([PendingViewerInfo]) -> Void)?
 
     /// Fires on every inbound audio RTP packet from any viewer. AppState
     /// pipes these into the local VoiceChannel so the sharer can hear
     /// viewers.
-    var onAudioReceived: ((Data) -> Void)?
+    public var onAudioReceived: ((Data) -> Void)?
 
     /// Test-only: fires with the viewer's address each time a PLI is recorded.
     /// In production, a PLI also triggers `helperCapture?.requestKeyframe()`,
@@ -648,10 +680,28 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// browser when tsnet emits a `BrowseToURL`. Without something listening
     /// before `up()`, the call blocks indefinitely waiting on a login the
     /// user can't see.
-    var nodeReadyBeforeUp: (@Sendable (TailscaleNode) async -> Void)?
+    public var nodeReadyBeforeUp: (@Sendable (TailscaleNode) async -> Void)?
 
-    init(port: UInt16 = NetworkConfig.tailscreenPort) {
+    /// - Parameters:
+    ///   - captureFactory: builds a fresh capture+encode backend for each
+    ///     share and each restart. `nil` runs the server headless — no video
+    ///     is produced, but admission, the audio relay, and the control plane
+    ///     all work, which is exactly the mode the network tests use.
+    ///   - inputInjector: the host's remote-control injector, or `nil` if this
+    ///     host can't inject. Supplying one is what adds `.remoteControl` to
+    ///     the advertised ``ScreenShareCaps``.
+    /// Both backends are required arguments with no defaults, deliberately: a
+    /// host must *say* it has no capture or no injection rather than get that
+    /// by omission, and it keeps `TailscaleScreenShareServer()` unambiguous
+    /// for the platform convenience initializers that wire real backends in.
+    public init(
+        port: UInt16 = NetworkConfig.tailscreenPort,
+        captureFactory: (@Sendable () -> any CaptureEncoding)?,
+        inputInjector: (any InputInjecting)?
+    ) {
         self.port = port
+        self.captureFactory = captureFactory
+        self.remoteControlInjector = inputInjector
         self.logger = TSLogger()
         self.rtpTimestampOriginNs = DispatchTime.now().uptimeNanoseconds
     }
@@ -662,7 +712,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// don't want the capture-helper subprocess to spawn — production
     /// callers always pass a real selection. `quality` is snapshotted
     /// for the whole share session (see `sessionQuality`).
-    func start(
+    public func start(
         hostname: String = "tailscreen-server",
         authKey: String? = nil,
         path: String? = nil,
@@ -769,7 +819,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         Task { [weak self] in await self?.adaptiveBitrateSweep() }
 
         lastFilterData.withLock { $0 = filterData }
-        remoteControlInjector.setSelection(decodedSelection())
+        remoteControlInjector?.setSelection(decodedSelection())
         if let filterData {
             try startHelperCapture(filterData: filterData)
         } else {
@@ -778,7 +828,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     }
 
     /// What to do about a helper process that exited without being asked to.
-    enum HelperExitDisposition: Equatable {
+    public enum HelperExitDisposition: Equatable {
         /// replayd refused the capture slot (another same-bundle process
         /// already holds one). Respawning hits the exact same wall — bail
         /// straight to teardown instead of burning the crash budget.
@@ -799,7 +849,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// first SCStream startup is replayd refusing the slot; `permanent:` is
     /// the helper's own non-retryable marker. Extracted from
     /// `onUnexpectedExit` so the routing is unit testable.
-    static func classifyHelperExit(reason: String) -> HelperExitDisposition {
+    public static func classifyHelperExit(reason: String) -> HelperExitDisposition {
         if reason.contains("-3805") || reason.localizedCaseInsensitiveContains("being interrupted") {
             return .slotRefused
         }
@@ -814,14 +864,14 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
 
     /// Crash budget: give up after this many helper exits inside the sliding
     /// window (see `slidingWindowCrashCount`).
-    static let maxHelperCrashesPerWindow = TransportTuning.maxHelperCrashesPerWindow
+    public static let maxHelperCrashesPerWindow = TransportTuning.maxHelperCrashesPerWindow
 
     /// Pure sliding-window crash accounting: prune timestamps older than
     /// `windowNs`, record `nowNs`, and return how many crashes the window now
     /// holds (including this one). The caller gives up once the result
     /// exceeds `maxHelperCrashesPerWindow`. Extracted from `onUnexpectedExit`
     /// so the budget math is unit testable.
-    static func slidingWindowCrashCount(
+    public static func slidingWindowCrashCount(
         _ stamps: inout [UInt64],
         appending nowNs: UInt64,
         windowNs: UInt64 = TransportTuning.helperCrashWindowNs
@@ -832,7 +882,8 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     }
 
     private func startHelperCapture(filterData: Data) throws {
-        let helper = HelperScreenCapture()
+        guard let captureFactory else { throw ScreenShareServerError.noCaptureBackend }
+        let helper = captureFactory()
         // Fresh helper ⇒ fresh anchor state: its encoder starts back at the
         // formula/ceiling bitrate, so the first parameter-sets emit must
         // re-anchor even if the resolution/codec are unchanged from the
@@ -884,8 +935,8 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
                 return true
             }
             guard changed else { return }
-            let bpp = VideoEncoder.defaultBitsPerPixel(for: codec)
-            let anchor = VideoEncoder.computeBitrate(
+            let bpp = EncoderTuning.defaultBitsPerPixel(for: codec)
+            let anchor = EncoderTuning.computeBitrate(
                 width: width, height: height, fps: quality.fpsCap, bitsPerPixel: bpp)
             self.anchoredBaselineBitrate.withLock { $0 = anchor }
             let baseline = min(anchor, quality.maxBitrateBps ?? anchor)
@@ -893,7 +944,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             self.currentBitrate.withLock { $0 = baseline }
             self.lastBitrateChangeNs.withLock { $0 = DispatchTime.now().uptimeNanoseconds }
             self.logger.log(
-                "HelperScreenCapture: anchored baseline bitrate \(baseline / 1000) kbps for "
+                "CaptureEncoding: anchored baseline bitrate \(baseline / 1000) kbps for "
                     + "\(width)x\(height) \(codec) @\(quality.fpsCap)fps"
             )
         }
@@ -901,14 +952,14 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             self?.onPreviewImage?(image)
         }
         helper.onUserStopped = { [weak self] in
-            self?.logger.log("HelperScreenCapture: user stopped via Control Center")
+            self?.logger.log("CaptureEncoding: user stopped capture out-of-app")
             self?.helperCapture = nil
-            // Surface a userStopped SCStreamError so AppState's
+            // Surface a userStopped error so the host's
             // `isUserInitiatedCaptureStop` branch tears the share
             // down quietly instead of trying to recover.
             let err = NSError(
-                domain: SCStreamError.errorDomain,
-                code: SCStreamError.Code.userStopped.rawValue,
+                domain: Self.userStoppedErrorDomain,
+                code: 1,
                 userInfo: [NSLocalizedDescriptionKey: "User stopped capture"]
             )
             self?.onCaptureStopped?(err)
@@ -993,7 +1044,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             qualityEnv["TAILSCREEN_FORCE_8BIT"] = "1"
         }
         try helper.start(
-            filterData: filterData, forceH264: forceH264.withLock { $0 }, qualityEnv: qualityEnv)
+            selectionData: filterData, forceH264: forceH264.withLock { $0 }, qualityEnv: qualityEnv)
         helperCapture = helper
         // Re-send the system-audio emission latch after every (re)spawn so a
         // helper restart preserves the toggle (mirrors the forceH264 handling).
@@ -1030,7 +1081,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// exhausted (or for any other externally-observed stream
     /// death). It resets the crash budget so the user gets a fresh
     /// run of auto-restarts.
-    func restartCapture() async throws {
+    public func restartCapture() async throws {
         guard isRunning else { return }
         if let result = await scheduleHelperRestart(resetCrashBudget: true).value {
             throw result
@@ -1061,12 +1112,12 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// didn't change with the source) and `parameterSets` / `helperCodec`
     /// are left in place — the fresh helper overwrites them, in order,
     /// before its first encoded AU broadcasts.
-    func changeSource(filterData: Data) async throws -> Bool {
+    public func changeSource(filterData: Data) async throws -> Bool {
         guard isRunning else { return false }
         lastFilterData.withLock { $0 = filterData }
         // Keep the injector's coordinate mapping in step with the new source
         // so a live control grant keeps landing events on the right region.
-        remoteControlInjector.setSelection(decodedSelection())
+        remoteControlInjector?.setSelection(decodedSelection())
         // Schedule directly (rather than via `restartCapture()`) so a stop
         // racing this call surfaces as the restart task's CancellationError
         // instead of silently succeeding past restartCapture's own guard.
@@ -1168,7 +1219,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
 
     /// Log a dropped (ungated) annotation at most once per share so a peer
     /// spamming the back-channel can't flood the log.
-    private let droppedAnnotationLogged = OSAllocatedUnfairLock<Bool>(initialState: false)
+    private let droppedAnnotationLogged = Mutex<Bool>(false)
     private func logDroppedAnnotation(peerAddress: String?) {
         let firstTime = droppedAnnotationLogged.withLock { logged -> Bool in
             if logged { return false }
@@ -1237,7 +1288,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// Deny a pending control request (sharer clicked Deny): drop it and tell
     /// the requester via `.controlRevoked` so its UI leaves the "requested"
     /// state. No-op for an unknown connection.
-    func declineControlRequest(connectionID: UUID) {
+    public func declineControlRequest(connectionID: UUID) {
         let existed = controlRequests.withLock { $0.removeValue(forKey: connectionID) != nil }
         guard existed else { return }
         notifyControlRequestsChanged()
@@ -1251,13 +1302,14 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// installing a grant that `CGEventPost` would silently ignore. Granting
     /// implicitly revokes any previous grantee (single-holder invariant).
     @discardableResult
-    func grantControl(toConnectionID connectionID: UUID) -> Bool {
+    public func grantControl(toConnectionID connectionID: UUID) -> Bool {
         guard isRunning else { return false }
-        guard grantBypassesAccessibilityForTesting || remoteControlInjector.isTrusted() else {
-            // Trigger the native Accessibility prompt and surface the in-app
-            // alert + deep-link, rather than installing a grant CGEventPost
-            // would silently ignore.
-            remoteControlInjector.promptForAccess()
+        guard grantBypassesAccessibilityForTesting || (remoteControlInjector?.isTrusted() ?? false) else {
+            // No injector at all on this host (or permission missing): trigger
+            // the platform's permission prompt and surface the in-app alert +
+            // deep-link, rather than installing a grant that injection would
+            // silently ignore.
+            remoteControlInjector?.promptForAccess()
             onControlAccessibilityRequired?()
             return false
         }
@@ -1284,7 +1336,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         // from the previous grantee) and an armed injector (mapping set, gate
         // open, queue cleared).
         inputRateLimiter.withLock { $0 = EventRateLimiter() }
-        remoteControlInjector.activate(selection: decodedSelection())
+        remoteControlInjector?.activate(selection: decodedSelection())
         Task { [weak self] in
             await self?.controlListener?.send(.controlGranted, to: connectionID)
         }
@@ -1296,7 +1348,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// Revoke the live grant (if any): tell the grantee, drop any queued
     /// input, and clear the sharer UI. `reason` is a short English tag for
     /// logs — the viewer shows its own localized message.
-    func revokeControl(reason: String) {
+    public func revokeControl(reason: String) {
         let previous = controlGrant.withLock { state -> ControlGrant? in
             let value = state.grant
             if value != nil {
@@ -1306,7 +1358,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             return value
         }
         guard let previous else { return }
-        remoteControlInjector.deactivate()
+        remoteControlInjector?.deactivate()
         sendControlRevoked(to: previous.connectionID, reason: reason)
         logger.log("Revoked remote control from \(previous.viewerIP) (\(reason))")
         notifyControlGrantChanged()
@@ -1429,7 +1481,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             let allowed = self.inputRateLimiter.withLock { $0.allow(nowNs: nowNs) }
             guard allowed else { return }
             self.onInputEventForTesting?(event)
-            self.remoteControlInjector.apply(event)
+            self.remoteControlInjector?.apply(event)
         }
         listener.onControlReleased = { [weak self] connectionID in
             guard let self else { return }
@@ -1481,7 +1533,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// (to avoid echoing a viewer's stroke back to them). Used both for
     /// sharer-painted strokes (no exclusion — sharer has no annotation
     /// connection) and viewer-to-viewer fan-out (exclude the source).
-    func broadcastAnnotation(_ op: AnnotationOp, excludingConnection: UUID? = nil) async {
+    public func broadcastAnnotation(_ op: AnnotationOp, excludingConnection: UUID? = nil) async {
         // A `.clearAll` wipes every stroke on every canvas — regardless of
         // who originated it (the server's own "Change Source…" broadcast,
         // the sharer's Clear All, or a viewer's fanned-out op). Retire every
@@ -1523,7 +1575,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// this domain as non-recoverable: respawning the capture helper can't
     /// fix a socket loop that can no longer read, so it goes straight to
     /// `stopSharing` instead of the capture-restart path.
-    static let receiveLoopErrorDomain = "Tailscreen.ReceiveLoop"
+    public static let receiveLoopErrorDomain = "Tailscreen.ReceiveLoop"
 
     /// `NSError` domain marking a helper failure the server has classified as
     /// non-retryable (`classifyHelperExit` → `.slotRefused` / `.permanent`).
@@ -1533,7 +1585,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// dies, the server hands AppState a `.permanent` error, AppState restarts,
     /// the fresh helper can't resolve the gone window and dies again — while
     /// the menubar stays "sharing" and viewers are never torn down.
-    static let helperUnrecoverableErrorDomain = "Tailscreen.HelperUnrecoverable"
+    public static let helperUnrecoverableErrorDomain = "Tailscreen.HelperUnrecoverable"
 
     /// `NSError` domain marking the one *expected* non-retryable helper exit:
     /// the captured window / display / app was closed (`classifyHelperExit`
@@ -1541,7 +1593,18 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// `helperUnrecoverableErrorDomain`, but reports it as a gentle notice
     /// ("the shared window closed") rather than a scary error alert — the user
     /// closed the window on purpose.
-    static let helperSourceGoneErrorDomain = "Tailscreen.HelperSourceGone"
+    public static let helperSourceGoneErrorDomain = "Tailscreen.HelperSourceGone"
+
+    /// `NSError` domain marking capture stopped by the user through a
+    /// *platform* affordance outside the app — macOS Control Center's Stop
+    /// button, a portal revoking the ScreenCast session. The host tears the
+    /// share down quietly rather than treating it as a failure.
+    ///
+    /// This used to be signalled with `SCStreamError.userStopped`, which is
+    /// the only reason this file needed ScreenCaptureKit at all; naming the
+    /// domain ourselves keeps the classification identical while letting a
+    /// non-Apple backend raise the same condition.
+    public static let userStoppedErrorDomain = "Tailscreen.CaptureUserStopped"
 
     /// Error surfaced through `onCaptureStopped` when the control-receive
     /// loop gives up — `ReceiveLoopPolicy.maxConsecutiveErrors` in a row, or
@@ -1719,7 +1782,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         if caps.isEmpty {
             return ScreenShareControlMessage.encodeHelloAck(ssrc: ssrc)
         }
-        return ScreenShareControlMessage.encodeHelloAck(ssrc: ssrc, caps: Self.serverCaps)
+        return ScreenShareControlMessage.encodeHelloAck(ssrc: ssrc, caps: serverCaps)
     }
 
     /// Serve a viewer NACK from the retransmit ring, subject to the per-viewer
@@ -1901,7 +1964,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// another viewer's audio by stuffing its SSRC into the RTP header. On
     /// success, returns every *other* viewer as a relay recipient. Extracted
     /// from `handleInboundAudioRTP` so the anti-spoof gate is unit testable.
-    static func audioRelayDecision(
+    public static func audioRelayDecision(
         viewerAudioSSRCs: [String: UInt32],
         sender: String,
         headerSSRC: UInt32
@@ -1916,7 +1979,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// fewer than `cap` are already queued behind a stalled send (drop-newest
     /// past the cap). Extracted so the drop policy — shared by the video and
     /// audio chains — is unit testable.
-    static func shouldEnqueue(queued: Int, cap: Int) -> Bool {
+    public static func shouldEnqueue(queued: Int, cap: Int) -> Bool {
         queued < cap
     }
 
@@ -1974,7 +2037,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// Pure PLI-ring append: add `timestampNs` and drop the oldest entries
     /// once the ring exceeds `cap`. Extracted from `recordPLI` so the
     /// bounded-growth invariant is unit testable.
-    static func appendingPLI(_ ring: [UInt64], timestampNs: UInt64, cap: Int = 32) -> [UInt64] {
+    public static func appendingPLI(_ ring: [UInt64], timestampNs: UInt64, cap: Int = 32) -> [UInt64] {
         var out = ring
         out.append(timestampNs)
         if out.count > cap {
@@ -1986,7 +2049,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// Per-viewer loss attribution: is loss this window isolated to one
     /// viewer (whose link we can throttle without touching the shared
     /// encoder) or widespread (everyone's suffering — cut the global rate)?
-    enum LossVerdict: Equatable {
+    public enum LossVerdict: Equatable {
         /// No viewer over the loss threshold.
         case healthy
         /// Exactly one viewer over threshold, every OTHER viewer perfectly
@@ -2004,7 +2067,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// (with a single viewer there is no "everyone else", so it stays
     /// `.widespread` — identical to today's behavior). Extracted so the
     /// precedence is unit testable, same pattern as `audioRelayDecision`.
-    static func lossAttribution(pliCounts: [String: Int], lossThreshold: Int = 2) -> LossVerdict {
+    public static func lossAttribution(pliCounts: [String: Int], lossThreshold: Int = 2) -> LossVerdict {
         let worst = pliCounts.values.max() ?? 0
         guard worst > lossThreshold else { return .healthy }
         let over = pliCounts.filter { $0.value > lossThreshold }
@@ -2020,9 +2083,9 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// Output of `fairnessDecision`: which viewers to keep in keyframe-only
     /// mode this window, and the PLI count (worst over the NON-throttled
     /// viewers) to feed the global `nextAdaptiveBitrate`.
-    struct FairnessDecision: Equatable {
-        var throttle: [String]  // sorted for determinism
-        var globalBitrateInput: Int
+    public struct FairnessDecision: Equatable {
+        public var throttle: [String]  // sorted for determinism
+        public var globalBitrateInput: Int
     }
 
     /// Pure fairness decision layered over `lossAttribution`. An `.isolated`
@@ -2036,7 +2099,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// *non-throttled* viewers, which for a `.widespread` verdict with nobody
     /// throttled equals the true max (today's path, so `AdaptiveBitrateTests`
     /// stay valid).
-    static func fairnessDecision(
+    public static func fairnessDecision(
         pliCounts: [String: Int],
         currentlyThrottled: Set<String>,
         lossThreshold: Int = 2
@@ -2056,7 +2119,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// keyframe-only slideshow. Crucially the caller advances `nextSequence`
     /// only when this returns true, so the throttled viewer sees a contiguous
     /// stream, not a perceived-loss gap that would provoke a PLI storm.
-    static func shouldSendFrame(isKeyframe: Bool, throttledUntilNs: UInt64, nowNs: UInt64) -> Bool {
+    public static func shouldSendFrame(isKeyframe: Bool, throttledUntilNs: UInt64, nowNs: UInt64) -> Bool {
         if isKeyframe { return true }
         return nowNs >= throttledUntilNs
     }
@@ -2079,7 +2142,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     }
 
     /// What to do with a not-yet-connected viewer's HELLO.
-    enum Admission: Equatable {
+    public enum Admission: Equatable {
         /// Join the fan-out set immediately (remembered allow, or gate off).
         case admit
         /// Park in `pendingViewers` awaiting the sharer's Accept / Deny.
@@ -2094,7 +2157,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// gate when it's on. Extracted so the precedence
     /// (blocklist > allowlist > gate) is unit testable — same pattern as
     /// `audioRelayDecision`.
-    static func admissionDecision(policy: PeerPolicy?, requireApproval: Bool) -> Admission {
+    public static func admissionDecision(policy: PeerPolicy?, requireApproval: Bool) -> Admission {
         switch policy {
         case .deny:
             return .reject
@@ -2111,7 +2174,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// a policy and are admitted — the post-resolution deny check in
     /// `applyResolvedIdentity` still expels them if they turn out to be
     /// blocked. Results are sorted for determinism.
-    static func drainDecision(
+    public static func drainDecision(
         pendingStableIDs: [String: String?],
         policies: [String: PeerPolicy]
     ) -> (approve: [String], deny: [String]) {
@@ -2134,7 +2197,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// already-connected peer expels it instead of only blocking future
     /// HELLOs. Unresolved (`nil`) StableNodeIDs can't match a policy and
     /// are left alone. Sorted for determinism.
-    static func connectedDenyList(
+    public static func connectedDenyList(
         viewerStableIDs: [String: String?],
         policies: [String: PeerPolicy]
     ) -> [String] {
@@ -2312,7 +2375,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// user flips the "Require approval for new viewers" toggle; safe to
     /// call before, during, or after `start()`. Turning the toggle off
     /// auto-approves anyone currently waiting.
-    func setRequireApproval(_ enabled: Bool) {
+    public func setRequireApproval(_ enabled: Bool) {
         let prev = requireApproval.withLock { existing -> Bool in
             let p = existing
             existing = enabled
@@ -2344,7 +2407,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// any thread. Re-evaluates viewers already parked pending whose
     /// StableNodeID has resolved, so an "Always allow" / "Deny & block"
     /// issued while someone is waiting acts on them immediately.
-    func setAccessPolicies(_ policies: [String: PeerPolicy]) {
+    public func setAccessPolicies(_ policies: [String: PeerPolicy]) {
         accessPolicies.withLock { $0 = policies }
         let resolved = pendingViewerInfos.withLock { state in
             state.compactMap { (addr, info) in info.stableID.map { (addr, $0) } }
@@ -2369,7 +2432,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// remembered `deny` (a blocked peer stays blocked). Called after the
     /// sharer accepts that peer's request-to-share, so their connect doesn't
     /// hit a second consent prompt.
-    func preApproveViewer(ip: String) {
+    public func preApproveViewer(ip: String) {
         preApprovedIPs.withLock { _ = $0.insert(ip) }
     }
 
@@ -2420,7 +2483,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// we suppressed at HELLO time, force a keyframe, and surface them
     /// in the connected-viewer roster. Safe to call for a viewer who's
     /// already approved (no-op).
-    func approveViewer(addr: String) {
+    public func approveViewer(addr: String) {
         let now = DispatchTime.now().uptimeNanoseconds
         let pending = pendingViewers.withLock { state -> PendingViewer? in
             state.removeValue(forKey: addr)
@@ -2459,7 +2522,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// down immediately (and can tell "declined" from "sharer stopped"),
     /// and drop them from the pending set. Safe to call for an unknown
     /// addr (no-op).
-    func denyViewer(addr: String) {
+    public func denyViewer(addr: String) {
         let existed = pendingViewers.withLock { state -> Bool in
             state.removeValue(forKey: addr) != nil
         }
@@ -2476,7 +2539,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// next HELLO goes back through the normal admission gate (approval
     /// prompt, or straight in with the gate off). Safe to call for an
     /// unknown addr (no-op).
-    func disconnectViewer(addr: String) {
+    public func disconnectViewer(addr: String) {
         expelViewer(addr: addr, reason: "disconnected by sharer")
     }
 
@@ -2633,7 +2696,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// missed: the runner re-loops whenever the generation advanced during a
     /// pass (a genuinely-unresolvable peer doesn't bump it, so it can't spin).
     private let resolveGeneration =
-        OSAllocatedUnfairLock<(running: Bool, requested: UInt64)>(initialState: (false, 0))
+        Mutex<(running: Bool, requested: UInt64)>((false, 0))
 
     private func cachePeer(ip: String, hostname: String?, stableID: String?) {
         if let hostname, !hostname.isEmpty {
@@ -2807,7 +2870,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// straggler KEEPALIVEs must be answered with denial, not re-run
     /// through the admission gate). Extracted from `registerOrRefresh` so
     /// the window math is unit testable.
-    static func expelledQuietDecision(
+    public static func expelledQuietDecision(
         expelledAtNs: [String: UInt64], addr: String, nowNs: UInt64, quietNs: UInt64
     ) -> (remaining: [String: UInt64], isQuieted: Bool) {
         let remaining = expelledAtNs.filter { nowNs &- $0.value <= quietNs }
@@ -2818,7 +2881,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// than `timeoutNs` as of `nowNs`? Shared by the connected-viewer and
     /// pending-viewer sweeps (which differ only in their timeout). Extracted
     /// from `sweepIdleViewers` so the timeout math is unit testable.
-    static func staleAddrs(
+    public static func staleAddrs(
         lastSeenNs: [String: UInt64], nowNs: UInt64, timeoutNs: UInt64
     ) -> [String] {
         lastSeenNs.filter { nowNs &- $0.value > timeoutNs }.map(\.key)
@@ -2828,7 +2891,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// produced *something* before (`lastActivityNs != 0` — 0 means no helper
     /// yet) but nothing within `timeoutNs`. Extracted from the watchdog in
     /// `sweepIdleViewers` so the liveness math is unit testable.
-    static func helperLooksHung(
+    public static func helperLooksHung(
         lastActivityNs: UInt64, nowNs: UInt64, timeoutNs: UInt64
     ) -> Bool {
         lastActivityNs != 0 && nowNs &- lastActivityNs > timeoutNs
@@ -3176,7 +3239,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// fast and recovery slow. A `current` above `baseline` clamps straight
     /// down to it with no hysteresis (see below). Extracted from the sweep so
     /// the math is unit testable without a live encoder.
-    static func nextAdaptiveBitrate(
+    public static func nextAdaptiveBitrate(
         worstPLIs: Int,
         current: Int,
         baseline: Int,
@@ -3208,37 +3271,37 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// one place. Legacy viewers contribute only `pliCount` (their RR fraction
     /// is 0 and they never NACK), so a PLI-only session degrades to exactly the
     /// `nextAdaptiveBitrate` behavior `AdaptiveBitrateTests` pins.
-    struct CongestionInputs: Equatable {
+    public struct CongestionInputs: Equatable {
         /// Worst per-viewer RR "fraction lost" this window, Q8 (0…255).
-        var lossFractionQ8: Int
+        public var lossFractionQ8: Int
         /// Worst non-throttled per-viewer PLI count this window (legacy signal).
-        var pliCount: Int
+        public var pliCount: Int
         /// Retransmits served this window. NACK-recovered loss is cheap (one
         /// packet, not a keyframe), so it weighs half a PLI in the cut decision.
-        var nackServed: Int
-        var current: Int
-        var baseline: Int
+        public var nackServed: Int
+        public var current: Int
+        public var baseline: Int
         /// Current capture frame-rate tier (60 / 30 / 15).
-        var fpsTier: Int
+        public var fpsTier: Int
         /// Session fps cap (from `QualitySettings.fpsCap`). The fps-recovery
         /// ladder must never raise above this — a `.low`-preset 30 fps session
         /// must not be pushed to 60.
-        var fpsCap: Int = 60
-        var elapsedSinceChangeNs: UInt64
+        public var fpsCap: Int = 60
+        public var elapsedSinceChangeNs: UInt64
     }
 
     /// Bitrate + fps-tier decision from receiver feedback. `nil` on either
     /// field means "leave it". Extracted as a pure func (same pattern as
     /// `nextAdaptiveBitrate`) so the loss bands, NACK weighting, and fps-ladder
     /// transitions are unit testable without a live encoder.
-    struct CongestionDecision: Equatable {
-        var bitrate: Int?
-        var fpsTier: Int?
-        static let hold = CongestionDecision(bitrate: nil, fpsTier: nil)
+    public struct CongestionDecision: Equatable, Sendable {
+        public var bitrate: Int?
+        public var fpsTier: Int?
+        public static let hold = CongestionDecision(bitrate: nil, fpsTier: nil)
     }
 
     /// The fps downshift ladder: 60 → 30 → 15 (and back). `nil` at the ends.
-    static func lowerFpsTier(_ tier: Int) -> Int? {
+    public static func lowerFpsTier(_ tier: Int) -> Int? {
         if tier > 30 { return 30 }
         if tier > 15 { return 15 }
         return nil
@@ -3246,7 +3309,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// Next tier up, clamped to the session `cap` — a capped (e.g. 30 fps
     /// `.low`) session must never be raised above its cap. `nil` when already
     /// at the top rung or the cap.
-    static func raiseFpsTier(_ tier: Int, cap: Int) -> Int? {
+    public static func raiseFpsTier(_ tier: Int, cap: Int) -> Int? {
         let next: Int
         if tier < 30 {
             next = 30
@@ -3264,7 +3327,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// gate as PLIs. ~10 % loss (highLossQ8 = 26) maps to just over the 2-PLI
     /// threshold, so a viewer reporting high RR loss with no PLIs is still
     /// eligible for keyframe-only isolation instead of dragging the global rate.
-    static func rrLossPLIEquivalent(fracLostQ8: Int) -> Int {
+    public static func rrLossPLIEquivalent(fracLostQ8: Int) -> Int {
         max(0, fracLostQ8) / 8
     }
 
@@ -3273,12 +3336,12 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// (keyframe-only) and the worst PLI / RR-loss over ONLY the non-throttled
     /// viewers — so one viewer's (possibly fabricated) RR loss gets it isolated
     /// first and can't set the shared rate for everyone.
-    struct GlobalCongestionInputs: Equatable {
-        var throttle: [String]
-        var pliInput: Int
-        var lossQ8Input: Int
+    public struct GlobalCongestionInputs: Equatable {
+        public var throttle: [String]
+        public var pliInput: Int
+        public var lossQ8Input: Int
     }
-    static func congestionInputs(
+    public static func congestionInputs(
         pliCounts: [String: Int],
         lossQ8ByAddr: [String: Int],
         currentlyThrottled: Set<String>,
@@ -3322,7 +3385,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// `fecRecovered` term de-oscillates only the FEC arm by design; feeding
     /// raw loss here would double-penalize loss the parity already repaired
     /// and suppress recovery exactly on the links FEC targets.
-    static func nextCongestionDecision(
+    public static func nextCongestionDecision(
         _ inputs: CongestionInputs,
         lossThreshold: Int = 2,
         downHysteresisNs: UInt64 = 5_000_000_000,
@@ -3381,26 +3444,26 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// Adaptive-FEC state carried across sweep windows: the active group size
     /// (0 = FEC off) and the consecutive-clean-window count driving the
     /// off-gate hysteresis.
-    struct FECState: Equatable, Sendable {
-        var groupSize: Int = 0
-        var cleanWindows: Int = 0
+    public struct FECState: Equatable, Sendable {
+        public var groupSize: Int = 0
+        public var cleanWindows: Int = 0
     }
 
     /// Per-viewer measurements the sweep snapshots for the FEC arm.
-    struct FECViewerSample: Equatable, Sendable {
+    public struct FECViewerSample: Equatable, Sendable {
         /// Latest RR-derived RTT (0 = unknown).
-        var rttNs: UInt64 = 0
+        public var rttNs: UInt64 = 0
         /// Freshness-decayed residual (post-FEC) RR loss, Q8.
-        var residualLossQ8: Int = 0
+        public var residualLossQ8: Int = 0
         /// FEC-recovered packets this viewer reported this window.
-        var recovered: Int = 0
+        public var recovered: Int = 0
         /// NACK-recovered packets this viewer reported this window. Feeds
         /// raw-loss reconstruction identically to `recovered`: a served
         /// retransmit masks link loss (counts as received), so without it a
         /// link NACK is quietly repairing reads clean and FEC never gates on —
         /// even at the high RTT where NACK's per-loss round trip is the very
         /// latency FEC's zero-RTT recovery removes.
-        var nackRecovered: Int = 0
+        public var nackRecovered: Int = 0
         /// Video packets planned for THIS viewer this window — the
         /// denominator for its own recovered-loss fraction. Per-viewer on
         /// purpose: a shared template-stream count would sum recoveries
@@ -3409,22 +3472,22 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         /// throttled viewer's rate (its expected count is a small fraction
         /// of the templates), dropping its gate and inviting a
         /// loss → PLI-storm → re-gate oscillation.
-        var expectedPackets: Int = 0
+        public var expectedPackets: Int = 0
         /// Viewer advertised `.fec` in its HELLO.
-        var fecCapable: Bool = false
+        public var fecCapable: Bool = false
     }
 
     /// One sweep step of the FEC arm: the next adaptive state plus the set
     /// of viewers gated for parity delivery this window.
-    struct FECSweepDecision: Equatable, Sendable {
-        var state = FECState()
-        var gated: Set<String> = []
+    public struct FECSweepDecision: Equatable, Sendable {
+        public var state = FECState()
+        public var gated: Set<String> = []
     }
 
     /// Convert a per-window recovered-packet count to a Q8 loss fraction
     /// against that viewer's own expected packet count (same fixed point as
     /// the RR `fracLostQ8`). Raw link loss ≈ residual + this.
-    static func fecRecoveredQ8(recovered: Int, expectedPackets: Int) -> Int {
+    public static func fecRecoveredQ8(recovered: Int, expectedPackets: Int) -> Int {
         guard expectedPackets > 0, recovered > 0 else { return 0 }
         return min(255, recovered * 256 / expectedPackets)
     }
@@ -3443,7 +3506,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// Clean-link viewers pay zero overhead even mid-share with a lossy
     /// peer; legacy / non-`.fec` viewers never pass (the caller keys the
     /// gate off the caps map).
-    static func fecViewerGate(rttNs: UInt64, rawLossQ8: Int) -> Bool {
+    public static func fecViewerGate(rttNs: UInt64, rawLossQ8: Int) -> Bool {
         rttNs > TransportTuning.fecOnGateRTTNs && rawLossQ8 > TransportTuning.fecOnGateLossQ8
     }
 
@@ -3468,7 +3531,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// - **Off-gate:** two consecutive windows with every `.fec` viewer's
     ///   raw loss under ~1 % step FEC off (asymmetric hysteresis, matching
     ///   the sweep's style).
-    static func fecSweepDecision(
+    public static func fecSweepDecision(
         samples: [String: FECViewerSample], state: FECState
     ) -> FECSweepDecision {
         var gated: Set<String> = []
@@ -3520,7 +3583,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// gated — no parity flowing) passes through unchanged. The result is
     /// clamped so compensation can never push the encoder below the adaptive
     /// floor's own compensated equivalent.
-    static func fecCompensatedBitrate(_ bitrate: Int, groupSize: Int) -> Int {
+    public static func fecCompensatedBitrate(_ bitrate: Int, groupSize: Int) -> Int {
         guard groupSize > 0 else { return bitrate }
         let scaled = bitrate * groupSize / (groupSize + 1)
         let floor = TransportTuning.adaptiveFloorMinBps * groupSize / (groupSize + 1)
@@ -3601,7 +3664,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// into the session snapshot so a crash-restart respawn spawns the
     /// helper with the ceiling the user last set. Safe to call while not
     /// sharing (no-ops until an encoder anchors a baseline).
-    func updateQualityCeiling(_ bps: Int?) {
+    public func updateQualityCeiling(_ bps: Int?) {
         // Same clamp/rounding as persistence (`normalized()`), so the live
         // path can't disagree with what the Settings pane stores.
         let ceiling = QualitySettings.normalizedCeiling(bps)
@@ -3834,7 +3897,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// Overwrites bytes 2-3 (sequence) and 8-11 (SSRC) of an RTP packet.
     /// Avoids re-encoding the whole header per viewer. Internal (not
     /// private) so the per-viewer rewrite is unit testable.
-    static func rewriteRTPHeader(_ packet: inout Data, sequence: UInt16, ssrc: UInt32) {
+    public static func rewriteRTPHeader(_ packet: inout Data, sequence: UInt16, ssrc: UInt32) {
         packet[2] = UInt8((sequence >> 8) & 0xFF)
         packet[3] = UInt8(sequence & 0xFF)
         packet[8] = UInt8((ssrc >> 24) & 0xFF)
@@ -3847,7 +3910,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// VoiceChannel calls this from its onSend closure. Fans out on the
     /// per-viewer audio send chains so a slow viewer's `pl.send` parks only
     /// its own next packet instead of stalling audio to everyone.
-    func sendAudioRTP(_ packet: Data) {
+    public func sendAudioRTP(_ packet: Data) {
         guard let pl = packetListener else { return }
         let recipients = viewers.withLock { Array($0.keys) }
         enqueueAudioPackets(packet, to: recipients, on: pl)
@@ -3861,7 +3924,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// pending rows clear — matching the Settings caption's "decline requests
     /// automatically". It doesn't revoke an existing grant (the sharer
     /// granted that explicitly; the Stop button / ⌃⌥. handles it).
-    func setAllowControlRequests(_ on: Bool) {
+    public func setAllowControlRequests(_ on: Bool) {
         controlRequestsAllowed.withLock { $0 = on }
         guard !on else { return }
         let drained = controlRequests.withLock { state -> [UUID] in
@@ -3888,7 +3951,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
     /// Enable/disable sharing system audio to viewers. Stores the latch (so a
     /// helper (re)spawn re-sends it) and forwards to the live helper for an
     /// instant mute/unmute. Called from the MainActor by `AppState`.
-    func setShareSystemAudio(_ on: Bool) {
+    public func setShareSystemAudio(_ on: Bool) {
         shareSystemAudio.withLock { $0 = on }
         helperCapture?.setAudioEnabled(on)
     }
@@ -3902,12 +3965,12 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
         sendAudioRTP(systemAudioPacketizer.packetize(au: au))
     }
 
-    func getIPAddresses() async throws -> (ip4: String?, ip6: String?) {
+    public func getIPAddresses() async throws -> (ip4: String?, ip6: String?) {
         guard let node = node else { throw TailscaleError.badInterfaceHandle }
         return try await node.addrs()
     }
 
-    func stop() async {
+    public func stop() async {
         logger.log("Server stopping…")
         isRunning = false
 
@@ -3923,7 +3986,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
             return had
         }
         controlRequests.withLock { $0.removeAll() }
-        remoteControlInjector.deactivate()
+        remoteControlInjector?.deactivate()
         droppedInputLogged.withLock { $0 = false }
         inputRateLimiter.withLock { $0 = EventRateLimiter() }
         if hadGrant { notifyControlGrantChanged() }
@@ -4051,7 +4114,7 @@ final class TailscaleScreenShareServer: @unchecked Sendable {
 
     /// Seed the server's cached codec + parameter sets as if the
     /// capture-helper had just emitted them.
-    func injectSyntheticParameters(_ params: CodecParameterSets) {
+    public func injectSyntheticParameters(_ params: CodecParameterSets) {
         parameterSets.withLock { $0 = params }
         switch params {
         case .h264: helperCodec = .h264

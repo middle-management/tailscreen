@@ -59,4 +59,12 @@ public enum EncoderTuning {
         case .h264: return 0.10
         }
     }
+
+    /// Target bitrate for a resolution/frame-rate at a given bits-per-pixel
+    /// budget. Pure arithmetic with no encoder dependency, so the sharer's
+    /// adaptive-bitrate anchor can compute it without knowing which encoder
+    /// backend is downstream.
+    public static func computeBitrate(width: Int, height: Int, fps: Int, bitsPerPixel: Double) -> Int {
+        Int(Double(width * height) * bitsPerPixel * Double(fps))
+    }
 }

@@ -3,6 +3,7 @@ import XCTest
 
 @testable import Tailscreen
 @testable import TailscreenProtocol
+@testable import TailscreenSharer
 @testable import TailscreenTransport
 
 /// Unit coverage for `AppState.isUserInitiatedCaptureStop(_:)`. The

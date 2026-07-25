@@ -178,10 +178,12 @@ jobs:
         working-directory: Apps/macOS
         run: swift build -c release
 
-  # Portability gate: the TailscreenProtocol package (wire protocol + pure
-  # decision logic + the tsnet-facing TailscreenTransport tier — a real
-  # dependency of the app, see Packages/TailscreenKit/README.md) must
-  # build and pass its smoke tests on Linux, where no Apple framework
+  # Portability gate: the TailscreenKit package — wire protocol + pure
+  # decision logic, the tsnet-facing TailscreenTransport tier, the Opus
+  # codec, and the two host-agnostic data planes (TailscreenViewer and
+  # TailscreenSharer, the latter carrying the whole screen-share server) —
+  # a real dependency of the app, see Packages/TailscreenKit/README.md.
+  # It must build and pass its tests on Linux, where no Apple framework
   # exists. This is what keeps the portable set portable: an
   # AppKit/os/CoreGraphics/VideoToolbox import sneaking into a package
   # file fails here, not on someone's future non-macOS port. Cheap (Linux
@@ -206,7 +208,11 @@ jobs:
         run: apt-get update && apt-get install -y --no-install-recommends make libopus-dev pkg-config
       - name: Apply TailscaleKit patches (header only, no Go build)
         run: make -C Packages/TailscaleKit apply-patches
-      - name: Build + test TailscreenProtocol on Linux
+      - name: Build + test TailscreenKit on Linux
+        # Builds every tier — including TailscreenSharer, the sharer data
+        # plane. That target needs only the patched TailscaleKit *header*
+        # (nothing here links libtailscale.a), so it rides this job with no
+        # extra setup and no Go build.
         run: PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" swift test --package-path Packages/TailscreenKit
 
   # Audio-codec-portability gate: OpusKit (a systemLibrary wrapper over

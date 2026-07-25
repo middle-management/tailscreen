@@ -2,6 +2,7 @@ import XCTest
 
 @testable import Tailscreen
 @testable import TailscreenProtocol
+@testable import TailscreenSharer
 @testable import TailscreenTransport
 
 /// Pure-decision tests for the receiver-feedback congestion controller
