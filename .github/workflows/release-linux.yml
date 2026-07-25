@@ -156,5 +156,5 @@ jobs:
             echo "| File | \`${{ steps.pkg.outputs.file }}\` |"
             echo "| SHA-256 | \`${{ steps.pkg.outputs.sha256 }}\` |"
             echo ""
-            echo "The SHA-256 is what a Homebrew formula's \`sha256\` field needs."
+            echo "The SHA-256 is what the tap's cask needs in its \`on_linux\` block."
           } >> "$GITHUB_STEP_SUMMARY"

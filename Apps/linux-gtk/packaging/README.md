@@ -30,19 +30,21 @@ recipes, and anyone's muscle memory, so it hasn't been done casually.
 
 ## Honest status
 
-Neither recipe is verified to build in this repository's CI. Packaging a Swift +
-GTK4 + tsnet app needs a full desktop toolchain (GTK4 dev libs, GPU/GL, FFmpeg,
-ALSA, Opus), a **Swift 6 toolchain**, **Go** (to compile `libtailscale.a`), and a
-**live network** (SwiftPM resolves swift-cross-ui; the first libtailscale build
-downloads Go modules) — none of which the CI container for the viewer's build
-job provides beyond a headless render self-test. The manifests and script are
-written to be **structurally correct and self-documenting** so they can be run on
-a real workstation; treat them as a starting point, not a turnkey pipeline.
+**AppImage: verified.** `release-linux.yml` built one end to end on a GitHub
+runner — Go c-archive, Swift 6 toolchain, GTK4 deps, `linuxdeploy` + its GTK
+plugin, `appimagetool` — producing a ~99 MB `Tailscreen-<version>-x86_64.AppImage`
+in about 11 minutes. What that proves is that the artifact *builds and bundles*;
+nobody has yet run the resulting AppImage on a desktop, so "it launches and
+shares a screen" remains unverified.
 
-What is verified: the app itself builds and passes its headless GL render
-self-test in the `linux-gtk-viewer` CI job (see `.github/workflows/build.yml`).
-The packaging wrappers here drive that same `swift build` and then bundle the
-resulting binary — the wrapping/bundling steps are what remain unverified.
+**Flatpak: unverified.** The manifest still needs a Swift toolchain inside the
+build sandbox (see below) and has never been built. It's written to be
+structurally correct and self-documenting — a starting point, not a turnkey
+pipeline.
+
+Separately, the app itself builds and passes its headless GL render self-test in
+the `linux-gtk-viewer` CI job (see `.github/workflows/build.yml`), which is the
+same `swift build` the packaging wrappers drive.
 
 Packaging deliberately **does not gate merges** — it can't run in the normal CI
 container. `.github/workflows/release-linux.yml` runs it instead on three
