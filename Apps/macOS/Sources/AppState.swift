@@ -2635,7 +2635,18 @@ class AppState: ObservableObject {
     /// from under it on a menu click would be worse than asking the user
     /// to finish first.
     private var isBusyForProfileSwitch: Bool {
-        sharingState != .idle || connectionState != .idle
+        !Self.canSwitchProfile(sharing: sharingState, connection: connectionState)
+    }
+
+    /// Pure gate: switching accounts closes the tsnet node, so it's only
+    /// allowed while nothing is riding it — no share (including one still
+    /// starting) and no viewer session (including one still connecting).
+    /// Extracted so the precedence is pinned by tests rather than inferred
+    /// from the two call sites. See `switchProfile` / `addAccountAndSignIn`.
+    nonisolated static func canSwitchProfile(
+        sharing: SharingState, connection: ConnectionState
+    ) -> Bool {
+        sharing == .idle && connection == .idle
     }
 
     /// Switch the active account profile, Tailscale-style: one node at a

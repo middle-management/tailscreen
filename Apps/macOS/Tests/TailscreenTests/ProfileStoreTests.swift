@@ -145,6 +145,19 @@ final class ProfileStoreTests: XCTestCase {
         XCTAssertEqual(store.profiles[0].stateDirectory, ProfileStore.legacyStateDirectory)
     }
 
+    // MARK: - Profile-switch gating (AppState)
+
+    func testProfileSwitchAllowedOnlyWhenFullyIdle() {
+        // Switching closes the tsnet node, so every non-idle state — a
+        // share still starting, a viewer still connecting — must block it.
+        XCTAssertTrue(AppState.canSwitchProfile(sharing: .idle, connection: .idle))
+        XCTAssertFalse(AppState.canSwitchProfile(sharing: .active, connection: .idle))
+        XCTAssertFalse(AppState.canSwitchProfile(sharing: .starting, connection: .idle))
+        XCTAssertFalse(AppState.canSwitchProfile(sharing: .idle, connection: .viewing))
+        XCTAssertFalse(AppState.canSwitchProfile(sharing: .idle, connection: .connecting))
+        XCTAssertFalse(AppState.canSwitchProfile(sharing: .active, connection: .viewing))
+    }
+
     func testStatePathAppendsInstanceSuffixAtResolveTime() throws {
         let legacy = TailscreenProfile(
             id: UUID(), displayName: "", loginName: "", stateDirectory: "tailscale")
