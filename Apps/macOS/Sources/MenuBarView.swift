@@ -617,11 +617,16 @@ private struct ViewersList: View {
                             .fill(Self.dotColor(for: viewer.health))
                             .frame(width: 8, height: 8)
                             .help(Self.tooltip(for: viewer.health))
+                            .accessibilityHidden(true)
                         Text(viewer.hostname ?? viewer.tailscaleIP)
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                             .truncationMode(.tail)
+                            // Health is a colored dot with a mouse-only
+                            // tooltip; fold it into the name's spoken
+                            // label so it isn't color-only.
+                            .accessibilityLabel(healthLabel(for: viewer))
                         Spacer(minLength: 0)
                         Button {
                             appState.disconnectConnectedViewer(viewer.id)
@@ -637,6 +642,13 @@ private struct ViewersList: View {
                 }
             }
         }
+    }
+
+    /// "wisp, connection degraded — packet loss" — one spoken string, so
+    /// the health dot's meaning survives without color or a mouse.
+    private func healthLabel(for viewer: ViewerInfo) -> String {
+        let name = viewer.hostname ?? viewer.tailscaleIP
+        return L("\(name), \(Self.tooltip(for: viewer.health))")
     }
 
     private static func dotColor(for health: ViewerHealth) -> Color {

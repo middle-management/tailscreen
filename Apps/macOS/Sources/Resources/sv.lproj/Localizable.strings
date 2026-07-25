@@ -61,6 +61,9 @@
 "DERP (%@)" = "DERP (%@)";
 "~%lld ms" = "~%lld ms";
 "Latency is measured over the current Tailscale path. Relayed connections usually switch to direct once traffic flows." = "Latensen mäts över den aktuella Tailscale-vägen. Reläade anslutningar byter oftast till direkt när trafik flödar.";
+"Good connection" = "Bra anslutning";
+"Fair connection" = "Godtagbar anslutning";
+"Poor connection" = "Dålig anslutning";
 
 /* MARK: - Account profiles (MainWindowView.swift / AppState.swift) */
 "Add Account…" = "Lägg till konto…";
