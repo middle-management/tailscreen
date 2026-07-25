@@ -28,12 +28,14 @@ let package = Package(
     products: [
         .library(name: "TailscreenViewerCore", targets: ["TailscreenViewerCore"]),
         .library(name: "TailscreenViewerTsnet", targets: ["TailscreenViewerTsnet"]),
+        .library(name: "TailscreenSharerLinux", targets: ["TailscreenSharerLinux"]),
     ],
     dependencies: [
         .package(path: "../../Packages/FFmpegKit"),
         .package(path: "../../Packages/ALSAKit"),
         .package(path: "../../Packages/TailscreenKit"),
         .package(path: "../../Packages/TailscaleKit"),
+        .package(path: "../../Packages/X11CaptureKit"),
     ],
     targets: [
         // FFmpeg decoder + ALSA sink + ViewerPipeline. No tsnet, so it builds
@@ -79,6 +81,53 @@ let package = Package(
                 .unsafeFlags(["-L", "../../Packages/TailscaleKit/lib"])
             ]
         ),
+        // The Linux SHARER backend: X11 capture + libavcodec encode behind the
+        // portable `CaptureEncoding` seam. No tsnet — the portable
+        // TailscaleScreenShareServer owns the transport; this only makes
+        // pixels.
+        .target(
+            name: "TailscreenSharerLinux",
+            dependencies: [
+                .product(name: "FFmpegKit", package: "FFmpegKit"),
+                .product(name: "X11CaptureKit", package: "X11CaptureKit"),
+                .product(name: "TailscreenSharer", package: "TailscreenKit"),
+                .product(name: "TailscreenProtocol", package: "TailscreenKit"),
+            ],
+            path: "Sources/TailscreenSharerLinux"
+        ),
+        // Headless Linux SHARER: the portable TailscaleScreenShareServer wired
+        // to the X11 capture backend. No UI — it exists to prove the extraction
+        // end to end and to be what a tray/desktop UI eventually drives.
+        .executableTarget(
+            name: "tailscreen-sharer-linux",
+            dependencies: [
+                "TailscreenSharerLinux",
+                .product(name: "TailscreenSharer", package: "TailscreenKit"),
+                .product(name: "TailscreenProtocol", package: "TailscreenKit"),
+                .product(name: "TailscaleKit", package: "TailscaleKit"),
+            ],
+            path: "Sources/tailscreen-sharer-linux",
+            linkerSettings: [
+                .unsafeFlags(["-L", "../../Packages/TailscaleKit/lib"])
+            ]
+        ),
+        // Headless VIEWER probe: the real receive path (TsnetTransport +
+        // ViewerSession + FFmpeg decode) with a counting sink instead of a
+        // window, so an end-to-end run can be scripted and asserted.
+        .executableTarget(
+            name: "tailscreen-viewer-probe",
+            dependencies: [
+                "TailscreenViewerCore",
+                "TailscreenViewerTsnet",
+                .product(name: "FFmpegKit", package: "FFmpegKit"),
+                .product(name: "TailscreenViewer", package: "TailscreenKit"),
+                .product(name: "TailscreenProtocol", package: "TailscreenKit"),
+            ],
+            path: "Sources/tailscreen-viewer-probe",
+            linkerSettings: [
+                .unsafeFlags(["-L", "../../Packages/TailscaleKit/lib"])
+            ]
+        ),
         // Real-decode pipeline test: encode H.264 → RTP → ViewerSession →
         // FFmpeg decode → collecting sinks. No tsnet, runs on Linux CI.
         .testTarget(
@@ -90,6 +139,18 @@ let package = Package(
                 .product(name: "TailscreenProtocol", package: "TailscreenKit"),
             ],
             path: "Tests/TailscreenViewerCoreTests"
+        ),
+        // Capture → encode → decode, through the real CaptureEncoding seam.
+        // Needs a display; self-skips without one, runs under Xvfb in CI.
+        .testTarget(
+            name: "TailscreenSharerLinuxTests",
+            dependencies: [
+                "TailscreenSharerLinux",
+                .product(name: "FFmpegKit", package: "FFmpegKit"),
+                .product(name: "TailscreenProtocol", package: "TailscreenKit"),
+                .product(name: "TailscreenSharer", package: "TailscreenKit"),
+            ],
+            path: "Tests/TailscreenSharerLinuxTests"
         ),
     ]
 )

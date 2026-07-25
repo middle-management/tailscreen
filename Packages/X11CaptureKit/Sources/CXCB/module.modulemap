@@ -1,0 +1,10 @@
+// pkg-config gives us xcb's -I and -lxcb; the SHM extension ships as a
+// separate library with its own .pc that emits only -lxcb-shm (no -lxcb), so
+// name both here rather than relying on one pkg-config entry to pull the
+// other.
+module CXCB [system] {
+    header "shim.h"
+    link "xcb"
+    link "xcb-shm"
+    export *
+}

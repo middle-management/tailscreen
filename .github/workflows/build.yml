@@ -319,19 +319,46 @@ jobs:
       - name: Install build tools + A/V dev libraries
         # golang-go/make/gcc for the libtailscale c-archive (see
         # linux-tailscalekit); the rest are the viewer's decode/audio system
-        # libs (FFmpeg / ALSA / Opus).
+        # libs (FFmpeg / ALSA / Opus) plus, for the SHARER backend in this same
+        # package, libxcb + Xvfb — X11 capture is the one capture path that can
+        # run headlessly (the ScreenCast portal needs a session bus, a
+        # compositor, and a consent dialog, so it never can).
         run: |
           apt-get update && apt-get install -y --no-install-recommends \
             golang-go make gcc libc6-dev pkg-config \
-            libavcodec-dev libavutil-dev libasound2-dev libopus-dev
+            libavcodec-dev libavutil-dev libasound2-dev libopus-dev \
+            libxcb1-dev libxcb-shm0-dev xvfb
       - name: Build libtailscale (patched) on Linux
         env:
           GOFLAGS: -buildvcs=false
         run: make -C Packages/TailscaleKit
-      - name: Build + test the Linux viewer package
+      - name: Build + test the Linux viewer + sharer package
         # PKG_CONFIG_PATH resolves libtailscale.pc (→ -L for libtailscale.a);
-        # the A/V libs are on the default pkg-config path.
-        run: PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" swift test --package-path Apps/linux
+        # the A/V libs are on the default pkg-config path. xvfb-run supplies
+        # the $DISPLAY the sharer's capture tests need — without it they
+        # self-skip and the capture path would go ungated.
+        run: |
+          PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" \
+            xvfb-run -a --server-args="-screen 0 1280x720x24" \
+            swift test --package-path Apps/linux
+
+  # Screen-capture-portability gate: X11CaptureKit (a C shim over libxcb +
+  # MIT-SHM, plus the BGRA→I420 conversion) must build and pass its tests on
+  # Linux. The colour-conversion half runs anywhere; the capture half runs
+  # under Xvfb, which is the whole reason X11 capture landed before the
+  # ScreenCast portal — the portal can't be exercised headlessly at all.
+  # Cheap: two apt packages, no Go, no submodules.
+  linux-x11-capture:
+    runs-on: ubuntu-latest
+    container: swift:6.1-noble
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install libxcb + Xvfb
+        run: |
+          apt-get update && apt-get install -y --no-install-recommends \
+            pkg-config libxcb1-dev libxcb-shm0-dev xvfb
+      - name: Build + test X11CaptureKit on Linux
+        run: xvfb-run -a --server-args="-screen 0 1280x720x24" swift test --package-path Packages/X11CaptureKit
 
   linux-gtk-viewer:
     # The native GTK desktop viewer (Apps/linux-gtk) — a separate package from

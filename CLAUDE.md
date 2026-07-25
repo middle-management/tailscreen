@@ -28,12 +28,13 @@ tailscreen/
 │   │   ├── Sources/            # Tailscreen executable (Swift)
 │   │   ├── Tests/TailscreenTests/  # Unit + connectivity tests
 │   │   └── Resources/          # Tailscreen.icns (release .app packaging)
-│   ├── linux/                  # Portable Linux/Windows viewer CORE — a SwiftPM
-│   │   │                       #   library package wiring FFmpegKit+ALSAKit +
-│   │   │                       #   the tsnet transport into the ViewerSession
-│   │   │                       #   core (no runnable exe; see its README)
+│   ├── linux/                  # Linux platform BACKENDS — a SwiftPM library
+│   │   │                       #   package wiring FFmpegKit+ALSAKit + the tsnet
+│   │   │                       #   transport into the ViewerSession core, and
+│   │   │                       #   X11CaptureKit+FFmpegKit into the sharer's
+│   │   │                       #   CaptureEncoding seam (no runnable exe)
 │   │   ├── Package.swift
-│   │   ├── Sources/{TailscreenViewerCore,TailscreenViewerTsnet}/
+│   │   ├── Sources/{TailscreenViewerCore,TailscreenViewerTsnet,TailscreenSharerLinux}/
 │   │   └── Tests/TailscreenViewerCoreTests/  # real-decode pipeline test
 │   └── linux-gtk/              # The runnable native Linux/Windows VIEWER — a
 │       │                       #   swift-cross-ui/GTK4 app reusing Apps/linux's
@@ -47,8 +48,12 @@ tailscreen/
 │   │   │                       #   audio codec (replaced AudioToolbox AAC);
 │   │   │                       #   see its README
 │   ├── FFmpegKit/              # systemLibrary wrapper over libavcodec — the
-│   │   │                       #   portable viewer's H.264/HEVC decoder (not
-│   │   │                       #   used by the mac app); see its README
+│   │   │                       #   portable viewer's H.264/HEVC decoder AND the
+│   │   │                       #   Linux sharer's encoder (not used by the mac
+│   │   │                       #   app); see its README
+│   ├── X11CaptureKit/          # C shim over libxcb + MIT-SHM — the Linux
+│   │   │                       #   sharer's screen capture + BGRA→I420
+│   │   │                       #   (limited-range BT.709); see its README
 │   ├── ALSAKit/                # systemLibrary wrapper over libasound (ALSA) —
 │   │   │                       #   the Linux viewer's audio-playback backend
 │   │   │                       #   (Linux-only; wired via Apps/linux); see README
@@ -153,6 +158,17 @@ Test-only seams added for the above: `TailscaleScreenShareClient.onDecodedFrameF
 make test-e2e-local     # XCTest suites above, under local headscale
 make test-e2e-harness   # two real Tailscreen processes, asserted by log marker
 ```
+
+**Linux sharer → Linux viewer** (`scripts/e2e-linux-sharer.sh`, local-only): the
+non-macOS counterpart. Brings up local headscale + an Xvfb display with real
+content, runs `tailscreen-sharer-linux` (the portable `TailscaleScreenShareServer`
++ the X11 `CaptureEncoding` backend) and `tailscreen-viewer-probe` (the real
+receive path with a counting sink instead of a window), and asserts the viewer
+was admitted, decoded frames at the display's geometry, and that those frames
+are **non-uniform** — i.e. real captured pixels rather than a flat rectangle
+that a frame-count assertion alone would accept. It also incidentally pins the
+conditional-capability behaviour: with no injector supplied the advertised
+`serverCaps` omits `.remoteControl`.
 
 Env-var test affordances:
 
@@ -473,7 +489,7 @@ User-facing strings are localized through SwiftPM resources. `Package.swift` set
 
 Three workflows under `.github/workflows/` (plus a docs-deploy workflow):
 
-- **Build** — runs `make build` + `make test` on every PR and push to `main`. Skips doc-only changes. Uses `concurrency.cancel-in-progress` to drop superseded runs. Also in this workflow: a **`linux-protocol` job** (Ubuntu, `swift:6.1-noble` container: `swift test --package-path Packages/TailscreenKit` — the required portability gate for the protocol package; needs the submodule + patches for the transport tier's header and apt `libopus-dev`/`pkg-config` for the `TailscreenAudio` tier, but no Go build), a **`linux-tailscalekit` job** (same container + apt Go: builds the patched libtailscale c-archive and runs the TailscaleKit unit tests on Linux — the transport-portability gate), a **`linux-opus` job** (same container + apt `libopus-dev`: builds `OpusKit` and runs its encode/decode round-trip tests — the audio-codec-portability gate for the Opus-only decision, `docs/porting-plan.md` #6), a **`linux-ffmpeg` job** (same container + apt `libavcodec-dev`: builds `FFmpegKit` and runs its H.264 decode / AVCC↔Annex-B tests — the video-decode-portability gate for the Linux/Windows viewer), a **`linux-alsa` job** (same container + apt `libasound2-dev`: builds `ALSAKit` and runs its PCM-playback tests against ALSA's `null` device — the audio-playback-portability gate for the Linux viewer's audio output), a **`linux-viewer` job** (same container + the A/V dev libs + the libtailscale Go c-archive: `swift test --package-path Apps/linux` — the viewer-integration gate that runs `PipelineIntegrationTests` (real H.264 encode → RTP → `ViewerSession` → FFmpeg decode → collecting sinks) AND link-checks `TailscreenViewerTsnet` on Linux; a live tsnet run stays local-only), a **`linux-gtk-viewer` job** (same container + apt GTK4 / gobject-introspection / epoxy / Mesa software-GL / Xvfb: builds the native GTK desktop viewer `Apps/linux-gtk` — swift-cross-ui chrome + a downstream `GtkVideoView` hosting a `GtkGLArea` with an OpenGL BT.709 YUV→RGB renderer — and runs its headless GL YUV-readback render self-test under Xvfb; the live tsnet leg is local-only, see `docs/linux-viewer-gtk-plan.md`), a **`build-release` job** (`swift build -c release` compile check, required — release-config breaks used to surface only on published releases) and a **diff-coverage gate** (`scripts/diff-coverage.sh`: lcov `DA:` records joined against `git diff -U0 origin/main...HEAD` changed lines in `Sources/*.swift`, fails under 70 % coverage of changed executable lines; currently `continue-on-error: true` with the same flip-to-required TODO convention as the `format` job).- **Soak** — nightly (`cron: 17 3 * * *`) + `workflow_dispatch`: runs `SoakTests` with `TAILSCREEN_SOAK=1` (the `ParserFuzzHarness` at ~50× PR budget plus the seeded `LossyChannel` impairment matrix). Deterministic — a red nightly names its reproducing seed/configuration.
+- **Build** — runs `make build` + `make test` on every PR and push to `main`. Skips doc-only changes. Uses `concurrency.cancel-in-progress` to drop superseded runs. Also in this workflow: a **`linux-protocol` job** (Ubuntu, `swift:6.1-noble` container: `swift test --package-path Packages/TailscreenKit` — the required portability gate for the protocol package; needs the submodule + patches for the transport tier's header and apt `libopus-dev`/`pkg-config` for the `TailscreenAudio` tier, but no Go build), a **`linux-tailscalekit` job** (same container + apt Go: builds the patched libtailscale c-archive and runs the TailscaleKit unit tests on Linux — the transport-portability gate), a **`linux-opus` job** (same container + apt `libopus-dev`: builds `OpusKit` and runs its encode/decode round-trip tests — the audio-codec-portability gate for the Opus-only decision, `docs/porting-plan.md` #6), a **`linux-ffmpeg` job** (same container + apt `libavcodec-dev`: builds `FFmpegKit` and runs its H.264 decode/encode + AVCC↔Annex-B tests — the video-codec-portability gate for the Linux/Windows viewer *and* the Linux sharer's encoder), a **`linux-x11-capture` job** (same container + apt `libxcb1-dev libxcb-shm0-dev xvfb`: builds `X11CaptureKit` and runs its colour-conversion tests plus, under `xvfb-run`, live root-window capture — the screen-capture-portability gate; X11 capture is the one capture path that *can* run headlessly, which is why it landed before the ScreenCast portal), a **`linux-alsa` job** (same container + apt `libasound2-dev`: builds `ALSAKit` and runs its PCM-playback tests against ALSA's `null` device — the audio-playback-portability gate for the Linux viewer's audio output), a **`linux-viewer` job** (same container + the A/V dev libs + libxcb/Xvfb + the libtailscale Go c-archive: `xvfb-run … swift test --package-path Apps/linux` — the platform-backend integration gate that runs `PipelineIntegrationTests` (real H.264 encode → RTP → `ViewerSession` → FFmpeg decode → collecting sinks) AND `CaptureEncoderTests` (real X11 capture → libavcodec encode → decode, through the `CaptureEncoding` seam — it needs the `xvfb-run` `$DISPLAY` or it self-skips) AND link-checks `TailscreenViewerTsnet` on Linux; a live tsnet run stays local-only), a **`linux-gtk-viewer` job** (same container + apt GTK4 / gobject-introspection / epoxy / Mesa software-GL / Xvfb: builds the native GTK desktop viewer `Apps/linux-gtk` — swift-cross-ui chrome + a downstream `GtkVideoView` hosting a `GtkGLArea` with an OpenGL BT.709 YUV→RGB renderer — and runs its headless GL YUV-readback render self-test under Xvfb; the live tsnet leg is local-only, see `docs/linux-viewer-gtk-plan.md`), a **`build-release` job** (`swift build -c release` compile check, required — release-config breaks used to surface only on published releases) and a **diff-coverage gate** (`scripts/diff-coverage.sh`: lcov `DA:` records joined against `git diff -U0 origin/main...HEAD` changed lines in `Sources/*.swift`, fails under 70 % coverage of changed executable lines; currently `continue-on-error: true` with the same flip-to-required TODO convention as the `format` job).- **Soak** — nightly (`cron: 17 3 * * *`) + `workflow_dispatch`: runs `SoakTests` with `TAILSCREEN_SOAK=1` (the `ParserFuzzHarness` at ~50× PR budget plus the seeded `LossyChannel` impairment matrix). Deterministic — a red nightly names its reproducing seed/configuration.
 - **Release** — fires when a GitHub release is **published**. Cross-builds `libtailscale.a` for `arm64` + `amd64`, lipo-merges, then `swift build -c release --arch arm64 --arch x86_64` for a universal Mach-O. Wraps it in `Tailscreen.app`, codesigns with a Developer ID identity, notarizes via `notarytool`, staples, and uploads the zipped `.app` + `checksums.txt` to the release. Signing + notarization run only when **all** of the Apple secrets (`APPLE_DEVELOPER_ID_CERT_P12`, `APPLE_DEVELOPER_ID_CERT_PASSWORD`, `APPLE_NOTARY_API_KEY_P8`, `APPLE_NOTARY_API_KEY_ID`, `APPLE_NOTARY_API_ISSUER_ID`) are set; otherwise an unsigned `.app` is uploaded with a warning. The Homebrew tap repo owns cask formatting.
 
 ## Git workflow notes

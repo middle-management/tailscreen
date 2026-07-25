@@ -16,14 +16,14 @@ final class DecodeTests: XCTestCase {
         // Two NALs, 4-byte big-endian length prefixes.
         let avcc = Data([
             0x00, 0x00, 0x00, 0x03, 0xAA, 0xBB, 0xCC,
-            0x00, 0x00, 0x00, 0x02, 0xDD, 0xEE,
+            0x00, 0x00, 0x00, 0x02, 0xDD, 0xEE
         ])
         let annexB = try XCTUnwrap(NALUnit.avccToAnnexB(avcc))
         XCTAssertEqual(
             [UInt8](annexB),
             [
                 0x00, 0x00, 0x00, 0x01, 0xAA, 0xBB, 0xCC,
-                0x00, 0x00, 0x00, 0x01, 0xDD, 0xEE,
+                0x00, 0x00, 0x00, 0x01, 0xDD, 0xEE
             ])
     }
 
@@ -53,7 +53,8 @@ final class DecodeTests: XCTestCase {
     // MARK: - Real encode → decode round trip
 
     func testH264EncodeDecodeRoundTrip() throws {
-        let width = 64, height = 48
+        let width = 64
+        let height = 48
         guard let encoder = TestH264Encoder(width: Int32(width), height: Int32(height)) else {
             throw XCTSkip("no H.264 encoder in this libavcodec build")
         }
@@ -90,7 +91,8 @@ final class DecodeTests: XCTestCase {
     /// The AVCC entry point: re-wrap the encoder's Annex-B output as AVCC and
     /// prove `decode(avcc:)` reaches the same frames.
     func testDecodeAVCCPath() throws {
-        let width = 32, height = 32
+        let width = 32
+        let height = 32
         guard let encoder = TestH264Encoder(width: Int32(width), height: Int32(height)) else {
             throw XCTSkip("no H.264 encoder in this libavcodec build")
         }
@@ -216,7 +218,8 @@ private final class TestH264Encoder {
         fill(
             frame.pointee.data.0, stride: Int(frame.pointee.linesize.0),
             width: Int(width), height: Int(height), value: luma)
-        let cw = Int(width) / 2, ch = Int(height) / 2
+        let cw = Int(width) / 2
+        let ch = Int(height) / 2
         fill(frame.pointee.data.1, stride: Int(frame.pointee.linesize.1), width: cw, height: ch, value: chroma)
         fill(frame.pointee.data.2, stride: Int(frame.pointee.linesize.2), width: cw, height: ch, value: chroma)
         frame.pointee.pts = pts
