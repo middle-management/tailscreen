@@ -1,15 +1,17 @@
-# Apps/linux — portable viewer core (Linux/Windows)
+# Apps/linux — Linux platform backends (viewer + sharer)
 
-Shared **library** package that plugs concrete platform backends into the
-portable `ViewerSession` data-plane core (`Packages/TailscreenKit`'s
-`TailscreenViewer` target). Where the macOS app decodes with VideoToolbox,
-renders with Metal, and plays audio through AVAudioEngine, these backends are:
+Shared **library** package that plugs concrete platform backends into the two
+portable data-plane cores in `Packages/TailscreenKit` — `TailscreenViewer`
+(`ViewerSession`) and `TailscreenSharer` (`TailscaleScreenShareServer`). Where
+the macOS app decodes with VideoToolbox, renders with Metal, plays audio
+through AVAudioEngine, and captures with ScreenCaptureKit, these backends are:
 
 | Role      | Backend                          | Seam it satisfies |
 |-----------|----------------------------------|-------------------|
 | Decode    | `FFmpegKit` (libavcodec)         | `VideoDecoding`   |
 | Audio     | `ALSAKit` (libasound)            | `AudioSink`       |
 | Transport | `TailscaleKit` (tsnet UDP)       | `receiveRTP` / `onControlToSend` / `tick` |
+| **Capture + encode** | `X11CaptureKit` + `FFmpegKit` | **`CaptureEncoding`** |
 
 The concrete video **render** surface is *not* here — the runnable viewer is
 the native GTK desktop app in **[`Apps/linux-gtk`](../linux-gtk)**, which owns a
@@ -34,11 +36,17 @@ Apps/linux/
 │   │                               # (ViewerPipeline — the decoder+sink assembler —
 │   │                               #  lives in TailscreenKit's TailscreenViewer target;
 │   │                               #  it was Foundation-only and needn't drag in libav*)
-│   └── TailscreenViewerTsnet/      # library — the tsnet transport
-│       ├── TsnetTransport.swift    #   node bring-up + discovery + UDP run loop
-│       └── ViewerBackChannel.swift #   outbound TCP control/annotation channel
-└── Tests/TailscreenViewerCoreTests/
-    └── PipelineIntegrationTests.swift  # real H.264 → RTP → decode → sink
+│   ├── TailscreenViewerTsnet/      # library — the tsnet transport
+│   │   ├── TsnetTransport.swift    #   node bring-up + discovery + UDP run loop
+│   │   └── ViewerBackChannel.swift #   outbound TCP control/annotation channel
+│   ├── TailscreenTestSharer/       # executable — synthetic sharer for local
+│   │                               #   end-to-end runs (captures nothing)
+│   └── TailscreenSharerLinux/      # library — the real SHARER capture backend
+│       └── X11CaptureEncoder.swift #   X11 capture + libavcodec → CaptureEncoding
+├── Tests/TailscreenViewerCoreTests/
+│   └── PipelineIntegrationTests.swift  # real H.264 → RTP → decode → sink
+└── Tests/TailscreenSharerLinuxTests/
+    └── CaptureEncoderTests.swift       # real capture → encode → decode (Xvfb)
 ```
 
 The package is split so the decode→audio pipeline is provable in CI without the
@@ -109,10 +117,31 @@ window-grow-to-video, the caps-gated toolbars, and the annotation / control /
 input back-channel paths (the sharer logs each inbound op and relays annotations
 back). Still local-only — it can't run in CI for the usual tsnet reason.
 
+## The sharer backend
+
+`TailscreenSharerLinux.X11CaptureEncoder` satisfies `CaptureEncoding`: it
+captures the X root window, encodes with libavcodec, and honours the three
+congestion levers (`setBitrate` / `requestKeyframe` / `setFrameInterval`).
+Everything above it — admission, RTP fan-out, NACK/FEC, congestion control — is
+the portable `TailscaleScreenShareServer`, unchanged.
+
+Unlike macOS there is **no helper subprocess**: `replayd`'s slot-release
+behaviour is the only reason capture is isolated there, and Linux has no
+equivalent coupling (`docs/porting-plan.md` #10), so capture runs in-process
+and `stop()` genuinely stops it.
+
+Current limits, deliberately explicit: display shares only (window/app
+selections are *refused*, not silently widened to the whole screen), X11 only,
+no system-audio capture, no preview thumbnails, software encoders only
+(hardware VA-API/NVENC needs `AVHWFramesContext` upload this path doesn't do).
+
 ## Not here yet
 
 - **Mic capture** — the viewer plays sharer/system audio (ALSA out); an ALSA
   *input* path for the mic is future work.
+- **The ScreenCast portal** — the production Wayland capture path, behind the
+  same `CaptureEncoding` seam. See `Packages/X11CaptureKit/README.md` for why
+  X11 came first (CI can run it; the portal never can).
 - **Windows** — the backends are cross-platform (FFmpeg/tsnet everywhere; audio
   would swap ALSA for WASAPI, render for a D3D swapchain — see
   `docs/viewer-windows-plan.md`), but only Linux is wired/tested so far.

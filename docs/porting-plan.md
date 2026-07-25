@@ -270,16 +270,49 @@ encoder for arithmetic), and `ScreenShareCaps.remoteControl` is advertised
 the bit instead of inviting control requests it can't serve — a distinction
 a macOS-only server had no reason to make.
 
-Feasibility of the two missing pieces was spiked on Linux before committing
-to the extraction: XCB/MIT-SHM zero-copy root capture → BGRA→I420 →
-**libx264** encode → libavcodec decode-back round-trips with exact centre-luma
-match under Xvfb, and the container's libavcodec offers `libx264`, `libx265`,
-`h264_vaapi`, `hevc_vaapi`, and `h264_nvenc`. Worth noting for CI strategy:
-**X11/XCB capture is headlessly testable under Xvfb, portal/PipeWire capture
-is not** (it needs a session bus, a compositor, and a consent dialog). Wiring
-both behind `CaptureEncoding` buys a CI-gated capture backend from day one,
-with the portal backend as the production Wayland path verified locally —
-the same split that made the viewer's `linux-viewer` job possible.
+*Landed:* the **first `CaptureEncoding` backend**, so a Linux host can now
+produce the pixels the portable server fans out.
+
+- **`Packages/X11CaptureKit`** — X11 root-window capture (libxcb + MIT-SHM
+  zero-copy, with a `GetImage` fallback) plus the BGRA→I420 conversion, in a C
+  shim under a Foundation-only Swift wrapper. Colour is **limited-range
+  BT.709**, matching the viewer's YUV shader exactly; the tests pin that by
+  transcribing the shader's inverse, because a wrong range doesn't fail, it
+  just ships a washed-out picture.
+- **`FFmpegKit` grew an encoder** (`FFmpeg.VideoEncoder`) plus
+  `NALUnit.annexBToAVCC` — the direction a non-Apple *sharer* needs, which
+  problem #3 above says belongs in the shared adapter layer and which the test
+  sharer had been reinventing privately. The encoder is configured for the
+  transport's constraints rather than archival quality: no B-frames, keyframes
+  on demand, and parameter sets in-band on **every** keyframe (no
+  `GLOBAL_HEADER`), which is what lets a viewer join mid-stream.
+- **`Apps/linux/Sources/TailscreenSharerLinux`** — `X11CaptureEncoder`, which
+  satisfies `CaptureEncoding` and honours all three congestion levers. No
+  helper subprocess: `replayd` is the only reason macOS isolates capture, and
+  Linux has no equivalent (#10 above).
+
+**CI gates both** — `linux-x11-capture` for the capture package, and
+`linux-viewer` now runs under `xvfb-run` so the capture→encode→decode
+integration test actually executes instead of self-skipping. That is the
+payoff of doing X11 before the portal: **X11 capture is headlessly testable
+under Xvfb; portal/PipeWire capture never can be** (session bus + compositor +
+consent dialog). Wiring both behind `CaptureEncoding` buys a CI-gated capture
+backend from day one, with the portal as the production Wayland path verified
+locally — the same split that made the viewer's `linux-viewer` job possible.
+
+Deliberate limits, all of them stated rather than silently degraded: display
+shares only (a window/app selection is **refused**, since widening it to the
+whole screen would leak what the user didn't pick), X11 only, no system-audio
+capture (#5 remains the unsolved one), no preview thumbnails, and **software
+encoders only** — `h264_vaapi`/`h264_nvenc` are present in most libavcodec
+builds and will happily be *found* by name, then fail to open without a
+matching device, because they consume hardware frames this path never uploads.
+Hardware encode is worth having and is its own piece of work, not a name in a
+list.
+
+Still open before a usable Linux sharer: a host UI (tray/window) driving
+`TailscaleScreenShareServer`, the portal capture backend for Wayland, and
+system audio.
 
 **Phase 4 — Windows.** Viewer first, reusing the Phase 2/3 adapter
 seams (capture/encode/decode/render/audio/input behind protocol-shaped
