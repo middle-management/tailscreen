@@ -143,7 +143,8 @@ public struct GtkVideoView: View {
                 // Overlay annotation strokes (mapped through the same transform).
                 if let annotations {
                     let data = annotations.renderData(
-                        aspect: Double(frame.width) / Double(max(1, frame.height)))
+                        aspect: Double(frame.width) / Double(max(1, frame.height)),
+                        renderHeight: Double(frame.height))
                     if !data.counts.isEmpty {
                         data.xy.withUnsafeBufferPointer { xy in
                             data.counts.withUnsafeBufferPointer { counts in
