@@ -23,8 +23,10 @@ let package = Package(
         .package(path: "../../Packages/TailscaleKit"),
         // The portable core: wire protocol + pure decision logic
         // (TailscreenProtocol), the tsnet-facing transport tier
-        // (TailscreenTransport), and the Opus codec tier (TailscreenAudio,
-        // which pulls in OpusKit/libopus). All build on Linux — see its README.
+        // (TailscreenTransport), the Opus codec tier (TailscreenAudio,
+        // which pulls in OpusKit/libopus), and the two host-agnostic data
+        // planes — TailscreenViewer and TailscreenSharer, whose platform
+        // backends this app supplies. All build on Linux — see its README.
         .package(path: "../../Packages/TailscreenKit")
     ],
     targets: [
@@ -35,7 +37,8 @@ let package = Package(
                 .product(name: "TailscreenProtocol", package: "TailscreenKit"),
                 .product(name: "TailscreenTransport", package: "TailscreenKit"),
                 .product(name: "TailscreenAudio", package: "TailscreenKit"),
-                .product(name: "TailscreenViewer", package: "TailscreenKit")
+                .product(name: "TailscreenViewer", package: "TailscreenKit"),
+                .product(name: "TailscreenSharer", package: "TailscreenKit")
             ],
             path: "Sources",
             resources: [
@@ -52,7 +55,8 @@ let package = Package(
             dependencies: [
                 "Tailscreen",
                 .product(name: "TailscreenAudio", package: "TailscreenKit"),
-                .product(name: "TailscreenViewer", package: "TailscreenKit")
+                .product(name: "TailscreenViewer", package: "TailscreenKit"),
+                .product(name: "TailscreenSharer", package: "TailscreenKit")
             ],
             path: "Tests/TailscreenTests",
             linkerSettings: [

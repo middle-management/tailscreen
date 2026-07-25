@@ -5,6 +5,7 @@ import os
 
 @testable import Tailscreen
 @testable import TailscreenProtocol
+@testable import TailscreenSharer
 @testable import TailscreenTransport
 
 /// End-to-end: two ephemeral Tailscale nodes in one process (server + client),

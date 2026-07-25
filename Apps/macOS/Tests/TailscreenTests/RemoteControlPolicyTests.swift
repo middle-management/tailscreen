@@ -2,6 +2,7 @@ import XCTest
 
 @testable import Tailscreen
 @testable import TailscreenProtocol
+@testable import TailscreenSharer
 @testable import TailscreenTransport
 
 /// Pure tests for the remote-control grant gate, mouse-move coalescing, and

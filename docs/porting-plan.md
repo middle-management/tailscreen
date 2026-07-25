@@ -242,6 +242,45 @@ UI last. (Remote-control injection via the RemoteDesktop portal (#2) is
 deprioritized — the confinement question makes it the highest-risk piece,
 and it isn't on the near path; see the effort note below.)
 
+*Landed:* the **sharer data plane is portable**. `TailscaleScreenShareServer`
+moved wholesale into `TailscreenKit`'s new `TailscreenSharer` target and
+builds/tests on Linux under `linux-protocol`. The measurement that motivated
+it: 4083 lines, of which exactly **two** were genuine Apple API usage (an
+`NSImage` preview callback, one `SCStreamError`) — the rest was portable
+logic that merely lived in a mac target. The blockers were bulk-mechanical,
+not architectural: 41 `OSAllocatedUnfairLock` → `Synchronization.Mutex`,
+plus those two API sites. Logging was already portable (`TSLogger: LogSink`).
+
+The platform surface is now two protocols — **`CaptureEncoding`** (capture +
+encode) and **`InputInjecting`** (remote-control injection) — and
+`CaptureEncoding` is shaped from `CaptureHelperWire`'s `OutType`/`InType`,
+because that seam already existed: the capture-helper IPC wire *was* a
+portability boundary, just never named as one. `HelperScreenCapture` and
+`RemoteControlInjector` conform with empty extensions. So the remaining
+Linux-sharer work is a `CaptureEncoding` implementation (portal/PipeWire
+capture + a libavcodec encoder honouring set-bitrate / force-keyframe /
+set-frame-interval) and a host UI — *not* a reimplementation of admission,
+fan-out, loss recovery, or congestion control.
+
+Two things this also fixed rather than just moved: the encoder bitrate
+formula now lives in `EncoderTuning.computeBitrate` beside
+`defaultBitsPerPixel` (the server no longer reaches into the VideoToolbox
+encoder for arithmetic), and `ScreenShareCaps.remoteControl` is advertised
+**iff** the host supplied an injector, so a non-injecting sharer withholds
+the bit instead of inviting control requests it can't serve — a distinction
+a macOS-only server had no reason to make.
+
+Feasibility of the two missing pieces was spiked on Linux before committing
+to the extraction: XCB/MIT-SHM zero-copy root capture → BGRA→I420 →
+**libx264** encode → libavcodec decode-back round-trips with exact centre-luma
+match under Xvfb, and the container's libavcodec offers `libx264`, `libx265`,
+`h264_vaapi`, `hevc_vaapi`, and `h264_nvenc`. Worth noting for CI strategy:
+**X11/XCB capture is headlessly testable under Xvfb, portal/PipeWire capture
+is not** (it needs a session bus, a compositor, and a consent dialog). Wiring
+both behind `CaptureEncoding` buys a CI-gated capture backend from day one,
+with the portal backend as the production Wayland path verified locally —
+the same split that made the viewer's `linux-viewer` job possible.
+
 **Phase 4 — Windows.** Viewer first, reusing the Phase 2/3 adapter
 seams (capture/encode/decode/render/audio/input behind protocol-shaped
 interfaces is the real deliverable of Phases 2–3). **Gated on a Windows

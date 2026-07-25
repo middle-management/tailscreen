@@ -21,6 +21,13 @@ import PackageDescription
 //     960-sample framing over OpusKit/libopus). Foundation + OpusKit only —
 //     also builds on Linux (needs libopus-dev + pkg-config). Kept out of
 //     TailscreenProtocol so that tier stays dependency-free.
+//   - TailscreenViewer: the host-agnostic viewer data plane (ViewerSession
+//     + the decoder/sink seams, ViewerPipeline, FrameStore).
+//   - TailscreenSharer: the host-agnostic sharer data plane
+//     (TailscaleScreenShareServer + the CaptureEncoding / InputInjecting
+//     seams). Like the viewer tier it owns no capture, encoder, or input
+//     backend — the macOS app plugs in its capture helper and CGEvent
+//     injector; a Linux sharer plugs in portal/PipeWire + libavcodec.
 let package = Package(
     name: "TailscreenKit",
     platforms: [
@@ -44,6 +51,10 @@ let package = Package(
         .library(
             name: "TailscreenViewer",
             targets: ["TailscreenViewer"]
+        ),
+        .library(
+            name: "TailscreenSharer",
+            targets: ["TailscreenSharer"]
         )
     ],
     dependencies: [
@@ -77,6 +88,15 @@ let package = Package(
                 "TailscreenAudio"
             ],
             path: "Sources/TailscreenViewer"
+        ),
+        .target(
+            name: "TailscreenSharer",
+            dependencies: [
+                "TailscreenProtocol",
+                "TailscreenTransport",
+                .product(name: "TailscaleKit", package: "TailscaleKit")
+            ],
+            path: "Sources/TailscreenSharer"
         ),
         .testTarget(
             name: "TailscreenProtocolTests",

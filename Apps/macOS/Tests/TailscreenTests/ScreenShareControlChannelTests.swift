@@ -5,6 +5,7 @@ import XCTest
 
 @testable import Tailscreen
 @testable import TailscreenProtocol
+@testable import TailscreenSharer
 @testable import TailscreenTransport
 
 /// End-to-end for the viewer→sharer control paths that ride alongside video:

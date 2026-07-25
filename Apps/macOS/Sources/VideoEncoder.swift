@@ -333,7 +333,10 @@ final class VideoEncoder: @unchecked Sendable {
     /// (`CaptureHelperRunner.handleFrame`), and the server's
     /// adaptive-bitrate baseline anchor (`onEncoderResolution`).
     static func computeBitrate(width: Int, height: Int, fps: Int, bitsPerPixel: Double) -> Int {
-        Int(Double(width * height) * bitsPerPixel * Double(fps))
+        // Single source of truth lives in the portable tuning layer, beside
+        // `defaultBitsPerPixel` — the sharer data plane computes its anchor
+        // from there without depending on this VideoToolbox encoder.
+        EncoderTuning.computeBitrate(width: width, height: height, fps: fps, bitsPerPixel: bitsPerPixel)
     }
 
     /// Sets the bandwidth ceiling via `DataRateLimits`. We deliberately do

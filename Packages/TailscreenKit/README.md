@@ -1,6 +1,6 @@
 # TailscreenKit
 
-The platform-portable core of Tailscreen, in four targets/tiers:
+The platform-portable core of Tailscreen, in five targets/tiers:
 
 - **`TailscreenProtocol`** — the port-7447 wire protocol (RTP
   packetization, framed TCP messages, UDP control bytes, helper/picker IPC
@@ -32,7 +32,7 @@ The platform-portable core of Tailscreen, in four targets/tiers:
   `TailscreenProtocol` so that tier stays dependency-free. Building/testing
   it needs libopus present (`apt install libopus-dev pkg-config` on Linux,
   `brew install opus` on macOS — resolved via pkg-config).
-- **`TailscreenViewer`** — the host-agnostic viewer data plane:
+- **`TailscreenViewer`** — the host-agnostic *viewer* data plane:
   `ViewerSession` (inbound RTP → decoded frames + outbound HELLO/NACK/PLI/RR
   feedback) behind the `VideoDecoding` / `VideoSink` / `AudioSink` seams,
   `ViewerPipeline` (assembles a session from host-supplied decoder/sink
@@ -42,22 +42,40 @@ The platform-portable core of Tailscreen, in four targets/tiers:
   decode, GL render, and ALSA output in behind the protocols; the Windows
   viewer will plug in D3D and WASAPI. Depends on `TailscreenProtocol` +
   `TailscreenAudio` only.
+- **`TailscreenSharer`** — the host-agnostic *sharer* data plane:
+  `TailscaleScreenShareServer` — viewer admission and the access-policy
+  gate, RTP fan-out, NACK/retransmit/FEC, the congestion + per-viewer
+  fairness controllers, the idle sweep, the capture-restart budget and
+  hung-backend watchdog, and the remote-control grant gate — behind two
+  seams in `SharerBackends.swift`: `CaptureEncoding` (capture + encode) and
+  `InputInjecting` (remote-control injection). Neither the capture stack nor
+  the injector is here: macOS plugs in its `--capture-helper` subprocess and
+  `CGEvent` injector, and a Linux sharer plugs in X11/portal capture +
+  libavcodec. `CaptureEncoding` is deliberately shaped like
+  `CaptureHelperWire`'s `OutType`/`InType` — the seam already existed as an
+  IPC wire and simply hadn't been named as a portability boundary. Depends
+  on `TailscreenProtocol` + `TailscreenTransport` + `TailscaleKit`.
 
-All four build and run on Linux; they're the libraries a future non-macOS
+All five build and run on Linux; they're the libraries a future non-macOS
 Tailscreen viewer or sharer links against. See `docs/porting-plan.md` for
 that roadmap.
 
 ## How it's put together
 
 - The sources live **only here** — the macOS app consumes this package as
-  a real SwiftPM dependency (`Package.swift` at the repo root declares it;
-  `Apps/macOS/Sources/ProtocolReexports.swift` `@_exported import`s all three products
-  so app code keeps using the types unqualified).
+  a real SwiftPM dependency (`Apps/macOS/Package.swift` declares it;
+  `Apps/macOS/Sources/ProtocolReexports.swift` `@_exported import`s the
+  products so app code keeps using the types unqualified).
 - Because the app crosses a module boundary, everything the app touches is
   `public` — including explicit memberwise initializers (Swift never
   synthesizes those as public). Test-only seams stay `internal`: the test
   suite uses `@testable import TailscreenProtocol` /
-  `@testable import TailscreenTransport` / `@testable import TailscreenAudio`.
+  `@testable import TailscreenTransport` / `@testable import TailscreenAudio` /
+  `@testable import TailscreenSharer`. The sharer tier is the one place this
+  rule bends: its extracted decision functions (`nextAdaptiveBitrate`,
+  `fecSweepDecision`, `admissionDecision`, …) are `public` even though only
+  tests call them today — they're the reusable part of the data plane, and a
+  second host implementation is exactly who would want them.
 - `Tests/TailscreenProtocolTests` began as a shallow smoke suite and now
   also holds the **migrated pure suites** — the loss-recovery/RTP/wire/util
   tests whose subject types live entirely in this package (FEC, NACK,

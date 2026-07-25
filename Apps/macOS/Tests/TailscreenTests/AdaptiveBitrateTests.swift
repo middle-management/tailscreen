@@ -2,6 +2,7 @@ import XCTest
 
 @testable import Tailscreen
 @testable import TailscreenProtocol
+@testable import TailscreenSharer
 @testable import TailscreenTransport
 
 /// Unit tests for the adaptive-bitrate decision. Pure function, no tsnet, no

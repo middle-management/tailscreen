@@ -1,4 +1,3 @@
-import AppKit
 import Foundation
 import TailscaleKit
 import os
@@ -33,8 +32,10 @@ final class HelperScreenCapture: @unchecked Sendable {
     /// signal for the SharingCard's "first preview" gate.
     var onFirstFrame: (() -> Void)?
     /// Helper sent a downsampled preview JPEG for the SharingCard
-    /// thumbnail. ~1 Hz cadence.
-    var onPreviewImage: ((NSImage) -> Void)?
+    /// thumbnail. ~1 Hz cadence. Carries the **encoded JPEG bytes**, not a
+    /// decoded image: `CaptureEncoding` is Foundation-only, so the decode
+    /// happens at the point of display (see `AppState.previewImage`).
+    var onPreviewImage: ((Data) -> Void)?
     /// Fires when the helper exits unexpectedly (process death without
     /// a prior `stop()` call). The reason describes how it died.
     var onUnexpectedExit: ((String) -> Void)?
@@ -78,7 +79,7 @@ final class HelperScreenCapture: @unchecked Sendable {
     ///   - qualityEnv: spawn-time quality knobs from
     ///     `QualitySettings.helperEnvironment()` (fps cap, codec preference,
     ///     bandwidth ceiling), merged into the child's environment.
-    func start(filterData: Data, forceH264: Bool = false, qualityEnv: [String: String] = [:]) throws {
+    func start(selectionData: Data, forceH264: Bool = false, qualityEnv: [String: String] = [:]) throws {
         guard let exe = resolveHelperExecutable() else {
             throw HelperScreenCaptureError.executableNotFound
         }
@@ -130,7 +131,7 @@ final class HelperScreenCapture: @unchecked Sendable {
         // before bringing the SCStream up. Send it now so the helper
         // isn't blocked once the reader thread starts.
         if let stdin = stdinHandle {
-            HelperControlWriter(handle: stdin).sendContentFilter(filterData)
+            HelperControlWriter(handle: stdin).sendContentFilter(selectionData)
         }
 
         // Reader thread — synchronous reads on the pipe. Async
@@ -258,9 +259,7 @@ final class HelperScreenCapture: @unchecked Sendable {
             case .firstFrame:
                 onFirstFrame?()
             case .previewJPEG:
-                if let img = NSImage(data: payload) {
-                    onPreviewImage?(img)
-                }
+                onPreviewImage?(payload)
             case .heartbeat:
                 // Liveness only — `onActivity` above already recorded it.
                 break
