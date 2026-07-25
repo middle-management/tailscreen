@@ -28,7 +28,7 @@ The hard, novel work was the Linux effort (L0–L4), and almost all of it is
 | Back-channel — `ViewerBackChannel` (TCP `ScreenShareMessage`) | portable Swift | none |
 | Picker — `PickerModel` + `discoverPeers` → `DiscoveredSharer` | portable Swift | none |
 | Chrome — `ViewerUIState`, `ViewerControls`, the swift-cross-ui view tree | portable Swift | none (WinUIBackend renders the same declarative views) |
-| Frame hand-off — `FrameStore` (locked, COW copy) | portable Swift | none |
+| Frame hand-off — `FrameStore` (locked, COW copy, in `TailscreenViewer`) | portable Swift | none |
 | Audio sink — `ALSAAudioSink` | Linux-only | **new:** a WASAPI (or XAudio2) `AudioSink` |
 | Video surface — `GtkVideoView` + `CGtkVideo` (GL YUV→RGB) | Linux-only | **new:** a WinUI video view + D3D YUV→RGB |
 
@@ -98,10 +98,13 @@ cross-thread frame hand-off safe regardless of backend.
   shared libs), the two native deps the portable Swift links.
 - A **new SwiftPM package** `Apps/windows` (sibling to `Apps/linux-gtk`), reusing
   `TailscreenViewerCore`/`TailscreenViewerTsnet` from `Apps/linux` and
-  `TailscreenViewerGtk`'s **portable** pieces (`FrameStore`, `ViewerUIState`,
-  `ViewerControls`, `PickerModel`) — those should move to a backend-neutral
-  target so both apps share them without the GTK app pulling WinUI or vice
-  versa. The video view + `CSwapChainVideo` are Windows-only targets.
+  `TailscreenViewerGtk`'s **portable** pieces. `FrameStore` has already made
+  that move — it now lives in TailscreenKit's `TailscreenViewer` target beside
+  `ViewerSession`/`ViewerPipeline`, so the Windows app gets the frame hand-off
+  without linking anything GTK. The rest (`ViewerUIState`, `ViewerControls`,
+  `PickerModel`) should follow into a backend-neutral target so both apps share
+  them without the GTK app pulling WinUI or vice versa. The video view +
+  `CSwapChainVideo` are Windows-only targets.
 - **CI:** a `windows-viewer` job on `windows-latest`: build the app; run a
   headless **D3D render self-test** using the **WARP** software rasterizer
   (`D3D_DRIVER_TYPE_WARP`) — the moral equivalent of the Linux job's Mesa

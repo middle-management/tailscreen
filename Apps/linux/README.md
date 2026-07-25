@@ -30,8 +30,10 @@ Apps/linux/
 ├── Sources/
 │   ├── TailscreenViewerCore/       # library — CI-testable, NO tsnet
 │   │   ├── Adapters.swift          #   FFmpeg → VideoDecoding, ALSA → AudioSink
-│   │   ├── ThreadedAudioSink.swift #   off-thread ALSA writes (used by the GTK viewer)
-│   │   └── ViewerPipeline.swift    #   assembles a ViewerSession + sinks
+│   │   └── ThreadedAudioSink.swift #   off-thread ALSA writes (used by the GTK viewer)
+│   │                               # (ViewerPipeline — the decoder+sink assembler —
+│   │                               #  lives in TailscreenKit's TailscreenViewer target;
+│   │                               #  it was Foundation-only and needn't drag in libav*)
 │   └── TailscreenViewerTsnet/      # library — the tsnet transport
 │       ├── TsnetTransport.swift    #   node bring-up + discovery + UDP run loop
 │       └── ViewerBackChannel.swift #   outbound TCP control/annotation channel

@@ -1,6 +1,6 @@
 # TailscreenKit
 
-The platform-portable core of Tailscreen, in three targets/tiers:
+The platform-portable core of Tailscreen, in four targets/tiers:
 
 - **`TailscreenProtocol`** — the port-7447 wire protocol (RTP
   packetization, framed TCP messages, UDP control bytes, helper/picker IPC
@@ -32,8 +32,18 @@ The platform-portable core of Tailscreen, in three targets/tiers:
   `TailscreenProtocol` so that tier stays dependency-free. Building/testing
   it needs libopus present (`apt install libopus-dev pkg-config` on Linux,
   `brew install opus` on macOS — resolved via pkg-config).
+- **`TailscreenViewer`** — the host-agnostic viewer data plane:
+  `ViewerSession` (inbound RTP → decoded frames + outbound HELLO/NACK/PLI/RR
+  feedback) behind the `VideoDecoding` / `VideoSink` / `AudioSink` seams,
+  `ViewerPipeline` (assembles a session from host-supplied decoder/sink
+  factories), and `FrameStore` (the lock + value-type-COW hand-off a renderer
+  polls from its UI thread). It owns no socket, thread, or timer, and no
+  concrete codec/renderer/audio backend — the Linux viewer plugs FFmpeg
+  decode, GL render, and ALSA output in behind the protocols; the Windows
+  viewer will plug in D3D and WASAPI. Depends on `TailscreenProtocol` +
+  `TailscreenAudio` only.
 
-All three build and run on Linux; they're the libraries a future non-macOS
+All four build and run on Linux; they're the libraries a future non-macOS
 Tailscreen viewer or sharer links against. See `docs/porting-plan.md` for
 that roadmap.
 

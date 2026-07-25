@@ -1,5 +1,4 @@
 import Foundation
-import TailscreenViewer
 
 /// Thread-safe holder for the most recent decoded frame. The video sink writes
 /// the latest frame (from the transport/decoder thread); the `GtkVideoView`
@@ -17,10 +16,10 @@ public final class FrameStore: @unchecked Sendable {
         frame = newFrame
         let redraw = requestRedraw
         lock.unlock()
-        // Ask the GLArea to repaint. The redraw hand-off (`cgtkvideo_queue_render`)
-        // marshals the actual GTK call onto the main thread via g_idle_add, so
-        // `set` (and thus `present`) is safe from any thread; the frame itself
-        // is a value-type copy behind the lock above.
+        // Ask the renderer to repaint. The host's redraw closure is responsible
+        // for marshalling onto its UI thread (the GTK viewer defers via
+        // `g_idle_add`), so `set` is safe to call from any thread; the frame
+        // itself is a value-type copy taken behind the lock above.
         redraw?()
     }
 
@@ -30,8 +29,8 @@ public final class FrameStore: @unchecked Sendable {
         return frame
     }
 
-    /// Register the GLArea-repaint request (`GtkVideoView` sets this once the
-    /// area exists). Invoked on `set` so a new frame triggers a redraw.
+    /// Register the renderer's repaint request (the host sets this once its
+    /// surface exists). Invoked on `set` so a new frame triggers a redraw.
     public func setRedraw(_ redraw: @escaping () -> Void) {
         lock.lock()
         requestRedraw = redraw
