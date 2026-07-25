@@ -9,8 +9,11 @@ the swift-cross-ui / GTK4 app whose executable product is
 - **Flatpak** — `flatpak/dev.tailscreen.Tailscreen.yml` (+ `.desktop` +
   `.metainfo.xml`) — the better long-term desktop channel, blocked on a Swift
   toolchain in the build sandbox (see below)
-- **Homebrew** — `homebrew/` — a formula template plus an honest account of why
-  Homebrew is a poor primary channel for a GTK app
+- **Homebrew** — `homebrew/` — no recipe of its own: the Linux AppImage is
+  carried by the *same* cask as the macOS app in
+  `middle-management/homebrew-tap`, branched `on_macos` / `on_linux`. The
+  README there explains that shape and why Homebrew is still a poor primary
+  channel for a GTK app
 
 All target the same app: id `dev.tailscreen.Tailscreen`, name **Tailscreen**,
 command `tailscreen-viewer-gtk`.
