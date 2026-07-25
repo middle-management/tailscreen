@@ -310,6 +310,29 @@ matching device, because they consume hardware frames this path never uploads.
 Hardware encode is worth having and is its own piece of work, not a name in a
 list.
 
+**Verified live, Linux→Linux, over headscale.** `scripts/e2e-linux-sharer.sh`
+brings up a local control plane, an Xvfb display with real content, a headless
+sharer (`tailscreen-sharer-linux`: the portable server + the X11 backend) and a
+headless viewer (`tailscreen-viewer-probe`: `TsnetTransport` + `ViewerSession` +
+FFmpeg decode), and asserts on what arrives:
+
+```
+[sharer] READY hostname=ts-sharer ip4=100.64.0.1 fps=10
+[sharer] viewers: 1 [100.64.0.2]
+[probe]  admitted by sharer (serverCaps=23)
+[probe]  first frame 1280x720
+[probe]  PROBE_OK frames=16 size=1280x720 nonUniform=true
+```
+
+That's the first time the sharer data plane has served a viewer off macOS, and
+three details in it are load-bearing. `nonUniform=true` means the decoded luma
+varies — real captured pixels, not a flat rectangle that would satisfy a frame
+count. `1280x720` matches the X display, so geometry survived
+capture→encode→RTP→decode. And `serverCaps=23` is
+`nack|receiverReport|fec|annotations` with **`remoteControl` (bit 3) absent** —
+the conditional-capability change observed in the wild: no injector supplied,
+so the bit is withheld.
+
 Still open before a usable Linux sharer: a host UI (tray/window) driving
 `TailscaleScreenShareServer`, the portal capture backend for Wayland, and
 system audio.

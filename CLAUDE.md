@@ -159,6 +159,17 @@ make test-e2e-local     # XCTest suites above, under local headscale
 make test-e2e-harness   # two real Tailscreen processes, asserted by log marker
 ```
 
+**Linux sharer → Linux viewer** (`scripts/e2e-linux-sharer.sh`, local-only): the
+non-macOS counterpart. Brings up local headscale + an Xvfb display with real
+content, runs `tailscreen-sharer-linux` (the portable `TailscaleScreenShareServer`
++ the X11 `CaptureEncoding` backend) and `tailscreen-viewer-probe` (the real
+receive path with a counting sink instead of a window), and asserts the viewer
+was admitted, decoded frames at the display's geometry, and that those frames
+are **non-uniform** — i.e. real captured pixels rather than a flat rectangle
+that a frame-count assertion alone would accept. It also incidentally pins the
+conditional-capability behaviour: with no injector supplied the advertised
+`serverCaps` omits `.remoteControl`.
+
 Env-var test affordances:
 
 | Env var | Read by | Effect |

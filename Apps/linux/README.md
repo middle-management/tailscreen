@@ -41,8 +41,10 @@ Apps/linux/
 │   │   └── ViewerBackChannel.swift #   outbound TCP control/annotation channel
 │   ├── TailscreenTestSharer/       # executable — synthetic sharer for local
 │   │                               #   end-to-end runs (captures nothing)
-│   └── TailscreenSharerLinux/      # library — the real SHARER capture backend
-│       └── X11CaptureEncoder.swift #   X11 capture + libavcodec → CaptureEncoding
+│   ├── TailscreenSharerLinux/      # library — the real SHARER capture backend
+│   │   └── X11CaptureEncoder.swift #   X11 capture + libavcodec → CaptureEncoding
+│   ├── tailscreen-sharer-linux/    # executable — the real headless SHARER
+│   └── tailscreen-viewer-probe/    # executable — headless viewer (asserts frames)
 ├── Tests/TailscreenViewerCoreTests/
 │   └── PipelineIntegrationTests.swift  # real H.264 → RTP → decode → sink
 └── Tests/TailscreenSharerLinuxTests/
@@ -134,6 +136,46 @@ Current limits, deliberately explicit: display shares only (window/app
 selections are *refused*, not silently widened to the whole screen), X11 only,
 no system-audio capture, no preview thumbnails, software encoders only
 (hardware VA-API/NVENC needs `AVHWFramesContext` upload this path doesn't do).
+
+### Running it end to end
+
+`tailscreen-sharer-linux` is a real (headless) sharer; `tailscreen-viewer-probe`
+is a headless viewer that decodes and asserts instead of drawing. Together they
+make the Linux→Linux path scriptable:
+
+```bash
+./scripts/e2e-linux-sharer.sh      # headscale + Xvfb + both nodes + assertions
+```
+
+That script brings its own control plane and display up and tears them down, so
+it's a single command from a clean checkout. A passing run looks like:
+
+```
+[sharer] READY hostname=ts-sharer ip4=100.64.0.1 fps=10
+[sharer] viewers: 1 [100.64.0.2]
+[probe]  admitted by sharer (serverCaps=23)
+[probe]  first frame 1280x720
+[probe]  PROBE_OK frames=16 size=1280x720 nonUniform=true
+```
+
+`nonUniform=true` is the load-bearing part: it means the decoded luma actually
+varies, so the frames carry real captured pixels rather than a flat rectangle
+that would satisfy a frame count. `serverCaps=23` is
+`nack|receiverReport|fec|annotations` — note `remoteControl` (bit 3) is
+**absent**, because this host supplies no `InputInjecting` backend and the
+portable server withholds the bit rather than inviting requests it can't serve.
+
+Local-only, for the usual tsnet reason: CI can't bring a tailnet up.
+
+To drive it by hand instead (e.g. to watch in the GTK viewer):
+
+```bash
+eval "$(./scripts/e2e-up-native.sh)"
+DISPLAY=:0 swift run --package-path Apps/linux tailscreen-sharer-linux \
+    --hostname ts-sharer --state-dir /tmp/sharer-state
+cd Apps/linux-gtk && swift run tailscreen-viewer-gtk 100.64.0.1 \
+    --state-dir /tmp/viewer-state
+```
 
 ## Not here yet
 

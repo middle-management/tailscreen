@@ -95,6 +95,39 @@ let package = Package(
             ],
             path: "Sources/TailscreenSharerLinux"
         ),
+        // Headless Linux SHARER: the portable TailscaleScreenShareServer wired
+        // to the X11 capture backend. No UI — it exists to prove the extraction
+        // end to end and to be what a tray/desktop UI eventually drives.
+        .executableTarget(
+            name: "tailscreen-sharer-linux",
+            dependencies: [
+                "TailscreenSharerLinux",
+                .product(name: "TailscreenSharer", package: "TailscreenKit"),
+                .product(name: "TailscreenProtocol", package: "TailscreenKit"),
+                .product(name: "TailscaleKit", package: "TailscaleKit"),
+            ],
+            path: "Sources/tailscreen-sharer-linux",
+            linkerSettings: [
+                .unsafeFlags(["-L", "../../Packages/TailscaleKit/lib"])
+            ]
+        ),
+        // Headless VIEWER probe: the real receive path (TsnetTransport +
+        // ViewerSession + FFmpeg decode) with a counting sink instead of a
+        // window, so an end-to-end run can be scripted and asserted.
+        .executableTarget(
+            name: "tailscreen-viewer-probe",
+            dependencies: [
+                "TailscreenViewerCore",
+                "TailscreenViewerTsnet",
+                .product(name: "FFmpegKit", package: "FFmpegKit"),
+                .product(name: "TailscreenViewer", package: "TailscreenKit"),
+                .product(name: "TailscreenProtocol", package: "TailscreenKit"),
+            ],
+            path: "Sources/tailscreen-viewer-probe",
+            linkerSettings: [
+                .unsafeFlags(["-L", "../../Packages/TailscaleKit/lib"])
+            ]
+        ),
         // Real-decode pipeline test: encode H.264 → RTP → ViewerSession →
         // FFmpeg decode → collecting sinks. No tsnet, runs on Linux CI.
         .testTarget(
