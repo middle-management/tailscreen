@@ -147,7 +147,11 @@ private struct HubHeader: View {
         // Clear the traffic lights, which float over the header's left edge.
         .padding(.leading, 84)
         .padding(.trailing, 16)
-        .frame(height: 52)
+        // minHeight, not height: at large text sizes the wordmark +
+        // tailnet lines must be able to push the bar taller rather than
+        // clip. 52 remains the floor, which is what keeps the traffic
+        // lights centered in the title-bar region at default sizes.
+        .frame(minHeight: 52)
         .frame(maxWidth: .infinity)
         .background(.bar)
         .gesture(WindowDragGesture())
@@ -434,7 +438,7 @@ private struct WelcomePane: View {
                             .font(.callout)
                             .foregroundStyle(.secondary)
                     }
-                    .frame(height: 28)
+                    .frame(minHeight: 28)
                 } else {
                     Button {
                         Task { await appState.initializeTailscaleAndLogin() }
@@ -770,7 +774,7 @@ private struct PeerListSection: View {
             Text(L("No Tailscreen devices on your tailnet"))
                 .font(.callout)
                 .foregroundStyle(.secondary)
-                .frame(height: 28)
+                .frame(minHeight: 28)
                 .transition(.opacity)
         } else if visiblePeers.isEmpty {
             // Devices exist but the filter/search hides them all — say so
@@ -778,7 +782,7 @@ private struct PeerListSection: View {
             Text(L("No screens match your filters"))
                 .font(.callout)
                 .foregroundStyle(.secondary)
-                .frame(height: 28)
+                .frame(minHeight: 28)
                 .transition(.opacity)
         } else {
             VStack(spacing: 4) {
@@ -936,7 +940,10 @@ private struct PeerRowSkeleton: View {
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 8)
-        .frame(height: 44)
+        // Matches PeerMenuRow's floor (it was 44 against the row's 48, so
+        // the skeleton→list swap nudged the list); `minHeight` for the
+        // same Dynamic Type reason as the row.
+        .frame(minHeight: 48)
         .opacity(pulsing ? 0.45 : 1.0)
         // Scoped `.animation(value:)`, NOT a global `withAnimation` in
         // onAppear, so the repeat-forever curve can't leak onto the
@@ -1026,7 +1033,7 @@ private struct PeerMenuRow: View {
                     Spacer(minLength: 0)
                 }
                 .padding(.leading, 12)
-                .frame(height: 48)
+                .frame(minHeight: 48)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -1041,7 +1048,13 @@ private struct PeerMenuRow: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.tertiary)
                     .rotationEffect(isExpanded ? .degrees(90) : .degrees(0))
-                    .frame(width: 32, height: 48)
+                    // minHeight (not maxHeight: .infinity) — inside the
+                    // list's ScrollView an unbounded child can propose
+                    // infinite height; this keeps the tap target matched
+                    // to the row's floor and lets the HStack center it
+                    // when the text lines grow.
+                    .frame(width: 32)
+                    .frame(minHeight: 48)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -1061,6 +1074,11 @@ private struct PeerMenuRow: View {
 private struct PeerDetailView: View {
     @EnvironmentObject var appState: AppState
     let peer: TailscreenPeer
+    /// Width of the "DNS" / "IP" / "Access" / "Route" gutter. Scaled
+    /// rather than fixed: at large text sizes a 40pt column truncates the
+    /// longer labels, and the whole point of the column is that the
+    /// values line up — so it has to grow with the text it holds.
+    @ScaledMetric(relativeTo: .caption) private var labelColumnWidth: CGFloat = 40
 
     /// Connecting out is only offered while the app is fully idle —
     /// mirroring what the menubar popover allowed before the list moved
@@ -1131,7 +1149,7 @@ private struct PeerDetailView: View {
                         Text(L("Access"))
                             .font(.caption)
                             .foregroundStyle(.tertiary)
-                            .frame(width: 40, alignment: .leading)
+                            .frame(width: labelColumnWidth, alignment: .leading)
                         Text(entry.policy == .allow ? L("Allowed") : L("Blocked"))
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(entry.policy == .allow ? Color.green : Color.red)
@@ -1144,7 +1162,7 @@ private struct PeerDetailView: View {
                         Text(L("Route"))
                             .font(.caption)
                             .foregroundStyle(.tertiary)
-                            .frame(width: 40, alignment: .leading)
+                            .frame(width: labelColumnWidth, alignment: .leading)
                         if let quality = qualityColor {
                             Circle()
                                 .fill(quality)
@@ -1172,7 +1190,7 @@ private struct PeerDetailView: View {
                         Text(L("Tags"))
                             .font(.caption)
                             .foregroundStyle(.tertiary)
-                            .frame(width: 40, alignment: .leading)
+                            .frame(width: labelColumnWidth, alignment: .leading)
                         ForEach(peer.tags, id: \.self) { tag in
                             Text(PeerListFilter.displayName(forTag: tag))
                                 .font(.caption2)
@@ -1287,7 +1305,7 @@ private struct PeerDetailView: View {
             Text(verbatim: label)
                 .font(.caption)
                 .foregroundStyle(.tertiary)
-                .frame(width: 40, alignment: .leading)
+                .frame(width: labelColumnWidth, alignment: .leading)
             Text(verbatim: value)
                 .font(.caption.monospaced())
                 .textSelection(.enabled)

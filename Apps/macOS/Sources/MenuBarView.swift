@@ -984,6 +984,9 @@ private struct RemoteControlViewerButton: View {
 private struct DisplayPickerSection: View {
     @EnvironmentObject var appState: AppState
     @State private var isHovered = false
+    /// Icon gutter width. SF Symbols at `.body` scale with the text size,
+    /// so a hard 16pt slot clips them at large sizes.
+    @ScaledMetric(relativeTo: .body) private var iconSlot: CGFloat = 16
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -996,7 +999,7 @@ private struct DisplayPickerSection: View {
                 HStack(spacing: 8) {
                     Image(systemName: "exclamationmark.triangle")
                         .font(.body)
-                        .frame(width: 16, alignment: .center)
+                        .frame(width: iconSlot, alignment: .center)
                         .foregroundStyle(.secondary)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(L("Another Tailscreen is sharing"))
@@ -1018,14 +1021,14 @@ private struct DisplayPickerSection: View {
                     HStack(spacing: 8) {
                         Image(systemName: "macwindow.on.rectangle")
                             .font(.body)
-                            .frame(width: 16, alignment: .center)
+                            .frame(width: iconSlot, alignment: .center)
                             .foregroundStyle(.secondary)
                         Text(L("Choose what to share…"))
                             .font(.body)
                         Spacer(minLength: 0)
                     }
                     .padding(.horizontal, 10)
-                    .frame(height: 34)
+                    .frame(minHeight: 34)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -1041,6 +1044,8 @@ private struct DisplayPickerSection: View {
 // MARK: - Menu row
 
 struct MenuRow: View {
+    /// See `DisplayPickerSection.iconSlot`.
+    @ScaledMetric(relativeTo: .body) private var iconSlot: CGFloat = 16
     let title: String
     let systemImage: String?
     let shortcut: String?
@@ -1065,10 +1070,10 @@ struct MenuRow: View {
                 if let systemImage {
                     Image(systemName: systemImage)
                         .font(.callout)
-                        .frame(width: 16, alignment: .center)
+                        .frame(width: iconSlot, alignment: .center)
                         .foregroundStyle(.secondary)
                 } else {
-                    Color.clear.frame(width: 16, height: 1)
+                    Color.clear.frame(width: iconSlot, height: 1)
                 }
 
                 Text(title)
@@ -1083,7 +1088,7 @@ struct MenuRow: View {
                 }
             }
             .padding(.horizontal, 10)
-            .frame(height: 24)
+            .frame(minHeight: 24)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
