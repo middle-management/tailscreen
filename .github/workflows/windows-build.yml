@@ -1,11 +1,18 @@
 name: Windows build
 
-# Builds the Swift side of Tailscreen on Windows, tier by tier, on the way to a
-# runnable WinUI app (docs/viewer-windows-plan.md, W2–W4).
+# Builds the Swift side of Tailscreen on Windows, on the way to a runnable WinUI
+# app (docs/viewer-windows-plan.md, W2–W4). Not a merge gate yet — nothing on
+# Windows ships.
 #
-# Not a merge gate yet. Nothing on Windows ships, and this job's job right now is
-# to tell us WHICH tiers compile — so the tier steps are continue-on-error and
-# the summary reports the matrix. It becomes a gate once the app builds.
+# Matrixed over Swift versions because the runner image (win25-vs2026) ships a
+# Windows SDK newer than older toolchains' module maps expect: Swift 6.0.3 fails
+# with `could not build module 'ucrt'` before compiling a line of our code. The
+# matrix answers "which toolchain works here" in one run instead of one per
+# guess, and fail-fast is off so a bad version doesn't hide a good one.
+#
+# Steps deliberately do NOT use continue-on-error: a failing step should BE the
+# error, with its compiler output attached, rather than something a later
+# summary step reports second-hand.
 #
 # Path-scoped push trigger for the same reason as windows-spike.yml: a Windows
 # runner shouldn't start for unrelated work, but a probe whose whole purpose is
@@ -24,19 +31,24 @@ permissions:
   contents: read
 
 jobs:
-  swift-tiers:
-    name: Portable Swift tiers
+  app:
+    name: Swift ${{ matrix.swift }}
     if: >-
       github.event_name != 'pull_request' ||
       github.event.label.name == 'run-windows-build'
     runs-on: windows-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        swift: ['6.1', '6.2']
 
     steps:
       # Windows checkouts don't create symlinks unless this is on and the
       # account may create them. TailscaleKit's Sources/ and include/ are
       # symlinks into the submodule, and without this they arrive as text files
       # containing their target path — which SwiftPM reports as an invalid
-      # custom path, aborting the entire package graph.
+      # custom path, aborting the entire package graph before anything compiles.
       - name: Allow symlinks in git
         run: git config --global core.symlinks true
 
@@ -51,107 +63,36 @@ jobs:
         shell: bash
         run: ./scripts/materialize-symlinks.sh
 
-      - name: Setup Swift
-        uses: compnerd/gha-setup-swift@main
+      - name: Setup Swift ${{ matrix.swift }}
+        uses: SwiftyLab/setup-swift@latest
         with:
-          branch: swift-6.0.3-release
-          tag: 6.0.3-RELEASE
+          swift-version: ${{ matrix.swift }}
 
       - name: Swift version
         run: swift --version
 
-      # TailscreenProtocol is the load-bearing one: Foundation + Synchronization
-      # only, no dependencies at all. If this doesn't build on Windows, nothing
-      # above it can, and the port needs a different answer.
-      - name: Tier 1 — TailscreenProtocol
-        id: protocol
-        continue-on-error: true
+      # The load-bearing tier: Foundation + Synchronization only, no
+      # dependencies. If this doesn't build, nothing above it can.
+      - name: TailscreenProtocol
         run: swift build --package-path Packages/TailscreenKit --target TailscreenProtocol
 
-      # The viewer data plane. Depends on TailscreenAudio (→ OpusKit → libopus),
-      # so this is expected to fail until opus is vendored/installed on Windows;
-      # running it anyway tells us whether anything ELSE in the tier is unhappy.
-      - name: Tier 2 — TailscreenViewer
-        id: viewer
-        continue-on-error: true
+      - name: TailscreenViewer
         run: swift build --package-path Packages/TailscreenKit --target TailscreenViewer
 
-      # The sharer data plane. Depends on TailscaleKit (header only at compile
-      # time), which needs the patch series applied.
-      - name: Tier 3 — TailscreenSharer
-        id: sharer
-        continue-on-error: true
+      - name: TailscreenSharer
         run: swift build --package-path Packages/TailscreenKit --target TailscreenSharer
 
-      - name: Report
-        if: always()
-        shell: bash
-        run: |
-          p='${{ steps.protocol.outcome }}'
-          v='${{ steps.viewer.outcome }}'
-          s='${{ steps.sharer.outcome }}'
-          {
-            echo "## Swift tiers on Windows"
-            echo ""
-            echo "| Tier | Result |"
-            echo "|---|---|"
-            echo "| TailscreenProtocol | $p |"
-            echo "| TailscreenViewer | $v |"
-            echo "| TailscreenSharer | $s |"
-          } >> "$GITHUB_STEP_SUMMARY"
-          echo "protocol=$p viewer=$v sharer=$s"
-          # Only the base tier is load-bearing today; the others are probes.
-          if [ "$p" != "success" ]; then
-            echo "TailscreenProtocol failed to build on Windows" >&2
-            exit 1
-          fi
-
-  app:
-    name: WinUI app
-    if: >-
-      github.event_name != 'pull_request' ||
-      github.event.label.name == 'run-windows-build'
-    runs-on: windows-latest
-
-    steps:
-      # Windows checkouts don't create symlinks unless this is on and the
-      # account may create them. TailscaleKit's Sources/ and include/ are
-      # symlinks into the submodule, and without this they arrive as text files
-      # containing their target path — which SwiftPM reports as an invalid
-      # custom path, aborting the entire package graph.
-      - name: Allow symlinks in git
-        run: git config --global core.symlinks true
-
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      # Belt and braces: core.symlinks only helps if the runner is also allowed
-      # to create them. This makes real copies of any that came through as text.
-      - name: Materialize symlinks
-        shell: bash
-        run: ./scripts/materialize-symlinks.sh
-
-      - name: Setup Swift
-        uses: compnerd/gha-setup-swift@main
-        with:
-          branch: swift-6.0.3-release
-          tag: 6.0.3-RELEASE
-
       # swift-cross-ui's WinUIBackend targets the Windows App SDK through
-      # CWinAppSDK. Resolving the package graph first, as its own step, keeps a
-      # dependency-resolution failure distinguishable from a compile failure —
-      # they need completely different fixes.
-      - name: Resolve dependencies
+      # CWinAppSDK. Resolving as its own step keeps a dependency-resolution
+      # failure distinguishable from a compile failure — different fixes.
+      - name: Resolve the app's dependencies
         run: swift package --package-path Apps/windows resolve
 
       - name: Build the app
         run: swift build --package-path Apps/windows --product tailscreen-windows
 
-      # A GUI app can't be launched headlessly to completion, but it CAN be
-      # asked to link and start: this proves the binary exists and is a real
-      # Windows executable rather than something that only compiled.
+      # A GUI app can't run to completion headlessly, but proving the binary
+      # exists and is a real PE executable is worth having.
       - name: Inspect the built binary
         shell: bash
         run: |
@@ -161,12 +102,12 @@ jobs:
             exit 1
           fi
           ls -la "$exe"
-          echo "built=$exe" >> "$GITHUB_STEP_SUMMARY"
 
+      # The whole point of the UI stage: a human runs this on a real desktop.
       - name: Upload the app
         uses: actions/upload-artifact@v4
         with:
-          name: tailscreen-windows
+          name: tailscreen-windows-swift${{ matrix.swift }}
           path: Apps/windows/.build/**/tailscreen-windows.exe
           retention-days: 14
           if-no-files-found: error
