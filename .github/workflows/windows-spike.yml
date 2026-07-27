@@ -5,9 +5,17 @@ name: Windows spike
 # only this proves it works.
 #
 # NOT a merge gate — nothing in the shipping product depends on it yet, and it
-# needs a Windows runner the normal CI matrix doesn't carry. Same pattern as the
-# Linux packaging job: on demand via a label, or manually.
+# needs a Windows runner the normal CI matrix doesn't carry.
+#
+# The push trigger is deliberately path-scoped to the spike itself: a Windows
+# runner shouldn't start for unrelated work, but a spike whose whole purpose is
+# to produce an answer is useless if running it needs a PR and a label first.
+# The label and dispatch triggers remain for re-running it on demand.
 on:
+  push:
+    paths:
+      - 'spikes/windows-tsnet-bridge/**'
+      - '.github/workflows/windows-spike.yml'
   pull_request:
     types: [labeled]
   workflow_dispatch:
