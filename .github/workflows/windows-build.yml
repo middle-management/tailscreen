@@ -61,7 +61,7 @@ jobs:
       # to create them. This makes real copies of any that came through as text.
       - name: Materialize symlinks
         shell: bash
-        run: ./scripts/materialize-symlinks.sh
+        run: ./scripts/materialize-symlinks.sh --force
 
       - name: Setup Swift ${{ matrix.swift }}
         uses: SwiftyLab/setup-swift@latest
