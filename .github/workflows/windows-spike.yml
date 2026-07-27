@@ -1,0 +1,89 @@
+name: Windows spike
+
+# Runs the Windows Go↔native bridge spike (spikes/windows-tsnet-bridge) on a
+# real Windows runner. Cross-compiling from Linux proves it builds and links;
+# only this proves it works.
+#
+# NOT a merge gate — nothing in the shipping product depends on it yet, and it
+# needs a Windows runner the normal CI matrix doesn't carry. Same pattern as the
+# Linux packaging job: on demand via a label, or manually.
+on:
+  pull_request:
+    types: [labeled]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bridge:
+    name: Go↔native bridge
+    # `pull_request: [labeled]` fires for every label; only ours should start a
+    # Windows runner.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.label.name == 'run-windows-spike'
+    runs-on: windows-latest
+
+    defaults:
+      run:
+        shell: bash
+        working-directory: spikes/windows-tsnet-bridge
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+          cache: false
+
+      # Leg A: the primitives, no C toolchain involved. If this fails, the
+      # Windows replacements for socketpair/SCM_RIGHTS don't hold and the whole
+      # bridge design needs rethinking.
+      - name: Leg A — bridge primitives (pure Go)
+        env:
+          CGO_ENABLED: '0'
+        run: go test -v ./...
+
+      # Leg B: the same handle, read by real C across a c-archive boundary.
+      - name: Leg B — build the c-archive
+        env:
+          CGO_ENABLED: '1'
+        run: go build -buildmode=c-archive -o spike.a .
+
+      - name: Leg B — link the C harness
+        run: |
+          # windows-latest ships mingw-w64 gcc; fall back to the MSYS2 copy if
+          # the bare name isn't on PATH.
+          if command -v gcc >/dev/null; then
+            CC=gcc
+          elif [ -x /c/msys64/mingw64/bin/gcc.exe ]; then
+            CC=/c/msys64/mingw64/bin/gcc.exe
+          else
+            echo "no gcc found on the runner" >&2
+            exit 1
+          fi
+          echo "using $CC"
+          "$CC" -I. -o harness.exe harness/harness.c spike.a \
+            -lws2_32 -lntdll -lbcrypt -lwinmm -luserenv -lsynchronization \
+            -ladvapi32 -lkernel32
+
+      - name: Leg B — run the C harness
+        run: ./harness.exe
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## Windows bridge spike"
+            echo ""
+            echo "Leg A — socketpair/SCM_RIGHTS replacements, pure Go."
+            echo "Leg B — the same handle read by real C recv() across a c-archive."
+            echo ""
+            echo "Green means the Windows bridge can keep libtailscale's existing"
+            echo "C API shape (an \`int\` the caller recv()s on). It says nothing"
+            echo "about tsnet, throughput, or the sharer's inbound listeners."
+          } >> "$GITHUB_STEP_SUMMARY"

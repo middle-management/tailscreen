@@ -1,0 +1,5 @@
+# Cross-build artifacts — regenerate with build.sh
+spike.a
+spike.h
+harness.exe
+windows-tsnet-bridge.exe
