@@ -4,11 +4,23 @@ name: Windows build
 # app (docs/viewer-windows-plan.md, W2–W4). Not a merge gate yet — nothing on
 # Windows ships.
 #
-# Matrixed over Swift versions because the runner image (win25-vs2026) ships a
-# Windows SDK newer than older toolchains' module maps expect: Swift 6.0.3 fails
-# with `could not build module 'ucrt'` before compiling a line of our code. The
-# matrix answers "which toolchain works here" in one run instead of one per
-# guess, and fail-fast is off so a bad version doesn't hide a good one.
+# Pinned to Swift 6.1. A matrix over 6.0.3/6.1/6.2 was used to find which
+# toolchain works on this runner image (win25-vs2026), and it answered:
+#
+#   6.0.3 — fails with `could not build module 'ucrt'` before compiling any of
+#           our code. Its module maps predate the image's Windows SDK.
+#   6.1   — builds everything: protocol tier, the WinUI app, viewer and sharer.
+#   6.2   — dies compiling swift-cross-ui, twice, at the same file
+#           (_RemoveGlobalActorIsolation.swift), with exit code 1 and NO
+#           diagnostic — a frontend killed rather than a source error. Capping
+#           parallelism at -j 2 did not change it, which rules out the memory
+#           pressure that was the obvious first guess. Same sources compile
+#           clean on 6.1, so this reads as a 6.2 defect on a third-party
+#           dependency rather than anything in this repo.
+#
+# 6.2 is therefore not in the matrix: a permanently red leg for a compiler bug
+# we don't control teaches nothing and hides real regressions. Worth retrying
+# when 6.3 lands or swift-cross-ui moves.
 #
 # Steps deliberately do NOT use continue-on-error: a failing step should BE the
 # error, with its compiler output attached, rather than something a later
@@ -41,7 +53,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        swift: ['6.1', '6.2']
+        swift: ['6.1']
 
     steps:
       # Windows checkouts don't create symlinks unless this is on and the
@@ -125,17 +137,8 @@ jobs:
       - name: Resolve the app's dependencies
         run: swift package --package-path Apps/windows resolve
 
-      # `-j 2` rather than the default (one job per core). Swift 6.2 died twice
-      # partway through SwiftCrossUI's ~1280 files with exit code 1 and NO
-      # diagnostic — the signature of a frontend killed rather than a source
-      # error, and 6.1 compiles the same sources fine. Four parallel frontends
-      # on a 4-core/16GB runner is a plausible memory squeeze, so this trades
-      # build time for headroom.
-      #
-      # If 6.2 still dies here, the cause is not parallelism and this should be
-      # reverted rather than lowered further.
       - name: Build the app
-        run: swift build --package-path Apps/windows --product tailscreen-windows -j 2
+        run: swift build --package-path Apps/windows --product tailscreen-windows
 
       # A GUI app can't run to completion headlessly, but proving the binary
       # exists and is a real PE executable is worth having.
