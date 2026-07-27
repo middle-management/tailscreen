@@ -57,6 +57,28 @@ jobs:
         with:
           submodules: recursive
 
+      # The patch series MUST be applied before the symlinks are materialized:
+      # the patches edit the submodule's Swift sources in place, and
+      # materialize copies that directory. Copy first and you get pristine
+      # upstream, whose `import Combine` is ungated and fails on Windows with
+      # `no such module 'Combine'` — a portability error for code that is
+      # already portable, just not yet patched.
+      #
+      # This is the Makefile's apply-patches loop inlined, because `make` isn't
+      # on the Windows image. GNU `patch` is: Git for Windows ships it in
+      # usr/bin, which is already on PATH. Compile-time only — no Go build is
+      # needed for the header.
+      - name: Apply the TailscaleKit patch series
+        shell: bash
+        working-directory: Packages/TailscaleKit
+        run: |
+          for p in Patches/*.patch; do
+            echo "applying $(basename "$p")"
+            patch -p1 -N -F0 -r - --no-backup-if-mismatch < "$p"
+          done
+          grep -n 'canImport(Combine)' Sources/TailscaleKit/IncomingConnection.swift \
+            || { echo "patches did not take: Combine import still ungated" >&2; exit 1; }
+
       # Belt and braces: core.symlinks only helps if the runner is also allowed
       # to create them. This makes real copies of any that came through as text.
       - name: Materialize symlinks
