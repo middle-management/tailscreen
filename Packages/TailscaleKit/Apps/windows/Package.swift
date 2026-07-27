@@ -1,0 +1,43 @@
+// swift-tools-version: 6.0
+import PackageDescription
+
+// tailscreen-windows — the native Windows desktop app.
+//
+// A SEPARATE package from Apps/linux-gtk for the same reason that one is
+// separate from Apps/linux: it pulls a UI toolchain (the Windows App SDK, via
+// swift-cross-ui's WinUIBackend) that no other job should pay for. The GTK app
+// additionally carries `CGtkVideo`, a GTK-linked C target that cannot build
+// here at all.
+//
+// Built up in stages (docs/viewer-windows-plan.md, W2–W4) because nothing Swift
+// in this repo had ever been compiled for Windows: this stage is UI-only, so a
+// failure lands in a small surface rather than somewhere in the union of
+// swift-cross-ui, tsnet, FFmpeg and D3D. Transport and video follow once the
+// chrome is proven to build and run.
+//
+// swift-cross-ui is pinned to the same exact revision as the GTK app — its
+// `View` protocol is young and can reshape across versions, and two apps
+// disagreeing about it would be a needless source of drift.
+let package = Package(
+    name: "tailscreen-windows",
+    dependencies: [
+        .package(
+            url: "https://github.com/stackotter/swift-cross-ui",
+            revision: "199a85614e3b2346aa10736b12f969af14a1f1ea"),
+        .package(path: "../../Packages/TailscreenKit"),
+    ],
+    targets: [
+        .executableTarget(
+            name: "tailscreen-windows",
+            dependencies: [
+                .product(name: "SwiftCrossUI", package: "swift-cross-ui"),
+                // DefaultBackend resolves to WinUIBackend on Windows (see
+                // swift-cross-ui's Package.swift), so the app doesn't name a
+                // backend and can still be built on a dev machine that isn't
+                // Windows for a quick syntax check.
+                .product(name: "DefaultBackend", package: "swift-cross-ui"),
+                .product(name: "TailscreenProtocol", package: "TailscreenKit"),
+            ]
+        )
+    ]
+)

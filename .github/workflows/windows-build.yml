@@ -91,3 +91,54 @@ jobs:
             echo "TailscreenProtocol failed to build on Windows" >&2
             exit 1
           fi
+
+  app:
+    name: WinUI app
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.label.name == 'run-windows-build'
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Swift
+        uses: compnerd/gha-setup-swift@main
+        with:
+          branch: swift-6.0.3-release
+          tag: 6.0.3-RELEASE
+
+      # swift-cross-ui's WinUIBackend targets the Windows App SDK through
+      # CWinAppSDK. Resolving the package graph first, as its own step, keeps a
+      # dependency-resolution failure distinguishable from a compile failure —
+      # they need completely different fixes.
+      - name: Resolve dependencies
+        run: swift package --package-path Apps/windows resolve
+
+      - name: Build the app
+        run: swift build --package-path Apps/windows --product tailscreen-windows
+
+      # A GUI app can't be launched headlessly to completion, but it CAN be
+      # asked to link and start: this proves the binary exists and is a real
+      # Windows executable rather than something that only compiled.
+      - name: Inspect the built binary
+        shell: bash
+        run: |
+          exe=$(find Apps/windows/.build -name 'tailscreen-windows.exe' | head -1)
+          if [ -z "$exe" ]; then
+            echo "no tailscreen-windows.exe produced" >&2
+            exit 1
+          fi
+          ls -la "$exe"
+          echo "built=$exe" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the app
+        uses: actions/upload-artifact@v4
+        with:
+          name: tailscreen-windows
+          path: Apps/windows/.build/**/tailscreen-windows.exe
+          retention-days: 14
+          if-no-files-found: error
