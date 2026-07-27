@@ -86,7 +86,7 @@ jobs:
         if: always()
         run: |
           {
-            echo "## Windows bridge spike"
+            echo "## Windows bridge spike (W0)"
             echo ""
             echo "Leg A — socketpair/SCM_RIGHTS replacements, pure Go."
             echo "Leg B — the same handle read by real C recv() across a c-archive."
@@ -94,4 +94,63 @@ jobs:
             echo "Green means the Windows bridge can keep libtailscale's existing"
             echo "C API shape (an \`int\` the caller recv()s on). It says nothing"
             echo "about tsnet, throughput, or the sharer's inbound listeners."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  libtailscale:
+    name: libtailscale c-archive
+    # W1: the bridge for real. Proves the patched libtailscale — the actual
+    # shipping dependency, not a spike — builds for Windows with a native
+    # toolchain. Cross-building from Linux with mingw proves less: it can hide
+    # toolchain differences that only surface here.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.label.name == 'run-windows-spike'
+    runs-on: windows-latest
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+          cache: false
+
+      # The Makefile's patch loop, run directly: `make` here would also try to
+      # build for the host, and the point is the Windows archive.
+      - name: Apply the TailscaleKit patch series
+        working-directory: Packages/TailscaleKit
+        run: |
+          for p in Patches/*.patch; do
+            echo "applying $(basename "$p")"
+            patch -p1 -N -F0 -r - --no-backup-if-mismatch < "$p"
+          done
+
+      - name: Build libtailscale.a for windows/amd64
+        working-directory: Packages/TailscaleKit/upstream/libtailscale
+        env:
+          CGO_ENABLED: '1'
+        run: |
+          go build -buildmode=c-archive -o libtailscale.a .
+          ls -la libtailscale.a libtailscale.h
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## libtailscale on Windows (W1)"
+            echo ""
+            echo "The patched c-archive built for windows/amd64 with a native"
+            echo "toolchain. This is the real dependency, not the spike — the"
+            echo "socketpair and SCM_RIGHTS paths now go through the platform"
+            echo "seam in bridge.go / bridge_unix.go / bridge_windows.go."
+            echo ""
+            echo "Still unproven here: a live tsnet node on Windows."
           } >> "$GITHUB_STEP_SUMMARY"

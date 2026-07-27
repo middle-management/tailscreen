@@ -98,7 +98,25 @@ First build downloads Go modules; **network access required**.
 
 `Packages/TailscaleKit/upstream/libtailscale` is pinned in `.gitmodules` (`ignore = dirty`). After a fresh clone, run `git submodule update --init --recursive` (or clone with `--recurse-submodules`).
 
-Patches in `Packages/TailscaleKit/Patches/*.patch` are applied on top of the upstream Swift sources. They add things like a `Foundation` import, glue imports for C-bridge types, `send`/`receive` on connections, public `logout`, listener poll-timeout handling, the `tsnet ListenPacket` / `PacketListener` Swift wrapper used by the UDP video path, a short-write-safe `OutgoingConnection.send` loop (patch 023 — replaced the app-side reflection hack that reached the private fd), and Linux portability gates (patch 022 — Combine→AsyncStream fallback, Glibc syscall shim, `FoundationNetworking` imports, SOCKS-free direct-loopback LocalAPI). **Do not edit `Packages/TailscaleKit/Sources/`** — those are symlinks into the submodule. Add or modify a patch instead, then re-run `make tailscale`. A new patch must be a sequential diff against the fully-patched tree (see `Patches/README.md` — the Makefile hard-fails on rejected hunks; `|| true` used to hide them and let GNU patch double-apply).
+Patches in `Packages/TailscaleKit/Patches/*.patch` are applied on top of the upstream Swift sources. They add things like a `Foundation` import, glue imports for C-bridge types, `send`/`receive` on connections, public `logout`, listener poll-timeout handling, the `tsnet ListenPacket` / `PacketListener` Swift wrapper used by the UDP video path, a short-write-safe `OutgoingConnection.send` loop (patch 023 — replaced the app-side reflection hack that reached the private fd), Linux portability gates (patch 022 — Combine→AsyncStream fallback, Glibc syscall shim, `FoundationNetworking` imports, SOCKS-free direct-loopback LocalAPI), and the **Windows bridge seam** (patch 024 — see below). **Do not edit `Packages/TailscaleKit/Sources/`** — those are symlinks into the submodule. Add or modify a patch instead, then re-run `make tailscale`. A new patch must be a sequential diff against the fully-patched tree (see `Patches/README.md` — the Makefile hard-fails on rejected hunks; `|| true` used to hide them and let GNU patch double-apply).
+
+The **Go↔C socket bridge** (patch 024) is the platform seam under
+`tailscale.go`. tsnet conns are userspace-WireGuard with no OS descriptor, so
+libtailscale bridges each to a real socket pair and hands C one end. Upstream
+does that with `socketpair(2)` plus SCM_RIGHTS descriptor passing for accepted
+connections — **neither exists on Windows** (`syscall.Socketpair`/`AF_LOCAL` are
+undefined for `GOOS=windows`; Win10 1803+ has AF_UNIX stream sockets but no
+`socketpair()` and no datagram mode, which patch 013's UDP video path needs).
+So both flavours moved behind `bridge.go`'s `bridgeStream` / `bridgePacket` /
+`bridgeConnSender` interfaces, with `bridge_unix.go` (unchanged behaviour) and
+`bridge_windows.go` (loopback TCP/UDP pairs; the accept handoff writes the
+handle *value*, since Go and C share one process and one handle table, so
+SCM_RIGHTS is unnecessary). Watch out when extending it: `syscall.Accept`,
+`Recvfrom`, `Sendto` and `SetsockoptTimeval` **compile on Windows but are
+`EWINDOWS` stubs that always fail at runtime** — which is why the Windows accept
+goes through Go's `net` package. `libtailscale.a` now builds for
+`windows/amd64`; CI job `windows-spike / libtailscale`. A live tsnet node on
+Windows is still unproven.
 
 **TailscaleKit builds and passes its tests on Linux** (Go c-archive + Swift wrapper; CI job `linux-tailscalekit`). The live two-node tsnet exchange (TCP + UDP `PacketListener` + LocalAPI over local headscale via `scripts/e2e-up-native.sh`, which is OS-aware) has been verified manually on a Linux host — see `docs/porting-plan.md` Phase 1.
 
