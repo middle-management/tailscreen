@@ -1,7 +1,9 @@
 import Foundation
 
-#if !canImport(Darwin)
+#if canImport(Glibc)
 import Glibc
+#elseif canImport(WinSDK)
+import WinSDK
 #endif
 
 // Combine stand-ins for platforms that don't have it (Linux), so the
