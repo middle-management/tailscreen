@@ -71,6 +71,23 @@ jobs:
       - name: Swift version
         run: swift --version
 
+      # libopus for the TailscreenAudio tier. vcpkg ships with the runner
+      # image, so this is an install rather than a bootstrap.
+      #
+      # COpus is a systemLibrary with `pkgConfig: "opus"`, but Windows has no
+      # pkg-config binary, so the header and library paths are passed
+      # explicitly on the build lines below instead. Note the include path ends
+      # in /opus: as COpus/shim.h documents, opus.pc's Cflags point *into* the
+      # opus/ header dir, so the include is <opus.h>, not <opus/opus.h>.
+      - name: Install libopus (vcpkg)
+        shell: bash
+        run: |
+          "$VCPKG_INSTALLATION_ROOT/vcpkg.exe" install opus:x64-windows
+          root="$VCPKG_INSTALLATION_ROOT/installed/x64-windows"
+          echo "OPUS_ROOT=$root" >> "$GITHUB_ENV"
+          ls -la "$root/include/opus/opus.h"
+          ls -la "$root/lib/"
+
       # The load-bearing tier: Foundation + Synchronization only, no
       # dependencies. If this doesn't build, nothing above it can.
       - name: TailscreenProtocol
@@ -121,14 +138,22 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
-      # Known-blocked probe, deliberately last and non-fatal: these tiers pull
-      # TailscreenAudio → OpusKit → libopus, which needs vcpkg on Windows. They
-      # run so their state is visible, but they must not fail a job whose
-      # deliverable — a runnable app — is already built and uploaded above.
-      - name: TailscreenViewer (needs libopus)
-        continue-on-error: true
-        run: swift build --package-path Packages/TailscreenKit --target TailscreenViewer
+      # The remaining tiers, which pull TailscreenAudio → OpusKit → libopus.
+      # They stay AFTER the upload so a failure here can't cost us the app
+      # artifact, but they are fatal: now that libopus is installed there's no
+      # reason to tolerate a failure, and tolerating it would only reintroduce
+      # the continue-on-error ambiguity that already misread a red run as green
+      # earlier in this workflow's history.
+      - name: TailscreenViewer
+        shell: bash
+        run: |
+          swift build --package-path Packages/TailscreenKit --target TailscreenViewer \
+            -Xcc -I"$OPUS_ROOT/include/opus" \
+            -Xlinker "/LIBPATH:$OPUS_ROOT/lib"
 
-      - name: TailscreenSharer (needs libopus)
-        continue-on-error: true
-        run: swift build --package-path Packages/TailscreenKit --target TailscreenSharer
+      - name: TailscreenSharer
+        shell: bash
+        run: |
+          swift build --package-path Packages/TailscreenKit --target TailscreenSharer \
+            -Xcc -I"$OPUS_ROOT/include/opus" \
+            -Xlinker "/LIBPATH:$OPUS_ROOT/lib"
