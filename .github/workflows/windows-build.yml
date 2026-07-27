@@ -93,7 +93,13 @@ jobs:
 
       # A GUI app can't run to completion headlessly, but proving the binary
       # exists and is a real PE executable is worth having.
-      - name: Inspect the built binary
+      #
+      # The exe is staged into a flat dist/ rather than uploaded from .build
+      # directly: a `Apps/windows/.build/**/tailscreen-windows.exe` pattern
+      # matched nothing even though this very step's `find` located the file,
+      # and an artifact upload is not worth debugging glob semantics over a
+      # dot-directory. An explicit path can't be ambiguous.
+      - name: Stage the built binary
         shell: bash
         run: |
           exe=$(find Apps/windows/.build -name 'tailscreen-windows.exe' | head -1)
@@ -102,13 +108,16 @@ jobs:
             exit 1
           fi
           ls -la "$exe"
+          mkdir -p dist
+          cp "$exe" dist/tailscreen-windows.exe
+          ls -la dist/
 
       # The whole point of the UI stage: a human runs this on a real desktop.
       - name: Upload the app
         uses: actions/upload-artifact@v4
         with:
           name: tailscreen-windows-swift${{ matrix.swift }}
-          path: Apps/windows/.build/**/tailscreen-windows.exe
+          path: dist/tailscreen-windows.exe
           retention-days: 14
           if-no-files-found: error
 
