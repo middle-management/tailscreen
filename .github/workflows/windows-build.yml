@@ -32,10 +32,24 @@ jobs:
     runs-on: windows-latest
 
     steps:
+      # Windows checkouts don't create symlinks unless this is on and the
+      # account may create them. TailscaleKit's Sources/ and include/ are
+      # symlinks into the submodule, and without this they arrive as text files
+      # containing their target path — which SwiftPM reports as an invalid
+      # custom path, aborting the entire package graph.
+      - name: Allow symlinks in git
+        run: git config --global core.symlinks true
+
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           submodules: recursive
+
+      # Belt and braces: core.symlinks only helps if the runner is also allowed
+      # to create them. This makes real copies of any that came through as text.
+      - name: Materialize symlinks
+        shell: bash
+        run: ./scripts/materialize-symlinks.sh
 
       - name: Setup Swift
         uses: compnerd/gha-setup-swift@main
@@ -100,10 +114,24 @@ jobs:
     runs-on: windows-latest
 
     steps:
+      # Windows checkouts don't create symlinks unless this is on and the
+      # account may create them. TailscaleKit's Sources/ and include/ are
+      # symlinks into the submodule, and without this they arrive as text files
+      # containing their target path — which SwiftPM reports as an invalid
+      # custom path, aborting the entire package graph.
+      - name: Allow symlinks in git
+        run: git config --global core.symlinks true
+
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           submodules: recursive
+
+      # Belt and braces: core.symlinks only helps if the runner is also allowed
+      # to create them. This makes real copies of any that came through as text.
+      - name: Materialize symlinks
+        shell: bash
+        run: ./scripts/materialize-symlinks.sh
 
       - name: Setup Swift
         uses: compnerd/gha-setup-swift@main
