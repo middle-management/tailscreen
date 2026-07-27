@@ -1,9 +1,12 @@
 import Foundation
 
+// Glibc only, deliberately. Importing WinSDK here would drag the Windows SDK's
+// `#define uuid_t UUID` into the module and make every mention of `UUID`
+// ambiguous against Foundation's — including the continuation keys in the
+// `Published` shim below. Nothing in this file needs a platform module on
+// Windows, so it doesn't ask for one.
 #if canImport(Glibc)
 import Glibc
-#elseif canImport(WinSDK)
-import WinSDK
 #endif
 
 // Combine stand-ins for platforms that don't have it (Linux), so the

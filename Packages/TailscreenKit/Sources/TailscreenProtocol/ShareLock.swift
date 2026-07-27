@@ -6,8 +6,6 @@ import Darwin
 // `Darwin.write` resolves to the module-wide Glibc shim in
 // PortabilityShims.swift; flock/open/close/ftruncate resolve unqualified.
 import Glibc
-#elseif canImport(WinSDK)
-import WinSDK
 #endif
 
 // The implementation below is POSIX (flock/open/ftruncate). Windows has no
