@@ -125,8 +125,17 @@ jobs:
       - name: Resolve the app's dependencies
         run: swift package --package-path Apps/windows resolve
 
+      # `-j 2` rather than the default (one job per core). Swift 6.2 died twice
+      # partway through SwiftCrossUI's ~1280 files with exit code 1 and NO
+      # diagnostic — the signature of a frontend killed rather than a source
+      # error, and 6.1 compiles the same sources fine. Four parallel frontends
+      # on a 4-core/16GB runner is a plausible memory squeeze, so this trades
+      # build time for headroom.
+      #
+      # If 6.2 still dies here, the cause is not parallelism and this should be
+      # reverted rather than lowered further.
       - name: Build the app
-        run: swift build --package-path Apps/windows --product tailscreen-windows
+        run: swift build --package-path Apps/windows --product tailscreen-windows -j 2
 
       # A GUI app can't run to completion headlessly, but proving the binary
       # exists and is a real PE executable is worth having.

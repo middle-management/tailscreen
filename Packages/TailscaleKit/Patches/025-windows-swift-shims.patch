@@ -1,6 +1,6 @@
-diff -ruN before/GlibcShims.swift /home/user/tailscreen/Packages/TailscaleKit/upstream/libtailscale/swift/TailscaleKit/GlibcShims.swift
---- a/upstream/libtailscale/swift/TailscaleKit/GlibcShims.swift	2026-07-27 18:52:39.744253910 +0000
-+++ b/upstream/libtailscale/swift/TailscaleKit/GlibcShims.swift	2026-07-27 18:52:54.363011133 +0000
+diff -ruN before/GlibcShims.swift after/GlibcShims.swift
+--- a/upstream/libtailscale/swift/TailscaleKit/GlibcShims.swift	2026-07-27 19:15:06.580458062 +0000
++++ b/upstream/libtailscale/swift/TailscaleKit/GlibcShims.swift	2026-07-27 18:53:42.297988446 +0000
 @@ -6,7 +6,11 @@
  // every file in the module (extend it here, not per-file, when a new syscall
  // needs qualifying). On Apple platforms this file compiles to nothing — the
@@ -14,9 +14,30 @@ diff -ruN before/GlibcShims.swift /home/user/tailscreen/Packages/TailscaleKit/up
  import Glibc
  
  enum Darwin {
-diff -ruN before/Listener.swift /home/user/tailscreen/Packages/TailscaleKit/upstream/libtailscale/swift/TailscaleKit/Listener.swift
---- a/upstream/libtailscale/swift/TailscaleKit/Listener.swift	2026-07-27 18:52:39.744484844 +0000
-+++ b/upstream/libtailscale/swift/TailscaleKit/Listener.swift	2026-07-27 18:52:54.363211885 +0000
+diff -ruN before/IncomingConnection.swift after/IncomingConnection.swift
+--- a/upstream/libtailscale/swift/TailscaleKit/IncomingConnection.swift	2026-07-27 19:15:06.580626030 +0000
++++ b/upstream/libtailscale/swift/TailscaleKit/IncomingConnection.swift	2026-07-27 19:14:42.687419970 +0000
+@@ -9,7 +9,7 @@
+ 
+ #if canImport(Darwin)
+ import Darwin
+-#else
++#elseif canImport(Glibc)
+ import Glibc
+ 
+ #endif
+diff -ruN before/Listener.swift after/Listener.swift
+--- a/upstream/libtailscale/swift/TailscaleKit/Listener.swift	2026-07-27 19:15:06.580886399 +0000
++++ b/upstream/libtailscale/swift/TailscaleKit/Listener.swift	2026-07-27 19:14:42.687633881 +0000
+@@ -9,7 +9,7 @@
+ 
+ #if canImport(Darwin)
+ import Darwin
+-#else
++#elseif canImport(Glibc)
+ import Glibc
+ 
+ #endif
 @@ -120,7 +120,7 @@
          }
          if ret < 0 {
@@ -26,9 +47,30 @@ diff -ruN before/Listener.swift /home/user/tailscreen/Packages/TailscaleKit/upst
          }
  
          logger?.log("Accepting \(proto.rawValue) connection via \(address)")
-diff -ruN before/PacketListener.swift /home/user/tailscreen/Packages/TailscaleKit/upstream/libtailscale/swift/TailscaleKit/PacketListener.swift
---- a/upstream/libtailscale/swift/TailscaleKit/PacketListener.swift	2026-07-27 18:52:39.744683443 +0000
-+++ b/upstream/libtailscale/swift/TailscaleKit/PacketListener.swift	2026-07-27 18:52:54.363403843 +0000
+diff -ruN before/OutgoingConnection.swift after/OutgoingConnection.swift
+--- a/upstream/libtailscale/swift/TailscaleKit/OutgoingConnection.swift	2026-07-27 19:15:06.585956910 +0000
++++ b/upstream/libtailscale/swift/TailscaleKit/OutgoingConnection.swift	2026-07-27 19:14:42.687906293 +0000
+@@ -12,7 +12,7 @@
+ 
+ #if canImport(Darwin)
+ import Darwin
+-#else
++#elseif canImport(Glibc)
+ import Glibc
+ 
+ #endif
+diff -ruN before/PacketListener.swift after/PacketListener.swift
+--- a/upstream/libtailscale/swift/TailscaleKit/PacketListener.swift	2026-07-27 19:15:06.582233428 +0000
++++ b/upstream/libtailscale/swift/TailscaleKit/PacketListener.swift	2026-07-27 19:14:42.688056587 +0000
+@@ -3,7 +3,7 @@
+ 
+ #if canImport(Darwin)
+ import Darwin
+-#else
++#elseif canImport(Glibc)
+ import Glibc
+ 
+ #endif
 @@ -102,7 +102,7 @@
                          return
                      }
@@ -38,9 +80,9 @@ diff -ruN before/PacketListener.swift /home/user/tailscreen/Packages/TailscaleKi
                          return
                      }
  
-diff -ruN before/SocketError.swift /home/user/tailscreen/Packages/TailscaleKit/upstream/libtailscale/swift/TailscaleKit/SocketError.swift
+diff -ruN before/SocketError.swift after/SocketError.swift
 --- a/upstream/libtailscale/swift/TailscaleKit/SocketError.swift	1970-01-01 00:00:00.000000000 +0000
-+++ b/upstream/libtailscale/swift/TailscaleKit/SocketError.swift	2026-07-27 18:50:25.029980346 +0000
++++ b/upstream/libtailscale/swift/TailscaleKit/SocketError.swift	2026-07-27 18:53:42.298697666 +0000
 @@ -0,0 +1,23 @@
 +// Copyright (c) Tailscale Inc & AUTHORS
 +// SPDX-License-Identifier: BSD-3-Clause
@@ -65,9 +107,9 @@ diff -ruN before/SocketError.swift /home/user/tailscreen/Packages/TailscaleKit/u
 +
 +var tailscaleLastSocketError: Int32 { errno }
 +#endif
-diff -ruN before/WindowsShims.swift /home/user/tailscreen/Packages/TailscaleKit/upstream/libtailscale/swift/TailscaleKit/WindowsShims.swift
+diff -ruN before/WindowsShims.swift after/WindowsShims.swift
 --- a/upstream/libtailscale/swift/TailscaleKit/WindowsShims.swift	1970-01-01 00:00:00.000000000 +0000
-+++ b/upstream/libtailscale/swift/TailscaleKit/WindowsShims.swift	2026-07-27 18:50:02.717979430 +0000
++++ b/upstream/libtailscale/swift/TailscaleKit/WindowsShims.swift	2026-07-27 18:53:42.298788579 +0000
 @@ -0,0 +1,91 @@
 +// Copyright (c) Tailscale Inc & AUTHORS
 +// SPDX-License-Identifier: BSD-3-Clause
