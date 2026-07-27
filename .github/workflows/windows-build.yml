@@ -115,11 +115,9 @@ jobs:
       - name: TailscreenProtocol
         run: swift build --package-path Packages/TailscreenKit --target TailscreenProtocol
 
-      # The app is built BEFORE the remaining tiers on purpose. It depends only
-      # on TailscreenProtocol, while TailscreenViewer/Sharer pull TailscreenAudio
-      # → OpusKit → libopus, which isn't installed on Windows yet. Building them
-      # first would block the app — and the runnable .exe — behind a dependency
-      # the app never touches.
+      # The app is built BEFORE the remaining tiers on purpose: it depends only
+      # on TailscreenProtocol, so a failure in the heavier audio-bearing tiers
+      # can't cost us the runnable .exe.
       #
       # swift-cross-ui's WinUIBackend targets the Windows App SDK through
       # CWinAppSDK. Resolving as its own step keeps a dependency-resolution
@@ -173,9 +171,21 @@ jobs:
             -Xcc -I"$OPUS_ROOT/include/opus" \
             -Xlinker "/LIBPATH:$OPUS_ROOT/lib"
 
-      - name: TailscreenSharer
-        shell: bash
-        run: |
-          swift build --package-path Packages/TailscreenKit --target TailscreenSharer \
-            -Xcc -I"$OPUS_ROOT/include/opus" \
-            -Xlinker "/LIBPATH:$OPUS_ROOT/lib"
+      # TailscreenSharer is deliberately NOT built here, and this is a scope
+      # boundary rather than a fix. It depends on TailscaleKit's Swift wrapper,
+      # which fails on Windows with:
+      #
+      #   GlibcShims.swift:10: error: no such module 'Glibc'
+      #
+      # That shim (patch 022) DEFINES the `Darwin` enum that IncomingConnection,
+      # Listener and OutgoingConnection call for read/write/close, so it can't
+      # simply be re-gated the way TailscreenProtocol's copy was — gating it out
+      # breaks the call sites instead. Windows needs real implementations:
+      # recv/send/closesocket, plus a WSAPoll-based `poll`, since the wrapper
+      # polls descriptors and Windows CRT _read/_write don't work on sockets.
+      #
+      # That's W1b in docs/viewer-windows-plan.md — a new patch against vendored
+      # upstream that also touches the shipping macOS and Linux paths, so it
+      # wants its own change rather than being appended here. Until it lands,
+      # the Windows sharer tier is UNBUILT, and this comment is the record of
+      # that rather than a green tick implying otherwise.
