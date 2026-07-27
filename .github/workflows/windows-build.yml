@@ -171,21 +171,11 @@ jobs:
             -Xcc -I"$OPUS_ROOT/include/opus" \
             -Xlinker "/LIBPATH:$OPUS_ROOT/lib"
 
-      # TailscreenSharer is deliberately NOT built here, and this is a scope
-      # boundary rather than a fix. It depends on TailscaleKit's Swift wrapper,
-      # which fails on Windows with:
-      #
-      #   GlibcShims.swift:10: error: no such module 'Glibc'
-      #
-      # That shim (patch 022) DEFINES the `Darwin` enum that IncomingConnection,
-      # Listener and OutgoingConnection call for read/write/close, so it can't
-      # simply be re-gated the way TailscreenProtocol's copy was — gating it out
-      # breaks the call sites instead. Windows needs real implementations:
-      # recv/send/closesocket, plus a WSAPoll-based `poll`, since the wrapper
-      # polls descriptors and Windows CRT _read/_write don't work on sockets.
-      #
-      # That's W1b in docs/viewer-windows-plan.md — a new patch against vendored
-      # upstream that also touches the shipping macOS and Linux paths, so it
-      # wants its own change rather than being appended here. Until it lands,
-      # the Windows sharer tier is UNBUILT, and this comment is the record of
-      # that rather than a green tick implying otherwise.
+      # TailscreenSharer pulls TailscaleKit's Swift wrapper, which needed
+      # Windows implementations of the POSIX calls it makes — patch 025.
+      - name: TailscreenSharer
+        shell: bash
+        run: |
+          swift build --package-path Packages/TailscreenKit --target TailscreenSharer \
+            -Xcc -I"$OPUS_ROOT/include/opus" \
+            -Xlinker "/LIBPATH:$OPUS_ROOT/lib"
