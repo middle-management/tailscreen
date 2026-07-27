@@ -1,0 +1,93 @@
+name: Windows build
+
+# Builds the Swift side of Tailscreen on Windows, tier by tier, on the way to a
+# runnable WinUI app (docs/viewer-windows-plan.md, W2–W4).
+#
+# Not a merge gate yet. Nothing on Windows ships, and this job's job right now is
+# to tell us WHICH tiers compile — so the tier steps are continue-on-error and
+# the summary reports the matrix. It becomes a gate once the app builds.
+#
+# Path-scoped push trigger for the same reason as windows-spike.yml: a Windows
+# runner shouldn't start for unrelated work, but a probe whose whole purpose is
+# to produce an answer is useless if running it needs a label first.
+on:
+  push:
+    paths:
+      - 'Packages/TailscreenKit/**'
+      - 'Apps/windows/**'
+      - '.github/workflows/windows-build.yml'
+  pull_request:
+    types: [labeled]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  swift-tiers:
+    name: Portable Swift tiers
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.label.name == 'run-windows-build'
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Swift
+        uses: compnerd/gha-setup-swift@main
+        with:
+          branch: swift-6.0.3-release
+          tag: 6.0.3-RELEASE
+
+      - name: Swift version
+        run: swift --version
+
+      # TailscreenProtocol is the load-bearing one: Foundation + Synchronization
+      # only, no dependencies at all. If this doesn't build on Windows, nothing
+      # above it can, and the port needs a different answer.
+      - name: Tier 1 — TailscreenProtocol
+        id: protocol
+        continue-on-error: true
+        run: swift build --package-path Packages/TailscreenKit --target TailscreenProtocol
+
+      # The viewer data plane. Depends on TailscreenAudio (→ OpusKit → libopus),
+      # so this is expected to fail until opus is vendored/installed on Windows;
+      # running it anyway tells us whether anything ELSE in the tier is unhappy.
+      - name: Tier 2 — TailscreenViewer
+        id: viewer
+        continue-on-error: true
+        run: swift build --package-path Packages/TailscreenKit --target TailscreenViewer
+
+      # The sharer data plane. Depends on TailscaleKit (header only at compile
+      # time), which needs the patch series applied.
+      - name: Tier 3 — TailscreenSharer
+        id: sharer
+        continue-on-error: true
+        run: swift build --package-path Packages/TailscreenKit --target TailscreenSharer
+
+      - name: Report
+        if: always()
+        shell: bash
+        run: |
+          p='${{ steps.protocol.outcome }}'
+          v='${{ steps.viewer.outcome }}'
+          s='${{ steps.sharer.outcome }}'
+          {
+            echo "## Swift tiers on Windows"
+            echo ""
+            echo "| Tier | Result |"
+            echo "|---|---|"
+            echo "| TailscreenProtocol | $p |"
+            echo "| TailscreenViewer | $v |"
+            echo "| TailscreenSharer | $s |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "protocol=$p viewer=$v sharer=$s"
+          # Only the base tier is load-bearing today; the others are probes.
+          if [ "$p" != "success" ]; then
+            echo "TailscreenProtocol failed to build on Windows" >&2
+            exit 1
+          fi
