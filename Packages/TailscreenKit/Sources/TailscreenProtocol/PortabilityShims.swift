@@ -85,11 +85,16 @@ public final class Published<Value: Sendable>: @unchecked Sendable {
 // Glibc stand-in for the `Darwin.`-qualified syscalls portable files use
 // (currently `ShareLock`). Internal, so any file in this module reaches it;
 // on Apple platforms the real Darwin module wins and this compiles away.
-#if !canImport(Darwin)
+//
+// Gated on Glibc rather than on "not Darwin": Windows has neither, and its
+// only consumer — ShareLock — has a Windows variant that touches no POSIX at
+// all, so there is nothing here for Windows to stand in for. Adding a
+// WinSDK branch would mean inventing a `write(2)` no caller wants.
+#if !canImport(Darwin) && canImport(Glibc)
 enum Darwin {
     @discardableResult
     static func write(_ fd: Int32, _ buf: UnsafeRawPointer?, _ count: Int) -> Int {
         Glibc.write(fd, buf, count)
     }
 }
-#endif  // !canImport(Darwin)
+#endif  // !canImport(Darwin) && canImport(Glibc)

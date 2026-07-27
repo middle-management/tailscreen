@@ -10,6 +10,11 @@ import Glibc
 import WinSDK
 #endif
 
+// The implementation below is POSIX (flock/open/ftruncate). Windows has no
+// flock and — more to the point — no `replayd`, so the constraint this type
+// models simply does not exist there. See the Windows variant at the bottom.
+#if !os(Windows)
+
 /// File-lock advisory mutex shared across Tailscreen instances on the
 /// same Mac. macOS's `replayd` enforces a per-bundle constraint that
 /// only one SCStream session can run on the bundle at a time; without
@@ -23,10 +28,6 @@ import WinSDK
 /// `flock(LOCK_EX | LOCK_NB)` it. The lock is auto-released when the
 /// fd is closed or the process exits — no orphan-lock recovery
 /// needed even on SIGKILL.
-// The implementation below is POSIX (flock/open/ftruncate). Windows has no
-// flock and — more to the point — no `replayd`, so the constraint this type
-// models simply does not exist there. See the Windows variant at the bottom.
-#if !os(Windows)
 public final class ShareLock: @unchecked Sendable {
     /// Path is /tmp because every short-lived/test scenario should
     /// see the lock land somewhere obvious and tmpfs-cleanable.
