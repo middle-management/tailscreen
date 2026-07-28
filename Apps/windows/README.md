@@ -36,12 +36,41 @@ the binary and fails the build on `STATUS_DLL_NOT_FOUND` (0xC0000135) or
 `STATUS_ENTRYPOINT_NOT_FOUND` (0xC0000139), so a missing DLL is caught on the
 runner instead of on your desktop.
 
-What it can't check is whether a window appears. On the runner the app gets
-past the loader and then traps (`0xC000001D` — how `fatalError`, a failed
-precondition or a nil force-unwrap surface on Windows), which is consistent
-with WinUI having no interactive desktop session to initialize against, but is
-*not* proof of that. Whether it also traps on a real desktop is exactly the
-open question this artifact exists to answer.
+The other thing the folder must contain is the **Windows App SDK bootstrapper**,
+at exactly this path beside the exe:
+
+```
+swift-winui_CWinAppSDK.resources\Microsoft.WindowsAppRuntime.Bootstrap.dll
+```
+
+`swift-winui`'s `WindowsAppRuntimeInitializer` looks it up at that literal
+relative path and nowhere else; when it isn't there it throws, and
+`SwiftApplication.main` turns that into `fatalError`, so the app quits
+instantly having successfully loaded every DLL it needs. An earlier version of
+the CI staging flattened the build tree's DLLs into one directory, which put
+that file somewhere the lookup doesn't check — the app aborted identically on
+the runner and on a real desktop, and the staging step now asserts the exact
+path rather than an approximation of it.
+
+If the machine has no Windows App Runtime installed, the bootstrapper runs
+`WindowsAppRuntimeInstaller.exe` when it is present beside the exe (the
+artifact ships it when the build tree provides it), and otherwise prompts.
+
+A Swift trap surfaces on Windows as either `0xC000001D` (illegal instruction,
+`ud2`) or `0xC0000409` (`__fastfail`); both have been observed from identical
+sources, so neither is the signature to look for. The message itself goes to
+stdout, which is why the app is still a console binary — see below.
+
+## Why a console window appears
+
+The executable is built for the console subsystem, so launching it opens a
+terminal alongside the UI. That is deliberate for now: everything diagnostic
+this app emits — including the bootstrapper failure above — is a `print` to
+stdout, and a windows-subsystem binary would discard it. Run it **from an
+already-open terminal** rather than double-clicking, or the window closes with
+the message before it can be read.
+
+Linking with `/SUBSYSTEM:WINDOWS` is the fix once the app reliably starts.
 
 A window should appear with the app name, a status line, and a **Check
 environment** button. Clicking it reads real values out of the portable

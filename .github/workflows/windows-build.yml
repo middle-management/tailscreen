@@ -223,16 +223,61 @@ jobs:
             exit 1
           fi
 
-          # swift-cross-ui's WinUIBackend binds the Windows App SDK, whose DLLs
-          # are restored into the build tree rather than installed system-wide.
-          # Ship whatever is there; the load check below is what decides whether
-          # it was enough.
+          # SwiftPM RESOURCE BUNDLES — directories, and their structure is
+          # load-bearing.
+          #
+          # swift-winui looks for the Windows App SDK bootstrapper at an exact
+          # relative path beside the executable:
+          #
+          #   swift-winui_CWinAppSDK.resources\Microsoft.WindowsAppRuntime.Bootstrap.dll
+          #
+          # and when it isn't there it throws, which SwiftApplication.main turns
+          # into fatalError("fatal"). A previous version of this step swept
+          # `find .build -name '*.dll'` into a FLAT dist/, which put that DLL
+          # (if it copied it at all) somewhere the lookup does not check — so
+          # the app died at startup on every machine including the runner,
+          # having loaded every library it needed. Copy the directories.
+          exedir=$(dirname "$exe")
+          shopt -s nullglob
+          for bundle in "$exedir"/*.resources "$exedir"/*.bundle; do
+            [ -d "$bundle" ] || continue
+            echo "resource bundle: $(basename "$bundle")"
+            cp -R "$bundle" dist/
+          done
+          shopt -u nullglob
+
+          # If the Windows App Runtime is absent from the test machine, the
+          # bootstrapper runs this installer when it sits beside the exe, rather
+          # than popping a "go download it" dialog. Worth shipping: the whole
+          # point of the artifact is that a tester needs nothing preinstalled.
+          installer=$(find Apps/windows/.build -name 'WindowsAppRuntimeInstaller.exe' | head -1)
+          if [ -n "$installer" ]; then
+            echo "runtime installer: $installer"
+            cp "$installer" dist/
+          else
+            echo "note: no WindowsAppRuntimeInstaller.exe in the build tree;" \
+                 "a machine without the Windows App Runtime will be prompted to install it"
+          fi
+
+          # Any remaining loose DLLs in the build tree, after the bundles so a
+          # flat copy can never stand in for a structured one.
           while IFS= read -r dll; do
             cp -n "$dll" dist/ 2>/dev/null || true
-          done < <(find Apps/windows/.build -name '*.dll')
+          done < <(find Apps/windows/.build -maxdepth 4 -name '*.dll')
 
           if [ ! -f dist/swiftCore.dll ]; then
             echo "swiftCore.dll was not staged — the artifact would not run" >&2
+            exit 1
+          fi
+
+          # Assert the exact path the app will look up, not an approximation of
+          # it. This is the invariant whose violation produced a green build and
+          # an app that quit instantly.
+          if [ ! -f dist/swift-winui_CWinAppSDK.resources/Microsoft.WindowsAppRuntime.Bootstrap.dll ] \
+             && [ ! -f dist/swift-winui_CWinAppSDK.bundle/Microsoft.WindowsAppRuntime.Bootstrap.dll ]; then
+            echo "FAILED: the Windows App SDK bootstrapper is not at the path swift-winui looks up." >&2
+            echo "The app would print 'Expected to find bootstrapper dll at one of ...' and abort." >&2
+            find Apps/windows/.build -name 'Microsoft.WindowsAppRuntime.Bootstrap.dll' >&2 || true
             exit 1
           fi
 
@@ -317,7 +362,7 @@ jobs:
           # on consecutive runs — 0xC000001D then 0xC0000409 — so neither is
           # the canonical one to test for.
           if ($hex -eq '0xC000001D' -or $hex -eq '0xC0000409') {
-            Write-Host "::warning::Swift trap ($hex) — packaging is fine, the app itself aborted. Expected headless if WinUI cannot init; check on a real desktop."
+            Write-Host "::warning::Swift trap ($hex) — every DLL loaded, then the app aborted. SwiftApplication.main turns a failed Windows App SDK init into fatalError, so check the staged resource bundle and the runtime before suspecting the UI code."
             exit 0
           }
           Write-Host "no loader failure; $hex is this app's own business"
