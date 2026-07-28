@@ -37,6 +37,17 @@ let package = Package(
                 // Windows for a quick syntax check.
                 .product(name: "DefaultBackend", package: "swift-cross-ui"),
                 .product(name: "TailscreenProtocol", package: "TailscreenKit"),
+                // The tsnet transport: node bring-up, interactive login and
+                // peer discovery. Shared with the Linux/GTK viewer — it lives
+                // in TailscreenKit precisely so consuming it here doesn't also
+                // drag in FFmpeg, ALSA and X11.
+                .product(name: "TailscreenViewerTsnet", package: "TailscreenKit"),
+            ],
+            // libtailscale.a is a link-time input, so the flag belongs on this
+            // executable rather than on the library targets that merely compile
+            // against the header. Relative, never absolute — see CLAUDE.md.
+            linkerSettings: [
+                .unsafeFlags(["-L", "../../Packages/TailscaleKit/lib"])
             ]
         )
     ]

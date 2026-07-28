@@ -55,6 +55,10 @@ let package = Package(
         .library(
             name: "TailscreenSharer",
             targets: ["TailscreenSharer"]
+        ),
+        .library(
+            name: "TailscreenViewerTsnet",
+            targets: ["TailscreenViewerTsnet"]
         )
     ],
     dependencies: [
@@ -97,6 +101,30 @@ let package = Package(
                 .product(name: "TailscaleKit", package: "TailscaleKit")
             ],
             path: "Sources/TailscreenSharer"
+        ),
+        // The viewer's tsnet transport: node bring-up (incl. the interactive
+        // browser-login URL), peer discovery, the UDP media socket and the TCP
+        // back-channel, assembled onto ViewerPipeline.
+        //
+        // It lived in Apps/linux until the Windows app needed it. Nothing about
+        // it was ever Linux-specific — it is Foundation + TailscaleKit + the
+        // portable tiers, and the `import TailscreenViewerCore` that tied it to
+        // FFmpeg and ALSA referenced no symbol from that module at all. Moving
+        // it here lets a host consume the transport without also acquiring a
+        // video decoder and an audio backend it may implement differently.
+        //
+        // Like TailscreenTransport, compiling this needs only the patched
+        // libtailscale header; the archive is a link-time input, so the `-L`
+        // flag belongs on the executable that links it, not here.
+        .target(
+            name: "TailscreenViewerTsnet",
+            dependencies: [
+                "TailscreenProtocol",
+                "TailscreenTransport",
+                "TailscreenViewer",
+                .product(name: "TailscaleKit", package: "TailscaleKit")
+            ],
+            path: "Sources/TailscreenViewerTsnet"
         ),
         .testTarget(
             name: "TailscreenProtocolTests",

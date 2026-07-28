@@ -3,7 +3,6 @@ import TailscaleKit
 import TailscreenProtocol
 import TailscreenTransport
 import TailscreenViewer
-import TailscreenViewerCore
 
 /// Connection parameters for the tsnet-backed viewer transport.
 public struct ViewerConfig: Sendable {

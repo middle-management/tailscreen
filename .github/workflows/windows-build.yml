@@ -97,6 +97,47 @@ jobs:
         shell: bash
         run: ./scripts/materialize-symlinks.sh --force
 
+      # From W3 the app links libtailscale, so the Go c-archive has to exist
+      # before `swift build` runs. Same recipe as windows-spike.yml's
+      # libtailscale job, which is where it was first proven to build for
+      # windows/amd64; the patch series above supplies bridge_windows.go
+      # (patch 024), without which this does not compile at all.
+      #
+      # Not `make tailscale`: make isn't on the Windows image, and the Makefile
+      # target does Unix-only path handling around the same two commands.
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+          cache: false
+
+      - name: Build libtailscale.a for windows/amd64
+        shell: bash
+        working-directory: Packages/TailscaleKit/upstream/libtailscale
+        env:
+          CGO_ENABLED: '1'
+        run: |
+          go build -buildmode=c-archive -o libtailscale.a .
+          ls -la libtailscale.a libtailscale.h
+
+      # `Packages/TailscaleKit/lib/libtailscale.a` is a symlink whose target is
+      # this build artifact, so materialize-symlinks.sh deliberately skipped it
+      # earlier ("target absent; leaving as-is") and it is still a dangling link
+      # (or a text file) now. Delete before copying: `cp` onto a dangling
+      # symlink follows it and would try to copy the archive over itself.
+      - name: Stage libtailscale for the linker
+        shell: bash
+        run: |
+          rm -f Packages/TailscaleKit/lib/libtailscale.a
+          mkdir -p Packages/TailscaleKit/lib
+          cp Packages/TailscaleKit/upstream/libtailscale/libtailscale.a Packages/TailscaleKit/lib/
+          ls -la Packages/TailscaleKit/lib/
+          # The module map reads include/tailscale.h — the hand-written API
+          # header, not cgo's generated libtailscale.h. Materialization already
+          # made it a real file; assert that rather than assume it.
+          test -f Packages/TailscaleKit/include/tailscale.h
+          echo "TAILSCALE_LIB=$(cd Packages/TailscaleKit/lib && pwd -W 2>/dev/null || cd Packages/TailscaleKit/lib && pwd)" >> "$GITHUB_ENV"
+
       - name: Setup Swift ${{ matrix.swift }}
         uses: SwiftyLab/setup-swift@latest
         with:
@@ -135,10 +176,23 @@ jobs:
       # CWinAppSDK. Resolving as its own step keeps a dependency-resolution
       # failure distinguishable from a compile failure — different fixes.
       - name: Resolve the app's dependencies
-        run: swift package --package-path Apps/windows resolve
+        working-directory: Apps/windows
+        run: swift package resolve
 
+      # Built FROM the package directory, not with --package-path from the repo
+      # root, because the manifest's `-L ../../Packages/TailscaleKit/lib` is
+      # resolved by the linker against ITS working directory. On Linux that
+      # relative flag is unused padding — libtailscale.pc supplies an absolute
+      # path via PKG_CONFIG_PATH — but Windows has no pkg-config (the build log
+      # says so: "couldn't find pc file for libtailscale"), which makes the
+      # manifest flag the only thing pointing at the archive.
+      #
+      # The absolute /LIBPATH: is belt and braces on top, in the same form the
+      # opus steps below already use.
       - name: Build the app
-        run: swift build --package-path Apps/windows --product tailscreen-windows
+        shell: bash
+        working-directory: Apps/windows
+        run: swift build --product tailscreen-windows -Xlinker "/LIBPATH:$TAILSCALE_LIB"
 
       # Stage the exe TOGETHER WITH THE SWIFT RUNTIME.
       #

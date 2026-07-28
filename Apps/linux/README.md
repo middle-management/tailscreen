@@ -36,9 +36,9 @@ Apps/linux/
 │   │                               # (ViewerPipeline — the decoder+sink assembler —
 │   │                               #  lives in TailscreenKit's TailscreenViewer target;
 │   │                               #  it was Foundation-only and needn't drag in libav*)
-│   ├── TailscreenViewerTsnet/      # library — the tsnet transport
-│   │   ├── TsnetTransport.swift    #   node bring-up + discovery + UDP run loop
-│   │   └── ViewerBackChannel.swift #   outbound TCP control/annotation channel
+│                               # (the tsnet transport moved to TailscreenKit's
+│                               #  TailscreenViewerTsnet target — the Windows app
+│                               #  needs it and nothing in it was Linux-specific)
 │   ├── TailscreenTestSharer/       # executable — synthetic sharer for local
 │   │                               #   end-to-end runs (captures nothing)
 │   ├── TailscreenSharerLinux/      # library — the real SHARER capture backend
@@ -53,8 +53,9 @@ Apps/linux/
 
 The package is split so the decode→audio pipeline is provable in CI without the
 tsnet/Go dependency: `TailscreenViewerCore` depends only on the A/V backends and
-the portable core. `TailscreenViewerTsnet` adds the `TailscaleKit` dependency
-(and thus the built `libtailscale.a`).
+the portable core. The transport lives in TailscreenKit as
+`TailscreenViewerTsnet`, which is what adds the `TailscaleKit` dependency (and
+thus the built `libtailscale.a`) for the executables here that consume it.
 
 ## Build & test
 
@@ -74,9 +75,10 @@ make -C ../../Packages/TailscaleKit
 PKG_CONFIG_PATH="$PWD/../../Packages/TailscaleKit" swift test --package-path .
 ```
 
-`swift test` builds and links the whole package (including `TailscreenViewerTsnet`),
-so it needs `libtailscale.a` present — which also makes it the Linux link-check
-for the tsnet transport. The `linux-viewer` CI job runs exactly this.
+`swift test` builds and links the whole package (including the executables that
+pull in `TailscreenViewerTsnet`), so it needs `libtailscale.a` present — which
+also makes it the Linux link-check for the tsnet transport. The `linux-viewer`
+CI job runs exactly this.
 
 ## Running the viewer
 

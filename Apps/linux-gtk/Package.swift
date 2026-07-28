@@ -71,7 +71,7 @@ let package = Package(
                 // Apps/linux core library package. The path dependency's
                 // identity is its directory name, `linux`.
                 .product(name: "TailscreenViewerCore", package: "linux"),
-                .product(name: "TailscreenViewerTsnet", package: "linux"),
+                .product(name: "TailscreenViewerTsnet", package: "TailscreenKit"),
             ],
             linkerSettings: [
                 // Resolve libtailscale.a for the tsnet transport (same relative

@@ -29,17 +29,24 @@ tailscreen/
 │   │   ├── Tests/TailscreenTests/  # Unit + connectivity tests
 │   │   └── Resources/          # Tailscreen.icns (release .app packaging)
 │   ├── linux/                  # Linux platform BACKENDS — a SwiftPM library
-│   │   │                       #   package wiring FFmpegKit+ALSAKit + the tsnet
-│   │   │                       #   transport into the ViewerSession core, and
-│   │   │                       #   X11CaptureKit+FFmpegKit into the sharer's
-│   │   │                       #   CaptureEncoding seam (no runnable exe)
+│   │   │                       #   package wiring FFmpegKit+ALSAKit into the
+│   │   │                       #   ViewerSession core, and X11CaptureKit+
+│   │   │                       #   FFmpegKit into the sharer's CaptureEncoding
+│   │   │                       #   seam (no runnable exe). The tsnet transport
+│   │   │                       #   is NOT here — see TailscreenViewerTsnet
 │   │   ├── Package.swift
-│   │   ├── Sources/{TailscreenViewerCore,TailscreenViewerTsnet,TailscreenSharerLinux}/
+│   │   ├── Sources/{TailscreenViewerCore,TailscreenSharerLinux}/
 │   │   └── Tests/TailscreenViewerCoreTests/  # real-decode pipeline test
-│   └── linux-gtk/              # The runnable native Linux/Windows VIEWER — a
-│       │                       #   swift-cross-ui/GTK4 app reusing Apps/linux's
-│       │                       #   Core+Tsnet with a GtkGLArea YUV renderer
-│       └── Sources/{TailscreenViewerGtk,tailscreen-viewer-gtk}/
+│   ├── linux-gtk/              # The runnable native Linux VIEWER — a
+│   │   │                       #   swift-cross-ui/GTK4 app reusing Apps/linux's
+│   │   │                       #   Core + the shared Tsnet transport, with a
+│   │   │                       #   GtkGLArea YUV renderer
+│   │   └── Sources/{TailscreenViewerGtk,tailscreen-viewer-gtk}/
+│   └── windows/                # The runnable native WINDOWS app — swift-cross-ui
+│       │                       #   on WinUI, reusing the portable tiers + the
+│       │                       #   shared tsnet transport (sign-in + peer list;
+│       │                       #   no video yet)
+│       └── Sources/tailscreen-windows/
 ├── Packages/                   # Local SwiftPM packages the app depends on
 │   ├── TailscreenKit/          # Portable (Linux-buildable) protocol core —
 │   │   │                       #   a real dependency of the app (see its README)
@@ -348,6 +355,21 @@ brand-new helper process each time. One behaviour genuinely changed:
 an `InputInjecting` backend — the mac-only server could hard-code "this
 platform can inject" and a portable one can't, so a host without injection
 correctly withholds the bit instead of inviting requests it can't serve.
+
+And a sixth tier: target **`TailscreenViewerTsnet`** — the viewer's tsnet
+transport (`TsnetTransport` + `ViewerBackChannel`): node bring-up including
+the interactive browser-login URL off the IPN bus, peer discovery, the UDP
+media socket, the TCP back-channel, and the run loop that drives
+`ViewerPipeline`. It lived in `Apps/linux` until the Windows app needed it;
+nothing in it was ever Linux-specific, and the `import TailscreenViewerCore`
+that tied it to FFmpeg and ALSA referenced **no symbol** from that module.
+Consuming the transport therefore no longer means also acquiring a video
+decoder and an audio backend a host may implement differently — which is the
+whole point on Windows, where neither FFmpeg nor ALSA applies. Like
+`TailscreenTransport` it needs only the patched libtailscale **header** to
+compile; `libtailscale.a` is a link-time input, so the `-L` flag belongs on
+the executable that links it. `@MainActor`-isolated: both GUI hosts service
+its recv/send/tick loop on the main thread.
 
 The rules for package files (no Apple frameworks; how to move a file in;
 what must be `public`) live canonically in

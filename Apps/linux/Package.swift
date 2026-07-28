@@ -16,18 +16,18 @@ import PackageDescription
 // isolated:
 //
 //   • `TailscreenViewerCore` (library): FFmpeg decoder + ALSA sink (+ the
-//     `ThreadedAudioSink` wrapper) + the `ViewerPipeline`. Foundation +
-//     FFmpeg/ALSA/Opus only — no libtailscale — so `swift test` builds it with
-//     just apt ffmpeg/alsa/opus.
-//   • `TailscreenViewerTsnet` (library): the tsnet transport. Adds TailscaleKit
-//     (→ libtailscale.a) + TailscreenTransport. Consumed by the GTK viewer.
+//     `ThreadedAudioSink` wrapper). Foundation + FFmpeg/ALSA/Opus only — no
+//     libtailscale — so `swift test` builds it with just apt ffmpeg/alsa/opus.
+//
+// The tsnet transport is NOT here: it lives in Packages/TailscreenKit as
+// `TailscreenViewerTsnet`, because the Windows app needs it and nothing in it
+// was ever Linux-specific.
 //
 // No `platforms:` clause on purpose — this is the Linux/Windows viewer.
 let package = Package(
     name: "tailscreen-viewer",
     products: [
         .library(name: "TailscreenViewerCore", targets: ["TailscreenViewerCore"]),
-        .library(name: "TailscreenViewerTsnet", targets: ["TailscreenViewerTsnet"]),
         .library(name: "TailscreenSharerLinux", targets: ["TailscreenSharerLinux"]),
     ],
     dependencies: [
@@ -49,21 +49,6 @@ let package = Package(
                 .product(name: "TailscreenProtocol", package: "TailscreenKit"),
             ],
             path: "Sources/TailscreenViewerCore"
-        ),
-        // The tsnet transport (consumed by the GTK viewer). Pulls TailscaleKit
-        // (libtailscale.a) + TailscreenTransport (IPN watcher/auth).
-        .target(
-            name: "TailscreenViewerTsnet",
-            dependencies: [
-                "TailscreenViewerCore",
-                .product(name: "TailscreenProtocol", package: "TailscreenKit"),
-                .product(name: "TailscreenTransport", package: "TailscreenKit"),
-                .product(name: "TailscaleKit", package: "TailscaleKit"),
-            ],
-            path: "Sources/TailscreenViewerTsnet",
-            linkerSettings: [
-                .unsafeFlags(["-L", "../../Packages/TailscaleKit/lib"])
-            ]
         ),
         // Synthetic sharer for local end-to-end runs (see its main.swift): a
         // second tsnet node speaking the sharer half of the wire protocol, so
@@ -118,7 +103,7 @@ let package = Package(
             name: "tailscreen-viewer-probe",
             dependencies: [
                 "TailscreenViewerCore",
-                "TailscreenViewerTsnet",
+                .product(name: "TailscreenViewerTsnet", package: "TailscreenKit"),
                 .product(name: "FFmpegKit", package: "FFmpegKit"),
                 .product(name: "TailscreenViewer", package: "TailscreenKit"),
                 .product(name: "TailscreenProtocol", package: "TailscreenKit"),
@@ -137,7 +122,7 @@ let package = Package(
                 // The node-identity test reaches into the tsnet transport for
                 // its (pure) naming decision — the transport itself still
                 // can't run in CI, but that decision can.
-                "TailscreenViewerTsnet",
+                .product(name: "TailscreenViewerTsnet", package: "TailscreenKit"),
                 .product(name: "FFmpegKit", package: "FFmpegKit"),
                 .product(name: "CFFmpeg", package: "FFmpegKit"),
                 .product(name: "TailscreenProtocol", package: "TailscreenKit"),
