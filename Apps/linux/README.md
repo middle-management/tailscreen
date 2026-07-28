@@ -33,6 +33,10 @@ Apps/linux/
 │   ├── TailscreenViewerCore/       # library — CI-testable, NO tsnet
 │   │   ├── Adapters.swift          #   FFmpeg → VideoDecoding, ALSA → AudioSink
 │   │   └── ThreadedAudioSink.swift #   off-thread ALSA writes (used by the GTK viewer)
+│   │                               # (the FFmpeg decoder moved to
+│   │                               #  Packages/TailscreenVideoFFmpeg — Windows needs
+│   │                               #  it without ALSA/X11 — and is @_exported from
+│   │                               #  Adapters.swift, so call sites are unchanged)
 │   │                               # (ViewerPipeline — the decoder+sink assembler —
 │   │                               #  lives in TailscreenKit's TailscreenViewer target;
 │   │                               #  it was Foundation-only and needn't drag in libav*)

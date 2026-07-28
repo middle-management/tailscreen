@@ -32,6 +32,7 @@ let package = Package(
     ],
     dependencies: [
         .package(path: "../../Packages/FFmpegKit"),
+        .package(path: "../../Packages/TailscreenVideoFFmpeg"),
         .package(path: "../../Packages/ALSAKit"),
         .package(path: "../../Packages/TailscreenKit"),
         .package(path: "../../Packages/TailscaleKit"),
@@ -44,6 +45,9 @@ let package = Package(
             name: "TailscreenViewerCore",
             dependencies: [
                 .product(name: "FFmpegKit", package: "FFmpegKit"),
+                // Re-exported by Adapters.swift, so consumers of this target
+                // keep getting FFmpegVideoDecoder without naming the package.
+                .product(name: "TailscreenVideoFFmpeg", package: "TailscreenVideoFFmpeg"),
                 .product(name: "ALSAKit", package: "ALSAKit"),
                 .product(name: "TailscreenViewer", package: "TailscreenKit"),
                 .product(name: "TailscreenProtocol", package: "TailscreenKit"),

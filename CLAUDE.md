@@ -58,6 +58,11 @@ tailscreen/
 │   │   │                       #   portable viewer's H.264/HEVC decoder AND the
 │   │   │                       #   Linux sharer's encoder (not used by the mac
 │   │   │                       #   app); see its README
+│   ├── TailscreenVideoFFmpeg/  # libavcodec behind the portable VideoDecoding
+│   │   │                       #   seam — shared by the Linux and Windows
+│   │   │                       #   viewers. Its own package so consuming the
+│   │   │                       #   decoder doesn't drag in ALSA/X11 (Apps/linux)
+│   │   │                       #   or make linux-protocol need libavcodec
 │   ├── X11CaptureKit/          # C shim over libxcb + MIT-SHM — the Linux
 │   │   │                       #   sharer's screen capture + BGRA→I420
 │   │   │                       #   (limited-range BT.709); see its README

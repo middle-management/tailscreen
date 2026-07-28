@@ -34,6 +34,7 @@ on:
     paths:
       - 'Packages/TailscreenKit/**'
       - 'Packages/FFmpegKit/**'
+      - 'Packages/TailscreenVideoFFmpeg/**'
       - 'Apps/windows/**'
       - '.github/workflows/windows-build.yml'
   pull_request:
@@ -106,9 +107,10 @@ jobs:
       #
       # Not `make tailscale`: make isn't on the Windows image, and the Makefile
       # target does Unix-only path handling around the same two commands.
-      # Module cache keyed on the submodule's go.sum. The c-archive build spends
-      # most of its ~100s downloading Tailscale's dependency set, and that set
-      # only moves when the submodule does.
+      #
+      # The module cache is keyed on the submodule's go.sum — most of the
+      # c-archive step's ~100s is downloading Tailscale's dependency set, and
+      # that set moves only when the submodule does.
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
