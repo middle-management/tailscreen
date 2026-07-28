@@ -36,6 +36,13 @@ the binary and fails the build on `STATUS_DLL_NOT_FOUND` (0xC0000135) or
 `STATUS_ENTRYPOINT_NOT_FOUND` (0xC0000139), so a missing DLL is caught on the
 runner instead of on your desktop.
 
+What it can't check is whether a window appears. On the runner the app gets
+past the loader and then traps (`0xC000001D` — how `fatalError`, a failed
+precondition or a nil force-unwrap surface on Windows), which is consistent
+with WinUI having no interactive desktop session to initialize against, but is
+*not* proof of that. Whether it also traps on a real desktop is exactly the
+open question this artifact exists to answer.
+
 A window should appear with the app name, a status line, and a **Check
 environment** button. Clicking it reads real values out of the portable
 `TailscreenProtocol` tier and updates the status line — which is the actual

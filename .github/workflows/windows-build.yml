@@ -180,17 +180,40 @@ jobs:
           mkdir -p dist
           cp "$exe" dist/tailscreen-windows.exe
 
-          # Any PATH entry holding Swift or Foundation DLLs is a runtime
-          # directory; copy all of them. Matching on the directory's *contents*
-          # rather than on a list of DLL names means a toolchain that adds or
-          # renames a runtime library doesn't silently ship a broken artifact
-          # (which is the failure mode being fixed here).
+          # The toolchain ships the runtime and the COMPILER in one bin
+          # directory, so copying every DLL beside swiftCore.dll produced a
+          # 1.1 GB artifact: liblldb (160 MB), sourcekitdInProc (150 MB),
+          # _InternalSwiftScan (150 MB), libclang (84 MB) and all of SwiftPM's
+          # own libraries, none of which an app loads. Hence an explicit list of
+          # what a Swift program actually links against.
+          #
+          # A name list can go stale when a toolchain adds or renames a runtime
+          # library — which is why the load check below is not optional. It is
+          # what makes an allow-list safe: anything missing from this list shows
+          # up as STATUS_DLL_NOT_FOUND on the runner, not on a tester's desktop.
+          #
+          # No bare `swift*.dll` glob: the compiler DLLs are `SwiftSyntax.dll`,
+          # `SwiftParser.dll` and friends, and one case-insensitive match would
+          # quietly put the 1.1 GB back.
+          runtime_dlls=(
+            swiftCore.dll swiftCRT.dll swiftWinSDK.dll swiftDispatch.dll
+            swiftSynchronization.dll swiftObservation.dll swiftRegexBuilder.dll
+            swiftSwiftOnoneSupport.dll swiftDistributed.dll
+            'swift_*.dll'
+            'Foundation*.dll' '_Foundation*.dll'
+            dispatch.dll BlocksRuntime.dll
+            'vcruntime140*.dll' 'msvcp140*.dll' concrt140.dll vccorlib140.dll
+          )
+
           found=0
           while IFS= read -r d; do
             [ -d "$d" ] || continue
-            if compgen -G "$d/swift*.dll" > /dev/null || compgen -G "$d/Foundation*.dll" > /dev/null; then
+            if compgen -G "$d/swiftCore.dll" > /dev/null || compgen -G "$d/Foundation*.dll" > /dev/null; then
               echo "runtime dir: $d"
-              cp -n "$d"/*.dll dist/ 2>/dev/null || true
+              for pattern in "${runtime_dlls[@]}"; do
+                compgen -G "$d/$pattern" > /dev/null || continue
+                cp -n "$d"/$pattern dist/ 2>/dev/null || true
+              done
               found=$((found + 1))
             fi
           done < <(echo "$PATH" | tr ':' '\n')
@@ -228,6 +251,21 @@ jobs:
       # Every other outcome (including a headless-display failure, and including
       # a timeout, which means it got far enough to sit in an event loop) is
       # accepted. Narrow on purpose: this is a packaging check, not a UI test.
+      #
+      # 0xC000001D is called out separately because it is what a Swift trap
+      # looks like on Windows — fatalError, a failed precondition and a nil
+      # force-unwrap all emit `ud2`, which the OS reports as an illegal
+      # instruction. That means the loader was satisfied and OUR code ran and
+      # then rejected something, which is a completely different bug class from
+      # a missing DLL and worth naming rather than lumping into "other". It does
+      # not fail the build: a WinUI app with no interactive desktop session may
+      # legitimately trap during backend init, and the runner cannot tell that
+      # apart from a real defect. A human with a real desktop can.
+      #
+      # ExitCode is an Int32 and these statuses are negative when read as one;
+      # `[uint32]` on a negative Int32 THROWS in PowerShell rather than
+      # reinterpreting the bits, which is how the first version of this step
+      # died. Mask through Int64 instead.
       - name: Check the app loads
         shell: pwsh
         working-directory: dist
@@ -238,7 +276,7 @@ jobs:
             Stop-Process -Id $p.Id -Force
             exit 0
           }
-          $code = [uint32]$p.ExitCode
+          $code = [uint32]([int64]$p.ExitCode -band 0xFFFFFFFF)
           $hex = '0x{0:X8}' -f $code
           Write-Host "exited with $hex"
           if ($code -eq 0xC0000135) {
@@ -248,6 +286,10 @@ jobs:
           if ($code -eq 0xC0000139) {
             Write-Error "STATUS_ENTRYPOINT_NOT_FOUND — a staged DLL is the wrong version"
             exit 1
+          }
+          if ($code -eq 0xC000001D) {
+            Write-Host "::warning::Swift trap (0xC000001D) — packaging is fine, the app itself aborted. Expected headless if WinUI cannot init; check on a real desktop."
+            exit 0
           }
           Write-Host "no loader failure; $hex is this app's own business"
 
