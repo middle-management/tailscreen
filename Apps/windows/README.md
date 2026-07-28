@@ -3,11 +3,24 @@
 The native Windows desktop app — swift-cross-ui on WinUI, reusing the same
 portable core as the macOS and Linux apps.
 
-**Status: UI stage (W2).** It renders and runs. It does not yet reach a tailnet
-or decode video; those are W3–W5 in `docs/viewer-windows-plan.md`. What this
-stage proves is that Swift, swift-cross-ui's WinUI backend and Tailscreen's
-portable tiers all build and run together on Windows — none of which had ever
-been tried before.
+**Status: UI stage (W2), confirmed on a real desktop.** Run on Windows 11 on
+2026-07-28: the window renders, the button responds, and the probe reads live
+values out of the portable tier (`arch x86_64 · fps cap 60 · codec auto`). It
+does not yet reach a tailnet or decode video; those are W3–W5 in
+`docs/viewer-windows-plan.md`. What this stage proves is that Swift,
+swift-cross-ui's WinUI backend and Tailscreen's portable tiers all build **and
+run** together on Windows — none of which had ever been tried before.
+
+That run was on a Windows-on-ARM VM, so the x64 binary was executing under
+emulation, which the probe line reports faithfully as `x86_64`.
+
+Two lines on stdout at startup are expected and harmless — gaps in
+swift-cross-ui's WinUI backend, not in this app:
+
+```
+[WinUIBackend] setSizeLimits(ofWindow:minimum:maximum:) unimplemented
+[WinUIBackend] setIncomingURLHandler(to:) not implemented
+```
 
 ## Testing it on a Windows machine
 
@@ -84,8 +97,12 @@ If the window appears and the button changes the text, the stage is good.
 ### Known limits at this stage
 
 - No tailnet, no peer list, no video. The app talks to nothing.
-- x86_64 only. arm64 Windows is untested and unbuilt.
+- x86_64 only. A native arm64 Windows build is unbuilt and untested; the x64
+  binary does run under emulation on Windows-on-ARM, which is how the first
+  confirmed run happened.
 - Unsigned, so SmartScreen will warn on first run.
+- The window is fixed-size in practice: `setSizeLimits` is unimplemented in
+  swift-cross-ui's WinUI backend.
 
 ## Building it yourself
 
