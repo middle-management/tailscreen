@@ -206,10 +206,27 @@ jobs:
       # explicitly on the build lines below instead. Note the include path ends
       # in /opus: as COpus/shim.h documents, opus.pc's Cflags point *into* the
       # opus/ header dir, so the include is <opus.h>, not <opus/opus.h>.
+      #
+      # Retried because this step fetches opus's source tarball from github.com
+      # and a `curl error 35 (SSL connect error)` there failed a whole run once.
+      # vcpkg prints "Not a transient network error, won't retry" for code 35,
+      # which is its classification, not a fact — an SSL handshake that fails
+      # against github.com is exactly the kind of thing that succeeds seconds
+      # later. Retrying here rather than arguing with vcpkg's taxonomy.
       - name: Install libopus (vcpkg)
         shell: bash
         run: |
-          "$VCPKG_INSTALLATION_ROOT/vcpkg.exe" install opus:x64-windows
+          for attempt in 1 2 3; do
+            if "$VCPKG_INSTALLATION_ROOT/vcpkg.exe" install opus:x64-windows; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then
+              echo "vcpkg install opus failed after 3 attempts" >&2
+              exit 1
+            fi
+            echo "::warning::vcpkg install opus failed (attempt $attempt), retrying"
+            sleep $((attempt * 15))
+          done
           root="$VCPKG_INSTALLATION_ROOT/installed/x64-windows"
           echo "OPUS_ROOT=$root" >> "$GITHUB_ENV"
           ls -la "$root/include/opus/opus.h"
