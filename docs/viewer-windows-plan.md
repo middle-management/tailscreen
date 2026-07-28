@@ -174,33 +174,87 @@ Two caveats, both to be measured rather than assumed:
 
 ## Phasing
 
-- **W0 — bridge spike.** `spikes/windows-tsnet-bridge`, green on a Windows
-  runner. *This is the one that can invalidate the shape; it comes first.*
-- **W1 — the bridge for real.** Port `tailscale.go`'s socketpair and accept paths
-  behind build tags, plus the Swift `recv`/`send` path; a live tsnet dial on
-  Windows against local headscale.
-- **W2 — video surface.** `WinUIVideoView` via `WinUIElementRepresentable`
-  hosting a `SwapChainPanel`; one synthetic YUV frame with correct pixels via
-  WARP read-back.
-- **W3 — live viewer.** Transport Task + frame marshalling
-  (`DispatcherQueue.TryEnqueue` in place of `g_idle_add`); live decoded video
-  from a real sharer.
-- **W4 — audio + chrome.** WASAPI `AudioSink`; the shared swift-cross-ui chrome
-  renders on `WinUIBackend` unchanged.
-- **W5 — sharer.** DXGI Desktop Duplication behind `CaptureEncoding`, `SendInput`
+Numbering here now matches the commits, the READMEs and the app's own doc
+comments. An earlier revision of this file numbered the stages differently
+(video at W2, audio at W4), which stopped being true once the bridge work split
+into W1/W1b and the UI landed before the transport.
+
+- **W0 — bridge spike.** ✅ `spikes/windows-tsnet-bridge`, green on a Windows
+  runner. *The one that could have invalidated the shape; it came first.*
+- **W1 — the bridge for real.** ✅ Patch 024: `bridge.go` seam,
+  `bridge_windows.go` on loopback TCP/UDP pairs.
+- **W1b — the Swift wrapper.** ✅ Patch 025: `recv`/`send`/`closesocket`,
+  `WSAPoll`, and `WSAGetLastError` in place of `errno`.
+- **W2 — the app renders.** ✅ swift-cross-ui on WinUI, portable tiers reachable
+  from the UI. Confirmed by eye on a real Windows 11 desktop.
+- **W3 — the app reaches the tailnet.** ✅ `lld-link` links the 56 MB Go
+  c-archive; the app signs in (browser login off the IPN bus) and lists tailnet
+  peers. Transport moved to `TailscreenViewerTsnet` in TailscreenKit so Windows
+  consumes it without FFmpeg/ALSA/X11. *Live sign-in against a real tailnet is
+  the outstanding manual check.*
+- **W4 — video.** ← next. Two independent halves, below.
+- **W5 — audio.** WASAPI behind the portable `AudioSink` protocol, mirroring
+  what ALSAKit does on Linux.
+- **W6 — sharer.** DXGI Desktop Duplication behind `CaptureEncoding`, `SendInput`
   behind `InputInjecting`. Both seams already exist and are exercised by Linux.
-- **W6 — packaging.** MSIX / signed installer; a Release-workflow Windows leg.
+- **W7 — packaging.** MSIX / signed installer; a Release-workflow Windows leg.
+
+### W4 in detail
+
+The two halves are independent and can fail independently, so they are separate
+steps rather than one "video" push.
+
+**Decode.** Reuse `FFmpegVideoDecoder` — the same `VideoDecoding` conformance the
+Linux viewer runs, already exercised against our exact RTP path by
+`PipelineIntegrationTests`. Media Foundation would give hardware decode and drop
+~100 MB of DLLs from the artifact, but it is a from-scratch COM backend with no
+reuse, so it is an optimisation for later rather than the way in.
+
+Two things must happen first:
+
+1. *Gate it.* `windows-build.yml`'s `ffmpeg` job fetches a pinned LGPL shared
+   FFmpeg 7.1 and runs FFmpegKit's suite on Windows. If libavcodec cannot link
+   here, the decision above is void and W4 becomes Media Foundation.
+2. *Extract it.* The decoder currently sits in `Apps/linux`'s
+   `TailscreenViewerCore` beside the ALSA sink, so consuming it drags in
+   ALSAKit and X11CaptureKit as package dependencies — the same coupling that
+   kept the transport unusable on Windows until W3 moved it. It needs its own
+   package depending only on FFmpegKit + TailscreenViewer.
+
+**Licensing is not a footnote here.** Tailscreen is MIT. A GPL FFmpeg build
+(the ones carrying libx264) would impose GPL on the whole app if shipped. The
+viewer only ever decodes, so an LGPL build is both sufficient and the only
+correct choice — and it is what CI now tests against.
+
+**Render.** `WinUIElementRepresentable` is a full `NSViewRepresentable`
+analogue (`associatedtype WinUIElementType: WinUI.FrameworkElement`, with
+make/update/coordinator/sizeThatFits), so any `FrameworkElement` can host the
+video. The hand-off from the decode side already exists and is portable:
+`FrameStore` in `TailscreenViewer` is described as "the lock + value-type-COW
+frame hand-off any renderer backend polls from its UI thread", which is exactly
+what an `updateWinUIElement` tick wants.
+
+Start with `Image` + `WriteableBitmap` and a CPU I420→BGRA conversion. It is
+slow and it is correct, and it makes "pixels on screen" a small debuggable
+increment. `SwapChainPanel` + D3D11 is the performance answer and can replace it
+without touching the decoder, the session, or `FrameStore` — which is the point
+of having the seam.
 
 ## Risks
 
-- **The bridge, still.** W0 proves the primitives; W1 has to survive contact with
-  tsnet's actual accept/dial paths and our patch series.
-- **Throughput.** Both the bridge and the SOCKS route add a copy per datagram.
-  Unmeasured.
-- **D3D device-lost.** Driver updates and sleep reset the GPU; the shim must
-  handle `DXGI_ERROR_DEVICE_REMOVED` by recreating device and swap chain.
-- **Headless render verification.** WARP should be deterministic; if it isn't,
-  Windows render coverage degrades to local-only and CI holds the compile gate.
+- **Throughput.** The bridge adds a copy per datagram. Still unmeasured, and it
+  matters more once video flows.
+- **Startup flakiness.** The Windows app has both reached its event loop and
+  aborted at startup from effectively identical binaries (`0xC000001D` /
+  `0xC0000409`). One occurrence in three tsnet-linked CI runs so far. Cause
+  unknown; if it clusters, chase it before W4 rather than during.
+- **D3D device-lost.** Only once the renderer moves to `SwapChainPanel`: driver
+  updates and sleep reset the GPU, so the shim must handle
+  `DXGI_ERROR_DEVICE_REMOVED` by recreating device and swap chain. The CPU
+  bitmap path has no such failure mode, which is a second reason to start there.
+- **Headless render verification.** A CPU blit can be verified by reading back
+  the bitmap, so unlike the D3D path it does not depend on WARP being
+  deterministic.
 
 ## Threading (unchanged model)
 
