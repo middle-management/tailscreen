@@ -203,10 +203,18 @@ jobs:
       #
       # The absolute /LIBPATH: is belt and braces on top, in the same form the
       # opus steps below already use.
+      # The opus flags are here as well as on the tier steps below because from
+      # W3 the app's dependency graph reaches them: TailscreenViewerTsnet →
+      # TailscreenViewer → TailscreenAudio → OpusKit → COpus. Before W3 the app
+      # depended only on TailscreenProtocol, which needs neither.
       - name: Build the app
         shell: bash
         working-directory: Apps/windows
-        run: swift build --product tailscreen-windows -Xlinker "/LIBPATH:$TAILSCALE_LIB"
+        run: |
+          swift build --product tailscreen-windows \
+            -Xcc -I"$OPUS_ROOT/include/opus" \
+            -Xlinker "/LIBPATH:$OPUS_ROOT/lib" \
+            -Xlinker "/LIBPATH:$TAILSCALE_LIB"
 
       # Stage the exe TOGETHER WITH THE SWIFT RUNTIME.
       #
@@ -332,6 +340,19 @@ jobs:
           while IFS= read -r dll; do
             cp -n "$dll" dist/ 2>/dev/null || true
           done < <(find Apps/windows/.build -maxdepth 4 -name '*.dll')
+
+          # libopus. vcpkg's x64-windows triplet builds SHARED libraries, so the
+          # app links an import library and needs opus.dll at run time. It lives
+          # in vcpkg's bin/, which is not on the PATH scan above (that only
+          # walks directories holding Swift/Foundation DLLs). libtailscale needs
+          # no equivalent — it is a static archive.
+          opus_root="${OPUS_ROOT:-}"
+          if [ -n "$opus_root" ] && [ -d "$opus_root/bin" ]; then
+            cp -n "$opus_root"/bin/*.dll dist/ 2>/dev/null || true
+            ls "$opus_root/bin/"
+          else
+            echo "note: no vcpkg opus bin/ — a shared libopus would be missing" >&2
+          fi
 
           if [ ! -f dist/swiftCore.dll ]; then
             echo "swiftCore.dll was not staged — the artifact would not run" >&2
