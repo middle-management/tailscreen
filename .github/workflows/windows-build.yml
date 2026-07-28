@@ -311,8 +311,13 @@ jobs:
             Write-Error "STATUS_ENTRYPOINT_NOT_FOUND — a staged DLL is the wrong version"
             exit 1
           }
-          if ($hex -eq '0xC000001D') {
-            Write-Host "::warning::Swift trap (0xC000001D) — packaging is fine, the app itself aborted. Expected headless if WinUI cannot init; check on a real desktop."
+          # Both forms of "our own code decided to die" are named. A Swift trap
+          # reaches the OS either as an illegal instruction (`ud2`) or through
+          # __fastfail, and BOTH have been observed here from the same sources
+          # on consecutive runs — 0xC000001D then 0xC0000409 — so neither is
+          # the canonical one to test for.
+          if ($hex -eq '0xC000001D' -or $hex -eq '0xC0000409') {
+            Write-Host "::warning::Swift trap ($hex) — packaging is fine, the app itself aborted. Expected headless if WinUI cannot init; check on a real desktop."
             exit 0
           }
           Write-Host "no loader failure; $hex is this app's own business"
