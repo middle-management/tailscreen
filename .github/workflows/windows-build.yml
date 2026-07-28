@@ -292,15 +292,26 @@ jobs:
           }
           $hex = '0x{0:X8}' -f $code
           Write-Host "exited with $hex"
-          if ($code -eq 0xC0000135) {
+          # Compared as STRINGS, not numbers. Every one of these constants is
+          # above Int32.MaxValue, so PowerShell types the literal `0xC0000135`
+          # as a NEGATIVE Int32, and `$code -eq 0xC0000135` — UInt32 against
+          # that — is false no matter what the app did. The first version of
+          # this check printed "exited with 0xC000001D" and then fell through to
+          # the no-match branch, which is how the bug surfaced: the gate meant
+          # to catch a missing DLL could never have fired.
+          #
+          # $hex comes straight from $code via a fixed format, so string
+          # equality is exact, and it is immune to the literal-typing rules that
+          # have now broken this step twice.
+          if ($hex -eq '0xC0000135') {
             Write-Error "STATUS_DLL_NOT_FOUND — a required DLL is missing from dist/"
             exit 1
           }
-          if ($code -eq 0xC0000139) {
+          if ($hex -eq '0xC0000139') {
             Write-Error "STATUS_ENTRYPOINT_NOT_FOUND — a staged DLL is the wrong version"
             exit 1
           }
-          if ($code -eq 0xC000001D) {
+          if ($hex -eq '0xC000001D') {
             Write-Host "::warning::Swift trap (0xC000001D) — packaging is fine, the app itself aborted. Expected headless if WinUI cannot init; check on a real desktop."
             exit 0
           }
