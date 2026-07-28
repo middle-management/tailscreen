@@ -284,6 +284,53 @@ jobs:
           ls -la dist/
           du -sh dist/
 
+      # Every staged binary must be the app's architecture.
+      #
+      # swift-winui carries BOTH arm64 and x86_64 copies of
+      # Microsoft.WindowsAppRuntime.Bootstrap.dll in its source tree, and its
+      # manifest picks between them with #if arch(...). The old flat sweep
+      # ignored that: `find` yields arm64/ before x86_64/, and `cp -n` took the
+      # first and then declined to overwrite it — so the artifact shipped an
+      # ARM64 bootstrapper beside an x64 exe. An x64 process cannot load an
+      # ARM64 DLL, so it failed with "Failed to load bootstrapper dll", which
+      # reads like a missing-file problem and is not one. Reported from a
+      # Windows-on-ARM VM, where PowerShell (itself ARM64) loaded the same DLL
+      # happily — a detail that makes the mismatch easy to misread.
+      #
+      # Checking the whole directory rather than just that one DLL: the defect
+      # was "a wrong-architecture file got staged", and nothing makes the
+      # bootstrapper the only file that can happen to.
+      - name: Check the staged binaries match the app's architecture
+        shell: pwsh
+        working-directory: dist
+        run: |
+          function Get-PEMachine($path) {
+            $fs = [IO.File]::OpenRead($path)
+            try {
+              $br = [IO.BinaryReader]::new($fs)
+              $fs.Position = 0x3C
+              $pe = $br.ReadInt32()
+              $fs.Position = $pe + 4
+              return '{0:X4}' -f $br.ReadUInt16()
+            } finally { $fs.Dispose() }
+          }
+          $want = Get-PEMachine 'tailscreen-windows.exe'
+          Write-Host "app architecture: $want (8664 = x64, AA64 = ARM64)"
+          $bad = @()
+          Get-ChildItem -Recurse -File |
+            Where-Object { $_.Extension -in '.dll', '.exe' } |
+            ForEach-Object {
+              $m = Get-PEMachine $_.FullName
+              if ($m -ne $want) {
+                $bad += "  $($_.FullName.Substring($PWD.Path.Length + 1)) is $m"
+              }
+            }
+          if ($bad.Count -gt 0) {
+            Write-Error ("architecture mismatch — these cannot load into a $want process:`n" + ($bad -join "`n"))
+            exit 1
+          }
+          Write-Host "all staged binaries are $want"
+
       # Catch a missing DLL HERE rather than on a tester's desktop.
       #
       # A WinUI app can't run to completion on a headless runner, so this does
