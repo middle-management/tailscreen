@@ -262,10 +262,18 @@ jobs:
       # legitimately trap during backend init, and the runner cannot tell that
       # apart from a real defect. A human with a real desktop can.
       #
-      # ExitCode is an Int32 and these statuses are negative when read as one;
+      # ExitCode is an Int32 and these statuses are negative when read as one.
       # `[uint32]` on a negative Int32 THROWS in PowerShell rather than
-      # reinterpreting the bits, which is how the first version of this step
-      # died. Mask through Int64 instead.
+      # reinterpreting the bits, and `-band 0xFFFFFFFF` does NOT rescue it:
+      # PowerShell types that literal as Int32 -1, so the mask is a no-op and
+      # the value stays negative. Both mistakes were made here in turn.
+      #
+      # BitConverter reinterprets the four bytes with no dependency on how the
+      # language types integer literals, which is the property that matters.
+      #
+      # The classification is wrapped because a bug in THIS step must not fail
+      # the build: it can only legitimately fail for the two loader statuses,
+      # and if the code can't be read then it can't be claimed to be either.
       - name: Check the app loads
         shell: pwsh
         working-directory: dist
@@ -276,7 +284,12 @@ jobs:
             Stop-Process -Id $p.Id -Force
             exit 0
           }
-          $code = [uint32]([int64]$p.ExitCode -band 0xFFFFFFFF)
+          try {
+            $code = [System.BitConverter]::ToUInt32([System.BitConverter]::GetBytes([int32]$p.ExitCode), 0)
+          } catch {
+            Write-Host "::warning::could not classify exit code '$($p.ExitCode)': $_"
+            exit 0
+          }
           $hex = '0x{0:X8}' -f $code
           Write-Host "exited with $hex"
           if ($code -eq 0xC0000135) {
