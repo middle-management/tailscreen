@@ -262,6 +262,11 @@ jobs:
       # No restore-keys on purpose: a partial hit here would mix objects built
       # against a different dependency revision, which is exactly the failure
       # mode that makes build caches untrustworthy.
+      #
+      # EVERY manifest in the app's dependency graph must be listed below. Adding
+      # a package to Apps/windows/Package.swift without adding its manifest here
+      # leaves a hole: bumping that package's own dependencies would not change
+      # the key, so a stale .build would be restored against new revisions.
       - name: Cache the app's build directory
         uses: actions/cache@v4
         with:
@@ -271,7 +276,9 @@ jobs:
             hashFiles('Apps/windows/Package.swift',
                       'Packages/TailscreenKit/Package.swift',
                       'Packages/TailscaleKit/Package.swift',
-                      'Packages/OpusKit/Package.swift') }}
+                      'Packages/OpusKit/Package.swift',
+                      'Packages/TailscreenVideoFFmpeg/Package.swift',
+                      'Packages/FFmpegKit/Package.swift') }}
 
       - name: Resolve the app's dependencies
         working-directory: Apps/windows
