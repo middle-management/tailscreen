@@ -3,24 +3,38 @@
 The native Windows desktop app — swift-cross-ui on WinUI, reusing the same
 portable core as the macOS and Linux apps.
 
-**Status: UI stage (W2), confirmed on a real desktop.** Run on Windows 11 on
-2026-07-28: the window renders, the button responds, and the probe reads live
-values out of the portable tier (`arch x86_64 · fps cap 60 · codec auto`). It
-does not yet reach a tailnet or decode video; those are W3–W5 in
-`docs/viewer-windows-plan.md`. What this stage proves is that Swift,
-swift-cross-ui's WinUI backend and Tailscreen's portable tiers all build **and
-run** together on Windows — none of which had ever been tried before.
+**Status: transport stage (W3).** The app brings up a real tsnet node, shows the
+interactive browser-login URL, and lists the tailnet's Tailscreen peers. It does
+not yet decode video or play audio — those are W4–W5 in
+`docs/viewer-windows-plan.md`.
 
-That run was on a Windows-on-ARM VM, so the x64 binary was executing under
-emulation, which the probe line reports faithfully as `x86_64`.
+What each stage established:
 
-Two lines on stdout at startup are expected and harmless — gaps in
-swift-cross-ui's WinUI backend, not in this app:
+- **W2** — Swift, swift-cross-ui's WinUI backend and the portable tiers build
+  and run together on Windows. Confirmed by eye on Windows 11 (2026-07-28):
+  window renders, button responds, probe reads `arch x86_64 · fps cap 60 ·
+  codec auto` out of `TailscreenProtocol`. That desktop was Windows-on-ARM, so
+  the x64 binary ran under emulation and the probe reported it faithfully.
+- **W3** — `libtailscale.a` (56 MB, `windows/amd64`) links into a Swift
+  executable via `lld-link`, and the app starts and holds its event loop with
+  tsnet linked in. Confirmed in CI. A live sign-in against a real tailnet is
+  the remaining manual check.
+
+Several lines on stdout at startup are expected and harmless — gaps in
+swift-cross-ui's WinUI backend, not faults here:
 
 ```
 [WinUIBackend] setSizeLimits(ofWindow:minimum:maximum:) unimplemented
 [WinUIBackend] setIncomingURLHandler(to:) not implemented
+[WinUIBackend] failed to attach to parent console
 ```
+
+**Startup is intermittently flaky.** The same binary has both reached its event
+loop and aborted at startup on consecutive CI runs, with the abort surfacing as
+`0xC000001D` or `0xC0000409`. It is not caused by linking tsnet — the trap
+predates W3 and was seen from builds that differed only in a CI script. If the
+app quits instantly, run it again before investigating; if it quits every time,
+that is a different problem and the stderr text will say so.
 
 ## Testing it on a Windows machine
 
@@ -85,24 +99,42 @@ the message before it can be read.
 
 Linking with `/SUBSYSTEM:WINDOWS` is the fix once the app reliably starts.
 
-A window should appear with the app name, a status line, and a **Check
-environment** button. Clicking it reads real values out of the portable
-`TailscreenProtocol` tier and updates the status line — which is the actual
-point of this stage: a window that paints but can't reach the shared core would
-be a dead end, and only clicking proves the event loop, the observable update
-and the repaint all work.
+A window should appear with a status line reading **Not signed in** and a **Sign
+in to Tailscale** button. Clicking it:
 
-If the window appears and the button changes the text, the stage is good.
+1. Creates a tsnet node under `%LOCALAPPDATA%\Tailscreen\tailscale`.
+2. Shows a login URL — as selectable text *and* an **Open in browser** button,
+   because launching a browser is the step most likely to fail and a URL you can
+   paste always works.
+3. Once you complete the browser login, the status becomes **Signed in as
+   \<you\>** and the tailnet's Tailscreen peers appear, each with an online dot,
+   hostname and Tailscale IP.
+
+**That peer list is the point of this stage.** A window can render without a
+tailnet; a peer list cannot. If names you recognise appear there, libtailscale's
+Windows bridge (patch 024) is carrying a real tsnet node — which is the claim
+the whole port rests on.
+
+An empty list is a *result*, not a failure, if the tailnet has no other
+Tailscreen instance running: the app distinguishes "still looking" from "none
+found" deliberately.
+
+Clicking a peer does nothing yet — connecting needs a decoder and a render
+surface (W4).
 
 ### Known limits at this stage
 
-- No tailnet, no peer list, no video. The app talks to nothing.
+- No video and no audio. Selecting a peer does nothing — W4/W5.
+- The node is brought up with `nodeRole: .viewerOnly`, so it is ephemeral and
+  deliberately excluded from other peers' discovery. This machine can watch;
+  it cannot yet be watched.
 - x86_64 only. A native arm64 Windows build is unbuilt and untested; the x64
   binary does run under emulation on Windows-on-ARM, which is how the first
   confirmed run happened.
 - Unsigned, so SmartScreen will warn on first run.
 - The window is fixed-size in practice: `setSizeLimits` is unimplemented in
   swift-cross-ui's WinUI backend.
+- Startup is intermittently flaky — see above.
 
 ## Building it yourself
 
