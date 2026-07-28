@@ -131,6 +131,21 @@ jobs:
           rm -f Packages/TailscaleKit/lib/libtailscale.a
           mkdir -p Packages/TailscaleKit/lib
           cp Packages/TailscaleKit/upstream/libtailscale/libtailscale.a Packages/TailscaleKit/lib/
+
+          # ALSO under the MSVC name. Modules/libtailscale/module.modulemap says
+          # `link "tailscale"`, so the Swift driver emits -ltailscale, and on
+          # Windows that resolves to `tailscale.lib` — not `libtailscale.a`,
+          # which is the Unix spelling the Makefile produces and every other
+          # platform expects. Without this the build compiles cleanly and dies at
+          # the very last step with
+          #
+          #   lld-link: error: could not open 'tailscale.lib'
+          #
+          # Same bytes under both names rather than a rename, so nothing that
+          # looks for the Unix artifact (the Makefile, the Linux jobs, the
+          # symlink's own target path) stops finding it.
+          cp Packages/TailscaleKit/upstream/libtailscale/libtailscale.a \
+             Packages/TailscaleKit/lib/tailscale.lib
           ls -la Packages/TailscaleKit/lib/
           # The module map reads include/tailscale.h — the hand-written API
           # header, not cgo's generated libtailscale.h. Materialization already
