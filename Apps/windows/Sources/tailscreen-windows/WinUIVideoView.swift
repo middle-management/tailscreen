@@ -1,6 +1,9 @@
 import Foundation
 import SwiftCrossUI
 import WinUI
+// `WinUIElementRepresentable` lives in the BACKEND module, not in SwiftCrossUI
+// and not in WinUI — it is the seam between the two, so neither re-exports it.
+import WinUIBackend
 
 import class TailscreenViewer.FrameStore
 import enum TailscreenViewer.I420Converter
@@ -27,8 +30,10 @@ struct WinUIVideoView: WinUIElementRepresentable {
     /// through `store`, not through this.
     let generation: Int
 
+    @MainActor
     func makeCoordinator() -> Coordinator { Coordinator() }
 
+    @MainActor
     func makeWinUIElement(context: Context) -> WinUI.Image {
         let image = WinUI.Image()
         // Fill the pane; the sharer's aspect ratio is preserved by `uniform`
@@ -38,33 +43,33 @@ struct WinUIVideoView: WinUIElementRepresentable {
         return image
     }
 
+    @MainActor
     func updateWinUIElement(_ element: WinUI.Image, context: Context) {
         context.coordinator.draw(from: store, into: element)
     }
 
+    /// Take whatever the parent offers, falling back to 16:9 when a dimension is
+    /// unspecified. The frame's own size is deliberately NOT consulted: with
+    /// `stretch = .uniform` the element letterboxes itself, so sizing to the
+    /// video would make the layout jump on the first decoded frame and again on
+    /// every resolution change.
+    ///
+    /// This overrides the protocol's default, which measures the element — an
+    /// `Image` with no source yet measures zero, which would collapse the pane
+    /// before the stream starts.
+    @MainActor
     func sizeThatFits(
         _ proposal: ProposedViewSize,
         winUIElement: WinUI.Image,
         context: Context
     ) -> ViewSize {
-        // Take whatever it is given: the frame's own size is irrelevant to
-        // layout once `stretch = .uniform` letterboxes it.
-        ViewSize(
-            size: SIMD2(
-                proposal.width ?? 640,
-                proposal.height ?? 360
-            ),
-            idealSize: SIMD2(640, 360),
-            minimumWidth: 160,
-            minimumHeight: 90,
-            maximumWidth: nil,
-            maximumHeight: nil
-        )
+        proposal.replacingUnspecifiedDimensions(by: ViewSize(640, 360))
     }
 
     /// Owns the bitmap across updates. Recreating a `WriteableBitmap` per frame
     /// would allocate a full-resolution surface 60 times a second; it is rebuilt
     /// only when the video size actually changes.
+    @MainActor
     final class Coordinator {
         private var bitmap: WriteableBitmap?
         private var bitmapWidth = 0
