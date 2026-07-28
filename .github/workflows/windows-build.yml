@@ -33,6 +33,7 @@ on:
   push:
     paths:
       - 'Packages/TailscreenKit/**'
+      - 'Packages/FFmpegKit/**'
       - 'Apps/windows/**'
       - '.github/workflows/windows-build.yml'
   pull_request:
@@ -570,3 +571,75 @@ jobs:
           swift build --package-path Packages/TailscreenKit --target TailscreenSharer \
             -Xcc -I"$OPUS_ROOT/include/opus" \
             -Xlinker "/LIBPATH:$OPUS_ROOT/lib"
+
+  # W4 gate: can a Swift program on Windows decode H.264 with libavcodec?
+  #
+  # This is the load-bearing question for the video stage, and it is worth
+  # answering before any decoder code exists — if libavcodec can't be linked
+  # here, the choice is Media Foundation and W4 looks completely different.
+  #
+  # Deliberately a SEPARATE job from `app`: it needs neither the submodule, the
+  # Go toolchain, nor libtailscale, and keeping it independent means an FFmpeg
+  # problem reads as an FFmpeg problem.
+  ffmpeg:
+    name: FFmpegKit
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.label.name == 'run-windows-build'
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # A PREBUILT FFmpeg rather than vcpkg. The vcpkg `ffmpeg` port builds from
+      # source and would dominate this job's runtime for a dependency we only
+      # need to link against; BtbN publishes ready-made Windows builds with
+      # headers and MSVC import libraries.
+      #
+      # LGPL, not GPL, and that is a licensing decision rather than a
+      # convenience one: Tailscreen is MIT, and linking a GPL FFmpeg build would
+      # impose GPL on the whole app. The LGPL build has no libx264, so it cannot
+      # ENCODE H.264 — which is exactly right for a viewer, and which FFmpegKit's
+      # tests already handle by self-skipping the encode cases
+      # (`FFmpeg.firstAvailableEncoder(...) != nil` guards).
+      #
+      # The version is pinned to 7.1 even though the build itself rolls: a fully
+      # floating `master` asset would turn an upstream FFmpeg change into a
+      # mystery failure here.
+      - name: Download FFmpeg (LGPL shared, 7.1)
+        shell: bash
+        run: |
+          set -euo pipefail
+          url=https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-win64-lgpl-shared-7.1.zip
+          curl -fsSL -o "$RUNNER_TEMP/ffmpeg.zip" "$url"
+          mkdir -p "$RUNNER_TEMP/ffmpeg"
+          unzip -q "$RUNNER_TEMP/ffmpeg.zip" -d "$RUNNER_TEMP/ffmpeg"
+
+          # The archive has one top-level directory whose name embeds the build
+          # date, so discover it rather than reconstructing it.
+          root=$(find "$RUNNER_TEMP/ffmpeg" -mindepth 1 -maxdepth 1 -type d | head -1)
+          [ -n "$root" ] || { echo "unexpected archive layout" >&2; exit 1; }
+          ls "$root/include/libavcodec/avcodec.h" "$root/lib/avcodec.lib"
+
+          native=$(cygpath -w "$root" 2>/dev/null || echo "$root")
+          echo "FFMPEG_ROOT=$native" >> "$GITHUB_ENV"
+          # The DLLs live in bin/ and are needed to RUN the tests, not to link.
+          cygpath -w "$root/bin" >> "$GITHUB_PATH"
+
+      - name: Setup Swift
+        uses: SwiftyLab/setup-swift@latest
+        with:
+          swift-version: '6.1'
+
+      # `swift test`, not `swift build`: linking proves the import libraries
+      # resolve, but only running proves the DLLs load and that this build
+      # actually carries an H.264 decoder (`testH264DecoderAvailable`). The
+      # AVCC↔Annex-B conversion tests are pure Swift and run regardless — they
+      # are the part the RTP path depends on most.
+      - name: Test FFmpegKit
+        shell: bash
+        run: |
+          swift test --package-path Packages/FFmpegKit \
+            -Xcc -I"$FFMPEG_ROOT/include" \
+            -Xlinker "/LIBPATH:$FFMPEG_ROOT/lib"
