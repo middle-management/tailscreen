@@ -6,6 +6,8 @@ import SwiftCrossUI
 // own `Published` / `ObservableObject` shims, the same collision the GTK app
 // hits and solves the same way.
 import struct TailscreenProtocol.QualitySettings
+import class TailscreenVideoFFmpeg.FFmpegVideoDecoder
+import class TailscreenViewer.FrameStore
 import struct TailscreenViewerTsnet.DiscoveredSharer
 import class TailscreenViewerTsnet.TsnetTransport
 import struct TailscreenViewerTsnet.ViewerConfig
@@ -13,18 +15,19 @@ import struct TailscreenViewerTsnet.ViewerConfig
 // NOT named main.swift on purpose: Swift rejects `@main` in a file with that
 // name, because main.swift is itself top-level code.
 
-/// Stage W3 of the Windows port: a live tsnet node, interactive sign-in, and
-/// the tailnet peer list.
+/// Stage W4 of the Windows port: sign in, pick a peer, watch its screen.
 ///
-/// W2 proved the chrome renders. This proves the thing the whole port actually
-/// rests on — that libtailscale's Go↔native bridge, rebuilt for Windows in
-/// patch 024, carries a real tsnet node on a real Windows machine. Everything
-/// downstream (video, audio, remote control) is a consumer of that node, so
-/// until it comes up nothing else is worth wiring.
+/// W2 proved the chrome renders; W3 proved libtailscale's Go↔native bridge
+/// (patch 024) carries a real tsnet node. This adds the video path on top —
+/// libavcodec decode through the portable `VideoDecoding` seam, and a CPU blit
+/// into a WinUI `WriteableBitmap`.
 ///
-/// Still no video: that needs a decoder and a render surface (W4). The peer
-/// list is the deliberate stopping point, because it is the first screen whose
-/// contents can only be correct if the node is genuinely on the tailnet.
+/// Both halves are shared rather than Windows-specific: the decoder is the same
+/// `FFmpegVideoDecoder` the Linux viewer runs, and the colour conversion is
+/// `I420Converter` in the portable tier, tested on Linux. What is genuinely new
+/// here is only the WinUI surface.
+///
+/// No audio yet — that is W5.
 @main
 struct TailscreenWindowsApp: App {
     @State var state = AppUIState()
@@ -48,13 +51,29 @@ struct TailscreenWindowsApp: App {
                     }
                 }
 
-                if state.phase == .ready {
+                if let host = state.watching {
+                    // Watching: the video fills the window, with one way out.
+                    HStack(spacing: 8) {
+                        Text("Watching \(host)")
+                            .font(.caption)
+                        Spacer()
+                        Button("Stop") { state.disconnect() }
+                    }
+                    WinUIVideoView(
+                        store: state.frameStore,
+                        generation: state.frameGeneration
+                    )
+                } else if state.phase == .ready {
                     HStack(spacing: 8) {
                         Button("Refresh") { state.refreshPeers() }
                         Button("Sign out") { state.signOut() }
                     }
                     Divider()
-                    PeerList(peers: state.peers, isSearching: state.isSearching)
+                    PeerList(
+                        peers: state.peers,
+                        isSearching: state.isSearching,
+                        onSelect: { state.connect(to: $0) }
+                    )
                 }
 
                 if !state.detail.isEmpty {
@@ -95,7 +114,7 @@ struct LoginCard: View {
     }
 }
 
-/// The discovered-sharer list.
+/// The discovered-sharer list. Selecting a row dials that peer.
 ///
 /// An empty list is reported as such rather than left blank: "no screens found"
 /// and "still looking" are different states, and on a tailnet with one machine
@@ -103,6 +122,7 @@ struct LoginCard: View {
 struct PeerList: View {
     let peers: [DiscoveredSharer]
     let isSearching: Bool
+    let onSelect: (DiscoveredSharer) -> Void
 
     var body: some View {
         VStack(spacing: 6) {
@@ -118,7 +138,11 @@ struct PeerList: View {
                         ForEach(peers, id: \.id) { peer in
                             HStack(spacing: 8) {
                                 Text(peer.isOnline ? "●" : "○")
-                                Text(peer.hostname)
+                                // A real Button, not a tap-handler on the row:
+                                // keyboard and screen readers can reach a
+                                // button, which is the same reason the macOS
+                                // peer rows use always-visible controls.
+                                Button(peer.hostname) { onSelect(peer) }
                                 Spacer()
                                 Text(peer.tailscaleIP)
                                     .font(.caption)
@@ -151,8 +175,18 @@ final class AppUIState: ObservableObject {
     @Published var loginURL: String?
     @Published var peers: [DiscoveredSharer] = []
     @Published var isSearching = false
+    /// Non-nil while a viewing session is running — the hostname on screen.
+    @Published var watching: String?
+    /// Bumped per decoded frame so SwiftCrossUI re-runs `updateWinUIElement`.
+    /// The frame itself travels through `frameStore`, never through this.
+    @Published var frameGeneration = 0
 
     private let transport = TsnetTransport()
+    /// The renderer hand-off, shared with `WinUIVideoView`. Portable, lock-
+    /// guarded, and the same type the GTK viewer polls from its draw callback.
+    let frameStore = FrameStore()
+    private var sessionTask: Task<Void, Never>?
+    private var stopRequested = false
 
     /// Architecture and a value read out of the portable protocol tier. W2 made
     /// this a button because proving the shared core was reachable from WinUI
@@ -218,12 +252,71 @@ final class AppUIState: ObservableObject {
         }
     }
 
+    /// Dial a peer and run a viewing session until `disconnect()`.
+    ///
+    /// `run` owns the whole receive loop, so it is held in a Task and torn down
+    /// by flipping `stopRequested`, which its `shouldClose` closure polls — the
+    /// transport's own contract for ending a session cleanly rather than
+    /// cancelling mid-datagram.
+    func connect(to peer: DiscoveredSharer) {
+        guard phase == .ready, sessionTask == nil else { return }
+        stopRequested = false
+        watching = peer.hostname
+        status = "Connecting to \(peer.hostname)…"
+        detail = ""
+
+        sessionTask = Task { [weak self] in
+            guard let self else { return }
+            let sink = WindowsVideoSink(store: frameStore) { [weak self] in
+                Task { @MainActor in self?.frameGeneration &+= 1 }
+            }
+            do {
+                try await transport.run(
+                    config: ViewerConfig(
+                        // Dial by IP, not hostname: the transport documents
+                        // that this sidesteps the from == dest hostname
+                        // mismatch the CLI host path warns about.
+                        hostname: peer.tailscaleIP,
+                        statePath: Self.stateDirectory()
+                    ),
+                    decoder: FFmpegVideoDecoder(),
+                    videoSink: sink,
+                    // W5. A nil sink is the transport's supported "video only".
+                    audioSink: nil,
+                    shouldClose: { [weak self] in self?.stopRequested ?? true },
+                    onAdmitted: { [weak self] _ in
+                        Task { @MainActor in self?.status = "Watching \(peer.hostname)" }
+                    },
+                    onAwaitingApproval: { [weak self] in
+                        Task { @MainActor in
+                            self?.status = "Waiting for \(peer.hostname) to approve…"
+                        }
+                    },
+                    onDeclined: { [weak self] in
+                        Task { @MainActor in self?.detail = "The sharer declined." }
+                    }
+                )
+            } catch {
+                detail = "Session ended: \(error)"
+            }
+            watching = nil
+            sessionTask = nil
+            status = transport.accountIdentity.map { "Signed in as \($0)" } ?? "Signed in"
+        }
+    }
+
+    func disconnect() {
+        stopRequested = true
+    }
+
     func signOut() {
         guard phase == .ready else { return }
+        stopRequested = true
         phase = .idle
         status = "Not signed in"
         detail = ""
         peers = []
+        watching = nil
         Task { await transport.teardown() }
     }
 

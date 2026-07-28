@@ -24,7 +24,17 @@ let package = Package(
         .package(
             url: "https://github.com/stackotter/swift-cross-ui",
             revision: "199a85614e3b2346aa10736b12f969af14a1f1ea"),
+        // Declared directly because W4's video surface imports WinUI types
+        // (`Image`, `WriteableBitmap`) to satisfy `WinUIElementRepresentable`'s
+        // `WinUIElementType`. swift-cross-ui depends on this too but does not
+        // re-export it, and SwiftPM resolves one version for the graph — so the
+        // requirement is written to match theirs exactly rather than pinning a
+        // revision that could contradict it.
+        .package(
+            url: "https://github.com/moreSwift/swift-winui",
+            .upToNextMinor(from: "0.2.1")),
         .package(path: "../../Packages/TailscreenKit"),
+        .package(path: "../../Packages/TailscreenVideoFFmpeg"),
     ],
     targets: [
         .executableTarget(
@@ -36,7 +46,17 @@ let package = Package(
                 // backend and can still be built on a dev machine that isn't
                 // Windows for a quick syntax check.
                 .product(name: "DefaultBackend", package: "swift-cross-ui"),
+                // WinUIElementRepresentable lives in the backend module, and
+                // the WinUI types it is generic over come from swift-winui.
+                // Both are Windows-only, which is what this package is.
+                .product(name: "WinUIBackend", package: "swift-cross-ui"),
+                .product(name: "WinUI", package: "swift-winui"),
                 .product(name: "TailscreenProtocol", package: "TailscreenKit"),
+                // libavcodec behind the portable VideoDecoding seam — the same
+                // decoder the Linux viewer uses, which is why it is a shared
+                // package rather than anything Windows-specific.
+                .product(name: "TailscreenVideoFFmpeg", package: "TailscreenVideoFFmpeg"),
+                .product(name: "TailscreenViewer", package: "TailscreenKit"),
                 // The tsnet transport: node bring-up, interactive login and
                 // peer discovery. Shared with the Linux/GTK viewer — it lives
                 // in TailscreenKit precisely so consuming it here doesn't also
