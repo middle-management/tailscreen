@@ -106,11 +106,15 @@ jobs:
       #
       # Not `make tailscale`: make isn't on the Windows image, and the Makefile
       # target does Unix-only path handling around the same two commands.
+      # Module cache keyed on the submodule's go.sum. The c-archive build spends
+      # most of its ~100s downloading Tailscale's dependency set, and that set
+      # only moves when the submodule does.
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.21'
-          cache: false
+          cache: true
+          cache-dependency-path: Packages/TailscaleKit/upstream/libtailscale/go.sum
 
       - name: Build libtailscale.a for windows/amd64
         shell: bash
@@ -205,6 +209,35 @@ jobs:
       # swift-cross-ui's WinUIBackend targets the Windows App SDK through
       # CWinAppSDK. Resolving as its own step keeps a dependency-resolution
       # failure distinguishable from a compile failure — different fixes.
+      # Two thirds of this job is compiling swift-cross-ui, swift-winui and the
+      # WindowsAppSDK bindings — ~1,450 compile units against our one app file,
+      # 14m20s of a 21m30s run. They change only when a pinned revision moves,
+      # so the cache key is the manifests plus the toolchain: our own sources
+      # changing does NOT invalidate it, and SwiftPM still recompiles the app
+      # target because its inputs changed.
+      #
+      # The tension worth naming: this workflow's job is partly to prove things
+      # build on Windows, and a warm .build weakens that. The key covers the
+      # inputs that would make a stale object wrong (dependency revisions, Swift
+      # version, runner OS), and the FFmpegKit job plus every Linux job still
+      # build cold — so the cold-build signal survives where it matters, while
+      # the expensive dependency compile stops being repeated for every one-line
+      # workflow edit.
+      #
+      # No restore-keys on purpose: a partial hit here would mix objects built
+      # against a different dependency revision, which is exactly the failure
+      # mode that makes build caches untrustworthy.
+      - name: Cache the app's build directory
+        uses: actions/cache@v4
+        with:
+          path: Apps/windows/.build
+          key: >-
+            windows-app-build-${{ matrix.swift }}-${{ runner.os }}-${{
+            hashFiles('Apps/windows/Package.swift',
+                      'Packages/TailscreenKit/Package.swift',
+                      'Packages/TailscaleKit/Package.swift',
+                      'Packages/OpusKit/Package.swift') }}
+
       - name: Resolve the app's dependencies
         working-directory: Apps/windows
         run: swift package resolve
