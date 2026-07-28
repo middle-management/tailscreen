@@ -136,7 +136,21 @@ jobs:
           # header, not cgo's generated libtailscale.h. Materialization already
           # made it a real file; assert that rather than assume it.
           test -f Packages/TailscaleKit/include/tailscale.h
-          echo "TAILSCALE_LIB=$(cd Packages/TailscaleKit/lib && pwd -W 2>/dev/null || cd Packages/TailscaleKit/lib && pwd)" >> "$GITHUB_ENV"
+
+          # A native path for the linker's /LIBPATH:, which does not understand
+          # the MSYS `/d/a/...` form bash reports.
+          #
+          # Computed in plain steps rather than as one clever substitution: the
+          # first version was `cd X && pwd -W 2>/dev/null || cd X && pwd`, and
+          # `A && B || C && D` parses as `((A && B) || C) && D` — so BOTH pwds
+          # ran and wrote two lines into GITHUB_ENV, the second of which is not
+          # KEY=VALUE. GitHub rejected the whole file command.
+          lib_dir="$PWD/Packages/TailscaleKit/lib"
+          if native=$(cygpath -w "$lib_dir" 2>/dev/null) && [ -n "$native" ]; then
+            lib_dir="$native"
+          fi
+          echo "staged libtailscale at: $lib_dir"
+          echo "TAILSCALE_LIB=$lib_dir" >> "$GITHUB_ENV"
 
       - name: Setup Swift ${{ matrix.swift }}
         uses: SwiftyLab/setup-swift@latest
