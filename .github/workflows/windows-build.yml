@@ -474,12 +474,32 @@ jobs:
         shell: pwsh
         working-directory: dist
         run: |
-          $p = Start-Process -FilePath .\tailscreen-windows.exe -PassThru
+          # Capture both streams. A Swift trap prints "Fatal error: ..." on the
+          # way down, and the first version of this step threw that away — which
+          # turned "the app aborted" into an unanswerable question exactly when
+          # linking tsnet made it start aborting. Written to RUNNER_TEMP rather
+          # than dist/ so the capture files don't end up in the artifact.
+          $out = Join-Path $env:RUNNER_TEMP 'app-stdout.txt'
+          $err = Join-Path $env:RUNNER_TEMP 'app-stderr.txt'
+          $p = Start-Process -FilePath .\tailscreen-windows.exe -PassThru `
+            -RedirectStandardOutput $out -RedirectStandardError $err
+
+          function Show-Output {
+            foreach ($f in @($out, $err)) {
+              if ((Test-Path $f) -and (Get-Item $f).Length -gt 0) {
+                Write-Host "--- $(Split-Path $f -Leaf) ---"
+                Get-Content $f | ForEach-Object { Write-Host $_ }
+              }
+            }
+          }
+
           if (-not $p.WaitForExit(20000)) {
             Write-Host "still running after 20s — the loader was satisfied"
             Stop-Process -Id $p.Id -Force
+            Show-Output
             exit 0
           }
+          Show-Output
           try {
             $code = [System.BitConverter]::ToUInt32([System.BitConverter]::GetBytes([int32]$p.ExitCode), 0)
           } catch {
