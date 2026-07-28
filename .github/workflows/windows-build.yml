@@ -140,17 +140,37 @@ jobs:
       - name: Build the app
         run: swift build --package-path Apps/windows --product tailscreen-windows
 
-      # A GUI app can't run to completion headlessly, but proving the binary
-      # exists and is a real PE executable is worth having.
+      # Stage the exe TOGETHER WITH THE SWIFT RUNTIME.
+      #
+      # Swift links its runtime dynamically on Windows, so a bare
+      # tailscreen-windows.exe dies before `main` with
+      #
+      #   The code execution cannot proceed because swiftCore.dll was not found
+      #
+      # on any machine without a Swift toolchain installed — which is every
+      # machine we would ask someone to test on. Uploading just the exe made the
+      # artifact runnable only by people who didn't need it.
+      #
+      # Windows searches the executable's own directory first, so co-locating
+      # the DLLs needs no PATH edit, no installer and no admin rights: unzip and
+      # double-click.
+      #
+      # The runtime directory is discovered from PATH rather than hardcoded.
+      # swift-driver is itself a Swift program, so if `swift build` ran at all
+      # then a directory containing swiftCore.dll is necessarily on PATH — which
+      # makes this independent of where the toolchain installer put things, a
+      # layout that has already moved once (C:\Library → %LOCALAPPDATA%).
       #
       # The exe is staged into a flat dist/ rather than uploaded from .build
       # directly: a `Apps/windows/.build/**/tailscreen-windows.exe` pattern
       # matched nothing even though this very step's `find` located the file,
       # and an artifact upload is not worth debugging glob semantics over a
       # dot-directory. An explicit path can't be ambiguous.
-      - name: Stage the built binary
+      - name: Stage the app with its runtime
         shell: bash
         run: |
+          set -euo pipefail
+
           exe=$(find Apps/windows/.build -name 'tailscreen-windows.exe' | head -1)
           if [ -z "$exe" ]; then
             echo "no tailscreen-windows.exe produced" >&2
@@ -159,14 +179,86 @@ jobs:
           ls -la "$exe"
           mkdir -p dist
           cp "$exe" dist/tailscreen-windows.exe
+
+          # Any PATH entry holding Swift or Foundation DLLs is a runtime
+          # directory; copy all of them. Matching on the directory's *contents*
+          # rather than on a list of DLL names means a toolchain that adds or
+          # renames a runtime library doesn't silently ship a broken artifact
+          # (which is the failure mode being fixed here).
+          found=0
+          while IFS= read -r d; do
+            [ -d "$d" ] || continue
+            if compgen -G "$d/swift*.dll" > /dev/null || compgen -G "$d/Foundation*.dll" > /dev/null; then
+              echo "runtime dir: $d"
+              cp -n "$d"/*.dll dist/ 2>/dev/null || true
+              found=$((found + 1))
+            fi
+          done < <(echo "$PATH" | tr ':' '\n')
+
+          if [ "$found" -eq 0 ]; then
+            echo "no Swift runtime directory found on PATH" >&2
+            exit 1
+          fi
+
+          # swift-cross-ui's WinUIBackend binds the Windows App SDK, whose DLLs
+          # are restored into the build tree rather than installed system-wide.
+          # Ship whatever is there; the load check below is what decides whether
+          # it was enough.
+          while IFS= read -r dll; do
+            cp -n "$dll" dist/ 2>/dev/null || true
+          done < <(find Apps/windows/.build -name '*.dll')
+
+          if [ ! -f dist/swiftCore.dll ]; then
+            echo "swiftCore.dll was not staged — the artifact would not run" >&2
+            exit 1
+          fi
+
           ls -la dist/
+          du -sh dist/
+
+      # Catch a missing DLL HERE rather than on a tester's desktop.
+      #
+      # A WinUI app can't run to completion on a headless runner, so this does
+      # not assert success — it asserts the absence of two specific NTSTATUS
+      # exit codes that mean the loader gave up before any of our code ran:
+      #
+      #   0xC0000135 STATUS_DLL_NOT_FOUND       — a DLL is missing
+      #   0xC0000139 STATUS_ENTRYPOINT_NOT_FOUND — a DLL is the wrong version
+      #
+      # Every other outcome (including a headless-display failure, and including
+      # a timeout, which means it got far enough to sit in an event loop) is
+      # accepted. Narrow on purpose: this is a packaging check, not a UI test.
+      - name: Check the app loads
+        shell: pwsh
+        working-directory: dist
+        run: |
+          $p = Start-Process -FilePath .\tailscreen-windows.exe -PassThru
+          if (-not $p.WaitForExit(20000)) {
+            Write-Host "still running after 20s — the loader was satisfied"
+            Stop-Process -Id $p.Id -Force
+            exit 0
+          }
+          $code = [uint32]$p.ExitCode
+          $hex = '0x{0:X8}' -f $code
+          Write-Host "exited with $hex"
+          if ($code -eq 0xC0000135) {
+            Write-Error "STATUS_DLL_NOT_FOUND — a required DLL is missing from dist/"
+            exit 1
+          }
+          if ($code -eq 0xC0000139) {
+            Write-Error "STATUS_ENTRYPOINT_NOT_FOUND — a staged DLL is the wrong version"
+            exit 1
+          }
+          Write-Host "no loader failure; $hex is this app's own business"
 
       # The whole point of the UI stage: a human runs this on a real desktop.
+      # The artifact is the WHOLE directory now — an exe on its own is not a
+      # thing anyone can run.
       - name: Upload the app
         uses: actions/upload-artifact@v4
         with:
           name: tailscreen-windows-swift${{ matrix.swift }}
-          path: dist/tailscreen-windows.exe
+          path: dist/
           retention-days: 14
           if-no-files-found: error
 

@@ -12,11 +12,29 @@ been tried before.
 ## Testing it on a Windows machine
 
 You do not need a Swift toolchain to try it. Every push that touches this app
-builds it in the `Windows build` workflow and attaches the executable:
+builds it in the `Windows build` workflow and attaches the app together with
+the Swift runtime it needs:
 
 1. Open the latest **Windows build** run in the repository's Actions tab.
-2. Download the **`tailscreen-windows`** artifact.
-3. Unzip and run `tailscreen-windows.exe`.
+2. Download the **`tailscreen-windows-swift6.1`** artifact.
+3. Unzip it **keeping the folder intact**, and run `tailscreen-windows.exe`
+   from inside that folder.
+
+Keeping the folder together is the part that matters. Swift links its runtime
+dynamically on Windows, so the exe on its own dies before `main` with
+
+> The code execution cannot proceed because swiftCore.dll was not found
+
+and then, once that one is satisfied, the same dialog again for
+`swift_Concurrency.dll`, `Foundation.dll` and so on down the chain. The
+artifact ships those DLLs beside the exe, and Windows searches the
+executable's own directory first — so this needs no installer, no PATH edit and
+no admin rights, but it does mean the exe must stay next to its DLLs.
+
+CI checks this rather than assuming it: after staging, the workflow launches
+the binary and fails the build on `STATUS_DLL_NOT_FOUND` (0xC0000135) or
+`STATUS_ENTRYPOINT_NOT_FOUND` (0xC0000139), so a missing DLL is caught on the
+runner instead of on your desktop.
 
 A window should appear with the app name, a status line, and a **Check
 environment** button. Clicking it reads real values out of the portable
@@ -36,8 +54,12 @@ If the window appears and the button changes the text, the stage is good.
 ## Building it yourself
 
 Needs the [swift.org Windows toolchain](https://www.swift.org/install/windows/)
-(6.0.3 is what CI uses) and the Windows App SDK that swift-cross-ui's
-`WinUIBackend` targets.
+(6.1 is what CI uses — 6.0.3 fails on `ucrt`, see `windows-build.yml`) and the
+Windows App SDK that swift-cross-ui's `WinUIBackend` targets.
+
+Installing the toolchain also puts the runtime DLLs on PATH, which is the other
+way to run a bare `tailscreen-windows.exe` if you have one lying around without
+its folder.
 
 ```powershell
 swift build --package-path Apps\windows --product tailscreen-windows
