@@ -2,6 +2,12 @@ import Foundation
 
 /// The receiving half of annotations: what a sharer has been asked to display.
 ///
+/// **Not** `TailscreenViewerGtk.AnnotationStore`, which is the GTK viewer's
+/// DRAWING store — live stroke tracking, tool mode, this participant's colour.
+/// The name here says which half it is, because the first version of this file
+/// was called `AnnotationStore` too and broke that viewer's build by shadowing
+/// it through a shared import.
+///
 /// The macOS `AnnotationCanvasModel` does this *and* owns local drawing — tool
 /// selection, drag tracking, an undo stack of the strokes this machine made.
 /// A sharer that only displays what viewers send needs none of that, and
@@ -11,7 +17,7 @@ import Foundation
 ///
 /// A value type with an injected clock, because the caller owns the thread and
 /// tests must not sleep.
-public struct AnnotationStore: Sendable {
+public struct ReceivedAnnotations: Sendable {
     /// How long a `.click` marker stays up. The same 0.8 s the macOS overlay
     /// animates over — a viewer pointing at something on two machines at once
     /// should see it vanish at the same moment on both.

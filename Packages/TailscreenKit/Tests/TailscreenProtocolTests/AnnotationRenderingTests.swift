@@ -3,7 +3,7 @@ import XCTest
 @testable import TailscreenProtocol
 
 /// Tests for the two halves of displaying a viewer's annotations on a sharer
-/// that has no drawing framework to hand: `AnnotationStore` (what to draw) and
+/// that has no drawing framework to hand: `ReceivedAnnotations` (what to draw) and
 /// `AnnotationRasterizer` (how).
 ///
 /// Both exist in the portable tier for the same reason: they are the parts a
@@ -24,7 +24,7 @@ final class AnnotationRenderingTests: XCTestCase {
         // A viewer dragging a pen re-sends the SAME id with a longer point
         // list every few milliseconds. Appending would leave hundreds of
         // overlapping copies of one stroke to redraw every frame.
-        var store = AnnotationStore()
+        var store = ReceivedAnnotations()
         let id = UUID()
         store.apply(.add(stroke(id: id, points: [.init(x: 0, y: 0)])), nowNs: 0)
         store.apply(
@@ -35,7 +35,7 @@ final class AnnotationRenderingTests: XCTestCase {
     }
 
     func testUndoRemovesAndUnknownUndoChangesNothing() {
-        var store = AnnotationStore()
+        var store = ReceivedAnnotations()
         let id = UUID()
         store.apply(.add(stroke(id: id, points: [.init(x: 0, y: 0)])), nowNs: 0)
 
@@ -46,33 +46,33 @@ final class AnnotationRenderingTests: XCTestCase {
     }
 
     func testClearAllOnAnEmptyStoreIsNotAChange() {
-        var store = AnnotationStore()
+        var store = ReceivedAnnotations()
         XCTAssertFalse(store.apply(.clearAll, nowNs: 0), "nothing to clear, nothing to redraw")
     }
 
     func testClickMarkersExpireAndOtherToolsDoNot() {
-        var store = AnnotationStore()
+        var store = ReceivedAnnotations()
         let click = UUID()
         store.apply(.add(stroke(id: click, tool: .click, points: [.init(x: 0.5, y: 0.5)])), nowNs: 0)
         store.apply(.add(stroke(tool: .pen, points: [.init(x: 0, y: 0)])), nowNs: 0)
 
-        XCTAssertFalse(store.expire(nowNs: AnnotationStore.clickLifetimeNs - 1))
+        XCTAssertFalse(store.expire(nowNs: ReceivedAnnotations.clickLifetimeNs - 1))
         XCTAssertEqual(store.annotations.count, 2)
 
-        XCTAssertTrue(store.expire(nowNs: AnnotationStore.clickLifetimeNs))
+        XCTAssertTrue(store.expire(nowNs: ReceivedAnnotations.clickLifetimeNs))
         XCTAssertEqual(store.annotations.count, 1, "the pen stroke stays")
         XCTAssertEqual(store.annotations.first?.tool, .pen)
     }
 
     func testNextExpiryLetsACallerSleepInsteadOfPolling() {
-        var store = AnnotationStore()
-        XCTAssertNil(AnnotationStore().nextExpiryNs)
+        var store = ReceivedAnnotations()
+        XCTAssertNil(ReceivedAnnotations().nextExpiryNs)
         store.apply(.add(stroke(tool: .click, points: [.init(x: 0.5, y: 0.5)])), nowNs: 1000)
-        XCTAssertEqual(store.nextExpiryNs, 1000 + AnnotationStore.clickLifetimeNs)
+        XCTAssertEqual(store.nextExpiryNs, 1000 + ReceivedAnnotations.clickLifetimeNs)
     }
 
     func testUndoOfAnEphemeralStrokeAlsoDropsItsDeadline() {
-        var store = AnnotationStore()
+        var store = ReceivedAnnotations()
         let id = UUID()
         store.apply(.add(stroke(id: id, tool: .click, points: [.init(x: 0.5, y: 0.5)])), nowNs: 0)
         store.apply(.undo(id), nowNs: 0)

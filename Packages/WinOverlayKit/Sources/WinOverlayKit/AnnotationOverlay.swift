@@ -7,7 +7,7 @@ import TailscreenProtocol
 /// Holds the store, the pixel buffer and the window, and does the one thing
 /// that has to be right: rasterize into premultiplied BGRA and hand it to
 /// `UpdateLayeredWindow`. The interesting halves are elsewhere on purpose —
-/// `AnnotationStore` decides what should be visible and `AnnotationRasterizer`
+/// `ReceivedAnnotations` decides what should be visible and `AnnotationRasterizer`
 /// draws it, both in the portable tier where Linux CI runs their tests. What
 /// is left here is window lifetime, which no test could check anyway.
 public final class AnnotationOverlay: @unchecked Sendable {
@@ -31,7 +31,7 @@ public final class AnnotationOverlay: @unchecked Sendable {
 
     private let lock = NSLock()
     private var handle: OpaquePointer?
-    private var store = AnnotationStore()
+    private var store = ReceivedAnnotations()
     private var pixels: [UInt8]
     private let region: Region
 

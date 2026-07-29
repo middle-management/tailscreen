@@ -11,7 +11,7 @@ import PackageDescription
 // composites a premultiplied BGRA bitmap. So the missing piece was never a
 // drawing API; it was a rasterizer, and a rasterizer is arithmetic.
 //
-// Which is why almost nothing lives here. `AnnotationStore` (what should be on
+// Which is why almost nothing lives here. `ReceivedAnnotations` (what should be on
 // screen) and `AnnotationRasterizer` (how to draw it) are both in
 // TailscreenProtocol, tested on Linux CI. This package owns window lifetime,
 // which no test could check anyway.
