@@ -53,6 +53,7 @@ on:
       - 'Packages/TailscreenSharerWGC/**'
       - 'Packages/SendInputKit/**'
       - 'Packages/WinOverlayKit/**'
+      - 'Packages/TailscreenHubUI/**'
       - 'Apps/windows/**'
       - 'scripts/materialize-symlinks.sh'
       - '.github/workflows/windows-build.yml'
@@ -310,6 +311,14 @@ jobs:
       - name: WinOverlayKit
         run: swift build --package-path Packages/WinOverlayKit
 
+      # The shared hub chrome. Cheap to build on its own — SwiftCrossUI plus
+      # nine small view files — and worth it because a swift-cross-ui API that
+      # the GTK app uses happily can still be one the Windows toolchain rejects,
+      # and finding that out here names the file instead of burying it in the
+      # app's 1,450-unit compile.
+      - name: TailscreenHubUI
+        run: swift build --package-path Packages/TailscreenHubUI
+
       # The sharer's capture backend: WGC frames → BGRAToI420 → libavcodec,
       # behind the portable `CaptureEncoding` seam.
       #
@@ -371,7 +380,8 @@ jobs:
                       'Packages/WGCCaptureKit/Package.swift',
                       'Packages/TailscreenSharerWGC/Package.swift',
                       'Packages/SendInputKit/Package.swift',
-                      'Packages/WinOverlayKit/Package.swift') }}
+                      'Packages/WinOverlayKit/Package.swift',
+                      'Packages/TailscreenHubUI/Package.swift') }}
 
       - name: Resolve the app's dependencies
         working-directory: Apps/windows

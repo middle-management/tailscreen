@@ -277,6 +277,27 @@ public final class SendInputInjector: @unchecked Sendable {
             in: region, virtualDesktop: virtualDesktopProvider())
     }
 
+    /// Opt this process into per-monitor DPI awareness. Call once, at startup,
+    /// before any window exists. Returns whether the process ended up aware.
+    ///
+    /// Every coordinate in this file — the monitor rects, the virtual desktop,
+    /// a window's bounds — is meaningless without it. A process that has not
+    /// asked is told a 150 %-scaled 3840 × 2160 display is 2560 × 1440, while
+    /// Windows.Graphics.Capture reports that same display's capture item as
+    /// 3840 × 2160, because item sizes are physical. The two never match, so
+    /// `WindowsCaptureRegion` cannot tell which display it is looking at and
+    /// the share silently loses remote control AND annotations — both of which
+    /// need to know where the shared content is.
+    ///
+    /// Lives on the injector because this is the injector's coordinate space:
+    /// the same call fixes the overlay's window position and the capture-region
+    /// match, and having one owner is better than three callers each hoping
+    /// someone else made it.
+    @discardableResult
+    public static func enablePerMonitorDPIAwareness() -> Bool {
+        ts_input_enable_per_monitor_dpi() != 0
+    }
+
     /// The real desktop, straight from `GetSystemMetrics`. The default behind
     /// `virtualDesktopProvider`; tests substitute their own.
     public static func virtualDesktop() -> Region {

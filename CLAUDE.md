@@ -39,17 +39,19 @@ tailscreen/
 │   │   └── Tests/TailscreenViewerCoreTests/  # real-decode pipeline test
 │   ├── linux-gtk/              # The runnable native Linux VIEWER — a
 │   │   │                       #   swift-cross-ui/GTK4 app reusing Apps/linux's
-│   │   │                       #   Core + the shared Tsnet transport, with a
+│   │   │                       #   Core + the shared Tsnet transport + the
+│   │   │                       #   shared TailscreenHubUI chrome, with a
 │   │   │                       #   GtkGLArea YUV renderer
 │   │   └── Sources/{TailscreenViewerGtk,tailscreen-viewer-gtk}/
 │   └── windows/                # The runnable native WINDOWS app — swift-cross-ui
 │       │                       #   on WinUI, reusing the portable tiers + the
-│       │                       #   shared tsnet transport: sign-in, peer list,
-│       │                       #   libavcodec video into a WinUI WriteableBitmap,
-│       │                       #   WASAPI audio, and sharing via the WGC picker
-│       │                       #   + TailscreenSharerWGC (no remote control:
-│       │                       #   no injector is supplied, so the server
-│       │                       #   withholds the .remoteControl cap)
+│       │                       #   shared tsnet transport + TailscreenHubUI:
+│       │                       #   sign-in, peer list, libavcodec video into a
+│       │                       #   WinUI WriteableBitmap, WASAPI audio, and
+│       │                       #   sharing via the WGC picker +
+│       │                       #   TailscreenSharerWGC (with remote control and
+│       │                       #   annotations, both gated on the capture item's
+│       │                       #   screen rect resolving — see WinOverlayKit)
 │       └── Sources/tailscreen-windows/
 ├── Packages/                   # Local SwiftPM packages the app depends on
 │   ├── TailscreenKit/          # Portable (Linux-buildable) protocol core —
@@ -77,20 +79,37 @@ tailscreen/
 │   │   │                       #   WINDOWS viewer's audio-playback backend, i.e.
 │   │   │                       #   what ALSAKit is on Linux. Nothing to install
 │   │   │                       #   (WASAPI ships with Windows); see its README
+│   ├── TailscreenHubUI/        # The hub's LOOK, shared by both swift-cross-ui
+│   │                           #   apps (GTK viewer + Windows app): HubStyle
+│   │                           #   tokens, the header, the screen rows and
+│   │                           #   their detail panes, the login/share cards,
+│   │                           #   the session placard, the over-video chrome.
+│   │                           #   Extracted from Apps/linux-gtk when the
+│   │                           #   Windows app needed the same design system —
+│   │                           #   SwiftCrossUI + TailscreenProtocol only, no
+│   │                           #   transport type, so Linux CI typechecks it on
+│   │                           #   the Windows app's behalf; see its README
 │   ├── WinOverlayKit/          # The WINDOWS sharer's annotation overlay: a
 │   │                           #   click-through layered window fed by the
 │   │                           #   portable AnnotationRasterizer. Tiny on
 │   │                           #   purpose — UpdateLayeredWindow takes a
 │   │                           #   premultiplied BGRA bitmap, so the missing
 │   │                           #   piece was a rasterizer, not a drawing API,
-│   │                           #   and a rasterizer is testable arithmetic
+│   │                           #   and a rasterizer is testable arithmetic.
+│   │                           #   The window OWNS A THREAD with a message
+│   │                           #   pump: annotations arrive on a network
+│   │                           #   thread, and a window whose thread never
+│   │                           #   pumps is one Windows treats as hung
 │   ├── SendInputKit/           # C shim over Win32 SendInput + the Swift
 │   │                           #   injector — the WINDOWS sharer's
 │   │                           #   InputInjecting backend, i.e. what
 │   │                           #   RemoteControlInjector is on macOS. C only
 │   │                           #   because INPUT carries an anonymous union;
 │   │                           #   every decision is in Swift and tested on
-│   │                           #   Linux through an inject-nothing seam
+│   │                           #   Linux through an inject-nothing seam. Also
+│   │                           #   owns the process's DPI awareness, because it
+│   │                           #   owns the coordinate space that setting
+│   │                           #   governs (see Common pitfalls)
 │   ├── TailscreenSharerWGC/    # The WINDOWS sharer's CaptureEncoding backend:
 │   │                           #   WGC frames → BGRAToI420 → libavcodec. Its own
 │   │                           #   package specifically so it carries NO WinUI —
@@ -593,6 +612,8 @@ User-facing strings are localized through SwiftPM resources. `Package.swift` set
 - **Don't add SCStream lifecycle to the main process.** All capture lives in the helper subprocess. The main-process screen-share server only spawns the helper and broadcasts what comes back.
 - **Linux CI (`linux-protocol`) fails after touching a package file** — you added an Apple-only dependency to a file in `Packages/TailscreenKit/Sources/`. Keep package files Foundation-only (see the package README's whitelist) or move the mac-bound piece into the app target. Reproduce with `make test-protocol` (works on macOS too).
 - **App fails to compile against a package type** ("initializer is inaccessible", "cannot find X in scope") — the declaration is `internal` in TailscreenKit. Mark what the app needs `public` (structs the app constructs need explicit public inits — Swift never synthesizes memberwise inits as public). Test-only seams should stay internal; tests use `@testable import TailscreenProtocol`/`TailscreenTransport`.
+- **On Windows, a share silently loses remote control AND annotations** — the process is not DPI aware. Both features are gated on `WindowsCaptureRegion.resolve` matching the WGC capture item's size against an enumerated monitor, and item sizes are **physical pixels** while a DPI-unaware process is told a 150 %-scaled 3840 × 2160 display is 2560 × 1440. Nothing errors; the match just never happens, and the viewer stops offering both features. `WindowsShareSession.prepareProcess()` (→ `SendInputInjector.enablePerMonitorDPIAwareness`) is called from the app's `init()` for this, before any window exists. An application manifest would also work and takes precedence.
+- **A Win32 window created off the app's UI thread never appears** — it belongs to the thread that created it, and every state change (show, hide, the `SetWindowPos` inside `UpdateLayeredWindow`) is delivered to that thread's message queue. A Swift concurrency executor thread does not pump messages, so Windows treats the window as hung: cross-thread calls block for five seconds each, and the window is destroyed outright if the thread exits. `WinOverlayKit` owns a thread with a `GetMessage` loop for exactly this, and every entry point posts to it. Do the same for any new window.
 - **Stop Sharing badge stuck on** — usually means a helper subprocess was orphaned by a stop/restart race. The screen-share server has a restart lock for this; if you touch capture restart, preserve the await-pending-restart-then-teardown ordering. This includes the mid-share "Change Source…" path: `TailscaleScreenShareServer.changeSource(filterData:)` swaps the cached selection and rides the same tracked restart — never spawn a helper directly.
 
 ## CI/CD

@@ -1,6 +1,7 @@
 import DefaultBackend
 import Foundation
 import SwiftCrossUI
+import TailscreenHubUI
 import TailscreenProtocol
 import TailscreenViewer
 import TailscreenViewerCore
@@ -467,6 +468,23 @@ struct ViewerApp: App {
         return ""
     }
 
+    /// The viewer's session state as the shared placard's phase.
+    ///
+    /// Two enums rather than one because the chrome must not import a viewer's
+    /// session model to draw five sentences — the same reason it takes
+    /// `HubScreen` instead of `DiscoveredSharer`. The cost is this function;
+    /// the benefit is a UI package that compiles without a transport.
+    private static func hubPhase(_ phase: ViewerUIState.SessionPhase) -> HubSessionPhase {
+        switch phase {
+        case .connecting: return .connecting
+        case .awaitingApproval: return .awaitingApproval
+        case .viewing: return .viewing
+        case .declined: return .declined
+        case .ended: return .ended
+        case .failed(let reason): return .failed(reason)
+        }
+    }
+
     /// The hub's sharing card. Only offered in picker mode: the direct-host
     /// path (`tailscreen-viewer-gtk <host>`) is a one-shot viewer invocation,
     /// and growing a share button onto it would be surprising.
@@ -476,12 +494,28 @@ struct ViewerApp: App {
             statusLine: sharer.statusLine,
             isSharing: sharer.phase == .sharing,
             canShare: sharer.canShare,
-            viewerIPs: sharer.viewerIPs,
-            pendingIPs: sharer.pendingIPs,
+            notes: sharer.viewerIPs.map { "• \($0) watching" },
+            // Viewers parked at the approval gate. The shared card renders
+            // these exactly like the Windows app's control requests, because
+            // they are the same interaction and this window is the only place
+            // either can be answered.
+            prompts: sharer.pendingIPs.map {
+                HubPrompt(id: $0, message: "\($0) wants to watch")
+            },
             onStart: { gSharer.startSharing() },
             onStop: { gSharer.stopSharing() },
-            onApprove: { gSharer.approve($0) },
-            onDeny: { gSharer.deny($0) })
+            onAccept: { gSharer.approve($0) },
+            onDecline: { gSharer.deny($0) })
+    }
+
+    /// The picker's discovered machines as hub rows, with the metadata sweep's
+    /// answer folded in so the shared chrome derives the sharing chip.
+    private var hubScreens: [HubScreen] {
+        picker.sharers.map { sharer in
+            HubScreen(
+                id: sharer.id, hostname: sharer.hostname, tailscaleIP: sharer.tailscaleIP,
+                isOnline: sharer.isOnline, metadata: picker.shareInfo[sharer.id])
+        }
     }
 
     @ViewBuilder private var rootView: some View {
@@ -546,7 +580,7 @@ struct ViewerApp: App {
             VStack(spacing: 0) {
                 ViewerHeader(subtitle: "Viewer")
                 Divider()
-                SessionPlacard(phase: ui.sessionPhase, host: sessionHost)
+                SessionPlacard(phase: Self.hubPhase(ui.sessionPhase), host: sessionHost)
             }
         } else {
             VStack(spacing: 0) {
@@ -555,20 +589,27 @@ struct ViewerApp: App {
                     showSpinner: headerShowsSpinner,
                     onRefresh: headerOnRefresh,
                     accountName: gPickerMode ? profileStore.active.name : nil,
-                    profiles: profileStore.profiles,
-                    activeProfileID: profileStore.activeID,
-                    onSelectProfile: gSwitchProfile,
+                    accounts: profileStore.profiles.map {
+                        HubAccount(id: $0.id, name: $0.name)
+                    },
+                    activeAccountID: profileStore.activeID,
+                    onSelectAccount: gSwitchProfile,
                     onAddAccount: gAddAccount)
                 Divider()
                 if gPickerMode {
                     PickerContent(
                         statusLine: picker.statusLine,
                         isPicking: showingPickerList,
-                        sharers: picker.sharers,
-                        shareInfo: picker.shareInfo,
+                        screens: hubScreens,
                         loginURL: picker.loginURL,
                         autoExpandFirst: gUIPreview,
-                        onSelect: { picker.select($0) },
+                        // The chrome hands back the row's id rather than a
+                        // transport type it deliberately does not import.
+                        onSelect: { id in
+                            guard let chosen = gPicker.sharers.first(where: { $0.id == id })
+                            else { return }
+                            gPicker.select(chosen)
+                        },
                         onOpenLogin: gOpenLogin,
                         shareCard: shareCard)
                 } else {

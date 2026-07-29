@@ -42,6 +42,11 @@ let package = Package(
         .package(path: "../../Packages/WASAPIKit"),
         .package(path: "../../Packages/TailscreenSharerWGC"),
         .package(path: "../../Packages/WGCCaptureKit"),
+        // The hub's look, shared with the GTK viewer. Extracted from that app
+        // rather than reinvented here: swift-cross-ui is a SwiftUI subset, so
+        // this chrome is hand-built from primitives, and building it twice
+        // would have produced two apps that agreed on day one and never again.
+        .package(path: "../../Packages/TailscreenHubUI"),
     ],
     targets: [
         .executableTarget(
@@ -81,6 +86,7 @@ let package = Package(
                 // picked `WGC.CaptureItem` between the picker and the share.
                 .product(name: "TailscreenSharerWGC", package: "TailscreenSharerWGC"),
                 .product(name: "WGCCaptureKit", package: "WGCCaptureKit"),
+                .product(name: "TailscreenHubUI", package: "TailscreenHubUI"),
             ],
             // libtailscale.a is a link-time input, so the flag belongs on this
             // executable rather than on the library targets that merely compile

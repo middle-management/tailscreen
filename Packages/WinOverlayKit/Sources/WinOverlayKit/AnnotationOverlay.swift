@@ -10,6 +10,10 @@ import TailscreenProtocol
 /// `ReceivedAnnotations` decides what should be visible and `AnnotationRasterizer`
 /// draws it, both in the portable tier where Linux CI runs their tests. What
 /// is left here is window lifetime, which no test could check anyway.
+///
+/// Callable from any thread, including the network thread annotations arrive
+/// on: the window itself lives on a thread of its own with a message pump (see
+/// `ts_overlay.h`), and every call here is a post to it.
 public final class AnnotationOverlay: @unchecked Sendable {
     /// A screen rectangle in virtual-desktop pixels — the same geometry remote
     /// control maps into, and for the same reason: an annotation's normalized
@@ -54,6 +58,8 @@ public final class AnnotationOverlay: @unchecked Sendable {
 
     deinit {
         // Synchronous teardown — the same rule the rest of this port follows.
+        // It joins the overlay's thread, under a bounded wait so a wedged pump
+        // cannot hold up the end of a share.
         ts_overlay_destroy(handle)
     }
 
@@ -107,10 +113,13 @@ public final class AnnotationOverlay: @unchecked Sendable {
         // frame of whatever is underneath it, and a share spends most of its
         // life with nobody drawing.
         guard !isEmpty else {
-            ts_overlay_set_visible(handle, 0)
+            ts_overlay_hide(handle)
             return
         }
 
+        // Showing is implicit in the update — there is no separate call,
+        // because an overlay with nothing in it should never be visible and so
+        // cannot be asked to be.
         lock.withLock {
             pixels.withUnsafeMutableBufferPointer { buffer in
                 guard let base = buffer.baseAddress else { return }
@@ -123,6 +132,5 @@ public final class AnnotationOverlay: @unchecked Sendable {
                 _ = ts_overlay_update(handle, base, Int32(region.width), Int32(region.height))
             }
         }
-        ts_overlay_set_visible(handle, 1)
     }
 }

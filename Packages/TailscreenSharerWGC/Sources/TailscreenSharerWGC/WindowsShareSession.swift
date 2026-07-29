@@ -54,6 +54,18 @@ public final class WindowsShareSession: @unchecked Sendable {
         public var controlRequests: [ControlRequestInfo] = []
         /// Who currently holds control, if anyone.
         public var controlGrantedTo: String?
+        /// Whether viewers can ask to control this machine.
+        ///
+        /// Reported rather than left implicit because its absence is otherwise
+        /// invisible from both ends: the viewer simply does not offer Request
+        /// Control, and the sharer sees a share that looks completely normal.
+        public var remoteControlAvailable = false
+        /// Whether viewers' strokes appear on this screen. Gated on the same
+        /// resolved geometry as control — a stroke's coordinates are normalized
+        /// against what the viewer SEES, so a target whose rect is unknown gets
+        /// neither rather than getting strokes drawn somewhere plausible and
+        /// wrong.
+        public var annotationsAvailable = false
         /// Live capture timings, so "it's slow" can be answered with which
         /// stage rather than a guess.
         public var timings: CaptureTimings?
@@ -65,6 +77,23 @@ public final class WindowsShareSession: @unchecked Sendable {
     public var onStatus: (@Sendable (Status) -> Void)?
 
     public init() {}
+
+    /// One-time process setup. **Call at startup, before any window exists.**
+    ///
+    /// Only DPI awareness, but it is not optional for this app: without it
+    /// Windows reports scaled coordinates for every display while
+    /// Windows.Graphics.Capture reports capture items in physical pixels, so
+    /// on any display above 100 % scaling nothing this app measures agrees
+    /// with anything it captures — `resolveControlRegion` finds no matching
+    /// monitor and the share loses remote control and annotations together,
+    /// with no error anywhere to explain it.
+    ///
+    /// A process-wide setting exposed here because this package owns the
+    /// coordinate space it governs; the app calls it once and never thinks
+    /// about it again.
+    public static func prepareProcess() {
+        SendInputInjector.enablePerMonitorDPIAwareness()
+    }
 
     private let lock = NSLock()
     private var server: TailscaleScreenShareServer?
@@ -121,12 +150,15 @@ public final class WindowsShareSession: @unchecked Sendable {
         // injector exists at all is what decides the advertised
         // `.remoteControl` capability, and that is fixed for the session.
         let region = Self.resolveControlRegion(for: item)
-        let controlNote: String
+        let regionNote: String
         switch region {
         case .success:
-            controlNote = ""
+            regionNote = ""
         case .failure(let reason):
-            controlNote = "Remote control is off — \(reason)"
+            // Names BOTH features, because both are gated on this one answer
+            // and a message about remote control alone left the missing
+            // annotations looking like a separate, unexplained fault.
+            regionNote = "Remote control and annotations are off — \(reason)"
         }
 
         // A resolved region means remote control is offered; an unresolved one
@@ -148,6 +180,8 @@ public final class WindowsShareSession: @unchecked Sendable {
                     width: resolved.width, height: resolved.height))
         }
         lock.withLock { overlay = annotationOverlay }
+        let injectorAvailable = injector != nil
+        let overlayAvailable = annotationOverlay != nil
 
         // The timings hook is on the concrete backend rather than the
         // `CaptureEncoding` seam, so it is attached inside the factory — which
@@ -191,6 +225,8 @@ public final class WindowsShareSession: @unchecked Sendable {
                 $0.isSharing = false
                 $0.viewerCount = 0
                 $0.message = error.map { "Sharing stopped: \($0)" } ?? ""
+                $0.remoteControlAvailable = false
+                $0.annotationsAvailable = false
             }
         }
 
@@ -198,6 +234,8 @@ public final class WindowsShareSession: @unchecked Sendable {
         update {
             $0.target = name
             $0.message = "Starting…"
+            $0.remoteControlAvailable = injectorAvailable
+            $0.annotationsAvailable = overlayAvailable
         }
 
         // A display target with no ID: on Windows the item IS the selection,
@@ -237,7 +275,7 @@ public final class WindowsShareSession: @unchecked Sendable {
 
         update {
             $0.isSharing = true
-            $0.message = controlNote
+            $0.message = regionNote
         }
     }
 
@@ -282,6 +320,9 @@ public final class WindowsShareSession: @unchecked Sendable {
             $0.isSharing = false
             $0.viewerCount = 0
             $0.message = ""
+            $0.remoteControlAvailable = false
+            $0.annotationsAvailable = false
+            $0.timings = nil
         }
     }
 

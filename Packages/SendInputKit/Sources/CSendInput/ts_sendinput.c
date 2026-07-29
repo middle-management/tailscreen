@@ -120,6 +120,62 @@ int32_t ts_input_key(uint16_t virtual_key, int32_t extended, int32_t down) {
     return (int32_t)SendInput(1, &input, sizeof(INPUT));
 }
 
+/*
+ * Resolved at runtime rather than linked, because the three generations of
+ * this API arrived in three different Windows versions and two different DLLs.
+ * Linking the newest would refuse to start on anything older; asking for it by
+ * name and falling back costs one GetProcAddress and works everywhere.
+ *
+ * DPI_AWARENESS_CONTEXT is an opaque handle whose per-monitor-v2 value is the
+ * documented sentinel -4. Spelled out here because the constant lives behind a
+ * WINVER gate this toolchain does not necessarily satisfy.
+ */
+typedef HANDLE ts_dpi_context;
+typedef BOOL(WINAPI *ts_set_dpi_context_fn)(ts_dpi_context);
+typedef HRESULT(WINAPI *ts_set_dpi_awareness_fn)(int);
+
+int32_t ts_input_enable_per_monitor_dpi(void) {
+    HMODULE user32 = GetModuleHandleW(L"user32.dll");
+    if (user32 != NULL) {
+        ts_set_dpi_context_fn setContext =
+            (ts_set_dpi_context_fn)GetProcAddress(user32, "SetProcessDpiAwarenessContext");
+        if (setContext != NULL) {
+            /* -4 is PER_MONITOR_AWARE_V2, -3 is PER_MONITOR_AWARE. V2 is the
+             * one worth having: it is what makes child windows and dialogs
+             * scale with the monitor they are on rather than the one the
+             * process started on. */
+            if (setContext((ts_dpi_context)(INT_PTR)-4)) {
+                return 1;
+            }
+            if (setContext((ts_dpi_context)(INT_PTR)-3)) {
+                return 1;
+            }
+            /* Already set — by an application manifest, which is the other
+             * legitimate way to do this and takes precedence over any call.
+             * Not a failure. */
+        }
+    }
+
+    /* Windows 8.1: PROCESS_PER_MONITOR_DPI_AWARE == 2. */
+    HMODULE shcore = LoadLibraryW(L"shcore.dll");
+    if (shcore != NULL) {
+        ts_set_dpi_awareness_fn setAwareness =
+            (ts_set_dpi_awareness_fn)GetProcAddress(shcore, "SetProcessDpiAwareness");
+        if (setAwareness != NULL) {
+            setAwareness(2);
+        }
+        FreeLibrary(shcore);
+    }
+    if (IsProcessDPIAware()) {
+        return 1;
+    }
+
+    /* Vista: system-wide awareness. Wrong on a mixed-DPI desktop, but "all
+     * monitors at the primary's scale" is far closer to the truth than "every
+     * monitor at 96 dpi", which is what not calling anything means. */
+    return SetProcessDPIAware() ? 1 : 0;
+}
+
 void ts_input_virtual_desktop(int32_t *out_x, int32_t *out_y, int32_t *out_width,
                               int32_t *out_height) {
     if (out_x != NULL) {
@@ -244,6 +300,8 @@ int32_t ts_input_key(uint16_t virtual_key, int32_t extended, int32_t down) {
     (void)down;
     return 0;
 }
+
+int32_t ts_input_enable_per_monitor_dpi(void) { return 0; }
 
 void ts_input_virtual_desktop(int32_t *out_x, int32_t *out_y, int32_t *out_width,
                               int32_t *out_height) {

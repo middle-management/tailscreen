@@ -1,6 +1,11 @@
 import DefaultBackend
 import Foundation
 import SwiftCrossUI
+// The hub's look, shared with the GTK viewer — header, screen rows with their
+// detail panes, cards, placards, tokens. Safe to import wholesale: it does not
+// re-export TailscreenProtocol, so the `Published` / `ObservableObject`
+// collision the targeted imports below exist to dodge does not arrive with it.
+import TailscreenHubUI
 
 // Targeted imports: pulling all of TailscreenProtocol collides with SwiftCrossUI's
 // own `Published` / `ObservableObject` shims, the same collision the GTK app
@@ -39,209 +44,139 @@ import enum WGCCaptureKit.WGC
 struct TailscreenWindowsApp: App {
     @State var state = AppUIState()
 
+    /// Process-wide setup that has to happen before a window exists — today,
+    /// per-monitor DPI awareness. Without it Windows reports scaled coordinates
+    /// for every display while Windows.Graphics.Capture reports capture items
+    /// in real pixels, so on any display above 100 % scaling the sharer cannot
+    /// work out which monitor it is capturing and silently loses both remote
+    /// control and annotations.
+    ///
+    /// `App.main()` default-constructs the app and then runs it, so this is the
+    /// earliest hook available short of an application manifest — which would
+    /// also work, and takes precedence if someone adds one later.
+    init() {
+        WindowsShareSession.prepareProcess()
+    }
+
     var body: some Scene {
         WindowGroup("Tailscreen") {
-            VStack(spacing: 12) {
-                Text("Tailscreen")
-                    .font(.title2)
-
-                Text(state.status)
-                    .font(.caption)
-
-                if let url = state.loginURL {
-                    LoginCard(url: url) { state.openLoginURL() }
-                }
-
-                if state.phase == .idle || state.phase == .failed {
-                    Button(state.phase == .failed ? "Try again" : "Sign in to Tailscale") {
-                        state.signIn()
-                    }
-                }
-
-                if let host = state.watching {
-                    // Watching: the video fills the window, with one way out.
-                    HStack(spacing: 8) {
-                        Text("Watching \(host)")
-                            .font(.caption)
-                        Spacer()
-                        Button("Stop") { state.disconnect() }
-                    }
-                    WinUIVideoView(
-                        store: state.frameStore,
-                        generation: state.frameGeneration
-                    )
-                } else if state.sharing.isSharing {
-                    SharingCard(
-                        status: state.sharing,
-                        onStop: { state.stopSharing() },
-                        onGrant: { state.grantControl(to: $0) },
-                        onDecline: { state.declineControl($0) },
-                        onRevoke: { state.revokeControl() }
-                    )
-                } else if state.phase == .ready {
-                    HStack(spacing: 8) {
-                        Button("Refresh") { state.refreshPeers() }
-                        if state.canShare {
-                            Button("Share this screen") { state.startSharing() }
-                        }
-                        Button("Sign out") { state.signOut() }
-                    }
-                    Divider()
-                    PeerList(
-                        peers: state.peers,
-                        isSearching: state.isSearching,
-                        onSelect: { state.connect(to: $0) }
-                    )
-                }
-
-                if !state.detail.isEmpty {
-                    Text(state.detail)
-                        .font(.caption)
-                }
-
-                Spacer()
-
-                Text(state.environmentLine)
-                    .font(.caption)
+            VStack(spacing: 0) {
+                ViewerHeader(
+                    subtitle: state.status,
+                    showSpinner: state.showsSpinner,
+                    onRefresh: state.canRefresh ? { state.refreshPeers() } : nil,
+                    secondaryAction: state.phase == .ready && state.watching == nil
+                        ? HubAction(label: "Sign out") { state.signOut() }
+                        : nil)
+                Divider()
+                content
+                Divider()
+                footer
             }
-            .padding(12)
         }
-        .defaultSize(width: 520, height: 460)
+        // Opens hub-narrow, like the macOS window and the GTK viewer: the hub
+        // is one column, and a wide window turns every row into a ribbon with
+        // the IP a foot from the hostname it belongs to.
+        .defaultSize(width: 480, height: 700)
     }
-}
 
-/// The interactive-login placard. tsnet emits a browser URL on the IPN bus when
-/// a fresh node has no auth key; until it is visited, `up()` does not return.
-///
-/// The URL is shown as text rather than only offered as a button on purpose:
-/// launching a browser is the part most likely to fail on a locked-down or
-/// headless machine, and a URL you can select and paste always works.
-struct LoginCard: View {
-    let url: String
-    let onOpen: () -> Void
-
-    var body: some View {
-        VStack(spacing: 6) {
-            Text("Sign in to your tailnet to continue")
-                .font(.caption)
-            Text(url)
-                .font(.caption)
-            Button("Open in browser") { onOpen() }
-        }
-        .padding(8)
-    }
-}
-
-/// What is on screen while this machine is sharing.
-///
-/// The viewer count is spelled out rather than shown as a badge: "nobody is
-/// watching yet" and "two people are watching" are the two facts a sharer
-/// actually wants, and a number alone leaves the first ambiguous.
-struct SharingCard: View {
-    let status: WindowsShareSession.Status
-    let onStop: () -> Void
-    let onGrant: (UUID) -> Void
-    let onDecline: (UUID) -> Void
-    let onRevoke: () -> Void
-
-    var body: some View {
-        VStack(spacing: 6) {
-            HStack(spacing: 8) {
-                Text("Sharing \(status.target)")
-                    .font(.caption)
-                Spacer()
-                Button("Stop sharing") { onStop() }
-            }
-            Text(
-                status.viewerCount == 0
-                    ? "No one is watching yet"
-                    : "\(status.viewerCount) watching"
-            )
-            .font(.caption)
-            // Carries the reason remote control is unavailable, when it is.
-            // "Request Control is missing" with no explanation is a support
-            // ticket; "2 displays share this resolution" is something the
-            // sharer can act on.
-            if !status.message.isEmpty {
-                Text(status.message)
-                    .font(.caption)
-            }
-
-            // Where the frame time goes. A viewer's overlay can prove the
-            // network is fine and still leave "why is it 1.4 fps" open —
-            // capture, convert and encode are three different problems.
-            if let timings = status.timings {
-                Text(timings.summary)
-                    .font(.caption)
-                if let slowest = timings.slowestStage {
-                    Text("slowest stage: \(slowest)")
-                        .font(.caption)
-                }
-            }
-
-            // A grant is a decision only the person at this keyboard can make,
-            // so it needs a control here. Without one the viewer's Request
-            // Control did nothing at either end.
-            if let holder = status.controlGrantedTo {
+    @ViewBuilder private var content: some View {
+        if let host = state.watching {
+            // Watching: the video gets the window, with one way out.
+            VStack(spacing: 0) {
                 HStack(spacing: 8) {
-                    Text("\(holder) is controlling this machine")
+                    Text("Watching \(host)")
                         .font(.caption)
+                        .foregroundColor(HubStyle.secondaryText)
                     Spacer()
-                    Button("Take back control") { onRevoke() }
+                    Button("Stop") { state.disconnect() }
                 }
+                .padding(.horizontal, 16)
+                .frame(height: Double(HubStyle.toolbarHeight))
+                .frame(maxWidth: .infinity)
+                .background(HubStyle.barFill)
+                WinUIVideoView(
+                    store: state.frameStore,
+                    generation: state.frameGeneration
+                )
             }
-            ForEach(status.controlRequests, id: \.id) { request in
-                HStack(spacing: 8) {
-                    Text("\(request.displayName) wants to control this machine")
-                        .font(.caption)
-                    Spacer()
-                    Button("Allow") { onGrant(request.id) }
-                    Button("Deny") { onDecline(request.id) }
-                }
-            }
+        } else if state.phase == .idle || state.phase == .failed {
+            SignInPane(
+                message: state.detail.isEmpty
+                    ? "Sign in to your tailnet to share this screen or watch someone else's."
+                    : state.detail,
+                buttonLabel: state.phase == .failed ? "Try again" : "Sign in to Tailscale",
+                onSignIn: { state.signIn() })
+        } else {
+            // Signed in, or on the way there. `PickerContent` covers both: with
+            // `isPicking` false it shows the login card over a spinner, and
+            // with it true, the Screens list.
+            PickerContent(
+                statusLine: state.status,
+                isPicking: state.phase == .ready && !state.isSearching,
+                screens: state.hubScreens,
+                loginURL: state.loginURL,
+                emptyMessage: "No Tailscreen screens found on your tailnet.",
+                onSelect: { state.connect(toID: $0) },
+                onOpenLogin: { state.openLoginURL() },
+                shareCard: state.shareCard)
         }
-        .padding(8)
+    }
+
+    /// Build stamp, and whatever the last thing to go wrong was.
+    ///
+    /// The stamp leads because it is the one thing you need before any other
+    /// number on screen can be trusted: "the new counter isn't there" and "this
+    /// is yesterday's exe" are indistinguishable without it.
+    private var footer: some View {
+        VStack(spacing: 2) {
+            if !state.detail.isEmpty && state.phase != .idle && state.phase != .failed {
+                Text(state.detail)
+                    .font(.caption)
+                    .foregroundColor(HubStyle.secondaryText)
+                    .multilineTextAlignment(.center)
+            }
+            Text(state.environmentLine)
+                .font(.caption)
+                .foregroundColor(HubStyle.tertiaryText)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity)
+        .background(HubStyle.barFill)
     }
 }
 
-/// The discovered-sharer list. Selecting a row dials that peer.
+/// The pre-sign-in state: what this app is for, and the one button that starts
+/// it.
 ///
-/// An empty list is reported as such rather than left blank: "no screens found"
-/// and "still looking" are different states, and on a tailnet with one machine
-/// the first is the correct, permanent answer.
-struct PeerList: View {
-    let peers: [DiscoveredSharer]
-    let isSearching: Bool
-    let onSelect: (DiscoveredSharer) -> Void
+/// A card rather than a bare button because this is the first thing anyone sees
+/// and "Tailscreen" over a lone control says nothing about what pressing it
+/// does. On failure the same card carries the reason and says "Try again",
+/// which keeps the error where the retry is.
+struct SignInPane: View {
+    let message: String
+    let buttonLabel: String
+    let onSignIn: @MainActor @Sendable () -> Void
 
     var body: some View {
-        VStack(spacing: 6) {
-            if isSearching {
-                Text("Looking for peers…")
-                    .font(.caption)
-            } else if peers.isEmpty {
-                Text("No Tailscreen peers found on this tailnet")
-                    .font(.caption)
-            } else {
-                ScrollView {
-                    VStack(spacing: 4) {
-                        ForEach(peers, id: \.id) { peer in
-                            HStack(spacing: 8) {
-                                Text(peer.isOnline ? "●" : "○")
-                                // A real Button, not a tap-handler on the row:
-                                // keyboard and screen readers can reach a
-                                // button, which is the same reason the macOS
-                                // peer rows use always-visible controls.
-                                Button(peer.hostname) { onSelect(peer) }
-                                Spacer()
-                                Text(peer.tailscaleIP)
-                                    .font(.caption)
-                            }
-                        }
-                    }
-                }
-            }
+        VStack(spacing: 12) {
+            Text("Screens on your tailnet")
+                .font(.headline)
+                .fontWeight(.semibold)
+            Text(message)
+                .font(.callout)
+                .foregroundColor(HubStyle.secondaryText)
+                .multilineTextAlignment(.center)
+            Button(buttonLabel, action: onSignIn)
         }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .center)
+        .hubCard()
+        .frame(maxWidth: HubStyle.contentMaxWidth)
+        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
     }
 }
 
@@ -295,6 +230,110 @@ final class AppUIState: ObservableObject {
         // it.
         return "\(BuildInfo.summary) · \(Self.architecture) · fps cap \(quality.fpsCap) "
             + "· codec \(quality.codecPreference)"
+    }
+
+    /// A spinner rides the header while something is genuinely in flight —
+    /// node bring-up or a discovery sweep. Not while merely idle: a spinner
+    /// that never stops is worse than none, because it makes a settled state
+    /// look broken.
+    var showsSpinner: Bool { phase == .starting || isSearching }
+
+    /// Refresh is offered only from the settled signed-in state.
+    var canRefresh: Bool { phase == .ready && watching == nil && !isSearching }
+
+    /// The discovered peers as hub rows.
+    ///
+    /// No metadata: the Windows app has no equivalent of the macOS sharing
+    /// sweep yet, so no row claims a green "Sharing" chip. Absent rather than
+    /// guessed — a chip that appears when a machine is merely reachable would
+    /// be a lie, and the chip is the one thing on the row people act on.
+    var hubScreens: [HubScreen] {
+        peers.map {
+            HubScreen(
+                id: $0.id, hostname: $0.hostname, tailscaleIP: $0.tailscaleIP,
+                isOnline: $0.isOnline)
+        }
+    }
+
+    /// The sharing half of the hub, or nil on a build that cannot capture.
+    ///
+    /// Withheld rather than shown and then failing: a Windows build without
+    /// Windows.Graphics.Capture cannot share, and finding that out by pressing
+    /// a button is worse than not being offered one.
+    var shareCard: ShareCard? {
+        guard shareSession.isSupported else { return nil }
+        return ShareCard(
+            statusLine: sharing.isSharing
+                ? "Sharing \(sharing.target)"
+                : "Not sharing",
+            isSharing: sharing.isSharing,
+            canShare: watching == nil,
+            startLabel: "Share this screen",
+            notes: shareNotes,
+            // Control requests and viewer approvals are the same interaction —
+            // a sentence and two buttons — so they go through the one prompt
+            // shape the shared card renders. This window is the only surface
+            // this app has; a request not rendered here is one nobody can
+            // answer, which is exactly what happened when the Windows sharer
+            // advertised the capability and had nowhere to show the request.
+            prompts: sharing.controlRequests.map {
+                HubPrompt(
+                    id: $0.id.uuidString,
+                    message: "\($0.displayName) wants to control this machine")
+            },
+            extraAction: sharing.controlGrantedTo.map { holder in
+                HubAction(label: "Take back control from \(holder)") { [weak self] in
+                    self?.revokeControl()
+                }
+            },
+            onStart: { [weak self] in self?.startSharing() },
+            onStop: { [weak self] in self?.stopSharing() },
+            onAccept: { [weak self] id in
+                guard let requestID = UUID(uuidString: id) else { return }
+                self?.grantControl(to: requestID)
+            },
+            onDecline: { [weak self] id in
+                guard let requestID = UUID(uuidString: id) else { return }
+                self?.declineControl(requestID)
+            })
+    }
+
+    /// The secondary lines under the share card's status.
+    private var shareNotes: [String] {
+        guard sharing.isSharing else { return [] }
+        var notes: [String] = [
+            // Spelled out rather than shown as a number: "nobody is watching
+            // yet" and "two people are watching" are the two facts a sharer
+            // wants, and a bare count leaves the first ambiguous.
+            sharing.viewerCount == 0
+                ? "No one is watching yet"
+                : "\(sharing.viewerCount) watching"
+        ]
+        // Which of the two optional features this share actually got. Their
+        // absence is otherwise invisible from both ends — the viewer simply
+        // stops offering them and the sharer sees a share that looks normal.
+        if sharing.remoteControlAvailable {
+            notes.append("Viewers can ask to control this machine")
+        }
+        if sharing.annotationsAvailable {
+            notes.append("Viewers' drawings appear on this screen")
+        }
+        // Carries the reason they are unavailable, when they are. "Request
+        // Control is missing" with no explanation is a support ticket; "2
+        // displays share this resolution" is something the sharer can act on.
+        if !sharing.message.isEmpty { notes.append(sharing.message) }
+        // Where the frame time goes. A viewer's stats overlay can prove the
+        // network is fine and still leave "why is it 2 fps" open — capture,
+        // convert and encode are three different problems with three different
+        // fixes, and the idle count separates all of them from "nothing on
+        // screen moved".
+        if let timings = sharing.timings {
+            notes.append(timings.summary)
+            if let slowest = timings.slowestStage {
+                notes.append("slowest stage: \(slowest)")
+            }
+        }
+        return notes
     }
 
     func signIn() {
@@ -373,6 +412,16 @@ final class AppUIState: ObservableObject {
     /// by flipping `stopRequested`, which its `shouldClose` closure polls — the
     /// transport's own contract for ending a session cleanly rather than
     /// cancelling mid-datagram.
+    /// Dial the row the hub reports was tapped.
+    ///
+    /// The shared chrome hands back a row id rather than a `DiscoveredSharer`,
+    /// because it deliberately does not import the transport that defines one —
+    /// a package that draws rectangles should not need a Go archive to compile.
+    func connect(toID id: String) {
+        guard let peer = peers.first(where: { $0.id == id }) else { return }
+        connect(to: peer)
+    }
+
     func connect(to peer: DiscoveredSharer) {
         guard phase == .ready, sessionTask == nil else { return }
         stopRequested = false
@@ -431,12 +480,6 @@ final class AppUIState: ObservableObject {
     }
 
     // MARK: Sharing
-
-    /// Whether to offer the share button at all. Withheld rather than shown
-    /// and then failing: a Windows build without Windows.Graphics.Capture
-    /// cannot share, and finding that out by pressing a button is worse than
-    /// not being offered one.
-    var canShare: Bool { shareSession.isSupported && watching == nil }
 
     /// Pick a target, then start sharing it.
     ///

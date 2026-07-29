@@ -25,6 +25,12 @@ let package = Package(
         .package(path: "../../Packages/TailscreenKit"),
         .package(path: "../linux"),
         .package(path: "../../Packages/TailscaleKit"),
+        // The hub's look — header, screen rows, cards, placards — shared with
+        // the Windows app. It used to live in this executable as
+        // `ViewerChrome.swift`; it moved out when a second swift-cross-ui app
+        // needed the same design system and copying it would have guaranteed
+        // the two drifted apart.
+        .package(path: "../../Packages/TailscreenHubUI"),
     ],
     targets: [
         // OpenGL YUV→RGB renderer for the GLArea. C so it can call GL (via
@@ -72,6 +78,7 @@ let package = Package(
                 // identity is its directory name, `linux`.
                 .product(name: "TailscreenViewerCore", package: "linux"),
                 .product(name: "TailscreenViewerTsnet", package: "TailscreenKit"),
+                .product(name: "TailscreenHubUI", package: "TailscreenHubUI"),
             ],
             linkerSettings: [
                 // Resolve libtailscale.a for the tsnet transport (same relative
