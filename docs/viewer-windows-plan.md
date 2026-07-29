@@ -406,11 +406,38 @@ would not.
 Swift setup therefore runs **before** Go in that job, opposite to the app job,
 because the Swift toolchain is where that clang comes from.
 
-**Still open:** whether `tsnet-probe` links and `tailscale_new()` returns on
-arm64, and then the app itself — WinUI, FFmpeg, staging. The probe reached the
-staging step and tripped a bug in this job's own copy of it (`cp` onto the
-dangling `lib/libtailscale.a` symlink, which the app job has always deleted
-first), so the link and run legs are still unproven rather than failed.
+**The current blocker, also not ours — and this one is the real one.** With the
+c-archive built and staged, Swift 6.1.3 cannot compile anything that imports
+`WinSDK` on arm64:
+
+```
+winnt.h:6164:11: error: reference to '_ARM64_BARRIER_ISH' is ambiguous
+  candidate ... swift-6.1.3-RELEASE-windows10-arm64/.../clang/include/arm64intr.h:23
+<unknown>:0: error: could not build C module 'WinSDK'
+```
+
+The toolchain's own clang builtin header and the runner image's Windows SDK
+(10.0.26100) both define that enumerator, so the `WinSDK` module map is
+unbuildable with that pairing. **No workaround exists inside this repo** —
+patch 025's POSIX shims import `WinSDK`, so the collision sits upstream of all
+our code, not beside it.
+
+This is the same shape as the documented 6.0.3 `could not build module 'ucrt'`
+failure on x64: a toolchain/SDK mismatch, fixed by moving the toolchain. The
+arm64 leg therefore tries **6.3** while the app job stays on 6.1 — the two share
+no cache, and 6.2 is pinned out of the x64 matrix for an unrelated swift-cross-ui
+frontend crash the probe never compiles.
+
+**Still unproven, therefore:** that `tsnet-probe` links on arm64, that
+`tailscale_new()` returns, and everything above it (WinUI, FFmpeg, staging). What
+IS established is that the two things expected to be hardest — the Go bridge and
+the c-archive — are not the problem.
+
+**Read this as a cost signal for W8.** Two independent upstream toolchain
+problems surfaced within the first three runs of a probe that deliberately builds
+almost nothing. Multi-arch is not a small increment on top of the x64 work, and
+a dual-architecture MSIX should not be planned as though arm64 were a URL change
+away. If arm64 matters, it wants its own phase.
 
 **Also unresolved, and cheap to forget:** no native arm64 build, so today's x64
 artifact runs under emulation on ARM devices (which is how the W2/W3 manual
