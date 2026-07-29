@@ -336,7 +336,9 @@ jobs:
                       'Packages/OpusKit/Package.swift',
                       'Packages/TailscreenVideoFFmpeg/Package.swift',
                       'Packages/FFmpegKit/Package.swift',
-                      'Packages/WASAPIKit/Package.swift') }}
+                      'Packages/WASAPIKit/Package.swift',
+                      'Packages/WGCCaptureKit/Package.swift',
+                      'Packages/TailscreenSharerWGC/Package.swift') }}
 
       - name: Resolve the app's dependencies
         working-directory: Apps/windows

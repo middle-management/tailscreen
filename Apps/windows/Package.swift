@@ -40,6 +40,8 @@ let package = Package(
         .package(path: "../../Packages/TailscreenKit"),
         .package(path: "../../Packages/TailscreenVideoFFmpeg"),
         .package(path: "../../Packages/WASAPIKit"),
+        .package(path: "../../Packages/TailscreenSharerWGC"),
+        .package(path: "../../Packages/WGCCaptureKit"),
     ],
     targets: [
         .executableTarget(
@@ -71,6 +73,14 @@ let package = Package(
                 // to the Linux viewer. No system package to install: WASAPI is
                 // part of Windows.
                 .product(name: "WASAPIKit", package: "WASAPIKit"),
+                // Sharing. A package of its own so it carries no WinUI and
+                // Linux CI can typecheck it — which covers the capture loop AND
+                // `WindowsShareSession`, whose off-the-main-actor discipline is
+                // exactly what a Windows-only build would let through unread.
+                // WGCCaptureKit is named directly because the app holds the
+                // picked `WGC.CaptureItem` between the picker and the share.
+                .product(name: "TailscreenSharerWGC", package: "TailscreenSharerWGC"),
+                .product(name: "WGCCaptureKit", package: "WGCCaptureKit"),
             ],
             // libtailscale.a is a link-time input, so the flag belongs on this
             // executable rather than on the library targets that merely compile

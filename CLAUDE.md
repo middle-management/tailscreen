@@ -46,7 +46,10 @@ tailscreen/
 │       │                       #   on WinUI, reusing the portable tiers + the
 │       │                       #   shared tsnet transport: sign-in, peer list,
 │       │                       #   libavcodec video into a WinUI WriteableBitmap,
-│       │                       #   WASAPI audio. Viewer only — no sharing yet
+│       │                       #   WASAPI audio, and sharing via the WGC picker
+│       │                       #   + TailscreenSharerWGC (no remote control:
+│       │                       #   no injector is supplied, so the server
+│       │                       #   withholds the .remoteControl cap)
 │       └── Sources/tailscreen-windows/
 ├── Packages/                   # Local SwiftPM packages the app depends on
 │   ├── TailscreenKit/          # Portable (Linux-buildable) protocol core —

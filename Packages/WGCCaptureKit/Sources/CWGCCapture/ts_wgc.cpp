@@ -121,10 +121,24 @@ extern "C" int32_t ts_wgc_pick(void *owner_hwnd, ts_wgc_item **out) {
 
     // The picker is modal system UI and parents itself to a window. Without
     // this it fails rather than picking a parent for us.
+    //
+    // A null owner is resolved rather than passed through. Callers that can
+    // hand over their real HWND should, but a GUI toolkit does not always
+    // surface one — swift-cross-ui does not — and `Initialize(nullptr)` is
+    // rejected, which would make "the picker is unavailable in this app" the
+    // reported cause of what is really a plumbing gap. The active window, then
+    // the foreground window, are the same fallbacks a modal dialog would use.
+    HWND owner = static_cast<HWND>(owner_hwnd);
+    if (owner == nullptr) {
+        owner = GetActiveWindow();
+    }
+    if (owner == nullptr) {
+        owner = GetForegroundWindow();
+    }
     hr = picker->QueryInterface(
         __uuidof(IInitializeWithWindow), reinterpret_cast<void **>(&withWindow));
     if (SUCCEEDED(hr)) {
-        withWindow->Initialize(static_cast<HWND>(owner_hwnd));
+        withWindow->Initialize(owner);
         ts_release(&withWindow);
     }
 

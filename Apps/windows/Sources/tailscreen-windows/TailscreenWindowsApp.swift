@@ -6,12 +6,15 @@ import SwiftCrossUI
 // own `Published` / `ObservableObject` shims, the same collision the GTK app
 // hits and solves the same way.
 import struct TailscreenProtocol.QualitySettings
+import enum TailscreenProtocol.TailscreenInstance
+import class TailscreenSharerWGC.WindowsShareSession
 import class TailscreenVideoFFmpeg.FFmpegVideoDecoder
 import class TailscreenViewer.FrameStore
 import class TailscreenViewer.ThreadedAudioSink
 import struct TailscreenViewerTsnet.DiscoveredSharer
 import class TailscreenViewerTsnet.TsnetTransport
 import struct TailscreenViewerTsnet.ViewerConfig
+import enum WGCCaptureKit.WGC
 
 // NOT named main.swift on purpose: Swift rejects `@main` in a file with that
 // name, because main.swift is itself top-level code.
@@ -21,7 +24,9 @@ import struct TailscreenViewerTsnet.ViewerConfig
 /// W2 proved the chrome renders; W3 proved libtailscale's Go↔native bridge
 /// (patch 024) carries a real tsnet node; W4 added libavcodec decode through the
 /// portable `VideoDecoding` seam and a CPU blit into a WinUI `WriteableBitmap`.
-/// W5 adds WASAPI playback behind the portable `AudioSink` seam.
+/// W5 adds WASAPI playback behind the portable `AudioSink` seam, and W6 adds
+/// sharing: the system capture picker, then the portable
+/// `TailscaleScreenShareServer` driven by Windows.Graphics.Capture.
 ///
 /// Very little of this is Windows-specific: the decoder is the same
 /// `FFmpegVideoDecoder` the Linux viewer runs, the colour conversion is
@@ -29,8 +34,6 @@ import struct TailscreenViewerTsnet.ViewerConfig
 /// audio wrapper is `ThreadedAudioSink` — all portable and all tested on Linux.
 /// What is genuinely new per stage is one platform file: the WinUI surface, and
 /// the WASAPI sink.
-///
-/// No sharing — that is W6.
 @main
 struct TailscreenWindowsApp: App {
     @State var state = AppUIState()
@@ -66,9 +69,17 @@ struct TailscreenWindowsApp: App {
                         store: state.frameStore,
                         generation: state.frameGeneration
                     )
+                } else if state.sharing.isSharing {
+                    SharingCard(
+                        status: state.sharing,
+                        onStop: { state.stopSharing() }
+                    )
                 } else if state.phase == .ready {
                     HStack(spacing: 8) {
                         Button("Refresh") { state.refreshPeers() }
+                        if state.canShare {
+                            Button("Share this screen") { state.startSharing() }
+                        }
                         Button("Sign out") { state.signOut() }
                     }
                     Divider()
@@ -112,6 +123,34 @@ struct LoginCard: View {
             Text(url)
                 .font(.caption)
             Button("Open in browser") { onOpen() }
+        }
+        .padding(8)
+    }
+}
+
+/// What is on screen while this machine is sharing.
+///
+/// The viewer count is spelled out rather than shown as a badge: "nobody is
+/// watching yet" and "two people are watching" are the two facts a sharer
+/// actually wants, and a number alone leaves the first ambiguous.
+struct SharingCard: View {
+    let status: WindowsShareSession.Status
+    let onStop: () -> Void
+
+    var body: some View {
+        VStack(spacing: 6) {
+            HStack(spacing: 8) {
+                Text("Sharing \(status.target)")
+                    .font(.caption)
+                Spacer()
+                Button("Stop sharing") { onStop() }
+            }
+            Text(
+                status.viewerCount == 0
+                    ? "No one is watching yet"
+                    : "\(status.viewerCount) watching"
+            )
+            .font(.caption)
         }
         .padding(8)
     }
@@ -184,7 +223,12 @@ final class AppUIState: ObservableObject {
     /// The frame itself travels through `frameStore`, never through this.
     @Published var frameGeneration = 0
 
+    /// Sharing state, mirrored from `SharingController` (which is off the main
+    /// actor on purpose — see its type comment).
+    @Published var sharing = WindowsShareSession.Status()
+
     private let transport = TsnetTransport()
+    private let shareSession = WindowsShareSession()
     /// The renderer hand-off, shared with `WinUIVideoView`. Portable, lock-
     /// guarded, and the same type the GTK viewer polls from its draw callback.
     let frameStore = FrameStore()
@@ -318,6 +362,60 @@ final class AppUIState: ObservableObject {
         stopRequested = true
     }
 
+    // MARK: Sharing
+
+    /// Whether to offer the share button at all. Withheld rather than shown
+    /// and then failing: a Windows build without Windows.Graphics.Capture
+    /// cannot share, and finding that out by pressing a button is worse than
+    /// not being offered one.
+    var canShare: Bool { shareSession.isSupported && watching == nil }
+
+    /// Pick a target, then start sharing it.
+    ///
+    /// The picker runs inline on the main actor because it is modal system UI
+    /// that needs an owner window and a message pump. Everything after it —
+    /// tsnet bring-up, capture, encode — runs off the main actor inside
+    /// `beginSharing`, which is the whole reason `WindowsShareSession` is not
+    /// `@MainActor`: the same shape of mistake froze sign-in earlier in this
+    /// port, and a share brings up a node exactly the same way.
+    func startSharing() {
+        guard phase == .ready, !sharing.isSharing else { return }
+        detail = ""
+
+        shareSession.onStatus = { [weak self] status in
+            Task { @MainActor in self?.sharing = status }
+        }
+
+        let item: WGC.CaptureItem?
+        do {
+            item = try shareSession.pickTarget()
+        } catch {
+            detail = "Could not open the capture picker: \(error)"
+            return
+        }
+        // Dismissing the picker is a decision, not a failure. Say nothing.
+        guard let item else { return }
+
+        let quality = QualitySettings.default
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await shareSession.beginSharing(
+                    item: item,
+                    hostname: Self.sharerHostname(),
+                    statePath: Self.sharerStateDirectory(),
+                    quality: quality
+                )
+            } catch {
+                self.detail = "Could not start sharing: \(error)"
+            }
+        }
+    }
+
+    func stopSharing() {
+        Task { [weak self] in await self?.shareSession.stopSharing() }
+    }
+
     func signOut() {
         guard phase == .ready else { return }
         stopRequested = true
@@ -363,6 +461,44 @@ final class AppUIState: ObservableObject {
             .appendingPathComponent("Tailscreen")
             .appendingPathComponent("tailscale")
             .path
+    }
+
+    /// A SEPARATE state directory from the viewer's.
+    ///
+    /// The screen-share server brings up its own tsnet node, and a tsnet state
+    /// directory holds a machine key — one identity. Pointing both at the same
+    /// directory would have two live nodes fighting over one key, which is the
+    /// same defect `TAILSCREEN_INSTANCE` exists to prevent for two copies of
+    /// the mac app on one machine. Reusing the viewer's NODE (the server's
+    /// `existingNode:` parameter) is the better answer and the one macOS uses;
+    /// it needs the app to own the node rather than the transport, which is a
+    /// larger change than this stage.
+    private static func sharerStateDirectory() -> String {
+        let base = ProcessInfo.processInfo.environment["LOCALAPPDATA"] ?? NSHomeDirectory()
+        return URL(fileURLWithPath: base)
+            .appendingPathComponent("Tailscreen")
+            .appendingPathComponent("tailscale-sharer")
+            .path
+    }
+
+    /// The name this machine advertises while sharing.
+    ///
+    /// Built from `serverHostnamePrefix` rather than spelled out, because
+    /// discovery's rule is "starts with the server prefix and NOT with the
+    /// client prefix" — a share registered under the viewer prefix is
+    /// deliberately invisible to the peers meant to watch it. Machine names
+    /// are filtered to what a hostname may contain, and one that would
+    /// collide with the client prefix falls back rather than disappearing.
+    private static func sharerHostname() -> String {
+        let machine =
+            ProcessInfo.processInfo.environment["COMPUTERNAME"]
+            ?? ProcessInfo.processInfo.hostName
+        var cleaned = machine.lowercased().filter { $0.isLetter || $0.isNumber || $0 == "-" }
+        let candidate = TailscreenInstance.serverHostnamePrefix + cleaned
+        if cleaned.isEmpty || !TailscreenInstance.isTailscreenServerHostname(candidate) {
+            cleaned = "windows"
+        }
+        return TailscreenInstance.serverHostnamePrefix + cleaned
     }
 
     private static var architecture: String {
