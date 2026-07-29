@@ -299,34 +299,18 @@ public final class X11CaptureEncoder: CaptureEncoding, @unchecked Sendable {
         lock.unlock()
         guard !already, let handler = onParameterSets else { return }
         guard let annexB = NALUnit.avccToAnnexB(avcc) else { return }
-        let nals = NALUnit.annexBNALs(annexB)
 
-        let sets: CodecParameterSets?
-        if isHEVC {
-            // HEVC NAL type is bits 1-6 of the first header byte.
-            let byType = Dictionary(
-                nals.compactMap { n -> (UInt8, Data)? in
-                    guard let f = n.first else { return nil }
-                    return ((f >> 1) & 0x3F, n)
-                }, uniquingKeysWith: { a, _ in a })
-            if let vps = byType[32], let sps = byType[33], let pps = byType[34] {
-                sets = .hevc(vps: vps, sps: sps, pps: pps)
-            } else {
-                sets = nil
-            }
-        } else {
-            let byType = Dictionary(
-                nals.compactMap { n -> (UInt8, Data)? in
-                    guard let f = n.first else { return nil }
-                    return (f & 0x1F, n)
-                }, uniquingKeysWith: { a, _ in a })
-            if let sps = byType[7], let pps = byType[8] {
-                sets = .h264(sps: sps, pps: pps)
-            } else {
-                sets = nil
-            }
-        }
-        guard let sets else { return }
+        // The NAL-type masks differ between the codecs and getting them
+        // crossed fails silently — viewers install nothing and sit on black
+        // while this side looks perfect — so the table lives in
+        // `ParameterSetExtraction`, shared with the Windows backend and
+        // tested on Linux CI. Splitting Annex-B stays here: that half is
+        // FFmpeg's, which the portable tier cannot name.
+        guard
+            let sets = ParameterSetExtraction.parameterSets(
+                fromAnnexBNALs: NALUnit.annexBNALs(annexB),
+                codec: isHEVC ? .hevc : .h264)
+        else { return }
         lock.lock()
         sentParameterSets = true
         lock.unlock()
