@@ -1,5 +1,6 @@
 import Foundation
 import SendInputKit
+import TailscaleKit
 import TailscreenProtocol
 import TailscreenSharer
 import WGCCaptureKit
@@ -83,11 +84,19 @@ public final class WindowsShareSession: @unchecked Sendable {
     ///   control; see the type comment for why it cannot be derived from the
     ///   capture item. Re-read on every activation, so a window that has been
     ///   moved or resized still maps correctly.
+    /// - Parameter existingNode: the app's already-signed-in tsnet node.
+    ///   **Supply it.** Without one the server brings up its own, which needs
+    ///   its own state directory — and a state directory holds a machine key,
+    ///   so that is a second machine, needing a second interactive browser
+    ///   login the user is never prompted for. The share then waits at that
+    ///   login forever and never appears on anyone's tailnet. Sharing the
+    ///   node is also what gives the app ONE identity, as the macOS app has.
     public func beginSharing(
         item: WGC.CaptureItem,
         hostname: String,
         statePath: String,
         quality: QualitySettings,
+        existingNode: TailscaleNode? = nil,
         controlRegion: (@Sendable () -> SendInputInjector.Region?)? = nil
     ) async throws {
         // A capture FACTORY, not an instance, because the server respawns the
@@ -136,11 +145,13 @@ public final class WindowsShareSession: @unchecked Sendable {
             if let controlURL {
                 try await newServer.start(
                     hostname: hostname, authKey: authKey, path: statePath,
-                    controlURL: controlURL, filterData: selectionData, quality: quality)
+                    controlURL: controlURL, filterData: selectionData, quality: quality,
+                    existingNode: existingNode)
             } else {
                 try await newServer.start(
                     hostname: hostname, authKey: authKey, path: statePath,
-                    filterData: selectionData, quality: quality)
+                    filterData: selectionData, quality: quality,
+                    existingNode: existingNode)
             }
         } catch {
             lock.withLock { server = nil }

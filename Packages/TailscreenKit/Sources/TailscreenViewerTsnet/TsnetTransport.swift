@@ -113,6 +113,19 @@ public final class TsnetTransport {
     /// skips `prepare` (the direct-host path, which dials without discovery).
     private var preparedNode: TailscaleNode?
 
+    /// The live node, for a host that also SHARES.
+    ///
+    /// `TailscaleScreenShareServer.start(existingNode:)` takes this so the
+    /// sharer runs on the same tailnet identity the user signed in with. The
+    /// alternative — letting the server bring up its own — needs a second state
+    /// directory, and a state directory holds a machine key, so it is a second
+    /// machine: a second interactive browser login the user is never prompted
+    /// for, and a share that silently never joins the tailnet. That is exactly
+    /// what the Windows app did before it read this.
+    ///
+    /// Pair it with `retainsNodeAcrossSessions` and a `.shareCapable` role.
+    public var sharedNode: TailscaleNode? { preparedNode }
+
     /// The Tailscale login/identity the prepared node authenticated as (e.g.
     /// "user@github"), resolved during `prepare`. nil before bring-up or after
     /// `teardown`. A GUI host uses it to label the active account.

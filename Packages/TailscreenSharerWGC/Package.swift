@@ -40,6 +40,7 @@ let package = Package(
         .package(path: "../FFmpegKit"),
         .package(path: "../TailscreenKit"),
         .package(path: "../SendInputKit"),
+        .package(path: "../TailscaleKit"),
     ],
     targets: [
         .target(
@@ -50,6 +51,9 @@ let package = Package(
                 .product(name: "TailscreenProtocol", package: "TailscreenKit"),
                 .product(name: "TailscreenSharer", package: "TailscreenKit"),
                 .product(name: "SendInputKit", package: "SendInputKit"),
+                // For `TailscaleNode`: the share runs on the app's already-signed-in
+                // node rather than bringing up a second one. See beginSharing.
+                .product(name: "TailscaleKit", package: "TailscaleKit"),
             ],
             path: "Sources/TailscreenSharerWGC"
         )

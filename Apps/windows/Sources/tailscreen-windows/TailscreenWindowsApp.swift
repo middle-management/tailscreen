@@ -6,7 +6,6 @@ import SwiftCrossUI
 // own `Published` / `ObservableObject` shims, the same collision the GTK app
 // hits and solves the same way.
 import struct TailscreenProtocol.QualitySettings
-import enum TailscreenProtocol.TailscreenInstance
 import class TailscreenSharerWGC.WindowsShareSession
 import class TailscreenVideoFFmpeg.FFmpegVideoDecoder
 import class TailscreenViewer.FrameStore
@@ -251,6 +250,13 @@ final class AppUIState: ObservableObject {
         detail = ""
         loginURL = nil
 
+        // Keep the node alive between viewing sessions. `run`'s defer clears
+        // `preparedNode` on EVERY exit path, so without this the peer list is
+        // still on screen with a node that is gone, and the next Refresh fails
+        // with `badInterfaceHandle` — which is exactly what happened after
+        // watching a share once.
+        transport.retainsNodeAcrossSessions = true
+
         Task {
             do {
                 try await transport.prepare(
@@ -259,7 +265,15 @@ final class AppUIState: ObservableObject {
                         // session starts. Discovery never reads it, and this
                         // stage stops before dialing.
                         hostname: "",
-                        statePath: Self.stateDirectory()
+                        statePath: Self.stateDirectory(),
+                        // Share-capable, so the node registers under
+                        // `tailscreen-<machine>` rather than the viewer prefix
+                        // that discovery deliberately EXCLUDES. A viewer-only
+                        // node is invisible in everyone's screen list by
+                        // design — correct while this app could only watch,
+                        // and the reason a share from it never showed up on
+                        // the Mac.
+                        nodeRole: .shareCapable(name: Self.machineName())
                     ),
                     onLoginURL: { [weak self] url in
                         // Fired from the IPN-bus watcher, off the main actor.
@@ -402,9 +416,17 @@ final class AppUIState: ObservableObject {
             do {
                 try await shareSession.beginSharing(
                     item: item,
-                    hostname: Self.sharerHostname(),
-                    statePath: Self.sharerStateDirectory(),
-                    quality: quality
+                    // Both are ignored when a node is supplied; passed so the
+                    // signature stays honest about what a standalone bring-up
+                    // would have used.
+                    hostname: Self.machineName(),
+                    statePath: Self.stateDirectory(),
+                    quality: quality,
+                    // THE app's node, not a new one. A second node means a
+                    // second machine key, a second browser login nobody is
+                    // prompted for, and a share that waits at that login
+                    // forever without ever joining the tailnet.
+                    existingNode: transport.sharedNode
                 )
             } catch {
                 self.detail = "Could not start sharing: \(error)"
@@ -463,42 +485,17 @@ final class AppUIState: ObservableObject {
             .path
     }
 
-    /// A SEPARATE state directory from the viewer's.
+    /// This machine's name, as the tailnet sees it.
     ///
-    /// The screen-share server brings up its own tsnet node, and a tsnet state
-    /// directory holds a machine key — one identity. Pointing both at the same
-    /// directory would have two live nodes fighting over one key, which is the
-    /// same defect `TAILSCREEN_INSTANCE` exists to prevent for two copies of
-    /// the mac app on one machine. Reusing the viewer's NODE (the server's
-    /// `existingNode:` parameter) is the better answer and the one macOS uses;
-    /// it needs the app to own the node rather than the transport, which is a
-    /// larger change than this stage.
-    private static func sharerStateDirectory() -> String {
-        let base = ProcessInfo.processInfo.environment["LOCALAPPDATA"] ?? NSHomeDirectory()
-        return URL(fileURLWithPath: base)
-            .appendingPathComponent("Tailscreen")
-            .appendingPathComponent("tailscale-sharer")
-            .path
-    }
-
-    /// The name this machine advertises while sharing.
-    ///
-    /// Built from `serverHostnamePrefix` rather than spelled out, because
-    /// discovery's rule is "starts with the server prefix and NOT with the
-    /// client prefix" — a share registered under the viewer prefix is
-    /// deliberately invisible to the peers meant to watch it. Machine names
-    /// are filtered to what a hostname may contain, and one that would
-    /// collide with the client prefix falls back rather than disappearing.
-    private static func sharerHostname() -> String {
+    /// `TsnetTransport` prefixes it with `serverHostnamePrefix`, so what is
+    /// returned here is the bare name — filtered to what a hostname may
+    /// contain, and never empty.
+    private static func machineName() -> String {
         let machine =
             ProcessInfo.processInfo.environment["COMPUTERNAME"]
             ?? ProcessInfo.processInfo.hostName
-        var cleaned = machine.lowercased().filter { $0.isLetter || $0.isNumber || $0 == "-" }
-        let candidate = TailscreenInstance.serverHostnamePrefix + cleaned
-        if cleaned.isEmpty || !TailscreenInstance.isTailscreenServerHostname(candidate) {
-            cleaned = "windows"
-        }
-        return TailscreenInstance.serverHostnamePrefix + cleaned
+        let cleaned = machine.lowercased().filter { $0.isLetter || $0.isNumber || $0 == "-" }
+        return cleaned.isEmpty ? "windows" : cleaned
     }
 
     private static var architecture: String {
