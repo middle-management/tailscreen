@@ -45,6 +45,42 @@ public enum BGRAToI420 {
     private static let cU: Int32 = 7756
     private static let cV: Int32 = 9139
 
+    /// A captured BGRA frame: where the pixels are and how they are laid out.
+    public struct Source {
+        public let bgra: UnsafePointer<UInt8>
+        /// Row pitch in BYTES, **not** derived from the width. Capture APIs pad
+        /// rows — DXGI reports its own pitch and it is routinely wider than
+        /// `width * 4` — and reading at `width * 4` skews the image
+        /// progressively further with every row.
+        public let stride: Int
+        public let width: Int
+        public let height: Int
+
+        public init(bgra: UnsafePointer<UInt8>, stride: Int, width: Int, height: Int) {
+            self.bgra = bgra
+            self.stride = stride
+            self.width = width
+            self.height = height
+        }
+    }
+
+    /// The three destination planes, sized per ``planeSizes(width:height:)``.
+    public struct Planes {
+        public let y: UnsafeMutablePointer<UInt8>
+        public let u: UnsafeMutablePointer<UInt8>
+        public let v: UnsafeMutablePointer<UInt8>
+
+        public init(
+            y: UnsafeMutablePointer<UInt8>,
+            u: UnsafeMutablePointer<UInt8>,
+            v: UnsafeMutablePointer<UInt8>
+        ) {
+            self.y = y
+            self.u = u
+            self.v = v
+        }
+    }
+
     /// Number of bytes an I420 frame of this size occupies, per plane.
     public static func planeSizes(width: Int, height: Int) -> (y: Int, chroma: Int) {
         (width * height, ((width + 1) / 2) * ((height + 1) / 2))
@@ -52,23 +88,21 @@ public enum BGRAToI420 {
 
     /// Convert one BGRA frame into caller-provided I420 planes.
     ///
-    /// - Parameters:
-    ///   - bgra: source pixels, `height` rows of `stride` bytes.
-    ///   - stride: source row pitch in BYTES. Capture APIs pad rows — DXGI
-    ///     reports its own pitch and it is routinely wider than `width * 4` —
-    ///     so this is not derived from the width.
-    ///   - y, u, v: destination planes, sized per ``planeSizes(width:height:)``.
+    /// The geometry and the destinations are grouped rather than passed as
+    /// seven arguments: swiftlint caps a function at five, and the two structs
+    /// read better at the call site anyway — a capture backend holds one
+    /// `Planes` for the life of a share and rebuilds `Source` per frame.
+    ///
     /// - Returns: false, without writing, if the geometry is unusable.
     @discardableResult
-    public static func convert(
-        bgra: UnsafePointer<UInt8>,
-        stride: Int,
-        width: Int,
-        height: Int,
-        y: UnsafeMutablePointer<UInt8>,
-        u: UnsafeMutablePointer<UInt8>,
-        v: UnsafeMutablePointer<UInt8>
-    ) -> Bool {
+    public static func convert(_ source: Source, into planes: Planes) -> Bool {
+        let bgra = source.bgra
+        let stride = source.stride
+        let width = source.width
+        let height = source.height
+        let y = planes.y
+        let u = planes.u
+        let v = planes.v
         guard width > 0, height > 0, stride >= width * 4 else { return false }
 
         for row in 0..<height {

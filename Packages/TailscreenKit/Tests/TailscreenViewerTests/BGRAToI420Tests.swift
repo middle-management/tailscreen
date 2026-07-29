@@ -39,9 +39,11 @@ final class BGRAToI420Tests: XCTestCase {
                 u.withUnsafeMutableBufferPointer { up in
                     v.withUnsafeMutableBufferPointer { vp in
                         BGRAToI420.convert(
-                            bgra: bgra.baseAddress!, stride: source.stride,
-                            width: width, height: height,
-                            y: yp.baseAddress!, u: up.baseAddress!, v: vp.baseAddress!)
+                            BGRAToI420.Source(
+                                bgra: bgra.baseAddress!, stride: source.stride,
+                                width: width, height: height),
+                            into: BGRAToI420.Planes(
+                                y: yp.baseAddress!, u: up.baseAddress!, v: vp.baseAddress!))
                     }
                 }
             }
@@ -199,9 +201,11 @@ final class BGRAToI420Tests: XCTestCase {
                 u.withUnsafeMutableBufferPointer { up in
                     v.withUnsafeMutableBufferPointer { vp in
                         BGRAToI420.convert(
-                            bgra: bgra.baseAddress!, stride: 4,  // needs 16
-                            width: 4, height: 4,
-                            y: yp.baseAddress!, u: up.baseAddress!, v: vp.baseAddress!)
+                            BGRAToI420.Source(
+                                bgra: bgra.baseAddress!, stride: 4,  // needs 16
+                                width: 4, height: 4),
+                            into: BGRAToI420.Planes(
+                                y: yp.baseAddress!, u: up.baseAddress!, v: vp.baseAddress!))
                     }
                 }
             }
