@@ -1,12 +1,22 @@
 import Foundation
 import SwiftCrossUI
+
+import class TailscreenViewer.FrameStore
+import enum TailscreenViewer.I420Converter
+
+// This is the app's ONLY genuinely Windows-bound file, and the `#else` at the
+// bottom is what lets Linux CI typecheck everything else in the app —
+// including `TailscreenWindowsApp.swift`, whose 90-line result-builder body
+// once failed on a Windows runner with "failed to produce diagnostic for
+// expression" after a forty-minute build. Everything the app does apart from
+// blitting a frame is portable, and there is no reason for a one-line type
+// error in it to be discoverable only on Windows.
+#if os(Windows)
+
 import WinUI
 // `WinUIElementRepresentable` lives in the BACKEND module, not in SwiftCrossUI
 // and not in WinUI — it is the seam between the two, so neither re-exports it.
 import WinUIBackend
-
-import class TailscreenViewer.FrameStore
-import enum TailscreenViewer.I420Converter
 
 /// The video surface: a WinUI `Image` fed from a `WriteableBitmap`, polling the
 /// portable `FrameStore` for the latest decoded frame.
@@ -100,3 +110,24 @@ struct WinUIVideoView: WinUIElementRepresentable {
         }
     }
 }
+
+#else
+
+/// Off Windows there is no WinUI to host, so the video surface is a placeholder
+/// with the same name and the same initializer.
+///
+/// It exists purely so the rest of the app compiles somewhere a Windows runner
+/// is not required — the same trick every C shim in this port uses (`ts_wgc`,
+/// `ts_overlay`, `ts_sendinput` all have off-Windows stubs), applied one layer
+/// up. Nothing renders it: no `#if`-free code path reaches this on a platform
+/// that could show it.
+struct WinUIVideoView: View {
+    let store: FrameStore
+    let generation: Int
+
+    var body: some View {
+        Text("Video is available on Windows only.")
+    }
+}
+
+#endif

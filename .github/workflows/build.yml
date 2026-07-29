@@ -429,6 +429,24 @@ jobs:
         # Linux subgraph (DefaultBackend→GtkBackend) — a bare `swift build`
         # would also try to compile swift-cross-ui's Windows-only WinUI backend.
         run: PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" swift build --package-path Apps/linux-gtk --product tailscreen-viewer-gtk
+      - name: Typecheck the Windows app
+        # The Windows app builds HERE, on Linux, and that is the point.
+        #
+        # Its one genuinely Windows-bound file is WinUIVideoView, which carries
+        # an `#if os(Windows)` and an off-Windows stub; the WinUI dependencies
+        # are conditioned on `.windows` in its manifest so SwiftPM prunes them
+        # away and swift-cross-ui resolves to GtkBackend, which this job already
+        # has installed. Everything else in the app — the whole view layer, the
+        # state machine, the share wiring — is portable and compiles here.
+        #
+        # It earns its place: a `condition ? closure : nil` in the app's `body`
+        # made the Windows compiler answer "failed to produce diagnostic for
+        # expression" and nothing else, forty minutes into a run, having built
+        # 1,450 units of dependency first. The same error appears here in about
+        # three, on a Linux runner that costs a tenth as much. The Windows job
+        # remains the authority on whether it LINKS and RUNS; this one is the
+        # authority on whether it typechecks, which is where the mistakes are.
+        run: PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" swift build --package-path Apps/windows --product tailscreen-windows
       - name: Headless render self-test (Xvfb + software GL)
         # Renders a 4-bar YUV frame through GtkVideoView, reads the pixels back,
         # and exits 0 only if the BT.709 output is correct — a CI-gated proof

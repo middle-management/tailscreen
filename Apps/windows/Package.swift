@@ -60,9 +60,21 @@ let package = Package(
                 .product(name: "DefaultBackend", package: "swift-cross-ui"),
                 // WinUIElementRepresentable lives in the backend module, and
                 // the WinUI types it is generic over come from swift-winui.
-                // Both are Windows-only, which is what this package is.
-                .product(name: "WinUIBackend", package: "swift-cross-ui"),
-                .product(name: "WinUI", package: "swift-winui"),
+                //
+                // Conditioned on Windows so the edge disappears elsewhere —
+                // which is what makes `swift build --product tailscreen-windows`
+                // work on Linux, and therefore what lets Linux CI typecheck
+                // this app instead of a Windows runner being the only machine
+                // that can. (swift-winui's `CWinAppSDK` includes
+                // <wtypesbase.h>; without the condition it is pulled in and
+                // fails to compile before any of our code is reached.)
+                // `WinUIVideoView` carries the matching `#if os(Windows)`.
+                .product(
+                    name: "WinUIBackend", package: "swift-cross-ui",
+                    condition: .when(platforms: [.windows])),
+                .product(
+                    name: "WinUI", package: "swift-winui",
+                    condition: .when(platforms: [.windows])),
                 .product(name: "TailscreenProtocol", package: "TailscreenKit"),
                 // libavcodec behind the portable VideoDecoding seam — the same
                 // decoder the Linux viewer uses, which is why it is a shared
