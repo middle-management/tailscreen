@@ -136,6 +136,39 @@ void ts_input_virtual_desktop(int32_t *out_x, int32_t *out_y, int32_t *out_width
     }
 }
 
+struct ts_monitor_sink {
+    int32_t *rects;
+    int32_t capacity;
+    int32_t count;
+};
+
+static BOOL CALLBACK ts_monitor_proc(HMONITOR monitor, HDC dc, LPRECT rect, LPARAM param) {
+    (void)monitor;
+    (void)dc;
+    struct ts_monitor_sink *sink = (struct ts_monitor_sink *)param;
+    /* Keep counting past capacity: the RETURN value tells the caller whether
+     * it saw every monitor, and silently stopping would make a truncated list
+     * indistinguishable from a complete one. */
+    if (sink->rects != NULL && sink->count < sink->capacity) {
+        int32_t *slot = sink->rects + (sink->count * 4);
+        slot[0] = rect->left;
+        slot[1] = rect->top;
+        slot[2] = rect->right - rect->left;
+        slot[3] = rect->bottom - rect->top;
+    }
+    sink->count++;
+    return TRUE;
+}
+
+int32_t ts_input_monitors(int32_t *out_rects, int32_t capacity) {
+    struct ts_monitor_sink sink;
+    sink.rects = out_rects;
+    sink.capacity = capacity < 0 ? 0 : capacity;
+    sink.count = 0;
+    EnumDisplayMonitors(NULL, NULL, ts_monitor_proc, (LPARAM)&sink);
+    return sink.count;
+}
+
 int32_t ts_input_window_rect(void *hwnd, int32_t *out_x, int32_t *out_y, int32_t *out_width,
                              int32_t *out_height) {
     RECT rect;
@@ -226,6 +259,12 @@ void ts_input_virtual_desktop(int32_t *out_x, int32_t *out_y, int32_t *out_width
     if (out_height != NULL) {
         *out_height = 0;
     }
+}
+
+int32_t ts_input_monitors(int32_t *out_rects, int32_t capacity) {
+    (void)out_rects;
+    (void)capacity;
+    return 0;
 }
 
 int32_t ts_input_window_rect(void *hwnd, int32_t *out_x, int32_t *out_y, int32_t *out_width,

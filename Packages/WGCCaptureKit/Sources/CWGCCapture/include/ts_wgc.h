@@ -85,6 +85,13 @@ void ts_wgc_item_release(ts_wgc_item *item);
 ///
 /// Safe to call from any thread; the frame pool is created free-threaded so
 /// frames can be pulled from the capture thread rather than the UI one.
+/// The item's pixel size, WITHOUT opening a capture session.
+///
+/// Needed before a share starts, to work out which monitor a picked display
+/// item refers to: a `GraphicsCaptureItem` exposes no HMONITOR, so its size is
+/// the only handle on its identity. See `WindowsCaptureRegion`.
+int32_t ts_wgc_item_size(ts_wgc_item *item, uint32_t *width, uint32_t *height);
+
 int32_t ts_wgc_open(ts_wgc_item *item, ts_wgc **out, uint32_t *width, uint32_t *height);
 
 /// Wait up to `timeout_ms` for a frame and map it for reading. On TS_WGC_OK the

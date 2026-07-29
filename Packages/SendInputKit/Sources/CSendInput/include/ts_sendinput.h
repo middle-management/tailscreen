@@ -50,6 +50,18 @@ int32_t ts_input_key(uint16_t virtual_key, int32_t extended, int32_t down);
 void ts_input_virtual_desktop(int32_t *out_x, int32_t *out_y, int32_t *out_width,
                               int32_t *out_height);
 
+/// Enumerate the monitors' bounds in screen pixels.
+///
+/// Fills up to `capacity` rectangles as x/y/width/height quadruples and
+/// returns how many monitors EXIST — which may exceed `capacity`, so a caller
+/// can tell "I saw them all" from "there were more". Coordinates are
+/// virtual-desktop coordinates, so x/y are negative for a monitor left of or
+/// above the primary.
+///
+/// Used to recover which display a WGC capture item refers to, since the item
+/// itself does not say. See `WindowsCaptureRegion`.
+int32_t ts_input_monitors(int32_t *out_rects, int32_t capacity);
+
 /// A window's bounds in screen pixels. Returns 0 if the window is gone.
 int32_t ts_input_window_rect(void *hwnd, int32_t *out_x, int32_t *out_y, int32_t *out_width,
                              int32_t *out_height);

@@ -133,6 +133,24 @@ public enum WGC {
             #endif
         }
 
+        /// The target's pixel size, without opening a capture session.
+        ///
+        /// The only handle on WHICH display an item refers to: a
+        /// `GraphicsCaptureItem` exposes no HMONITOR, so the size is matched
+        /// against the enumerated monitors to recover the rect remote control
+        /// needs. Zero when unavailable.
+        public var size: (width: Int, height: Int) {
+            #if os(Windows)
+            guard let handle else { return (0, 0) }
+            var width: UInt32 = 0
+            var height: UInt32 = 0
+            guard ts_wgc_item_size(handle, &width, &height) == 0 else { return (0, 0) }
+            return (Int(width), Int(height))
+            #else
+            return (0, 0)
+            #endif
+        }
+
         /// What the picker called it — for the sharer's own "sharing X" label.
         public var displayName: String {
             #if os(Windows)

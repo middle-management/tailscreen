@@ -281,6 +281,24 @@ extern "C" int32_t ts_wgc_item_name(ts_wgc_item *item, char *buffer, int32_t cap
     return TS_WGC_OK;
 }
 
+extern "C" int32_t ts_wgc_item_size(ts_wgc_item *item, uint32_t *width, uint32_t *height) {
+    if (item == nullptr) {
+        return TS_WGC_ERR_ARGUMENT;
+    }
+    ABI::Windows::Graphics::SizeInt32 size = {};
+    HRESULT hr = item->item->get_Size(&size);
+    if (FAILED(hr)) {
+        return static_cast<int32_t>(hr);
+    }
+    if (width != nullptr) {
+        *width = static_cast<uint32_t>(size.Width < 0 ? 0 : size.Width);
+    }
+    if (height != nullptr) {
+        *height = static_cast<uint32_t>(size.Height < 0 ? 0 : size.Height);
+    }
+    return TS_WGC_OK;
+}
+
 extern "C" void ts_wgc_item_release(ts_wgc_item *item) {
     if (item == nullptr) {
         return;

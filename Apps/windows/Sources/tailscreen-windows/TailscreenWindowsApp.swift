@@ -150,6 +150,14 @@ struct SharingCard: View {
                     : "\(status.viewerCount) watching"
             )
             .font(.caption)
+            // Carries the reason remote control is unavailable, when it is.
+            // "Request Control is missing" with no explanation is a support
+            // ticket; "2 displays share this resolution" is something the
+            // sharer can act on.
+            if !status.message.isEmpty {
+                Text(status.message)
+                    .font(.caption)
+            }
         }
         .padding(8)
     }

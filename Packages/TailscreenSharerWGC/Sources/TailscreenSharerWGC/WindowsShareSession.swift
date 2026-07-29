@@ -79,11 +79,10 @@ public final class WindowsShareSession: @unchecked Sendable {
     /// `nonisolated` and `async`: called from a `Task` on the main actor, it
     /// runs on the global executor, so the node bring-up inside `start` never
     /// occupies the UI thread.
-    /// - Parameter controlRegion: where the shared content sits in screen
-    ///   pixels, or nil when unknown. Supplying it is what enables remote
-    ///   control; see the type comment for why it cannot be derived from the
-    ///   capture item. Re-read on every activation, so a window that has been
-    ///   moved or resized still maps correctly.
+    /// Remote control is enabled automatically when the picked target's
+    /// screen rect can be resolved — see `resolveControlRegion`. It cannot
+    /// always be, and the reason lands in the published status rather than
+    /// being swallowed.
     /// - Parameter existingNode: the app's already-signed-in tsnet node.
     ///   **Supply it.** Without one the server brings up its own, which needs
     ///   its own state directory — and a state directory holds a machine key,
@@ -96,17 +95,37 @@ public final class WindowsShareSession: @unchecked Sendable {
         hostname: String,
         statePath: String,
         quality: QualitySettings,
-        existingNode: TailscaleNode? = nil,
-        controlRegion: (@Sendable () -> SendInputInjector.Region?)? = nil
+        existingNode: TailscaleNode? = nil
     ) async throws {
         // A capture FACTORY, not an instance, because the server respawns the
         // backend to restart capture. Closing over the item is what makes a
         // restart re-target the same window without asking the user again —
         // the equivalent of the macOS helper re-resolving its cached selection,
         // which a `GraphicsCaptureItem` cannot be turned back into.
+        // Resolve WHERE the target is before building the server: whether an
+        // injector exists at all is what decides the advertised
+        // `.remoteControl` capability, and that is fixed for the session.
+        let region = Self.resolveControlRegion(for: item)
+        let controlNote: String
+        switch region {
+        case .success:
+            controlNote = ""
+        case .failure(let reason):
+            controlNote = "Remote control is off — \(reason)"
+        }
+
+        // A resolved region means remote control is offered; an unresolved one
+        // means no injector, so the server withholds `.remoteControl` and
+        // viewers hide Request Control rather than sending requests that would
+        // land in the wrong place.
+        var injector: WindowsInputInjector?
+        if case .success(let resolved) = region {
+            injector = WindowsInputInjector(regionProvider: { resolved })
+        }
+
         let newServer = TailscaleScreenShareServer(
             captureFactory: { WGCCaptureEncoder(item: item) },
-            inputInjector: controlRegion.map { WindowsInputInjector(regionProvider: $0) }
+            inputInjector: injector
         )
         let name = item.displayName
 
@@ -164,7 +183,7 @@ public final class WindowsShareSession: @unchecked Sendable {
 
         update {
             $0.isSharing = true
-            $0.message = ""
+            $0.message = controlNote
         }
     }
 
@@ -181,6 +200,22 @@ public final class WindowsShareSession: @unchecked Sendable {
             $0.viewerCount = 0
             $0.message = ""
         }
+    }
+
+    /// Where the picked target sits on screen, or why that is unknowable.
+    ///
+    /// The item carries no HMONITOR, so its SIZE is matched against the
+    /// enumerated monitors — the decision itself is `WindowsCaptureRegion` in
+    /// TailscreenProtocol, where Linux CI tests the cases that matter,
+    /// especially the two-identical-monitors one that must decline rather than
+    /// guess.
+    static func resolveControlRegion(
+        for item: WGC.CaptureItem
+    ) -> Result<SendInputInjector.Region, WindowsCaptureRegion.Failure> {
+        let size = item.size
+        return WindowsCaptureRegion.resolve(
+            itemWidth: size.width, itemHeight: size.height,
+            monitors: SendInputInjector.monitors())
     }
 
     /// Mutate the published status under the lock and publish the result.

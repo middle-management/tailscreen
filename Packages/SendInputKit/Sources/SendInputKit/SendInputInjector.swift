@@ -288,6 +288,35 @@ public final class SendInputInjector: @unchecked Sendable {
         return Region(x: Int(x), y: Int(y), width: Int(width), height: Int(height))
     }
 
+    /// Every monitor's bounds, in virtual-desktop coordinates.
+    ///
+    /// `WindowsCaptureRegion` matches a capture item's size against these to
+    /// work out which display it is. The buffer grows until the shim stops
+    /// reporting more monitors than fit: the shim returns how many EXIST, not
+    /// how many were written, precisely so a truncated list is detectable
+    /// rather than silently passing as complete — and a truncated list is the
+    /// one thing that could turn "two identical monitors, decline" into "one
+    /// monitor, pick it".
+    public static func monitors() -> [Region] {
+        var capacity = 8
+        for _ in 0..<4 {
+            var buffer = [Int32](repeating: 0, count: capacity * 4)
+            let total = Int(
+                buffer.withUnsafeMutableBufferPointer { pointer in
+                    ts_input_monitors(pointer.baseAddress, Int32(capacity))
+                })
+            if total <= capacity {
+                return (0..<total).map { index in
+                    Region(
+                        x: Int(buffer[index * 4]), y: Int(buffer[index * 4 + 1]),
+                        width: Int(buffer[index * 4 + 2]), height: Int(buffer[index * 4 + 3]))
+                }
+            }
+            capacity = total
+        }
+        return []
+    }
+
     /// A window's bounds in screen pixels, for a window share's region.
     public static func windowRegion(hwnd: UnsafeMutableRawPointer) -> Region? {
         var x: Int32 = 0
