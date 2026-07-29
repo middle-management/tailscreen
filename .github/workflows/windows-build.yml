@@ -1076,14 +1076,85 @@ jobs:
         shell: bash
         run: ./scripts/materialize-symlinks.sh --force
 
+      # Swift comes BEFORE Go, which is the opposite of the app job's order and
+      # is deliberate: the Swift toolchain ships the clang that cgo needs below.
+      # The first version of this job installed Go first, and cgo picked up
+      # whatever `gcc` was on PATH — an x86_64 one — which tried to assemble
+      # runtime/cgo's ARM64 `gcc_arm64.S` and produced
+      # `no such instruction: stp x29,x30`. `stp` is an ARM64 instruction, so
+      # that error is an x86 assembler reading ARM64 assembly, not a bad file.
+      - name: Setup Swift 6.1
+        uses: SwiftyLab/setup-swift@latest
+        with:
+          swift-version: '6.1'
+
+      # Prints the target triple, which is a finding in its own right: if the
+      # action resolved an x86_64 toolchain on an arm64 host, everything below
+      # would still build and would be answering a different question.
+      - name: Swift version and target
+        shell: bash
+        run: |
+          swift --version
+          echo "--- target triple ---"
+          swift -print-target-info | grep -i triple || true
+
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.21'
           cache: false
 
+      # Which C compilers exist here, and what does each target BY DEFAULT?
+      #
+      # This is a step whose output is the point. cgo's compiler choice is
+      # implicit (`gcc` on PATH unless CC says otherwise) and its failure mode is
+      # an assembler error deep in runtime/cgo that names an instruction rather
+      # than a compiler — so the inventory is what makes the next failure, if
+      # there is one, readable in one pass instead of three.
+      - name: Inventory C compilers
+        id: cc
+        shell: bash
+        run: |
+          pick=""
+          for cc in clang aarch64-w64-mingw32-gcc gcc cc; do
+            path=$(command -v "$cc" 2>/dev/null) || continue
+            echo "--- $cc -> $path"
+            "$cc" --version 2>&1 | head -2 || true
+            machine=$("$cc" -dumpmachine 2>/dev/null || echo '?')
+            echo "    -dumpmachine: $machine"
+            case "$machine" in
+              aarch64*|arm64*)
+                if [ -z "$pick" ]; then pick="$cc"; native=1; fi ;;
+            esac
+          done
+
+          # No compiler defaults to ARM64: fall back to clang with an explicit
+          # target. clang's integrated assembler understands the GNU ARM64
+          # syntax gcc_arm64.S is written in, which is the specific capability
+          # missing above.
+          if [ -z "$pick" ] && command -v clang >/dev/null 2>&1; then
+            pick=clang
+            native=0
+          fi
+          if [ -z "$pick" ]; then
+            echo "no usable C compiler found — cgo cannot build for arm64" >&2
+            exit 1
+          fi
+
+          echo "CGO_CC=$pick" >> "$GITHUB_ENV"
+          if [ "${native:-0}" = "1" ]; then
+            echo "chose $pick (natively targets arm64, no --target needed)"
+            echo "CGO_TARGET_FLAGS=" >> "$GITHUB_ENV"
+          else
+            echo "chose $pick with an explicit aarch64 target"
+            echo "CGO_TARGET_FLAGS=--target=aarch64-unknown-windows-msvc" >> "$GITHUB_ENV"
+          fi
+
       # GOARCH is explicit rather than inherited from the host, so this step
       # says what it builds even if it ever runs somewhere else.
+      #
+      # CC is explicit for the reason the inventory step above documents: left
+      # implicit, cgo reaches for an x86_64 gcc and fails inside runtime/cgo.
       - name: Build libtailscale.a for windows/arm64
         shell: bash
         working-directory: Packages/TailscaleKit/upstream/libtailscale
@@ -1092,6 +1163,11 @@ jobs:
           GOOS: windows
           GOARCH: arm64
         run: |
+          export CC="$CGO_CC"
+          export CGO_CFLAGS="$CGO_TARGET_FLAGS"
+          export CGO_LDFLAGS="$CGO_TARGET_FLAGS"
+          echo "CC=$CC  CGO_CFLAGS=$CGO_CFLAGS"
+          go env CC CGO_ENABLED GOOS GOARCH
           go build -buildmode=c-archive -o libtailscale.a .
           ls -la libtailscale.a libtailscale.h
 
@@ -1108,21 +1184,6 @@ jobs:
           native=$(cygpath -w "$lib" 2>/dev/null || echo "$lib")
           echo "TAILSCALE_LIB=$native" >> "$GITHUB_ENV"
           ls -la "$lib"
-
-      - name: Setup Swift 6.1
-        uses: SwiftyLab/setup-swift@latest
-        with:
-          swift-version: '6.1'
-
-      # Prints the target triple, which is the actual finding of this step: if
-      # the action resolved an x86_64 toolchain on an arm64 host, everything
-      # below would still build and would be answering a different question.
-      - name: Swift version and target
-        shell: bash
-        run: |
-          swift --version
-          echo "--- target triple ---"
-          swift -print-target-info | grep -i triple || true
 
       # arm64-windows is the NATIVE triplet here, not a cross triplet.
       - name: Install libopus (vcpkg)
@@ -1240,4 +1301,108 @@ jobs:
             echo "Not answered here: the app itself (WinUI, FFmpeg, staging), and a"
             echo "live tailnet. FFmpeg does publish \`winarm64-lgpl-shared\`, so the"
             echo "video path has a supply route when the app follows."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # W8b — does a PACKAGED Tailscreen install and start?
+  #
+  # Not the same question as "does an MSIX build". A packaged WinUI 3 app is
+  # supposed to resolve its Windows App SDK dependency through the package
+  # graph, while an unpackaged one calls the bootstrapper to find an installed
+  # runtime — the mechanism behind two of the staging bugs this workflow already
+  # carries assertions for. swift-winui initialises through the bootstrapper
+  # either way, and whether that is correct, harmless or fatal inside a package
+  # is not something the docs settle. So this installs it and launches it.
+  #
+  # `needs: app` and downloads that job's artifact rather than rebuilding: the
+  # thing to package IS what the staging step already produced, and a second
+  # 22-minute build to obtain it would be pure waste.
+  #
+  # A failure here is a finding. The verify script reports which of the three
+  # stages broke — install, activate, or stay alive — because "MSIX didn't work"
+  # is not an actionable answer and each stage has a different cause.
+  #
+  # Self-signed, so this proves INSTALLABILITY, not distributability. A cert
+  # whose private key sits on FIPS 140-2 hardware is a separate W8 decision with
+  # a cost attached (docs/viewer-windows-plan.md).
+  #
+  # continue-on-error while exploratory, same flip-to-required convention as the
+  # arm64 probe above. Flip it once green.
+  msix:
+    name: MSIX package (exploratory)
+    needs: app
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.label.name == 'run-windows-build'
+    runs-on: windows-latest
+    continue-on-error: true
+
+    steps:
+      # Only the packaging inputs are needed, not the submodule or the patch
+      # series: the payload arrives prebuilt from `app`.
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download the staged app
+        uses: actions/download-artifact@v4
+        with:
+          name: tailscreen-windows-swift6.1
+          path: dist
+
+      # The artifact is the staging step's output, so this is also a check that
+      # the artifact a human downloads is complete enough to package.
+      - name: Show what arrived
+        shell: bash
+        run: |
+          echo "payload: $(find dist -type f | wc -l) files, $(du -sh dist | cut -f1)"
+          ls -la dist/ | head -30
+          test -f dist/tailscreen-windows.exe || {
+            echo "artifact has no tailscreen-windows.exe" >&2; exit 1; }
+
+      - name: Pack and sign the MSIX
+        shell: pwsh
+        run: |
+          ./scripts/windows/make-msix.ps1 `
+            -StageDir dist `
+            -OutFile out/Tailscreen.msix `
+            -Version 0.0.1.0
+
+      # The actual finding. Install → activate by AUMID → does it stay up.
+      - name: Install the MSIX and launch it
+        shell: pwsh
+        run: |
+          ./scripts/windows/verify-msix.ps1 `
+            -MsixPath $env:MSIX_PATH `
+            -PfxPath $env:MSIX_PFX
+
+      # Uploaded whether or not the launch succeeded: an MSIX that installs but
+      # dies is exactly the artifact worth inspecting by hand, and a green-only
+      # upload would withhold it precisely when it is most useful.
+      - name: Upload the MSIX
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: tailscreen-windows-msix
+          path: out/*.msix
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## W8b — MSIX"
+            echo ""
+            echo "Packs the \`app\` job's staged artifact, signs it with a"
+            echo "**self-signed** certificate, trusts that cert, installs the"
+            echo "package and activates it by AUMID."
+            echo ""
+            echo "Proves installability, NOT distributability — a real cert needs"
+            echo "its private key on FIPS 140-2 hardware (SignPath's free OSS"
+            echo "tier, or a hardware token). That is a separate W8 decision."
+            echo ""
+            echo "Launching by AUMID rather than by exe path is deliberate:"
+            echo "running the exe out of WindowsApps gives it NO package"
+            echo "identity, so it would re-test the unpackaged path while"
+            echo "appearing to test this one."
           } >> "$GITHUB_STEP_SUMMARY"
