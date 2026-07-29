@@ -121,16 +121,21 @@ private struct SignedOutMenuView: View {
 
 /// Compact identity strip at the top of the popover: which account — and
 /// therefore which tailnet — a share started from here will appear on.
-/// With multi-account profiles, "Choose what to share…" is ambiguous
-/// without it. The tailnet (org) name leads, since login names collide
-/// across tailnets; clicking opens the main window, where accounts are
-/// switched and managed.
+/// Rendered only while more than one account is registered: that's when
+/// "Choose what to share…" is ambiguous without it. With a single account
+/// the strip duplicates the main window (and the "Open Tailscreen" row
+/// below covers its click-through), so it's dropped to keep the popover
+/// lean. The tailnet (org) name leads, since login names collide across
+/// tailnets; clicking opens the main window, where accounts are switched
+/// and managed.
 private struct PopoverIdentityHeader: View {
     @EnvironmentObject var appState: AppState
     @State private var isHovered = false
 
     var body: some View {
-        if let profile = appState.tailscaleAuth.userProfile {
+        if appState.profileStore.profiles.count > 1,
+            let profile = appState.tailscaleAuth.userProfile
+        {
             Button {
                 appState.presentMainWindow()
             } label: {
