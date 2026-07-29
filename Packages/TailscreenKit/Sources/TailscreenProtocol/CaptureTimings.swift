@@ -56,9 +56,16 @@ public struct CaptureTimings: Sendable, Equatable {
         guard frames > 0 else {
             return timeouts > 0 ? "idle — nothing on screen changed" : "starting…"
         }
-        return String(
+        let stages = String(
             format: "%.1f fps · capture %.0f ms · convert %.0f ms · encode %.0f ms",
             framesPerSecond, acquireMs, convertMs, encodeMs)
+        // The idle count is what separates "this sharer is slow" from "nothing
+        // on screen moved" — the distinction this whole type exists for, and
+        // one the numbers above cannot make on their own: a low frame rate
+        // looks identical either way. Omitted when zero so a busy screen reads
+        // cleanly.
+        guard timeouts > 0 else { return stages }
+        return "\(stages) · \(timeouts) idle"
     }
 }
 

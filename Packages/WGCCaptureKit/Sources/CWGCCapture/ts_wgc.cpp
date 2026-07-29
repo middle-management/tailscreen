@@ -11,6 +11,10 @@
 #include <inspectable.h>
 #include <roapi.h>
 #include <shobjidl_core.h>
+// timeBeginPeriod/timeEndPeriod. Not reachable through windows.h under
+// WIN32_LEAN_AND_MEAN, and this is the modern header for them (mmsystem.h
+// drags in the rest of the multimedia API for two functions).
+#include <timeapi.h>
 #include <windows.foundation.h>
 #include <windows.graphics.capture.h>
 #include <windows.graphics.capture.interop.h>
@@ -40,6 +44,7 @@ struct ts_wgc {
     UINT width;
     UINT height;
     bool mapped;
+    bool raisedTimerResolution;
 };
 
 template <typename T>
@@ -325,6 +330,7 @@ extern "C" int32_t ts_wgc_open(
     capture::IGraphicsCaptureSession *session = nullptr;
     ID3D11Texture2D *staging = nullptr;
     ts_wgc *handle = nullptr;
+    bool raisedTimerResolution = false;
     ABI::Windows::Graphics::SizeInt32 size = {};
     D3D11_TEXTURE2D_DESC stagingDesc = {};
     HRESULT hr = S_OK;
@@ -377,6 +383,17 @@ extern "C" int32_t ts_wgc_open(
     if (FAILED(hr)) {
         goto fail;
     }
+    // Ask for a 1 ms system timer while capturing.
+    //
+    // Windows' default is 15.6 ms, which is longer than a frame at any rate
+    // worth sharing — so every `Sleep` in the acquire loop below overshoots
+    // its deadline and the loop misses frames it was awake for. This is the
+    // same request media players and capture software make, and it is scoped:
+    // ts_wgc_close gives it back, so an idle Tailscreen does not hold the
+    // whole machine at a high timer rate.
+    timeBeginPeriod(1);
+    raisedTimerResolution = true;
+
     hr = session->StartCapture();
     if (FAILED(hr)) {
         goto fail;
@@ -411,6 +428,12 @@ extern "C" int32_t ts_wgc_open(
     handle->staging = staging;
     handle->width = static_cast<UINT>(size.Width);
     handle->height = static_cast<UINT>(size.Height);
+    // Ownership of the timer request moves to the handle here, so ts_wgc_close
+    // gives it back. Tracked in a LOCAL until this point because `handle` does
+    // not exist yet when the request is made — writing the flag through it
+    // earlier dereferenced null.
+    handle->raisedTimerResolution = raisedTimerResolution;
+    raisedTimerResolution = false;
 
     *width = handle->width;
     *height = handle->height;
@@ -422,6 +445,11 @@ extern "C" int32_t ts_wgc_open(
     return TS_WGC_OK;
 
 fail:
+    // Still ours if the handle was never built — otherwise the request leaks
+    // and the machine stays at a 1 ms timer for the life of the process.
+    if (raisedTimerResolution) {
+        timeEndPeriod(1);
+    }
     ts_release(&staging);
     ts_release(&session);
     ts_release(&pool);
@@ -463,7 +491,13 @@ extern "C" int32_t ts_wgc_acquire(
         if (static_cast<LONG>(GetTickCount() - deadline) >= 0) {
             return TS_WGC_TIMEOUT;
         }
-        Sleep(2);
+        // Sleep(1), and only meaningful because ts_wgc_open raised the
+        // system timer resolution. At Windows' DEFAULT 15.6 ms granularity a
+        // `Sleep(2)` here really slept ~15.6 ms, so a poll loop budgeted 16 ms
+        // overshot on its FIRST wait — which is why measured capture time came
+        // back as 24 ms against a 16 ms deadline, and why frames arriving
+        // during that overshoot were missed rather than picked up.
+        Sleep(1);
     }
 
     d3d11abi::IDirect3DSurface *surface = nullptr;
@@ -514,6 +548,14 @@ extern "C" void ts_wgc_release(ts_wgc *handle) {
 extern "C" void ts_wgc_close(ts_wgc *handle) {
     if (handle == nullptr) {
         return;
+    }
+    // Give the system timer resolution back. Every timeBeginPeriod needs its
+    // matching timeEndPeriod — the request is reference-counted process-wide,
+    // and leaking one holds the whole machine at 1 ms for as long as
+    // Tailscreen is running, share or no share.
+    if (handle->raisedTimerResolution) {
+        timeEndPeriod(1);
+        handle->raisedTimerResolution = false;
     }
     ts_wgc_release(handle);
     ts_release(&handle->staging);

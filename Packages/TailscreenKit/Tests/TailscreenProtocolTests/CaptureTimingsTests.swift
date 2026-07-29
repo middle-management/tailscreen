@@ -116,5 +116,16 @@ final class CaptureTimingsTests: XCTestCase {
         XCTAssertTrue(summary.contains("1.4 fps"))
         XCTAssertTrue(summary.contains("convert 41 ms"))
         XCTAssertTrue(summary.contains("encode 180 ms"))
+        XCTAssertFalse(summary.contains("idle"), "a busy screen reads cleanly")
+    }
+
+    func testSummaryNamesIdlePassesWhenThereAreAny() {
+        // Two frames a second with 38 idle passes and two frames a second with
+        // none are completely different problems, and the stage timings alone
+        // cannot tell them apart.
+        let mostlyIdle = CaptureTimings(
+            framesPerSecond: 2, acquireMs: 24, convertMs: 6, encodeMs: 3,
+            frames: 2, timeouts: 38)
+        XCTAssertTrue(mostlyIdle.summary.contains("38 idle"))
     }
 }

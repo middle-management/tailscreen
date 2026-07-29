@@ -43,6 +43,9 @@ let package = Package(
                 // IInitializeWithWindow, which the picker needs to parent
                 // itself to the app's window.
                 .linkedLibrary("ole32", .when(platforms: [.windows])),
+                // timeBeginPeriod/timeEndPeriod: the acquire loop's Sleep is
+                // useless at Windows' default 15.6 ms timer granularity.
+                .linkedLibrary("winmm", .when(platforms: [.windows])),
             ]
         ),
         .target(
