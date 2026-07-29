@@ -5,6 +5,8 @@ import SwiftCrossUI
 // Targeted imports: pulling all of TailscreenProtocol collides with SwiftCrossUI's
 // own `Published` / `ObservableObject` shims, the same collision the GTK app
 // hits and solves the same way.
+import struct TailscreenProtocol.CaptureTimings
+import struct TailscreenProtocol.ControlRequestInfo
 import struct TailscreenProtocol.QualitySettings
 import class TailscreenSharerWGC.WindowsShareSession
 import class TailscreenVideoFFmpeg.FFmpegVideoDecoder
@@ -71,7 +73,10 @@ struct TailscreenWindowsApp: App {
                 } else if state.sharing.isSharing {
                     SharingCard(
                         status: state.sharing,
-                        onStop: { state.stopSharing() }
+                        onStop: { state.stopSharing() },
+                        onGrant: { state.grantControl(to: $0) },
+                        onDecline: { state.declineControl($0) },
+                        onRevoke: { state.revokeControl() }
                     )
                 } else if state.phase == .ready {
                     HStack(spacing: 8) {
@@ -135,6 +140,9 @@ struct LoginCard: View {
 struct SharingCard: View {
     let status: WindowsShareSession.Status
     let onStop: () -> Void
+    let onGrant: (UUID) -> Void
+    let onDecline: (UUID) -> Void
+    let onRevoke: () -> Void
 
     var body: some View {
         VStack(spacing: 6) {
@@ -157,6 +165,39 @@ struct SharingCard: View {
             if !status.message.isEmpty {
                 Text(status.message)
                     .font(.caption)
+            }
+
+            // Where the frame time goes. A viewer's overlay can prove the
+            // network is fine and still leave "why is it 1.4 fps" open —
+            // capture, convert and encode are three different problems.
+            if let timings = status.timings {
+                Text(timings.summary)
+                    .font(.caption)
+                if let slowest = timings.slowestStage {
+                    Text("slowest stage: \(slowest)")
+                        .font(.caption)
+                }
+            }
+
+            // A grant is a decision only the person at this keyboard can make,
+            // so it needs a control here. Without one the viewer's Request
+            // Control did nothing at either end.
+            if let holder = status.controlGrantedTo {
+                HStack(spacing: 8) {
+                    Text("\(holder) is controlling this machine")
+                        .font(.caption)
+                    Spacer()
+                    Button("Take back control") { onRevoke() }
+                }
+            }
+            ForEach(status.controlRequests, id: \.id) { request in
+                HStack(spacing: 8) {
+                    Text("\(request.displayName) wants to control this machine")
+                        .font(.caption)
+                    Spacer()
+                    Button("Allow") { onGrant(request.id) }
+                    Button("Deny") { onDecline(request.id) }
+                }
             }
         }
         .padding(8)
@@ -444,6 +485,20 @@ final class AppUIState: ObservableObject {
 
     func stopSharing() {
         Task { [weak self] in await self?.shareSession.stopSharing() }
+    }
+
+    func grantControl(to requestID: UUID) {
+        if !shareSession.grantControl(to: requestID) {
+            detail = "Remote control isn't available for this share."
+        }
+    }
+
+    func declineControl(_ requestID: UUID) {
+        shareSession.declineControl(requestID)
+    }
+
+    func revokeControl() {
+        shareSession.revokeControl()
     }
 
     func signOut() {

@@ -43,6 +43,19 @@ public final class WindowsShareSession: @unchecked Sendable {
         public var target = ""
         public var viewerCount = 0
         public var message = ""
+        /// Viewers asking for remote control, awaiting an answer.
+        ///
+        /// The server surfaces these and does nothing else with them: a grant
+        /// is a decision only the person at the keyboard can make. The Windows
+        /// app had an injector, advertised the capability and then had nowhere
+        /// to show the request — so a viewer pressed Request Control and
+        /// nothing happened at either end.
+        public var controlRequests: [ControlRequestInfo] = []
+        /// Who currently holds control, if anyone.
+        public var controlGrantedTo: String?
+        /// Live capture timings, so "it's slow" can be answered with which
+        /// stage rather than a guess.
+        public var timings: CaptureTimings?
 
         public init() {}
     }
@@ -123,14 +136,35 @@ public final class WindowsShareSession: @unchecked Sendable {
             injector = WindowsInputInjector(regionProvider: { resolved })
         }
 
+        // The timings hook is on the concrete backend rather than the
+        // `CaptureEncoding` seam, so it is attached inside the factory — which
+        // also means a restart's fresh backend keeps reporting.
+        let onTimings: @Sendable (CaptureTimings) -> Void = { [weak self] timings in
+            self?.update { $0.timings = timings }
+        }
         let newServer = TailscaleScreenShareServer(
-            captureFactory: { WGCCaptureEncoder(item: item) },
-            inputInjector: injector
+            captureFactory: {
+                let encoder = WGCCaptureEncoder(item: item)
+                encoder.onTimings = onTimings
+                return encoder
+            },
+            inputInjector: injector,
+            // No overlay window on Windows, so viewer annotations would be
+            // drawn confidently at a sharer that renders nothing. Withholding
+            // the capability disables the viewer's drawing tools instead —
+            // which is why the Mac's strokes were never appearing here.
+            rendersAnnotations: false
         )
         let name = item.displayName
 
         newServer.onViewersChanged = { [weak self] viewers in
             self?.update { $0.viewerCount = viewers.count }
+        }
+        newServer.onControlRequestsChanged = { [weak self] requests in
+            self?.update { $0.controlRequests = requests }
+        }
+        newServer.onControlGrantChanged = { [weak self] _, grant in
+            self?.update { $0.controlGrantedTo = grant?.hostname ?? grant?.viewerIP }
         }
         newServer.onCaptureStopped = { [weak self] error in
             self?.update {
@@ -185,6 +219,29 @@ public final class WindowsShareSession: @unchecked Sendable {
             $0.isSharing = true
             $0.message = controlNote
         }
+    }
+
+    /// Answer a pending remote-control request.
+    ///
+    /// Returns false when the grant was refused by the platform — which on
+    /// Windows means the injector is absent (an unresolvable capture region),
+    /// since UIPI has no permission to ask for.
+    @discardableResult
+    public func grantControl(to requestID: UUID) -> Bool {
+        let server = lock.withLock { self.server }
+        return server?.grantControl(toConnectionID: requestID) ?? false
+    }
+
+    public func declineControl(_ requestID: UUID) {
+        let server = lock.withLock { self.server }
+        server?.declineControlRequest(connectionID: requestID)
+    }
+
+    /// Take control back. The injector's revoke seal drops anything already
+    /// queued and releases a button held mid-drag.
+    public func revokeControl() {
+        let server = lock.withLock { self.server }
+        server?.revokeControl(reason: "the sharer took control back")
     }
 
     public func stopSharing() async {

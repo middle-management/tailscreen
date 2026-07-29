@@ -371,11 +371,26 @@ jobs:
       # W3 the app's dependency graph reaches them: TailscreenViewerTsnet →
       # TailscreenViewer → TailscreenAudio → OpusKit → COpus. Before W3 the app
       # depended only on TailscreenProtocol, which needs neither.
+      # RELEASE, not debug.
+      #
+      # A real share came back at 1.4 fps with the sharer pinning half a core,
+      # while the viewer's stats showed 17 ms latency and zero loss — so the
+      # network was innocent and the sharer was the bottleneck. The prime
+      # suspect is the config: `BGRAToI420` is a scalar per-pixel loop over two
+      # million pixels per frame, and a Swift debug build keeps bounds checks,
+      # skips inlining and does no cross-module optimisation. That is an order
+      # of magnitude on exactly this kind of code, and it applies equally to
+      # the viewer's `I420Converter` blit.
+      #
+      # It costs one full rebuild (debug and release use separate .build
+      # directories) and nothing after. The compile check is no weaker for it —
+      # if anything release config catches more, which is why the mac side has
+      # a `build-release` job at all.
       - name: Build the app
         shell: bash
         working-directory: Apps/windows
         run: |
-          swift build --product tailscreen-windows \
+          swift build -c release --product tailscreen-windows \
             -Xcc -I"$OPUS_ROOT/include/opus" \
             -Xcc -I"$FFMPEG_ROOT/include" \
             -Xlinker "/LIBPATH:$OPUS_ROOT/lib" \
@@ -401,7 +416,7 @@ jobs:
         shell: bash
         working-directory: Apps/windows
         run: |
-          swift build --product tsnet-probe \
+          swift build -c release --product tsnet-probe \
             -Xcc -I"$OPUS_ROOT/include/opus" \
             -Xlinker "/LIBPATH:$OPUS_ROOT/lib" \
             -Xlinker "/LIBPATH:$TAILSCALE_LIB"
@@ -437,7 +452,12 @@ jobs:
         run: |
           set -euo pipefail
 
-          exe=$(find Apps/windows/.build -name 'tailscreen-windows.exe' | head -1)
+          # Scoped to the release directory, not just the name. The build
+          # cache restores the whole .build tree, so a debug exe from before
+          # the switch to release config can still be sitting there — and an
+          # unscoped `head -1` would happily ship it, which is the one binary
+          # this change exists to stop shipping.
+          exe=$(find Apps/windows/.build -path '*/release/*' -name 'tailscreen-windows.exe' | head -1)
           if [ -z "$exe" ]; then
             echo "no tailscreen-windows.exe produced" >&2
             exit 1
@@ -459,7 +479,7 @@ jobs:
           # shape of hole as a missing path filter. It is a hard failure now:
           # the build step above is unconditional, so if the exe is absent here
           # something is wrong with this step, not with the build.
-          probe=$(find Apps/windows/.build -name 'tsnet-probe.exe' | head -1)
+          probe=$(find Apps/windows/.build -path '*/release/*' -name 'tsnet-probe.exe' | head -1)
           if [ -z "$probe" ]; then
             echo "no tsnet-probe.exe produced" >&2
             exit 1

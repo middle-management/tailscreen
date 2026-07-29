@@ -51,6 +51,13 @@ public final class WGCCaptureEncoder: CaptureEncoding, @unchecked Sendable {
     public var onUserStopped: (() -> Void)?
     public var onActivity: (() -> Void)?
 
+    /// Per-stage timings, once a second. Not part of `CaptureEncoding` — it is
+    /// this backend's own diagnostic, and the question it answers ("which of
+    /// capture, convert and encode is the slow one") is one a viewer's stats
+    /// overlay structurally cannot: from the far end a slow sharer and a quiet
+    /// screen look identical.
+    public var onTimings: ((CaptureTimings) -> Void)?
+
     public enum StartError: Error, CustomStringConvertible {
         case unsupportedSelection(String)
         case malformedSelection
@@ -246,6 +253,7 @@ public final class WGCCaptureEncoder: CaptureEncoding, @unchecked Sendable {
     // MARK: Capture loop
 
     private func captureLoop(width: Int, height: Int) {
+        var timings = CaptureTimingAccumulator()
         let sizes = BGRAToI420.planeSizes(width: width, height: height)
         var yPlane = [UInt8](repeating: 0, count: sizes.y)
         var uPlane = [UInt8](repeating: 0, count: sizes.chroma)
@@ -264,6 +272,8 @@ public final class WGCCaptureEncoder: CaptureEncoding, @unchecked Sendable {
 
             let frameStart = DispatchTime.now().uptimeNanoseconds
             var converted = false
+            var convertNs: UInt64 = 0
+            var encodeNs: UInt64 = 0
             do {
                 // Nil means the acquire timed out, which for WGC is the
                 // ORDINARY state of a still target: it produces a frame only
@@ -271,7 +281,9 @@ public final class WGCCaptureEncoder: CaptureEncoding, @unchecked Sendable {
                 // count a failure.
                 let ok = try session.withFrame(timeoutMilliseconds: max(1, 1000 / max(1, fps))) {
                     frame -> Bool in
-                    yPlane.withUnsafeMutableBufferPointer { y in
+                    let convertStart = DispatchTime.now().uptimeNanoseconds
+                    defer { convertNs = DispatchTime.now().uptimeNanoseconds &- convertStart }
+                    return yPlane.withUnsafeMutableBufferPointer { y in
                         uPlane.withUnsafeMutableBufferPointer { u in
                             vPlane.withUnsafeMutableBufferPointer { v in
                                 guard let yBase = y.baseAddress, let uBase = u.baseAddress,
@@ -328,6 +340,7 @@ public final class WGCCaptureEncoder: CaptureEncoding, @unchecked Sendable {
             }
             if converted || (owedKeyframe && havePlanes) {
                 if owedKeyframe { encoder.requestKeyframe() }
+                let encodeStart = DispatchTime.now().uptimeNanoseconds
                 do {
                     for accessUnit in try encoder.encode(
                         yPlane: yPlane, uPlane: uPlane, vPlane: vPlane)
@@ -335,6 +348,7 @@ public final class WGCCaptureEncoder: CaptureEncoding, @unchecked Sendable {
                         if accessUnit.isKeyframe { emitParameterSets(from: accessUnit.data) }
                         onAccessUnit?(accessUnit.data, accessUnit.isKeyframe)
                     }
+                    encodeNs = DispatchTime.now().uptimeNanoseconds &- encodeStart
                 } catch {
                     // Put the request back: an encode that failed did not
                     // produce the keyframe someone is waiting for.
@@ -346,7 +360,20 @@ public final class WGCCaptureEncoder: CaptureEncoding, @unchecked Sendable {
                 lock.withLock { keyframePending = true }
             }
 
-            let elapsed = DispatchTime.now().uptimeNanoseconds &- frameStart
+            // `acquire` is the whole pass minus the two stages we timed —
+            // i.e. waiting for the platform to hand over a frame, which is
+            // the dominant cost when the screen is still and near zero when
+            // it isn't. Measured by subtraction so the three numbers always
+            // add up to the work actually done.
+            let workNs = DispatchTime.now().uptimeNanoseconds &- frameStart
+            let now = DispatchTime.now().uptimeNanoseconds
+            timings.record(
+                nowNs: now,
+                acquireNs: workNs &- min(workNs, convertNs &+ encodeNs),
+                convertNs: convertNs, encodeNs: encodeNs, producedFrame: converted)
+            if let snapshot = timings.snapshot(nowNs: now) { onTimings?(snapshot) }
+
+            let elapsed = workNs
             let interval = UInt64(1_000_000_000 / max(1, fps))
             if elapsed < interval {
                 Thread.sleep(forTimeInterval: Double(interval - elapsed) / 1_000_000_000)
