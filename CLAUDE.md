@@ -74,10 +74,12 @@ tailscreen/
 │   │   │                       #   WINDOWS viewer's audio-playback backend, i.e.
 │   │   │                       #   what ALSAKit is on Linux. Nothing to install
 │   │   │                       #   (WASAPI ships with Windows); see its README
-│   ├── DXGICaptureKit/         # C++ shim over DXGI Desktop Duplication — the
-│   │   │                       #   WINDOWS sharer's screen capture, i.e. what
-│   │   │                       #   X11CaptureKit is on Linux. Hands back BGRA
-│   │   │                       #   only; BGRAToI420 does the conversion
+│   ├── WGCCaptureKit/          # C++/raw-WinRT shim over Windows.Graphics.Capture
+│   │   │                       #   — the WINDOWS sharer's screen capture. The
+│   │   │                       #   picker + per-window model that matches macOS's
+│   │   │                       #   SCContentSharingPicker, not DXGI Duplication's
+│   │   │                       #   whole-output-only. Hands back BGRA; BGRAToI420
+│   │   │                       #   does the conversion
 │   └── TailscaleKit/           # Wraps libtailscale
 │       ├── upstream/libtailscale/  # Git submodule (tailscale/libtailscale)
 │       ├── Sources/  lib/  include/  # Symlinks into upstream
