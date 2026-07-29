@@ -64,6 +64,18 @@ on:
     types: [labeled]
   workflow_dispatch:
 
+# A newer push to the same branch cancels the older in-flight run, exactly as
+# `build.yml` already does.
+#
+# Added after four Windows runs sat in the queue at once for four consecutive
+# commits, three of them already superseded — at ~25 minutes each that is both
+# a lot of runner time and, worse, a long delay before the run that actually
+# matters gets an answer. A superseded Windows result teaches nothing: the
+# branch tip is what ships.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -379,6 +391,29 @@ jobs:
       # W3 the app's dependency graph reaches them: TailscreenViewerTsnet →
       # TailscreenViewer → TailscreenAudio → OpusKit → COpus. Before W3 the app
       # depended only on TailscreenProtocol, which needs neither.
+      # Stamp the commit into the binary.
+      #
+      # Without it, "the new counter isn't showing" and "you're running last
+      # hour's exe" are the same observation, and telling them apart costs a
+      # download and a test session each time. The footer names the commit and
+      # the configuration, so the running app answers it.
+      #
+      # The grep is the point of the step, not decoration: a silently-failed
+      # substitution ships a binary that CLAIMS to be a dev build, which is
+      # worse than no stamp at all — and this workflow has already been bitten
+      # twice by a skippable miss (the absent path filter, the un-staged
+      # probe). Fail loudly instead.
+      - name: Stamp the build
+        shell: bash
+        run: |
+          set -euo pipefail
+          file=Apps/windows/Sources/tailscreen-windows/BuildInfo.swift
+          short=$(git rev-parse --short HEAD)
+          sed -i "s/static let commit = \"dev\"/static let commit = \"$short\"/" "$file"
+          grep -q "static let commit = \"$short\"" "$file" \
+            || { echo "build stamp did not apply — refusing to ship an exe labelled 'dev'" >&2; exit 1; }
+          echo "stamped $short"
+
       # RELEASE, not debug.
       #
       # A real share came back at 1.4 fps with the sharer pinning half a core,

@@ -289,7 +289,12 @@ final class AppUIState: ObservableObject {
     /// node, it is a footer.
     var environmentLine: String {
         let quality = QualitySettings.default
-        return "\(Self.architecture) · fps cap \(quality.fpsCap) · codec \(quality.codecPreference)"
+        // The build stamp leads, because it is the one thing you need before
+        // any other number on screen can be trusted: "the new counter isn't
+        // there" and "this is yesterday's exe" are indistinguishable without
+        // it.
+        return "\(BuildInfo.summary) · \(Self.architecture) · fps cap \(quality.fpsCap) "
+            + "· codec \(quality.codecPreference)"
     }
 
     func signIn() {
