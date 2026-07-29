@@ -18,6 +18,17 @@
 // wrong name is a compile error rather than a silent mismatch. The file stays
 // `extern "C"` at its boundary, so Swift still imports a plain C header.
 
+// NO C++ standard library headers here, and not merely as minimalism.
+//
+// MSVC's STL hard-asserts the compiler version it was built for: including
+// <cstdlib> against MSVC 14.51 with the clang 19 that Swift 6.1.3 ships fails
+// with `error STL1000: Unexpected compiler version, expected Clang 20 or
+// newer`. That combination is whatever the runner image happens to pair, so it
+// is not ours to fix and not ours to depend on. There is an escape hatch
+// (_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH) but it opts into a combination
+// Microsoft says is unsupported, and this file needs three functions:
+// allocation, release and a copy. Win32 has all three, from <windows.h>, and
+// C++ here buys exactly one thing — `__uuidof` — which costs no library at all.
 #define WIN32_LEAN_AND_MEAN
 
 #include <windows.h>
@@ -25,9 +36,6 @@
 #include <audioclient.h>
 #include <mmdeviceapi.h>
 #include <mmreg.h>
-
-#include <cstdlib>
-#include <cstring>
 
 // 100 ms of engine buffer, in 100-nanosecond units. Large enough that a late
 // drain-thread wake-up does not underrun, small enough that the added latency
@@ -146,7 +154,8 @@ extern "C" int32_t ts_wasapi_open(ts_wasapi **out, uint32_t *sample_rate, uint32
         goto fail;
     }
 
-    handle = static_cast<ts_wasapi *>(std::calloc(1, sizeof(ts_wasapi)));
+    handle = static_cast<ts_wasapi *>(
+        HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(ts_wasapi)));
     if (handle == nullptr) {
         hr = E_OUTOFMEMORY;
         goto fail;
@@ -154,7 +163,7 @@ extern "C" int32_t ts_wasapi_open(ts_wasapi **out, uint32_t *sample_rate, uint32
 
     hr = client->Start();
     if (FAILED(hr)) {
-        std::free(handle);
+        HeapFree(GetProcessHeap(), 0, handle);
         handle = nullptr;
         goto fail;
     }
@@ -238,7 +247,7 @@ extern "C" int32_t ts_wasapi_write(ts_wasapi *handle, const float *interleaved, 
             return static_cast<int32_t>(hr);
         }
 
-        std::memcpy(destination, source, static_cast<size_t>(chunk) * frame_bytes);
+        CopyMemory(destination, source, static_cast<size_t>(chunk) * frame_bytes);
 
         hr = handle->render->ReleaseBuffer(chunk, 0);
         if (FAILED(hr)) {
@@ -268,7 +277,7 @@ extern "C" void ts_wasapi_close(ts_wasapi *handle) {
     if (handle->owns_com) {
         CoUninitialize();
     }
-    std::free(handle);
+    HeapFree(GetProcessHeap(), 0, handle);
 }
 
 #endif  // _WIN32

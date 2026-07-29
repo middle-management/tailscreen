@@ -37,7 +37,13 @@ buys nothing, so the shim exposes three `extern "C"` functions and `WASAPIKit`
 wraps them in a throwing Swift API — the same split ALSAKit uses over libasound
 and X11CaptureKit over libxcb.
 
-It is C++ rather than C for exactly one reason: **`__uuidof`**. The first
+It is C++ rather than C for exactly one reason: **`__uuidof`** — and it uses
+**no C++ standard library at all**, which is not minimalism but a requirement:
+MSVC's STL hard-asserts its compiler version, so including `<cstdlib>` against
+MSVC 14.51 with the clang 19 that Swift 6.1.3 ships fails with `error STL1000:
+Unexpected compiler version, expected Clang 20 or newer`. That pairing is
+whatever the runner image happens to install. The shim needs allocation, release
+and a copy; Win32 provides all three from `<windows.h>`. The first
 version was C and linked `uuid.lib` for `CLSID_MMDeviceEnumerator` and the three
 interface IIDs; that library does not carry them (the MMDevice GUIDs live in
 MIDL-generated `_i.c` files no SDK import library includes) and the app failed
