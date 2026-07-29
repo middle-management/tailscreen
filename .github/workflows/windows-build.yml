@@ -382,10 +382,12 @@ jobs:
       # OWN remote dependency moves a pin, and a moved pin is a new key. Path
       # dependencies never appear in it, which is the whole point — editing our
       # own packages is now free.
-      - name: Resolve the app's dependencies
-        working-directory: Apps/windows
-        run: swift package resolve
-
+      # Restore BEFORE resolve, which is the opposite of the original order and
+      # is only possible because Apps/windows/Package.resolved is committed (see
+      # the note in .gitignore). While it was ignored, the key's hashFiles input
+      # did not exist at checkout, so resolve had to run first purely to
+      # manufacture it — 61s of a warm job spent producing something that could
+      # simply be read.
       - name: Restore the app's build directory
         id: app-build-cache
         uses: actions/cache/restore@v4
@@ -394,6 +396,44 @@ jobs:
           key: >-
             windows-app-build-${{ matrix.swift }}-${{ runner.os }}-${{
             hashFiles('Apps/windows/Package.resolved') }}
+
+      # Now a no-op on the happy path: the restored .build carries the checkouts
+      # and the pins already match. Kept as its own step because a resolution
+      # failure and a compile failure want different fixes, which is why it was
+      # separated in the first place.
+      - name: Resolve the app's dependencies
+        working-directory: Apps/windows
+        run: swift package resolve
+
+      # If resolve CHANGED the lockfile, stop.
+      #
+      # Both cache steps key on hashFiles('Apps/windows/Package.resolved'). A
+      # rewrite here would mean the save key no longer matches the restore key,
+      # so every run would miss, save under a fresh key, and miss again — a
+      # cache that silently does nothing while looking healthy. That is a worse
+      # failure than a red step, and it is exactly the "absence looks like
+      # success" shape this workflow has already been burned by once.
+      #
+      # A stale lockfile is a real condition: it happens whenever a dependency
+      # requirement in Package.swift moves without the pins being refreshed. The
+      # fix is local and mechanical, so the message says it.
+      - name: Check the lockfile is current
+        shell: bash
+        run: |
+          if ! git diff --quiet -- Apps/windows/Package.resolved; then
+            # Single quotes: backticks in a double-quoted bash string are command
+            # substitution, so the prose spelling of the command would have RUN
+            # the command.
+            echo '::error::Apps/windows/Package.resolved is stale — swift package resolve rewrote it.'
+            echo "The Windows build cache is keyed on this file, so a rewrite mid-job would"
+            echo "split the restore and save keys and quietly disable the cache."
+            echo ""
+            echo "Fix locally, in Apps/windows:  swift package resolve && git add Package.resolved"
+            echo ""
+            git --no-pager diff -- Apps/windows/Package.resolved
+            exit 1
+          fi
+          echo "lockfile unchanged by resolve — restore and save keys agree"
 
       # Built FROM the package directory, not with --package-path from the repo
       # root, because the manifest's `-L ../../Packages/TailscaleKit/lib` is
@@ -1191,9 +1231,25 @@ jobs:
         shell: bash
         run: |
           lib=Packages/TailscaleKit/lib
+          src=Packages/TailscaleKit/upstream/libtailscale/libtailscale.a
           mkdir -p "$lib"
-          cp Packages/TailscaleKit/upstream/libtailscale/libtailscale.a "$lib/"
-          cp "$lib/libtailscale.a" "$lib/tailscale.lib"
+
+          # rm FIRST. `$lib/libtailscale.a` is a SYMLINK whose target is exactly
+          # $src, which materialize-symlinks.sh deliberately left alone earlier
+          # (its target did not exist yet). Copying onto it therefore resolves to
+          # copying the file over itself, and `cp` refuses:
+          #
+          #   cp: '.../upstream/libtailscale/libtailscale.a' and
+          #       '.../lib/libtailscale.a' are the same file
+          #
+          # The app job has always done this; this job was written from a partial
+          # reading of it and dropped the one line that mattered.
+          rm -f "$lib/libtailscale.a" "$lib/tailscale.lib"
+          cp "$src" "$lib/libtailscale.a"
+          # Both names from the SOURCE, not lib/ → lib/, for the same reason.
+          # The module map says `link "tailscale"`, so MSVC wants tailscale.lib.
+          cp "$src" "$lib/tailscale.lib"
+
           native=$(cygpath -w "$lib" 2>/dev/null || echo "$lib")
           echo "TAILSCALE_LIB=$native" >> "$GITHUB_ENV"
           ls -la "$lib"

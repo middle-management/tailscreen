@@ -4,6 +4,17 @@
 *.xcodeproj
 *.xcworkspace
 Package.resolved
+# ...EXCEPT the Windows app's. Apps/windows is a leaf executable, not a library,
+# so pinning its dependency graph is correct rather than presumptuous — nobody
+# consumes it and resolves against their own constraints.
+#
+# It is also load-bearing for CI. The Windows build cache is keyed on this
+# file's hash, so while it was ignored, `swift package resolve` had to run
+# BEFORE the cache could be restored just to produce the key — 61s of a warm
+# job spent generating something that could have been checked out. With it
+# committed, restore goes first and resolve becomes a no-op against the
+# restored checkouts.
+!Apps/windows/Package.resolved
 
 # macOS
 .DS_Store

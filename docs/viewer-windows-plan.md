@@ -364,6 +364,54 @@ Whatever the installer does, they must stay separately replaceable DLLs and the
 package must carry the LGPL text and the relink offer. Any format here handles
 that; the thing to avoid is a single-file bundler helpfully merging them in.
 
+#### W8a — what the arm64 probe has actually established
+
+Run natively on a `windows-11-arm` runner (GA for public repos, 4 vCPU, free),
+so none of this is cross-compilation.
+
+**Confirmed:**
+
+- **Swift has a real Windows arm64 toolchain** and `SwiftyLab/setup-swift`
+  resolves it: `swift-6.1.3-RELEASE-windows10-arm64`. Published since 6.0.
+- **Go builds the patched libtailscale c-archive for `windows/arm64`** —
+  55,378,236 bytes, with the full patch series including `bridge_windows.go`
+  applied. The bridge needed no arm64-specific work: loopback TCP/UDP pairs and
+  a handle value carry over unchanged.
+- **FFmpeg has a supply route.** BtbN publishes
+  `ffmpeg-n7.1-latest-winarm64-lgpl-shared-7.1.zip`, identical naming to the
+  `win64` asset already consumed, so the video path needs a URL change and not a
+  from-source build.
+- **`CGoRuntimeInit` already handles arm64** — `#elif defined(_M_ARM64)` →
+  `_rt0_arm64_windows_lib`, with a hard `#error` for an unrecognised
+  architecture. Patch 026 anticipated this.
+
+**The one real blocker found, and it is not ours:** cgo picks its C compiler
+implicitly — `gcc` on PATH unless `CC` says otherwise — and the arm64 runner
+image carries an **x86_64** gcc. It duly used it, and the build died inside
+`runtime/cgo`:
+
+```
+gcc_arm64.S:30: Error: no such instruction: `stp x29,x30,[sp,'
+```
+
+`stp` is an ARM64 instruction, so that message is an x86 assembler reading ARM64
+assembly. Nothing in it names a compiler, which is the whole argument for
+answering this in a three-minute probe rather than inside a forty-minute app
+build. The job now inventories every C compiler it can find, prints each one's
+`-dumpmachine`, and chooses on that evidence. On this image **clang natively
+targets arm64**, so no `--target` is needed and `CGO_TARGET_FLAGS` comes back
+empty — the explicit-target path is retained as a fallback for images where it
+would not.
+
+Swift setup therefore runs **before** Go in that job, opposite to the app job,
+because the Swift toolchain is where that clang comes from.
+
+**Still open:** whether `tsnet-probe` links and `tailscale_new()` returns on
+arm64, and then the app itself — WinUI, FFmpeg, staging. The probe reached the
+staging step and tripped a bug in this job's own copy of it (`cp` onto the
+dangling `lib/libtailscale.a` symlink, which the app job has always deleted
+first), so the link and run legs are still unproven rather than failed.
+
 **Also unresolved, and cheap to forget:** no native arm64 build, so today's x64
 artifact runs under emulation on ARM devices (which is how the W2/W3 manual
 verification was done). Whether W8 ships a second architecture or an arm64
