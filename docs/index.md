@@ -10,17 +10,18 @@ image: /assets/social-card.png
   <p class="ts-badges">
     <span class="ts-badge">Open source</span>
     <span class="ts-badge">macOS 15+</span>
-    <span class="ts-badge">Free</span>
+    <span class="ts-badge">MIT</span>
   </p>
   <h1>Screen sharing that feels&nbsp;like <span class="ts-accent">sitting at the same Mac</span>.</h1>
-  <p class="ts-hero-tagline">Tailscreen connects your team&rsquo;s Macs directly to each other
-  over the private network you already run. Help arrives in seconds, nothing is
-  recorded, and your screen never passes through anyone else&rsquo;s servers.</p>
+  <p class="ts-hero-tagline">Tailscreen streams one Mac&rsquo;s screen to another over your own
+  Tailscale network &mdash; WireGuard-encrypted, peer-to-peer, at 60&nbsp;fps.
+  No meeting SaaS in the middle, no new vendor in your data path, no port to
+  forward.</p>
   <p class="ts-hero-actions">
     <a href="{% link install.md %}" class="btn btn-primary fs-5">Install</a>
     <a href="https://github.com/middle-management/tailscreen" class="btn fs-5">View on GitHub</a>
   </p>
-  <p class="ts-hero-note">Free and open source. No new vendor, no new accounts &mdash; it uses the Tailscale login your team already has.</p>
+  <p class="ts-hero-note">Free and open source. The only account it needs is the Tailscale login your team already has.</p>
 </div>
 
 <div class="ts-container">
@@ -54,7 +55,7 @@ image: /assets/social-card.png
       <span class="ts-mock-title">Viewing robert&rsquo;s MacBook&nbsp;Pro</span>
     </div>
     <div class="ts-mock-screen">
-      <span class="ts-mock-route">direct &middot; encrypted</span>
+      <span class="ts-mock-route">direct &middot; wireguard</span>
       <div class="ts-mock-code">
         <span class="ts-mock-line is-accent" style="width: 32%"></span>
         <span class="ts-mock-line" style="width: 74%; margin-left: 6%"></span>
@@ -78,7 +79,7 @@ image: /assets/social-card.png
         </svg>
         <span class="ts-mock-cursor-label">anna</span>
       </div>
-      <span class="ts-mock-stats"><span class="ts-mock-live"></span>60 fps &middot; live</span>
+      <span class="ts-mock-stats"><span class="ts-mock-live"></span>60 fps &middot; HEVC &middot; 4.1 Mbit/s</span>
     </div>
   </div>
   <p class="ts-mock-caption">The whole UI is a compact window and a menubar sharing tool. The viewer
@@ -88,30 +89,32 @@ image: /assets/social-card.png
 <div class="ts-stats">
   <div class="ts-stat">
     <span class="ts-stat-n">60&thinsp;fps</span>
-    <span class="ts-stat-c">smooth enough to forget it&rsquo;s remote</span>
+    <span class="ts-stat-c">hardware-encoded, full Retina</span>
   </div>
   <div class="ts-stat">
     <span class="ts-stat-n">Zero</span>
-    <span class="ts-stat-c">servers between your Macs</span>
+    <span class="ts-stat-c">third-party servers in your data path</span>
   </div>
   <div class="ts-stat">
-    <span class="ts-stat-n">100%</span>
-    <span class="ts-stat-c">encrypted, end to end</span>
+    <span class="ts-stat-n">P2P</span>
+    <span class="ts-stat-c">WireGuard-encrypted, end to end</span>
   </div>
   <div class="ts-stat">
-    <span class="ts-stat-n">$0</span>
-    <span class="ts-stat-c">no licenses, no subscriptions, no per-seat fees</span>
+    <span class="ts-stat-n">MIT</span>
+    <span class="ts-stat-c">open source &mdash; audit it yourself</span>
   </div>
 </div>
 
-<p class="ts-intro">Tailscreen runs on the private
-<a href="https://tailscale.com/">Tailscale</a> network your machines are
-already on. Your screen travels straight from one Mac to the other, encrypted
-the whole way &mdash; never stored, never recorded, never visible to a
+<p class="ts-intro">Pixels are captured and hardware-encoded on the sharing
+Mac, then carried straight to the viewer through your
+<a href="https://tailscale.com/">Tailscale</a> WireGuard tunnel &mdash; direct
+when the network allows, through Tailscale&rsquo;s encrypted relays when it
+doesn&rsquo;t. Either way it&rsquo;s decrypted only on the two Macs you chose:
+your screen is never stored, never recorded, and never visible to a
 third-party server.</p>
 </div>
 
-## Why teams choose Tailscreen
+## Why technical teams say yes
 
 <div class="ts-container">
 <div class="ts-spotlight-row">
@@ -123,12 +126,13 @@ third-party server.</p>
     </svg>
   </div>
   <div class="ts-spotlight-body">
-    <h3>Your screen is nobody else&rsquo;s business</h3>
-    <p>Every session is a direct, encrypted connection between two of your own
-    machines. There&rsquo;s no meeting cloud in the middle, no recording
-    service, no vendor holding a copy of what your team looked at &mdash; and
-    because the code is open source, you don&rsquo;t have to take anyone&rsquo;s
-    word for it.</p>
+    <h3>A threat model you can hold in your head</h3>
+    <p>The entire data path is sharer&rsquo;s Mac &rarr; WireGuard tunnel
+    &rarr; viewer&rsquo;s Mac. No meeting cloud, no recording service, no
+    vendor with a copy of what your team looked at &mdash; there&rsquo;s
+    nothing to add to your vendor review, and because the whole implementation
+    is MIT-licensed source, your own engineers can verify every claim on this
+    page.</p>
   </div>
 </div>
 
@@ -140,12 +144,12 @@ third-party server.</p>
     </svg>
   </div>
   <div class="ts-spotlight-body">
-    <h3>Control stays with the person sharing</h3>
-    <p>A viewer can ask to use your mouse and keyboard &mdash; nothing happens
-    until you say yes. Only one person can have control at a time, they
-    can&rsquo;t reach beyond what you chose to share, and control is taken back
-    automatically the instant they disconnect. Want it back sooner? One click
-    &mdash; or <kbd>&#8963;</kbd><kbd>&#8997;</kbd><kbd>.</kbd> from anywhere.</p>
+    <h3>Remote control, on your terms</h3>
+    <p>A viewer can request your mouse and keyboard &mdash; nothing happens
+    until you grant it. One grantee at a time, pointer confined to what
+    you&rsquo;re sharing, auto-revoked the instant they disconnect. Take it
+    back with one click, or hit <kbd>&#8963;</kbd><kbd>&#8997;</kbd><kbd>.</kbd>
+    from anywhere when you want it back <em>right now</em>.</p>
   </div>
 </div>
 </div>
@@ -163,9 +167,9 @@ third-party server.</p>
       </svg>
     </div>
     <h3>You decide who sees what</h3>
-    <p>Nobody sees a single frame until you Accept them &mdash; and apps you
-    mark private (Messages, your password manager) are never shared at all,
-    even when you share the whole screen.</p>
+    <p>Nobody sees a single frame until you Accept them &mdash; and cloaked
+    apps (Messages, your password manager) are excluded at capture time, so
+    they never reach the encoder, let alone the wire.</p>
   </div>
   <div class="ts-card">
     <div class="ts-card-icon">
@@ -173,10 +177,10 @@ third-party server.</p>
         <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
       </svg>
     </div>
-    <h3>Quality that keeps up</h3>
-    <p>Sharp, full-resolution, and smooth &mdash; and when the network turns
-    ugly, the picture degrades gracefully instead of freezing, then snaps back
-    the moment the connection recovers.</p>
+    <h3>Built for imperfect networks</h3>
+    <p>Selective retransmission, forward error correction, and adaptive
+    bitrate and frame-rate control mean the picture degrades smoothly instead
+    of freezing &mdash; then snaps back the moment the link recovers.</p>
   </div>
   <div class="ts-card">
     <div class="ts-card-icon">
@@ -186,8 +190,8 @@ third-party server.</p>
       </svg>
     </div>
     <h3>Finds your Macs for you</h3>
-    <p>Everyone on your network shows up by name, and Tailscreen shows you
-    who&rsquo;s sharing. Nobody ever types an IP address.</p>
+    <p>Tailscreen discovers peers across your tailnet and lists who&rsquo;s
+    sharing, by machine name. Nobody ever types an IP address.</p>
   </div>
   <div class="ts-card">
     <div class="ts-card-icon">
@@ -197,9 +201,10 @@ third-party server.</p>
         <path d="M19 5a10 10 0 0 1 0 14"/>
       </svg>
     </div>
-    <h3>Voice &amp; sound, built in</h3>
-    <p>Talk while you share, and let viewers hear what your Mac is playing
-    &mdash; no separate call to set up. Everyone gets a mute button.</p>
+    <h3>Voice &amp; system audio</h3>
+    <p>Talk over the same encrypted tunnel, and share what your Mac is
+    playing &mdash; no separate call to set up. Viewers hear both; everyone
+    gets a mute button.</p>
   </div>
   <div class="ts-card">
     <div class="ts-card-icon">
@@ -209,9 +214,9 @@ third-party server.</p>
       </svg>
     </div>
     <h3>Draw on the screen</h3>
-    <p>Both sides can circle, point, and sketch right on the shared screen
-    &mdash; so &ldquo;that button, right there&rdquo; never needs a
-    paragraph.</p>
+    <p>Two-way annotations ride a reliable back-channel, so &ldquo;that
+    button, right there&rdquo; lands even when the network is dropping video
+    packets.</p>
   </div>
   <div class="ts-card">
     <div class="ts-card-icon">
@@ -221,9 +226,10 @@ third-party server.</p>
         <path d="M17.7 7.7A2.5 2.5 0 1 1 19.5 12H2"/>
       </svg>
     </div>
-    <h3>Nothing left behind</h3>
-    <p>When you stop sharing, the session is simply gone &mdash; no lingering
-    access, no ghost devices in your admin console, nothing to clean up.</p>
+    <h3>Leaves no trace in your tailnet</h3>
+    <p>Every session runs as an ephemeral Tailscale node that vanishes when
+    you stop. No ghost machines in your admin console, no lingering access,
+    nothing to clean up.</p>
   </div>
 </div>
 </div>
@@ -258,6 +264,7 @@ third-party server.</p>
   <li>A Tailscale account &mdash; the free personal tier is fine.</li>
   <li>Screen Recording permission; macOS asks the first time you share.
   (Accessibility too, but only if you ever grant remote control.)</li>
+  <li>A Swift 6 toolchain &mdash; only if you&rsquo;re building from source.</li>
 </ul>
 </div>
 
