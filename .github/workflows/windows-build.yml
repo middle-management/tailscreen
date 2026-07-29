@@ -268,10 +268,46 @@ jobs:
           ls -la "$root/include/opus/opus.h"
           ls -la "$root/lib/"
 
-      # The load-bearing tier: Foundation + Synchronization only, no
-      # dependencies. If this doesn't build, nothing above it can.
-      - name: TailscreenProtocol
-        run: swift build --package-path Packages/TailscreenKit --target TailscreenProtocol
+      # ---------------------------------------------------------------------
+      # Only PROBE steps survive here, and that is a deliberate cut.
+      #
+      # This job used to build nine packages before the app: TailscreenProtocol,
+      # WASAPIKit, WGCCaptureKit, SendInputKit, WinOverlayKit, TailscreenHubUI,
+      # TailscreenSharerWGC, TailscreenViewer, TailscreenSharer. Measured on a
+      # warm run they cost 787s of a 1303s job — 60 % — and TailscreenHubUI
+      # alone was 463s, 35 % of the whole thing, because building it standalone
+      # compiles swift-cross-ui from scratch in ITS OWN .build directory.
+      #
+      # Every one of them is a dependency of Apps/windows (directly, or through
+      # TailscreenSharerWGC), so `Build the app` already compiles all of them —
+      # in the .build directory that IS cached. The pre-steps were therefore
+      # doing the same work twice, and the expensive copy was the uncached one.
+      #
+      # What they bought was a precise failure location. That is worth paying
+      # for, but not twice: Linux CI already typechecks every one of them on a
+      # cheap runner, and names the file when it fails —
+      #
+      #   TailscreenHubUI      → linux-gtk-viewer, "Typecheck the Windows app"
+      #   TailscreenSharerWGC  → linux-viewer, "Typecheck the Windows sharer backend"
+      #   WinOverlayKit        → linux-viewer, "Typecheck the Windows annotation overlay"
+      #   TailscreenProtocol   → linux-protocol
+      #   TailscreenViewer     → linux-viewer, TailscreenSharer → linux-protocol
+      #
+      # So localization moved to the runner where it costs three minutes instead
+      # of the one where it cost thirteen.
+      #
+      # The three that remain build PROBE EXECUTABLES, and that is the whole
+      # reason they are not redundant: a SwiftPM library target is compiled but
+      # never LINKED, so Linux typechecking cannot catch a missing import
+      # library — the failure mode that once let WASAPIKit's four undefined GUID
+      # symbols pass their own step and surface eleven minutes later in the app.
+      # Linking is Windows-only, it is what these probes force, and together
+      # they cost 112s.
+      #
+      # If you add a package to the app's graph, do NOT add a build step here.
+      # Add it to the Linux typecheck job instead, and add a probe here only if
+      # it links something new.
+      # ---------------------------------------------------------------------
 
       # WASAPIKit before the app, not with it. It is a few hundred lines of COM
       # against SDK headers that nothing off Windows can compile, so a mistake in
@@ -305,38 +341,10 @@ jobs:
       - name: SendInputKit
         run: swift build --package-path Packages/SendInputKit --product sendinput-probe
 
-      # The annotation overlay: a layered click-through window fed by the
-      # portable rasterizer. Built early like the other shims, so a Win32
-      # mistake surfaces in seconds rather than inside the app build.
-      - name: WinOverlayKit
-        run: swift build --package-path Packages/WinOverlayKit
-
-      # The shared hub chrome. Cheap to build on its own — SwiftCrossUI plus
-      # nine small view files — and worth it because a swift-cross-ui API that
-      # the GTK app uses happily can still be one the Windows toolchain rejects,
-      # and finding that out here names the file instead of burying it in the
-      # app's 1,450-unit compile.
-      - name: TailscreenHubUI
-        run: swift build --package-path Packages/TailscreenHubUI
-
-      # The sharer's capture backend: WGC frames → BGRAToI420 → libavcodec,
-      # behind the portable `CaptureEncoding` seam.
-      #
-      # It has no WinUI in it, which is deliberate and is why it is a package
-      # rather than a target in Apps/windows — Linux CI typechecks the same
-      # sources in the linux-ffmpeg job, so what this step adds is specifically
-      # the Windows-only half: that WGCCaptureKit's real (non-stub) API is the
-      # one the encoder calls.
-      - name: TailscreenSharerWGC
-        shell: bash
-        run: |
-          swift build --package-path Packages/TailscreenSharerWGC \
-            -Xcc -I"$FFMPEG_ROOT/include" \
-            -Xlinker "/LIBPATH:$FFMPEG_ROOT/lib"
-
-      # The app is built BEFORE the remaining tiers on purpose: it depends only
-      # on TailscreenProtocol, so a failure in the heavier audio-bearing tiers
-      # can't cost us the runnable .exe.
+      # There are no per-tier build steps after this any more — see the note
+      # above the probes. The app build is now the first and only thing that
+      # compiles the package graph on Windows, which is also what makes the
+      # cache below worth as much as it is.
       #
       # swift-cross-ui's WinUIBackend targets the Windows App SDK through
       # CWinAppSDK. Resolving as its own step keeps a dependency-resolution
@@ -891,10 +899,37 @@ jobs:
           $env:GODEBUG = 'inittrace=1'
           $p = Start-Process -FilePath .\tsnet-probe.exe -PassThru `
             -RedirectStandardOutput $out -RedirectStandardError $err
-          # 90s: node creation is sub-second when it works, so anything near
-          # this is the hang, not slowness.
-          $exited = $p.WaitForExit(90000)
-          if (-not $exited) { $p.Kill(); $p.WaitForExit() }
+
+          # POLL for the marker instead of waiting for exit.
+          #
+          # The probe does not exit on the success path — it goes on to block in
+          # up() waiting for a browser login that never comes — so
+          # WaitForExit(90000) always burned the full 90 seconds, on every run,
+          # including every green one. That was 7 % of this job spent watching a
+          # process we had already learned everything from.
+          #
+          # The marker is what the step asserts on anyway, so appearing is the
+          # real completion condition. 90s stays as the ceiling because node
+          # creation is sub-second when it works, so anything near it is the
+          # hang this step exists to catch — the timeout is unchanged, only the
+          # success path got faster.
+          $deadline = 90
+          $found = $false
+          for ($i = 0; $i -lt $deadline * 2; $i++) {
+            $so_far = ''
+            foreach ($f in @($out, $err)) {
+              if (Test-Path $f) { $so_far += (Get-Content $f -Raw -ErrorAction SilentlyContinue) }
+            }
+            if ($so_far -match 'subscribing to the IPN bus' -or $so_far -match 'calling up\(\)') {
+              $found = $true
+              Write-Host "marker seen after ~$([math]::Round($i / 2.0, 1))s"
+              break
+            }
+            if ($p.HasExited) { break }
+            Start-Sleep -Milliseconds 500
+          }
+          if (-not $p.HasExited) { $p.Kill() }
+          $p.WaitForExit()
 
           foreach ($f in @($out, $err)) {
             if (Test-Path $f) {
@@ -920,28 +955,6 @@ jobs:
           }
           Write-Error "tsnet-probe stalled inside tailscale_new() — reproduces the app's freeze with no UI, no COM apartment and no WinUI in the process"
           exit 1
-
-      # The remaining tiers, which pull TailscreenAudio → OpusKit → libopus.
-      # They stay AFTER the upload so a failure here can't cost us the app
-      # artifact, but they are fatal: now that libopus is installed there's no
-      # reason to tolerate a failure, and tolerating it would only reintroduce
-      # the continue-on-error ambiguity that already misread a red run as green
-      # earlier in this workflow's history.
-      - name: TailscreenViewer
-        shell: bash
-        run: |
-          swift build --package-path Packages/TailscreenKit --target TailscreenViewer \
-            -Xcc -I"$OPUS_ROOT/include/opus" \
-            -Xlinker "/LIBPATH:$OPUS_ROOT/lib"
-
-      # TailscreenSharer pulls TailscaleKit's Swift wrapper, which needed
-      # Windows implementations of the POSIX calls it makes — patch 025.
-      - name: TailscreenSharer
-        shell: bash
-        run: |
-          swift build --package-path Packages/TailscreenKit --target TailscreenSharer \
-            -Xcc -I"$OPUS_ROOT/include/opus" \
-            -Xlinker "/LIBPATH:$OPUS_ROOT/lib"
 
   # W4 gate: can a Swift program on Windows decode H.264 with libavcodec?
   #
