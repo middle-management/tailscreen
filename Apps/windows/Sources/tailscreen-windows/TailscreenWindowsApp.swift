@@ -61,12 +61,17 @@ struct TailscreenWindowsApp: App {
     var body: some Scene {
         WindowGroup("Tailscreen") {
             VStack(spacing: 0) {
+                // Every action closure captures the MODEL, never `self`: these
+                // are `@MainActor @Sendable`, and a view struct is the wrong
+                // thing to be sending. `AppUIState` is a main-actor class and
+                // therefore Sendable, so capturing it directly is both correct
+                // and what the GTK app does with its module-level models.
                 ViewerHeader(
                     subtitle: state.status,
                     showSpinner: state.showsSpinner,
-                    onRefresh: state.canRefresh ? { state.refreshPeers() } : nil,
+                    onRefresh: state.canRefresh ? { [state] in state.refreshPeers() } : nil,
                     secondaryAction: state.phase == .ready && state.watching == nil
-                        ? HubAction(label: "Sign out") { state.signOut() }
+                        ? HubAction(label: "Sign out") { [state] in state.signOut() }
                         : nil)
                 Divider()
                 content
@@ -89,7 +94,7 @@ struct TailscreenWindowsApp: App {
                         .font(.caption)
                         .foregroundColor(HubStyle.secondaryText)
                     Spacer()
-                    Button("Stop") { state.disconnect() }
+                    Button("Stop") { [state] in state.disconnect() }
                 }
                 .padding(.horizontal, 16)
                 .frame(height: Double(HubStyle.toolbarHeight))
@@ -106,7 +111,7 @@ struct TailscreenWindowsApp: App {
                     ? "Sign in to your tailnet to share this screen or watch someone else's."
                     : state.detail,
                 buttonLabel: state.phase == .failed ? "Try again" : "Sign in to Tailscale",
-                onSignIn: { state.signIn() })
+                onSignIn: { [state] in state.signIn() })
         } else {
             // Signed in, or on the way there. `PickerContent` covers both: with
             // `isPicking` false it shows the login card over a spinner, and
@@ -117,8 +122,8 @@ struct TailscreenWindowsApp: App {
                 screens: state.hubScreens,
                 loginURL: state.loginURL,
                 emptyMessage: "No Tailscreen screens found on your tailnet.",
-                onSelect: { state.connect(toID: $0) },
-                onOpenLogin: { state.openLoginURL() },
+                onSelect: { [state] id in state.connect(toID: id) },
+                onOpenLogin: { [state] in state.openLoginURL() },
                 shareCard: state.shareCard)
         }
     }
