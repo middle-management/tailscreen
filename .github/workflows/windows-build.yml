@@ -344,6 +344,23 @@ jobs:
             -Xlinker "/LIBPATH:$FFMPEG_ROOT/lib" \
             -Xlinker "/LIBPATH:$TAILSCALE_LIB"
 
+      # A console tsnet bring-up, shipped in the artifact beside the app.
+      #
+      # The app cannot tell "libtailscale hangs on Windows" from "the app's
+      # environment hangs it" — it carries WinUI, the Windows App SDK, a COM
+      # apartment and swift-cross-ui's run loop, and cannot subtract any of
+      # them. This links the same archive with none of that, so the two cases
+      # give visibly different answers on the same machine.
+      #
+      # Built here rather than run: a CI runner has no tailnet to join, and the
+      # question is what happens on the user's desktop.
+      - name: Build the tsnet probe
+        shell: bash
+        working-directory: Apps/windows
+        run: |
+          swift build --product tsnet-probe \
+            -Xlinker "/LIBPATH:$TAILSCALE_LIB"
+
       # Stage the exe TOGETHER WITH THE SWIFT RUNTIME.
       #
       # Swift links its runtime dynamically on Windows, so a bare
@@ -383,6 +400,16 @@ jobs:
           ls -la "$exe"
           mkdir -p dist
           cp "$exe" dist/tailscreen-windows.exe
+
+          # The diagnostic probe rides along: it shares every staged runtime DLL
+          # with the app, so shipping it costs one file and saves the user a
+          # second download when the app misbehaves.
+          probe=".build/x86_64-unknown-windows-msvc/debug/tsnet-probe.exe"
+          if [ -f "$probe" ]; then
+            cp "$probe" dist/tsnet-probe.exe
+          else
+            echo "note: tsnet-probe.exe not built; skipping" >&2
+          fi
 
           # The toolchain ships the runtime and the COMPILER in one bin
           # directory, so copying every DLL beside swiftCore.dll produced a

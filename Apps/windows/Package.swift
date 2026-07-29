@@ -20,6 +20,10 @@ import PackageDescription
 // disagreeing about it would be a needless source of drift.
 let package = Package(
     name: "tailscreen-windows",
+    products: [
+        // See the target comment: this is a diagnostic, not a shipped app.
+        .executable(name: "tsnet-probe", targets: ["tsnet-probe"])
+    ],
     dependencies: [
         .package(
             url: "https://github.com/stackotter/swift-cross-ui",
@@ -71,6 +75,24 @@ let package = Package(
             // libtailscale.a is a link-time input, so the flag belongs on this
             // executable rather than on the library targets that merely compile
             // against the header. Relative, never absolute — see CLAUDE.md.
+            linkerSettings: [
+                .unsafeFlags(["-L", "../../Packages/TailscaleKit/lib"])
+            ]
+        ),
+        // A console tsnet bring-up, with no WinUI, no Windows App SDK, no COM
+        // apartment and no swift-cross-ui run loop — same libtailscale.a, same
+        // Swift runtime, same machine. It exists to split "the Go archive
+        // hangs on Windows" from "the app's environment hangs it", which the
+        // GUI app cannot distinguish from the inside.
+        //
+        // Lives here rather than in TailscreenKit because it needs the same
+        // relative `-L` for libtailscale.a that the app has, and because the
+        // Windows job already builds this package.
+        .executableTarget(
+            name: "tsnet-probe",
+            dependencies: [
+                .product(name: "TailscreenViewerTsnet", package: "TailscreenKit")
+            ],
             linkerSettings: [
                 .unsafeFlags(["-L", "../../Packages/TailscaleKit/lib"])
             ]
