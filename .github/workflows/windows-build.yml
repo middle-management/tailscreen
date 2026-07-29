@@ -1109,11 +1109,43 @@ jobs:
   # must be flipped the moment it goes green, because an exploratory job left
   # permissive forever is the "missing run reads as success" failure this
   # workflow's own history already paid for once.
+  # ON DEMAND ONLY. It has produced its finding and is blocked on an upstream
+  # toolchain bind (below), so running it on every push would add a permanently
+  # red check for a reason nobody can act on from this repo. Re-run it with
+  # `workflow_dispatch`, or by labelling a PR `run-arm64-probe`, when a new Swift
+  # release or runner image makes it worth another look.
+  #
+  # THE BIND, measured over three runs, and the reason this is parked:
+  #
+  #   Swift 6.1.3   cgo/c-archive WORKS (55 MB)   WinSDK module BROKEN
+  #   Swift 6.3.3   cgo/c-archive BROKEN          WinSDK never reached
+  #
+  # 6.1.3 builds the archive, then cannot build the `WinSDK` Swift module —
+  # its bundled clang `arm64intr.h` and the image's Windows SDK 10.0.26100 both
+  # define `_ARM64_BARRIER_ISH`, so the reference is ambiguous. Unworkaroundable
+  # here: patch 025's POSIX shims import WinSDK.
+  #
+  # 6.3.3 fails earlier and more fundamentally:
+  #
+  #   clang: error: unsupported option '-mthreads' for target
+  #          'aarch64-unknown-windows-msvc'
+  #
+  # That is not a version quirk. Go's cgo assumes a MinGW-flavoured driver on
+  # Windows and passes MinGW flags like `-mthreads` unconditionally; Swift's
+  # clang targets windows-MSVC and rejects them. 6.1.3's clang happened to
+  # tolerate the flag, which is why it got further — not because it was the
+  # right compiler.
+  #
+  # So the real fix is to stop using Swift's clang for cgo and supply an
+  # aarch64 MinGW toolchain (llvm-mingw) for the archive, keeping the MSVC
+  # toolchain for Swift. That is a genuine piece of work, not a retry, which is
+  # why this is parked rather than iterated.
   arm64-probe:
-    name: arm64 probe (exploratory)
+    name: arm64 probe (on demand)
     if: >-
-      github.event_name != 'pull_request' ||
-      github.event.label.name == 'run-windows-build'
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       github.event.label.name == 'run-arm64-probe')
     # GA for public repositories since Aug 2025, 4 vCPU, free — so this is a
     # NATIVE arm64 build, not a cross-compile. That removes the biggest unknown
     # from the list above: no sysroot to assemble, no --triple to get wrong.
@@ -1151,35 +1183,15 @@ jobs:
       # runtime/cgo's ARM64 `gcc_arm64.S` and produced
       # `no such instruction: stp x29,x30`. `stp` is an ARM64 instruction, so
       # that error is an x86 assembler reading ARM64 assembly, not a bad file.
-      # 6.3, NOT the 6.1 the app job pins, and the divergence is a finding
-      # rather than carelessness.
-      #
-      # 6.1 resolved correctly here — swift-6.1.3-RELEASE-windows10-arm64, a
-      # genuine arm64 toolchain — and then could not compile anything that
-      # imports WinSDK:
-      #
-      #   winnt.h:6164:11: error: reference to '_ARM64_BARRIER_ISH' is ambiguous
-      #     candidate ... swift-6.1.3.../lib/swift/clang/include/arm64intr.h:23
-      #   <unknown>:0: error: could not build C module 'WinSDK'
-      #
-      # The toolchain's own clang builtin header and this image's Windows SDK
-      # (10.0.26100) both define that enumerator, so the WinSDK module map is
-      # unbuildable on arm64 with that pairing. Nothing in this repo is
-      # implicated, and nothing in this repo can work around it: patch 025's
-      # POSIX shims import WinSDK, so the collision is upstream of all our code.
-      #
-      # This is the same SHAPE as the documented 6.0.3 `could not build module
-      # 'ucrt'` failure on x64 — a toolchain/SDK mismatch, fixed by moving the
-      # toolchain. A clang builtin header colliding with a newer SDK is exactly
-      # what a newer toolchain would correct, so the arm64 leg tries 6.3.
-      #
-      # It is free to differ from the app job's 6.1: this leg shares no cache
-      # with it, and 6.2 is pinned out of the x64 matrix for an unrelated
-      # swift-cross-ui frontend crash which the probe never compiles.
+      # 6.1 deliberately, because it is the version that gets FURTHEST. Both
+      # 6.1 and 6.3 were measured, and they fail at different points — see the
+      # bind documented at the top of this job. Leaving the leg on 6.1 means
+      # whoever picks this up resumes from the furthest known-good state instead
+      # of re-deriving it.
       - name: Setup Swift
         uses: SwiftyLab/setup-swift@latest
         with:
-          swift-version: '6.3'
+          swift-version: '6.1'
 
       # Prints the target triple, which is a finding in its own right: if the
       # action resolved an x86_64 toolchain on an arm64 host, everything below
@@ -1418,7 +1430,7 @@ jobs:
             echo ""
             echo "Native build on a \`windows-11-arm\` runner. What this job answers:"
             echo ""
-            echo "- Swift 6.1 has a Windows arm64 toolchain and the action resolved it"
+            echo "- Swift has a Windows arm64 toolchain and the action resolves it"
             echo "- Go builds the patched libtailscale c-archive for GOARCH=arm64 with cgo"
             echo "- lld-link joins them and produces an ARM64 PE"
             echo "- patch 026's \`_rt0_arm64_windows_lib\` entry starts the Go runtime"

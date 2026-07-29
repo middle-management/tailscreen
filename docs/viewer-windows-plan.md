@@ -406,9 +406,33 @@ would not.
 Swift setup therefore runs **before** Go in that job, opposite to the app job,
 because the Swift toolchain is where that clang comes from.
 
-**The current blocker, also not ours — and this one is the real one.** With the
-c-archive built and staged, Swift 6.1.3 cannot compile anything that imports
-`WinSDK` on arm64:
+**The blocker is a two-sided toolchain bind, and it is why this is parked.**
+Measured over three runs:
+
+| | cgo / c-archive | `WinSDK` Swift module |
+|---|---|---|
+| Swift 6.1.3 | **works** (55 MB archive) | **broken** |
+| Swift 6.3.3 | **broken** (`-mthreads`) | never reached |
+
+On 6.3.3 the failure is earlier and more fundamental than a version quirk:
+
+```
+clang: error: unsupported option '-mthreads' for target 'aarch64-unknown-windows-msvc'
+```
+
+**Go's cgo assumes a MinGW-flavoured driver on Windows** and passes MinGW flags
+like `-mthreads` unconditionally. Swift's clang targets windows-MSVC and rejects
+them. 6.1.3's clang happened to *tolerate* the flag, which is why it got further
+— not because it was the right compiler. Using Swift's clang for cgo was always
+a workaround that happened to hold.
+
+So the real fix is to stop conflating the two compilers: supply an **aarch64
+llvm-mingw** toolchain for the c-archive and keep the MSVC toolchain for Swift.
+That is a genuine piece of work, not a retry, which is why the probe is now
+**on-demand only** (`workflow_dispatch`, or the `run-arm64-probe` label) rather
+than reddening every push for a reason nobody can act on from this repo.
+
+On 6.1.3 the second side of the bind is:
 
 ```
 winnt.h:6164:11: error: reference to '_ARM64_BARRIER_ISH' is ambiguous
@@ -423,21 +447,29 @@ patch 025's POSIX shims import `WinSDK`, so the collision sits upstream of all
 our code, not beside it.
 
 This is the same shape as the documented 6.0.3 `could not build module 'ucrt'`
-failure on x64: a toolchain/SDK mismatch, fixed by moving the toolchain. The
-arm64 leg therefore tries **6.3** while the app job stays on 6.1 — the two share
-no cache, and 6.2 is pinned out of the x64 matrix for an unrelated swift-cross-ui
-frontend crash the probe never compiles.
+failure on x64: a toolchain/SDK mismatch. Moving the toolchain was the obvious
+remedy and is what 6.3.3 was tried for — but it trades this failure for the
+`-mthreads` one above, which is the bind. **The leg stays pinned to 6.1**, the
+version that gets furthest, so whoever resumes starts from the furthest known
+state rather than re-deriving it.
 
 **Still unproven, therefore:** that `tsnet-probe` links on arm64, that
 `tailscale_new()` returns, and everything above it (WinUI, FFmpeg, staging). What
 IS established is that the two things expected to be hardest — the Go bridge and
 the c-archive — are not the problem.
 
-**Read this as a cost signal for W8.** Two independent upstream toolchain
-problems surfaced within the first three runs of a probe that deliberately builds
-almost nothing. Multi-arch is not a small increment on top of the x64 work, and
-a dual-architecture MSIX should not be planned as though arm64 were a URL change
-away. If arm64 matters, it wants its own phase.
+**Read this as a cost signal for W8.** Three distinct upstream failures inside
+four runs of a probe that deliberately builds almost nothing: an x86_64 assembler
+handed ARM64 assembly, a clang builtin header colliding with the Windows SDK, and
+cgo's MinGW assumptions meeting an MSVC-targeting clang. None of them is our
+code, and none has a fix that lives in this repo.
+
+Multi-arch is therefore **not** a small increment on top of the x64 work, and a
+dual-architecture MSIX should not be planned as though arm64 were a URL change
+away — an earlier revision of this document implied exactly that, on the strength
+of the Swift toolchain and FFmpeg assets existing. They do exist; they are not
+the hard part. If arm64 matters it wants its own phase, and that phase starts
+with llvm-mingw rather than with the app.
 
 **Also unresolved, and cheap to forget:** no native arm64 build, so today's x64
 artifact runs under emulation on ARM devices (which is how the W2/W3 manual
