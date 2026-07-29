@@ -94,7 +94,9 @@ final class AnnotationRenderingTests: XCTestCase {
         buffer.withUnsafeMutableBufferPointer { pointer in
             guard let base = pointer.baseAddress else { return }
             AnnotationRasterizer.render(
-                annotations, width: width, height: height, stride: width * 4, into: base)
+                annotations,
+                into: AnnotationRasterizer.Surface(
+                    bgra: base, stride: width * 4, width: width, height: height))
         }
         return buffer
     }
@@ -182,7 +184,9 @@ final class AnnotationRenderingTests: XCTestCase {
         buffer.withUnsafeMutableBufferPointer { pointer in
             guard let base = pointer.baseAddress else { return }
             // Stride smaller than a row: unusable, and must not be written.
-            AnnotationRasterizer.render([], width: 4, height: 1, stride: 4, into: base)
+            AnnotationRasterizer.render(
+                [],
+                into: AnnotationRasterizer.Surface(bgra: base, stride: 4, width: 4, height: 1))
         }
         XCTAssertTrue(buffer.allSatisfy { $0 == 0x11 })
     }

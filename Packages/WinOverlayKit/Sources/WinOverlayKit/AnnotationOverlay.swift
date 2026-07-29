@@ -115,8 +115,11 @@ public final class AnnotationOverlay: @unchecked Sendable {
             pixels.withUnsafeMutableBufferPointer { buffer in
                 guard let base = buffer.baseAddress else { return }
                 AnnotationRasterizer.render(
-                    annotations, width: region.width, height: region.height,
-                    stride: region.width * AnnotationRasterizer.bytesPerPixel, into: base)
+                    annotations,
+                    into: AnnotationRasterizer.Surface(
+                        bgra: base,
+                        stride: region.width * AnnotationRasterizer.bytesPerPixel,
+                        width: region.width, height: region.height))
                 _ = ts_overlay_update(handle, base, Int32(region.width), Int32(region.height))
             }
         }

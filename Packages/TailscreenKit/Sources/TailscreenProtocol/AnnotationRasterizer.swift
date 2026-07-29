@@ -25,33 +25,49 @@ public enum AnnotationRasterizer {
     /// Bytes per pixel in the output.
     public static let bytesPerPixel = 4
 
+    /// The destination: where the pixels are and how they are laid out.
+    ///
+    /// Grouped rather than passed as four parameters, the same way
+    /// ``BGRAToI420`` groups its source and planes — and for the same
+    /// immediate reason, that the alternative trips swiftlint's
+    /// `function_parameter_count`. It also reads better: these four are one
+    /// thing, and a caller that got `stride` and `width` the wrong way round
+    /// would produce a sheared image rather than an error.
+    public struct Surface {
+        public let bgra: UnsafeMutablePointer<UInt8>
+        /// Bytes per row; `width * bytesPerPixel` when tightly packed.
+        public let stride: Int
+        public let width: Int
+        public let height: Int
+
+        public init(bgra: UnsafeMutablePointer<UInt8>, stride: Int, width: Int, height: Int) {
+            self.bgra = bgra
+            self.stride = stride
+            self.width = width
+            self.height = height
+        }
+    }
+
     /// The short-edge length `Annotation.width` is quoted against. A width of
     /// 3 means 3 pixels on a surface this tall, and proportionally more or
     /// less on any other.
     public static let referenceShortEdge: Double = 1000
 
-    /// Clear `bgra` to fully transparent and draw `annotations` over it.
+    /// Clear `surface` to fully transparent and draw `annotations` over it.
     ///
     /// - Parameters:
     ///   - annotations: in draw order — later ones cover earlier ones.
-    ///   - width: buffer width in pixels.
-    ///   - height: buffer height in pixels.
-    ///   - stride: bytes per row; `width * 4` when tightly packed.
-    ///   - bgra: destination, at least `stride * height` bytes.
+    ///   - surface: destination, at least `stride * height` bytes.
     ///
     /// Stroke widths in `Annotation` are relative to the video's short edge
     /// (the same convention both existing renderers use), so they scale with
     /// the surface rather than becoming hairlines on a 4K display.
-    public static func render(
-        _ annotations: [Annotation],
-        width: Int,
-        height: Int,
-        stride: Int,
-        into bgra: UnsafeMutablePointer<UInt8>
-    ) {
-        guard width > 0, height > 0, stride >= width * bytesPerPixel else { return }
+    public static func render(_ annotations: [Annotation], into surface: Surface) {
+        let width = surface.width
+        let height = surface.height
+        guard width > 0, height > 0, surface.stride >= width * bytesPerPixel else { return }
         for row in 0..<height {
-            let base = bgra + row * stride
+            let base = surface.bgra + row * surface.stride
             base.update(repeating: 0, count: width * bytesPerPixel)
         }
         guard !annotations.isEmpty else { return }
@@ -80,8 +96,7 @@ public enum AnnotationRasterizer {
             for index in 0..<(points.count - 1) {
                 drawSegment(
                     from: points[index], to: points[index + 1],
-                    halfWidth: halfWidth, color: annotation.color,
-                    width: width, height: height, stride: stride, bgra: bgra)
+                    halfWidth: halfWidth, color: annotation.color, surface: surface)
             }
         }
     }
@@ -97,11 +112,10 @@ public enum AnnotationRasterizer {
         to end: CGPoint,
         halfWidth: Double,
         color: Annotation.RGBA,
-        width: Int,
-        height: Int,
-        stride: Int,
-        bgra: UnsafeMutablePointer<UInt8>
+        surface: Surface
     ) {
+        let width = surface.width
+        let height = surface.height
         let x0 = Double(start.x) * Double(width)
         let y0 = Double(start.y) * Double(height)
         let x1 = Double(end.x) * Double(width)
@@ -123,7 +137,7 @@ public enum AnnotationRasterizer {
         let lengthSquared = dx * dx + dy * dy
 
         for py in minY...maxY {
-            let row = bgra + py * stride
+            let row = surface.bgra + py * surface.stride
             for px in minX...maxX {
                 // Pixel centre, not corner: a half-pixel bias is a visible
                 // shift on a thin stroke.
