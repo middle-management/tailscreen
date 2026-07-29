@@ -39,6 +39,7 @@ let package = Package(
         .package(path: "../WGCCaptureKit"),
         .package(path: "../FFmpegKit"),
         .package(path: "../TailscreenKit"),
+        .package(path: "../SendInputKit"),
     ],
     targets: [
         .target(
@@ -48,6 +49,7 @@ let package = Package(
                 .product(name: "FFmpegKit", package: "FFmpegKit"),
                 .product(name: "TailscreenProtocol", package: "TailscreenKit"),
                 .product(name: "TailscreenSharer", package: "TailscreenKit"),
+                .product(name: "SendInputKit", package: "SendInputKit"),
             ],
             path: "Sources/TailscreenSharerWGC"
         )

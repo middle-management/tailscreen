@@ -1,4 +1,5 @@
 import Foundation
+import SendInputKit
 import TailscreenProtocol
 import TailscreenSharer
 import WGCCaptureKit
@@ -23,11 +24,16 @@ import WGCCaptureKit
 /// reasoning above, which is the part a Windows-only build would let through
 /// unread until someone ran it.
 ///
-/// No input injector is supplied, so the server correctly withholds
-/// `ScreenShareCaps.remoteControl` and viewers hide Request Control instead of
-/// sending requests this host cannot serve. That is the conditional-capability
-/// behaviour the portable server gained when it stopped being macOS-only, and
-/// it is what makes an incomplete platform honest rather than broken.
+/// Remote control is offered only when the caller can say WHERE the shared
+/// content is on screen (`controlRegion`). A WGC `GraphicsCaptureItem` does
+/// not expose its HMONITOR or HWND, so a picker-chosen target has no known
+/// geometry and normalized coordinates cannot be mapped onto it — and a click
+/// landing somewhere the viewer did not aim it is worse than a click that does
+/// not happen. Without a region no injector is supplied, the server withholds
+/// `ScreenShareCaps.remoteControl`, and viewers hide Request Control rather
+/// than sending requests this host cannot serve. That conditional capability
+/// is what the portable server gained when it stopped being macOS-only, and it
+/// is what makes an incomplete platform honest rather than broken.
 public final class WindowsShareSession: @unchecked Sendable {
     /// What the UI needs to render, pushed on every change.
     public struct Status: Sendable {
@@ -72,11 +78,17 @@ public final class WindowsShareSession: @unchecked Sendable {
     /// `nonisolated` and `async`: called from a `Task` on the main actor, it
     /// runs on the global executor, so the node bring-up inside `start` never
     /// occupies the UI thread.
+    /// - Parameter controlRegion: where the shared content sits in screen
+    ///   pixels, or nil when unknown. Supplying it is what enables remote
+    ///   control; see the type comment for why it cannot be derived from the
+    ///   capture item. Re-read on every activation, so a window that has been
+    ///   moved or resized still maps correctly.
     public func beginSharing(
         item: WGC.CaptureItem,
         hostname: String,
         statePath: String,
-        quality: QualitySettings
+        quality: QualitySettings,
+        controlRegion: (@Sendable () -> SendInputInjector.Region?)? = nil
     ) async throws {
         // A capture FACTORY, not an instance, because the server respawns the
         // backend to restart capture. Closing over the item is what makes a
@@ -85,7 +97,7 @@ public final class WindowsShareSession: @unchecked Sendable {
         // which a `GraphicsCaptureItem` cannot be turned back into.
         let newServer = TailscaleScreenShareServer(
             captureFactory: { WGCCaptureEncoder(item: item) },
-            inputInjector: nil
+            inputInjector: controlRegion.map { WindowsInputInjector(regionProvider: $0) }
         )
         let name = item.displayName
 

@@ -356,6 +356,16 @@ jobs:
       # This job rather than linux-ffmpeg because the graph reaches
       # TailscreenSharer → TailscaleKit, which needs the submodule and the
       # patch series that only the jobs with `submodules: recursive` have.
+      # The remote-control injector's gate, modifier synthesis and
+      # stuck-button release, all asserted through its test seam so no real
+      # SendInput runs and no cursor moves. The Win32 shim stubs out here, so
+      # what is checked is every decision and none of the syscalls — which is
+      # the right split, because the decisions are where the damage is (an
+      # event landing after a revoke, a button left held down on someone's
+      # desktop with no input path able to release it).
+      - name: Test the Windows input injector on Linux
+        run: swift test --package-path Packages/SendInputKit
+
       - name: Typecheck the Windows sharer backend on Linux
         run: |
           PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" \

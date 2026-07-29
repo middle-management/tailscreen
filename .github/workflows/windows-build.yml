@@ -51,6 +51,7 @@ on:
       - 'Packages/WASAPIKit/**'
       - 'Packages/WGCCaptureKit/**'
       - 'Packages/TailscreenSharerWGC/**'
+      - 'Packages/SendInputKit/**'
       - 'Apps/windows/**'
       - 'scripts/materialize-symlinks.sh'
       - '.github/workflows/windows-build.yml'
@@ -279,6 +280,17 @@ jobs:
       - name: WGCCaptureKit
         run: swift build --package-path Packages/WGCCaptureKit --product wgc-probe
 
+      # Remote control: Win32 SendInput behind the portable `InputInjecting`
+      # seam. Via its PROBE, so the LINKER runs — a library target is compiled
+      # but never linked, which is how WASAPIKit's four missing GUID symbols
+      # passed their own step and failed eleven minutes later in the app.
+      #
+      # Built, not RUN, unlike wasapi-probe. wasapi-probe's failure mode on a
+      # runner is silence; this one moves a real cursor, and it takes
+      # `--inject` before it will.
+      - name: SendInputKit
+        run: swift build --package-path Packages/SendInputKit --product sendinput-probe
+
       # The sharer's capture backend: WGC frames → BGRAToI420 → libavcodec,
       # behind the portable `CaptureEncoding` seam.
       #
@@ -338,7 +350,8 @@ jobs:
                       'Packages/FFmpegKit/Package.swift',
                       'Packages/WASAPIKit/Package.swift',
                       'Packages/WGCCaptureKit/Package.swift',
-                      'Packages/TailscreenSharerWGC/Package.swift') }}
+                      'Packages/TailscreenSharerWGC/Package.swift',
+                      'Packages/SendInputKit/Package.swift') }}
 
       - name: Resolve the app's dependencies
         working-directory: Apps/windows
