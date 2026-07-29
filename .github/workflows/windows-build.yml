@@ -29,14 +29,33 @@ name: Windows build
 # Path-scoped push trigger for the same reason as windows-spike.yml: a Windows
 # runner shouldn't start for unrelated work, but a probe whose whole purpose is
 # to produce an answer is useless if running it needs a label first.
+#
+# EVERY package the Windows job builds from must be listed below, and the list
+# had a hole: `Packages/WASAPIKit/**` was missing when W5 added it, so the commit
+# that fixed the shim's STL error changed only files under that path and no
+# Windows runner started. The branch then showed fourteen green checks while the
+# last actual Windows result was a failure two commits earlier. TailscaleKit and
+# OpusKit were missing for the same reason and had been all along — a patch-025
+# change is exactly what this job exists to validate.
+#
+# Same rule as the build cache's key, and worth checking against it: if a
+# package is in the app's dependency graph, it belongs in both.
 on:
   push:
     paths:
       - 'Packages/TailscreenKit/**'
+      - 'Packages/TailscaleKit/**'
+      - 'Packages/OpusKit/**'
       - 'Packages/FFmpegKit/**'
       - 'Packages/TailscreenVideoFFmpeg/**'
+      - 'Packages/WASAPIKit/**'
       - 'Apps/windows/**'
+      - 'scripts/materialize-symlinks.sh'
       - '.github/workflows/windows-build.yml'
+      # Doc-only edits under those paths still don't warrant a 20-minute
+      # Windows runner. Negative patterns are evaluated after the positive
+      # ones, so this subtracts rather than replacing them.
+      - '!**/*.md'
   pull_request:
     types: [labeled]
   workflow_dispatch:
