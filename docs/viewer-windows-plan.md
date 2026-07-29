@@ -109,10 +109,10 @@ compiler's opinion alone builds cleanly and fails on first use.
 
 ### The spike
 
-`spikes/windows-tsnet-bridge/` retires this risk before any UI work, with no
-tsnet involved so a failure points at the primitive rather than at forty layers
-of Tailscale. It builds loopback replacements for both socketpair flavours and
-proves, on a real Windows runner:
+`spikes/windows-tsnet-bridge/` retired this risk before any UI work, with no
+tsnet involved so a failure pointed at the primitive rather than at forty layers
+of Tailscale. It built loopback replacements for both socketpair flavours and
+proved, on a real Windows runner:
 
 - stream round trip in both directions;
 - **datagram boundaries preserved** — one datagram in, exactly one out, which is
@@ -124,10 +124,15 @@ proves, on a real Windows runner:
   Unix machinery exists for a constraint we do not have;
 - a Go-side close surfaces to the native end as EOF.
 
-Leg B repeats the stream and datagram checks from real C `recv()` across a cgo
+Leg B repeated the stream and datagram checks from real C `recv()` across a cgo
 c-archive boundary, because that is where linkage and runtime-init surprises
-live. CI job: `windows-spike`, on the `run-windows-spike` label or manual
-dispatch — not a merge gate.
+live.
+
+**The spike and its `windows-spike` workflow have since been deleted.** They
+answered their question and patch 024 shipped the answer; the `Windows build`
+job now builds the real c-archive, links it into the app and runs `tsnet-probe`
+against it, which is strictly stronger evidence than the spike could give. The
+findings above are the record — the code was scaffolding, not the record.
 
 Note the replacement is *simpler* than the Unix original: the accept side uses
 Go's `net` package (avoiding the `Accept` stub), which makes the Go end an
@@ -180,8 +185,9 @@ comments. An earlier revision of this file numbered the stages differently
 (video at W2, audio at W4), which stopped being true once the bridge work split
 into W1/W1b and the UI landed before the transport.
 
-- **W0 — bridge spike.** ✅ `spikes/windows-tsnet-bridge`, green on a Windows
-  runner. *The one that could have invalidated the shape; it came first.*
+- **W0 — bridge spike.** ✅ Green on a Windows runner, then deleted once patch
+  024 shipped the real bridge. *The one that could have invalidated the shape;
+  it came first.*
 - **W1 — the bridge for real.** ✅ Patch 024: `bridge.go` seam,
   `bridge_windows.go` on loopback TCP/UDP pairs.
 - **W1b — the Swift wrapper.** ✅ Patch 025: `recv`/`send`/`closesocket`,

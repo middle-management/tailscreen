@@ -26,9 +26,9 @@ name: Windows build
 # error, with its compiler output attached, rather than something a later
 # summary step reports second-hand.
 #
-# Path-scoped push trigger for the same reason as windows-spike.yml: a Windows
-# runner shouldn't start for unrelated work, but a probe whose whole purpose is
-# to produce an answer is useless if running it needs a label first.
+# The push trigger is path-scoped: a Windows runner shouldn't start for unrelated
+# work, but a job whose whole purpose is to produce an answer is useless if
+# running it needs a label first.
 #
 # EVERY package the Windows job builds from must be listed below, and the list
 # had a hole: `Packages/WASAPIKit/**` was missing when W5 added it, so the commit
@@ -136,10 +136,10 @@ jobs:
         run: ./scripts/materialize-symlinks.sh --force
 
       # From W3 the app links libtailscale, so the Go c-archive has to exist
-      # before `swift build` runs. Same recipe as windows-spike.yml's
-      # libtailscale job, which is where it was first proven to build for
-      # windows/amd64; the patch series above supplies bridge_windows.go
-      # (patch 024), without which this does not compile at all.
+      # before `swift build` runs. The patch series above supplies
+      # bridge_windows.go (patch 024), without which this does not compile at
+      # all — it is what replaces the socketpair + SCM_RIGHTS handoff that has
+      # no Windows equivalent.
       #
       # Not `make tailscale`: make isn't on the Windows image, and the Makefile
       # target does Unix-only path handling around the same two commands.

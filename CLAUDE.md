@@ -181,8 +181,9 @@ SCM_RIGHTS is unnecessary). Watch out when extending it: `syscall.Accept`,
 `Recvfrom`, `Sendto` and `SetsockoptTimeval` **compile on Windows but are
 `EWINDOWS` stubs that always fail at runtime** — which is why the Windows accept
 goes through Go's `net` package. `libtailscale.a` now builds for
-`windows/amd64`; CI job `windows-spike / libtailscale`. A live tsnet node on
-Windows is still unproven.
+`windows/amd64`, proven by the `Windows build / Swift 6.1` job, which builds the
+c-archive, links it into the app, and runs `tsnet-probe` against it. A node that
+reaches a real tailnet on Windows is still unproven.
 
 The **Go runtime start on Windows** (patch 026) is the other half of making
 that archive usable. A Go c-archive does not start its own runtime: it asks
