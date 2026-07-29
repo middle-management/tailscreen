@@ -418,12 +418,22 @@ jobs:
           # The diagnostic probe rides along: it shares every staged runtime DLL
           # with the app, so shipping it costs one file and saves the user a
           # second download when the app misbehaves.
-          probe=".build/x86_64-unknown-windows-msvc/debug/tsnet-probe.exe"
-          if [ -f "$probe" ]; then
-            cp "$probe" dist/tsnet-probe.exe
-          else
-            echo "note: tsnet-probe.exe not built; skipping" >&2
+          #
+          # Located the same way as the app, and for the same reason the first
+          # version of this was wrong: THIS STEP HAS NO `working-directory`, so
+          # it runs at the repo root while the two build steps above run in
+          # Apps/windows. A relative `.build/…` path therefore missed, and
+          # because the miss was written as a skippable note the artifact
+          # shipped without the probe and the job still went green — the same
+          # shape of hole as a missing path filter. It is a hard failure now:
+          # the build step above is unconditional, so if the exe is absent here
+          # something is wrong with this step, not with the build.
+          probe=$(find Apps/windows/.build -name 'tsnet-probe.exe' | head -1)
+          if [ -z "$probe" ]; then
+            echo "no tsnet-probe.exe produced" >&2
+            exit 1
           fi
+          cp "$probe" dist/tsnet-probe.exe
 
           # The toolchain ships the runtime and the COMPILER in one bin
           # directory, so copying every DLL beside swiftCore.dll produced a
@@ -713,6 +723,66 @@ jobs:
           path: dist/
           retention-days: 14
           if-no-files-found: error
+
+      # Does the Go c-archive come up on Windows AT ALL?
+      #
+      # The app freezes with two lines on stderr — "creating state dir" then
+      # "creating tsnet node" — and nothing after, which puts the stall inside
+      # `TailscaleNode.init` → `tailscale_new()`, the first call into the Go
+      # archive. That was being investigated by asking the user to run the probe
+      # on their desktop, which is a slow loop and, it turns out, an unnecessary
+      # one: `tailscale_new()` allocates a server struct. It contacts nothing,
+      # needs no tailnet and needs no desktop, so a headless runner can reach it
+      # exactly as a user's machine does.
+      #
+      # So this asserts the probe gets PAST node creation, by looking for the
+      # next line the transport logs. It deliberately does not wait for `up()` —
+      # with no auth key that blocks on a browser login forever, and that is not
+      # the step under suspicion. A timeout with only the first two lines
+      # present is the reproduction; a third line means the archive is fine on
+      # this machine and the difference is the user's environment.
+      #
+      # After the upload, like the tiers below it: a diagnostic must never cost
+      # us the artifact a human is waiting to run.
+      - name: Check tsnet node creation returns
+        shell: pwsh
+        working-directory: dist
+        run: |
+          $err = Join-Path $env:RUNNER_TEMP 'probe-stderr.txt'
+          $out = Join-Path $env:RUNNER_TEMP 'probe-stdout.txt'
+          # inittrace names the Go package if the stall is in runtime init.
+          $env:GODEBUG = 'inittrace=1'
+          $p = Start-Process -FilePath .\tsnet-probe.exe -PassThru `
+            -RedirectStandardOutput $out -RedirectStandardError $err
+          # 90s: node creation is sub-second when it works, so anything near
+          # this is the hang, not slowness.
+          $exited = $p.WaitForExit(90000)
+          if (-not $exited) { $p.Kill(); $p.WaitForExit() }
+
+          foreach ($f in @($out, $err)) {
+            if (Test-Path $f) {
+              Write-Host "--- $(Split-Path -Leaf $f) ---"
+              Get-Content $f | ForEach-Object { Write-Host $_ }
+            }
+          }
+
+          $text = ''
+          foreach ($f in @($out, $err)) {
+            if (Test-Path $f) { $text += (Get-Content $f -Raw) }
+          }
+
+          if ($text -notmatch 'creating tsnet node') {
+            Write-Host "::warning::probe never reached node creation — this step is not measuring what it claims"
+            exit 0
+          }
+          # Any line the transport logs after `TailscaleNode.init` returns. The
+          # no-auth-key path is the one the app takes and the one that hangs.
+          if ($text -match 'subscribing to the IPN bus' -or $text -match 'calling up\(\)') {
+            Write-Host "tailscale_new() returned — the Go archive initialises on Windows"
+            exit 0
+          }
+          Write-Error "tsnet-probe stalled inside tailscale_new() — reproduces the app's freeze with no UI, no COM apartment and no WinUI in the process"
+          exit 1
 
       # The remaining tiers, which pull TailscreenAudio → OpusKit → libopus.
       # They stay AFTER the upload so a failure here can't cost us the app
