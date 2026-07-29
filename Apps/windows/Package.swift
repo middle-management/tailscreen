@@ -35,6 +35,7 @@ let package = Package(
             .upToNextMinor(from: "0.2.1")),
         .package(path: "../../Packages/TailscreenKit"),
         .package(path: "../../Packages/TailscreenVideoFFmpeg"),
+        .package(path: "../../Packages/WASAPIKit"),
     ],
     targets: [
         .executableTarget(
@@ -62,6 +63,10 @@ let package = Package(
                 // in TailscreenKit precisely so consuming it here doesn't also
                 // drag in FFmpeg, ALSA and X11.
                 .product(name: "TailscreenViewerTsnet", package: "TailscreenKit"),
+                // WASAPI behind the portable `AudioSink` seam — what ALSAKit is
+                // to the Linux viewer. No system package to install: WASAPI is
+                // part of Windows.
+                .product(name: "WASAPIKit", package: "WASAPIKit"),
             ],
             // libtailscale.a is a link-time input, so the flag belongs on this
             // executable rather than on the library targets that merely compile

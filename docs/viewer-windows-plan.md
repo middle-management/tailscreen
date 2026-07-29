@@ -43,8 +43,9 @@ all of it is backend-agnostic Swift that already compiles for Windows unchanged:
 | Picker — `PickerModel` + `discoverPeers` | portable Swift | none |
 | Chrome — `ViewerUIState`, `ViewerControls`, the swift-cross-ui view tree | portable Swift | none |
 | Frame hand-off — `FrameStore` | portable Swift | none |
-| Audio out — `ALSAAudioSink` | Linux-only | **new:** WASAPI `AudioSink` |
-| Video surface — `GtkVideoView` + `CGtkVideo` | Linux-only | **new:** `SwapChainPanel` + D3D11 |
+| Off-thread audio — `ThreadedAudioSink` | was Linux-only | ✅ moved to the portable tier, reused unchanged |
+| Audio out — `ALSAAudioSink` | Linux-only | ✅ **new:** `WASAPIKit` + `WASAPIAudioSink` |
+| Video surface — `GtkVideoView` + `CGtkVideo` | Linux-only | ✅ **new:** `WinUIVideoView` (`Image` + `WriteableBitmap`; `SwapChainPanel` later) |
 | Capture — `X11CaptureKit` + `X11CaptureEncoder` | Linux-only | **new:** DXGI Desktop Duplication behind `CaptureEncoding` |
 | Input injection | none on Linux | **new:** `SendInput` + HID→VK |
 
@@ -192,10 +193,19 @@ into W1/W1b and the UI landed before the transport.
   peers. Transport moved to `TailscreenViewerTsnet` in TailscreenKit so Windows
   consumes it without FFmpeg/ALSA/X11. *Live sign-in against a real tailnet is
   the outstanding manual check.*
-- **W4 — video.** ← next. Two independent halves, below.
-- **W5 — audio.** WASAPI behind the portable `AudioSink` protocol, mirroring
-  what ALSAKit does on Linux.
-- **W6 — sharer.** DXGI Desktop Duplication behind `CaptureEncoding`, `SendInput`
+- **W4 — video.** ✅ `FFmpegVideoDecoder` behind the portable `VideoDecoding`
+  seam, blitted into a WinUI `Image`/`WriteableBitmap`. The decoder moved to
+  `Packages/TailscreenVideoFFmpeg` so consuming it doesn't also drag in ALSA and
+  X11; the colour conversion is `I420Converter` in the portable tier, tested on
+  Linux. *No frame has been watched — CI has no sharer and no display.*
+- **W5 — audio.** ✅ WASAPI shared-mode rendering behind the portable
+  `AudioSink` seam (`Packages/WASAPIKit`), the counterpart to ALSAKit on Linux,
+  fronted by `ThreadedAudioSink` so the blocking device write stays off the
+  WinUI main thread. `ThreadedAudioSink` moved from `Apps/linux` into the
+  portable tier — it was always thread + queue over `AudioSink` — and the
+  48 kHz mono → device-format adaptation is `MonoPCMConverter`, also portable
+  and tested. *No sound has been heard.*
+- **W6 — sharer.** ← next. DXGI Desktop Duplication behind `CaptureEncoding`, `SendInput`
   behind `InputInjecting`. Both seams already exist and are exercised by Linux.
 - **W7 — packaging.** MSIX / signed installer; a Release-workflow Windows leg.
 

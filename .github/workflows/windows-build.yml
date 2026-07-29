@@ -237,6 +237,13 @@ jobs:
       - name: TailscreenProtocol
         run: swift build --package-path Packages/TailscreenKit --target TailscreenProtocol
 
+      # WASAPIKit before the app, not with it. It is a few hundred lines of COM
+      # against SDK headers that nothing off Windows can compile, so a mistake in
+      # it should surface in fifteen seconds here rather than eleven minutes into
+      # the app build. No system package: WASAPI ships with Windows.
+      - name: WASAPIKit
+        run: swift build --package-path Packages/WASAPIKit
+
       # The app is built BEFORE the remaining tiers on purpose: it depends only
       # on TailscreenProtocol, so a failure in the heavier audio-bearing tiers
       # can't cost us the runnable .exe.
@@ -278,7 +285,8 @@ jobs:
                       'Packages/TailscaleKit/Package.swift',
                       'Packages/OpusKit/Package.swift',
                       'Packages/TailscreenVideoFFmpeg/Package.swift',
-                      'Packages/FFmpegKit/Package.swift') }}
+                      'Packages/FFmpegKit/Package.swift',
+                      'Packages/WASAPIKit/Package.swift') }}
 
       - name: Resolve the app's dependencies
         working-directory: Apps/windows

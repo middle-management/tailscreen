@@ -3,10 +3,10 @@
 The native Windows desktop app — swift-cross-ui on WinUI, reusing the same
 portable core as the macOS and Linux apps.
 
-**Status: transport stage (W3).** The app brings up a real tsnet node, shows the
-interactive browser-login URL, and lists the tailnet's Tailscreen peers. It does
-not yet decode video or play audio — those are W4–W5 in
-`docs/viewer-windows-plan.md`.
+**Status: audio stage (W5).** The app brings up a real tsnet node, shows the
+interactive browser-login URL, lists the tailnet's Tailscreen peers, and dials
+one into a viewing session with libavcodec video and WASAPI audio. It cannot
+share its own screen — that is W6 in `docs/viewer-windows-plan.md`.
 
 What each stage established:
 
@@ -17,8 +17,20 @@ What each stage established:
   the x64 binary ran under emulation and the probe reported it faithfully.
 - **W3** — `libtailscale.a` (56 MB, `windows/amd64`) links into a Swift
   executable via `lld-link`, and the app starts and holds its event loop with
-  tsnet linked in. Confirmed in CI. A live sign-in against a real tailnet is
-  the remaining manual check.
+  tsnet linked in. Confirmed in CI, and the artifact has been downloaded and run
+  unassisted on Windows 11. A live sign-in against a real tailnet is the
+  remaining manual check.
+- **W4** — video. `FFmpegVideoDecoder` (the Linux viewer's decoder, moved into
+  `Packages/TailscreenVideoFFmpeg` so taking it does not also mean taking ALSA
+  and X11) behind the portable `VideoDecoding` seam, blitted into a WinUI
+  `Image` via a `WriteableBitmap`. The colour conversion is `I420Converter` in
+  the portable tier, unit-tested on Linux. Compiles and links; no frame has been
+  watched.
+- **W5** — audio. WASAPI shared-mode rendering behind the portable `AudioSink`
+  seam (`Packages/WASAPIKit`), fronted by `ThreadedAudioSink` so the blocking
+  device write stays off the WinUI main thread. The 48 kHz mono → device-format
+  conversion is `MonoPCMConverter` in the portable tier, also unit-tested on
+  Linux. Compiles and links; no sound has been heard.
 
 Several lines on stdout at startup are expected and harmless — gaps in
 swift-cross-ui's WinUI backend, not faults here:
@@ -119,12 +131,23 @@ An empty list is a *result*, not a failure, if the tailnet has no other
 Tailscreen instance running: the app distinguishes "still looking" from "none
 found" deliberately.
 
-Clicking a peer does nothing yet — connecting needs a decoder and a render
-surface (W4).
+Clicking a peer dials it and starts a viewing session: the video fills the
+window and audio goes to the default output device. Neither has been observed
+working on real hardware yet — see the limits below.
 
 ### Known limits at this stage
 
-- No video and no audio. Selecting a peer does nothing — W4/W5.
+- **Nobody has seen a frame or heard a sample.** Both paths compile, link and
+  start; the decoder is covered by `linux-viewer`'s real encode→RTP→decode test
+  and both conversions by unit tests, but CI has no sharer to dial and no
+  display or sound card to check. This is the outstanding manual test.
+- Audio failure is silent by design: if the output device cannot be opened, or
+  its shared-mode mix format is not 32-bit float, the session continues
+  video-only and says so once on stderr.
+- Changing the default output device mid-session ends audio for that session.
+  Reopening on the next buffer would fix it and wants a retry budget so a
+  permanently absent device does not thrash; not done yet.
+- It cannot share its own screen — W6.
 - The node is brought up with `nodeRole: .viewerOnly`, so it is ephemeral and
   deliberately excluded from other peers' discovery. This machine can watch;
   it cannot yet be watched.

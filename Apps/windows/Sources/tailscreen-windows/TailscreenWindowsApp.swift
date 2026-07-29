@@ -8,6 +8,7 @@ import SwiftCrossUI
 import struct TailscreenProtocol.QualitySettings
 import class TailscreenVideoFFmpeg.FFmpegVideoDecoder
 import class TailscreenViewer.FrameStore
+import class TailscreenViewer.ThreadedAudioSink
 import struct TailscreenViewerTsnet.DiscoveredSharer
 import class TailscreenViewerTsnet.TsnetTransport
 import struct TailscreenViewerTsnet.ViewerConfig
@@ -15,19 +16,21 @@ import struct TailscreenViewerTsnet.ViewerConfig
 // NOT named main.swift on purpose: Swift rejects `@main` in a file with that
 // name, because main.swift is itself top-level code.
 
-/// Stage W4 of the Windows port: sign in, pick a peer, watch its screen.
+/// Stage W5 of the Windows port: sign in, pick a peer, watch and hear it.
 ///
 /// W2 proved the chrome renders; W3 proved libtailscale's Go↔native bridge
-/// (patch 024) carries a real tsnet node. This adds the video path on top —
-/// libavcodec decode through the portable `VideoDecoding` seam, and a CPU blit
-/// into a WinUI `WriteableBitmap`.
+/// (patch 024) carries a real tsnet node; W4 added libavcodec decode through the
+/// portable `VideoDecoding` seam and a CPU blit into a WinUI `WriteableBitmap`.
+/// W5 adds WASAPI playback behind the portable `AudioSink` seam.
 ///
-/// Both halves are shared rather than Windows-specific: the decoder is the same
-/// `FFmpegVideoDecoder` the Linux viewer runs, and the colour conversion is
-/// `I420Converter` in the portable tier, tested on Linux. What is genuinely new
-/// here is only the WinUI surface.
+/// Very little of this is Windows-specific: the decoder is the same
+/// `FFmpegVideoDecoder` the Linux viewer runs, the colour conversion is
+/// `I420Converter`, the PCM conversion is `MonoPCMConverter`, and the off-thread
+/// audio wrapper is `ThreadedAudioSink` — all portable and all tested on Linux.
+/// What is genuinely new per stage is one platform file: the WinUI surface, and
+/// the WASAPI sink.
 ///
-/// No audio yet — that is W5.
+/// No sharing — that is W6.
 @main
 struct TailscreenWindowsApp: App {
     @State var state = AppUIState()
@@ -270,6 +273,13 @@ final class AppUIState: ObservableObject {
             let sink = WindowsVideoSink(store: frameStore) { [weak self] in
                 Task { @MainActor in self?.frameGeneration &+= 1 }
             }
+            // Off-thread on purpose. The transport is serviced by the WinUI main
+            // thread, so a blocking WASAPI write inline in `handleAudio` — up to
+            // a device buffer, ~50×/s — would stall the UI loop and freeze
+            // video. The wrapper is also what gives the sink its single-threaded
+            // COM apartment, which is why it opens the device lazily.
+            let audio = ThreadedAudioSink(wrapping: WASAPIAudioSink())
+            defer { audio.stop() }
             do {
                 try await transport.run(
                     config: ViewerConfig(
@@ -281,8 +291,7 @@ final class AppUIState: ObservableObject {
                     ),
                     decoder: FFmpegVideoDecoder(),
                     videoSink: sink,
-                    // W5. A nil sink is the transport's supported "video only".
-                    audioSink: nil,
+                    audioSink: audio,
                     shouldClose: { [weak self] in self?.stopRequested ?? true },
                     onAdmitted: { [weak self] _ in
                         Task { @MainActor in self?.status = "Watching \(peer.hostname)" }

@@ -44,8 +44,9 @@ tailscreen/
 │   │   └── Sources/{TailscreenViewerGtk,tailscreen-viewer-gtk}/
 │   └── windows/                # The runnable native WINDOWS app — swift-cross-ui
 │       │                       #   on WinUI, reusing the portable tiers + the
-│       │                       #   shared tsnet transport (sign-in + peer list;
-│       │                       #   no video yet)
+│       │                       #   shared tsnet transport: sign-in, peer list,
+│       │                       #   libavcodec video into a WinUI WriteableBitmap,
+│       │                       #   WASAPI audio. Viewer only — no sharing yet
 │       └── Sources/tailscreen-windows/
 ├── Packages/                   # Local SwiftPM packages the app depends on
 │   ├── TailscreenKit/          # Portable (Linux-buildable) protocol core —
@@ -69,6 +70,10 @@ tailscreen/
 │   ├── ALSAKit/                # systemLibrary wrapper over libasound (ALSA) —
 │   │   │                       #   the Linux viewer's audio-playback backend
 │   │   │                       #   (Linux-only; wired via Apps/linux); see README
+│   ├── WASAPIKit/              # C shim over WASAPI shared-mode rendering — the
+│   │   │                       #   WINDOWS viewer's audio-playback backend, i.e.
+│   │   │                       #   what ALSAKit is on Linux. Nothing to install
+│   │   │                       #   (WASAPI ships with Windows); see its README
 │   └── TailscaleKit/           # Wraps libtailscale
 │       ├── upstream/libtailscale/  # Git submodule (tailscale/libtailscale)
 │       ├── Sources/  lib/  include/  # Symlinks into upstream
@@ -307,7 +312,16 @@ And a fourth tier: target **`TailscreenViewer`** (`ViewerSession` + the
 `DecodedVideoFrame` value type, plus `ViewerPipeline` — the host-supplied-
 factory assembler that wires a decoder + sinks into a session — and
 `FrameStore`, the lock + value-type-COW frame hand-off any renderer backend
-polls from its UI thread). This is the portable, host-agnostic viewer
+polls from its UI thread, plus the two pieces every GUI host needs between the
+session and its device: `ThreadedAudioSink`, which turns a backend's blocking
+`play` into a non-blocking enqueue drained on one thread — mandatory when the
+transport is serviced by the UI thread, as it is in both the GTK and WinUI
+viewers — and `MonoPCMConverter`, the 48 kHz mono → device-(rate, channels)
+Float32 adaptation with a buffer-boundary-continuous linear resampler.
+`I420Converter` (limited-range BT.709 I420 → BGRA8, for CPU-blit renderers) sits
+alongside them for the same reason: pure arithmetic every backend needs and no
+backend can test, so it lives where Linux CI runs it). This is the portable,
+host-agnostic viewer
 data-plane core: it turns inbound RTP datagrams + a host-supplied clock into
 decoded video frames, decoded audio, and outbound feedback control bytes
 (HELLO / NACK / PLI / receiver reports), reusing `TailscreenProtocol`
