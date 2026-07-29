@@ -20,8 +20,9 @@ same engine and adds latency for nothing.
 
 Unlike ALSAKit (`libasound2-dev`) or FFmpegKit (`libavcodec-dev`), there is
 nothing to install. WASAPI ships with Windows and its headers are already in the
-Swift toolchain's `Windows.sdk`. The package links `ole32` (COM lifetime) and
-`uuid` (the CLSID/IID symbols).
+Swift toolchain's `Windows.sdk`. The package links exactly one library,
+`ole32`, for the COM lifetime calls — the GUIDs need none, for the reason in
+the next section.
 
 ## Shape
 
