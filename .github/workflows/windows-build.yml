@@ -354,11 +354,18 @@ jobs:
       #
       # Built here rather than run: a CI runner has no tailnet to join, and the
       # question is what happens on the user's desktop.
+      # Same link flags as the app minus FFmpeg. The probe imports only the
+      # transport, but the transport depends on TailscreenViewer, which depends
+      # on TailscreenAudio, which links libopus — so "it imports less" does not
+      # mean "it links less", and the first version of this step failed on
+      # `could not open 'opus.lib'`.
       - name: Build the tsnet probe
         shell: bash
         working-directory: Apps/windows
         run: |
           swift build --product tsnet-probe \
+            -Xcc -I"$OPUS_ROOT/include/opus" \
+            -Xlinker "/LIBPATH:$OPUS_ROOT/lib" \
             -Xlinker "/LIBPATH:$TAILSCALE_LIB"
 
       # Stage the exe TOGETHER WITH THE SWIFT RUNTIME.
