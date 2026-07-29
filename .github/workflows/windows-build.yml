@@ -1014,3 +1014,230 @@ jobs:
           swift test --package-path Packages/FFmpegKit \
             -Xcc -I"$FFMPEG_ROOT/include" \
             -Xlinker "/LIBPATH:$FFMPEG_ROOT/lib"
+
+  # W8a — does the toolchain chain work on windows/arm64 AT ALL?
+  #
+  # Shaped like the W0 bridge spike deliberately: the smallest artifact that can
+  # answer a toolchain question, with none of the app in it, so a failure names
+  # the primitive rather than one of forty layers above it. Three things have to
+  # hold at once and none of them is ours — the Swift Windows arm64 toolchain,
+  # Go's `-buildmode=c-archive` for GOARCH=arm64 with cgo, and lld-link joining
+  # them. If any fails, every downstream arm64 decision (dual-arch MSIX, a
+  # second winget architecture) is moot, so it is worth knowing before planning
+  # around it.
+  #
+  # Unlike W0 this needs no new directory and no throwaway code: `tsnet-probe`
+  # already exists and already asserts the thing under suspicion. That was the
+  # lesson of deleting the spike — the value was the answer, and the real build
+  # subsumed the scaffold.
+  #
+  # NOT the app: no WinUI, no FFmpeg (the probe links neither), no staging. It
+  # runs from .build/release with the toolchain's runtime on PATH, because the
+  # question is "does the archive initialise on arm64", not "is the artifact
+  # correctly staged" — that is W8's problem and it has its own assertion.
+  #
+  # continue-on-error while it is exploratory, following the same flip-to-
+  # required convention as the `format` and diff-coverage jobs in build.yml. It
+  # must be flipped the moment it goes green, because an exploratory job left
+  # permissive forever is the "missing run reads as success" failure this
+  # workflow's own history already paid for once.
+  arm64-probe:
+    name: arm64 probe (exploratory)
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.label.name == 'run-windows-build'
+    # GA for public repositories since Aug 2025, 4 vCPU, free — so this is a
+    # NATIVE arm64 build, not a cross-compile. That removes the biggest unknown
+    # from the list above: no sysroot to assemble, no --triple to get wrong.
+    runs-on: windows-11-arm
+    continue-on-error: true
+
+    steps:
+      - name: Allow symlinks in git
+        run: git config --global core.symlinks true
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # Same order as the app job, and for the same reason: patches BEFORE
+      # materializing, or you copy pristine upstream and lose bridge_windows.go.
+      - name: Apply the TailscaleKit patch series
+        shell: bash
+        working-directory: Packages/TailscaleKit
+        run: |
+          for p in Patches/*.patch; do
+            echo "applying $(basename "$p")"
+            patch -p1 -N -F0 -r - --no-backup-if-mismatch < "$p"
+          done
+
+      - name: Materialize symlinks
+        shell: bash
+        run: ./scripts/materialize-symlinks.sh --force
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+          cache: false
+
+      # GOARCH is explicit rather than inherited from the host, so this step
+      # says what it builds even if it ever runs somewhere else.
+      - name: Build libtailscale.a for windows/arm64
+        shell: bash
+        working-directory: Packages/TailscaleKit/upstream/libtailscale
+        env:
+          CGO_ENABLED: '1'
+          GOOS: windows
+          GOARCH: arm64
+        run: |
+          go build -buildmode=c-archive -o libtailscale.a .
+          ls -la libtailscale.a libtailscale.h
+
+      # MSVC wants tailscale.lib (the module map says `link "tailscale"`), the
+      # Unix convention is libtailscale.a. Stage both, exactly as the app job
+      # does — a missing .lib here would read as an unrelated link failure.
+      - name: Stage libtailscale for the linker
+        shell: bash
+        run: |
+          lib=Packages/TailscaleKit/lib
+          mkdir -p "$lib"
+          cp Packages/TailscaleKit/upstream/libtailscale/libtailscale.a "$lib/"
+          cp "$lib/libtailscale.a" "$lib/tailscale.lib"
+          native=$(cygpath -w "$lib" 2>/dev/null || echo "$lib")
+          echo "TAILSCALE_LIB=$native" >> "$GITHUB_ENV"
+          ls -la "$lib"
+
+      - name: Setup Swift 6.1
+        uses: SwiftyLab/setup-swift@latest
+        with:
+          swift-version: '6.1'
+
+      # Prints the target triple, which is the actual finding of this step: if
+      # the action resolved an x86_64 toolchain on an arm64 host, everything
+      # below would still build and would be answering a different question.
+      - name: Swift version and target
+        shell: bash
+        run: |
+          swift --version
+          echo "--- target triple ---"
+          swift -print-target-info | grep -i triple || true
+
+      # arm64-windows is the NATIVE triplet here, not a cross triplet.
+      - name: Install libopus (vcpkg)
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            if "$VCPKG_INSTALLATION_ROOT/vcpkg.exe" install opus:arm64-windows; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then
+              echo "vcpkg install opus failed after 3 attempts" >&2
+              exit 1
+            fi
+            echo "::warning::vcpkg install opus failed (attempt $attempt), retrying"
+            sleep $((attempt * 15))
+          done
+          root="$VCPKG_INSTALLATION_ROOT/installed/arm64-windows"
+          echo "OPUS_ROOT=$root" >> "$GITHUB_ENV"
+          ls -la "$root/include/opus/opus.h"
+
+      # libopus is here for the same non-obvious reason as in the app job: the
+      # probe imports only the transport, but the transport depends on
+      # TailscreenViewer → TailscreenAudio → OpusKit, so importing less does not
+      # mean linking less.
+      - name: Build the tsnet probe for arm64
+        shell: bash
+        working-directory: Apps/windows
+        run: |
+          swift build -c release --product tsnet-probe \
+            -Xcc -I"$OPUS_ROOT/include/opus" \
+            -Xlinker "/LIBPATH:$OPUS_ROOT/lib" \
+            -Xlinker "/LIBPATH:$TAILSCALE_LIB"
+
+      # Confirms the linker produced an ARM64 PE and not an x64 one — the same
+      # machine-type check the app job runs on its staged binaries, and for the
+      # same reason: an architecture mismatch here fails at load with a message
+      # that reads like a missing file.
+      - name: Check the probe is an ARM64 binary
+        shell: pwsh
+        working-directory: Apps/windows
+        run: |
+          $exe = Get-ChildItem -Recurse -Filter tsnet-probe.exe .build |
+            Select-Object -First 1
+          if (-not $exe) { Write-Error 'no tsnet-probe.exe produced'; exit 1 }
+          Write-Host "probe: $($exe.FullName)"
+          $fs = [System.IO.File]::OpenRead($exe.FullName)
+          $br = New-Object System.IO.BinaryReader($fs)
+          $fs.Position = 0x3C
+          $peOff = $br.ReadInt32()
+          $fs.Position = $peOff + 4
+          $machine = $br.ReadUInt16()
+          $br.Close(); $fs.Close()
+          $hex = '0x{0:X4}' -f $machine
+          Write-Host "PE machine type: $hex (0xAA64 = ARM64, 0x8664 = x64)"
+          if ($machine -ne 0xAA64) {
+            Write-Error "probe is not ARM64 ($hex) — the toolchain targeted the wrong architecture, so a green build below would prove nothing"
+            exit 1
+          }
+          "PROBE_EXE=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      # The actual question. Identical assertion to the x64 job's: does
+      # tailscale_new() return, i.e. does patch 026's .CRT$XCU entry start the Go
+      # runtime on arm64 too? That file already names _rt0_arm64_windows_lib
+      # behind `#if defined(_M_ARM64)` with a hard #error for anything else, so
+      # this either confirms that guard or shows it never fired.
+      #
+      # Deliberately does not wait for up(): with no auth key that blocks on a
+      # browser login forever, and it is not the step under suspicion.
+      - name: Check tsnet node creation returns on arm64
+        shell: pwsh
+        run: |
+          $err = Join-Path $env:RUNNER_TEMP 'probe-stderr.txt'
+          $out = Join-Path $env:RUNNER_TEMP 'probe-stdout.txt'
+          $env:GODEBUG = 'inittrace=1'
+          $p = Start-Process -FilePath $env:PROBE_EXE -PassThru `
+            -RedirectStandardOutput $out -RedirectStandardError $err
+          $exited = $p.WaitForExit(90000)
+          if (-not $exited) { $p.Kill(); $p.WaitForExit() }
+
+          $text = ''
+          foreach ($f in @($out, $err)) {
+            if (Test-Path $f) {
+              Write-Host "--- $(Split-Path -Leaf $f) ---"
+              Get-Content $f | ForEach-Object { Write-Host $_ }
+              $text += (Get-Content $f -Raw)
+            }
+          }
+          Write-Host "exit code: $($p.ExitCode)"
+
+          if ($text -notmatch 'creating tsnet node') {
+            Write-Error "probe never reached node creation on arm64 — the failure is before tailscale_new(), so read the output above rather than trusting this step's name"
+            exit 1
+          }
+          if ($text -match 'subscribing to the IPN bus' -or $text -match 'calling up\(\)') {
+            Write-Host 'tailscale_new() returned — the Go c-archive initialises on windows/arm64'
+            exit 0
+          }
+          Write-Error 'tsnet-probe stalled inside tailscale_new() on arm64 — patch 026 starts the runtime on x64 but not here'
+          exit 1
+
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## W8a — windows/arm64 probe"
+            echo ""
+            echo "Native build on a \`windows-11-arm\` runner. What this job answers:"
+            echo ""
+            echo "- Swift 6.1 has a Windows arm64 toolchain and the action resolved it"
+            echo "- Go builds the patched libtailscale c-archive for GOARCH=arm64 with cgo"
+            echo "- lld-link joins them and produces an ARM64 PE"
+            echo "- patch 026's \`_rt0_arm64_windows_lib\` entry starts the Go runtime"
+            echo ""
+            echo "Not answered here: the app itself (WinUI, FFmpeg, staging), and a"
+            echo "live tailnet. FFmpeg does publish \`winarm64-lgpl-shared\`, so the"
+            echo "video path has a supply route when the app follows."
+          } >> "$GITHUB_STEP_SUMMARY"
