@@ -4,17 +4,32 @@
 *.xcodeproj
 *.xcworkspace
 Package.resolved
-# ...EXCEPT the Windows app's. Apps/windows is a leaf executable, not a library,
-# so pinning its dependency graph is correct rather than presumptuous — nobody
-# consumes it and resolves against their own constraints.
+# ...EXCEPT the two apps that have REMOTE dependencies to pin.
 #
-# It is also load-bearing for CI. The Windows build cache is keyed on this
-# file's hash, so while it was ignored, `swift package resolve` had to run
-# BEFORE the cache could be restored just to produce the key — 61s of a warm
-# job spent generating something that could have been checked out. With it
-# committed, restore goes first and resolve becomes a no-op against the
-# restored checkouts.
+# The criterion is not "is it an app" but "does it resolve anything remotely".
+# Apps/macOS, Apps/linux and Packages/TailscreenKit depend only on local
+# `path:` packages, so SwiftPM writes no Package.resolved for them at all —
+# there is nothing to lock and committing one would commit an empty file. The
+# two below pull swift-cross-ui (and Apps/windows also swift-winui) over the
+# network, so their graphs are the ones that can move underneath us.
+#
+# Pinning is right for these specifically because they are LEAF executables:
+# nobody consumes them and re-resolves against their own constraints, which is
+# the situation where a committed lockfile would be presumptuous. For the
+# library packages the default ignore stays correct.
+#
+# Both apps pin swift-cross-ui to the same revision in their manifests, and
+# that agreement is currently held only by two hand-maintained literals.
+# Committing both lockfiles makes a divergence show up in a diff.
+#
+# For Apps/windows it is also load-bearing for CI: the Windows build cache is
+# keyed on this file's hash, so while it was ignored, `swift package resolve`
+# had to run BEFORE the cache could be restored purely to produce the key —
+# 61s of a warm job spent generating something that could have been checked
+# out. With it committed, restore goes first and resolve is a no-op against
+# the restored checkouts.
 !Apps/windows/Package.resolved
+!Apps/linux-gtk/Package.resolved
 
 # macOS
 .DS_Store
