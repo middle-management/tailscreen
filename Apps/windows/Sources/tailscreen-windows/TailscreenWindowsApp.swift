@@ -58,21 +58,19 @@ struct TailscreenWindowsApp: App {
         WindowsShareSession.prepareProcess()
     }
 
+    // The view is deliberately split into many small, individually-typed
+    // pieces rather than one nested expression. A first attempt inlined the
+    // header's two optional arguments as `cond ? closure : nil` ternaries, and
+    // the Windows compiler answered with "failed to produce diagnostic for
+    // expression" against the whole `body` — the type checker giving up
+    // without saying on what. Result builders plus optional closures are the
+    // known way to get there, and the fix is not to find the clever line but
+    // to stop asking one expression to be inferred all at once. The GTK app is
+    // written the same way for the same reason.
     var body: some Scene {
         WindowGroup("Tailscreen") {
             VStack(spacing: 0) {
-                // Every action closure captures the MODEL, never `self`: these
-                // are `@MainActor @Sendable`, and a view struct is the wrong
-                // thing to be sending. `AppUIState` is a main-actor class and
-                // therefore Sendable, so capturing it directly is both correct
-                // and what the GTK app does with its module-level models.
-                ViewerHeader(
-                    subtitle: state.status,
-                    showSpinner: state.showsSpinner,
-                    onRefresh: state.canRefresh ? { [state] in state.refreshPeers() } : nil,
-                    secondaryAction: state.phase == .ready && state.watching == nil
-                        ? HubAction(label: "Sign out") { [state] in state.signOut() }
-                        : nil)
+                header
                 Divider()
                 content
                 Divider()
@@ -85,47 +83,88 @@ struct TailscreenWindowsApp: App {
         .defaultSize(width: 480, height: 700)
     }
 
+    private var header: some View {
+        ViewerHeader(
+            subtitle: state.status,
+            showSpinner: state.showsSpinner,
+            onRefresh: headerRefresh,
+            secondaryAction: headerSignOut)
+    }
+
+    /// Refresh, offered only from the settled signed-in state.
+    ///
+    /// A computed property with an explicit type, not a ternary at the call
+    /// site: the annotation is what lets the closure literal be checked on its
+    /// own instead of against an optional inside a builder.
+    ///
+    /// Every action closure captures the MODEL, never `self` — these are
+    /// `@MainActor @Sendable`, and a view struct is the wrong thing to be
+    /// sending. `AppUIState` is a main-actor class and therefore Sendable.
+    private var headerRefresh: (@MainActor @Sendable () -> Void)? {
+        guard state.canRefresh else { return nil }
+        let model = state
+        return { model.refreshPeers() }
+    }
+
+    private var headerSignOut: HubAction? {
+        guard state.phase == .ready, state.watching == nil else { return nil }
+        let model = state
+        return HubAction(label: "Sign out") { model.signOut() }
+    }
+
     @ViewBuilder private var content: some View {
         if let host = state.watching {
-            // Watching: the video gets the window, with one way out.
-            VStack(spacing: 0) {
-                HStack(spacing: 8) {
-                    Text("Watching \(host)")
-                        .font(.caption)
-                        .foregroundColor(HubStyle.secondaryText)
-                    Spacer()
-                    Button("Stop") { [state] in state.disconnect() }
-                }
-                .padding(.horizontal, 16)
-                .frame(height: Double(HubStyle.toolbarHeight))
-                .frame(maxWidth: .infinity)
-                .background(HubStyle.barFill)
-                WinUIVideoView(
-                    store: state.frameStore,
-                    generation: state.frameGeneration
-                )
-            }
+            watching(host: host)
         } else if state.phase == .idle || state.phase == .failed {
-            SignInPane(
-                message: state.detail.isEmpty
-                    ? "Sign in to your tailnet to share this screen or watch someone else's."
-                    : state.detail,
-                buttonLabel: state.phase == .failed ? "Try again" : "Sign in to Tailscale",
-                onSignIn: { [state] in state.signIn() })
+            signIn
         } else {
-            // Signed in, or on the way there. `PickerContent` covers both: with
-            // `isPicking` false it shows the login card over a spinner, and
-            // with it true, the Screens list.
-            PickerContent(
-                statusLine: state.status,
-                isPicking: state.phase == .ready && !state.isSearching,
-                screens: state.hubScreens,
-                loginURL: state.loginURL,
-                emptyMessage: "No Tailscreen screens found on your tailnet.",
-                onSelect: { [state] id in state.connect(toID: id) },
-                onOpenLogin: { [state] in state.openLoginURL() },
-                shareCard: state.shareCard)
+            hub
         }
+    }
+
+    /// Watching: the video gets the window, with one way out.
+    private func watching(host: String) -> some View {
+        let model = state
+        return VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Text("Watching \(host)")
+                    .font(.caption)
+                    .foregroundColor(HubStyle.secondaryText)
+                Spacer()
+                Button("Stop") { model.disconnect() }
+            }
+            .padding(.horizontal, 16)
+            .frame(height: Double(HubStyle.toolbarHeight))
+            .frame(maxWidth: .infinity)
+            .background(HubStyle.barFill)
+            WinUIVideoView(store: state.frameStore, generation: state.frameGeneration)
+        }
+    }
+
+    private var signIn: some View {
+        let model = state
+        let message =
+            state.detail.isEmpty
+            ? "Sign in to your tailnet to share this screen or watch someone else's."
+            : state.detail
+        let label = state.phase == .failed ? "Try again" : "Sign in to Tailscale"
+        return SignInPane(message: message, buttonLabel: label) { model.signIn() }
+    }
+
+    /// Signed in, or on the way there. `PickerContent` covers both: with
+    /// `isPicking` false it shows the login card over a spinner, and with it
+    /// true, the Screens list.
+    private var hub: some View {
+        let model = state
+        return PickerContent(
+            statusLine: state.status,
+            isPicking: state.phase == .ready && !state.isSearching,
+            screens: state.hubScreens,
+            loginURL: state.loginURL,
+            emptyMessage: "No Tailscreen screens found on your tailnet.",
+            onSelect: { id in model.connect(toID: id) },
+            onOpenLogin: { model.openLoginURL() },
+            shareCard: state.shareCard)
     }
 
     /// Build stamp, and whatever the last thing to go wrong was.
@@ -135,7 +174,7 @@ struct TailscreenWindowsApp: App {
     /// is yesterday's exe" are indistinguishable without it.
     private var footer: some View {
         VStack(spacing: 2) {
-            if !state.detail.isEmpty && state.phase != .idle && state.phase != .failed {
+            if showsDetail {
                 Text(state.detail)
                     .font(.caption)
                     .foregroundColor(HubStyle.secondaryText)
@@ -150,6 +189,13 @@ struct TailscreenWindowsApp: App {
         .padding(.vertical, 8)
         .frame(maxWidth: .infinity)
         .background(HubStyle.barFill)
+    }
+
+    /// The footer carries the last error, except before sign-in — there the
+    /// sign-in card already shows it, and repeating it reads as two failures.
+    private var showsDetail: Bool {
+        guard !state.detail.isEmpty else { return false }
+        return state.phase != .idle && state.phase != .failed
     }
 }
 
