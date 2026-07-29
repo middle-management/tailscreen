@@ -211,9 +211,21 @@ into W1/W1b and the UI landed before the transport.
   portable tier — it was always thread + queue over `AudioSink` — and the
   48 kHz mono → device-format adaptation is `MonoPCMConverter`, also portable
   and tested. *No sound has been heard.*
-- **W6 — sharer.** ← next. DXGI Desktop Duplication behind `CaptureEncoding`, `SendInput`
-  behind `InputInjecting`. Both seams already exist and are exercised by Linux.
-- **W7 — packaging.** MSIX / signed installer; a Release-workflow Windows leg.
+- **W6 — sharer.** ✅ **Windows.Graphics.Capture, not DXGI Desktop
+  Duplication** — this entry used to say DXGI, and that was the wrong call.
+  Duplication only ever yields a whole output; WGC has a picker and a per-window
+  model, which is what actually matches macOS's `SCContentSharingPicker`, and
+  sharing one window is the common case. `TailscreenSharerWGC` behind
+  `CaptureEncoding`, `SendInputKit` behind `InputInjecting`, `WinOverlayKit` for
+  annotations. *No real screen has been captured — CI has no display.*
+- **W7 — the silently-broken parts.** ✅ Per-monitor-v2 DPI awareness (without
+  it both remote control and annotations resolve to nothing, with no error);
+  the overlay's owned message-pump thread; annotations advertised as a
+  capability rather than assumed; the hub chrome extracted to
+  `Packages/TailscreenHubUI` and shared with the GTK app; the Windows app
+  typechecked on Linux CI.
+- **W8 — packaging.** ← next. Installer, signing, distribution channels. See
+  below; nothing here is decided yet.
 
 ### W4 in detail
 
@@ -255,6 +267,108 @@ slow and it is correct, and it makes "pixels on screen" a small debuggable
 increment. `SwapChainPanel` + D3D11 is the performance answer and can replace it
 without touching the decoder, the session, or `FrameStore` — which is the point
 of having the seam.
+
+### W8 in detail — packaging
+
+Today the artifact is a staged directory: the exe, an explicit list of Swift
+runtime DLLs, the FFmpeg LGPL DLLs, libopus, and the Windows App SDK
+bootstrapper at the one literal relative path `swift-winui` looks for. That is
+fine for CI and not something to hand a user.
+
+Four decisions, and they are close to independent — the ordering below is by
+what unblocks what, not by importance.
+
+**1. Stop needing the bootstrapper.** WinUI 3 resolves its framework dependency
+one of two ways: through the package graph (MSIX), or through the bootstrapper
+API (unpackaged), which needs the Windows App SDK runtime installed or carried
+alongside. The staging bugs this cost us — the bootstrapper at the wrong path,
+then an arm64 bootstrapper beside an x64 exe — were both this mechanism. Windows
+App SDK **self-contained mode** bundles the runtime and deletes the lookup
+entirely. It is the smallest change here, it is independent of every other
+decision, and it removes a whole bug class rather than adding an assertion
+against it. Do this first regardless of what else is chosen.
+
+**2. Signing, which is the long pole.** Since June 2023 OV/EV code signing
+private keys must live on FIPS 140-2 hardware, so **a `.pfx` in CI secrets is no
+longer possible for a newly issued certificate** — the pattern the macOS release
+workflow uses does not transfer. The options are a cloud signing service (Azure
+Trusted Signing, DigiCert KeyLocker, SSL.com eSigner), a hardware token on a
+self-hosted runner, or **SignPath**, which has a free tier for OSS projects and
+a GitHub Actions integration. SignPath is the obvious first call for an MIT
+project; Certum's OSS-priced hardware certs are the usual alternative.
+
+*Check Azure Trusted Signing's eligibility rules before planning around it —
+Microsoft has changed who can onboard more than once, and this note may be out
+of date by the time you read it.*
+
+Unsigned is not a neutral choice: SmartScreen warns on download and first run,
+which lands badly for an app that then asks for screen capture and input
+injection. This has the longest lead time of anything in W8, so start it early
+even if the installer format is undecided.
+
+**3. Installer format.**
+
+- **MSIX** — Microsoft's modern format and WinUI 3's native story. Clean
+  install/uninstall, differential updates, Store-eligible, and it makes decision
+  1 moot by resolving the framework dependency through the package graph. Costs:
+  the manifest `Publisher` must match the signing cert's subject exactly, a
+  self-signed cert means users hand-installing it, and the container's
+  virtualized filesystem/registry occasionally surprises apps that write beside
+  their exe (we don't — tsnet state is in AppData).
+- **Inno Setup** — what most OSS desktop projects actually ship. One
+  self-contained exe, handles shortcuts/uninstall/upgrade-in-place without
+  ceremony. Unglamorous, hard to beat at our size.
+- **WiX / MSI** — the enterprise answer: Group Policy deployment, admin
+  transforms, per-machine installs. WiX v4 is a ground-up rewrite from v3, so
+  v3-era material misleads. Heaviest to author; worth it only if someone asks
+  for managed deployment.
+- **Velopack** — successor to Squirrel.Windows. Its distinguishing feature is
+  auto-update with delta packages. Premature until there is a release cadence to
+  update along.
+
+**4. Distribution channels, which are layered on top and not alternatives to
+the above.** All three want the same thing: a stable download URL and a
+checksum. None of them changes the format decision, which is why they come last
+and are individually cheap.
+
+- **winget** — ships with Windows 11 (via App Installer), which is the whole
+  argument. Declarative YAML manifest submitted to `microsoft/winget-pkgs`
+  pointing at an installer plus hashes; accepts MSI, MSIX or plain exe. Highest
+  leverage per unit of effort for a developer-facing tool.
+- **Scoop** — developer-focused, installs per-user with no admin rights, JSON
+  manifests in git "buckets". The cheapest to publish, because **you can host
+  your own bucket** — a repo with a manifest in it — with no review queue at
+  all. Good fit for the audience most likely to install a Tailscale-adjacent
+  tool early.
+- **Chocolatey** — predates winget (2011) and still has the deepest catalogue
+  and the strongest sysadmin/ops following. Packages are NuGet `.nupkg`
+  containers wrapping **PowerShell install scripts**, which is the real
+  difference from winget's declarative manifests: a Chocolatey package can do
+  arbitrary work — dependency chains, custom logic, papering over a badly
+  behaved installer — where a winget manifest essentially points at one. That
+  power is also its cost: it's a script to maintain per release, the community
+  repository has a moderation queue that adds latency to a release, and the
+  `AU` PowerShell module exists specifically because keeping package versions
+  current by hand doesn't scale. At 142 MB the package should download from
+  GitHub Releases with a checksum rather than embed the binary — which is what
+  Chocolatey's own guidelines want anyway.
+
+  **Verdict for us: winget first, Scoop second, Chocolatey if asked for.** Its
+  audience skews toward automated fleet provisioning, which is not where a
+  peer-to-peer screen-sharing GUI finds its first users. Revisit if anyone asks
+  to deploy Tailscreen across an estate.
+
+**LGPL constraint on all of the above.** The FFmpeg DLLs are LGPL shared builds,
+deliberately — the GPL builds carry libx264 and would infect this MIT codebase.
+Whatever the installer does, they must stay separately replaceable DLLs and the
+package must carry the LGPL text and the relink offer. Any format here handles
+that; the thing to avoid is a single-file bundler helpfully merging them in.
+
+**Also unresolved, and cheap to forget:** no native arm64 build, so today's x64
+artifact runs under emulation on ARM devices (which is how the W2/W3 manual
+verification was done). Whether W8 ships a second architecture or an arm64
+build lands separately is an open question, but the installer and the winget
+manifest both grow a dimension when it does.
 
 ## Risks
 
