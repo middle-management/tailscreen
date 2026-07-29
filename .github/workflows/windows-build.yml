@@ -50,6 +50,7 @@ on:
       - 'Packages/TailscreenVideoFFmpeg/**'
       - 'Packages/WASAPIKit/**'
       - 'Packages/WGCCaptureKit/**'
+      - 'Packages/TailscreenSharerWGC/**'
       - 'Apps/windows/**'
       - 'scripts/materialize-symlinks.sh'
       - '.github/workflows/windows-build.yml'
@@ -277,6 +278,21 @@ jobs:
       # in seconds rather than eleven minutes into the app build.
       - name: WGCCaptureKit
         run: swift build --package-path Packages/WGCCaptureKit --product wgc-probe
+
+      # The sharer's capture backend: WGC frames → BGRAToI420 → libavcodec,
+      # behind the portable `CaptureEncoding` seam.
+      #
+      # It has no WinUI in it, which is deliberate and is why it is a package
+      # rather than a target in Apps/windows — Linux CI typechecks the same
+      # sources in the linux-ffmpeg job, so what this step adds is specifically
+      # the Windows-only half: that WGCCaptureKit's real (non-stub) API is the
+      # one the encoder calls.
+      - name: TailscreenSharerWGC
+        shell: bash
+        run: |
+          swift build --package-path Packages/TailscreenSharerWGC \
+            -Xcc -I"$FFMPEG_ROOT/include" \
+            -Xlinker "/LIBPATH:$FFMPEG_ROOT/lib"
 
       # The app is built BEFORE the remaining tiers on purpose: it depends only
       # on TailscreenProtocol, so a failure in the heavier audio-bearing tiers

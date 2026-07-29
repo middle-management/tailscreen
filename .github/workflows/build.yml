@@ -342,6 +342,25 @@ jobs:
             xvfb-run -a --server-args="-screen 0 1280x720x24" \
             swift test --package-path Apps/linux
 
+      # The WINDOWS sharer's capture backend, typechecked HERE.
+      #
+      # It cannot run on Linux — WGCCaptureKit stubs every entry point to
+      # `unsupportedPlatform` off Windows — but it compiles, because it is
+      # deliberately a package with no WinUI in it. That is worth a step: the
+      # alternative is discovering a type error in the capture loop eleven
+      # minutes into a Windows job, when everything it is made of (the
+      # `CaptureEncoding` seam, FFmpegKit, BGRAToI420, ParameterSetExtraction)
+      # is checkable here in seconds. The Windows job still builds it, for the
+      # half this cannot see: that the real WGC API matches the calls.
+      #
+      # This job rather than linux-ffmpeg because the graph reaches
+      # TailscreenSharer → TailscaleKit, which needs the submodule and the
+      # patch series that only the jobs with `submodules: recursive` have.
+      - name: Typecheck the Windows sharer backend on Linux
+        run: |
+          PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" \
+            swift build --package-path Packages/TailscreenSharerWGC
+
   # Screen-capture-portability gate: X11CaptureKit (a C shim over libxcb +
   # MIT-SHM, plus the BGRA→I420 conversion) must build and pass its tests on
   # Linux. The colour-conversion half runs anywhere; the capture half runs

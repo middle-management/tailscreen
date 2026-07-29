@@ -68,7 +68,15 @@ public enum WGC {
     /// Outlives the session capturing it, so a share can be restarted against
     /// the same target without asking the user again. That is what the macOS
     /// capture-helper respawn does with its cached `PickerSelection`.
-    public final class CaptureItem {
+    ///
+    /// `@unchecked Sendable` because the handle is written only by `init` and
+    /// `deinit` and the underlying WinRT object is agile — and because it has
+    /// to cross: the sharer's capture FACTORY closes over the picked item so a
+    /// restart re-targets the same window without asking the user again, which
+    /// is the invariant the macOS helper gets from re-resolving its cached
+    /// `PickerSelection`. An item has no ID to re-resolve, so it is the item
+    /// itself that must travel.
+    public final class CaptureItem: @unchecked Sendable {
         #if os(Windows)
         fileprivate var handle: OpaquePointer?
         #endif

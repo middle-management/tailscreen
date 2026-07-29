@@ -74,6 +74,13 @@ tailscreen/
 │   │   │                       #   WINDOWS viewer's audio-playback backend, i.e.
 │   │   │                       #   what ALSAKit is on Linux. Nothing to install
 │   │   │                       #   (WASAPI ships with Windows); see its README
+│   ├── TailscreenSharerWGC/    # The WINDOWS sharer's CaptureEncoding backend:
+│   │                           #   WGC frames → BGRAToI420 → libavcodec. Its own
+│   │                           #   package specifically so it carries NO WinUI —
+│   │                           #   which is what lets Linux CI typecheck it
+│   │                           #   (linux-viewer job) instead of only a Windows
+│   │                           #   runner. Counterpart of Apps/linux's
+│   │                           #   TailscreenSharerLinux
 │   ├── WGCCaptureKit/          # C++/raw-WinRT shim over Windows.Graphics.Capture
 │   │   │                       #   — the WINDOWS sharer's screen capture. The
 │   │   │                       #   picker + per-window model that matches macOS's
