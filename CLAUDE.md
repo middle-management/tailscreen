@@ -70,10 +70,14 @@ tailscreen/
 │   ├── ALSAKit/                # systemLibrary wrapper over libasound (ALSA) —
 │   │   │                       #   the Linux viewer's audio-playback backend
 │   │   │                       #   (Linux-only; wired via Apps/linux); see README
-│   ├── WASAPIKit/              # C shim over WASAPI shared-mode rendering — the
+│   ├── WASAPIKit/              # C++ shim over WASAPI shared-mode rendering — the
 │   │   │                       #   WINDOWS viewer's audio-playback backend, i.e.
 │   │   │                       #   what ALSAKit is on Linux. Nothing to install
 │   │   │                       #   (WASAPI ships with Windows); see its README
+│   ├── DXGICaptureKit/         # C++ shim over DXGI Desktop Duplication — the
+│   │   │                       #   WINDOWS sharer's screen capture, i.e. what
+│   │   │                       #   X11CaptureKit is on Linux. Hands back BGRA
+│   │   │                       #   only; BGRAToI420 does the conversion
 │   └── TailscaleKit/           # Wraps libtailscale
 │       ├── upstream/libtailscale/  # Git submodule (tailscale/libtailscale)
 │       ├── Sources/  lib/  include/  # Symlinks into upstream

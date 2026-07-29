@@ -49,6 +49,7 @@ on:
       - 'Packages/FFmpegKit/**'
       - 'Packages/TailscreenVideoFFmpeg/**'
       - 'Packages/WASAPIKit/**'
+      - 'Packages/DXGICaptureKit/**'
       - 'Apps/windows/**'
       - 'scripts/materialize-symlinks.sh'
       - '.github/workflows/windows-build.yml'
@@ -270,6 +271,12 @@ jobs:
       # build.
       - name: WASAPIKit
         run: swift build --package-path Packages/WASAPIKit --product wasapi-probe
+
+      # Same reasoning as WASAPIKit: a few hundred lines of COM that nothing off
+      # Windows can compile, built early and via its PROBE so the linker runs
+      # here rather than in the app.
+      - name: DXGICaptureKit
+        run: swift build --package-path Packages/DXGICaptureKit --product dxgi-probe
 
       # The app is built BEFORE the remaining tiers on purpose: it depends only
       # on TailscreenProtocol, so a failure in the heavier audio-bearing tiers
