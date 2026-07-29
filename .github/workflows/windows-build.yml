@@ -360,32 +360,32 @@ jobs:
       # against a different dependency revision, which is exactly the failure
       # mode that makes build caches untrustworthy.
       #
-      # EVERY manifest in the app's dependency graph must be listed below. Adding
-      # a package to Apps/windows/Package.swift without adding its manifest here
-      # leaves a hole: bumping that package's own dependencies would not change
-      # the key, so a stale .build would be restored against new revisions.
-      - name: Cache the app's build directory
-        uses: actions/cache@v4
+      # RESOLVE FIRST, so the key can be `Package.resolved` — which is precisely
+      # the set of remote revisions and nothing else. The key used to hash every
+      # manifest in the graph, ours included, and that was wrong in the
+      # expensive direction: swift-cross-ui's objects do not depend on
+      # TailscreenHubUI's manifest, but adding that package to the graph changed
+      # the key and threw away fourteen minutes of third-party compile. A run
+      # went from 14 minutes to 42 for a change that touched no remote
+      # dependency at all.
+      #
+      # `Package.resolved` also closes the hole the old comment worried about
+      # without anyone having to maintain a list: a local package bumping its
+      # OWN remote dependency moves a pin, and a moved pin is a new key. Path
+      # dependencies never appear in it, which is the whole point — editing our
+      # own packages is now free.
+      - name: Resolve the app's dependencies
+        working-directory: Apps/windows
+        run: swift package resolve
+
+      - name: Restore the app's build directory
+        id: app-build-cache
+        uses: actions/cache/restore@v4
         with:
           path: Apps/windows/.build
           key: >-
             windows-app-build-${{ matrix.swift }}-${{ runner.os }}-${{
-            hashFiles('Apps/windows/Package.swift',
-                      'Packages/TailscreenKit/Package.swift',
-                      'Packages/TailscaleKit/Package.swift',
-                      'Packages/OpusKit/Package.swift',
-                      'Packages/TailscreenVideoFFmpeg/Package.swift',
-                      'Packages/FFmpegKit/Package.swift',
-                      'Packages/WASAPIKit/Package.swift',
-                      'Packages/WGCCaptureKit/Package.swift',
-                      'Packages/TailscreenSharerWGC/Package.swift',
-                      'Packages/SendInputKit/Package.swift',
-                      'Packages/WinOverlayKit/Package.swift',
-                      'Packages/TailscreenHubUI/Package.swift') }}
-
-      - name: Resolve the app's dependencies
-        working-directory: Apps/windows
-        run: swift package resolve
+            hashFiles('Apps/windows/Package.resolved') }}
 
       # Built FROM the package directory, not with --package-path from the repo
       # root, because the manifest's `-L ../../Packages/TailscaleKit/lib` is
@@ -473,6 +473,39 @@ jobs:
             -Xcc -I"$OPUS_ROOT/include/opus" \
             -Xlinker "/LIBPATH:$OPUS_ROOT/lib" \
             -Xlinker "/LIBPATH:$TAILSCALE_LIB"
+
+      # `if: always()` is the entire reason this is a separate save step rather
+      # than `actions/cache`, whose post step is `post-if: success()` and so
+      # saves NOTHING when a job fails.
+      #
+      # That default is exactly backwards for a build cache. A run that compiles
+      # 1,450 units of swift-cross-ui, swift-winui and the WindowsAppSDK
+      # bindings and then fails on one line of our own Swift has produced every
+      # object worth keeping — and threw all of them away, so the next run,
+      # carrying the one-line fix, paid the twenty-eight minutes over again.
+      # That happened twice in one afternoon.
+      #
+      # Saving a build directory from a failed compile is safe: SwiftPM tracks
+      # inputs per target, so a partial .build is simply fewer finished objects,
+      # and the target that failed recompiles.
+      #
+      # The condition is `!cancelled()`, not `always()`, and it is guarded on
+      # the restore step having run — both because **cache keys are immutable**.
+      # A run cancelled at 20 % (this workflow has cancel-in-progress, so that
+      # happens on every rapid push) would otherwise claim the key with a
+      # fifth of a build directory that no later run could replace, and an
+      # early failure would claim it with a `.build` that does not exist yet.
+      # One poisoned key is worse than one cold build.
+      - name: Save the app's build directory
+        if: >-
+          ${{ !cancelled() && steps.app-build-cache.outcome == 'success'
+          && steps.app-build-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: Apps/windows/.build
+          key: >-
+            windows-app-build-${{ matrix.swift }}-${{ runner.os }}-${{
+            hashFiles('Apps/windows/Package.resolved') }}
 
       # Stage the exe TOGETHER WITH THE SWIFT RUNTIME.
       #
