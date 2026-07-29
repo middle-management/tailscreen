@@ -41,6 +41,7 @@ let package = Package(
         .package(path: "../TailscreenKit"),
         .package(path: "../SendInputKit"),
         .package(path: "../TailscaleKit"),
+        .package(path: "../WinOverlayKit"),
     ],
     targets: [
         .target(
@@ -54,6 +55,8 @@ let package = Package(
                 // For `TailscaleNode`: the share runs on the app's already-signed-in
                 // node rather than bringing up a second one. See beginSharing.
                 .product(name: "TailscaleKit", package: "TailscaleKit"),
+                // The annotation overlay: viewers' strokes on the sharer's screen.
+                .product(name: "WinOverlayKit", package: "WinOverlayKit"),
             ],
             path: "Sources/TailscreenSharerWGC"
         )

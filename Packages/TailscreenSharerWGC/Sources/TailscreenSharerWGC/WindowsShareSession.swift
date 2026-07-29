@@ -4,6 +4,7 @@ import TailscaleKit
 import TailscreenProtocol
 import TailscreenSharer
 import WGCCaptureKit
+import WinOverlayKit
 
 /// Runs a share on Windows: the system capture picker, then the portable
 /// `TailscaleScreenShareServer` driven by `WGCCaptureEncoder`.
@@ -67,6 +68,7 @@ public final class WindowsShareSession: @unchecked Sendable {
 
     private let lock = NSLock()
     private var server: TailscaleScreenShareServer?
+    private var overlay: AnnotationOverlay?
     private var status = Status()
 
     /// Whether this machine can capture at all — checked before any UI is
@@ -132,9 +134,20 @@ public final class WindowsShareSession: @unchecked Sendable {
         // viewers hide Request Control rather than sending requests that would
         // land in the wrong place.
         var injector: WindowsInputInjector?
+        var annotationOverlay: AnnotationOverlay?
         if case .success(let resolved) = region {
             injector = WindowsInputInjector(regionProvider: { resolved })
+            // Annotations need the same rect as remote control, and for the
+            // same reason: a stroke's coordinates are normalized against what
+            // the viewer can SEE. So they gate together — a target whose
+            // geometry is unknown gets neither, rather than getting strokes
+            // drawn somewhere plausible and wrong.
+            annotationOverlay = AnnotationOverlay(
+                region: AnnotationOverlay.Region(
+                    x: resolved.x, y: resolved.y,
+                    width: resolved.width, height: resolved.height))
         }
+        lock.withLock { overlay = annotationOverlay }
 
         // The timings hook is on the concrete backend rather than the
         // `CaptureEncoding` seam, so it is attached inside the factory — which
@@ -149,12 +162,19 @@ public final class WindowsShareSession: @unchecked Sendable {
                 return encoder
             },
             inputInjector: injector,
-            // No overlay window on Windows, so viewer annotations would be
-            // drawn confidently at a sharer that renders nothing. Withholding
-            // the capability disables the viewer's drawing tools instead —
-            // which is why the Mac's strokes were never appearing here.
-            rendersAnnotations: false
+            // Advertised only when an overlay actually exists. The capability
+            // means "your strokes will appear on my screen", so a share with
+            // no resolvable geometry — and therefore no overlay — must not
+            // claim it, exactly as it must not claim `.remoteControl`.
+            rendersAnnotations: annotationOverlay != nil
         )
+        newServer.onAnnotationReceived = { [weak self] op in
+            // Fires on the control-channel thread. The overlay is
+            // thread-safe and redraws only when the op changed something,
+            // which matters because a pen drag sends one every few
+            // milliseconds.
+            self?.lock.withLock { self?.overlay }?.apply(op)
+        }
         let name = item.displayName
 
         newServer.onViewersChanged = { [weak self] viewers in
@@ -250,6 +270,12 @@ public final class WindowsShareSession: @unchecked Sendable {
             server = nil
             return value
         }
+        let liveOverlay = lock.withLock { () -> AnnotationOverlay? in
+            let value = overlay
+            overlay = nil
+            return value
+        }
+        liveOverlay?.clear()
         guard let running else { return }
         await running.stop()
         update {

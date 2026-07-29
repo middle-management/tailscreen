@@ -366,6 +366,13 @@ jobs:
       - name: Test the Windows input injector on Linux
         run: swift test --package-path Packages/SendInputKit
 
+      # The annotation overlay's Swift half. Its shim stubs out here, so what
+      # this checks is the store/rasterize/update plumbing — and the halves
+      # with any decisions in them (`AnnotationStore`, `AnnotationRasterizer`)
+      # are tested outright in the linux-protocol job.
+      - name: Typecheck the Windows annotation overlay on Linux
+        run: swift build --package-path Packages/WinOverlayKit
+
       - name: Typecheck the Windows sharer backend on Linux
         run: |
           PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" \
