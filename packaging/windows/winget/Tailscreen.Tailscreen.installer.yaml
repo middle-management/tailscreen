@@ -1,0 +1,36 @@
+# winget installer manifest TEMPLATE for microsoft/winget-pkgs — see README.md
+# in this directory for the tokens and the submission prerequisites.
+#
+# InstallerType msix means winget validates the package's SIGNATURE at
+# submission and install time: the MSIX must be signed with a certificate
+# chaining to a root trusted on the user's machine. The self-signed MSIX that
+# release-windows.yml currently produces will be REJECTED — SignPath (or an
+# equivalent trusted code-signing cert) must replace the self-sign first.
+#
+# The MSIX Identity's Name ("Tailscreen.Tailscreen", packaging/windows/
+# AppxManifest.xml) is deliberately the same string as the PackageIdentifier
+# below, and the Identity's Publisher must be the production certificate's
+# Subject — winget cross-checks the manifest against the package it downloads.
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+PackageIdentifier: Tailscreen.Tailscreen
+PackageVersion: "@VERSION@"
+Platform:
+  - Windows.Desktop
+# The MSIX package format floor (packaging/windows/AppxManifest.xml's
+# TargetDeviceFamily); the app's real floor is higher (WinUI 3).
+MinimumOSVersion: 10.0.17763.0
+InstallerType: msix
+# PackageFamilyName = Identity Name + a hash derived from the signing
+# certificate's Subject, so it is only knowable once the production (SignPath)
+# certificate exists. `wingetcreate` computes it from the uploaded MSIX at
+# submission time; fill it in then:
+# PackageFamilyName: Tailscreen.Tailscreen_xxxxxxxxxxxxx
+Installers:
+  - Architecture: x64
+    InstallerUrl: "@URL_X64@"
+    InstallerSha256: "@SHA256_X64@"
+  - Architecture: arm64
+    InstallerUrl: "@URL_ARM64@"
+    InstallerSha256: "@SHA256_ARM64@"
+ManifestType: installer
+ManifestVersion: 1.6.0

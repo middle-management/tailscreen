@@ -5,13 +5,11 @@
 
 .DESCRIPTION
   This is the question W8b exists to answer, and it is not the same question as
-  "does the package build". A packaged WinUI 3 app resolves its Windows App SDK
-  dependency differently from an unpackaged one: unpackaged calls the
-  bootstrapper to find an installed runtime (the mechanism behind two of the
-  staging bugs already fixed), while packaged is supposed to get it from the
-  package graph. swift-winui initialises through the bootstrapper either way,
-  and whether that is correct, harmless or fatal inside a package is not
-  something reading the docs settles. So: install it and launch it.
+  "does the package build". The package is self-contained: the Windows App SDK
+  runtime is staged app-local, swift-winui is patched to skip the bootstrapper
+  when the runtime is local, and the reg-free WinRT manifest is embedded — so
+  what remains to verify is that the package installs, activates, and gets its
+  DLLs resolved by the loader. So: install it and launch it.
 
   A failure here is a finding, not a defeat — the useful output is WHICH of the
   three stages fails (install / activate / stay alive) and with what code.
@@ -165,9 +163,9 @@ public static class Activator2 {
   # 4. Does it stay up?
   #
   # Same standard as the unpackaged "Check the app loads" step: surviving the
-  # loader is the bar. A packaged app that dies immediately is usually a missing
-  # DLL inside the package or a bootstrapper that cannot find its runtime, and
-  # both show up as an early exit rather than an install error.
+  # loader is the bar. A packaged app that dies immediately at loader level
+  # means a DLL is missing from the self-contained payload — an early exit
+  # rather than an install error.
   # -------------------------------------------------------------------------
   Start-Sleep -Seconds 12
   $proc = Get-Process -Id $pid2 -ErrorAction SilentlyContinue
@@ -207,18 +205,20 @@ public static class Activator2 {
       # `ud2` (0xC000001D) and __fastfail (0xC0000409) are both how a Swift
       # fatalError / failed precondition / nil force-unwrap reaches the OS. Either
       # one means the LOADER WAS SATISFIED — every DLL in the package resolved —
-      # and then our own code decided to die. For a WinUI app that is most often
-      # swift-winui's SwiftApplication.main turning a failed Windows App SDK init
-      # into fatalError.
+      # and then our own code decided to die.
       #
-      # Which is exactly the packaged framework-resolution question this job
-      # exists to ask... and exactly what a headless runner CANNOT answer,
-      # because a WinUI app with no interactive desktop session may legitimately
-      # trap during backend init and the runner cannot tell that apart from a
-      # real defect. The app job's unpackaged `Check the app loads` step reached
-      # this conclusion first and accepts both codes with a warning; this job
-      # failing on the same codes was an unjustified asymmetry between the
-      # packaged and unpackaged checks.
+      # The package is SELF-CONTAINED now: the Windows App SDK runtime is staged
+      # app-local (stage-winappsdk.sh), swift-winui is patched to skip the
+      # bootstrapper when the runtime is local (patch-swift-winui.sh), and the
+      # reg-free WinRT manifest is embedded (embed-regfree-manifest.ps1). With
+      # that in place, both architectures' packaged launches resolve every DLL
+      # and then trap identically on headless runners — which is exactly what a
+      # WinUI app may legitimately do during backend init with no interactive
+      # desktop session, and the runner cannot tell that apart from a real
+      # defect. The app job's unpackaged `Check the app loads` step reached this
+      # conclusion first and accepts both codes with a warning; this job failing
+      # on the same codes was an unjustified asymmetry between the packaged and
+      # unpackaged checks.
       #
       # So: loader failures above stay fatal, because those ARE packaging bugs
       # and the runner can decide them. A trap is reported and tolerated, and the
@@ -226,7 +226,7 @@ public static class Activator2 {
       if ($hex -eq '0xC000001D' -or $hex -eq '0xC0000409') {
         Write-Host "  => Swift trap ($hex): every DLL in the package resolved, then the app aborted."
         Write-Host ''
-        Write-Host '::warning::packaged app trapped at startup — NOT decidable here. Two candidates a headless runner cannot separate: (1) a packaged process cannot reach Windows App SDK (no <PackageDependency>, and swift-winui uses the unpackaged bootstrapper), or (2) WinUI backend init legitimately trapping with no interactive desktop session. The unpackaged check tolerates the same codes for the same reason. Needs a human on a real desktop.'
+        Write-Host '::warning::packaged app trapped at startup — the known headless outcome, NOT decidable here. The package is self-contained (Windows App SDK payload staged app-local, swift-winui patched to skip the bootstrapper, reg-free WinRT manifest embedded), and both arches resolve all DLLs then trap identically on headless runners. The one open question is whether WinUI init succeeds on an interactive desktop — verified by a human installing this artifact.'
         $script:verdict = 'trap'
       }
     } else {
@@ -234,14 +234,16 @@ public static class Activator2 {
     }
 
     Write-Host ''
-    Write-Host 'Leading hypothesis, and what this job exists to distinguish:'
-    Write-Host '  A packaged WinUI 3 app is meant to resolve Windows App SDK'
-    Write-Host '  through the PACKAGE GRAPH, but this manifest declares no'
-    Write-Host '  <PackageDependency> on the WindowsAppRuntime framework — and'
-    Write-Host '  swift-winui initialises through the UNPACKAGED bootstrapper'
-    Write-Host '  regardless. A packaged process therefore has neither route to'
-    Write-Host '  the runtime. Fix is Windows App SDK self-contained mode, or a'
-    Write-Host '  declared framework dependency. See docs/viewer-windows-plan.md W8.'
+    Write-Host 'Context for reading the exit code above:'
+    Write-Host '  The package is SELF-CONTAINED — the Windows App SDK runtime is'
+    Write-Host '  staged app-local, swift-winui is patched to skip the bootstrapper'
+    Write-Host '  when the runtime is local, and the reg-free WinRT manifest is'
+    Write-Host '  embedded. On headless runners both architectures resolve every'
+    Write-Host '  DLL and then trap identically (0xC000001D / 0xC0000409), so a'
+    Write-Host '  loader-level exit here is a real packaging regression, while a'
+    Write-Host '  trap is the known headless outcome. The remaining open question'
+    Write-Host '  is only whether WinUI init succeeds on an interactive desktop —'
+    Write-Host '  verified by a human installing the artifact.'
     Write-Host ''
 
     # The RIGHT logs. Filtering the Application log by 'tailscreen' found nothing

@@ -1,9 +1,9 @@
 name: Release (Linux)
 
 # Builds the Linux desktop app (Apps/linux-gtk — the swift-cross-ui/GTK4 app
-# that both views and shares) and uploads an AppImage to the GitHub Release
-# that triggered the run. The mirror of release.yml, which does the same for
-# the macOS .app.
+# that both views and shares) and uploads an x86_64 AppImage plus an arm64
+# tarball to the GitHub Release that triggered the run. The mirror of
+# release.yml, which does the same for the macOS .app.
 #
 # Only the GTK app is packaged. The other Linux executables
 # (tailscreen-sharer-linux, tailscreen-viewer-probe, TailscreenTestSharer) are
@@ -175,3 +175,178 @@ jobs:
             echo ""
             echo "The SHA-256 is what the tap's cask needs in its \`on_linux\` block."
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # The arm64 leg — a plain tarball, not an AppImage: the linuxdeploy +
+  # appimagetool flow above is x86_64-only today (their release download URLs
+  # are literally *-x86_64.AppImage; neither project publishes arm64 binaries),
+  # so an arm64 AppImage stays a noted follow-up until they do.
+  #
+  # This job mirrors build.yml's `linux-app-arm64` gate: same runner
+  # (GitHub's free ubuntu-24.04-arm), same multi-arch swift:6.1-noble
+  # container, same apt set, same release build of product `tailscreen`, and
+  # the same Xvfb GL YUV-readback self-test — so the tarball this uploads is
+  # gated on actually rendering, not just compiling.
+  #
+  # Container caveat: `gh` is NOT installed in swift:6.1-noble, so this job
+  # cannot `gh release upload` itself. Rather than bolting the GitHub CLI apt
+  # repo (keyring + sources.list + update) onto the container, the tarball is
+  # handed to a follow-on non-container job via an artifact and uploaded from
+  # ubuntu-latest, where gh is preinstalled — fewer moving parts, and the
+  # artifact doubles as the PR-build deliverable exactly like the appimage
+  # job's split.
+  tarball-arm64:
+    name: Build arm64 tarball
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.label.name == 'build-linux-package'
+    runs-on: ubuntu-24.04-arm
+    container: swift:6.1-noble
+
+    steps:
+      - name: Resolve version
+        id: version
+        run: |
+          case "${{ github.event_name }}" in
+            workflow_dispatch) tag="${{ github.event.inputs.tag }}" ;;
+            release)           tag="${{ github.event.release.tag_name }}" ;;
+            *)                 tag="pr-${{ github.event.pull_request.number }}" ;;
+          esac
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.ref || steps.version.outputs.tag }}
+          submodules: recursive
+
+      - name: Install GTK4 + GL + headless display + A/V + Go
+        # Same set as build.yml's linux-app-arm64 job — see linux-gtk-viewer's
+        # comment there for why each package is needed. All multi-arch in noble.
+        run: |
+          apt-get update && apt-get install -y --no-install-recommends \
+            libgtk-4-dev gir1.2-gtk-4.0 libgirepository1.0-dev libepoxy-dev \
+            libgl1-mesa-dri xvfb libopus-dev pkg-config \
+            golang-go make gcc libc6-dev \
+            libavcodec-dev libavutil-dev libasound2-dev
+
+      - name: Build libtailscale (patched) for linux/arm64
+        # Go targets the host arch — arm64 here. GOFLAGS: dubious-ownership
+        # VCS stamping inside the container (see build.yml's linux-tailscalekit).
+        env:
+          GOFLAGS: -buildvcs=false
+        run: make -C Packages/TailscaleKit
+
+      - name: Build the app (release)
+        # PKG_CONFIG_PATH resolves libtailscale.pc for the tsnet transport;
+        # building the executable product prunes SwiftPM to the Linux subgraph.
+        run: PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" swift build -c release --package-path Apps/linux-gtk --product tailscreen
+
+      - name: Headless render self-test (Xvfb + software GL)
+        # Identical to build.yml's gate, pointed at the release binary this
+        # job ships — the proof this leg renders on arm64, not compile-only.
+        run: |
+          if timeout 90 xvfb-run -a -s "-screen 0 800x600x24" \
+            env GDK_BACKEND=x11 LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe \
+            Apps/linux-gtk/.build/release/tailscreen --render-self-test \
+            > /tmp/gtk-selftest.log 2>&1; then
+            status=0
+          else
+            status=$?
+          fi
+          cat /tmp/gtk-selftest.log
+          test "$status" -eq 0
+          grep -q 'CGTKVIDEO_SELFTEST result=PASS' /tmp/gtk-selftest.log
+
+      - name: Stage tarball
+        id: pkg
+        # Launch notes generated here, same approach (and same text) as
+        # build.yml's linux-app-arm64 job — the artifact's inputs stay the
+        # binary + this workflow file.
+        run: |
+          set -eu
+          FILE="Tailscreen-${{ steps.version.outputs.version }}-linux-arm64.tar.gz"
+          STAGE=dist/tailscreen-linux-arm64
+          mkdir -p "$STAGE"
+          cp Apps/linux-gtk/.build/release/tailscreen "$STAGE/tailscreen"
+          cat > "$STAGE/README.txt" <<'EOF'
+          Tailscreen for Linux (arm64)
+          ============================
+
+          Run:  ./tailscreen            (picker mode)
+                ./tailscreen <host>     (dial a sharer directly)
+
+          Runtime dependencies (Ubuntu 24.04 arm64 package names):
+            libgtk-4-1 libepoxy0 libavcodec60 libavutil58 libasound2t64
+            libopus0 mesa/OpenGL drivers
+
+          Sign in happens in your browser on first run (tsnet interactive
+          login), or export TAILSCREEN_TS_AUTHKEY. See the repository's
+          Apps/linux-gtk/packaging/README.md for packaged install channels.
+          EOF
+          tar -C dist -czf "$FILE" tailscreen-linux-arm64
+          sha256sum "$FILE" > checksums-linux-arm64.txt
+          echo "file=$FILE" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(awk '{print $1}' checksums-linux-arm64.txt)" >> "$GITHUB_OUTPUT"
+          cat checksums-linux-arm64.txt
+
+      # Uploaded on EVERY trigger, unlike the appimage job's PR-only artifact:
+      # for a PR build it is the deliverable, for a release build it is the
+      # hand-off to `upload-arm64` below (gh isn't in this container).
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.pkg.outputs.file }}
+          path: |
+            ${{ steps.pkg.outputs.file }}
+            checksums-linux-arm64.txt
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Summary
+        run: |
+          {
+            echo "## Linux package (arm64)"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| File | \`${{ steps.pkg.outputs.file }}\` |"
+            echo "| SHA-256 | \`${{ steps.pkg.outputs.sha256 }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # The non-container half of tarball-arm64: swift:6.1-noble has no `gh`, so
+  # the release upload runs here on ubuntu-latest (gh preinstalled) from the
+  # artifact the container job handed over. PR builds skip this by design —
+  # there is no release to upload to.
+  upload-arm64:
+    name: Upload arm64 tarball to the release
+    needs: tarball-arm64
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Resolve version
+        id: version
+        # Same derivation as tarball-arm64 — only the release/dispatch cases
+        # can reach this job, and both yield the same tag both times.
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ github.event.inputs.tag }}"
+          else
+            tag="${{ github.event.release.tag_name }}"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Download the tarball
+        uses: actions/download-artifact@v4
+        with:
+          name: Tailscreen-${{ steps.version.outputs.version }}-linux-arm64.tar.gz
+
+      - name: Upload to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ steps.version.outputs.tag }}" \
+            "Tailscreen-${{ steps.version.outputs.version }}-linux-arm64.tar.gz" \
+            checksums-linux-arm64.txt --clobber
