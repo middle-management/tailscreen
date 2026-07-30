@@ -925,8 +925,9 @@ jobs:
     # PUSH-TRIGGERED as of the dual-arch decision — the toolchain chain proved
     # out (llvm-mingw + 6.3), so this leg now builds the FULL app, stages it
     # with the same scripts as x64, and uploads tailscreen-windows-arm64.
-    # continue-on-error stays until this full pipeline has been green once;
-    # flip it then, per the convention every other job here followed.
+    # A HARD GATE since the full pipeline went green on f7bab59 — build,
+    # staging, arch check, upload, and the probe run (tailscale_new() returns
+    # on arm64) all passed, per the flip-on-green convention.
     name: app (arm64)
     if: >-
       github.event_name != 'pull_request' ||
@@ -935,7 +936,6 @@ jobs:
     # NATIVE arm64 build, not a cross-compile. That removes the biggest unknown
     # from the list above: no sysroot to assemble, no --triple to get wrong.
     runs-on: windows-11-arm
-    continue-on-error: true
 
     steps:
       - name: Allow symlinks in git
@@ -1460,8 +1460,9 @@ jobs:
     # A MATRIX over both architectures since the dual-arch decision. The x64 leg
     # is the hard gate it was before; the arm64 leg runs NATIVELY on a
     # windows-11-arm runner — which is what makes its install/activate test
-    # meaningful rather than a cross-arch guess — and is continue-on-error until
-    # it has been green once. Same scripts both legs: make-msix.ps1 reads the
+    # meaningful rather than a cross-arch guess. Both legs are HARD GATES
+    # since the arm64 leg went green on f7bab59 (native pack/sign/install/
+    # activate on windows-11-arm). Same scripts both legs: make-msix.ps1 reads the
     # package architecture from the exe's PE header, and its SDK-tool lookup
     # already prefers the host architecture's tools.
     name: MSIX package (${{ matrix.arch }})
@@ -1480,7 +1481,6 @@ jobs:
             runner: windows-11-arm
             artifact: tailscreen-windows-arm64
     runs-on: ${{ matrix.runner }}
-    continue-on-error: ${{ matrix.arch == 'arm64' }}
 
     steps:
       # Only the packaging inputs are needed, not the submodule or the patch

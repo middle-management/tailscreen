@@ -601,7 +601,32 @@ job now puts the toolchain's own arm64 runtime on PATH, verifying the DLL's PE
 machine type first, because a toolchain can carry more than one architecture's
 runtime and an x64 `swiftCore.dll` fails with the same unhelpful code.
 
-`tailscale_new()` returning on arm64 is the one remaining unknown. The first
+**W8a and the dual-arch pipeline are COMPLETE.** On run eight (`f7bab59`) the
+whole chain went green and both arm64 legs were flipped to hard gates: the full
+WinUI app compiles for windows/arm64 on Swift 6.3, staging passes, the arch
+check passes, `tailscreen-windows-arm64` uploads, the probe runs from `dist/`
+and **`tailscale_new()` returns on arm64** — patch 026's
+`_rt0_arm64_windows_lib` entry starts the Go runtime for real — and the arm64
+MSIX packs, signs, installs and activates **natively on a `windows-11-arm`
+runner**. Every push now produces and gates x64 + arm64 apps and MSIX packages.
+
+The eight-run failure frontier, each fix permanent:
+
+| Run | Failed at |
+|---|---|
+| 1 | cgo used an x86 assembler on ARM64 asm |
+| 2 | WinSDK `_ARM64_BARRIER_ISH` collision (Swift 6.1) |
+| 3 | `-mthreads`: cgo needs MinGW, not MSVC clang → llvm-mingw |
+| 4 | probe ran bare: no Swift runtime beside it |
+| 5 | still `0xC0000135`: shared `opus.dll` → run from `dist/` |
+| 6 | Swift 6.3 type-checker timeout in SendInputKit |
+| 7 | x64 vcruntime staged from the dual-arch NuGet payload |
+| 8 | x64 vcruntime via the PATH harvest → PE-gated purge; **green** |
+
+The durable staging lesson: NuGet payloads AND Swift-runtime PATH dirs both
+carry x64 vcruntimes, so `stage-app.sh` now purges any top-level DLL whose PE
+machine type differs from the exe's, with the swiftCore/bootstrapper assertions
+running after the purge so over-deletion fails loudly. The first
 runtime-on-PATH attempt still hit `0xC0000135`: the Swift runtime was necessary
 but not sufficient, because the probe also links vcpkg's **shared** libopus,
 whose `opus.dll` is on nobody's PATH. The x64 job never met this because it runs
