@@ -18,9 +18,11 @@ name: Windows build
 #           clean on 6.1, so this reads as a 6.2 defect on a third-party
 #           dependency rather than anything in this repo.
 #
-# 6.2 is therefore not in the matrix: a permanently red leg for a compiler bug
-# we don't control teaches nothing and hides real regressions. Worth retrying
-# when 6.3 lands or swift-cross-ui moves.
+# 6.2 is therefore not in the matrix. 6.3 WAS retried when it landed — the
+# 6.2 frontend crash does not reproduce — and after a green exploratory leg
+# plus a real-desktop launch of that artifact, the matrix collapsed to 6.3
+# (which is also what the arm64 job needs: 6.1's WinSDK module is broken
+# there). One toolchain, both architectures.
 #
 # Steps deliberately do NOT use continue-on-error: a failing step should BE the
 # error, with its compiler output attached, rather than something a later
@@ -107,16 +109,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        swift: ['6.1', '6.3']
-    # The 6.3 leg is EXPLORATORY (6.1 stays the gate and feeds the msix x64
-    # matrix by artifact name). Rationale for retrying now rather than "when
-    # 6.3 lands": it has landed, and the arm64 job compiles the SAME
-    # swift-cross-ui sources on 6.3.3 that crashed 6.2's frontend here — so the
-    # documented blocker is plausibly gone. Its cache key includes the version,
-    # so the cold 6.3 build cannot disturb the warm 6.1 cache. If green: flip
-    # this to a hard gate, collapse to swift: ['6.3'], drop the arm64 version
-    # skew, and the two app jobs converge toward the deferred matrix cleanup.
-    continue-on-error: ${{ matrix.swift == '6.3' }}
+        swift: ['6.3']
+    # Collapsed to 6.3 after the exploratory leg went green AND the user
+    # launched that exact artifact on a real desktop (viewing a live Mac
+    # share). 6.1 kept a broken WinSDK module on arm64; 6.3 builds both
+    # architectures, so the version skew is gone. The lockfile guard's
+    # non-6.1 branch discards SwiftPM 6.3's format rewrite, keeping cache
+    # keys hashed on the committed file; committing a 6.3-format lockfile
+    # (and re-tightening that guard) is a welcome follow-up.
 
     steps:
       # Windows checkouts don't create symlinks unless this is on and the
@@ -1499,7 +1499,7 @@ jobs:
         include:
           - arch: x64
             runner: windows-latest
-            artifact: tailscreen-windows-swift6.1
+            artifact: tailscreen-windows-swift6.3
           - arch: arm64
             runner: windows-11-arm
             artifact: tailscreen-windows-arm64
