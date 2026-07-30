@@ -51,12 +51,22 @@ struct TailscreenWindowsApp: App {
     /// work out which monitor it is capturing and silently loses both remote
     /// control and annotations.
     ///
-    /// `App.main()` default-constructs the app and then runs it, so this is the
-    /// earliest hook available short of an application manifest — which would
-    /// also work, and takes precedence if someone adds one later.
-    init() {
-        WindowsShareSession.prepareProcess()
-    }
+    /// `App.main()` default-constructs the app and then runs it — which is
+    /// exactly why this init must NOT call `WindowsShareSession.prepareProcess()`
+    /// any more. It runs BEFORE swift-winui's `WindowsAppRuntimeInitializer`,
+    /// whose init does `try CHECKED(SetProcessDpiAwareness(PROCESS_PER_MONITOR_
+    /// DPI_AWARE))` — and that call returns E_ACCESSDENIED (0x80070005) when
+    /// awareness was already set, which `CHECKED` turns into a fatalError at
+    /// SwiftApplication.swift:64. Setting awareness here therefore killed the
+    /// app at startup, deterministically, on every real desktop ("Failed to
+    /// initialize WindowsAppRuntimeInitializer: 0x80070005 — Access is denied").
+    ///
+    /// swift-winui's own per-monitor (v1) awareness is sufficient for the
+    /// capture-region math this call existed for: monitor enumeration returns
+    /// physical pixels under v1 too. `prepareProcess()` remains available for
+    /// non-WinUI hosts (tests, headless probes), where nothing else sets
+    /// awareness.
+    init() {}
 
     // The view is deliberately split into many small, individually-typed
     // pieces rather than one nested expression. A first attempt inlined the

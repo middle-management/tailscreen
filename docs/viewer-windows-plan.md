@@ -610,6 +610,21 @@ and **`tailscale_new()` returns on arm64** — patch 026's
 MSIX packs, signs, installs and activates **natively on a `windows-11-arm`
 runner**. Every push now produces and gates x64 + arm64 apps and MSIX packages.
 
+**Real-desktop verdict on the startup trap (post-green).** The `0xC000001D`
+seen by CI and on desktops was diagnosed on real hardware with the console
+attached: `Failed to initialize WindowsAppRuntimeInitializer: 0x80070005 —
+Access is denied`, then `WinUI/SwiftApplication.swift:64: Fatal error`. Reading
+swift-winui's source names the exact call: its initializer does
+`try CHECKED(SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE))`, and that
+API returns E_ACCESSDENIED when awareness was **already set** — which our app
+did first, in `init()`, per the W7b fix. Deterministic, same fault offset every
+time; not elevation, not a missing runtime (installing WindowsAppRuntime 1.6.9
+changed nothing). Fix: the WinUI app no longer sets DPI awareness itself —
+swift-winui's per-monitor v1 is sufficient for `WindowsCaptureRegion` (physical
+pixels either way); `prepareProcess()` remains for non-WinUI hosts. The W7b
+pitfall entry in CLAUDE.md is rewritten accordingly — its cure became the
+poison when swift-winui added its own CHECKED call.
+
 The eight-run failure frontier, each fix permanent:
 
 | Run | Failed at |
