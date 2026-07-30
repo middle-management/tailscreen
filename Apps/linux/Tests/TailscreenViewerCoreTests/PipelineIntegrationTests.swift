@@ -97,8 +97,14 @@ final class PipelineIntegrationTests: XCTestCase {
             onControlToSend: { controlBytes.append($0) }
         )
 
-        // One NAL of junk that is not a valid H.264 access unit.
-        let junk = Data([0x41, 0x9A, 0x00, 0xFF, 0x13, 0x37, 0x42, 0x24])
+        // One NAL of junk that is not a valid H.264 access unit — but typed as
+        // an IDR (first byte 0x65, nal_type 5), because ViewerSession now gates
+        // pre-keyframe AUs: a non-IDR first AU is dropped before the decoder
+        // ever sees it (deliberately — that is normal stream-join noise, not an
+        // error), so only an IDR-flagged AU can exercise the decode-throw → PLI
+        // path this test exists for. A corrupt KEYFRAME is precisely the case
+        // where an immediate PLI is the right answer.
+        let junk = Data([0x65, 0x9A, 0x00, 0xFF, 0x13, 0x37, 0x42, 0x24])
         let packetizer = H264Packetizer()
         let packets = packetizer.packetize(nals: [junk], timestamp: 0, ssrc: 0, startSequence: 0)
         pipeline.tick(nowNs: 1_000_000)
