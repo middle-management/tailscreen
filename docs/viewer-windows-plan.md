@@ -601,7 +601,32 @@ job now puts the toolchain's own arm64 runtime on PATH, verifying the DLL's PE
 machine type first, because a toolchain can carry more than one architecture's
 runtime and an x64 `swiftCore.dll` fails with the same unhelpful code.
 
-`tailscale_new()` returning on arm64 is the one remaining unknown.
+`tailscale_new()` returning on arm64 is the one remaining unknown. The first
+runtime-on-PATH attempt still hit `0xC0000135`: the Swift runtime was necessary
+but not sufficient, because the probe also links vcpkg's **shared** libopus,
+whose `opus.dll` is on nobody's PATH. The x64 job never met this because it runs
+its probe from the staged `dist/` — so the arm64 job now does exactly that,
+which is also the more honest test: the probe sees precisely the DLL set a
+user's unzipped artifact would.
+
+#### Dual-arch on push
+
+With the toolchain chain proven, the arm64 leg is now a **full app pipeline on
+every push**: c-archive → app + probe build (cached per-arch on the committed
+lockfile) → staged with the same `stage-app.sh` / `check-staged-arch.ps1` the
+x64 job uses (extracted from the inline steps for exactly this reason — the
+staging logic was already arch-neutral, taking the runtime from PATH and the
+reference architecture from the exe's own PE header) → uploaded as
+`tailscreen-windows-arm64`. The `msix` job is a **matrix over both
+architectures**, each leg packing its own artifact and install/activate-testing
+it **natively** — the arm64 MSIX is verified on a `windows-11-arm` runner, not
+cross-arch guessed. The x64 leg keeps its hard-gate status; the arm64 legs are
+`continue-on-error` until each has been green once, per the same
+flip-on-green convention every other job here followed. Note the version skew
+this bakes in: x64 ships Swift 6.1, arm64 ships 6.3, because 6.1's WinSDK module
+is broken on arm64 and 6.2/6.3 are pinned out on x64 for the swift-cross-ui
+frontend crash. One toolchain for both is a follow-up for when either blocker
+clears.
 
 On 6.1.3 the second side of the bind is:
 

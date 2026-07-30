@@ -614,253 +614,13 @@ jobs:
       # dot-directory. An explicit path can't be ambiguous.
       - name: Stage the app with its runtime
         shell: bash
-        run: |
-          set -euo pipefail
+        run: ./scripts/windows/stage-app.sh
 
-          # Scoped to the release directory, not just the name. The build
-          # cache restores the whole .build tree, so a debug exe from before
-          # the switch to release config can still be sitting there — and an
-          # unscoped `head -1` would happily ship it, which is the one binary
-          # this change exists to stop shipping.
-          exe=$(find Apps/windows/.build -path '*/release/*' -name 'tailscreen-windows.exe' | head -1)
-          if [ -z "$exe" ]; then
-            echo "no tailscreen-windows.exe produced" >&2
-            exit 1
-          fi
-          ls -la "$exe"
-          mkdir -p dist
-          cp "$exe" dist/tailscreen-windows.exe
-
-          # The diagnostic probe rides along: it shares every staged runtime DLL
-          # with the app, so shipping it costs one file and saves the user a
-          # second download when the app misbehaves.
-          #
-          # Located the same way as the app, and for the same reason the first
-          # version of this was wrong: THIS STEP HAS NO `working-directory`, so
-          # it runs at the repo root while the two build steps above run in
-          # Apps/windows. A relative `.build/…` path therefore missed, and
-          # because the miss was written as a skippable note the artifact
-          # shipped without the probe and the job still went green — the same
-          # shape of hole as a missing path filter. It is a hard failure now:
-          # the build step above is unconditional, so if the exe is absent here
-          # something is wrong with this step, not with the build.
-          probe=$(find Apps/windows/.build -path '*/release/*' -name 'tsnet-probe.exe' | head -1)
-          if [ -z "$probe" ]; then
-            echo "no tsnet-probe.exe produced" >&2
-            exit 1
-          fi
-          cp "$probe" dist/tsnet-probe.exe
-
-          # The toolchain ships the runtime and the COMPILER in one bin
-          # directory, so copying every DLL beside swiftCore.dll produced a
-          # 1.1 GB artifact: liblldb (160 MB), sourcekitdInProc (150 MB),
-          # _InternalSwiftScan (150 MB), libclang (84 MB) and all of SwiftPM's
-          # own libraries, none of which an app loads. Hence an explicit list of
-          # what a Swift program actually links against.
-          #
-          # A name list can go stale when a toolchain adds or renames a runtime
-          # library — which is why the load check below is not optional. It is
-          # what makes an allow-list safe: anything missing from this list shows
-          # up as STATUS_DLL_NOT_FOUND on the runner, not on a tester's desktop.
-          #
-          # No bare `swift*.dll` glob: the compiler DLLs are `SwiftSyntax.dll`,
-          # `SwiftParser.dll` and friends, and one case-insensitive match would
-          # quietly put the 1.1 GB back.
-          runtime_dlls=(
-            swiftCore.dll swiftCRT.dll swiftWinSDK.dll swiftDispatch.dll
-            swiftSynchronization.dll swiftObservation.dll swiftRegexBuilder.dll
-            swiftSwiftOnoneSupport.dll swiftDistributed.dll
-            'swift_*.dll'
-            'Foundation*.dll' '_Foundation*.dll'
-            dispatch.dll BlocksRuntime.dll
-            'vcruntime140*.dll' 'msvcp140*.dll' concrt140.dll vccorlib140.dll
-          )
-
-          found=0
-          while IFS= read -r d; do
-            [ -d "$d" ] || continue
-            if compgen -G "$d/swiftCore.dll" > /dev/null || compgen -G "$d/Foundation*.dll" > /dev/null; then
-              echo "runtime dir: $d"
-              for pattern in "${runtime_dlls[@]}"; do
-                compgen -G "$d/$pattern" > /dev/null || continue
-                cp -n "$d"/$pattern dist/ 2>/dev/null || true
-              done
-              found=$((found + 1))
-            fi
-          done < <(echo "$PATH" | tr ':' '\n')
-
-          if [ "$found" -eq 0 ]; then
-            echo "no Swift runtime directory found on PATH" >&2
-            exit 1
-          fi
-
-          # SwiftPM RESOURCE BUNDLES — directories, and their structure is
-          # load-bearing.
-          #
-          # swift-winui looks for the Windows App SDK bootstrapper at an exact
-          # relative path beside the executable:
-          #
-          #   swift-winui_CWinAppSDK.resources\Microsoft.WindowsAppRuntime.Bootstrap.dll
-          #
-          # and when it isn't there it throws, which SwiftApplication.main turns
-          # into fatalError("fatal"). A previous version of this step swept
-          # `find .build -name '*.dll'` into a FLAT dist/, which put that DLL
-          # (if it copied it at all) somewhere the lookup does not check — so
-          # the app died at startup on every machine including the runner,
-          # having loaded every library it needed. Copy the directories.
-          exedir=$(dirname "$exe")
-          shopt -s nullglob
-          for bundle in "$exedir"/*.resources "$exedir"/*.bundle; do
-            [ -d "$bundle" ] || continue
-            echo "resource bundle: $(basename "$bundle")"
-            cp -R "$bundle" dist/
-          done
-          shopt -u nullglob
-
-          # If the Windows App Runtime is absent from the test machine, the
-          # bootstrapper runs this installer when it sits beside the exe, rather
-          # than popping a "go download it" dialog. Worth shipping: the whole
-          # point of the artifact is that a tester needs nothing preinstalled.
-          installer=$(find Apps/windows/.build -name 'WindowsAppRuntimeInstaller.exe' | head -1)
-          if [ -n "$installer" ]; then
-            echo "runtime installer: $installer"
-            cp "$installer" dist/
-          else
-            echo "note: no WindowsAppRuntimeInstaller.exe in the build tree;" \
-                 "a machine without the Windows App Runtime will be prompted to install it"
-          fi
-
-          # Any remaining loose DLLs in the build tree, after the bundles so a
-          # flat copy can never stand in for a structured one.
-          while IFS= read -r dll; do
-            cp -n "$dll" dist/ 2>/dev/null || true
-          done < <(find Apps/windows/.build -maxdepth 4 -name '*.dll')
-
-          # libopus. vcpkg's x64-windows triplet builds SHARED libraries, so the
-          # app links an import library and needs opus.dll at run time. It lives
-          # in vcpkg's bin/, which is not on the PATH scan above (that only
-          # walks directories holding Swift/Foundation DLLs). libtailscale needs
-          # no equivalent — it is a static archive.
-          opus_root="${OPUS_ROOT:-}"
-          if [ -n "$opus_root" ] && [ -d "$opus_root/bin" ]; then
-            cp -n "$opus_root"/bin/*.dll dist/ 2>/dev/null || true
-            ls "$opus_root/bin/"
-          else
-            echo "note: no vcpkg opus bin/ — a shared libopus would be missing" >&2
-          fi
-
-          # libavcodec and friends, for the same reason: BtbN's is a SHARED
-          # build, so the exe carries import libraries and needs the DLLs. The
-          # architecture gate below checks these too, which is worth having —
-          # this is a third-party archive, not something we compiled.
-          ffmpeg_root=$(cygpath -u "${FFMPEG_ROOT:-}" 2>/dev/null || echo "${FFMPEG_ROOT:-}")
-          if [ -n "$ffmpeg_root" ] && [ -d "$ffmpeg_root/bin" ]; then
-            cp -n "$ffmpeg_root"/bin/*.dll dist/ 2>/dev/null || true
-          else
-            echo "note: no FFmpeg bin/ — video decode would fail at load" >&2
-          fi
-
-          if [ ! -f dist/swiftCore.dll ]; then
-            echo "swiftCore.dll was not staged — the artifact would not run" >&2
-            exit 1
-          fi
-
-          # Assert the exact path the app will look up, not an approximation of
-          # it. This is the invariant whose violation produced a green build and
-          # an app that quit instantly.
-          if [ ! -f dist/swift-winui_CWinAppSDK.resources/Microsoft.WindowsAppRuntime.Bootstrap.dll ] \
-             && [ ! -f dist/swift-winui_CWinAppSDK.bundle/Microsoft.WindowsAppRuntime.Bootstrap.dll ]; then
-            echo "FAILED: the Windows App SDK bootstrapper is not at the path swift-winui looks up." >&2
-            echo "The app would print 'Expected to find bootstrapper dll at one of ...' and abort." >&2
-            find Apps/windows/.build -name 'Microsoft.WindowsAppRuntime.Bootstrap.dll' >&2 || true
-            exit 1
-          fi
-
-          ls -la dist/
-          du -sh dist/
-
-      # Every staged binary must be the app's architecture.
-      #
-      # swift-winui carries BOTH arm64 and x86_64 copies of
-      # Microsoft.WindowsAppRuntime.Bootstrap.dll in its source tree, and its
-      # manifest picks between them with #if arch(...). The old flat sweep
-      # ignored that: `find` yields arm64/ before x86_64/, and `cp -n` took the
-      # first and then declined to overwrite it — so the artifact shipped an
-      # ARM64 bootstrapper beside an x64 exe. An x64 process cannot load an
-      # ARM64 DLL, so it failed with "Failed to load bootstrapper dll", which
-      # reads like a missing-file problem and is not one. Reported from a
-      # Windows-on-ARM VM, where PowerShell (itself ARM64) loaded the same DLL
-      # happily — a detail that makes the mismatch easy to misread.
-      #
-      # Checking the whole directory rather than just that one DLL: the defect
-      # was "a wrong-architecture file got staged", and nothing makes the
-      # bootstrapper the only file that can happen to.
       - name: Check the staged binaries match the app's architecture
         shell: pwsh
         working-directory: dist
-        run: |
-          function Get-PEMachine($path) {
-            $fs = [IO.File]::OpenRead($path)
-            try {
-              $br = [IO.BinaryReader]::new($fs)
-              $fs.Position = 0x3C
-              $pe = $br.ReadInt32()
-              $fs.Position = $pe + 4
-              return '{0:X4}' -f $br.ReadUInt16()
-            } finally { $fs.Dispose() }
-          }
-          $want = Get-PEMachine 'tailscreen-windows.exe'
-          Write-Host "app architecture: $want (8664 = x64, AA64 = ARM64)"
-          $bad = @()
-          Get-ChildItem -Recurse -File |
-            Where-Object { $_.Extension -in '.dll', '.exe' } |
-            ForEach-Object {
-              $m = Get-PEMachine $_.FullName
-              if ($m -ne $want) {
-                $bad += "  $($_.FullName.Substring($PWD.Path.Length + 1)) is $m"
-              }
-            }
-          if ($bad.Count -gt 0) {
-            Write-Error ("architecture mismatch — these cannot load into a $want process:`n" + ($bad -join "`n"))
-            exit 1
-          }
-          Write-Host "all staged binaries are $want"
+        run: ../scripts/windows/check-staged-arch.ps1
 
-      # Catch a missing DLL HERE rather than on a tester's desktop.
-      #
-      # A WinUI app can't run to completion on a headless runner, so this does
-      # not assert success — it asserts the absence of two specific NTSTATUS
-      # exit codes that mean the loader gave up before any of our code ran:
-      #
-      #   0xC0000135 STATUS_DLL_NOT_FOUND       — a DLL is missing
-      #   0xC0000139 STATUS_ENTRYPOINT_NOT_FOUND — a DLL is the wrong version
-      #
-      # Every other outcome (including a headless-display failure, and including
-      # a timeout, which means it got far enough to sit in an event loop) is
-      # accepted. Narrow on purpose: this is a packaging check, not a UI test.
-      #
-      # 0xC000001D is called out separately because it is what a Swift trap
-      # looks like on Windows — fatalError, a failed precondition and a nil
-      # force-unwrap all emit `ud2`, which the OS reports as an illegal
-      # instruction. That means the loader was satisfied and OUR code ran and
-      # then rejected something, which is a completely different bug class from
-      # a missing DLL and worth naming rather than lumping into "other". It does
-      # not fail the build: a WinUI app with no interactive desktop session may
-      # legitimately trap during backend init, and the runner cannot tell that
-      # apart from a real defect. A human with a real desktop can.
-      #
-      # ExitCode is an Int32 and these statuses are negative when read as one.
-      # `[uint32]` on a negative Int32 THROWS in PowerShell rather than
-      # reinterpreting the bits, and `-band 0xFFFFFFFF` does NOT rescue it:
-      # PowerShell types that literal as Int32 -1, so the mask is a no-op and
-      # the value stays negative. Both mistakes were made here in turn.
-      #
-      # BitConverter reinterprets the four bytes with no dependency on how the
-      # language types integer literals, which is the property that matters.
-      #
-      # The classification is wrapped because a bug in THIS step must not fail
-      # the build: it can only legitimately fail for the two loader statuses,
-      # and if the code can't be read then it can't be claimed to be either.
       - name: Check the app loads
         shell: pwsh
         working-directory: dist
@@ -1162,11 +922,15 @@ jobs:
   # reasoned attempt does not make it a gate. Run it with `workflow_dispatch` or
   # the `run-arm64-probe` label. If it goes green, promote it then.
   arm64-probe:
-    name: arm64 probe (on demand)
+    # PUSH-TRIGGERED as of the dual-arch decision — the toolchain chain proved
+    # out (llvm-mingw + 6.3), so this leg now builds the FULL app, stages it
+    # with the same scripts as x64, and uploads tailscreen-windows-arm64.
+    # continue-on-error stays until this full pipeline has been green once;
+    # flip it then, per the convention every other job here followed.
+    name: app (arm64)
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request' &&
-       github.event.label.name == 'run-arm64-probe')
+      github.event_name != 'pull_request' ||
+      github.event.label.name == 'run-windows-build'
     # GA for public repositories since Aug 2025, 4 vCPU, free — so this is a
     # NATIVE arm64 build, not a cross-compile. That removes the biggest unknown
     # from the list above: no sysroot to assemble, no --triple to get wrong.
@@ -1419,6 +1183,20 @@ jobs:
           echo "TAILSCALE_LIB=$native" >> "$GITHUB_ENV"
           ls -la "$lib"
 
+      # The winarm64 twin of the x64 job's FFmpeg step — same BtbN release, same
+      # LGPL-shared licensing reasoning, different target directory name inside
+      # the zip. Needed by the APP build below; the probe links no FFmpeg.
+      - name: Download FFmpeg (LGPL shared, 7.1, winarm64)
+        shell: bash
+        run: |
+          url=https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-winarm64-lgpl-shared-7.1.zip
+          curl -fsSL -o "$RUNNER_TEMP/ffmpeg.zip" "$url"
+          unzip -q "$RUNNER_TEMP/ffmpeg.zip" -d "$RUNNER_TEMP/ffmpeg"
+          root=$(find "$RUNNER_TEMP/ffmpeg" -maxdepth 1 -mindepth 1 -type d | head -1)
+          test -f "$root/include/libavcodec/avcodec.h"
+          native=$(cygpath -w "$root" 2>/dev/null || echo "$root")
+          echo "FFMPEG_ROOT=$native" >> "$GITHUB_ENV"
+
       # arm64-windows is the NATIVE triplet here, not a cross triplet.
       - name: Install libopus (vcpkg)
         shell: bash
@@ -1437,6 +1215,30 @@ jobs:
           root="$VCPKG_INSTALLATION_ROOT/installed/arm64-windows"
           echo "OPUS_ROOT=$root" >> "$GITHUB_ENV"
           ls -la "$root/include/opus/opus.h"
+
+      # Same restore-first pattern as the x64 job, same committed-lockfile key
+      # input — but a DISTINCT key: the x64 key carries no architecture (it
+      # predates there being a second one), so 'arm64' here is what keeps this
+      # job from restoring x64 objects into an arm64 build.
+      - name: Restore the app's build directory
+        id: arm64-build-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: Apps/windows/.build
+          key: >-
+            windows-app-build-arm64-6.3-${{
+            hashFiles('Apps/windows/Package.resolved') }}
+
+      - name: Build the app for arm64
+        shell: bash
+        working-directory: Apps/windows
+        run: |
+          swift build -c release --product tailscreen-windows \
+            -Xcc -I"$FFMPEG_ROOT/include" \
+            -Xcc -I"$OPUS_ROOT/include/opus" \
+            -Xlinker "/LIBPATH:$FFMPEG_ROOT/lib" \
+            -Xlinker "/LIBPATH:$OPUS_ROOT/lib" \
+            -Xlinker "/LIBPATH:$TAILSCALE_LIB"
 
       # libopus is here for the same non-obvious reason as in the app job: the
       # probe imports only the transport, but the transport depends on
@@ -1478,25 +1280,24 @@ jobs:
           }
           "PROBE_EXE=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-      # The actual question. Identical assertion to the x64 job's: does
-      # tailscale_new() return, i.e. does patch 026's .CRT$XCU entry start the Go
-      # runtime on arm64 too? That file already names _rt0_arm64_windows_lib
-      # behind `#if defined(_M_ARM64)` with a hard #error for anything else, so
-      # this either confirms that guard or shows it never fired.
-      #
-      # Deliberately does not wait for up(): with no auth key that blocks on a
-      # browser login forever, and it is not the step under suspicion.
-      # The probe links the Swift runtime DYNAMICALLY, like every Swift binary
-      # on Windows, and this job stages nothing — the x64 job runs its probe out
-      # of dist/ with the runtime DLLs copied beside it, which is why it never
-      # hit this. Running the bare exe from .build/ died with 0xC0000135
-      # (STATUS_DLL_NOT_FOUND) and empty output: the loader failed before main.
-      # Same lesson the packaging section learned first, relearned here.
-      #
-      # PATH rather than a copy, because this step wants the toolchain's own
-      # arm64 runtime and nothing else. The DLL's PE machine type is verified —
-      # a toolchain can carry more than one architecture's runtime, and an x64
-      # swiftCore.dll beside an arm64 exe fails with the same unhelpful code.
+      # Same if-logic as the x64 save: bank the objects even on failure, never
+      # under a key another run already owns.
+      - name: Save the app's build directory
+        if: >-
+          ${{ !cancelled() && steps.arm64-build-cache.outcome == 'success'
+          && steps.arm64-build-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: Apps/windows/.build
+          key: >-
+            windows-app-build-arm64-6.3-${{
+            hashFiles('Apps/windows/Package.resolved') }}
+
+      # stage-app.sh harvests the Swift runtime DLLs from PATH, so the arm64
+      # toolchain's runtime must be there first. The DLL's PE machine type is
+      # verified — a toolchain can carry more than one architecture's runtime,
+      # and an x64 swiftCore.dll beside an arm64 exe fails at load with the same
+      # unhelpful 0xC0000135 this job has already decoded twice.
       - name: Put the Swift arm64 runtime on PATH
         shell: pwsh
         run: |
@@ -1511,8 +1312,7 @@ jobs:
             $fs.Position = $peOff + 4
             $machine = $br.ReadUInt16()
             $br.Close(); $fs.Close()
-            $hex = '0x{0:X4}' -f $machine
-            Write-Host "$($dll.FullName): $hex"
+            Write-Host "$($dll.FullName): $('0x{0:X4}' -f $machine)"
             if ($machine -eq 0xAA64) {
               $dir = Split-Path -Parent $dll.FullName
               Write-Host "using ARM64 runtime: $dir"
@@ -1523,13 +1323,45 @@ jobs:
           Write-Error 'found swiftCore.dll but none is ARM64'
           exit 1
 
+      # The SAME scripts as x64 — that is the point of having extracted them.
+      # stage-app.sh takes the runtime from PATH, which the runtime step above
+      # already pointed at the arm64 toolchain; check-staged-arch.ps1 reads its
+      # reference architecture from the exe itself.
+      - name: Stage the app with its runtime
+        shell: bash
+        run: ./scripts/windows/stage-app.sh
+
+      - name: Check the staged binaries match the app's architecture
+        shell: pwsh
+        working-directory: dist
+        run: ../scripts/windows/check-staged-arch.ps1
+
+      - name: Upload the app
+        uses: actions/upload-artifact@v4
+        with:
+          name: tailscreen-windows-arm64
+          path: dist/
+          retention-days: 14
+          if-no-files-found: error
+
+      # FROM dist/, exactly like the x64 job — and that placement IS the fix for
+      # the second 0xC0000135. Putting the Swift runtime on PATH was necessary
+      # but not sufficient: the probe also links vcpkg's SHARED libopus, whose
+      # opus.dll lives in installed/arm64-windows/bin and is on nobody's PATH.
+      # The x64 job never met this because it always ran its probe from the
+      # staged directory, where stage-app.sh had copied opus.dll. Running from
+      # dist/ means the probe sees precisely the DLL set a user's unzipped
+      # artifact would — which is also the more honest test.
+      #
+      # After the upload, like x64: a diagnostic must never cost the artifact.
       - name: Check tsnet node creation returns on arm64
         shell: pwsh
+        working-directory: dist
         run: |
           $err = Join-Path $env:RUNNER_TEMP 'probe-stderr.txt'
           $out = Join-Path $env:RUNNER_TEMP 'probe-stdout.txt'
           $env:GODEBUG = 'inittrace=1'
-          $p = Start-Process -FilePath $env:PROBE_EXE -PassThru `
+          $p = Start-Process -FilePath .\tsnet-probe.exe -PassThru `
             -RedirectStandardOutput $out -RedirectStandardError $err
           $exited = $p.WaitForExit(90000)
           if (-not $exited) { $p.Kill(); $p.WaitForExit() }
@@ -1563,6 +1395,7 @@ jobs:
           }
           Write-Error 'tsnet-probe stalled inside tailscale_new() on arm64 — patch 026 starts the runtime on x64 but not here'
           exit 1
+
 
       - name: Summary
         if: always()
@@ -1624,12 +1457,30 @@ jobs:
   # launch. The launch verdict needs a human on a real desktop and is tracked in
   # the plan doc's not-proven list, not here.
   msix:
-    name: MSIX package
-    needs: app
+    # A MATRIX over both architectures since the dual-arch decision. The x64 leg
+    # is the hard gate it was before; the arm64 leg runs NATIVELY on a
+    # windows-11-arm runner — which is what makes its install/activate test
+    # meaningful rather than a cross-arch guess — and is continue-on-error until
+    # it has been green once. Same scripts both legs: make-msix.ps1 reads the
+    # package architecture from the exe's PE header, and its SDK-tool lookup
+    # already prefers the host architecture's tools.
+    name: MSIX package (${{ matrix.arch }})
+    needs: [app, arm64-probe]
     if: >-
       github.event_name != 'pull_request' ||
       github.event.label.name == 'run-windows-build'
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-latest
+            artifact: tailscreen-windows-swift6.1
+          - arch: arm64
+            runner: windows-11-arm
+            artifact: tailscreen-windows-arm64
+    runs-on: ${{ matrix.runner }}
+    continue-on-error: ${{ matrix.arch == 'arm64' }}
 
     steps:
       # Only the packaging inputs are needed, not the submodule or the patch
@@ -1640,7 +1491,7 @@ jobs:
       - name: Download the staged app
         uses: actions/download-artifact@v4
         with:
-          name: tailscreen-windows-swift6.1
+          name: ${{ matrix.artifact }}
           path: dist
 
       # The artifact is the staging step's output, so this is also a check that
@@ -1676,7 +1527,7 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
-          name: tailscreen-windows-msix
+          name: tailscreen-windows-msix-${{ matrix.arch }}
           path: out/*.msix
           retention-days: 14
           if-no-files-found: warn
