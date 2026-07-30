@@ -175,6 +175,23 @@ else
   echo "note: no FFmpeg bin/ — video decode would fail at load" >&2
 fi
 
+# FINAL PASS: no top-level DLL survives with the wrong architecture, whatever
+# copy path brought it in. The sweep above was gated and the arch check STILL
+# failed — the PATH runtime harvest also matches vcruntime140*.dll, and a PATH
+# dir that qualifies via swiftCore.dll/Foundation*.dll can still hold x64 VC
+# redistributables beside them. Enumerating every such source is a losing game;
+# deleting mismatches once, here, ends it. The swiftCore/bootstrapper
+# assertions below still run AFTER this, so an over-eager delete fails loudly
+# instead of shipping quietly.
+for dll in dist/*.dll; do
+  [ -f "$dll" ] || continue
+  m=$(pe_machine "$dll")
+  if [ "$m" != "$app_machine" ]; then
+    echo "removing $(basename "$dll") ($m != $app_machine)"
+    rm -f "$dll"
+  fi
+done
+
 if [ ! -f dist/swiftCore.dll ]; then
   echo "swiftCore.dll was not staged — the artifact would not run" >&2
   exit 1
