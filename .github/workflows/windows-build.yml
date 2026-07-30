@@ -1486,6 +1486,43 @@ jobs:
       #
       # Deliberately does not wait for up(): with no auth key that blocks on a
       # browser login forever, and it is not the step under suspicion.
+      # The probe links the Swift runtime DYNAMICALLY, like every Swift binary
+      # on Windows, and this job stages nothing — the x64 job runs its probe out
+      # of dist/ with the runtime DLLs copied beside it, which is why it never
+      # hit this. Running the bare exe from .build/ died with 0xC0000135
+      # (STATUS_DLL_NOT_FOUND) and empty output: the loader failed before main.
+      # Same lesson the packaging section learned first, relearned here.
+      #
+      # PATH rather than a copy, because this step wants the toolchain's own
+      # arm64 runtime and nothing else. The DLL's PE machine type is verified —
+      # a toolchain can carry more than one architecture's runtime, and an x64
+      # swiftCore.dll beside an arm64 exe fails with the same unhelpful code.
+      - name: Put the Swift arm64 runtime on PATH
+        shell: pwsh
+        run: |
+          $root = ($env:SDKROOT -split 'Platforms')[0]
+          $dlls = Get-ChildItem -Recurse -Filter swiftCore.dll $root -ErrorAction SilentlyContinue
+          if (-not $dlls) { Write-Error "no swiftCore.dll under $root"; exit 1 }
+          foreach ($dll in $dlls) {
+            $fs = [System.IO.File]::OpenRead($dll.FullName)
+            $br = New-Object System.IO.BinaryReader($fs)
+            $fs.Position = 0x3C
+            $peOff = $br.ReadInt32()
+            $fs.Position = $peOff + 4
+            $machine = $br.ReadUInt16()
+            $br.Close(); $fs.Close()
+            $hex = '0x{0:X4}' -f $machine
+            Write-Host "$($dll.FullName): $hex"
+            if ($machine -eq 0xAA64) {
+              $dir = Split-Path -Parent $dll.FullName
+              Write-Host "using ARM64 runtime: $dir"
+              $dir | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+              exit 0
+            }
+          }
+          Write-Error 'found swiftCore.dll but none is ARM64'
+          exit 1
+
       - name: Check tsnet node creation returns on arm64
         shell: pwsh
         run: |
@@ -1505,7 +1542,16 @@ jobs:
               $text += (Get-Content $f -Raw)
             }
           }
-          Write-Host "exit code: $($p.ExitCode)"
+          # Hex + names, because "-1073741515" cost a decode round. Strings, not
+          # numeric -eq — the constants exceed Int32.MaxValue (see the app job's
+          # load check for the history).
+          $u = [System.BitConverter]::ToUInt32([System.BitConverter]::GetBytes([int32]$p.ExitCode), 0)
+          $hex = '0x{0:X8}' -f $u
+          Write-Host "exit code: $hex"
+          if ($hex -eq '0xC0000135') {
+            Write-Error 'STATUS_DLL_NOT_FOUND — the probe needs the Swift arm64 runtime on PATH (see the step above)'
+            exit 1
+          }
 
           if ($text -notmatch 'creating tsnet node') {
             Write-Error "probe never reached node creation on arm64 — the failure is before tailscale_new(), so read the output above rather than trusting this step's name"

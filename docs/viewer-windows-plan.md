@@ -586,6 +586,23 @@ new data point, not a repeat.
 The probe stays **on-demand** (`workflow_dispatch`, or the `run-arm64-probe`
 label): four failures mean one reasoned attempt does not make it a gate.
 
+**The pairing worked — measured, not hoped.** The first llvm-mingw + 6.3 run
+established, in order: cgo built the c-archive with **no `-mthreads` error**
+(conclusive that llvm-mingw's clang was used, since 6.3.3's own clang rejects
+that flag); `tsnet-probe` **compiled against WinSDK on 6.3.3**, so the
+`_ARM64_BARRIER_ISH` collision is 6.1-specific and gone; and the linked exe is a
+genuine `0xAA64` ARM64 PE. Every stage of the toolchain chain now passes.
+
+The run then failed at `0xC0000135` (DLL not found, empty output) — the job ran
+the bare exe from `.build/` with no Swift runtime beside it or on PATH, while
+the x64 job runs its probe from the staged `dist/`. The same "Swift links
+dynamically on Windows" lesson the packaging section opens with, relearned. The
+job now puts the toolchain's own arm64 runtime on PATH, verifying the DLL's PE
+machine type first, because a toolchain can carry more than one architecture's
+runtime and an x64 `swiftCore.dll` fails with the same unhelpful code.
+
+`tailscale_new()` returning on arm64 is the one remaining unknown.
+
 On 6.1.3 the second side of the bind is:
 
 ```
