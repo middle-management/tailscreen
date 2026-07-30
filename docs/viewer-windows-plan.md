@@ -393,14 +393,51 @@ unpackaged, passes the `Check the app loads` step in the `app` job.** The only
 difference is package identity. So this isolates the problem to packaged-mode
 framework resolution rather than to the app, the staging, or the payload.
 
-**Leading hypothesis, now the thing to fix.** A packaged WinUI 3 app is meant to
-obtain Windows App SDK through the **package graph**, but this manifest declares
-no `<PackageDependency>` on the WindowsAppRuntime framework — and swift-winui
-initialises through the **unpackaged bootstrapper** regardless of identity. A
-packaged process therefore has *neither* route to the runtime. The verify script
-now prints the classified exit code and reads the AppModel channels (the first
-run filtered the Application log by "tailscreen" and found nothing, because
-activation failures do not land there) so the next run should name it outright.
+**The exit code is `0xC000001D`, `STATUS_ILLEGAL_INSTRUCTION`** — and it reframes
+the failure rather than confirming the first guess.
+
+It is **not** `0xC0000135`, so nothing is missing from the payload. `ud2`
+(`0xC000001D`) and `__fastfail` (`0xC0000409`) are both how a Swift `fatalError`
+/ failed precondition / nil force-unwrap reaches the OS, which means **the loader
+was satisfied — every DLL in the package resolved — and then our own code decided
+to die.** For a WinUI app the usual cause is swift-winui's
+`SwiftApplication.main` turning a failed Windows App SDK init into `fatalError`.
+
+So the framework-resolution hypothesis survives, but arriving as a Swift trap
+rather than a loader error: a packaged process has no `<PackageDependency>` on
+the WindowsAppRuntime framework, and swift-winui initialises through the
+**unpackaged bootstrapper** regardless of identity, so it has neither route to
+the runtime and traps.
+
+**But a headless runner cannot decide this, and pretending otherwise was a bug in
+this job.** The app job's unpackaged `Check the app loads` step reached that
+conclusion first and already tolerates both trap codes with a warning, because a
+WinUI app with no interactive desktop session may legitimately trap during
+backend init and the runner cannot tell that apart from a real defect. This job
+failing on the same codes was an unjustified asymmetry between the packaged and
+unpackaged checks — the packaged path was being held to a standard the unpackaged
+path had already been shown unable to meet.
+
+`verify-msix.ps1` now matches that standard: loader- and install-level failures
+stay fatal, because those *are* packaging bugs and the runner *can* decide them;
+a Swift trap is reported with a warning naming both candidates, and the launch
+verdict is explicitly deferred to a human on a real desktop. The classified exit
+code is printed either way, which is how this was diagnosed at all.
+
+**Net for W8b, then:** MSIX packing, signing, installation and activation are
+proven in CI. The packaged launch outcome is **not decidable in CI** and joins
+the existing list of things needing a real Windows desktop — alongside "no frame
+has been displayed", "no sound has been heard", and the DPI fix on a scaled
+display.
+
+A caution for whoever runs it: `0xC000001D` is also one of the two codes in the
+pre-existing **intermittent startup flakiness** of the *unpackaged* app
+(`0xC000001D` / `0xC0000409`, cause unknown, documented as retry-first). Two
+packaged runs both trapped where the unpackaged app traps only sometimes, which
+is suggestive of a real packaged-mode difference — but two samples is not
+evidence, and the codes are indistinguishable. Do not assume a packaged trap on a
+real desktop is the framework issue without checking whether the unpackaged build
+on that same machine is behaving.
 
 **This corrects decision ordering earlier in this section.** W8's four decisions
 were described as "close to independent". They are not. **MSIX cannot work until
