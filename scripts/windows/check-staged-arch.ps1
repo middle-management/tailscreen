@@ -13,7 +13,7 @@ function Get-PEMachine($path) {
     return '{0:X4}' -f $br.ReadUInt16()
   } finally { $fs.Dispose() }
 }
-$want = Get-PEMachine 'tailscreen-windows.exe'
+$want = Get-PEMachine 'tailscreen.exe'
 Write-Host "app architecture: $want (8664 = x64, AA64 = ARM64)"
 $bad = @()
 Get-ChildItem -Recurse -File |

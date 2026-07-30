@@ -34,7 +34,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
 cd "$REPO_ROOT"
 
 APP_ID="dev.tailscreen.Tailscreen"
-BIN_NAME="tailscreen-viewer-gtk"
+BIN_NAME="tailscreen"
 ICON_NAME="tailscreen"                 # AppImage icon basename (matches Icon= below)
 BUILD_DIR="Apps/linux-gtk/.build/release"
 APPDIR="${APPDIR:-$REPO_ROOT/Apps/linux-gtk/.build/AppDir}"
@@ -112,7 +112,7 @@ HERE="$(dirname "$(readlink -f "${0}")")"
 export PATH="$HERE/usr/bin:$PATH"
 export LD_LIBRARY_PATH="$HERE/usr/lib:${LD_LIBRARY_PATH:-}"
 export XDG_DATA_DIRS="$HERE/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
-exec "$HERE/usr/bin/tailscreen-viewer-gtk" "$@"
+exec "$HERE/usr/bin/tailscreen" "$@"
 EOF
 chmod +x "$APPDIR/AppRun"
 

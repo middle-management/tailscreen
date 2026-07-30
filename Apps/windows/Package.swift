@@ -1,7 +1,9 @@
 // swift-tools-version: 6.0
 import PackageDescription
 
-// tailscreen-windows — the native Windows desktop app.
+// tailscreen (Windows) — the native Windows desktop app. The executable is
+// plain `tailscreen.exe`; the package keeps a platform-qualified name because
+// package names are build-graph identity, not what users run.
 //
 // A SEPARATE package from Apps/linux-gtk for the same reason that one is
 // separate from Apps/linux: it pulls a UI toolchain (the Windows App SDK, via
@@ -50,7 +52,7 @@ let package = Package(
     ],
     targets: [
         .executableTarget(
-            name: "tailscreen-windows",
+            name: "tailscreen",
             dependencies: [
                 .product(name: "SwiftCrossUI", package: "swift-cross-ui"),
                 // DefaultBackend resolves to WinUIBackend on Windows (see
@@ -62,7 +64,7 @@ let package = Package(
                 // the WinUI types it is generic over come from swift-winui.
                 //
                 // Conditioned on Windows so the edge disappears elsewhere —
-                // which is what makes `swift build --product tailscreen-windows`
+                // which is what makes `swift build --product tailscreen`
                 // work on Linux, and therefore what lets Linux CI typecheck
                 // this app instead of a Windows runner being the only machine
                 // that can. (swift-winui's `CWinAppSDK` includes

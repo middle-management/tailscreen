@@ -42,7 +42,7 @@
   <url type="vcs-browser">https://github.com/middle-management/tailscreen</url>
 
   <provides>
-    <binary>tailscreen-viewer-gtk</binary>
+    <binary>tailscreen</binary>
   </provides>
 
   <content_rating type="oars-1.1" />

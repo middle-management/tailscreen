@@ -100,8 +100,10 @@ final class ProfileStore: ObservableObject {
         return ViewerProfile(id: id, name: name, statePath: statePath)
     }
 
-    /// `$XDG_CONFIG_HOME/tailscreen-viewer-gtk` (or `~/.config/…`, or the CWD as
-    /// a last resort) — the standard Linux per-user config location.
+    /// `$XDG_CONFIG_HOME/tailscreen` (or `~/.config/…`, or the CWD as a last
+    /// resort) — the standard Linux per-user config location. The directory was
+    /// `tailscreen-viewer-gtk` before the executable rename; an existing old
+    /// directory is moved into place once so profiles and node state survive.
     private static func configRoot() -> String {
         let env = ProcessInfo.processInfo.environment
         let base: String
@@ -112,6 +114,12 @@ final class ProfileStore: ObservableObject {
         } else {
             base = FileManager.default.currentDirectoryPath
         }
-        return base + "/tailscreen-viewer-gtk"
+        let root = base + "/tailscreen"
+        let legacy = base + "/tailscreen-viewer-gtk"
+        if !FileManager.default.fileExists(atPath: root),
+            FileManager.default.fileExists(atPath: legacy) {
+            try? FileManager.default.moveItem(atPath: legacy, toPath: root)
+        }
+        return root
     }
 }

@@ -17,14 +17,14 @@ set -euo pipefail
 # the switch to release config can still be sitting there — and an
 # unscoped `head -1` would happily ship it, which is the one binary
 # this change exists to stop shipping.
-exe=$(find Apps/windows/.build -path '*/release/*' -name 'tailscreen-windows.exe' | head -1)
+exe=$(find Apps/windows/.build -path '*/release/*' -name 'tailscreen.exe' | head -1)
 if [ -z "$exe" ]; then
-  echo "no tailscreen-windows.exe produced" >&2
+  echo "no tailscreen.exe produced" >&2
   exit 1
 fi
 ls -la "$exe"
 mkdir -p dist
-cp "$exe" dist/tailscreen-windows.exe
+cp "$exe" dist/tailscreen.exe
 
 # The diagnostic probe rides along: it shares every staged runtime DLL
 # with the app, so shipping it costs one file and saves the user a
@@ -140,7 +140,7 @@ pe_machine() {
   [ -n "$off" ] || { echo 0000; return; }
   od -An -tx2 -j $((off + 4)) -N 2 "$1" 2>/dev/null | tr -d ' '
 }
-app_machine=$(pe_machine dist/tailscreen-windows.exe)
+app_machine=$(pe_machine dist/tailscreen.exe)
 echo "app PE machine: $app_machine"
 while IFS= read -r dll; do
   m=$(pe_machine "$dll")

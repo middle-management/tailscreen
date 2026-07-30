@@ -519,7 +519,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          file=Apps/windows/Sources/tailscreen-windows/BuildInfo.swift
+          file=Apps/windows/Sources/tailscreen/BuildInfo.swift
           short=$(git rev-parse --short HEAD)
           sed -i "s/static let commit = \"dev\"/static let commit = \"$short\"/" "$file"
           grep -q "static let commit = \"$short\"" "$file" \
@@ -545,7 +545,7 @@ jobs:
         shell: bash
         working-directory: Apps/windows
         run: |
-          swift build -c release --product tailscreen-windows \
+          swift build -c release --product tailscreen \
             -Xcc -I"$OPUS_ROOT/include/opus" \
             -Xcc -I"$FFMPEG_ROOT/include" \
             -Xlinker "/LIBPATH:$OPUS_ROOT/lib" \
@@ -612,7 +612,7 @@ jobs:
       # Stage the exe TOGETHER WITH THE SWIFT RUNTIME.
       #
       # Swift links its runtime dynamically on Windows, so a bare
-      # tailscreen-windows.exe dies before `main` with
+      # tailscreen.exe dies before `main` with
       #
       #   The code execution cannot proceed because swiftCore.dll was not found
       #
@@ -631,7 +631,7 @@ jobs:
       # layout that has already moved once (C:\Library → %LOCALAPPDATA%).
       #
       # The exe is staged into a flat dist/ rather than uploaded from .build
-      # directly: a `Apps/windows/.build/**/tailscreen-windows.exe` pattern
+      # directly: a `Apps/windows/.build/**/tailscreen.exe` pattern
       # matched nothing even though this very step's `find` located the file,
       # and an artifact upload is not worth debugging glob semantics over a
       # dot-directory. An explicit path can't be ambiguous.
@@ -655,7 +655,7 @@ jobs:
           # than dist/ so the capture files don't end up in the artifact.
           $out = Join-Path $env:RUNNER_TEMP 'app-stdout.txt'
           $err = Join-Path $env:RUNNER_TEMP 'app-stderr.txt'
-          $p = Start-Process -FilePath .\tailscreen-windows.exe -PassThru `
+          $p = Start-Process -FilePath .\tailscreen.exe -PassThru `
             -RedirectStandardOutput $out -RedirectStandardError $err
 
           function Show-Output {
@@ -718,7 +718,7 @@ jobs:
       - name: Upload the app
         uses: actions/upload-artifact@v4
         with:
-          name: tailscreen-windows-swift${{ matrix.swift }}
+          name: tailscreen-windows-x64
           path: dist/
           retention-days: 14
           if-no-files-found: error
@@ -1256,7 +1256,7 @@ jobs:
         shell: bash
         working-directory: Apps/windows
         run: |
-          swift build -c release --product tailscreen-windows \
+          swift build -c release --product tailscreen \
             -Xcc -I"$FFMPEG_ROOT/include" \
             -Xcc -I"$OPUS_ROOT/include/opus" \
             -Xlinker "/LIBPATH:$FFMPEG_ROOT/lib" \
@@ -1499,7 +1499,7 @@ jobs:
         include:
           - arch: x64
             runner: windows-latest
-            artifact: tailscreen-windows-swift6.3
+            artifact: tailscreen-windows-x64
           - arch: arm64
             runner: windows-11-arm
             artifact: tailscreen-windows-arm64
@@ -1524,8 +1524,8 @@ jobs:
         run: |
           echo "payload: $(find dist -type f | wc -l) files, $(du -sh dist | cut -f1)"
           ls -la dist/ | head -30
-          test -f dist/tailscreen-windows.exe || {
-            echo "artifact has no tailscreen-windows.exe" >&2; exit 1; }
+          test -f dist/tailscreen.exe || {
+            echo "artifact has no tailscreen.exe" >&2; exit 1; }
 
       - name: Pack and sign the MSIX
         shell: pwsh

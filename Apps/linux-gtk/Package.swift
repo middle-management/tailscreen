@@ -1,7 +1,10 @@
 // swift-tools-version: 6.0
 import PackageDescription
 
-// tailscreen-viewer-gtk — the native GTK desktop viewer (Linux/Windows).
+// tailscreen (Linux/GTK) — the native GTK desktop app: a full sharer AND
+// viewer, like the macOS and Windows apps. The executable is plain
+// `tailscreen`; the package keeps a platform-qualified name because package
+// names are build-graph identity, not what users run.
 //
 // A SEPARATE package from Apps/linux on purpose: it pulls in swift-cross-ui +
 // GTK4, which the Apps/linux core `linux-viewer` CI job neither needs nor should
@@ -63,7 +66,7 @@ let package = Package(
             ]
         ),
         .executableTarget(
-            name: "tailscreen-viewer-gtk",
+            name: "tailscreen",
             dependencies: [
                 .product(name: "TailscreenSharer", package: "TailscreenKit"),
                 .product(name: "TailscaleKit", package: "TailscaleKit"),

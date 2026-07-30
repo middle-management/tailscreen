@@ -59,7 +59,7 @@
   <Applications>
     <Application
       Id="Tailscreen"
-      Executable="tailscreen-windows.exe"
+      Executable="tailscreen.exe"
       EntryPoint="Windows.FullTrustApplication">
       <uap:VisualElements
         DisplayName="Tailscreen"

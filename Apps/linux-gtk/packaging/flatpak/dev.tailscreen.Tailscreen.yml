@@ -18,7 +18,7 @@ app-id: dev.tailscreen.Tailscreen
 runtime: org.gnome.Platform
 runtime-version: '47'
 sdk: org.gnome.Sdk
-command: tailscreen-viewer-gtk
+command: tailscreen
 
 # The Go toolchain (to compile libtailscale.a) is available as an official
 # freedesktop SDK extension. Swift is NOT — it must be provided separately
@@ -43,10 +43,10 @@ build-options:
   env:
     GOFLAGS: -buildvcs=false
     # SwiftPM's systemLibrary targets resolve libtailscale.pc from here.
-    PKG_CONFIG_PATH: /run/build/tailscreen-viewer-gtk/Packages/TailscaleKit
+    PKG_CONFIG_PATH: /run/build/tailscreen/Packages/TailscaleKit
 
 modules:
-  - name: tailscreen-viewer-gtk
+  - name: tailscreen
     buildsystem: simple
     # Network is needed at build time: SwiftPM fetches swift-cross-ui and the
     # first libtailscale build downloads Go modules.
@@ -59,13 +59,13 @@ modules:
       # 2. Build the viewer executable product only, so SwiftPM prunes to the
       #    Linux subgraph (DefaultBackend -> GtkBackend) and never tries the
       #    Windows-only WinUI backend.
-      - swift build -c release --package-path Apps/linux-gtk --product tailscreen-viewer-gtk
+      - swift build -c release --package-path Apps/linux-gtk --product tailscreen
       # 3. Install the binary + desktop entry + AppStream metadata. The icon is
       #    a placeholder: a real PNG rendered from docs/assets/app-icon.svg is a
       #    follow-up (see README). If present it is installed; otherwise the
       #    install is skipped so the build does not fail on the missing asset.
-      - install -Dm755 Apps/linux-gtk/.build/release/tailscreen-viewer-gtk
-        /app/bin/tailscreen-viewer-gtk
+      - install -Dm755 Apps/linux-gtk/.build/release/tailscreen
+        /app/bin/tailscreen
       - install -Dm644 Apps/linux-gtk/packaging/flatpak/dev.tailscreen.Tailscreen.desktop
         /app/share/applications/dev.tailscreen.Tailscreen.desktop
       - install -Dm644 Apps/linux-gtk/packaging/flatpak/dev.tailscreen.Tailscreen.metainfo.xml

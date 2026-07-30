@@ -460,7 +460,7 @@ jobs:
         # Build the executable product specifically so SwiftPM prunes to the
         # Linux subgraph (DefaultBackend→GtkBackend) — a bare `swift build`
         # would also try to compile swift-cross-ui's Windows-only WinUI backend.
-        run: PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" swift build --package-path Apps/linux-gtk --product tailscreen-viewer-gtk
+        run: PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" swift build --package-path Apps/linux-gtk --product tailscreen
       - name: Typecheck the Windows app
         # The Windows app builds HERE, on Linux, and that is the point.
         #
@@ -478,7 +478,7 @@ jobs:
         # three, on a Linux runner that costs a tenth as much. The Windows job
         # remains the authority on whether it LINKS and RUNS; this one is the
         # authority on whether it typechecks, which is where the mistakes are.
-        run: PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" swift build --package-path Apps/windows --product tailscreen-windows
+        run: PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" swift build --package-path Apps/windows --product tailscreen
       - name: Headless render self-test (Xvfb + software GL)
         # Renders a 4-bar YUV frame through GtkVideoView, reads the pixels back,
         # and exits 0 only if the BT.709 output is correct — a CI-gated proof
@@ -494,7 +494,7 @@ jobs:
         run: |
           if timeout 90 xvfb-run -a -s "-screen 0 800x600x24" \
             env GDK_BACKEND=x11 LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe \
-            Apps/linux-gtk/.build/debug/tailscreen-viewer-gtk --render-self-test \
+            Apps/linux-gtk/.build/debug/tailscreen --render-self-test \
             > /tmp/gtk-selftest.log 2>&1; then
             status=0
           else

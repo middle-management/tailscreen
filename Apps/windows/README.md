@@ -1,4 +1,4 @@
-# tailscreen-windows
+# tailscreen (Windows)
 
 The native Windows desktop app — swift-cross-ui on WinUI, reusing the same
 portable core as the macOS and Linux apps.
@@ -55,8 +55,8 @@ builds it in the `Windows build` workflow and attaches the app together with
 the Swift runtime it needs:
 
 1. Open the latest **Windows build** run in the repository's Actions tab.
-2. Download the **`tailscreen-windows-swift6.1`** artifact.
-3. Unzip it **keeping the folder intact**, and run `tailscreen-windows.exe`
+2. Download the **`tailscreen-windows-x64`** artifact.
+3. Unzip it **keeping the folder intact**, and run `tailscreen.exe`
    from inside that folder.
 
 Keeping the folder together is the part that matters. Swift links its runtime
@@ -166,11 +166,11 @@ Needs the [swift.org Windows toolchain](https://www.swift.org/install/windows/)
 Windows App SDK that swift-cross-ui's `WinUIBackend` targets.
 
 Installing the toolchain also puts the runtime DLLs on PATH, which is the other
-way to run a bare `tailscreen-windows.exe` if you have one lying around without
+way to run a bare `tailscreen.exe` if you have one lying around without
 its folder.
 
 ```powershell
-swift build --package-path Apps\windows --product tailscreen-windows
+swift build --package-path Apps\windows --product tailscreen
 ```
 
 **Clone with symlinks enabled**, or the build fails before it starts:

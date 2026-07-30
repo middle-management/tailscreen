@@ -48,8 +48,8 @@ $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $pkgSrc = Join-Path $repoRoot 'packaging/windows'
 
 if (-not (Test-Path $StageDir)) { throw "stage dir not found: $StageDir" }
-$exe = Join-Path $StageDir 'tailscreen-windows.exe'
-if (-not (Test-Path $exe)) { throw "no tailscreen-windows.exe in $StageDir" }
+$exe = Join-Path $StageDir 'tailscreen.exe'
+if (-not (Test-Path $exe)) { throw "no tailscreen.exe in $StageDir" }
 
 # Windows reserves the revision field for the Store. MakeAppx accepts a non-zero
 # one and Store submission rejects it, so fail here where the message is useful.

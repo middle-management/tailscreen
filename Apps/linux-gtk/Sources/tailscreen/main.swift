@@ -8,10 +8,10 @@ import TailscreenViewerCore
 import TailscreenViewerGtk
 import TailscreenViewerTsnet
 
-// tailscreen-viewer-gtk — native GTK desktop viewer.
+// tailscreen — native GTK desktop viewer.
 //
-//   tailscreen-viewer-gtk [<sharer-host>] [--port N] [--state-dir PATH] [--control-url URL]
-//   tailscreen-viewer-gtk --render-self-test
+//   tailscreen [<sharer-host>] [--port N] [--state-dir PATH] [--control-url URL]
+//   tailscreen --render-self-test
 //   Env: TAILSCREEN_TS_AUTHKEY, TAILSCREEN_TS_CONTROL_URL
 //
 // With a host argument the viewer dials it directly. WITHOUT one it enters
@@ -54,7 +54,7 @@ var gPickerMode = false
 func fail(_ message: String) -> Never {
     FileHandle.standardError.write(Data("error: \(message)\n".utf8))
     FileHandle.standardError.write(
-        Data("usage: tailscreen-viewer-gtk [<sharer-host>] [--port N] [--no-audio] [--state-dir PATH] [--control-url URL]\n".utf8))
+        Data("usage: tailscreen [<sharer-host>] [--port N] [--no-audio] [--state-dir PATH] [--control-url URL]\n".utf8))
     exit(2)
 }
 
@@ -67,7 +67,15 @@ func parseConfig() -> (config: ViewerConfig, host: String?, wantAudio: Bool, exp
     var port: UInt16 = 7447
     var wantAudio = true
     var explicitStateDir = false
-    var statePath = FileManager.default.currentDirectoryPath + "/.tailscreen-viewer-gtk-state"
+    var statePath = FileManager.default.currentDirectoryPath + "/.tailscreen-state"
+    // The executable used to be `tailscreen-viewer-gtk` and kept its one-shot
+    // state beside the CWD under the old name; adopt it so the rename doesn't
+    // force a re-login.
+    let legacyStatePath = FileManager.default.currentDirectoryPath + "/.tailscreen-viewer-gtk-state"
+    if !FileManager.default.fileExists(atPath: statePath),
+        FileManager.default.fileExists(atPath: legacyStatePath) {
+        try? FileManager.default.moveItem(atPath: legacyStatePath, toPath: statePath)
+    }
     let env = ProcessInfo.processInfo.environment
     var controlURL = env["TAILSCREEN_TS_CONTROL_URL"]
     let authKey = env["TAILSCREEN_TS_AUTHKEY"]
@@ -486,7 +494,7 @@ struct ViewerApp: App {
     }
 
     /// The hub's sharing card. Only offered in picker mode: the direct-host
-    /// path (`tailscreen-viewer-gtk <host>`) is a one-shot viewer invocation,
+    /// path (`tailscreen <host>`) is a one-shot viewer invocation,
     /// and growing a share button onto it would be surprising.
     private var shareCard: ShareCard? {
         guard gPickerMode else { return nil }

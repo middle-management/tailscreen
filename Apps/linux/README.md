@@ -112,7 +112,7 @@ eval "$(./scripts/e2e-up-native.sh)"
 swift run --package-path Apps/linux TailscreenTestSharer --fps 10 --size 640x360
 
 # 3. viewer, dialing that address (separate state dir!)
-cd Apps/linux-gtk && swift run tailscreen-viewer-gtk 100.64.0.2 \
+cd Apps/linux-gtk && swift run tailscreen 100.64.0.2 \
     --state-dir /tmp/viewer-state
 
 ./scripts/e2e-down-native.sh   # when done
@@ -179,7 +179,7 @@ To drive it by hand instead (e.g. to watch in the GTK viewer):
 eval "$(./scripts/e2e-up-native.sh)"
 DISPLAY=:0 swift run --package-path Apps/linux tailscreen-sharer-linux \
     --hostname ts-sharer --state-dir /tmp/sharer-state
-cd Apps/linux-gtk && swift run tailscreen-viewer-gtk 100.64.0.1 \
+cd Apps/linux-gtk && swift run tailscreen 100.64.0.1 \
     --state-dir /tmp/viewer-state
 ```
 
