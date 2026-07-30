@@ -460,6 +460,20 @@ jobs:
       - name: Check the lockfile is current
         shell: bash
         run: |
+          # The committed lockfile is written by SwiftPM 6.1. SwiftPM 6.3
+          # REWRITES it on resolve — format/originHash churn, same pins — which
+          # tripped this guard on the exploratory 6.3 leg before any compile
+          # ran. On that leg the rewrite is discarded so restore and save keys
+          # both hash the committed file; the guard stays FATAL on 6.1, where a
+          # rewrite means genuinely stale pins. If the matrix ever collapses to
+          # 6.3, commit the 6.3-format lockfile in the same change.
+          if [ "${{ matrix.swift }}" != "6.1" ]; then
+            if ! git diff --quiet -- Apps/windows/Package.resolved; then
+              echo "::notice::SwiftPM ${{ matrix.swift }} rewrote Package.resolved (format churn); discarding so cache keys stay consistent"
+              git checkout -- Apps/windows/Package.resolved
+            fi
+            exit 0
+          fi
           if ! git diff --quiet -- Apps/windows/Package.resolved; then
             # Single quotes: backticks in a double-quoted bash string are command
             # substitution, so the prose spelling of the command would have RUN
