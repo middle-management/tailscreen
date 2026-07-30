@@ -293,7 +293,6 @@ final class ViewerSessionTests: XCTestCase {
         base: UInt16, count: Int, ssrc: UInt32
     ) -> (packets: [Data], parity: Data) {
         let packetizer = H264Packetizer()
-        session.markKeyframeSeenForTesting()
         let nals = AVCCParser.nalUnits(from: makeAVCC(byteCount: 200, marker: 0x41))
         var packets: [Data] = []
         for i in 0..<count {
@@ -317,6 +316,10 @@ final class ViewerSessionTests: XCTestCase {
             audioSink: nil, onControlToSend: control.send)
         let serverCaps: ScreenShareCaps = serverFEC ? fullCaps : [.nack, .receiverReport]
         session.receiveRTP(ScreenShareControlMessage.encodeHelloAck(ssrc: 5, caps: serverCaps))
+        // FEC suites drive P-frame-only streams and assert on recovered frame
+        // counts; open the pre-keyframe gate so the mechanics under test stay
+        // observable.
+        session.markKeyframeSeenForTesting()
         return session
     }
 
