@@ -1152,10 +1152,15 @@ jobs:
   # tolerate the flag, which is why it got further — not because it was the
   # right compiler.
   #
-  # So the real fix is to stop using Swift's clang for cgo and supply an
-  # aarch64 MinGW toolchain (llvm-mingw) for the archive, keeping the MSVC
-  # toolchain for Swift. That is a genuine piece of work, not a retry, which is
-  # why this is parked rather than iterated.
+  # THAT FIX IS NOW IN THIS JOB: llvm-mingw supplies the aarch64 MinGW driver for
+  # the c-archive, and Swift's MSVC toolchain is left to compile Swift. Paired
+  # with 6.3, because each version's blocker is what the other half addresses —
+  # llvm-mingw removes -mthreads from the picture, leaving only the WinSDK module
+  # question, which is where 6.1.3 failed and 6.3.3 was never reached.
+  #
+  # Still on-demand rather than push-triggered: it has failed four times and one
+  # reasoned attempt does not make it a gate. Run it with `workflow_dispatch` or
+  # the `run-arm64-probe` label. If it goes green, promote it then.
   arm64-probe:
     name: arm64 probe (on demand)
     if: >-
@@ -1199,15 +1204,24 @@ jobs:
       # runtime/cgo's ARM64 `gcc_arm64.S` and produced
       # `no such instruction: stp x29,x30`. `stp` is an ARM64 instruction, so
       # that error is an x86 assembler reading ARM64 assembly, not a bad file.
-      # 6.1 deliberately, because it is the version that gets FURTHEST. Both
-      # 6.1 and 6.3 were measured, and they fail at different points — see the
-      # bind documented at the top of this job. Leaving the leg on 6.1 means
-      # whoever picks this up resumes from the furthest known-good state instead
-      # of re-deriving it.
+      # 6.3, paired with llvm-mingw below, and the pairing is the whole point.
+      #
+      # The two versions failed at different places, and each one's blocker is
+      # what the OTHER half of this change fixes:
+      #
+      #   6.1.3  cgo built (Swift's clang tolerated -mthreads)  WinSDK BROKEN
+      #   6.3.3  cgo FAILED on -mthreads                        WinSDK untested
+      #
+      # llvm-mingw takes cgo off Swift's clang entirely, so -mthreads stops
+      # mattering and the Swift version only has to get the WinSDK module right —
+      # which is precisely where 6.1.3 failed and 6.3.3 was never reached. So
+      # 6.3 + llvm-mingw is the combination with no known blocker on either side.
+      # If WinSDK still collides on 6.3, that is a new and useful data point
+      # rather than a repeat.
       - name: Setup Swift
         uses: SwiftyLab/setup-swift@latest
         with:
-          swift-version: '6.1'
+          swift-version: '6.3'
 
       # Prints the target triple, which is a finding in its own right: if the
       # action resolved an x86_64 toolchain on an arm64 host, everything below
@@ -1218,6 +1232,73 @@ jobs:
           swift --version
           echo "--- target triple ---"
           swift -print-target-info | grep -i triple || true
+
+      # THE fix for the -mthreads failure, and a return to parity rather than a
+      # novelty.
+      #
+      # Go's cgo assumes a MinGW-flavoured driver on Windows and passes MinGW
+      # flags unconditionally. The x64 job has always satisfied that with the
+      # runner image's MinGW gcc, and lld-link has always joined that MinGW-ABI
+      # c-archive to MSVC-ABI Swift code — that arrangement is what ships today.
+      # The arm64 runner simply has no aarch64 MinGW, so this job substituted
+      # Swift's MSVC-targeting clang, which is the wrong tool and only seemed to
+      # work on 6.1.3 because that clang tolerated the flag.
+      #
+      # llvm-mingw supplies the missing piece. Its toolchains are multi-target,
+      # so either host archive can emit aarch64 objects; the aarch64 archive is
+      # tried first (native) with x86_64 as a fallback, since Windows on ARM runs
+      # x64 binaries emulated. The step reports which archive it used and that
+      # compiler's -dumpmachine, because a silently wrong host/target pairing is
+      # the failure mode that has already cost this job two rounds.
+      #
+      # Installed BEFORE the inventory step below on purpose: that step already
+      # looks for aarch64-w64-mingw32-gcc first and prefers any compiler whose
+      # -dumpmachine reports aarch64, so it picks this up with no change.
+      #
+      # Pinned to a dated release, not "latest", so a green run stays
+      # reproducible. Bump deliberately.
+      - name: Install llvm-mingw (for cgo's aarch64 target)
+        shell: pwsh
+        env:
+          LLVM_MINGW_RELEASE: '20250910'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $rel = $env:LLVM_MINGW_RELEASE
+          $dest = Join-Path $env:RUNNER_TEMP 'llvm-mingw'
+          New-Item -ItemType Directory -Path $dest -Force | Out-Null
+
+          $ok = $false
+          foreach ($hostArch in @('aarch64', 'x86_64')) {
+            $name = "llvm-mingw-$rel-ucrt-$hostArch"
+            $url  = "https://github.com/mstorsjo/llvm-mingw/releases/download/$rel/$name.zip"
+            $zip  = Join-Path $env:RUNNER_TEMP "$name.zip"
+            Write-Host "trying $name"
+            try {
+              Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+            } catch {
+              Write-Host "  download failed: $($_.Exception.Message)"
+              continue
+            }
+            Expand-Archive -Path $zip -DestinationPath $dest -Force
+            $bin = Join-Path $dest "$name\bin"
+            if (-not (Test-Path $bin)) { Write-Host '  no bin/ in the archive'; continue }
+
+            # Does its aarch64 driver actually EXECUTE on this host? A mismatched
+            # archive fails here rather than 90 seconds deep inside runtime/cgo.
+            $cc = Join-Path $bin 'aarch64-w64-mingw32-gcc.exe'
+            if (-not (Test-Path $cc)) { Write-Host '  no aarch64-w64-mingw32-gcc.exe'; continue }
+            $machine = & $cc -dumpmachine 2>$null
+            if ($LASTEXITCODE -ne 0 -or -not $machine) {
+              Write-Host '  driver present but will not run on this host'
+              continue
+            }
+            Write-Host "  OK: $cc"
+            Write-Host "  -dumpmachine: $machine"
+            "$bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+            $ok = $true
+            break
+          }
+          if (-not $ok) { throw 'could not install an aarch64-targeting MinGW toolchain' }
 
       - name: Setup Go
         uses: actions/setup-go@v5

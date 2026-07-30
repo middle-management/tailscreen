@@ -568,9 +568,23 @@ a workaround that happened to hold.
 
 So the real fix is to stop conflating the two compilers: supply an **aarch64
 llvm-mingw** toolchain for the c-archive and keep the MSVC toolchain for Swift.
-That is a genuine piece of work, not a retry, which is why the probe is now
-**on-demand only** (`workflow_dispatch`, or the `run-arm64-probe` label) rather
-than reddening every push for a reason nobody can act on from this repo.
+**That fix is now wired into the probe** — and it is a return to parity, not a
+novelty: the x64 job has always built the c-archive with the runner image's
+MinGW gcc and let lld-link join the MinGW-ABI archive to MSVC-ABI Swift code.
+The arm64 runner simply had no aarch64 MinGW, which is why the job wrongly
+borrowed Swift's clang.
+
+The probe installs llvm-mingw (pinned release, aarch64-hosted archive first with
+x86_64-under-emulation as fallback, each candidate proven by running its
+`-dumpmachine` before being trusted) and pairs it with **Swift 6.3**, because
+each version's blocker is what the other half of the change addresses:
+llvm-mingw takes cgo off Swift's clang entirely, so `-mthreads` stops mattering
+and the Swift version only has to get the WinSDK module right — where 6.1.3
+failed and 6.3.3 was never reached. If WinSDK still collides on 6.3 that is a
+new data point, not a repeat.
+
+The probe stays **on-demand** (`workflow_dispatch`, or the `run-arm64-probe`
+label): four failures mean one reasoned attempt does not make it a gate.
 
 On 6.1.3 the second side of the bind is:
 
