@@ -143,12 +143,23 @@ public static class Activator2 {
   }
 
   # Grab the Process object WHILE IT IS ALIVE, purely to keep a handle open so
-  # .ExitCode is readable after it dies. Get-Process after exit throws, and the
-  # exit code is the single most discriminating piece of evidence available here:
-  # 0xC0000135 is a missing DLL, 0xC0000409 a security check, and a WinAppSDK
-  # bootstrapper HRESULT is something else again. Without it, "gone within 12s"
-  # is a symptom shared by every hypothesis.
+  # .ExitCode is readable after it dies. The exit code is the single most
+  # discriminating evidence available here: 0xC0000135 is a missing DLL,
+  # 0xC0000409 a security check, and a WinAppSDK bootstrapper HRESULT something
+  # else again. Without it, "gone within 12s" is a symptom every hypothesis
+  # shares.
   $handle = Get-Process -Id $pid2 -ErrorAction SilentlyContinue
+
+  # Touching .Handle is REQUIRED, not defensive. Get-Process hands back a Process
+  # object whose OS handle .NET opens LAZILY, so a first attempt that only
+  # captured the object still lost the exit code — the run reported "could not
+  # read the exit code — the handle closed first". Reading .Handle forces
+  # OpenProcess now and caches it, which is what keeps ExitCode readable once the
+  # process is gone.
+  if ($handle) {
+    try { $null = $handle.Handle }
+    catch { Write-Host "::warning::could not open a handle on pid $pid2 : $_" }
+  }
 
   # -------------------------------------------------------------------------
   # 4. Does it stay up?
