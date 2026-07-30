@@ -625,7 +625,12 @@ final class ViewerSessionTests: XCTestCase {
         XCTAssertEqual(session.preKeyframeDropCount, 2)
 
         // The keyframe opens the gate; a P-frame after it decodes normally.
-        let idr = AVCCParser.nalUnits(from: makeAVCC())
+        // Small IDR on purpose: the default makeAVCC() fragments across several
+        // RTP packets, which would occupy seqs 2..N and collide with the
+        // P-frame at seq 3 — the depacketizer would then drop the P-frame as a
+        // duplicate and this test would fail for sequencing reasons, not
+        // gating ones (it did).
+        let idr = AVCCParser.nalUnits(from: makeAVCC(byteCount: 200))
         for pkt in packetizer.packetize(nals: idr, timestamp: 15000, ssrc: 42, startSequence: 2) {
             session.receiveRTP(pkt)
         }
