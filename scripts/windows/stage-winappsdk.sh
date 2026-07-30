@@ -72,14 +72,57 @@ distabs="$(cd "$dist" && pwd)"
 # else in the framework MSIX (AppxManifest.xml, DeploymentAgent.exe, the
 # nested MSIX/, *.man) is consumed at build time or MSIX-machinery-only and is
 # excluded by not being copied.
-(
-  cd "$work/payload"
-  find . -type f \( \
-    -name '*.dll' -o -name '*.mui' -o -name '*.png' -o -name '*.winmd' \
-    -o -name '*.xaml' -o -name '*.xbf' -o -name '*.pri' \
-    -o -name 'RestartAgent.exe' -o -name 'map.html' \
-  \) -print0 | xargs -0 cp --parents -t "$distabs"
-)
+#
+# Python, not `find | xargs cp`: on both Windows runners, cp deterministically
+# failed to CREATE dist/Microsoft.WindowsAppRuntime.Bootstrap.dll with a bare
+# "Permission denied" — that one file, both arches, no pre-existing dest, and
+# the identical pipeline is clean on Linux. MSYS cp cannot say WHY; Python's
+# OSError carries the Windows error code (5 = access denied, 32 = sharing
+# violation from an AV scan, 225 = Defender "contains a virus or potentially
+# unwanted software"), so a failure here names the mechanism instead of
+# guessing. Each file gets an unlink-first (a read-only dest from an earlier
+# stage would EACCES a plain overwrite) and one delayed retry (rides out a
+# scan-lock); a final failure still fails the script.
+"$PY" - "$work/payload" "$distabs" <<'PYEOF'
+import os
+import shutil
+import sys
+import time
+
+src_root, dist = sys.argv[1], sys.argv[2]
+exts = {".dll", ".mui", ".png", ".winmd", ".xaml", ".xbf", ".pri"}
+names = {"RestartAgent.exe", "map.html"}
+failed = []
+copied = 0
+for root, _dirs, files in os.walk(src_root):
+    for name in files:
+        if os.path.splitext(name)[1].lower() not in exts and name not in names:
+            continue
+        src = os.path.join(root, name)
+        rel = os.path.relpath(src, src_root)
+        dst = os.path.join(dist, rel)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        for attempt in (1, 2):
+            try:
+                if os.path.exists(dst):
+                    os.chmod(dst, 0o666)
+                    os.unlink(dst)
+                shutil.copyfile(src, dst)
+                copied += 1
+                break
+            except OSError as e:
+                win = getattr(e, "winerror", None)
+                print(f"copy {rel} attempt {attempt}: {e!r} winerror={win}",
+                      file=sys.stderr)
+                if attempt == 2:
+                    failed.append(rel)
+                else:
+                    time.sleep(2)
+print(f"copied {copied} payload files")
+if failed:
+    print(f"FAILED to stage: {failed}", file=sys.stderr)
+    sys.exit(1)
+PYEOF
 
 # WinUI probes for the app-local resource index under this name; the rename
 # also keeps it from colliding with an app's own resources.pri. Same step as
