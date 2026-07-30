@@ -425,10 +425,16 @@ verdict is explicitly deferred to a human on a real desktop. The classified exit
 code is printed either way, which is how this was diagnosed at all.
 
 **Net for W8b, then:** MSIX packing, signing, installation and activation are
-proven in CI. The packaged launch outcome is **not decidable in CI** and joins
-the existing list of things needing a real Windows desktop — alongside "no frame
-has been displayed", "no sound has been heard", and the DPI fix on a scaled
-display.
+proven in CI, and the `msix` job is now a **required gate** rather than
+exploratory — `continue-on-error` removed. What it gates is deliberately narrow:
+pack, sign, install, activate and any loader-level exit are fatal, because those
+are packaging defects a headless runner can decide; a Swift trap after activation
+is warned. **A red `msix` job therefore means the package is broken, not that the
+app failed to launch.**
+
+The packaged launch outcome is **not decidable in CI** and joins the existing
+list of things needing a real Windows desktop — alongside "no frame has been
+displayed", "no sound has been heard", and the DPI fix on a scaled display.
 
 A caution for whoever runs it: `0xC000001D` is also one of the two codes in the
 pre-existing **intermittent startup flakiness** of the *unpackaged* app

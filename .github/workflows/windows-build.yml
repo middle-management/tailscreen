@@ -1478,16 +1478,31 @@ jobs:
   # whose private key sits on FIPS 140-2 hardware is a separate W8 decision with
   # a cost attached (docs/viewer-windows-plan.md).
   #
-  # continue-on-error while exploratory, same flip-to-required convention as the
-  # arm64 probe above. Flip it once green.
+  # A REAL GATE now, not exploratory — continue-on-error is deliberately absent.
+  # What it gates is precise, and worth stating so nobody widens it by accident:
+  #
+  #   FATAL   MakeAppx pack, SignTool sign, Add-AppxPackage install, AUMID
+  #           activation, and any loader-level exit (0xC0000135 DLL not found,
+  #           0xC0000139 missing export). These are packaging defects and a
+  #           headless runner can decide them.
+  #   WARNED  A Swift trap after activation (0xC000001D / 0xC0000409). The
+  #           loader was satisfied and our own code aborted, which on a runner
+  #           with no interactive desktop session is indistinguishable from
+  #           WinUI backend init legitimately trapping. The unpackaged
+  #           `Check the app loads` step already tolerates the same codes for
+  #           the same reason; failing here while accepting there would be an
+  #           asymmetry with no justification behind it.
+  #
+  # So a red msix job means the PACKAGE is broken, not that the app did not
+  # launch. The launch verdict needs a human on a real desktop and is tracked in
+  # the plan doc's not-proven list, not here.
   msix:
-    name: MSIX package (exploratory)
+    name: MSIX package
     needs: app
     if: >-
       github.event_name != 'pull_request' ||
       github.event.label.name == 'run-windows-build'
     runs-on: windows-latest
-    continue-on-error: true
 
     steps:
       # Only the packaging inputs are needed, not the submodule or the patch
