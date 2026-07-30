@@ -127,8 +127,28 @@ fi
 
 # Any remaining loose DLLs in the build tree, after the bundles so a
 # flat copy can never stand in for a structured one.
+# ARCH-GATED, unlike every copy above it, because this sweep is the one that
+# cannot trust its source: the WindowsAppSDK/swift-winui NuGet payload inside
+# .build ships BOTH architectures' DLLs side by side, and an unfiltered cp -n
+# takes whichever find meets first. On arm64 that staged an x64
+# vcruntime140_1.dll beside the AA64 exe — the bootstrapper bug in mirror
+# image, caught by the arch check this time. Only DLLs whose PE machine type
+# matches the exe's own are eligible.
+pe_machine() {
+  local off
+  off=$(od -An -tu4 -j 60 -N 4 "$1" 2>/dev/null | tr -d ' ')
+  [ -n "$off" ] || { echo 0000; return; }
+  od -An -tx2 -j $((off + 4)) -N 2 "$1" 2>/dev/null | tr -d ' '
+}
+app_machine=$(pe_machine dist/tailscreen-windows.exe)
+echo "app PE machine: $app_machine"
 while IFS= read -r dll; do
-  cp -n "$dll" dist/ 2>/dev/null || true
+  m=$(pe_machine "$dll")
+  if [ "$m" = "$app_machine" ]; then
+    cp -n "$dll" dist/ 2>/dev/null || true
+  else
+    echo "skipping $(basename "$dll") ($m != $app_machine)"
+  fi
 done < <(find Apps/windows/.build -maxdepth 4 -name '*.dll')
 
 # libopus. vcpkg's x64-windows triplet builds SHARED libraries, so the
