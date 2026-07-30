@@ -47,11 +47,23 @@ major_minor="${ver%.*}"   # 1.5.250108004 -> 1.5
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
-unzip -o -q -j "$nupkg" \
-  "tools/MSIX/win10-$arch/Microsoft.WindowsAppRuntime.$major_minor.msix" \
-  "license.txt" "NOTICE.txt" -d "$work"
+# Extraction via Python, not unzip: Git Bash on the Windows runners does not
+# ship unzip, and Python is on every GitHub image (and already required for
+# gen-regfree-manifest.py below).
+PY="$(command -v python3 || command -v python)"
+[ -n "$PY" ] || { echo "no python interpreter found" >&2; exit 1; }
+
+"$PY" - "$nupkg" "tools/MSIX/win10-$arch/Microsoft.WindowsAppRuntime.$major_minor.msix" "$work" <<'PYEOF'
+import sys, zipfile, pathlib
+nupkg, member, dest = sys.argv[1:4]
+dest = pathlib.Path(dest)
+with zipfile.ZipFile(nupkg) as z:
+    for name in (member, "license.txt", "NOTICE.txt"):
+        data = z.read(name)
+        (dest / pathlib.Path(name).name).write_bytes(data)
+PYEOF
 mkdir -p "$work/payload"
-unzip -o -q "$work/Microsoft.WindowsAppRuntime.$major_minor.msix" -d "$work/payload"
+"$PY" -m zipfile -e "$work/Microsoft.WindowsAppRuntime.$major_minor.msix" "$work/payload"
 
 mkdir -p "$dist"
 distabs="$(cd "$dist" && pwd)"
@@ -100,7 +112,7 @@ done
 # The reg-free WinRT manifest, generated from the SAME MSIX the DLLs came
 # from so the two can never skew. CI must embed it with mt.exe (see
 # gen-regfree-manifest.py's header for why embedding is mandatory).
-python3 "$(cd "$(dirname "$0")" && pwd)/gen-regfree-manifest.py" \
+"$PY" "$(cd "$(dirname "$0")" && pwd)/gen-regfree-manifest.py" \
   "$work/payload/AppxManifest.xml" \
   "$distabs/tailscreen.exe.manifest" \
   --verify-dist "$distabs"

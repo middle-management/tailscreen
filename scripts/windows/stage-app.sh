@@ -112,18 +112,13 @@ for bundle in "$exedir"/*.resources "$exedir"/*.bundle; do
 done
 shopt -u nullglob
 
-# If the Windows App Runtime is absent from the test machine, the
-# bootstrapper runs this installer when it sits beside the exe, rather
-# than popping a "go download it" dialog. Worth shipping: the whole
-# point of the artifact is that a tester needs nothing preinstalled.
-installer=$(find Apps/windows/.build -name 'WindowsAppRuntimeInstaller.exe' | head -1)
-if [ -n "$installer" ]; then
-  echo "runtime installer: $installer"
-  cp "$installer" dist/
-else
-  echo "note: no WindowsAppRuntimeInstaller.exe in the build tree;" \
-       "a machine without the Windows App Runtime will be prompted to install it"
-fi
+# WindowsAppRuntimeInstaller.exe is deliberately NOT staged any more: the
+# app ships the Windows App SDK runtime itself (stage-winappsdk.sh runs
+# after this script and lays the framework payload beside the exe), so the
+# bootstrapper never runs and nothing needs installing. Staging the
+# installer again would just hide a broken self-contained layout behind a
+# runtime install on the test machine — the CI launch check is supposed to
+# prove the payload works.
 
 # Any remaining loose DLLs in the build tree, after the bundles so a
 # flat copy can never stand in for a structured one.

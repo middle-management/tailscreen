@@ -713,6 +713,61 @@ verification was done). Whether W8 ships a second architecture or an arm64
 build lands separately is an open question, but the installer and the winget
 manifest both grow a dimension when it does.
 
+### W9d in detail — self-contained Windows App SDK (landed)
+
+W8's "stop needing the bootstrapper" decision is implemented; the runtime now
+ships with the app. The research that sized it corrected one premise: the
+pinned swift-winui (`df7642f`, via swift-cross-ui) targets Windows App SDK
+**1.5** (`WINDOWSAPPSDK_RELEASE_MAJORMINOR = 0x00010005`), not 1.6 — so the
+bootstrapper could only ever match an installed *1.5* runtime, and a machine
+with only 1.6.x installed failed even the framework-dependent path. That is
+what the desktop MSIX "two terminal windows and gone" symptom was made of:
+packaged identity skips the bootstrapper, our AppxManifest carries no
+`<PackageDependency>`, no runtime in the package, nothing to activate against.
+
+Three pieces, all in `scripts/windows/` and wired into both app jobs:
+
+1. **`stage-winappsdk.sh`** — downloads `Microsoft.WindowsAppSDK`
+   **1.5.250108004** (the last 1.5 servicing release, in lockstep with
+   swift-winui's pin — a 1.6+ payload against 1.5-generation projections is
+   untested territory; bump the two together), extracts the per-arch framework
+   MSIX, and stages its payload beside the exe per Microsoft's own
+   `SelfContained.targets` allowlist (incl. the `resources.pri` →
+   `Microsoft.UI.Xaml.Controls.pri` rename and the redistribution license
+   texts; §3 of the SDK license explicitly permits shipping these files with
+   the app). DDLM/Main/Singleton are not staged — only push/app-notification
+   APIs need the Singleton and we use none. PE-machine-gated per arch.
+2. **`swift-winui-selfcontained.patch` + `patch-swift-winui.sh`** — a CI-time
+   patch of the resolved checkout (the no-fork option was chosen
+   deliberately): in the unpackaged path, an app-local
+   `Microsoft.WindowsAppRuntime.dll` is `LoadLibrary`'d directly and the
+   bootstrapper skipped — the exact behaviour of WindowsAppSDK's
+   UndockedRegFreeWinRT auto-initializer — and `MddBootstrapShutdown` is
+   gated on bootstrap actually having run. The checkout's content is
+   deterministic (the committed lockfile pins the revision), the script is
+   idempotent across cache restores, and drift is a hard failure. The same
+   patch is upstreamable to moreSwift/swift-winui as a follow-up.
+3. **`gen-regfree-manifest.py` + `embed-regfree-manifest.ps1`** — the piece
+   without which the DLLs are decorative. With no framework package in the
+   process, `RoGetActivationFactory` resolves through the exe's application
+   manifest, so the framework MSIX's **896 activatable-class registrations
+   across 16 DLLs** are generated into a reg-free WinRT manifest (from the
+   same MSIX the DLLs came from, verified against the staged directory) and
+   embedded into `tailscreen.exe` with `mt.exe`, merge-aware of any manifest
+   lld-link already embedded. Skipping the embed does not fail the build; it
+   fails at the user's first XAML type with `REGDB_E_CLASSNOTREG` — which is
+   why the embed step reads the resource back and counts.
+
+`WindowsAppRuntimeInstaller.exe` is no longer staged: it existed to install
+the runtime on runtime-less machines, and shipping it would let a broken
+self-contained layout pass the CI launch check by quietly installing the
+framework instead. "Check the app loads" is now the self-contained proof, and
+the MSIX activation check covers the packaged flavour on both architectures.
+Cost: ~57 MB per arch uncompressed (~25 MB zipped), and self-contained apps
+forfeit Microsoft's runtime servicing — a WinAppSDK security fix means
+re-releasing the app. Still open in W9d: SignPath signing and the winget
+manifest off a release workflow.
+
 ## Risks
 
 - **Throughput.** The bridge adds a copy per datagram. Still unmeasured, and it

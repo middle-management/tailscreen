@@ -489,6 +489,18 @@ jobs:
           fi
           echo "lockfile unchanged by resolve — restore and save keys agree"
 
+      # Self-contained Windows App SDK (W9d): patch the resolved swift-winui
+      # checkout so an app-local runtime payload short-circuits the
+      # bootstrapper. Runs after resolve (the checkout must exist) and before
+      # the build (which must carry it). Idempotent across cache restores —
+      # a restored .build already contains the patched checkout and the marker
+      # check no-ops — and a drifted checkout is a hard failure, never a
+      # silent skip. The patch is behaviour-neutral without the staged
+      # payload, so the probe and any non-self-contained run are unaffected.
+      - name: Patch swift-winui for the self-contained runtime
+        shell: bash
+        run: ./scripts/windows/patch-swift-winui.sh
+
       # Built FROM the package directory, not with --package-path from the repo
       # root, because the manifest's `-L ../../Packages/TailscaleKit/lib` is
       # resolved by the linker against ITS working directory. On Linux that
@@ -638,6 +650,33 @@ jobs:
       - name: Stage the app with its runtime
         shell: bash
         run: ./scripts/windows/stage-app.sh
+
+      # The ~80 MB WinAppSDK nupkg, cached by exact version — nuget.org
+      # package content is immutable, so this key never needs invalidating.
+      - name: Cache the Windows App SDK nupkg
+        uses: actions/cache@v4
+        with:
+          path: .winappsdk-cache
+          key: winappsdk-nupkg-1.5.250108004
+
+      # Self-contained runtime payload + the reg-free WinRT manifest it needs
+      # (generated from the same MSIX, verified against the staged DLLs).
+      # Before the arch check on purpose: the payload DLLs go through the same
+      # PE-machine gate as everything else in dist/.
+      - name: Stage the self-contained Windows App SDK
+        shell: bash
+        run: ./scripts/windows/stage-winappsdk.sh x64
+
+      # Without the embed, the payload is decorative and the app dies at its
+      # first XAML type (REGDB_E_CLASSNOTREG) — see the script's header. After
+      # this step, "Check the app loads" below is the self-contained proof:
+      # the runner-installed runtime (if any) is never consulted, and
+      # WindowsAppRuntimeInstaller.exe is no longer staged to paper over a
+      # broken layout.
+      - name: Embed the reg-free WinRT manifest
+        shell: pwsh
+        working-directory: dist
+        run: ../scripts/windows/embed-regfree-manifest.ps1
 
       - name: Check the staged binaries match the app's architecture
         shell: pwsh
@@ -1252,6 +1291,25 @@ jobs:
             windows-app-build-arm64-6.3-${{
             hashFiles('Apps/windows/Package.resolved') }}
 
+      # An explicit resolve so the swift-winui checkout exists before the patch
+      # step on a cold cache (the build's implicit resolve would come too
+      # late). SwiftPM 6.3 rewrites the committed 6.1-format lockfile on
+      # resolve — discarded, exactly as the x64 job's lockfile guard does, so
+      # the build-cache restore and save keys keep hashing the same file.
+      - name: Resolve the app's dependencies
+        shell: bash
+        run: |
+          (cd Apps/windows && swift package resolve)
+          if ! git diff --quiet -- Apps/windows/Package.resolved; then
+            echo "::notice::SwiftPM rewrote Package.resolved (format churn); discarding so cache keys stay consistent"
+            git checkout -- Apps/windows/Package.resolved
+          fi
+
+      # Same patch as the x64 job — see that step's comment.
+      - name: Patch swift-winui for the self-contained runtime
+        shell: bash
+        run: ./scripts/windows/patch-swift-winui.sh
+
       - name: Build the app for arm64
         shell: bash
         working-directory: Apps/windows
@@ -1353,6 +1411,27 @@ jobs:
       - name: Stage the app with its runtime
         shell: bash
         run: ./scripts/windows/stage-app.sh
+
+      # Self-contained Windows App SDK, arm64 flavour — same trio as the x64
+      # job (cache → stage payload + manifest → embed), see those steps'
+      # comments. This is the half that fixes the arm64 MSIX silent exit:
+      # packaged identity skips the bootstrapper, and with the framework
+      # payload in the package plus the embedded reg-free manifest there is
+      # nothing left to skip.
+      - name: Cache the Windows App SDK nupkg
+        uses: actions/cache@v4
+        with:
+          path: .winappsdk-cache
+          key: winappsdk-nupkg-1.5.250108004
+
+      - name: Stage the self-contained Windows App SDK
+        shell: bash
+        run: ./scripts/windows/stage-winappsdk.sh arm64
+
+      - name: Embed the reg-free WinRT manifest
+        shell: pwsh
+        working-directory: dist
+        run: ../scripts/windows/embed-regfree-manifest.ps1
 
       - name: Check the staged binaries match the app's architecture
         shell: pwsh
