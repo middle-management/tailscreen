@@ -358,6 +358,44 @@ and are individually cheap.
   peer-to-peer screen-sharing GUI finds its first users. Revisit if anyone asks
   to deploy Tailscreen across an estate.
 
+#### W8b — what the MSIX probe has actually established
+
+**Packing and signing work.** MakeAppx packs the `app` job's staged directory —
+the exe plus its Swift runtime, FFmpeg, libopus and WindowsAppSDK DLLs, plus a
+templated `AppxManifest.xml` and logo assets — into a **142.4 MB** `.msix`, and
+SignTool signs it. The package is uploaded as `tailscreen-windows-msix` on every
+run, so it can be inspected by hand.
+
+Two design choices in `scripts/windows/make-msix.ps1` that are worth keeping:
+
+- The manifest's `Publisher` is **derived from the signing certificate's
+  Subject**, read back off the created cert rather than assumed to equal the
+  requested string — `New-SelfSignedCertificate` normalises spacing, and a
+  publisher mismatch fails at *install* time naming neither side.
+- `ProcessorArchitecture` is read from the **exe's PE header**, not passed in.
+  An architecture mismatch inside a package fails on the user's machine, not in
+  CI.
+
+**Still unproven: install and activation.** The first run failed on a defect in
+the packing script itself — `signtool verify /pa` fails by design while the
+self-signed cert is untrusted, and the script warned about that without
+resetting `$LASTEXITCODE`, so pwsh exited 1 after printing every success line.
+The install and AUMID-activation steps never ran.
+
+That is the **fourth** PowerShell-semantics bug in this workflow's history,
+after the three integer-comparison ones in the load check (`[uint32]` on a
+negative `Int32`, `-band 0xFFFFFFFF` not rescuing it, and `-eq 0xC0000135`
+always false). The pattern is consistent enough to state as a rule: **in
+PowerShell, assume the language's defaults are against you and assert the
+behaviour you want.** Tolerating a native command's failure means clearing its
+exit code as well as skipping the throw, and the script now also ends with an
+explicit `exit 0` so this cannot recur silently.
+
+So the question the job exists to answer — does a *packaged* WinUI 3 app resolve
+its Windows App SDK dependency through the package graph, given swift-winui
+initialises through the unpackaged bootstrapper either way — remains open. The
+machinery to answer it is in place and the packaging half of it is done.
+
 **LGPL constraint on all of the above.** The FFmpeg DLLs are LGPL shared builds,
 deliberately — the GPL builds carry libx264 and would infect this MIT codebase.
 Whatever the installer does, they must stay separately replaceable DLLs and the

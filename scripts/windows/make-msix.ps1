@@ -201,6 +201,13 @@ if ($LASTEXITCODE -ne 0) {
   # Expected for a self-signed cert that is not yet in TrustedPeople. Not fatal:
   # verify-msix.ps1 trusts the cert and then installs, which is the real test.
   Write-Host "::warning::signtool verify /pa failed — expected while the cert is untrusted"
+
+  # RESET IT. pwsh exits with the last $LASTEXITCODE, so tolerating a native
+  # command's failure means clearing the code as well as skipping the throw.
+  # Without this the script printed every success line, wrote its outputs, and
+  # then failed the step on the exit code of a check it had just declared
+  # expected — so the install and activation steps never ran at all.
+  $global:LASTEXITCODE = 0
 }
 
 $size = [math]::Round((Get-Item $OutFile).Length / 1MB, 1)
@@ -209,3 +216,9 @@ Write-Host "packed and signed: $OutFile (${size} MB)"
 "MSIX_PATH=$OutFile" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 "MSIX_PFX=$PfxPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 "MSIX_PUBLISHER=$publisher" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+# Explicit, rather than inheriting whatever the last native command left behind.
+# Every failure path above throws, so reaching here means success — and saying so
+# structurally is cheaper than auditing $LASTEXITCODE at every future edit. This
+# script already failed a step once while printing nothing but success.
+exit 0
