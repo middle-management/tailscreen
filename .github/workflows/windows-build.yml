@@ -38,8 +38,16 @@ name: Windows build
 # OpusKit were missing for the same reason and had been all along — a patch-025
 # change is exactly what this job exists to validate.
 #
-# Same rule as the build cache's key, and worth checking against it: if a
-# package is in the app's dependency graph, it belongs in both.
+# The rule was originally written as "if a package is in the app's dependency
+# graph, it belongs in both the trigger and the cache key" — and that phrasing is
+# what let the hole happen a SECOND time. `packaging/windows/` and
+# `scripts/windows/` are not packages and are not in any dependency graph; they
+# are inputs to the MSIX job, and the rule as stated did not reach them.
+#
+# So, stated to cover what it actually needs to cover: IF A FILE IS AN INPUT TO
+# ANY JOB IN THIS WORKFLOW, IT BELONGS IN THIS LIST. Packages, scripts, manifests,
+# assets. Then separately check the cache key, which only cares about the subset
+# that changes what gets compiled.
 on:
   push:
     paths:
@@ -56,6 +64,14 @@ on:
       - 'Packages/TailscreenHubUI/**'
       - 'Apps/windows/**'
       - 'scripts/materialize-symlinks.sh'
+      # The MSIX job's inputs. Missing at first, and the hole reproduced the
+      # WASAPIKit one described above almost exactly: the commit fixing
+      # make-msix.ps1's exit-code bug touched that script and a .md, so the
+      # negation below removed the doc and nothing matched the script — no
+      # Windows runner started, and the fix sat unverified while the branch
+      # looked fine. Found only by going to read a run that did not exist.
+      - 'packaging/windows/**'
+      - 'scripts/windows/**'
       - '.github/workflows/windows-build.yml'
       # Doc-only edits under those paths still don't warrant a 20-minute
       # Windows runner. Negative patterns are evaluated after the positive

@@ -396,6 +396,30 @@ its Windows App SDK dependency through the package graph, given swift-winui
 initialises through the unpackaged bootstrapper either way — remains open. The
 machinery to answer it is in place and the packaging half of it is done.
 
+**And then the fix for that bug was itself unverified for the same reason the
+WASAPIKit one was.** The commit repairing the exit code touched
+`scripts/windows/make-msix.ps1` and one `.md`. The workflow's `!**/*.md`
+negation removed the doc, and the script matched no pattern in the trigger at
+all — `scripts/` was covered only by the single literal
+`scripts/materialize-symlinks.sh`. **No Windows runner started.** The branch
+looked fine and the fix sat unverified; it was found only by going to read a run
+that did not exist.
+
+The trigger now includes `packaging/windows/**` and `scripts/windows/**`, but the
+more useful correction is to the *rule*. It was written as "if a package is in
+the app's dependency graph, it belongs in both the trigger and the cache key",
+and that phrasing is precisely what let the hole recur: these are not packages
+and are in no dependency graph. Restated in the workflow as **"if a file is an
+input to any job in this workflow, it belongs in this list"** — packages,
+scripts, manifests, assets — with the cache key considered separately, since it
+only cares about the subset that changes what gets compiled.
+
+Three occurrences now (`WASAPIKit/**`, `TailscaleKit/**` + `OpusKit/**`, and
+this one), so it is worth naming the general hazard rather than the instances: a
+path-scoped workflow fails **silently and green**. A red build tells you
+something is wrong; a run that never starts tells you nothing while the thing it
+guards goes untested, and the absence is indistinguishable from success.
+
 **LGPL constraint on all of the above.** The FFmpeg DLLs are LGPL shared builds,
 deliberately — the GPL builds carry libx264 and would infect this MIT codebase.
 Whatever the installer does, they must stay separately replaceable DLLs and the
