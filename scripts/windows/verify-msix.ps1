@@ -142,6 +142,14 @@ public static class Activator2 {
     throw
   }
 
+  # Grab the Process object WHILE IT IS ALIVE, purely to keep a handle open so
+  # .ExitCode is readable after it dies. Get-Process after exit throws, and the
+  # exit code is the single most discriminating piece of evidence available here:
+  # 0xC0000135 is a missing DLL, 0xC0000409 a security check, and a WinAppSDK
+  # bootstrapper HRESULT is something else again. Without it, "gone within 12s"
+  # is a symptom shared by every hypothesis.
+  $handle = Get-Process -Id $pid2 -ErrorAction SilentlyContinue
+
   # -------------------------------------------------------------------------
   # 4. Does it stay up?
   #
@@ -160,13 +168,60 @@ public static class Activator2 {
     $script:verdict = 'ok'
   } else {
     Write-Finding 'EXITED EARLY' "pid $pid2 is gone within 12s"
-    Write-Host "Most likely a payload DLL missing from the package, or the"
-    Write-Host "WindowsAppSDK bootstrapper failing to resolve a runtime from"
-    Write-Host "inside the package. Check the events below and compare the"
-    Write-Host "package payload against the staged directory."
-    Get-WinEvent -LogName 'Application' -MaxEvents 20 -ErrorAction SilentlyContinue |
-      Where-Object { $_.Message -match 'tailscreen' } |
-      ForEach-Object { Write-Host "[$($_.TimeCreated)] $($_.Message)" }
+
+    # The exit code, classified. This is the evidence that separates the
+    # hypotheses; the first version of this step printed none and left the
+    # question open.
+    $code = $null
+    if ($handle) {
+      try { $code = $handle.ExitCode } catch { }
+    }
+    if ($null -ne $code) {
+      $u = [System.BitConverter]::ToUInt32([System.BitConverter]::GetBytes([int32]$code), 0)
+      # Compared as STRINGS. Every constant below exceeds Int32.MaxValue, so
+      # PowerShell types the literal as a NEGATIVE Int32 and a numeric -eq is
+      # false no matter what the app did — the bug that broke the unpackaged
+      # load check twice. Do not "simplify" this.
+      $hex = '0x{0:X8}' -f $u
+      Write-Host "exit code: $hex"
+      switch ($hex) {
+        '0xC0000135' { Write-Host '  => STATUS_DLL_NOT_FOUND: a payload DLL is missing from the package' }
+        '0xC0000139' { Write-Host '  => STATUS_ENTRYPOINT_NOT_FOUND: a DLL loaded but lacked an export' }
+        '0xC0000409' { Write-Host '  => STATUS_STACK_BUFFER_OVERRUN (also Swift/CRT fatalError)' }
+        '0xC000001D' { Write-Host '  => STATUS_ILLEGAL_INSTRUCTION' }
+        default      { Write-Host '  => not a loader status; likely a clean exit from our own code' }
+      }
+    } else {
+      Write-Host '::warning::could not read the exit code — the handle closed first'
+    }
+
+    Write-Host ''
+    Write-Host 'Leading hypothesis, and what this job exists to distinguish:'
+    Write-Host '  A packaged WinUI 3 app is meant to resolve Windows App SDK'
+    Write-Host '  through the PACKAGE GRAPH, but this manifest declares no'
+    Write-Host '  <PackageDependency> on the WindowsAppRuntime framework — and'
+    Write-Host '  swift-winui initialises through the UNPACKAGED bootstrapper'
+    Write-Host '  regardless. A packaged process therefore has neither route to'
+    Write-Host '  the runtime. Fix is Windows App SDK self-contained mode, or a'
+    Write-Host '  declared framework dependency. See docs/viewer-windows-plan.md W8.'
+    Write-Host ''
+
+    # The RIGHT logs. Filtering the Application log by 'tailscreen' found nothing
+    # on the first run: a packaged app's activation failures land in the AppModel
+    # channels, and a loader failure in WER, neither of which mentions our name in
+    # a way that filter caught.
+    foreach ($log in @(
+      'Microsoft-Windows-AppModel-Runtime/Admin',
+      'Microsoft-Windows-AppXDeploymentServer/Operational',
+      'Application'
+    )) {
+      $ev = Get-WinEvent -LogName $log -MaxEvents 15 -ErrorAction SilentlyContinue |
+        Where-Object { $_.LevelDisplayName -in @('Error', 'Warning', 'Critical') }
+      if ($ev) {
+        Write-Host "--- $log ---"
+        $ev | ForEach-Object { Write-Host "[$($_.TimeCreated)] $($_.Message)" }
+      }
+    }
     $script:verdict = 'exited'
   }
 } finally {

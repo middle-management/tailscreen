@@ -376,11 +376,46 @@ Two design choices in `scripts/windows/make-msix.ps1` that are worth keeping:
   An architecture mismatch inside a package fails on the user's machine, not in
   CI.
 
-**Still unproven: install and activation.** The first run failed on a defect in
-the packing script itself — `signtool verify /pa` fails by design while the
-self-signed cert is untrusted, and the script warned about that without
-resetting `$LASTEXITCODE`, so pwsh exited 1 after printing every success line.
-The install and AUMID-activation steps never ran.
+**Install and activation work. The packaged app does not stay running.** Four of
+the five stages pass:
+
+| Stage | Result |
+|---|---|
+| MakeAppx pack | ✅ `Package creation succeeded`, 142.4 MB |
+| SignTool sign | ✅ |
+| Trust cert + `Add-AppxPackage` | ✅ installed as `Tailscreen.Tailscreen_0.0.1.0_x64__0gj03dk66ap0y`, arch `X64` |
+| Activate by AUMID | ✅ `activated, pid 6336` |
+| Stay alive 12 s | ❌ **gone within 12 s** |
+
+This is precisely the failure the job was built to detect, and it is worth being
+clear about why it is informative rather than disappointing: **the same binary,
+unpackaged, passes the `Check the app loads` step in the `app` job.** The only
+difference is package identity. So this isolates the problem to packaged-mode
+framework resolution rather than to the app, the staging, or the payload.
+
+**Leading hypothesis, now the thing to fix.** A packaged WinUI 3 app is meant to
+obtain Windows App SDK through the **package graph**, but this manifest declares
+no `<PackageDependency>` on the WindowsAppRuntime framework — and swift-winui
+initialises through the **unpackaged bootstrapper** regardless of identity. A
+packaged process therefore has *neither* route to the runtime. The verify script
+now prints the classified exit code and reads the AppModel channels (the first
+run filtered the Application log by "tailscreen" and found nothing, because
+activation failures do not land there) so the next run should name it outright.
+
+**This corrects decision ordering earlier in this section.** W8's four decisions
+were described as "close to independent". They are not. **MSIX cannot work until
+the Windows App SDK deployment mode is settled** — either self-contained, or a
+declared framework dependency with that framework present on the target machine.
+Self-contained was already recommended first on the grounds that it deletes the
+bootstrapper-path bug class; this makes it a **prerequisite** for the packaging
+decision rather than merely a good idea, and it is the reason to do it before
+choosing a format at all.
+
+An earlier version of this section also implied MSIX would make the
+architecture-mismatch class of bug "unrepresentable". That remains true of the
+*payload* — the package records its own architecture and `Add-AppxPackage`
+enforces it, which this run demonstrates by reporting `X64` — but it does not
+help with framework resolution, which is a different mechanism entirely.
 
 That is the **fourth** PowerShell-semantics bug in this workflow's history,
 after the three integer-comparison ones in the load check (`[uint32]` on a
