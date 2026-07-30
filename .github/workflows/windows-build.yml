@@ -107,7 +107,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        swift: ['6.1']
+        swift: ['6.1', '6.3']
+    # The 6.3 leg is EXPLORATORY (6.1 stays the gate and feeds the msix x64
+    # matrix by artifact name). Rationale for retrying now rather than "when
+    # 6.3 lands": it has landed, and the arm64 job compiles the SAME
+    # swift-cross-ui sources on 6.3.3 that crashed 6.2's frontend here — so the
+    # documented blocker is plausibly gone. Its cache key includes the version,
+    # so the cold 6.3 build cannot disturb the warm 6.1 cache. If green: flip
+    # this to a hard gate, collapse to swift: ['6.3'], drop the arm64 version
+    # skew, and the two app jobs converge toward the deferred matrix cleanup.
+    continue-on-error: ${{ matrix.swift == '6.3' }}
 
     steps:
       # Windows checkouts don't create symlinks unless this is on and the
