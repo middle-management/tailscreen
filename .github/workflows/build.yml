@@ -504,6 +504,115 @@ jobs:
           test "$status" -eq 0
           grep -q 'CGTKVIDEO_SELFTEST result=PASS' /tmp/gtk-selftest.log
 
+  linux-app-arm64:
+    # The native Linux app on arm64 — GitHub's free arm64 runner for public
+    # repos (ubuntu-24.04-arm) with the SAME swift:6.1-noble container as
+    # every other Linux job: the library/swift image is multi-arch
+    # (amd64 + arm64, verified on Docker Hub), so the apt package set and
+    # job shape stay byte-identical to linux-gtk-viewer and there is no
+    # swift.org-tarball toolchain install to maintain. Three deliberate
+    # differences from the x64 job:
+    #   • builds -c release, not debug — one build does triple duty: the
+    #     arm64 release-config compile check, the binary the self-test
+    #     gates, and the binary the artifact ships (the debug leg is
+    #     already covered on x64 by linux-gtk-viewer; building both
+    #     configs here would roughly double the job for no extra signal),
+    #   • runs the same headless GL YUV-readback self-test — the proof
+    #     this is a real leg (llvmpipe renders + BT.709 math verified on
+    #     arm64), not compile-only,
+    #   • stages + uploads `tailscreen-linux-arm64.tar.gz`, the arm64
+    #     counterpart of release-linux.yml's x86_64 AppImage. A plain
+    #     tarball, not an AppImage: the linuxdeploy/appimagetool flow in
+    #     release-linux.yml is x86_64-only today (its download URLs are
+    #     literally *-x86_64.AppImage); an arm64 AppImage is a follow-up
+    #     for the release workflow, not a per-PR gate.
+    # Caching is intentionally omitted, matching every sibling container
+    # job: setup-go's tool cache doesn't apply inside the container (see
+    # linux-tailscalekit) — apt's golang-go and a fresh module download
+    # are the established pattern. Apps/linux-gtk/Package.resolved IS
+    # committed (scoped .gitignore negation), so a SwiftPM cache keyed on
+    # it is an available follow-up if this job's resolve step ever gets
+    # slow. Hard gate: no continue-on-error — an arm64 break is a real
+    # break.
+    runs-on: ubuntu-24.04-arm
+    container: swift:6.1-noble
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install GTK4 + GL + headless display + A/V + Go
+        # Same set as linux-gtk-viewer — see that job's comment for why
+        # each package is needed. All are multi-arch in noble.
+        run: |
+          apt-get update && apt-get install -y --no-install-recommends \
+            libgtk-4-dev gir1.2-gtk-4.0 libgirepository1.0-dev libepoxy-dev \
+            libgl1-mesa-dri xvfb libopus-dev pkg-config \
+            golang-go make gcc libc6-dev \
+            libavcodec-dev libavutil-dev libasound2-dev
+      - name: Build libtailscale (patched) for linux/arm64
+        # Go targets the host arch — arm64 here — so the same make
+        # invocation as the x64 jobs emits an arm64 c-archive. GOFLAGS:
+        # see linux-tailscalekit (dubious-ownership VCS stamping).
+        env:
+          GOFLAGS: -buildvcs=false
+        run: make -C Packages/TailscaleKit
+      - name: Build the app (release)
+        # PKG_CONFIG_PATH resolves libtailscale.pc for the tsnet transport;
+        # building the executable product specifically prunes SwiftPM to the
+        # Linux subgraph (see linux-gtk-viewer).
+        run: PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" swift build -c release --package-path Apps/linux-gtk --product tailscreen
+      - name: Headless render self-test (Xvfb + software GL)
+        # Identical to linux-gtk-viewer's gate (same POSIX-sh caveats — see
+        # that job's comment), pointed at the release binary this job ships.
+        run: |
+          if timeout 90 xvfb-run -a -s "-screen 0 800x600x24" \
+            env GDK_BACKEND=x11 LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe \
+            Apps/linux-gtk/.build/release/tailscreen --render-self-test \
+            > /tmp/gtk-selftest.log 2>&1; then
+            status=0
+          else
+            status=$?
+          fi
+          cat /tmp/gtk-selftest.log
+          test "$status" -eq 0
+          grep -q 'CGTKVIDEO_SELFTEST result=PASS' /tmp/gtk-selftest.log
+      - name: Stage tarball
+        # The launch notes are generated HERE, not copied from the repo, on
+        # purpose: this workflow's `paths-ignore: '**.md'` means an artifact
+        # that shipped a repo .md would be a path-filter hole — edits to it
+        # would skip this job and "a missing run reads as success". Keeping
+        # the artifact's inputs to the binary + this workflow file keeps
+        # every input inside the trigger paths.
+        run: |
+          set -eu
+          STAGE=dist/tailscreen-linux-arm64
+          mkdir -p "$STAGE"
+          cp Apps/linux-gtk/.build/release/tailscreen "$STAGE/tailscreen"
+          cat > "$STAGE/README.txt" <<'EOF'
+          Tailscreen for Linux (arm64)
+          ============================
+
+          Run:  ./tailscreen            (picker mode)
+                ./tailscreen <host>     (dial a sharer directly)
+
+          Runtime dependencies (Ubuntu 24.04 arm64 package names):
+            libgtk-4-1 libepoxy0 libavcodec60 libavutil58 libasound2t64
+            libopus0 mesa/OpenGL drivers
+
+          Sign in happens in your browser on first run (tsnet interactive
+          login), or export TAILSCREEN_TS_AUTHKEY. See the repository's
+          Apps/linux-gtk/packaging/README.md for packaged install channels.
+          EOF
+          tar -C dist -czf tailscreen-linux-arm64.tar.gz tailscreen-linux-arm64
+          sha256sum tailscreen-linux-arm64.tar.gz
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tailscreen-linux-arm64
+          path: tailscreen-linux-arm64.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
   lint:
     runs-on: macos-latest
     steps:
