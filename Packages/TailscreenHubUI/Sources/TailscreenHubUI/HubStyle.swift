@@ -38,10 +38,22 @@ public enum HubStyle {
 extension View {
     /// The rounded, faintly-tinted, hairline-bordered card the hub uses for its
     /// status/login modules. Apply *after* the content's own padding.
+    ///
+    /// The hairline border is a *background* layer (stacked over the fill,
+    /// under the content) — deliberately NOT an `.overlay`. On the WinUI
+    /// backend an overlaid shape is hit-testable across its whole interior even
+    /// when stroked with a clear fill: `renderPath` always assigns the
+    /// `WinUI.Path` a fill brush (a transparent `SolidColorBrush` for
+    /// `Color.clear`), and XAML hit-testing keys on brush *presence*, not
+    /// alpha. An overlay sized to the card therefore sat over every control in
+    /// it and swallowed all mouse clicks — the login card's button worked by
+    /// keyboard (focus traversal bypasses hit-testing) and never by mouse.
+    /// Content is padded well off the card edge, so drawing the stroke under
+    /// it instead is visually identical.
     public func hubCard(radius: Double = HubStyle.cardRadius) -> some View {
         self
-            .background(RoundedRectangle(cornerRadius: radius).fill(HubStyle.cardFill))
-            .overlay {
+            .background {
+                RoundedRectangle(cornerRadius: radius).fill(HubStyle.cardFill)
                 RoundedRectangle(cornerRadius: radius).stroke(HubStyle.cardStroke)
             }
     }
