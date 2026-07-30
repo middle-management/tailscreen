@@ -354,9 +354,40 @@ public final class ViewerSession {
     /// `onDecodedFrame` → the sink (wired in `init`); a decode failure comes
     /// back through `onDecodeFailure` → a PLI. For a synchronous decoder both
     /// happen inside this call; for an async one, later.
+    ///
+    /// GATED until the first keyframe: feeding P-frame slices to a decoder
+    /// that has never seen parameter sets is guaranteed failure, and libavcodec
+    /// says so loudly — the real Mac→Windows session logged two lines
+    /// ("PPS id out of range" / "Skipping invalid undecodable NALU") for every
+    /// pre-keyframe frame, ~2 s of spam per keyframe interval. The Mac
+    /// `VideoDecoder` has always dropped these silently; the portable path now
+    /// matches, counting instead of logging so time-to-first-frame problems
+    /// stay measurable (`preKeyframeDropCount`, surfaced via `onVideoStats`
+    /// consumers that already poll).
     private func submit(_ au: VideoAccessUnit) {
+        if !seenKeyframe {
+            guard au.containsIDR else {
+                preKeyframeDropCount += 1
+                return
+            }
+            seenKeyframe = true
+        }
         decoder.decode(accessUnit: au.avcc, codec: au.codec, isKeyframe: au.containsIDR)
     }
+
+    /// True once a keyframe has been submitted; P-frames before it are
+    /// undecodable by construction and are counted, not decoded.
+    private var seenKeyframe = false
+    /// Dropped-before-first-keyframe count — the visibility a silent drop
+    /// would otherwise cost (a large value here means keyframes are being
+    /// torn in transit; look at NACK/FEC recovery, not the decoder).
+    public private(set) var preKeyframeDropCount = 0
+
+    /// Test-only: open the keyframe gate without a real IDR, so suites that
+    /// exercise transport mechanics (gap→NACK, FEC recovery) with P-frame-only
+    /// streams keep asserting on frame counts. Internal via @testable, per the
+    /// package convention.
+    func markKeyframeSeenForTesting() { seenKeyframe = true }
 
     // MARK: - Audio handling
 
