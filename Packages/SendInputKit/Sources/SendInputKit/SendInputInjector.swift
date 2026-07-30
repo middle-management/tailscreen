@@ -327,11 +327,21 @@ public final class SendInputInjector: @unchecked Sendable {
                     ts_input_monitors(pointer.baseAddress, Int32(capacity))
                 })
             if total <= capacity {
-                return (0..<total).map { index in
-                    Region(
-                        x: Int(buffer[index * 4]), y: Int(buffer[index * 4 + 1]),
-                        width: Int(buffer[index * 4 + 2]), height: Int(buffer[index * 4 + 3]))
+                // A plain loop, not `(0..<total).map` with the Int() conversions
+                // inline: Swift 6.3's type-checker times out on that closure
+                // ("unable to type-check this expression in reasonable time")
+                // while 6.1 accepted it — and 6.3 is what the arm64 build uses.
+                var regions = [Region]()
+                regions.reserveCapacity(total)
+                for index in 0..<total {
+                    let base = index * 4
+                    let x = Int(buffer[base])
+                    let y = Int(buffer[base + 1])
+                    let width = Int(buffer[base + 2])
+                    let height = Int(buffer[base + 3])
+                    regions.append(Region(x: x, y: y, width: width, height: height))
                 }
+                return regions
             }
             capacity = total
         }
