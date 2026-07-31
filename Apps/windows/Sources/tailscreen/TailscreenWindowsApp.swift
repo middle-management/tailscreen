@@ -66,7 +66,14 @@ struct TailscreenWindowsApp: App {
     /// physical pixels under v1 too. `prepareProcess()` remains available for
     /// non-WinUI hosts (tests, headless probes), where nothing else sets
     /// awareness.
-    init() {}
+    ///
+    /// What DOES belong here is `ConsoleBridge`: the exe is a GUI-subsystem
+    /// binary, so stdio must be attached to a parent console or redirected to
+    /// the log file before anything prints — and it touches no DPI, COM, or
+    /// WinUI state, so it cannot re-create the initializer collision above.
+    init() {
+        ConsoleBridge.attachOrRedirect()
+    }
 
     // The view is deliberately split into many small, individually-typed
     // pieces rather than one nested expression. A first attempt inlined the

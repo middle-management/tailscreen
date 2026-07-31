@@ -106,7 +106,19 @@ let package = Package(
             // executable rather than on the library targets that merely compile
             // against the header. Relative, never absolute — see CLAUDE.md.
             linkerSettings: [
-                .unsafeFlags(["-L", "../../Packages/TailscaleKit/lib"])
+                .unsafeFlags(["-L", "../../Packages/TailscaleKit/lib"]),
+                // GUI subsystem: SwiftPM's default is a console-subsystem PE,
+                // so the loader materialized a terminal window before any of
+                // our code ran — including for the MSIX-installed app. The
+                // ENTRY override keeps Swift's ordinary `main` path (a bare
+                // /SUBSYSTEM:WINDOWS makes the linker expect WinMain); the CRT
+                // init it runs is the same one that walks .CRT$XCU, so the Go
+                // runtime start (patch 026) is unaffected. ConsoleBridge
+                // reattaches or redirects the now-consoleless stdio.
+                // tsnet-probe deliberately stays a console binary.
+                .unsafeFlags(
+                    ["-Xlinker", "/SUBSYSTEM:WINDOWS", "-Xlinker", "/ENTRY:mainCRTStartup"],
+                    .when(platforms: [.windows])),
             ]
         ),
         // A console tsnet bring-up, with no WinUI, no Windows App SDK, no COM

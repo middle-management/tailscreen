@@ -1606,21 +1606,44 @@ jobs:
           test -f dist/tailscreen.exe || {
             echo "artifact has no tailscreen.exe" >&2; exit 1; }
 
+      # A STABLE dev certificate, when the secrets exist: Windows trusts a
+      # certificate, not a build, so signing every run with the same pfx means
+      # a machine that trusted it once installs every future MSIX without the
+      # trust dance — and the Publisher (derived from the cert by
+      # make-msix.ps1) stays constant, which keeps the PackageFamilyName
+      # stable across builds. Absent the secrets, the per-run throwaway cert
+      # behaviour is unchanged. This is still a SELF-SIGNED dev cert either
+      # way — SignPath replaces it for distribution.
       - name: Pack and sign the MSIX
         shell: pwsh
+        env:
+          MSIX_PFX_B64: ${{ secrets.TAILSCREEN_MSIX_PFX_BASE64 }}
+          MSIX_PFX_PASSWORD: ${{ secrets.TAILSCREEN_MSIX_PFX_PASSWORD }}
         run: |
+          $extra = @{}
+          if ($env:MSIX_PFX_B64) {
+            $pfx = Join-Path $env:RUNNER_TEMP 'tailscreen-msix.pfx'
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:MSIX_PFX_B64))
+            $extra.PfxPath = $pfx
+            if ($env:MSIX_PFX_PASSWORD) { $extra.PfxPassword = $env:MSIX_PFX_PASSWORD }
+            Write-Host "signing with the repo's stable dev certificate"
+          }
           ./scripts/windows/make-msix.ps1 `
             -StageDir dist `
             -OutFile out/Tailscreen.msix `
-            -Version 0.0.1.0
+            -Version 0.0.1.0 @extra
 
       # The actual finding. Install → activate by AUMID → does it stay up.
       - name: Install the MSIX and launch it
         shell: pwsh
+        env:
+          MSIX_PFX_PASSWORD: ${{ secrets.TAILSCREEN_MSIX_PFX_PASSWORD }}
         run: |
+          $extra = @{}
+          if ($env:MSIX_PFX_PASSWORD) { $extra.PfxPassword = $env:MSIX_PFX_PASSWORD }
           ./scripts/windows/verify-msix.ps1 `
             -MsixPath $env:MSIX_PATH `
-            -PfxPath $env:MSIX_PFX
+            -PfxPath $env:MSIX_PFX @extra
 
       # Uploaded whether or not the launch succeeded: an MSIX that installs but
       # dies is exactly the artifact worth inspecting by hand, and a green-only

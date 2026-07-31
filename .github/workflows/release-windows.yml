@@ -474,13 +474,27 @@ jobs:
       # cert, NOT distributable. SignPath (free OSS tier) replaces this signing
       # step later; the pack/manifest half stays as-is. The Version is the
       # 4-part derivation from the Resolve version step.
+      # With the TAILSCREEN_MSIX_PFX_* secrets set, every build signs with the
+      # SAME dev certificate — trust it once and every future MSIX installs,
+      # and the Publisher/PackageFamilyName stay constant. Still self-signed.
       - name: Build the MSIX
         shell: pwsh
+        env:
+          MSIX_PFX_B64: ${{ secrets.TAILSCREEN_MSIX_PFX_BASE64 }}
+          MSIX_PFX_PASSWORD: ${{ secrets.TAILSCREEN_MSIX_PFX_PASSWORD }}
         run: |
+          $extra = @{}
+          if ($env:MSIX_PFX_B64) {
+            $pfx = Join-Path $env:RUNNER_TEMP 'tailscreen-msix.pfx'
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:MSIX_PFX_B64))
+            $extra.PfxPath = $pfx
+            if ($env:MSIX_PFX_PASSWORD) { $extra.PfxPassword = $env:MSIX_PFX_PASSWORD }
+            Write-Host "signing with the repo's stable dev certificate"
+          }
           ./scripts/windows/make-msix.ps1 `
             -StageDir dist `
             -OutFile "out/Tailscreen-${{ steps.version.outputs.version }}-windows-${{ matrix.arch }}.msix" `
-            -Version "${{ steps.version.outputs.msix_version }}"
+            -Version "${{ steps.version.outputs.msix_version }}" @extra
 
       - name: Checksums
         id: pkg
