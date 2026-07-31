@@ -93,7 +93,12 @@ on:
 # matters gets an answer. A superseded Windows result teaches nothing: the
 # branch tip is what ships.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # The label name is part of the group because `pull_request: [labeled]`
+  # fires once PER LABEL: adding two labels in one API call produced two runs
+  # in the same group, and the second — which existed only to evaluate its
+  # `if` and skip — cancelled the first mid-build. Pushes keep superseding
+  # pushes (label.name is empty there, so they share the 'push' bucket).
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event.label.name || 'push' }}
   cancel-in-progress: true
 
 permissions:
