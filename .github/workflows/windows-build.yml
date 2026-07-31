@@ -404,9 +404,15 @@ jobs:
       # the expensive dependency compile stops being repeated for every one-line
       # workflow edit.
       #
-      # No restore-keys on purpose: a partial hit here would mix objects built
-      # against a different dependency revision, which is exactly the failure
-      # mode that makes build caches untrustworthy.
+      # restore-keys falls back to the newest same-toolchain cache when the
+      # exact key misses. An earlier version refused, fearing mixed objects —
+      # but SwiftPM/llbuild track per-target inputs, so a stale .build plus a
+      # fresh resolve rebuilds exactly the targets whose pins moved and reuses
+      # the rest; wrong binaries are not the failure mode here. What IS real is
+      # the cost asymmetry the refusal created: a one-pin bump repaid the full
+      # ~24-minute dependency compile. The toolchain and OS stay in the prefix,
+      # so a Swift upgrade still builds cold — that boundary is the one llbuild
+      # cannot referee (swiftmodule format).
       #
       # RESOLVE FIRST, so the key can be `Package.resolved` — which is precisely
       # the set of remote revisions and nothing else. The key used to hash every
@@ -436,6 +442,8 @@ jobs:
           key: >-
             windows-app-build-${{ matrix.swift }}-${{ runner.os }}-${{
             hashFiles('Apps/windows/Package.resolved') }}
+          restore-keys: |
+            windows-app-build-${{ matrix.swift }}-${{ runner.os }}-
 
       # Now a no-op on the happy path: the restored .build carries the checkouts
       # and the pins already match. Kept as its own step because a resolution
@@ -610,13 +618,22 @@ jobs:
       # fifth of a build directory that no later run could replace, and an
       # early failure would claim it with a `.build` that does not exist yet.
       # One poisoned key is worse than one cold build.
+      # The product binaries are excluded from the archive: they are relinked
+      # on every build regardless, and ~200 MB less per generation is real
+      # eviction-pressure relief on the repo's shared 10 GB cache budget — an
+      # overnight eviction of this very cache is why a morning's first build
+      # ran cold. (Exclusions apply at save; restore extracts whatever the
+      # archive holds, so the two path specs need not match.)
       - name: Save the app's build directory
         if: >-
           ${{ !cancelled() && steps.app-build-cache.outcome == 'success'
           && steps.app-build-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
-          path: Apps/windows/.build
+          path: |
+            Apps/windows/.build
+            !Apps/windows/.build/**/release/tailscreen.exe
+            !Apps/windows/.build/**/release/tsnet-probe.exe
           key: >-
             windows-app-build-${{ matrix.swift }}-${{ runner.os }}-${{
             hashFiles('Apps/windows/Package.resolved') }}
@@ -1290,6 +1307,11 @@ jobs:
           key: >-
             windows-app-build-arm64-6.3-${{
             hashFiles('Apps/windows/Package.resolved') }}
+          # Same fallback rationale as the x64 restore: a pin bump costs an
+          # incremental rebuild instead of a cold one; llbuild rebuilds what
+          # the new pins invalidate.
+          restore-keys: |
+            windows-app-build-arm64-6.3-
 
       # An explicit resolve so the swift-winui checkout exists before the patch
       # step on a cold cache (the build's implicit resolve would come too
@@ -1362,14 +1384,19 @@ jobs:
           "PROBE_EXE=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       # Same if-logic as the x64 save: bank the objects even on failure, never
-      # under a key another run already owns.
+      # under a key another run already owns. Product binaries excluded like
+      # the x64 save — relinked every build, and smaller caches survive the
+      # repo's 10 GB eviction budget longer.
       - name: Save the app's build directory
         if: >-
           ${{ !cancelled() && steps.arm64-build-cache.outcome == 'success'
           && steps.arm64-build-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
-          path: Apps/windows/.build
+          path: |
+            Apps/windows/.build
+            !Apps/windows/.build/**/release/tailscreen.exe
+            !Apps/windows/.build/**/release/tsnet-probe.exe
           key: >-
             windows-app-build-arm64-6.3-${{
             hashFiles('Apps/windows/Package.resolved') }}
