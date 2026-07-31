@@ -44,7 +44,8 @@ name: Windows build
 # graph, it belongs in both the trigger and the cache key" — and that phrasing is
 # what let the hole happen a SECOND time. `packaging/windows/` and
 # `scripts/windows/` are not packages and are not in any dependency graph; they
-# are inputs to the MSIX job, and the rule as stated did not reach them.
+# are inputs to the MSIX packaging steps at the tail of the app jobs, and the
+# rule as stated did not reach them.
 #
 # So, stated to cover what it actually needs to cover: IF A FILE IS AN INPUT TO
 # ANY JOB IN THIS WORKFLOW, IT BELONGS IN THIS LIST. Packages, scripts, manifests,
@@ -66,8 +67,8 @@ on:
       - 'Packages/TailscreenHubUI/**'
       - 'Apps/windows/**'
       - 'scripts/materialize-symlinks.sh'
-      # The MSIX job's inputs. Missing at first, and the hole reproduced the
-      # WASAPIKit one described above almost exactly: the commit fixing
+      # The MSIX packaging steps' inputs. Missing at first, and the hole
+      # reproduced the WASAPIKit one described above almost exactly: the commit fixing
       # make-msix.ps1's exit-code bug touched that script and a .md, so the
       # negation below removed the doc and nothing matched the script — no
       # Windows runner started, and the fix sat unverified while the branch
@@ -866,6 +867,127 @@ jobs:
           Write-Error "tsnet-probe stalled inside tailscale_new() — reproduces the app's freeze with no UI, no COM apartment and no WinUI in the process"
           exit 1
 
+      # ---------------------------------------------------------------------
+      # W8b — does a PACKAGED Tailscreen install and start?
+      #
+      # Not the same question as "does an MSIX build". A packaged WinUI 3 app
+      # is supposed to resolve its Windows App SDK dependency through the
+      # package graph, while an unpackaged one calls the bootstrapper to find
+      # an installed runtime — the mechanism behind two of the staging bugs
+      # this workflow already carries assertions for. swift-winui initialises
+      # through the bootstrapper either way, and whether that is correct,
+      # harmless or fatal inside a package is not something the docs settle.
+      # So this packs it, installs it and launches it.
+      #
+      # These steps used to be a separate `msix` matrix job (needs: both app
+      # jobs) that downloaded this job's ~600 MB artifact onto a second runner
+      # of the same type. They now run at the tail of each app job, where
+      # dist/ is already staged — no second runner spin-up, no artifact
+      # round-trip. Two knock-on simplifications are intended: the old job
+      # carried its own PR-label `if` gate, and the folded steps simply run
+      # exactly when the app jobs run (the same trigger set); and one arch's
+      # MSIX no longer waits on — or is blocked by — the OTHER arch's app job.
+      #
+      # A failure here is a finding. The verify script reports which of the
+      # three stages broke — install, activate, or stay alive — because "MSIX
+      # didn't work" is not an actionable answer and each stage has a
+      # different cause.
+      #
+      # Self-signed, so this proves INSTALLABILITY, not distributability. A
+      # cert whose private key sits on FIPS 140-2 hardware is a separate W8
+      # decision with a cost attached (docs/viewer-windows-plan.md).
+      #
+      # A REAL GATE — continue-on-error is deliberately absent. What it gates
+      # is precise, and worth stating so nobody widens it by accident:
+      #
+      #   FATAL   MakeAppx pack, SignTool sign, Add-AppxPackage install, AUMID
+      #           activation, and any loader-level exit (0xC0000135 DLL not
+      #           found, 0xC0000139 missing export). These are packaging
+      #           defects and a headless runner can decide them.
+      #   WARNED  A Swift trap after activation (0xC000001D / 0xC0000409). The
+      #           loader was satisfied and our own code aborted, which on a
+      #           runner with no interactive desktop session is
+      #           indistinguishable from WinUI backend init legitimately
+      #           trapping. The unpackaged `Check the app loads` step above
+      #           already tolerates the same codes for the same reason;
+      #           failing here while accepting there would be an asymmetry
+      #           with no justification behind it.
+      #
+      # So a red MSIX step means the PACKAGE is broken, not that the app did
+      # not launch. The launch verdict needs a human on a real desktop and is
+      # tracked in the plan doc's not-proven list, not here.
+      # ---------------------------------------------------------------------
+
+      # A STABLE dev certificate, when the secrets exist: Windows trusts a
+      # certificate, not a build, so signing every run with the same pfx means
+      # a machine that trusted it once installs every future MSIX without the
+      # trust dance — and the Publisher (derived from the cert by
+      # make-msix.ps1) stays constant, which keeps the PackageFamilyName
+      # stable across builds. Absent the secrets, the per-run throwaway cert
+      # behaviour is unchanged. This is still a SELF-SIGNED dev cert either
+      # way — SignPath replaces it for distribution.
+      - name: Pack and sign the MSIX
+        shell: pwsh
+        env:
+          MSIX_PFX_B64: ${{ secrets.TAILSCREEN_MSIX_PFX_BASE64 }}
+          MSIX_PFX_PASSWORD: ${{ secrets.TAILSCREEN_MSIX_PFX_PASSWORD }}
+        run: |
+          $extra = @{}
+          if ($env:MSIX_PFX_B64) {
+            $pfx = Join-Path $env:RUNNER_TEMP 'tailscreen-msix.pfx'
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:MSIX_PFX_B64))
+            $extra.PfxPath = $pfx
+            if ($env:MSIX_PFX_PASSWORD) { $extra.PfxPassword = $env:MSIX_PFX_PASSWORD }
+            Write-Host "signing with the repo's stable dev certificate"
+          }
+          ./scripts/windows/make-msix.ps1 `
+            -StageDir dist `
+            -OutFile out/Tailscreen.msix `
+            -Version 0.0.1.0 @extra
+
+      # The actual finding. Install → activate by AUMID → does it stay up.
+      # make-msix.ps1 wrote MSIX_PATH/MSIX_PFX into GITHUB_ENV above.
+      - name: Install the MSIX and launch it
+        shell: pwsh
+        env:
+          MSIX_PFX_PASSWORD: ${{ secrets.TAILSCREEN_MSIX_PFX_PASSWORD }}
+        run: |
+          $extra = @{}
+          if ($env:MSIX_PFX_PASSWORD) { $extra.PfxPassword = $env:MSIX_PFX_PASSWORD }
+          ./scripts/windows/verify-msix.ps1 `
+            -MsixPath $env:MSIX_PATH `
+            -PfxPath $env:MSIX_PFX @extra
+
+      # Uploaded whether or not the launch succeeded: an MSIX that installs but
+      # dies is exactly the artifact worth inspecting by hand, and a green-only
+      # upload would withhold it precisely when it is most useful.
+      - name: Upload the MSIX
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: tailscreen-windows-msix-x64
+          path: out/*.msix
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## W8b — MSIX (x64)"
+            echo ""
+            echo "Packs this job's staged dist/, signs it with a **self-signed**"
+            echo "certificate, trusts that cert, installs the package and"
+            echo "activates it by AUMID. Proves installability, NOT"
+            echo "distributability — a real cert needs its private key on"
+            echo "FIPS 140-2 hardware (SignPath's free OSS tier, or a hardware"
+            echo "token); that is a separate W8 decision. Launching by AUMID"
+            echo "rather than by exe path is deliberate: running the exe out of"
+            echo "WindowsApps gives it NO package identity, so it would re-test"
+            echo "the unpackaged path while appearing to test this one."
+          } >> "$GITHUB_STEP_SUMMARY"
+
   # W4 gate: can a Swift program on Windows decode H.264 with libavcodec?
   #
   # This is the load-bearing question for the video stage, and it is worth
@@ -1525,122 +1647,11 @@ jobs:
           Write-Error 'tsnet-probe stalled inside tailscale_new() on arm64 — patch 026 starts the runtime on x64 but not here'
           exit 1
 
-
-      - name: Summary
-        if: always()
-        shell: bash
-        run: |
-          {
-            echo "## W8a — windows/arm64 probe"
-            echo ""
-            echo "Native build on a \`windows-11-arm\` runner. What this job answers:"
-            echo ""
-            echo "- Swift has a Windows arm64 toolchain and the action resolves it"
-            echo "- Go builds the patched libtailscale c-archive for GOARCH=arm64 with cgo"
-            echo "- lld-link joins them and produces an ARM64 PE"
-            echo "- patch 026's \`_rt0_arm64_windows_lib\` entry starts the Go runtime"
-            echo ""
-            echo "Not answered here: the app itself (WinUI, FFmpeg, staging), and a"
-            echo "live tailnet. FFmpeg does publish \`winarm64-lgpl-shared\`, so the"
-            echo "video path has a supply route when the app follows."
-          } >> "$GITHUB_STEP_SUMMARY"
-
-  # W8b — does a PACKAGED Tailscreen install and start?
-  #
-  # Not the same question as "does an MSIX build". A packaged WinUI 3 app is
-  # supposed to resolve its Windows App SDK dependency through the package
-  # graph, while an unpackaged one calls the bootstrapper to find an installed
-  # runtime — the mechanism behind two of the staging bugs this workflow already
-  # carries assertions for. swift-winui initialises through the bootstrapper
-  # either way, and whether that is correct, harmless or fatal inside a package
-  # is not something the docs settle. So this installs it and launches it.
-  #
-  # `needs: app` and downloads that job's artifact rather than rebuilding: the
-  # thing to package IS what the staging step already produced, and a second
-  # 22-minute build to obtain it would be pure waste.
-  #
-  # A failure here is a finding. The verify script reports which of the three
-  # stages broke — install, activate, or stay alive — because "MSIX didn't work"
-  # is not an actionable answer and each stage has a different cause.
-  #
-  # Self-signed, so this proves INSTALLABILITY, not distributability. A cert
-  # whose private key sits on FIPS 140-2 hardware is a separate W8 decision with
-  # a cost attached (docs/viewer-windows-plan.md).
-  #
-  # A REAL GATE now, not exploratory — continue-on-error is deliberately absent.
-  # What it gates is precise, and worth stating so nobody widens it by accident:
-  #
-  #   FATAL   MakeAppx pack, SignTool sign, Add-AppxPackage install, AUMID
-  #           activation, and any loader-level exit (0xC0000135 DLL not found,
-  #           0xC0000139 missing export). These are packaging defects and a
-  #           headless runner can decide them.
-  #   WARNED  A Swift trap after activation (0xC000001D / 0xC0000409). The
-  #           loader was satisfied and our own code aborted, which on a runner
-  #           with no interactive desktop session is indistinguishable from
-  #           WinUI backend init legitimately trapping. The unpackaged
-  #           `Check the app loads` step already tolerates the same codes for
-  #           the same reason; failing here while accepting there would be an
-  #           asymmetry with no justification behind it.
-  #
-  # So a red msix job means the PACKAGE is broken, not that the app did not
-  # launch. The launch verdict needs a human on a real desktop and is tracked in
-  # the plan doc's not-proven list, not here.
-  msix:
-    # A MATRIX over both architectures since the dual-arch decision. The x64 leg
-    # is the hard gate it was before; the arm64 leg runs NATIVELY on a
-    # windows-11-arm runner — which is what makes its install/activate test
-    # meaningful rather than a cross-arch guess. Both legs are HARD GATES
-    # since the arm64 leg went green on f7bab59 (native pack/sign/install/
-    # activate on windows-11-arm). Same scripts both legs: make-msix.ps1 reads the
-    # package architecture from the exe's PE header, and its SDK-tool lookup
-    # already prefers the host architecture's tools.
-    name: MSIX package (${{ matrix.arch }})
-    needs: [app, arm64-probe]
-    if: >-
-      github.event_name != 'pull_request' ||
-      github.event.label.name == 'run-windows-build'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: x64
-            runner: windows-latest
-            artifact: tailscreen-windows-x64
-          - arch: arm64
-            runner: windows-11-arm
-            artifact: tailscreen-windows-arm64
-    runs-on: ${{ matrix.runner }}
-
-    steps:
-      # Only the packaging inputs are needed, not the submodule or the patch
-      # series: the payload arrives prebuilt from `app`.
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Download the staged app
-        uses: actions/download-artifact@v4
-        with:
-          name: ${{ matrix.artifact }}
-          path: dist
-
-      # The artifact is the staging step's output, so this is also a check that
-      # the artifact a human downloads is complete enough to package.
-      - name: Show what arrived
-        shell: bash
-        run: |
-          echo "payload: $(find dist -type f | wc -l) files, $(du -sh dist | cut -f1)"
-          ls -la dist/ | head -30
-          test -f dist/tailscreen.exe || {
-            echo "artifact has no tailscreen.exe" >&2; exit 1; }
-
-      # A STABLE dev certificate, when the secrets exist: Windows trusts a
-      # certificate, not a build, so signing every run with the same pfx means
-      # a machine that trusted it once installs every future MSIX without the
-      # trust dance — and the Publisher (derived from the cert by
-      # make-msix.ps1) stays constant, which keeps the PackageFamilyName
-      # stable across builds. Absent the secrets, the per-run throwaway cert
-      # behaviour is unchanged. This is still a SELF-SIGNED dev cert either
-      # way — SignPath replaces it for distribution.
+      # Same steps and gate classification as the x64 job's MSIX tail — see
+      # the long comment there (packaged-vs-unpackaged, the FATAL/WARNED
+      # split, self-signed proves installability not distributability). This
+      # leg packs and install/activate-tests the arm64 artifact NATIVELY on
+      # this windows-11-arm runner, from the dist/ staged above.
       - name: Pack and sign the MSIX
         shell: pwsh
         env:
@@ -1661,6 +1672,7 @@ jobs:
             -Version 0.0.1.0 @extra
 
       # The actual finding. Install → activate by AUMID → does it stay up.
+      # make-msix.ps1 wrote MSIX_PATH/MSIX_PFX into GITHUB_ENV above.
       - name: Install the MSIX and launch it
         shell: pwsh
         env:
@@ -1679,7 +1691,7 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
-          name: tailscreen-windows-msix-${{ matrix.arch }}
+          name: tailscreen-windows-msix-arm64
           path: out/*.msix
           retention-days: 14
           if-no-files-found: warn
@@ -1689,18 +1701,23 @@ jobs:
         shell: bash
         run: |
           {
-            echo "## W8b — MSIX"
+            echo "## W8a — windows/arm64 probe"
             echo ""
-            echo "Packs the \`app\` job's staged artifact, signs it with a"
-            echo "**self-signed** certificate, trusts that cert, installs the"
-            echo "package and activates it by AUMID."
+            echo "Native build on a \`windows-11-arm\` runner. What this job answers:"
             echo ""
-            echo "Proves installability, NOT distributability — a real cert needs"
-            echo "its private key on FIPS 140-2 hardware (SignPath's free OSS"
-            echo "tier, or a hardware token). That is a separate W8 decision."
+            echo "- Swift has a Windows arm64 toolchain and the action resolves it"
+            echo "- Go builds the patched libtailscale c-archive for GOARCH=arm64 with cgo"
+            echo "- lld-link joins them and produces an ARM64 PE"
+            echo "- patch 026's \`_rt0_arm64_windows_lib\` entry starts the Go runtime"
             echo ""
-            echo "Launching by AUMID rather than by exe path is deliberate:"
-            echo "running the exe out of WindowsApps gives it NO package"
-            echo "identity, so it would re-test the unpackaged path while"
-            echo "appearing to test this one."
+            echo "Not answered here: the app itself (WinUI, FFmpeg, staging), and a"
+            echo "live tailnet. FFmpeg does publish \`winarm64-lgpl-shared\`, so the"
+            echo "video path has a supply route when the app follows."
+            echo ""
+            echo "## W8b — MSIX (arm64)"
+            echo ""
+            echo "Packed from this job's staged dist/, signed (self-signed dev"
+            echo "cert), installed and activated by AUMID natively on this arm64"
+            echo "runner — same steps and FATAL/WARNED gate classification as"
+            echo "the x64 job's MSIX tail."
           } >> "$GITHUB_STEP_SUMMARY"

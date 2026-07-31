@@ -657,10 +657,12 @@ lockfile) → staged with the same `stage-app.sh` / `check-staged-arch.ps1` the
 x64 job uses (extracted from the inline steps for exactly this reason — the
 staging logic was already arch-neutral, taking the runtime from PATH and the
 reference architecture from the exe's own PE header) → uploaded as
-`tailscreen-windows-arm64`. The `msix` job is a **matrix over both
-architectures**, each leg packing its own artifact and install/activate-testing
-it **natively** — the arm64 MSIX is verified on a `windows-11-arm` runner, not
-cross-arch guessed. The x64 leg keeps its hard-gate status; the arm64 legs are
+`tailscreen-windows-arm64`. The MSIX pack/sign/install/activate steps run at
+the **tail of each app job** (formerly a separate `msix` matrix job — folded in
+to drop a runner spin-up and a ~600 MB artifact round-trip per arch), each arch
+packing its own staged dist/ and install/activate-testing it **natively** — the
+arm64 MSIX is verified on a `windows-11-arm` runner, not cross-arch guessed.
+The x64 leg keeps its hard-gate status; the arm64 legs are
 `continue-on-error` until each has been green once, per the same
 flip-on-green convention every other job here followed. Note the version skew
 this bakes in: x64 ships Swift 6.1, arm64 ships 6.3, because 6.1's WinSDK module
