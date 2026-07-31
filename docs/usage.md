@@ -14,9 +14,9 @@ permalink: /usage/
 
 You need a Tailscale account — the free personal tier is fine, and it
 doesn't expire. Sign up at [tailscale.com](https://tailscale.com/),
-install the Tailscale app on every Mac you want to share between, and let
-it add them to your tailnet. Then install Tailscreen on those Macs (see
-[Install]({% link install.md %})).
+install the Tailscale app on every machine you want to share between, and
+let it add them to your tailnet. Then install Tailscreen on those machines
+(see [Install]({% link install.md %})).
 
 You do **not** need to register Tailscreen as a Tailscale device. It spins
 up its own ephemeral tsnet node when you start sharing or connecting, and
@@ -28,12 +28,33 @@ If you'd rather not use Tailscale's hosted control plane — you run
 fully airgapped tailnet — see
 [Self-hosted control planes]({% link self-hosted.md %}).
 
+## Platform notes
+
+Tailscreen is one app on three platforms — macOS, Linux, and Windows — and
+they all speak the same protocol, so any of them can view or share to any
+other. This page uses the macOS app's menus and keyboard shortcuts in its
+examples; the hub window, share card, and viewer work the same everywhere.
+The honest differences:
+
+- **Sharing works everywhere**, with one Linux caveat: capture goes through
+  X11, so a Wayland session can view but not yet share — the app detects
+  this and says so.
+- **Remote control** can be requested from any viewer, but only a macOS or
+  Windows sharer can grant it. The Linux sharer can't inject input yet, so
+  it doesn't advertise the capability and its viewers never see a Request
+  Control button.
+- **Audio capture is macOS-only today.** The mic button and **Share System
+  Audio** exist on the macOS app; Linux and Windows endpoints play back the
+  audio they receive but don't capture any.
+- **Permissions:** Screen Recording and Accessibility prompts are macOS
+  concepts. Linux and Windows have no equivalent gate.
+
 ## Sharing your screen
 
 1. Click the 📺 in the menubar, or open the Tailscreen window.
-2. Pick **Choose what to share…**. macOS's native picker opens — choose a
+2. Pick **Choose what to share…**. The native picker opens — choose a
    display, a single window, or one or more apps.
-3. Approve Screen Recording if macOS asks. (See
+3. On a Mac, approve Screen Recording if macOS asks. (See
    [Install → Permissions]({% link install.md %}#permissions) — the
    permission only takes effect after a relaunch.)
 4. The first time you ever share, Tailscale will open a browser tab to log
@@ -128,7 +149,7 @@ The flow also works in reverse. Expand a peer's row in the Screens list
 and click **Ask to Share** to ask that peer to share *their* screen.
 Clicking it puts a banner in their Tailscreen — "*name* wants you to
 share", with **Share** and **Decline** buttons. If they hit Share, the
-picker opens on their Mac, and you're automatically pre-approved for the
+picker opens on their machine, and you're automatically pre-approved for the
 share that follows — no second approval round-trip.
 
 You'll get one of three outcomes: **Request Accepted** ("…is choosing what
@@ -148,7 +169,7 @@ strip always shows which account a new share will start on.
 ## Annotations
 
 The viewer's toolbar has drawing tools. Doodle on the sharer's screen and
-your strokes appear in a transparent overlay window on their Mac. The
+your strokes appear in a transparent overlay window on their machine. The
 back-channel rides over TCP rather than the lossy UDP video stream — see
 [Network Protocol]({% link protocol.md %}) — so individual stroke segments
 won't drop even if you lose a video frame or two.
@@ -158,8 +179,10 @@ sharing and they're gone.
 
 ## Voice chat
 
-Both sides have a mic button (and **⌃⌥M** works system-wide, even when
-Tailscreen isn't focused). Audio is Opus over the same tunnel as the video.
+Both sides have a mic button on macOS (**⌃⌥M** works system-wide, even when
+Tailscreen isn't focused; other platforms are playback-only for now — see
+[Platform notes](#platform-notes)). Audio is Opus over the same tunnel as
+the video.
 With multiple viewers, everyone hears everyone — the sharer relays each
 viewer's voice to the other viewers. The receive path runs an adaptive
 jitter buffer with packet-loss concealment, so a lossy Wi-Fi link degrades
@@ -167,8 +190,9 @@ into brief soft spots rather than robotic stutter.
 
 ## Sharing system audio
 
-The sharing card has a **Share System Audio** button — everything your Mac
-plays gets captured and streamed to viewers alongside the video. **Mute
+The sharing card has a **Share System Audio** button (macOS — see
+[Platform notes](#platform-notes)) — everything your Mac plays gets
+captured and streamed to viewers alongside the video. **Mute
 System Audio** toggles it back off instantly. If you want it on from the
 start of every share, flip **Share system audio when sharing starts** in
 **Settings → Audio**.
@@ -203,33 +227,35 @@ Zoom to 50% / Zoom to 200% entries are different: those resize the
 
 ## Remote control
 
-A viewer can drive the sharer's Mac — mouse and keyboard — but only after
-an explicit grant, and only one viewer at a time.
+A viewer can drive the sharer's machine — mouse and keyboard — but only
+after an explicit grant, and only one viewer at a time. (Granting requires
+a macOS or Windows sharer — see [Platform notes](#platform-notes).)
 
 **As the viewer:** open the menubar while viewing and click **Request
 Control**. You'll see "Waiting for the sharer to grant control" until the
 sharer answers. Once granted, your clicks and keystrokes in the viewer
-window are injected on their Mac. Click **Stop controlling** when you're
-done.
+window are injected on their machine. Click **Stop controlling** when
+you're done.
 
 **As the sharer:** a request shows up as "*name* wants control" with
 **Grant** and **Deny** buttons (plus a notification if the menubar is
 closed). Before you grant, read the caption:
 
-Granting gives full keyboard and mouse control of your entire Mac — not
-just the shared window.
+Granting gives full keyboard and mouse control of your entire computer —
+not just the shared window.
 {: .warning }
 
 That's not boilerplate. The *pointer* is confined to the shared content
-(a shared window or app can't be used to click your menu bar or Dock),
-but keystrokes land wherever macOS focus is — scoping the keyboard to one
-app isn't something macOS lets us do reliably, so we don't pretend
-otherwise.
+(a shared window or app can't be used to click your menu bar, Dock, or
+taskbar), but keystrokes land wherever the sharer's OS focus is — scoping
+the keyboard to one app isn't something any platform lets us do reliably,
+so we don't pretend otherwise.
 
-The first grant prompts for **Accessibility** permission (System Settings
-→ Privacy & Security → Accessibility) — that's the macOS permission for
-synthesizing input events, separate from Screen Recording. The grant is
-refused until it's given; allow Tailscreen there and grant again.
+On macOS, the first grant prompts for **Accessibility** permission (System
+Settings → Privacy & Security → Accessibility) — that's the macOS
+permission for synthesizing input events, separate from Screen Recording.
+The grant is refused until it's given; allow Tailscreen there and grant
+again. Windows needs no equivalent permission.
 
 Ending it: the **Stop** button in the sharing card, **File → Stop Remote
 Control**, or the **⌃⌥.** panic hotkey — which is registered system-wide
@@ -276,7 +302,8 @@ for stats") so you don't need the overlay open to notice.
 Press **⇧⌘/** in the viewer window (or click the **?** button in its
 toolbar, or pick **Help → Keyboard Shortcuts**) to bring up a cheat sheet
 listing everything below. Hovering any toolbar button also surfaces its
-shortcut.
+shortcut. (These are the macOS app's shortcuts; the in-app cheat sheet is
+always the authority for the build you're running.)
 
 | Shortcut | Action |
 |---|---|
@@ -300,7 +327,7 @@ shortcut.
 
 Either way, the ephemeral tsnet nodes get torn down. Nothing to clean up.
 
-## Testing on one Mac
+## Testing on one machine
 
 You can run the full peer-discovery + connection path on a single machine
 using the bundled launcher:

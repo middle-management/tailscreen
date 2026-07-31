@@ -346,8 +346,8 @@ modifying:
 
 ## What's not here
 
-- **No iOS, no iPadOS.** macOS 15+ only. ScreenCaptureKit on iOS is a
-  different beast, and we're not going there.
+- **No iOS, no iPadOS.** Desktop only — macOS 15+, Linux, and Windows.
+  ScreenCaptureKit on iOS is a different beast, and we're not going there.
 - **No central relay.** Tailscale's DERP is the only fallback when direct
   P2P fails. Even DERP traffic is end-to-end encrypted; the relay only
   sees ciphertext.

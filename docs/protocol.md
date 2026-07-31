@@ -86,7 +86,7 @@ packet:
 - `98` — voice (bidirectional; the sharer also relays each viewer's voice
   to the other viewers, byte-for-byte, after validating the packet's SSRC
   against the one the server assigned that viewer).
-- `99` — system audio (sharer → viewers only; what the sharer's Mac is
+- `99` — system audio (sharer → viewers only; what the sharer's machine is
   playing). Viewers demux by payload type, exactly like video's 96/97.
 
 SSRC allocation is deliberately partitioned: the sharer's voice owns SSRC
@@ -280,7 +280,7 @@ The message types on this channel:
 | `0x03` | `annotation`      | viewer → sharer | An annotation op (stroke, undo, clear).          |
 | `0x04` | `requestToShare`  | peer → peer     | "Please share your screen."                      |
 | `0x05` | `shareResponse`   | receiver → requester | Accept/decline, sent back **on the same connection** the request arrived on. |
-| `0x06` | `controlRequest`  | viewer → sharer | "Let me control your Mac."                       |
+| `0x06` | `controlRequest`  | viewer → sharer | "Let me control your machine."                   |
 | `0x07` | `controlGranted`  | sharer → viewer | You have control.                                |
 | `0x08` | `controlRevoked`  | sharer → viewer | Control ended (`{reason}`).                      |
 | `0x09` | `inputEvent`      | viewer → sharer | Mouse move/down/up/scroll (left/right/middle), key down/up. Coordinates normalized `[0,1]` top-left, same convention as annotations. Keys are **USB HID keyboard-page usage IDs** and modifiers a five-bit platform-neutral set (shift/control/alt/meta/capsLock) — no platform's native keycodes or flag bits ever ride the wire; each endpoint translates (macOS: `MacKeyCodeMapping`). Button/scroll events carry the modifier snapshot too, so modified clicks work. |

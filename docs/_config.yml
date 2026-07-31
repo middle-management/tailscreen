@@ -1,5 +1,5 @@
 title: Tailscreen
-description: Encrypted, low-latency peer-to-peer screen sharing over Tailscale — a native macOS app.
+description: Encrypted, low-latency peer-to-peer screen sharing over Tailscale — native apps for macOS, Linux, and Windows.
 url: https://tailscreen.dev
 baseurl: ""
 repository: middle-management/tailscreen

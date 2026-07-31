@@ -10,11 +10,12 @@ permalink: /install/
 1. TOC
 {:toc}
 
-Three ways in: Homebrew, a release download, or building from source.
-
-Most of this page is about the macOS app. There's also a **Linux desktop
-app** — the GTK build, which both views and shares — with its own section
-[below](#linux).
+Tailscreen runs on **macOS**, **Linux**, and **Windows** — every release
+ships all three from the same
+[Releases page](https://github.com/middle-management/tailscreen/releases).
+Pick your platform: [macOS](#homebrew) (Homebrew or a release download),
+[Linux](#linux) (AppImage or tarball), [Windows](#windows) (zip or MSIX) —
+or [build from source](#from-source).
 
 ## Homebrew
 
@@ -22,12 +23,11 @@ app** — the GTK build, which both views and shares — with its own section
 brew install --cask middle-management/tap/tailscreen
 ```
 
-On macOS the cask drops `Tailscreen.app` into `/Applications` — the same
-signed, notarized universal binary the release page hosts. On Linux the
-*same* cask links the release AppImage instead: one cask carries both
-artifacts, branched on `on_macos` / `on_linux`. It lives in
+The cask drops `Tailscreen.app` into `/Applications` — the same signed,
+notarized universal binary the release page hosts. It lives in
 [middle-management/homebrew-tap](https://github.com/middle-management/homebrew-tap)
-and is bumped on each release.
+and is bumped on each release. (Homebrew casks are macOS-only; on Linux,
+grab the AppImage from the [Linux](#linux) section instead.)
 
 To upgrade later:
 
@@ -41,7 +41,7 @@ To remove:
 brew uninstall --cask tailscreen
 ```
 
-## From a release
+## From a release (macOS)
 
 Go to the [Releases page](https://github.com/middle-management/tailscreen/releases),
 download `Tailscreen-<version>-macOS.zip`, unzip, drag to `/Applications`.
@@ -55,19 +55,25 @@ yell at you the first time you open it.
 ## Linux
 
 The Linux app is the GTK build under `Apps/linux-gtk` — one window that both
-views a peer's screen and shares this machine's. It ships as an **x86_64
-AppImage** attached to the same GitHub release as the Mac app:
+views a peer's screen and shares this machine's. It ships in two flavors,
+attached to the same GitHub release as the Mac app:
 
-```bash
-chmod +x Tailscreen-<version>-x86_64.AppImage
-./Tailscreen-<version>-x86_64.AppImage
-```
+- **x86_64 AppImage** — self-contained, no install step:
 
-Or through Homebrew, which links the same AppImage:
+  ```bash
+  chmod +x Tailscreen-<version>-x86_64.AppImage
+  ./Tailscreen-<version>-x86_64.AppImage
+  ```
 
-```bash
-brew install --cask middle-management/tap/tailscreen
-```
+- **arm64 tarball** (`Tailscreen-<version>-linux-arm64.tar.gz`) — the same
+  app as a plain tarball (the AppImage tooling doesn't ship arm64 builds
+  yet). Unpack it and run the bundled `tailscreen` binary; it needs the
+  distro's GTK4 and GL libraries installed.
+
+The executable is plain `tailscreen`. If you used an earlier release, your
+sign-in carries over — the app migrates the old
+`~/.config/tailscreen-viewer-gtk` state directory to `~/.config/tailscreen`
+automatically on first launch.
 
 Two things to know:
 
@@ -83,10 +89,33 @@ Two things to know:
 A Flatpak manifest exists under `Apps/linux-gtk/packaging/flatpak` but isn't
 published yet; it needs a Swift SDK extension.
 
+## Windows
+
+The Windows app views **and** shares — sign in, watch a peer, or share your
+own screen with remote control and annotations. Each release carries native
+**x64** and **arm64** builds:
+
+- **Zip** (recommended today): download
+  `Tailscreen-<version>-windows-x64.zip` (or `-arm64`), unzip anywhere, run
+  `tailscreen.exe`. Everything it needs — the Swift runtime, the Windows App
+  SDK, FFmpeg — is in the folder; there's no installer and nothing else to
+  install.
+- **MSIX**: a per-arch installer package also sits on the release, but it's
+  currently **self-signed** — Windows won't install it until you trust the
+  signing certificate, which is more hassle than the zip. A trust-chained
+  signature (and with it a `winget install` path) is in progress; until
+  then, use the zip.
+
+Pick the arch that matches your machine — an arm64 laptop runs the arm64
+build natively, and Windows will refuse a mismatched MSIX outright.
+
 ## From source
 
-This section builds the **macOS** app; for the Linux one see
-`Apps/linux-gtk` and `Apps/linux/README.md` in the repository.
+This section builds the **macOS** app. For Linux, see `Apps/linux-gtk` and
+`Apps/linux/README.md` in the repository; for Windows, the build is
+CI-defined — `.github/workflows/windows-build.yml` is the authoritative
+recipe (Swift 6.3 + llvm-mingw for the Go archive), and every CI run uploads
+a runnable app artifact.
 
 The project is Swift Package Manager only — no Xcode project, none
 planned. Builds go through the top-level
@@ -158,18 +187,21 @@ because `libtailscale.a` doesn't exist yet. Run `make build` (or at least
 
 ## Permissions
 
-The first time you share, macOS pops a Screen Recording
-prompt. Approve it in **System Settings → Privacy & Security → Screen
+On macOS, the first time you share, a Screen Recording
+prompt pops up. Approve it in **System Settings → Privacy & Security → Screen
 Recording**, then quit and relaunch — macOS only applies the new
-permission to a restarted process.
+permission to a restarted process. Linux and Windows have no equivalent
+prompt: capture permission is implicit in the session (X11) or granted
+through the system picker (Windows).
 
 ## Uninstall
 
-Quit Tailscreen, drag `Tailscreen.app` to the trash. If you want to nuke the
-ephemeral-node state too:
+- **macOS:** quit Tailscreen, drag `Tailscreen.app` to the trash. State
+  lives in `~/Library/Application Support/Tailscreen` if you want to nuke
+  the ephemeral-node state too.
+- **Linux:** delete the AppImage or tarball directory; state lives in
+  `~/.config/tailscreen`.
+- **Windows:** delete the unzipped folder (or uninstall the MSIX from
+  Settings → Apps).
 
-```bash
-rm -rf ~/Library/Application\ Support/Tailscreen
-```
-
-That's it. There's no installer, no daemon, no LaunchAgent.
+That's it. There's no daemon, no LaunchAgent, no background service.

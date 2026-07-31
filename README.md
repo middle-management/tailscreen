@@ -8,9 +8,9 @@
 
 📖 **Documentation:** <https://tailscreen.dev>
 
-Lightweight screen sharing between Macs, for the times when spinning up a full conferencing app feels like overkill.
+Lightweight screen sharing between your machines, for the times when spinning up a full conferencing app feels like overkill.
 
-Tailscreen is a tiny macOS app that streams one Mac's screen to another Mac over [Tailscale](https://tailscale.com/). It uses ScreenCaptureKit to grab pixels, VideoToolbox to encode HEVC (with H.264 as a fallback for older hardware), and Tailscale's WireGuard tunnel to move bytes. There is no server, no port to forward, and no account to create beyond Tailscale itself.
+Tailscreen is a tiny desktop app — macOS, Linux, and Windows — that streams one computer's screen to another over [Tailscale](https://tailscale.com/). On a Mac it uses ScreenCaptureKit to grab pixels and VideoToolbox to encode HEVC (with H.264 as a fallback for older hardware); on Linux and Windows, X11 capture and Windows.Graphics.Capture feed libavcodec. Every platform speaks the same wire protocol, so any of them can watch any other, and Tailscale's WireGuard tunnel moves the bytes. There is no server, no port to forward, and no account to create beyond Tailscale itself.
 
 You click your display, the other person clicks your machine in their device list, a window opens. That's the whole thing.
 
@@ -20,14 +20,14 @@ You click your display, the other person clicks your machine in their device lis
 - Automatic peer discovery — Tailscreen probes your tailnet and lists which machines are sharing. No IP-typing.
 - Ephemeral tsnet nodes. Each session spins up a fresh node and Tailscale tears it down when you're done; your admin console doesn't fill up with ghosts.
 - Two-way annotations over a reliable TCP back-channel, so strokes don't get dropped when video does.
-- A small, ordinary Mac app: one window for finding peers and signing in, and a menubar icon that carries the sharing controls while you share.
+- A small, ordinary desktop app: one window for finding peers and signing in — plus, on the Mac, a menubar icon that carries the sharing controls while you share.
 
 ## What you need
 
-- macOS 15.2 (Sequoia) or later. Earlier macOS versions, iOS, and Linux aren't supported.
+- macOS 15.2 (Sequoia) or later, Linux (x86_64 or arm64 — X11 to share; Wayland sessions can view), or Windows 10/11 (x64 or arm64), in any combination on the two ends.
 - Swift 6 toolchain if you're building from source. Otherwise just grab a release.
 - A Tailscale account, or a self-hosted control plane like [headscale](https://github.com/juanfont/headscale). The free Tailscale personal tier is fine; see [Self-hosted control planes](https://tailscreen.dev/self-hosted/) if you'd rather not depend on Tailscale Inc.
-- Screen Recording permission. macOS will ask the first time.
+- On a Mac: Screen Recording permission. macOS will ask the first time.
 
 ## Install
 
@@ -42,6 +42,8 @@ Pulls the signed, notarized universal build from the latest release. Cask formul
 ### From a release
 
 Grab the latest `Tailscreen-<version>-macOS.zip` from [Releases](https://github.com/middle-management/tailscreen/releases), unzip, drag to `/Applications`. The release zip is a universal binary, signed and notarized when the build secrets are configured.
+
+The same release carries the **Linux** build (x86_64 AppImage + arm64 tarball) and the **Windows** build (x64 + arm64 zip and MSIX) — see the [Install docs](https://tailscreen.dev/install/) for those.
 
 ### From source
 
@@ -109,7 +111,7 @@ The panel switches to a "Viewing *hostname*" card. **Disconnect** there or close
 
 Ephemeral tsnet nodes get torn down automatically — nothing to clean up in the Tailscale admin console.
 
-## Testing on one Mac
+## Testing on one machine
 
 You can exercise the full peer-discovery path on a single machine:
 
