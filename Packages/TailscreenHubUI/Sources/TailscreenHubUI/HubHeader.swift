@@ -16,16 +16,17 @@ public struct HubAccount: Identifiable, Sendable, Equatable {
     }
 }
 
-/// Thick header standing in for a title bar: the "Tailscreen" wordmark over a
-/// status subtitle on the left, and on the right a spinner while something is
-/// in flight, a Refresh button, and the account menu.
+/// Header bar: the session status on the left, and on the right a spinner
+/// while something is in flight, a Refresh button, and the account menu.
 ///
-/// The macOS app gets this region for free by hiding its title bar and
-/// attaching an empty toolbar so the traffic lights stay centered. Neither GTK
-/// nor WinUI has that trick available through swift-cross-ui, so the header is
-/// ordinary content with a fixed height — which is also why every optional
-/// below hides its control rather than disabling it: an empty header reads as
-/// a title bar, a header full of dead buttons does not.
+/// No "Tailscreen" wordmark here, deliberately. The macOS app hides its native
+/// title bar, so its hub header doubles as one and carries the wordmark; both
+/// swift-cross-ui hosts keep their native title bars — which already say
+/// "Tailscreen" — and repeating it directly underneath read as redundant (it
+/// did, on the first Windows desktop build). The header is ordinary content
+/// with a fixed height, which is also why every optional below hides its
+/// control rather than disabling it: a quiet header reads as chrome, a header
+/// full of dead buttons does not.
 public struct ViewerHeader: View {
     let subtitle: String
     var showSpinner = false
@@ -66,15 +67,10 @@ public struct ViewerHeader: View {
 
     public var body: some View {
         HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Tailscreen")
-                    .font(.headline)
-                    .fontWeight(.bold)
-                Text(subtitle)
-                    .font(.caption)
-                    .foregroundColor(HubStyle.secondaryText)
-                    .lineLimit(1)
-            }
+            Text(subtitle)
+                .font(.body)
+                .foregroundColor(HubStyle.secondaryText)
+                .lineLimit(1)
             Spacer()
             if showSpinner {
                 ProgressView()
