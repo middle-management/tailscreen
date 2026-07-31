@@ -124,10 +124,19 @@ if failed:
     sys.exit(1)
 PYEOF
 
-# WinUI probes for the app-local resource index under this name; the rename
-# also keeps it from colliding with an app's own resources.pri. Same step as
-# SelfContained.targets.
-mv "$distabs/resources.pri" "$distabs/Microsoft.UI.Xaml.Controls.pri"
+# The framework's resources.pri stays NAMED resources.pri — deliberately NOT
+# the Microsoft.UI.Xaml.Controls.pri rename SelfContained.targets performs.
+# That msbuild step renames it so makepri can MERGE it into the app's own
+# generated resources.pri without a collision; nothing at runtime ever loads
+# the renamed file. We have no makepri step and no app-generated resources.pri
+# (SwiftPM emits none), so after the rename the exe directory contained no
+# resource index at all. MRT Core loads `resources.pri` from beside the exe
+# (unpackaged) or the package root (MSIX), and WinUI's first XAML lookup —
+# ms-appx:///Microsoft.UI.Xaml/Themes/themeresources.xaml — resolves through
+# it. With the index renamed away, that lookup threw "Cannot locate resource"
+# on a real desktop AFTER every DLL resolved, the same post-load trap CI's
+# headless MSIX activation showed on both arches.
+[ -f "$distabs/resources.pri" ] || { echo "framework resources.pri missing from payload" >&2; exit 1; }
 
 # License terms travel with the redistributed runtime (license.txt section 3,
 # Distributable Code). Prefixed names so they cannot shadow app-level files.
