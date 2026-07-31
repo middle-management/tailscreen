@@ -35,9 +35,11 @@ import Foundation
 enum ConsoleBridge {
     static func attachOrRedirect() {
         #if os(Windows)
-            // ATTACH_PARENT_PROCESS. `.boolValue`: WinSDK imports BOOL as
-            // `WindowsBool`, which is not a Swift `Bool` in an `if`.
-            if AttachConsole(DWORD(bitPattern: -1)).boolValue {
+            // ATTACH_PARENT_PROCESS. AttachConsole comes through the WinSDK
+            // overlay as a plain Swift `Bool` on this toolchain — a first
+            // attempt wrote `.boolValue` defensively and the compiler answered
+            // "value of type 'Bool' has no member 'boolValue'".
+            if AttachConsole(DWORD(bitPattern: -1)) {
                 _ = freopen("CONOUT$", "w", stdout)
                 _ = freopen("CONOUT$", "w", stderr)
                 return

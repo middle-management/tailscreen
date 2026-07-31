@@ -322,7 +322,11 @@ jobs:
           sha256sum "$FILE" "$APPIMAGE" > checksums-linux-arm64.txt
           echo "file=$FILE" >> "$GITHUB_OUTPUT"
           echo "appimage=$APPIMAGE" >> "$GITHUB_OUTPUT"
-          echo "sha256=$(awk '{print $1}' checksums-linux-arm64.txt)" >> "$GITHUB_OUTPUT"
+          # NR==1: the checksums file has two lines now, and a multi-line
+          # value fed to $GITHUB_OUTPUT this way is rejected ("Invalid
+          # format") — which failed the job AFTER the first arm64 AppImage
+          # had already built successfully.
+          echo "sha256=$(awk 'NR==1{print $1}' checksums-linux-arm64.txt)" >> "$GITHUB_OUTPUT"
           cat checksums-linux-arm64.txt
 
       # Uploaded on EVERY trigger, unlike the appimage job's PR-only artifact:
