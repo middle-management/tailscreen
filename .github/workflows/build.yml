@@ -520,12 +520,11 @@ jobs:
     #   • runs the same headless GL YUV-readback self-test — the proof
     #     this is a real leg (llvmpipe renders + BT.709 math verified on
     #     arm64), not compile-only,
-    #   • stages + uploads `tailscreen-linux-arm64.tar.gz`, the arm64
-    #     counterpart of release-linux.yml's x86_64 AppImage. A plain
-    #     tarball, not an AppImage: the linuxdeploy/appimagetool flow in
-    #     release-linux.yml is x86_64-only today (its download URLs are
-    #     literally *-x86_64.AppImage); an arm64 AppImage is a follow-up
-    #     for the release workflow, not a per-PR gate.
+    #   • stages + uploads `tailscreen-linux-arm64.tar.gz`. A plain tarball
+    #     here on purpose: the arm64 AppImage exists, but it lives in
+    #     release-linux.yml's tarball-arm64 job (aarch64 linuxdeploy +
+    #     appimagetool) — AppImage assembly is a packaging concern, not a
+    #     per-PR gate, exactly as the x86_64 AppImage is release-only too.
     # Caching is intentionally omitted, matching every sibling container
     # job: setup-go's tool cache doesn't apply inside the container (see
     # linux-tailscalekit) — apt's golang-go and a fresh module download

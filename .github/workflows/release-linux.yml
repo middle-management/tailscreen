@@ -176,10 +176,13 @@ jobs:
             echo "The SHA-256 is what the tap's cask needs in its \`on_linux\` block."
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # The arm64 leg — a plain tarball, not an AppImage: the linuxdeploy +
-  # appimagetool flow above is x86_64-only today (their release download URLs
-  # are literally *-x86_64.AppImage; neither project publishes arm64 binaries),
-  # so an arm64 AppImage stays a noted follow-up until they do.
+  # The arm64 leg — an AppImage AND a plain tarball. An earlier version of
+  # this job claimed linuxdeploy/appimagetool publish no arm64 binaries and
+  # shipped only the tarball; that claim was checked and is false — both
+  # projects' `continuous` releases carry *-aarch64.AppImage builds — so the
+  # AppImage is built here with the same script as the x86_64 job, just with
+  # aarch64 tools. The tarball stays: it needs neither FUSE nor an AppImage
+  # runtime on the target box, which some arm devices lack.
   #
   # This job mirrors build.yml's `linux-app-arm64` gate: same runner
   # (GitHub's free ubuntu-24.04-arm), same multi-arch swift:6.1-noble
@@ -195,7 +198,7 @@ jobs:
   # artifact doubles as the PR-build deliverable exactly like the appimage
   # job's split.
   tarball-arm64:
-    name: Build arm64 tarball
+    name: Build arm64 package
     if: >-
       github.event_name != 'pull_request' ||
       github.event.label.name == 'build-linux-package'
@@ -222,13 +225,32 @@ jobs:
 
       - name: Install GTK4 + GL + headless display + A/V + Go
         # Same set as build.yml's linux-app-arm64 job — see linux-gtk-viewer's
-        # comment there for why each package is needed. All multi-arch in noble.
+        # comment there for why each package is needed — plus the AppImage
+        # assembly extras the x86_64 job installs (librsvg for the icon,
+        # desktop-file-utils + file for linuxdeploy, curl to fetch the tools).
+        # All multi-arch in noble.
         run: |
           apt-get update && apt-get install -y --no-install-recommends \
             libgtk-4-dev gir1.2-gtk-4.0 libgirepository1.0-dev libepoxy-dev \
             libgl1-mesa-dri xvfb libopus-dev pkg-config \
             golang-go make gcc libc6-dev \
-            libavcodec-dev libavutil-dev libasound2-dev
+            libavcodec-dev libavutil-dev libasound2-dev \
+            librsvg2-bin file desktop-file-utils curl ca-certificates
+
+      - name: Install linuxdeploy + appimagetool (aarch64)
+        # The aarch64 twins of the x86_64 job's tools — both projects publish
+        # them on their `continuous` releases. The gtk plugin is an
+        # arch-neutral shell script.
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          base=https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous
+          curl -fsSL "$base/linuxdeploy-aarch64.AppImage" -o "$HOME/.local/bin/linuxdeploy"
+          curl -fsSL "https://github.com/linuxdeploy/linuxdeploy-plugin-gtk/raw/master/linuxdeploy-plugin-gtk.sh" \
+            -o "$HOME/.local/bin/linuxdeploy-plugin-gtk.sh"
+          curl -fsSL "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-aarch64.AppImage" \
+            -o "$HOME/.local/bin/appimagetool"
+          chmod +x "$HOME/.local/bin/linuxdeploy" "$HOME/.local/bin/linuxdeploy-plugin-gtk.sh" "$HOME/.local/bin/appimagetool"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Build libtailscale (patched) for linux/arm64
         # Go targets the host arch — arm64 here. GOFLAGS: dubious-ownership
@@ -258,13 +280,25 @@ jobs:
           test "$status" -eq 0
           grep -q 'CGTKVIDEO_SELFTEST result=PASS' /tmp/gtk-selftest.log
 
-      - name: Stage tarball
+      - name: Build the AppImage
+        # Same script as the x86_64 job. The app + c-archive are already built
+        # by the steps above, so the script's own build steps are incremental
+        # no-ops; what runs here is the AppDir assembly + linuxdeploy. The
+        # container has no FUSE, hence APPIMAGE_EXTRACT_AND_RUN — the same
+        # arrangement the x86_64 job uses on the hosted runner.
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: '1'
+          OUTPUT: Tailscreen-${{ steps.version.outputs.version }}-aarch64.AppImage
+        run: Apps/linux-gtk/packaging/appimage/build-appimage.sh
+
+      - name: Stage tarball + checksums
         id: pkg
         # Launch notes generated here, same approach (and same text) as
         # build.yml's linux-app-arm64 job — the artifact's inputs stay the
         # binary + this workflow file.
         run: |
           set -eu
+          APPIMAGE="Tailscreen-${{ steps.version.outputs.version }}-aarch64.AppImage"
           FILE="Tailscreen-${{ steps.version.outputs.version }}-linux-arm64.tar.gz"
           STAGE=dist/tailscreen-linux-arm64
           mkdir -p "$STAGE"
@@ -285,8 +319,9 @@ jobs:
           Apps/linux-gtk/packaging/README.md for packaged install channels.
           EOF
           tar -C dist -czf "$FILE" tailscreen-linux-arm64
-          sha256sum "$FILE" > checksums-linux-arm64.txt
+          sha256sum "$FILE" "$APPIMAGE" > checksums-linux-arm64.txt
           echo "file=$FILE" >> "$GITHUB_OUTPUT"
+          echo "appimage=$APPIMAGE" >> "$GITHUB_OUTPUT"
           echo "sha256=$(awk '{print $1}' checksums-linux-arm64.txt)" >> "$GITHUB_OUTPUT"
           cat checksums-linux-arm64.txt
 
@@ -299,6 +334,7 @@ jobs:
           name: ${{ steps.pkg.outputs.file }}
           path: |
             ${{ steps.pkg.outputs.file }}
+            ${{ steps.pkg.outputs.appimage }}
             checksums-linux-arm64.txt
           retention-days: 14
           if-no-files-found: error
@@ -310,8 +346,9 @@ jobs:
             echo ""
             echo "| | |"
             echo "|---|---|"
-            echo "| File | \`${{ steps.pkg.outputs.file }}\` |"
-            echo "| SHA-256 | \`${{ steps.pkg.outputs.sha256 }}\` |"
+            echo "| AppImage | \`${{ steps.pkg.outputs.appimage }}\` |"
+            echo "| Tarball | \`${{ steps.pkg.outputs.file }}\` |"
+            echo "| SHA-256 (tarball) | \`${{ steps.pkg.outputs.sha256 }}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
 
   # The non-container half of tarball-arm64: swift:6.1-noble has no `gh`, so
@@ -319,7 +356,7 @@ jobs:
   # artifact the container job handed over. PR builds skip this by design —
   # there is no release to upload to.
   upload-arm64:
-    name: Upload arm64 tarball to the release
+    name: Upload arm64 package to the release
     needs: tarball-arm64
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
@@ -338,7 +375,7 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Download the tarball
+      - name: Download the package artifact
         uses: actions/download-artifact@v4
         with:
           name: Tailscreen-${{ steps.version.outputs.version }}-linux-arm64.tar.gz
@@ -349,4 +386,5 @@ jobs:
         run: |
           gh release upload "${{ steps.version.outputs.tag }}" \
             "Tailscreen-${{ steps.version.outputs.version }}-linux-arm64.tar.gz" \
+            "Tailscreen-${{ steps.version.outputs.version }}-aarch64.AppImage" \
             checksums-linux-arm64.txt --clobber

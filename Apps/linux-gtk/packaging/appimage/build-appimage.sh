@@ -38,7 +38,9 @@ BIN_NAME="tailscreen"
 ICON_NAME="tailscreen"                 # AppImage icon basename (matches Icon= below)
 BUILD_DIR="Apps/linux-gtk/.build/release"
 APPDIR="${APPDIR:-$REPO_ROOT/Apps/linux-gtk/.build/AppDir}"
-OUTPUT="${OUTPUT:-$REPO_ROOT/Tailscreen-x86_64.AppImage}"
+# Arch-aware default: linuxdeploy/appimagetool ship aarch64 builds too, and
+# this script is arch-neutral — the tools on PATH decide the target.
+OUTPUT="${OUTPUT:-$REPO_ROOT/Tailscreen-$(uname -m).AppImage}"
 
 echo "==> Checking required tools"
 missing=0
