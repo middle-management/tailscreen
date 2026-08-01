@@ -14,8 +14,7 @@ name: Release
 #
 # WHAT SHIPS
 #   macOS    universal signed+notarized Tailscreen.app zip     (app-macos.yml)
-#   Linux    x86_64 AppImage                                   (steps below)
-#            arm64 AppImage + tarball                          (app-linux.yml)
+#   Linux    AppImage + tarball, per arch                      (app-linux.yml)
 #   Windows  per-arch zip + self-signed MSIX                   (app-windows.yml)
 #
 # TRIGGERS
@@ -26,8 +25,14 @@ name: Release
 #     broken at tag time. Each platform has its own label:
 #         build-linux-package     → the Linux jobs
 #         build-windows-package   → the Windows jobs
-#     macOS deliberately has none here: pr-notarized-build.yml already owns the
-#     PR-shaped macOS build, including the label dance and the result comment.
+#         build:notarized         → the macOS job
+#     The macOS one is different in kind: a signed, notarized .app is the ONLY
+#     way to exercise UNUserNotificationCenter, TCC prompts and Gatekeeper (a
+#     `swift build` binary has no CFBundleIdentifier), so that build is a
+#     deliverable in its own right rather than a packaging rehearsal. It used to
+#     live in its own workflow, pr-notarized-build.yml, which is what brought
+#     the label-removal and result-comment machinery with it — machinery Linux
+#     and Windows lacked for no reason, and now share.
 #   • workflow_dispatch — manual, against an existing tag.
 #
 # NO `concurrency:` BLOCK, deliberately. `pull_request: [labeled]` fires once
@@ -35,11 +40,16 @@ name: Release
 # THIS workflow — one where the Linux jobs run and the Windows ones skip, one
 # where the reverse happens. Both are wanted. A naive group keyed on the ref
 # would put them in the same bucket and let the second cancel the first
-# mid-build; that exact bug has already been fixed twice in this repo
-# (windows-build.yml, pr-notarized-build.yml) by adding the label name to the
-# group. Here the honest answer is simpler: these runs do not conflict, so do
-# not group them. Neither release-linux.yml nor release-windows.yml had a
-# concurrency block either — this preserves that, it does not introduce it.
+# mid-build; that exact bug has already been fixed twice in this repo by adding
+# the label name to the group. Here the honest answer is simpler: these runs do
+# not conflict, so do not group them. Neither release-linux.yml nor
+# release-windows.yml had a concurrency block, so this preserves their
+# behaviour rather than introducing something.
+#
+# The one thing lost with pr-notarized-build.yml's own group: re-adding
+# `build:notarized` while a build is running no longer cancels the older one.
+# Both finish and the later comment wins. Cheap, and the alternative reopens
+# the cancel-the-wrong-run bug above.
 #
 # SIGNING. macOS signs + notarizes only when ALL of these are set; otherwise an
 # unsigned .app is uploaded with a warning (which is also what a fork PR gets):
@@ -86,7 +96,8 @@ jobs:
     if: >-
       github.event_name != 'pull_request' ||
       github.event.label.name == 'build-linux-package' ||
-      github.event.label.name == 'build-windows-package'
+      github.event.label.name == 'build-windows-package' ||
+      github.event.label.name == 'build:notarized'
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.version.outputs.tag }}
@@ -128,207 +139,165 @@ jobs:
           echo "msix_version=$msix_version" >> "$GITHUB_OUTPUT"
           echo "tag=$tag version=$version msix_version=$msix_version"
 
+  # Remove the trigger label as soon as the run starts, so re-adding it kicks
+  # off a fresh build against the latest PR head.
+  #
+  # GitHub does not fire `labeled` for a label that is already present, so
+  # without this a rebuild means manually removing and re-adding. macOS has had
+  # this since pr-notarized-build.yml; Linux and Windows did not, which was an
+  # asymmetry with no reason behind it — one implementation now covers all
+  # three.
+  #
+  # Its own job because a job that calls a reusable workflow can carry no steps,
+  # and FIRST so a failed or cancelled run never leaves a stale label implying
+  # the build is still coming. `continue-on-error` because failing to tidy a
+  # label must not fail the build the label asked for.
+  unlabel:
+    name: Remove trigger label
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Remove trigger label
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LABEL: ${{ github.event.label.name }}
+        run: |
+          gh api -X DELETE \
+            "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/labels/$LABEL" \
+            || true
+
   # ---------------------------------------------------------------------------
   # macOS — universal (arm64 + x86_64), signed, notarized, stapled.
-  #
-  # Release and dispatch only: there is no macOS package label, because
-  # pr-notarized-build.yml already builds a PR's .app on `build:notarized` and
-  # comments the result. Two workflows offering the same PR build under
-  # different labels would be a worse answer than one.
   # ---------------------------------------------------------------------------
   macos:
     name: macOS
-    needs: version
-    if: github.event_name != 'pull_request'
+    needs: [version, unlabel]
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.label.name == 'build:notarized'
     uses: ./.github/workflows/app-macos.yml
     with:
-      # The tag is both what gets built and what the assets are uploaded to.
-      ref: ${{ needs.version.outputs.tag }}
-      tag: ${{ needs.version.outputs.tag }}
-      upload_to_release: true
-      # A shipped artifact is compiled from source on the runner that ships it,
-      # never restored from a key a per-push workflow wrote. Same policy on
-      # every platform below — see app-windows.yml's header on `use_cache`.
-      cache: false
+      # Release/dispatch builds the tag exactly. A PR build takes the PR head —
+      # this is the one platform where a PR build is a first-class deliverable
+      # rather than a packaging rehearsal, because a signed, notarized .app is
+      # the ONLY way to exercise UNUserNotificationCenter, TCC prompts and
+      # Gatekeeper; a `swift build` binary has no CFBundleIdentifier at all.
+      ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || needs.version.outputs.tag }}
+      tag: ${{ github.event_name == 'pull_request' && '' || needs.version.outputs.tag }}
+      # macOS wants a numeric CFBundleShortVersionString; the SHA rides the
+      # artifact name, not the plist.
+      version: ${{ github.event_name == 'pull_request' && format('0.0.{0}', github.event.pull_request.number) || needs.version.outputs.version }}
+      label: ${{ github.event_name == 'pull_request' && format('pr{0}', github.event.pull_request.number) || '' }}
+      include_commit_in_name: ${{ github.event_name == 'pull_request' }}
+      # A PR build goes to a workflow artifact; a release goes to the release.
+      upload_artifact: ${{ github.event_name == 'pull_request' }}
+      upload_to_release: ${{ github.event_name != 'pull_request' }}
+      # POLICY, and the one place the two diverge deliberately: a shipped
+      # artifact is compiled from source on the runner that ships it, while a
+      # PR smoke-test build takes the cache because fast turnaround is the
+      # entire point of asking for one.
+      cache: ${{ github.event_name == 'pull_request' }}
     secrets: inherit
 
   # ---------------------------------------------------------------------------
-  # Linux x86_64 — AppImage.
+  # Linux — an AppImage per architecture, plus a tarball on arm64.
   #
-  # NOT folded into app-linux.yml, unlike the arm64 leg. This job uses a host
-  # runner with swift-actions/setup-swift and sudo apt rather than the
-  # swift:6.1-noble container the arm64 leg runs in, and it builds the artifact
-  # most users actually download. The arm64 leg is evidence it would probably
-  # port, but "probably" is not a good enough reason to rewrite the x86_64
-  # release path with no way to test it short of cutting a release.
+  # Both arches go through app-linux.yml. An earlier revision of this file kept
+  # x86_64 as a separate hand-written job on a HOST runner (swift-actions/
+  # setup-swift + sudo apt) rather than the swift:6.1-noble container, on the
+  # reasoning that it builds the artifact most users download and could not be
+  # tested short of cutting a release.
+  #
+  # Both halves of that were wrong. app-linux.yml ALREADY accepts `arch: x64`
+  # (it selects ubuntu-latest, sets APPIMAGE_ARCH=x86_64, installs librsvg2-bin
+  # so the icon renders, and sets APPIMAGE_EXTRACT_AND_RUN=1 so it needs no
+  # FUSE) — the x64 path was fully wired and had simply never been called. And
+  # it IS testable: `build-linux-package` on a pull request runs exactly this
+  # job. The duplicate was a host-runner reimplementation of a container path
+  # that already existed and is exercised on arm64 every push.
+  #
+  # BOTH arches ask for `tarball+appimage`, x86_64 included, because
+  # app-linux.yml's "Stage package + checksums" step builds the tarball
+  # unconditionally for any non-`none` package and names the upload artifact
+  # after it. Passing `appimage` for x64 would produce a tarball anyway and
+  # only make the input lie about it.
+  #
+  # TWO RELEASE-ASSET CHANGES on x86_64, both from adopting the container
+  # path's naming:
+  #   • `checksums-linux.txt` is now `checksums-linux-x86_64.txt`. The
+  #     Homebrew tap lives in another repo and may reference the old name —
+  #     check it before the next release.
+  #   • a `Tailscreen-<version>-linux-x86_64.tar.gz` now ships alongside the
+  #     AppImage. Additive, and the same no-FUSE escape hatch arm64 already had.
+  # The AppImage filename is unchanged (`Tailscreen-<version>-x86_64.AppImage`).
   # ---------------------------------------------------------------------------
-  linux-appimage:
-    name: Linux (AppImage x86_64)
+  linux:
+    name: Linux (${{ matrix.arch }})
     needs: version
     if: >-
       github.event_name != 'pull_request' ||
       github.event.label.name == 'build-linux-package'
-    runs-on: ubuntu-latest
-
-    env:
-      APP_ID: dev.tailscreen.Tailscreen
-      PRODUCT: tailscreen
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          # For a release/dispatch build, build the tag exactly. For a PR build,
-          # take the PR head (the default checkout ref).
-          ref: ${{ github.event_name == 'pull_request' && github.ref || needs.version.outputs.tag }}
-          submodules: recursive
-
-      - name: Install Swift + build dependencies
-        # The Linux app's own deps (see the linux-app CI job) plus the sharer's
-        # capture/encode libs (libxcb, libavcodec), plus librsvg so the AppImage
-        # script renders a real icon rather than its 1x1 placeholder, plus FUSE
-        # for appimagetool.
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libgtk-4-dev gir1.2-gtk-4.0 libgirepository1.0-dev libepoxy-dev \
-            libglib2.0-dev libgl1-mesa-dri libopus-dev pkg-config make gcc \
-            libc6-dev libavcodec-dev libavutil-dev libasound2-dev \
-            libxcb1-dev libxcb-shm0-dev librsvg2-bin file desktop-file-utils \
-            libfuse2 curl
-
-      - name: Setup Swift
-        uses: swift-actions/setup-swift@v2
-        with:
-          swift-version: '6.1'
-
-      - name: Install linuxdeploy + appimagetool
-        run: |
-          mkdir -p "$HOME/.local/bin"
-          base=https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous
-          curl -fsSL "$base/linuxdeploy-x86_64.AppImage" -o "$HOME/.local/bin/linuxdeploy"
-          curl -fsSL "https://github.com/linuxdeploy/linuxdeploy-plugin-gtk/raw/master/linuxdeploy-plugin-gtk.sh" \
-            -o "$HOME/.local/bin/linuxdeploy-plugin-gtk.sh"
-          curl -fsSL "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage" \
-            -o "$HOME/.local/bin/appimagetool"
-          chmod +x "$HOME/.local/bin/linuxdeploy" "$HOME/.local/bin/linuxdeploy-plugin-gtk.sh" "$HOME/.local/bin/appimagetool"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
-      # cache: false — see the macos job above; same policy, same reason.
-      - name: Build libtailscale (Go c-archive)
-        uses: ./.github/actions/bootstrap
-        with:
-          libtailscale: host
-          cache: 'false'
-
-      - name: Build the AppImage
-        env:
-          # appimagetool needs this on runners without a usable FUSE mount.
-          APPIMAGE_EXTRACT_AND_RUN: '1'
-          OUTPUT: Tailscreen-${{ needs.version.outputs.version }}-x86_64.AppImage
-        run: Apps/linux-gtk/packaging/appimage/build-appimage.sh
-
-      - name: Checksums
-        id: pkg
-        run: |
-          FILE="Tailscreen-${{ needs.version.outputs.version }}-x86_64.AppImage"
-          sha256sum "$FILE" > checksums-linux.txt
-          echo "file=$FILE" >> "$GITHUB_OUTPUT"
-          echo "sha256=$(awk '{print $1}' checksums-linux.txt)" >> "$GITHUB_OUTPUT"
-          cat checksums-linux.txt
-
-      # A PR build proves the packaging still works; it deliberately does NOT
-      # upload to a release (there isn't one). The artifact is downloadable from
-      # the run for a human to try.
-      - name: Upload build artifact (PR builds)
-        if: github.event_name == 'pull_request'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ steps.pkg.outputs.file }}
-          path: |
-            ${{ steps.pkg.outputs.file }}
-            checksums-linux.txt
-          retention-days: 14
-
-      - name: Upload to the release
-        if: github.event_name != 'pull_request'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release upload "${{ needs.version.outputs.tag }}" \
-            "${{ steps.pkg.outputs.file }}" checksums-linux.txt --clobber
-
-      - name: Summary
-        run: |
-          {
-            echo "## Linux package"
-            echo ""
-            echo "| | |"
-            echo "|---|---|"
-            echo "| File | \`${{ steps.pkg.outputs.file }}\` |"
-            echo "| SHA-256 | \`${{ steps.pkg.outputs.sha256 }}\` |"
-            echo ""
-            echo "The SHA-256 is what the tap's cask needs in its \`on_linux\` block."
-          } >> "$GITHUB_STEP_SUMMARY"
-
-  # ---------------------------------------------------------------------------
-  # Linux arm64 — AppImage AND a plain tarball.
-  #
-  # An earlier version claimed linuxdeploy/appimagetool publish no arm64
-  # binaries and shipped only the tarball; that was checked and is false — both
-  # projects' `continuous` releases carry *-aarch64.AppImage builds. The tarball
-  # stays because it needs neither FUSE nor an AppImage runtime on the target
-  # box, which some arm devices lack.
-  #
-  # The steps live in app-linux.yml, shared with build.yml's `linux-app-arm64`
-  # gate — same runner, container, apt set, release build, Xvfb GL YUV-readback
-  # self-test, and the same hand-written README.txt inside the tarball, which
-  # used to be duplicated down to its wording. So what ships is gated on
-  # actually RENDERING rather than merely compiling, from one definition rather
-  # than two that happened to agree.
-  # ---------------------------------------------------------------------------
-  linux-arm64:
-    name: Linux (arm64)
-    needs: version
-    if: >-
-      github.event_name != 'pull_request' ||
-      github.event.label.name == 'build-linux-package'
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, arm64]
     uses: ./.github/workflows/app-linux.yml
     with:
-      arch: arm64
+      arch: ${{ matrix.arch }}
+      package: tarball+appimage
+      # For a release/dispatch build, build the tag exactly. For a PR build,
+      # take the PR head.
       ref: ${{ github.event_name == 'pull_request' && github.ref || needs.version.outputs.tag }}
       version: ${{ needs.version.outputs.version }}
-      package: tarball+appimage
+      package: ${{ matrix.package }}
+      # A shipped artifact is compiled from source on the runner that ships it.
       use_cache: false
 
-  # The non-container half of linux-arm64: swift:6.1-noble has no `gh`, so the
+  # The non-container half of `linux`: swift:6.1-noble has no `gh`, so the
   # release upload runs here on ubuntu-latest (gh preinstalled) from the
-  # artifact the container job handed over. Bolting the GitHub CLI apt repo
-  # (keyring + sources.list + update) onto the container would be more moving
-  # parts, and the artifact doubles as the PR-build deliverable exactly like the
-  # AppImage job's split above.
+  # artifacts the container jobs handed over. Bolting the GitHub CLI apt repo
+  # (keyring + sources.list + update) into the container would be more moving
+  # parts, and the artifact doubles as the PR-build deliverable.
+  #
+  # Matrixed alongside `linux` rather than arm64-only: now that x86_64 also
+  # builds in the container, it needs the same handoff. The per-arch filename
+  # fragments are matrix fields instead of repeated ternaries — PACKAGE_ARCH
+  # and APPIMAGE_ARCH differ on arm64 (`arm64` vs `aarch64`) and coincide on
+  # x64 (`x86_64`), which is exactly the sort of near-miss worth naming once.
   #
   # PR builds skip this by design — there is no release to upload to.
-  linux-upload-arm64:
-    name: Upload arm64 package to the release
-    needs: [version, linux-arm64]
+  linux-upload:
+    name: Upload Linux ${{ matrix.arch }} to the release
+    needs: [version, linux]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            package_arch: x86_64
+            appimage_arch: x86_64
+          - arch: arm64
+            package_arch: arm64
+            appimage_arch: aarch64
     steps:
       - name: Download the package artifact
         uses: actions/download-artifact@v4
         with:
-          name: Tailscreen-${{ needs.version.outputs.version }}-linux-arm64.tar.gz
+          name: Tailscreen-${{ needs.version.outputs.version }}-linux-${{ matrix.package_arch }}.tar.gz
 
       - name: Upload to the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release upload "${{ needs.version.outputs.tag }}" \
-            "Tailscreen-${{ needs.version.outputs.version }}-linux-arm64.tar.gz" \
-            "Tailscreen-${{ needs.version.outputs.version }}-aarch64.AppImage" \
-            checksums-linux-arm64.txt --clobber
+            "Tailscreen-${{ needs.version.outputs.version }}-linux-${{ matrix.package_arch }}.tar.gz" \
+            "Tailscreen-${{ needs.version.outputs.version }}-${{ matrix.appimage_arch }}.AppImage" \
+            "checksums-linux-${{ matrix.package_arch }}.txt" --clobber
 
   # ---------------------------------------------------------------------------
   # Windows — a zip and a self-signed MSIX per architecture.
@@ -372,3 +341,43 @@ jobs:
       verify_msix: false
       upload_to_release: ${{ github.event_name != 'pull_request' }}
     secrets: inherit
+
+  # Tell the PR what came out. Only for `build:notarized`, whose whole purpose
+  # is handing a human a testable .app — the package labels produce artifacts a
+  # reader can find on the run, and a comment per label would be noise.
+  #
+  # `--repo` is REQUIRED: this job has no checkout (it cannot, being a sibling
+  # of reusable-workflow calls), so gh has no git remote to infer from and
+  # exits "fatal: not a git repository".
+  comment:
+    name: Comment result on PR
+    needs: macos
+    if: always() && github.event_name == 'pull_request' && github.event.label.name == 'build:notarized'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Comment result on PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APP_NAME: Tailscreen
+          SHORT: ${{ needs.macos.outputs.short_sha }}
+          SIGNED: ${{ needs.macos.outputs.signed }}
+          RESULT: ${{ needs.macos.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [ "$RESULT" = "success" ]; then
+            if [ "$SIGNED" = "true" ]; then
+              state="✅ Signed + notarized \`${APP_NAME}.app\` built for \`${SHORT}\`."
+            else
+              state="⚠️ **Unsigned** \`${APP_NAME}.app\` built for \`${SHORT}\` (signing secrets unavailable — fork PR?)."
+            fi
+            body="${state}
+
+          Download the artifact from the [workflow run](${RUN_URL}) (GitHub login required). Re-add the \`build:notarized\` label to rebuild against the latest commit."
+          else
+            body="❌ Notarized build failed for \`${SHORT:-this commit}\`. See the [workflow run](${RUN_URL}) for details."
+          fi
+          gh pr comment "${{ github.event.pull_request.number }}" \
+            --repo "${{ github.repository }}" --body "$body"

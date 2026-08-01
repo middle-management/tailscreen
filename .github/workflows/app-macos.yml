@@ -2,7 +2,8 @@ name: macOS app
 
 # ONE definition of "build a universal, signed, notarized Tailscreen.app".
 #
-# release.yml and pr-notarized-build.yml used to carry that definition twice,
+# release.yml's release job and pr-notarized-build.yml used to carry that
+# definition twice,
 # and the two copies shared ELEVEN identical steps: Setup Go, Apply
 # libtailscale patches, Build universal libtailscale.a, Build universal static
 # libopus, Build universal Tailscreen binary, Assemble Tailscreen.app, Check
@@ -17,7 +18,7 @@ name: macOS app
 # ref, what version string, what the zip is called, and where the result goes
 # (a GitHub Release, or a workflow artifact for a human to try).
 #
-# SECURITY: callers pass `secrets: inherit`. pr-notarized-build.yml triggers on
+# SECURITY: callers pass `secrets: inherit`. release.yml's PR path triggers on
 # `pull_request` (NOT `pull_request_target`), so a fork PR gets no secrets and
 # falls through to the unsigned path. Nothing here changes that: the signing
 # gate is "are all five secrets non-empty", evaluated at run time.
