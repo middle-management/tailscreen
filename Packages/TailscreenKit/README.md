@@ -100,7 +100,7 @@ PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" \
 ```
 
 CI's `linux-protocol` job (`.github/workflows/build.yml`) runs exactly this
-inside a `swift:6.1-noble` container on every PR — that job is what
+inside a `swift:6.3-noble` container on every PR — that job is what
 *enforces* the portability boundary.
 
 ## Rules for files in the portable set

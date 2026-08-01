@@ -1,6 +1,6 @@
 name: Linux app
 
-# ONE definition of "build the GTK app in the swift:6.1-noble container, prove
+# ONE definition of "build the GTK app in the swift:6.3-noble container, prove
 # it renders, and package it".
 #
 # build.yml's `linux-app-arm64` and release.yml's `linux-arm64` were
@@ -76,14 +76,14 @@ on:
 
 jobs:
   build:
-    # GitHub's free arm64 runner for public repos, with the SAME swift:6.1-noble
+    # GitHub's free arm64 runner for public repos, with the SAME swift:6.3-noble
     # container as every other Linux job: the library/swift image is multi-arch
     # (amd64 + arm64, verified on Docker Hub), so the apt package set and job
     # shape stay identical across architectures and there is no
     # swift.org-tarball toolchain install to maintain.
     runs-on: ${{ inputs.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     timeout-minutes: 40
-    container: swift:6.1-noble
+    container: swift:6.3-noble
 
     env:
       APPIMAGE_ARCH: ${{ inputs.arch == 'arm64' && 'aarch64' || 'x86_64' }}
@@ -165,10 +165,10 @@ jobs:
         with:
           path: Apps/linux-gtk/.build
           key: >-
-            linux-gtk-build-swift6.1-noble-${{ runner.os }}-${{ runner.arch
+            linux-gtk-build-swift6.3-noble-${{ runner.os }}-${{ runner.arch
             }}-${{ inputs.configuration }}-${{ hashFiles('Apps/linux-gtk/Package.resolved') }}
           restore-keys: |
-            linux-gtk-build-swift6.1-noble-${{ runner.os }}-${{ runner.arch }}-${{ inputs.configuration }}-
+            linux-gtk-build-swift6.3-noble-${{ runner.os }}-${{ runner.arch }}-${{ inputs.configuration }}-
 
       - name: Build the app
         # PKG_CONFIG_PATH resolves libtailscale.pc for the tsnet transport;
@@ -270,7 +270,7 @@ jobs:
 
       # Uploaded on EVERY trigger: for a per-push or PR build it is the
       # deliverable, for a release build it is the hand-off to the caller's
-      # upload job — `gh` is not installed in swift:6.1-noble, so the release
+      # upload job — `gh` is not installed in swift:6.3-noble, so the release
       # upload cannot happen here.
       - name: Upload build artifact
         if: inputs.package != 'none'
@@ -311,5 +311,5 @@ jobs:
             Apps/linux-gtk/.build
             !Apps/linux-gtk/.build/**/${{ inputs.configuration }}/tailscreen
           key: >-
-            linux-gtk-build-swift6.1-noble-${{ runner.os }}-${{ runner.arch
+            linux-gtk-build-swift6.3-noble-${{ runner.os }}-${{ runner.arch
             }}-${{ inputs.configuration }}-${{ hashFiles('Apps/linux-gtk/Package.resolved') }}

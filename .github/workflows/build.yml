@@ -181,7 +181,7 @@ jobs:
   # ---------------------------------------------------------------------
   # The per-package portability gates. Six jobs became six MATRIX LEGS of one
   # job, because they were six copies of the same four steps — container
-  # swift:6.1-noble, checkout, `apt-get install <set>`, `swift test
+  # swift:6.3-noble, checkout, `apt-get install <set>`, `swift test
   # --package-path <package>` — differing only in the set and the package.
   #
   # They are NOT collapsed into one leg, and that is the point. Each answers a
@@ -203,7 +203,7 @@ jobs:
     name: ${{ matrix.name }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    container: swift:6.1-noble
+    container: swift:6.3-noble
     strategy:
       fail-fast: false
       matrix:
@@ -342,7 +342,7 @@ jobs:
   linux-viewer:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    container: swift:6.1-noble
+    container: swift:6.3-noble
     steps:
       - uses: actions/checkout@v4
         with:
@@ -433,7 +433,7 @@ jobs:
     # Audio + swift-cross-ui, and the render path is gated headlessly.
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    container: swift:6.1-noble
+    container: swift:6.3-noble
     steps:
       - uses: actions/checkout@v4
         with:
@@ -500,10 +500,10 @@ jobs:
         with:
           path: Apps/linux-gtk/.build
           key: >-
-            linux-gtk-build-swift6.1-noble-${{ runner.os }}-${{ runner.arch
+            linux-gtk-build-swift6.3-noble-${{ runner.os }}-${{ runner.arch
             }}-debug-${{ hashFiles('Apps/linux-gtk/Package.resolved') }}
           restore-keys: |
-            linux-gtk-build-swift6.1-noble-${{ runner.os }}-${{ runner.arch }}-debug-
+            linux-gtk-build-swift6.3-noble-${{ runner.os }}-${{ runner.arch }}-debug-
 
       # A SECOND cache for the Windows app's Linux typecheck, because it is a
       # second full swift-cross-ui compile. Its key prefix is distinct from
@@ -516,10 +516,10 @@ jobs:
         with:
           path: Apps/windows/.build
           key: >-
-            linux-typecheck-windows-app-swift6.1-noble-${{ runner.os }}-${{
+            linux-typecheck-windows-app-swift6.3-noble-${{ runner.os }}-${{
             runner.arch }}-${{ hashFiles('Apps/windows/Package.resolved') }}
           restore-keys: |
-            linux-typecheck-windows-app-swift6.1-noble-${{ runner.os }}-${{ runner.arch }}-
+            linux-typecheck-windows-app-swift6.3-noble-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Build the Linux app
         # PKG_CONFIG_PATH resolves libtailscale.pc for the tsnet transport.
@@ -587,7 +587,7 @@ jobs:
             Apps/linux-gtk/.build
             !Apps/linux-gtk/.build/**/debug/tailscreen
           key: >-
-            linux-gtk-build-swift6.1-noble-${{ runner.os }}-${{ runner.arch
+            linux-gtk-build-swift6.3-noble-${{ runner.os }}-${{ runner.arch
             }}-debug-${{ hashFiles('Apps/linux-gtk/Package.resolved') }}
 
       - name: Save the Windows app's Linux typecheck directory
@@ -600,11 +600,11 @@ jobs:
             Apps/windows/.build
             !Apps/windows/.build/**/debug/tailscreen
           key: >-
-            linux-typecheck-windows-app-swift6.1-noble-${{ runner.os }}-${{
+            linux-typecheck-windows-app-swift6.3-noble-${{ runner.os }}-${{
             runner.arch }}-${{ hashFiles('Apps/windows/Package.resolved') }}
 
   # The native Linux app on arm64 — GitHub's free arm64 runner for public
-  # repos (ubuntu-24.04-arm) in the SAME swift:6.1-noble container as every
+  # repos (ubuntu-24.04-arm) in the SAME swift:6.3-noble container as every
   # other Linux job. Three deliberate differences from the x64
   # `linux-app` leg:
   #   • builds -c release, not debug — one build does triple duty: the arm64

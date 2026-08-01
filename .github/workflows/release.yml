@@ -220,7 +220,7 @@ jobs:
   #
   # Both arches go through app-linux.yml. An earlier revision of this file kept
   # x86_64 as a separate hand-written job on a HOST runner (swift-actions/
-  # setup-swift + sudo apt) rather than the swift:6.1-noble container, on the
+  # setup-swift + sudo apt) rather than the swift:6.3-noble container, on the
   # reasoning that it builds the artifact most users download and could not be
   # tested short of cutting a release.
   #
@@ -272,7 +272,7 @@ jobs:
       # A shipped artifact is compiled from source on the runner that ships it.
       use_cache: false
 
-  # The non-container half of `linux`: swift:6.1-noble has no `gh`, so the
+  # The non-container half of `linux`: swift:6.3-noble has no `gh`, so the
   # release upload runs here on ubuntu-latest (gh preinstalled) from the
   # artifacts the container jobs handed over. Bolting the GitHub CLI apt repo
   # (keyring + sources.list + update) into the container would be more moving
