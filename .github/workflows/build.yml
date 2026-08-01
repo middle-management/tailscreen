@@ -425,6 +425,72 @@ jobs:
         with:
           go: preinstalled
           libtailscale: host
+
+      # ---------------------------------------------------------------------
+      # The two builds below are what sets this workflow's WALL CLOCK. Measured
+      # on a recent run: build.yml took 8m26s end to end, and this job took
+      # 8m26s of it — every other job finished in 2-3 minutes and ran
+      # concurrently, contributing nothing. The reason is that both builds
+      # compile swift-cross-ui from scratch, in two separate .build
+      # directories, on every single push, for a dependency whose revisions
+      # move only when a pin does.
+      #
+      # windows-build.yml already solved exactly this and its solution is
+      # copied here in shape, including the parts that are non-obvious:
+      #
+      #   • restore/save as SEPARATE steps, not `actions/cache`, because that
+      #     action's post step is `post-if: success()` — a run that compiles
+      #     the whole dependency graph and then fails on one line of our own
+      #     Swift throws away every object worth keeping, and the next run
+      #     pays for all of it again. That happened twice in one afternoon on
+      #     the Windows side.
+      #   • the save's condition is `!cancelled()` AND the restore having run,
+      #     because cache keys are IMMUTABLE. This workflow has
+      #     cancel-in-progress, so a run cancelled at 20 % is routine, and it
+      #     must never claim a key with a fifth of a build directory that no
+      #     later run could replace.
+      #   • runner.arch is IN THE KEY. linux-app-arm64 runs this same package
+      #     in the same container on a different architecture, and an x64
+      #     object tree restored into an arm64 build is the cross-arch staging
+      #     bug this repo has already shipped once.
+      #   • restore-keys prefix fallback, so a lockfile bump costs an
+      #     incremental rebuild rather than a cold one. Safe for a SwiftPM
+      #     .build specifically: llbuild tracks inputs per target, so a stale
+      #     tree plus a fresh resolve rebuilds exactly the targets whose pins
+      #     moved. (The libtailscale cache deliberately has no such fallback —
+      #     an opaque .a has no such referee.)
+      #
+      # Two directories, not one, and deliberately NOT a shared
+      # --scratch-path: Apps/windows and Apps/linux-gtk resolve different
+      # build plans from the same dependencies, so sharing would thrash.
+      # ---------------------------------------------------------------------
+      - name: Restore the GTK app's build directory
+        id: gtk-build-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: Apps/linux-gtk/.build
+          key: >-
+            linux-gtk-build-swift6.1-noble-${{ runner.os }}-${{ runner.arch
+            }}-debug-${{ hashFiles('Apps/linux-gtk/Package.resolved') }}
+          restore-keys: |
+            linux-gtk-build-swift6.1-noble-${{ runner.os }}-${{ runner.arch }}-debug-
+
+      # A SECOND cache for the Windows app's Linux typecheck, because it is a
+      # second full swift-cross-ui compile. Its key prefix is distinct from
+      # windows-build.yml's `windows-app-build-*` so a Linux object tree can
+      # never be restored into a Windows job — same package, incompatible
+      # everything.
+      - name: Restore the Windows app's Linux typecheck directory
+        id: winapp-typecheck-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: Apps/windows/.build
+          key: >-
+            linux-typecheck-windows-app-swift6.1-noble-${{ runner.os }}-${{
+            runner.arch }}-${{ hashFiles('Apps/windows/Package.resolved') }}
+          restore-keys: |
+            linux-typecheck-windows-app-swift6.1-noble-${{ runner.os }}-${{ runner.arch }}-
+
       - name: Build the GTK viewer
         # PKG_CONFIG_PATH resolves libtailscale.pc for the tsnet transport.
         # Build the executable product specifically so SwiftPM prunes to the
@@ -474,6 +540,39 @@ jobs:
           test "$status" -eq 0
           grep -q 'CGTKVIDEO_SELFTEST result=PASS' /tmp/gtk-selftest.log
 
+      # Both saves live at the end so they bank objects from a run that failed
+      # the typecheck or the self-test — the compile is the expensive part and
+      # it already happened. The product binaries are excluded: they are
+      # relinked on every build regardless, and a smaller archive survives the
+      # repo's shared 10 GB cache budget longer. (Exclusions apply at save;
+      # restore extracts whatever the archive holds, so the two path specs need
+      # not match.)
+      - name: Save the GTK app's build directory
+        if: >-
+          ${{ !cancelled() && steps.gtk-build-cache.outcome == 'success'
+          && steps.gtk-build-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            Apps/linux-gtk/.build
+            !Apps/linux-gtk/.build/**/debug/tailscreen
+          key: >-
+            linux-gtk-build-swift6.1-noble-${{ runner.os }}-${{ runner.arch
+            }}-debug-${{ hashFiles('Apps/linux-gtk/Package.resolved') }}
+
+      - name: Save the Windows app's Linux typecheck directory
+        if: >-
+          ${{ !cancelled() && steps.winapp-typecheck-cache.outcome == 'success'
+          && steps.winapp-typecheck-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            Apps/windows/.build
+            !Apps/windows/.build/**/debug/tailscreen
+          key: >-
+            linux-typecheck-windows-app-swift6.1-noble-${{ runner.os }}-${{
+            runner.arch }}-${{ hashFiles('Apps/windows/Package.resolved') }}
+
   linux-app-arm64:
     # The native Linux app on arm64 — GitHub's free arm64 runner for public
     # repos (ubuntu-24.04-arm) with the SAME swift:6.1-noble container as
@@ -495,14 +594,15 @@ jobs:
     #     release-linux.yml's tarball-arm64 job (aarch64 linuxdeploy +
     #     appimagetool) — AppImage assembly is a packaging concern, not a
     #     per-PR gate, exactly as the x86_64 AppImage is release-only too.
-    # Caching is intentionally omitted, matching every sibling container
-    # job: setup-go's tool cache doesn't apply inside the container (see
-    # linux-tailscalekit) — apt's golang-go and a fresh module download
-    # are the established pattern. Apps/linux-gtk/Package.resolved IS
-    # committed (scoped .gitignore negation), so a SwiftPM cache keyed on
-    # it is an available follow-up if this job's resolve step ever gets
-    # slow. Hard gate: no continue-on-error — an arm64 break is a real
-    # break.
+    # The SwiftPM cache that comment used to call "an available follow-up" is
+    # now here, and it is what keeps this job on every push rather than being
+    # demoted to a nightly. It was the second of the two jobs setting this
+    # workflow's wall clock (8m15s of an 8m26s run) for exactly the reason
+    # linux-gtk-viewer was: a cold swift-cross-ui compile every time. Its key
+    # carries runner.arch, so it cannot collide with the x64 job's — see the
+    # long note on those cache steps for the rest of the reasoning.
+    #
+    # Hard gate: no continue-on-error — an arm64 break is a real break.
     runs-on: ubuntu-24.04-arm
     container: swift:6.1-noble
     steps:
@@ -526,6 +626,22 @@ jobs:
         with:
           go: preinstalled
           libtailscale: host
+      # Same shape as linux-gtk-viewer's cache — restore/save split, the
+      # `!cancelled()` + restore-ran guard, the prefix fallback — but a
+      # DIFFERENT key: runner.arch is arm64 here, and the configuration is
+      # release. Either alone would be enough to separate them; both are in
+      # the key because a shared key across architectures is a bug this repo
+      # has already shipped once.
+      - name: Restore the GTK app's build directory
+        id: gtk-build-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: Apps/linux-gtk/.build
+          key: >-
+            linux-gtk-build-swift6.1-noble-${{ runner.os }}-${{ runner.arch
+            }}-release-${{ hashFiles('Apps/linux-gtk/Package.resolved') }}
+          restore-keys: |
+            linux-gtk-build-swift6.1-noble-${{ runner.os }}-${{ runner.arch }}-release-
       - name: Build the app (release)
         # PKG_CONFIG_PATH resolves libtailscale.pc for the tsnet transport;
         # building the executable product specifically prunes SwiftPM to the
@@ -582,6 +698,22 @@ jobs:
           path: tailscreen-linux-arm64.tar.gz
           if-no-files-found: error
           retention-days: 14
+
+      # Last, so a failed self-test or a failed staging step still banks the
+      # compile. The release binary is excluded — relinked every build, and a
+      # smaller archive survives the shared cache budget longer.
+      - name: Save the GTK app's build directory
+        if: >-
+          ${{ !cancelled() && steps.gtk-build-cache.outcome == 'success'
+          && steps.gtk-build-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            Apps/linux-gtk/.build
+            !Apps/linux-gtk/.build/**/release/tailscreen
+          key: >-
+            linux-gtk-build-swift6.1-noble-${{ runner.os }}-${{ runner.arch
+            }}-release-${{ hashFiles('Apps/linux-gtk/Package.resolved') }}
 
   lint:
     runs-on: macos-latest
