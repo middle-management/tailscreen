@@ -52,6 +52,19 @@ public final class WindowsShareSession: @unchecked Sendable {
         /// to show the request — so a viewer pressed Request Control and
         /// nothing happened at either end.
         public var controlRequests: [ControlRequestInfo] = []
+        /// Viewers parked at the approval gate, awaiting Accept or Deny.
+        ///
+        /// Surfaced for exactly the reason above, one step earlier in the same
+        /// story: the gate is useless if the prompt it produces has nowhere to
+        /// appear. A parked viewer sees a Connecting placard and waits
+        /// forever.
+        public var pendingViewers: [PendingViewer] = []
+        /// Whether new viewers have to be let in by hand.
+        ///
+        /// Mirrored into the status so the UI's switch reads back from the
+        /// thing it controls rather than from a second copy that can drift out
+        /// of step with the live share.
+        public var requireApproval = true
         /// Who currently holds control, if anyone.
         public var controlGrantedTo: String?
         /// Whether viewers can ask to control this machine.
@@ -71,6 +84,26 @@ public final class WindowsShareSession: @unchecked Sendable {
         public var timings: CaptureTimings?
 
         public init() {}
+    }
+
+    /// A viewer waiting on the sharer's Accept / Deny.
+    ///
+    /// A local type rather than the server's `PendingViewerInfo` so the app
+    /// does not have to take a direct dependency on `TailscreenSharer` — and,
+    /// more usefully, so `id` is documented at the point the app touches it:
+    /// it is the server's `"ip:port"` viewer key, and `approveViewer` /
+    /// `denyViewer` match on exactly that. Hand them the bare IP and both
+    /// silently do nothing, which reads as two dead buttons.
+    public struct PendingViewer: Sendable, Identifiable, Hashable {
+        public let id: String
+        /// Hostname when the netmap lookup has landed, the Tailscale IP until
+        /// then. Cosmetic — never use it to identify the viewer.
+        public let displayName: String
+
+        public init(id: String, displayName: String) {
+            self.id = id
+            self.displayName = displayName
+        }
     }
 
     /// Called off the main actor. The caller hops.
@@ -99,6 +132,15 @@ public final class WindowsShareSession: @unchecked Sendable {
     private var server: TailscaleScreenShareServer?
     private var overlay: AnnotationOverlay?
     private var status = Status()
+    /// The gate to apply to the next share, and to the running one.
+    ///
+    /// Held here rather than only on the server because the server exists only
+    /// while a share does, and the setting is something the user sets *before*
+    /// pressing Share. Defaults to on: `TailscaleScreenShareServer` defaults
+    /// it OFF — correct for a headless automation sharer, catastrophic for a
+    /// desktop app that forgets to say otherwise — so this wrapper's job is to
+    /// make forgetting fail closed.
+    private var requireApproval = true
 
     /// Whether this machine can capture at all — checked before any UI is
     /// offered, so an unsupported Windows build is a sentence rather than a
@@ -214,6 +256,14 @@ public final class WindowsShareSession: @unchecked Sendable {
         newServer.onViewersChanged = { [weak self] viewers in
             self?.update { $0.viewerCount = viewers.count }
         }
+        newServer.onPendingViewersChanged = { [weak self] pending in
+            // Fires on a network thread; `update` publishes and the app hops.
+            self?.update {
+                $0.pendingViewers = pending.map {
+                    PendingViewer(id: $0.id, displayName: $0.hostname ?? $0.tailscaleIP)
+                }
+            }
+        }
         newServer.onControlRequestsChanged = { [weak self] requests in
             self?.update { $0.controlRequests = requests }
         }
@@ -224,14 +274,27 @@ public final class WindowsShareSession: @unchecked Sendable {
             self?.update {
                 $0.isSharing = false
                 $0.viewerCount = 0
+                $0.pendingViewers = []
                 $0.message = error.map { "Sharing stopped: \($0)" } ?? ""
                 $0.remoteControlAvailable = false
                 $0.annotationsAvailable = false
             }
         }
 
-        lock.withLock { server = newServer }
+        // Publish the server, then assert the gate — in that order, and both
+        // before `start`. Reading the setting first and publishing after would
+        // lose a flip that landed in between: `setRequireApproval` would find
+        // no server to push to, and this server would already be holding the
+        // stale value. Doing it after `start` would leave a window, short but
+        // exactly the one an already-waiting peer's HELLO arrives in, where
+        // the share is open door.
+        let gate = lock.withLock { () -> Bool in
+            server = newServer
+            return requireApproval
+        }
+        newServer.setRequireApproval(gate)
         update {
+            $0.requireApproval = gate
             $0.target = name
             $0.message = "Starting…"
             $0.remoteControlAvailable = injectorAvailable
@@ -279,6 +342,34 @@ public final class WindowsShareSession: @unchecked Sendable {
         }
     }
 
+    /// Turn the approval gate on or off, now and for the next share.
+    ///
+    /// Takes effect mid-share: `setRequireApproval(false)` also drains anyone
+    /// already parked (minus remembered-deny peers), so turning it off is how
+    /// a sharer admits a queue in one click. Persistence is the caller's —
+    /// this package owns no preferences.
+    public func setRequireApproval(_ enabled: Bool) {
+        let server = lock.withLock { () -> TailscaleScreenShareServer? in
+            requireApproval = enabled
+            return self.server
+        }
+        server?.setRequireApproval(enabled)
+        update { $0.requireApproval = enabled }
+    }
+
+    /// Admit a viewer parked at the gate. `id` is a `PendingViewer.id`.
+    public func approveViewer(_ id: String) {
+        let server = lock.withLock { self.server }
+        server?.approveViewer(addr: id)
+    }
+
+    /// Reject a viewer parked at the gate. One-time: nothing is remembered, so
+    /// the same peer's next HELLO parks again rather than being blocked.
+    public func denyViewer(_ id: String) {
+        let server = lock.withLock { self.server }
+        server?.denyViewer(addr: id)
+    }
+
     /// Answer a pending remote-control request.
     ///
     /// Returns false when the grant was refused by the platform — which on
@@ -319,6 +410,7 @@ public final class WindowsShareSession: @unchecked Sendable {
         update {
             $0.isSharing = false
             $0.viewerCount = 0
+            $0.pendingViewers = []
             $0.message = ""
             $0.remoteControlAvailable = false
             $0.annotationsAvailable = false
