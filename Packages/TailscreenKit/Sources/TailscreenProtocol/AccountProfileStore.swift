@@ -155,25 +155,28 @@ public final class AccountProfileStore {
     }
 
     public init(layout: AccountProfileLayout) {
+        // `fm` rather than repeating `FileManager.default`: it keeps the
+        // conditions below on ONE line each, which is not a cosmetic point
+        // here. swift-format wraps a long multi-clause condition and then puts
+        // the opening brace on its own line; swiftlint's `opening_brace` rule
+        // rejects exactly that. The two tools cannot both be satisfied by a
+        // wrapped condition, so the fix is to not need one.
+        let fm = FileManager.default
+
         // Adopt the pre-rename config directory BEFORE anything creates the
         // new one — once `root` exists the rename is (correctly) skipped, so
         // creating it first would strand the old registry forever.
-        if let legacy = layout.legacyRoot,
-            !FileManager.default.fileExists(atPath: layout.root),
-            FileManager.default.fileExists(atPath: legacy)
-        {
-            try? FileManager.default.moveItem(atPath: legacy, toPath: layout.root)
+        if let legacy = layout.legacyRoot, !fm.fileExists(atPath: layout.root), fm.fileExists(atPath: legacy) {
+            try? fm.moveItem(atPath: legacy, toPath: layout.root)
         }
         root = layout.root
         namePrefix = layout.namePrefix
-        try? FileManager.default.createDirectory(
-            atPath: layout.root, withIntermediateDirectories: true)
+        try? fm.createDirectory(atPath: layout.root, withIntermediateDirectories: true)
 
         let url = URL(fileURLWithPath: layout.root).appendingPathComponent("profiles.json")
-        if let data = try? Data(contentsOf: url),
-            let saved = try? JSONDecoder().decode(Saved.self, from: data),
-            !saved.profiles.isEmpty
-        {
+        let saved = (try? Data(contentsOf: url))
+            .flatMap { try? JSONDecoder().decode(Saved.self, from: $0) }
+        if let saved, !saved.profiles.isEmpty {
             profiles = saved.profiles
             // A stored selection naming a profile that is gone falls back to
             // the first rather than leaving `active` pointing at nothing.
