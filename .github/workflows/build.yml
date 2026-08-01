@@ -176,124 +176,151 @@ jobs:
         working-directory: Apps/macOS
         run: swift build -c release
 
-  # Portability gate: the TailscreenKit package — wire protocol + pure
-  # decision logic, the tsnet-facing TailscreenTransport tier, the Opus
-  # codec, and the two host-agnostic data planes (TailscreenViewer and
-  # TailscreenSharer, the latter carrying the whole screen-share server) —
-  # a real dependency of the app, see Packages/TailscreenKit/README.md.
-  # It must build and pass its tests on Linux, where no Apple framework
-  # exists. This is what keeps the portable set portable: an
-  # AppKit/os/CoreGraphics/VideoToolbox import sneaking into a package
-  # file fails here, not on someone's future non-macOS port. Cheap (Linux
-  # minutes, no Go build — the transport tier compiles against the patched
-  # tailscale.h; only linking needs the .a, and nothing here links it) and
-  # required — a break is always a real portability regression.
-  linux-protocol:
+  # ---------------------------------------------------------------------
+  # The per-package portability gates. Six jobs became six MATRIX LEGS of one
+  # job, because they were six copies of the same four steps — container
+  # swift:6.1-noble, checkout, `apt-get install <set>`, `swift test
+  # --package-path <package>` — differing only in the set and the package.
+  #
+  # They are NOT collapsed into one leg, and that is the point. Each answers a
+  # different question, and the value of a red check here is that it names the
+  # LAYER that broke: "libopus does not build on Linux" and "the Windows input
+  # injector's decisions regressed" want different people looking. `fail-fast:
+  # false` keeps that true when several break at once.
+  #
+  # `name: ${{ matrix.name }}` rather than the default `linux-packages (…)`
+  # label, so the check names are byte-identical to the six jobs they replace
+  # — a branch-protection rule or a bookmark pointing at `linux-protocol` goes
+  # on pointing at it.
+  #
+  # Each leg is ~50s and they run concurrently, so this is not a speed change;
+  # it is a "a fix to the container image, the apt invocation or the checkout
+  # lands once" change.
+  # ---------------------------------------------------------------------
+  linux-packages:
+    name: ${{ matrix.name }}
     runs-on: ubuntu-latest
     container: swift:6.1-noble
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Portability gate: the TailscreenKit package — wire protocol + pure
+          # decision logic, the tsnet-facing TailscreenTransport tier, the Opus
+          # codec, and the two host-agnostic data planes (TailscreenViewer and
+          # TailscreenSharer, the latter carrying the whole screen-share
+          # server) — a real dependency of the app, see
+          # Packages/TailscreenKit/README.md. It must build and pass its tests
+          # on Linux, where no Apple framework exists. This is what keeps the
+          # portable set portable: an AppKit/os/CoreGraphics/VideoToolbox
+          # import sneaking into a package file fails here, not on someone's
+          # future non-macOS port. Cheap (Linux minutes, no Go build — the
+          # transport tier compiles against the patched tailscale.h; only
+          # linking needs the .a, and nothing here links it) and required — a
+          # break is always a real portability regression.
+          #
+          # The submodule is for TailscaleKit, whose sources are symlinks into
+          # it; `swift test` builds every tier including TailscreenSharer,
+          # which needs only the patched HEADER, so no Go build.
+          #
+          # libopus-dev + pkg-config are for the TailscreenAudio target's
+          # OpusKit dependency (opus.pc is on the Linux default search path, so
+          # no PKG_CONFIG_PATH entry is needed for it). `make` used to be in
+          # this set too, purely so the Makefile's patch loop could run; the
+          # bootstrap action inlines that loop, so it is gone.
+          - name: linux-protocol
+            apt: libopus-dev pkg-config
+            submodules: recursive
+            go: none
+            libtailscale: none
+            cmd: PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" swift test --package-path Packages/TailscreenKit
+
+          # Audio-codec-portability gate: OpusKit (a systemLibrary wrapper over
+          # libopus — see Packages/OpusKit/README.md) must build and pass its
+          # encode/decode round-trip tests on Linux. This is the portable
+          # foundation for the Opus-only audio decision
+          # (docs/porting-plan.md #6). Cheap: one apt install, no submodules,
+          # no Go.
+          - name: linux-opus
+            apt: libopus-dev pkg-config
+            cmd: swift test --package-path Packages/OpusKit
+
+          # Video-decode-portability gate: FFmpegKit (a systemLibrary wrapper
+          # over libavcodec — see Packages/FFmpegKit/README.md) must build and
+          # pass its decode tests on Linux. This is the portable video-decode
+          # foundation for the Linux/Windows viewer (docs/porting-plan.md —
+          # "Decode"). Cheap: one apt install, no submodules, no Go.
+          # (libavutil-dev comes with libavcodec-dev; opus.pc-style
+          # default-path resolution means no PKG_CONFIG_PATH entry is needed.)
+          - name: linux-ffmpeg
+            apt: libavcodec-dev libavutil-dev pkg-config
+            cmd: swift test --package-path Packages/FFmpegKit
+
+          # Audio-playback-portability gate: ALSAKit (a systemLibrary wrapper
+          # over libasound — see Packages/ALSAKit/README.md) must build and
+          # pass its PCM-playback tests on Linux. This is the Linux viewer's
+          # audio-output backend (the counterpart to the mac viewer's
+          # AVAudioEngine sink); the tests open ALSA's always-present "null"
+          # PCM so they run headless with no sound hardware. Cheap: one apt
+          # install, no submodules, no Go.
+          - name: linux-alsa
+            apt: libasound2-dev pkg-config
+            cmd: swift test --package-path Packages/ALSAKit
+
+          # Screen-capture-portability gate: X11CaptureKit (a C shim over
+          # libxcb + MIT-SHM, plus the BGRA→I420 conversion) must build and
+          # pass its tests on Linux. The colour-conversion half runs anywhere;
+          # the capture half runs under Xvfb, which is the whole reason X11
+          # capture landed before the ScreenCast portal — the portal can't be
+          # exercised headlessly at all. Cheap: two apt packages, no Go, no
+          # submodules.
+          - name: linux-x11-capture
+            apt: pkg-config libxcb1-dev libxcb-shm0-dev xvfb
+            cmd: xvfb-run -a --server-args="-screen 0 1280x720x24" swift test --package-path Packages/X11CaptureKit
+
+          # Transport-portability gate: libtailscale (Go c-archive) + the
+          # patched TailscaleKit Swift wrapper must build and pass their unit
+          # tests on Linux. This is the compile-time half of the porting plan's
+          # Phase 1; the live two-node tsnet exchange (TCP + UDP
+          # PacketListener + LocalAPI over local headscale) was verified
+          # manually on Linux and stays local-only for now — Linux runners
+          # likely CAN run it (unlike the macOS-sandbox-blocked handshake),
+          # which is a candidate follow-up.
+          #
+          # noble's golang-go is 1.22 — above the repo's 1.21 floor. Kept
+          # apt-simple because setup-go's tool cache doesn't apply inside this
+          # container. The swift:*-noble images are slim: make isn't present
+          # (the host libtailscale build goes through it, for the macOS
+          # deployment-target flags), and cgo wants gcc — the image only
+          # guarantees clang.
+          - name: linux-tailscalekit
+            apt: golang-go make gcc libc6-dev
+            submodules: recursive
+            go: preinstalled
+            libtailscale: host
+            cmd: PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" swift test --package-path Packages/TailscaleKit
+
     steps:
       - uses: actions/checkout@v4
         with:
-          # The TailscreenTransport target depends on TailscaleKit, whose
-          # sources are symlinks into the submodule.
-          submodules: recursive
-      - name: Install libopus
-        # The swift:*-noble images are slim. libopus-dev + pkg-config are for
-        # the TailscreenAudio target's OpusKit dependency (opus.pc is on the
-        # Linux default search path, so no PKG_CONFIG_PATH entry is needed for
-        # it). `make` used to be here too, purely so the Makefile's patch loop
-        # could run; the bootstrap action inlines that loop, so it is gone.
-        run: apt-get update && apt-get install -y --no-install-recommends libopus-dev pkg-config
-      - name: Apply TailscaleKit patches (header only, no Go build)
+          # 'false' for the four legs that omit it — only the TailscaleKit-
+          # touching legs need the submodule, and cloning it costs the others
+          # nothing they use.
+          submodules: ${{ matrix.submodules || 'false' }}
+      - name: Install ${{ matrix.apt }}
+        # The swift:*-noble images are slim, so every leg brings its own
+        # system libraries. One apt invocation, one place to fix.
+        run: apt-get update && apt-get install -y --no-install-recommends ${{ matrix.apt }}
+      - name: Bootstrap TailscaleKit
+        # Only the submodule legs. Skipping it entirely on the others is what
+        # keeps an empty `libtailscale:` from ever reaching the action.
+        if: matrix.submodules == 'recursive'
         uses: ./.github/actions/bootstrap
         with:
-          go: none
-          libtailscale: none
-      - name: Build + test TailscreenKit on Linux
-        # Builds every tier — including TailscreenSharer, the sharer data
-        # plane. That target needs only the patched TailscaleKit *header*
-        # (nothing here links libtailscale.a), so it rides this job with no
-        # extra setup and no Go build.
-        run: PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" swift test --package-path Packages/TailscreenKit
-
-  # Audio-codec-portability gate: OpusKit (a systemLibrary wrapper over
-  # libopus — see Packages/OpusKit/README.md) must build and pass its
-  # encode/decode round-trip tests on Linux. This is the portable foundation
-  # for the Opus-only audio decision (docs/porting-plan.md #6); wiring it
-  # into the app's audio path is a later mac-side step. Cheap: one apt
-  # install, no submodules, no Go.
-  linux-opus:
-    runs-on: ubuntu-latest
-    container: swift:6.1-noble
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install libopus
-        run: apt-get update && apt-get install -y --no-install-recommends libopus-dev pkg-config
-      - name: Build + test OpusKit on Linux
-        run: swift test --package-path Packages/OpusKit
-
-  # Video-decode-portability gate: FFmpegKit (a systemLibrary wrapper over
-  # libavcodec — see Packages/FFmpegKit/README.md) must build and pass its
-  # decode tests on Linux. This is the portable video-decode foundation for
-  # the Linux/Windows viewer (docs/porting-plan.md — "Decode"); wiring it into
-  # a portable viewer session is later work. Cheap: one apt install, no
-  # submodules, no Go. (libavutil-dev comes with libavcodec-dev; opus.pc-style
-  # default-path resolution means no PKG_CONFIG_PATH entry is needed.)
-  linux-ffmpeg:
-    runs-on: ubuntu-latest
-    container: swift:6.1-noble
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install FFmpeg dev libraries
-        run: apt-get update && apt-get install -y --no-install-recommends libavcodec-dev libavutil-dev pkg-config
-      - name: Build + test FFmpegKit on Linux
-        run: swift test --package-path Packages/FFmpegKit
-
-  # Audio-playback-portability gate: ALSAKit (a systemLibrary wrapper over
-  # libasound — see Packages/ALSAKit/README.md) must build and pass its
-  # PCM-playback tests on Linux. This is the Linux viewer's audio-output
-  # backend (the counterpart to the mac viewer's AVAudioEngine sink); the
-  # tests open ALSA's always-present "null" PCM so they run headless with no
-  # sound hardware. Cheap: one apt install, no submodules, no Go.
-  linux-alsa:
-    runs-on: ubuntu-latest
-    container: swift:6.1-noble
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install libasound
-        run: apt-get update && apt-get install -y --no-install-recommends libasound2-dev pkg-config
-      - name: Build + test ALSAKit on Linux
-        run: swift test --package-path Packages/ALSAKit
-
-  # Transport-portability gate: libtailscale (Go c-archive) + the patched
-  # TailscaleKit Swift wrapper must build and pass their unit tests on
-  # Linux. This is the compile-time half of the porting plan's Phase 1;
-  # the live two-node tsnet exchange (TCP + UDP PacketListener + LocalAPI
-  # over local headscale) was verified manually on Linux and stays
-  # local-only for now — Linux runners likely CAN run it (unlike the
-  # macOS-sandbox-blocked handshake), which is a candidate follow-up.
-  linux-tailscalekit:
-    runs-on: ubuntu-latest
-    container: swift:6.1-noble
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - name: Install build tools
-        # noble's golang-go is 1.22 — above the repo's 1.21 floor. Kept
-        # apt-simple because setup-go's tool cache doesn't apply inside
-        # this container. The swift:*-noble images are slim: make isn't
-        # present, and cgo wants gcc (the image only guarantees clang).
-        run: apt-get update && apt-get install -y --no-install-recommends golang-go make gcc libc6-dev
-      - name: Build libtailscale (patched) on Linux
-        uses: ./.github/actions/bootstrap
-        with:
-          # apt's Go, not setup-go's — its tool cache doesn't apply inside
-          # this container, so the image's own toolchain is the pattern here.
-          go: preinstalled
-          libtailscale: host
-      - name: Test TailscaleKit on Linux
-        run: PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" swift test --package-path Packages/TailscaleKit
+          go: ${{ matrix.go }}
+          libtailscale: ${{ matrix.libtailscale }}
+      - name: ${{ matrix.name }}
+        run: ${{ matrix.cmd }}
 
   # Viewer-integration gate: the portable Linux viewer library package
   # (Apps/linux) must build and pass its pipeline integration test on Linux.
@@ -378,24 +405,6 @@ jobs:
         run: |
           PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" \
             swift build --package-path Packages/TailscreenSharerWGC
-
-  # Screen-capture-portability gate: X11CaptureKit (a C shim over libxcb +
-  # MIT-SHM, plus the BGRA→I420 conversion) must build and pass its tests on
-  # Linux. The colour-conversion half runs anywhere; the capture half runs
-  # under Xvfb, which is the whole reason X11 capture landed before the
-  # ScreenCast portal — the portal can't be exercised headlessly at all.
-  # Cheap: two apt packages, no Go, no submodules.
-  linux-x11-capture:
-    runs-on: ubuntu-latest
-    container: swift:6.1-noble
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install libxcb + Xvfb
-        run: |
-          apt-get update && apt-get install -y --no-install-recommends \
-            pkg-config libxcb1-dev libxcb-shm0-dev xvfb
-      - name: Build + test X11CaptureKit on Linux
-        run: xvfb-run -a --server-args="-screen 0 1280x720x24" swift test --package-path Packages/X11CaptureKit
 
   linux-gtk-viewer:
     # The native GTK desktop viewer (Apps/linux-gtk) — a separate package from
