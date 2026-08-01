@@ -99,10 +99,13 @@ jobs:
           chmod +x "$HOME/.local/bin/linuxdeploy" "$HOME/.local/bin/linuxdeploy-plugin-gtk.sh" "$HOME/.local/bin/appimagetool"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
+      # cache: false — a shipped artifact is compiled from source on the runner
+      # that ships it, never restored from a key a per-push workflow wrote.
       - name: Build libtailscale (Go c-archive)
         uses: ./.github/actions/bootstrap
         with:
           libtailscale: host
+          cache: 'false'
 
       - name: Build the AppImage
         env:
@@ -232,11 +235,12 @@ jobs:
 
       - name: Build libtailscale (patched) for linux/arm64
         # Go targets the host arch — arm64 here. apt's Go, like every sibling
-        # container job.
+        # container job. cache: false — release artifacts build cold.
         uses: ./.github/actions/bootstrap
         with:
           go: preinstalled
           libtailscale: host
+          cache: 'false'
 
       - name: Build the app (release)
         # PKG_CONFIG_PATH resolves libtailscale.pc for the tsnet transport;

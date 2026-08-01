@@ -2,7 +2,8 @@ name: Bootstrap libtailscale
 description: >-
   The prologue every Tailscreen build job repeats: materialize the TailscaleKit
   symlinks (Windows), apply the patch series, set up Go, and produce
-  libtailscale.a for the target.
+  libtailscale.a for the target — restored from cache when the inputs have not
+  moved.
 
 # WHY THIS DOES NOT CHECK OUT THE REPO.
 #
@@ -36,6 +37,8 @@ inputs:
       'setup-go' installs Go via actions/setup-go from the submodule's go.mod;
       'preinstalled' uses whatever is on PATH (the Linux containers take Go
       from apt, where setup-go's tool cache does not apply); 'none' skips it.
+      Skipped entirely on a libtailscale cache hit — nothing downstream of this
+      action needs a Go toolchain, only the archive.
     required: false
     default: 'setup-go'
   libtailscale:
@@ -46,12 +49,23 @@ inputs:
       archive under both the Unix and MSVC names and export TAILSCALE_LIB.
     required: false
     default: 'none'
+  cache:
+    description: >-
+      Restore/save libtailscale.a. CI wants this; a release build wants it off,
+      so a shipped artifact is compiled from source on the runner that ships it.
+    required: false
+    default: 'true'
   llvm-mingw-release:
     description: >-
       Pinned llvm-mingw release used for the windows-arm64 cgo toolchain. Dated,
       not "latest", so a green run stays reproducible. Bump deliberately.
     required: false
     default: '20250910'
+
+outputs:
+  cache-hit:
+    description: 'true when libtailscale.a came from the cache rather than Go.'
+    value: ${{ steps.libtailscale-cache.outputs.cache-hit }}
 
 runs:
   using: composite
@@ -112,6 +126,44 @@ runs:
         echo "sha=$sha" >> "$GITHUB_OUTPUT"
         echo "libtailscale pinned at $sha"
 
+    # The single biggest cross-job win in this repo's CI: the Go c-archive is
+    # ~45-100 s and was built once per job, upward of a dozen times per push,
+    # from inputs that change only when the submodule or the patch series does.
+    #
+    # Everything that can change the bytes is in the key: the runner OS and
+    # architecture, the requested target (host / universal / a Windows arch),
+    # the Go provisioning mode (apt's Go in the containers is not setup-go's),
+    # the pinned submodule revision, and the patch series — several of which
+    # ADD .go files, so a patch edit really is a source change.
+    #
+    # No restore-keys, deliberately. A prefix fallback would hand a job an
+    # archive built from DIFFERENT sources, and unlike a SwiftPM .build there is
+    # no per-target dependency tracking to notice — the link would simply
+    # succeed against the wrong code. A miss here costs one Go build.
+    - name: Restore libtailscale.a
+      id: libtailscale-cache
+      if: inputs.libtailscale != 'none' && inputs.cache == 'true'
+      uses: actions/cache/restore@v4
+      with:
+        path: |
+          Packages/TailscaleKit/upstream/libtailscale/libtailscale.a
+          Packages/TailscaleKit/upstream/libtailscale/libtailscale.h
+        key: libtailscale-${{ runner.os }}-${{ runner.arch }}-${{ inputs.libtailscale }}-${{ inputs.go }}-${{ steps.rev.outputs.sha }}-${{ hashFiles('Packages/TailscaleKit/Patches/*') }}
+
+    # tar preserves mtimes, so a restored archive is OLDER than the
+    # .patches-applied marker written moments ago — and
+    # Packages/TailscaleKit/Makefile's rule is `$(UPSTREAM_LIB): $(PATCH_MARKER)`.
+    # Without this touch, every `make tailscale` downstream would decide the
+    # archive is stale and rebuild exactly what the cache just saved.
+    - name: Refresh the restored archive's timestamps
+      if: steps.libtailscale-cache.outputs.cache-hit == 'true'
+      shell: bash
+      run: |
+        touch Packages/TailscaleKit/.patches-applied
+        touch Packages/TailscaleKit/upstream/libtailscale/libtailscale.a \
+              Packages/TailscaleKit/upstream/libtailscale/libtailscale.h
+        ls -la Packages/TailscaleKit/upstream/libtailscale/libtailscale.a
+
     # THE fix for cgo's -mthreads failure on windows/arm64, and a return to
     # parity rather than a novelty.
     #
@@ -130,7 +182,7 @@ runs:
     # silently wrong host/target pairing is the failure mode that cost this job
     # two rounds.
     - name: Install llvm-mingw (for cgo's aarch64 target)
-      if: inputs.libtailscale == 'windows-arm64'
+      if: inputs.libtailscale == 'windows-arm64' && steps.libtailscale-cache.outputs.cache-hit != 'true'
       shell: pwsh
       env:
         LLVM_MINGW_RELEASE: ${{ inputs.llvm-mingw-release }}
@@ -185,7 +237,7 @@ runs:
     # It runs AFTER llvm-mingw on purpose: it prefers any compiler whose
     # -dumpmachine reports aarch64, so it picks that install up with no change.
     - name: Inventory C compilers
-      if: inputs.libtailscale == 'windows-arm64'
+      if: inputs.libtailscale == 'windows-arm64' && steps.libtailscale-cache.outputs.cache-hit != 'true'
       shell: bash
       run: |
         pick=""
@@ -225,7 +277,7 @@ runs:
     # Skipped on a cache hit: nothing downstream of this action wants a Go
     # toolchain, only the archive it produces.
     - name: Setup Go
-      if: inputs.go == 'setup-go'
+      if: inputs.go == 'setup-go' && (inputs.libtailscale == 'none' || steps.libtailscale-cache.outputs.cache-hit != 'true')
       uses: actions/setup-go@v5
       with:
         # Version derived from the submodule's go.mod, not pinned here.
@@ -256,14 +308,14 @@ runs:
     # Go's VCS stamping dies with exit 128. The stamp is worthless for a
     # c-archive — skip it. Harmless everywhere else.
     - name: Build libtailscale.a
-      if: inputs.libtailscale == 'host'
+      if: inputs.libtailscale == 'host' && steps.libtailscale-cache.outputs.cache-hit != 'true'
       shell: bash
       env:
         GOFLAGS: -buildvcs=false
       run: make -C Packages/TailscaleKit
 
     - name: Build universal libtailscale.a
-      if: inputs.libtailscale == 'macos-universal'
+      if: inputs.libtailscale == 'macos-universal' && steps.libtailscale-cache.outputs.cache-hit != 'true'
       shell: bash
       working-directory: Packages/TailscaleKit/upstream/libtailscale
       run: |
@@ -297,7 +349,7 @@ runs:
     # this does not compile at all — it is what replaces the socketpair +
     # SCM_RIGHTS handoff that has no Windows equivalent.
     - name: Build libtailscale.a for windows/amd64
-      if: inputs.libtailscale == 'windows-amd64'
+      if: inputs.libtailscale == 'windows-amd64' && steps.libtailscale-cache.outputs.cache-hit != 'true'
       shell: bash
       working-directory: Packages/TailscaleKit/upstream/libtailscale
       env:
@@ -311,7 +363,7 @@ runs:
     # reason the inventory step above documents: left implicit, cgo reaches for
     # an x86_64 gcc and fails inside runtime/cgo.
     - name: Build libtailscale.a for windows/arm64
-      if: inputs.libtailscale == 'windows-arm64'
+      if: inputs.libtailscale == 'windows-arm64' && steps.libtailscale-cache.outputs.cache-hit != 'true'
       shell: bash
       working-directory: Packages/TailscaleKit/upstream/libtailscale
       env:
@@ -326,6 +378,25 @@ runs:
         go env CC CGO_ENABLED GOOS GOARCH
         go build -buildmode=c-archive -o libtailscale.a .
         ls -la libtailscale.a libtailscale.h
+
+    # `if: !cancelled()` and the restore-ran guard are both about cache keys
+    # being IMMUTABLE. A run cancelled at 20 % (cancel-in-progress fires on
+    # every rapid push) would otherwise claim the key with nothing behind it,
+    # and no later run could replace it. One poisoned key is worse than one
+    # cold build. Saving after a FAILED job is still right — the archive either
+    # exists and is correct, or the step above failed and there is nothing to
+    # save.
+    - name: Save libtailscale.a
+      if: >-
+        !cancelled() && inputs.libtailscale != 'none' && inputs.cache == 'true'
+        && steps.libtailscale-cache.outcome == 'success'
+        && steps.libtailscale-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: |
+          Packages/TailscaleKit/upstream/libtailscale/libtailscale.a
+          Packages/TailscaleKit/upstream/libtailscale/libtailscale.h
+        key: libtailscale-${{ runner.os }}-${{ runner.arch }}-${{ inputs.libtailscale }}-${{ inputs.go }}-${{ steps.rev.outputs.sha }}-${{ hashFiles('Packages/TailscaleKit/Patches/*') }}
 
     # MSVC wants tailscale.lib — Modules/libtailscale/module.modulemap says
     # `link "tailscale"`, so the Swift driver emits -ltailscale and on Windows
