@@ -18,7 +18,7 @@ final class ViewerApprovalPreferenceTests: XCTestCase {
     /// A never-touched install gets the gate. This is the whole point of
     /// reading `object(forKey:)` instead of `bool(forKey:)`.
     func testUnsetDefaultsOn() {
-        XCTAssertTrue(ViewerApprovalPreference.resolve(stored: nil, openDoor: false))
+        XCTAssertTrue(ViewerApprovalPreference.resolve(stored: .unset, openDoor: false))
     }
 
     /// An explicit opt-out survives the on-by-default rule. A `bool(forKey:)`
@@ -26,17 +26,17 @@ final class ViewerApprovalPreferenceTests: XCTestCase {
     /// flipping the default on would silently re-enable the gate for everyone
     /// who had turned it off.
     func testStoredChoiceSticks() {
-        XCTAssertFalse(ViewerApprovalPreference.resolve(stored: false, openDoor: false))
-        XCTAssertTrue(ViewerApprovalPreference.resolve(stored: true, openDoor: false))
+        XCTAssertFalse(ViewerApprovalPreference.resolve(stored: .chosen(false), openDoor: false))
+        XCTAssertTrue(ViewerApprovalPreference.resolve(stored: .chosen(true), openDoor: false))
     }
 
     /// Open-door mode outranks everything, including a stored `true`.
     /// Otherwise the scripted harnesses park their automated viewers on a
     /// prompt nobody is there to answer.
     func testOpenDoorOverridesStoredValue() {
-        XCTAssertFalse(ViewerApprovalPreference.resolve(stored: true, openDoor: true))
-        XCTAssertFalse(ViewerApprovalPreference.resolve(stored: nil, openDoor: true))
-        XCTAssertFalse(ViewerApprovalPreference.resolve(stored: false, openDoor: true))
+        XCTAssertFalse(ViewerApprovalPreference.resolve(stored: .chosen(true), openDoor: true))
+        XCTAssertFalse(ViewerApprovalPreference.resolve(stored: .unset, openDoor: true))
+        XCTAssertFalse(ViewerApprovalPreference.resolve(stored: .chosen(false), openDoor: true))
     }
 
     /// Only the exact `"1"` arms open door. A stray `TAILSCREEN_OPEN_DOOR=0`

@@ -33,11 +33,29 @@ public enum ViewerApprovalPreference {
     public static let defaultsKey = "requireViewerApproval"
     public static let openDoorEnvKey = "TAILSCREEN_OPEN_DOOR"
 
+    /// What storage holds for the gate.
+    ///
+    /// An enum rather than `Bool?` — the same call `PeerSharingState` makes,
+    /// and for the same reason: the third state is a real state, not a missing
+    /// answer, and naming it stops `unset` from being read as "off" by anyone
+    /// skimming. (It also satisfies swiftlint's `discouraged_optional_boolean`,
+    /// which is the rule that caught the optional here; the enum is the fix the
+    /// rule is pointing at, not a workaround for it.)
+    public enum Stored: Equatable, Sendable {
+        /// Never touched — the on-by-default rule applies.
+        case unset
+        /// An explicit choice the user made, which must survive.
+        case chosen(Bool)
+    }
+
     /// The gate's value given what was stored and whether open-door mode is
-    /// forced. `stored` is `nil` on a never-touched install.
-    public static func resolve(stored: Bool?, openDoor: Bool) -> Bool {
+    /// forced.
+    public static func resolve(stored: Stored, openDoor: Bool) -> Bool {
         if openDoor { return false }
-        return stored ?? true
+        switch stored {
+        case .unset: return true
+        case .chosen(let value): return value
+        }
     }
 
     /// Whether `environment` asks for open-door mode.
@@ -49,9 +67,12 @@ public enum ViewerApprovalPreference {
         defaults: UserDefaults = .standard,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Bool {
-        resolve(
-            stored: defaults.object(forKey: defaultsKey) as? Bool,
-            openDoor: openDoorForced(environment))
+        // `object(forKey:)`, not `bool(forKey:)`: the latter reports false for
+        // both "absent" and "stored false", which is precisely the distinction
+        // the tri-state exists to keep.
+        let stored: Stored =
+            (defaults.object(forKey: defaultsKey) as? Bool).map(Stored.chosen) ?? .unset
+        return resolve(stored: stored, openDoor: openDoorForced(environment))
     }
 
     /// Persist an explicit choice.
