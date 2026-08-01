@@ -3,7 +3,7 @@ name: Linux app
 # ONE definition of "build the GTK app in the swift:6.1-noble container, prove
 # it renders, and package it".
 #
-# build.yml's `linux-app-arm64` and release-linux.yml's `tarball-arm64` were
+# build.yml's `linux-app-arm64` and release.yml's `linux-arm64` were
 # the same job twice: same runner (GitHub's free ubuntu-24.04-arm), same
 # multi-arch container, same apt set, same release build of product
 # `tailscreen`, the same Xvfb GL YUV-readback self-test, and the same
@@ -12,7 +12,7 @@ name: Linux app
 # What differs is the packaging tail and whether a cache may be used, and both
 # are inputs.
 #
-# NOT covered here: release-linux.yml's x86_64 `appimage` job, which runs on a
+# NOT covered here: release.yml's x86_64 `linux-appimage` job, which runs on a
 # HOST runner with swift-actions/setup-swift and sudo apt rather than in this
 # container. Folding it in is a plausible follow-up — the arm64 leg proves the
 # AppImage assembles fine inside the container — but it is the job that builds
@@ -82,6 +82,7 @@ jobs:
     # shape stay identical across architectures and there is no
     # swift.org-tarball toolchain install to maintain.
     runs-on: ${{ inputs.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    timeout-minutes: 40
     container: swift:6.1-noble
 
     env:

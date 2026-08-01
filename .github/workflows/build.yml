@@ -26,6 +26,7 @@ concurrency:
 jobs:
   build:
     runs-on: macos-latest
+    timeout-minutes: 45
     # SwiftPM on Apple-silicon runners does NOT search Homebrew's
     # /opt/homebrew/lib/pkgconfig by default, so OpusKit's `pkgConfig: "opus"`
     # can't find opus.pc from `brew install opus` unless it's on
@@ -157,6 +158,7 @@ jobs:
   # continue-on-error): a release-config compile break is always real.
   build-release:
     runs-on: macos-latest
+    timeout-minutes: 30
     # See the `build` job: SwiftPM on arm64 runners doesn't search brew's
     # pkgconfig dir, so put libopus (and libtailscale) on PKG_CONFIG_PATH.
     env:
@@ -200,6 +202,7 @@ jobs:
   linux-packages:
     name: ${{ matrix.name }}
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     container: swift:6.1-noble
     strategy:
       fail-fast: false
@@ -338,6 +341,7 @@ jobs:
   # the libtailscale Go c-archive (same build as linux-tailscalekit).
   linux-viewer:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     container: swift:6.1-noble
     steps:
       - uses: actions/checkout@v4
@@ -428,6 +432,7 @@ jobs:
     # No libtailscale/Go: this L0a build reaches only TailscreenProtocol/Viewer/
     # Audio + swift-cross-ui, and the render path is gated headlessly.
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     container: swift:6.1-noble
     steps:
       - uses: actions/checkout@v4
@@ -612,11 +617,11 @@ jobs:
   #     compile-only,
   #   • stages + uploads `tailscreen-linux-arm64.tar.gz`. A plain tarball here
   #     on purpose: the arm64 AppImage exists, but it lives in
-  #     release-linux.yml (aarch64 linuxdeploy + appimagetool) — AppImage
+  #     release.yml (aarch64 linuxdeploy + appimagetool) — AppImage
   #     assembly is a packaging concern, not a per-PR gate, exactly as the
   #     x86_64 AppImage is release-only too.
   #
-  # The steps live in app-linux.yml, shared with release-linux.yml's arm64
+  # The steps live in app-linux.yml, shared with release.yml's arm64
   # packaging job — which was this job plus a tarball rename, down to the
   # duplicated README.txt wording inside the tarball.
   #
@@ -633,6 +638,7 @@ jobs:
 
   lint:
     runs-on: macos-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - name: Install SwiftLint
@@ -654,6 +660,7 @@ jobs:
     # config and the existing style, then we flip this to required.
     # TODO: drop `continue-on-error` once the check is observed to pass.
     runs-on: macos-latest
+    timeout-minutes: 10
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
@@ -679,6 +686,7 @@ jobs:
     # we deliberately tolerate failures here — making it required
     # without first fixing the false positives would block every PR.
     runs-on: macos-latest
+    timeout-minutes: 30
     continue-on-error: true
     # See the `build` job: put libopus (+ libtailscale) on PKG_CONFIG_PATH so
     # SwiftPM resolves them on arm64 runners. The Makefile appends this.
@@ -726,6 +734,7 @@ jobs:
   cache-audit:
     name: cache-audit
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     # A diagnostic must never be the reason a PR is red. `set -euo pipefail`
     # below is there so a broken query is visible in THIS job rather than
     # silently printing zeroes; continue-on-error keeps that visibility from

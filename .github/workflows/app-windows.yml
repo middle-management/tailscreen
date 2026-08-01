@@ -2,7 +2,7 @@ name: Windows app
 
 # ONE definition of "build, stage and package the Windows app".
 #
-# release-windows.yml said in its own header that its steps were
+# release.yml said in its own header that its steps were
 # "windows-build.yml's `app` and `arm64-probe` jobs, copied faithfully rather
 # than reinvented". They were, and the copy was 545 lines. Between the three
 # call sites — x64 CI, arm64 CI, and the two-arch release matrix — the build
@@ -19,7 +19,7 @@ name: Windows app
 # artifact, and inventing a single behaviour for both would be worse.
 #
 # `use_cache` is the load-bearing one, and it is POLICY, not convenience: CI
-# passes true, release-windows.yml passes FALSE so a shipped binary is compiled
+# passes true, release.yml passes FALSE so a shipped binary is compiled
 # cold on the runner that ships it and can never contain an object a per-push
 # workflow's cache key handed it. Sharing one definition is not the same as
 # sharing one policy; the input is what keeps them apart.
@@ -147,6 +147,7 @@ jobs:
     # NATIVE build, not a cross-compile. That removes the biggest unknown: no
     # sysroot to assemble, no --triple to get wrong.
     runs-on: ${{ inputs.arch == 'arm64' && 'windows-11-arm' || 'windows-latest' }}
+    timeout-minutes: 75
 
     env:
       FFMPEG_FLAVOUR: ${{ inputs.arch == 'arm64' && 'winarm64' || 'win64' }}
@@ -180,8 +181,14 @@ jobs:
       # It also has to come before the bootstrap action's llvm-mingw install:
       # GITHUB_PATH PREPENDS, so whichever writes last wins, and llvm-mingw's
       # clang must outrank Swift's MSVC-targeting one when cgo goes looking.
+      #
+      # `@v1`, not `@latest`: `@latest` is a MOVING TAG on a third-party
+      # action, so an upstream release would change how this repo's Windows
+      # binaries are produced with no commit here — unreproducible builds and
+      # an unreviewed supply-chain edge on the toolchain installer. The v1 line
+      # still picks up patches.
       - name: Setup Swift ${{ inputs.swift_version }}
-        uses: SwiftyLab/setup-swift@latest
+        uses: SwiftyLab/setup-swift@v1
         with:
           swift-version: ${{ inputs.swift_version }}
 
