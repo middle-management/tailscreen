@@ -39,8 +39,15 @@ on:
     types: [labeled]
 
 # One in-flight build per PR; a newer label re-add supersedes an older run.
+#
+# The label name is part of the group for the same reason windows-build.yml's
+# is: `pull_request: [labeled]` fires once PER LABEL, so adding two labels in
+# one API call produces two runs. Every job here gates on
+# `label.name == 'build:notarized'`, so the run for the OTHER label exists only
+# to evaluate its `if` and skip — and with the label out of the group it lands
+# in the same one and cancels a real build mid-flight.
 concurrency:
-  group: pr-notarized-${{ github.event.pull_request.number }}
+  group: pr-notarized-${{ github.event.pull_request.number }}-${{ github.event.label.name }}
   cancel-in-progress: true
 
 permissions:
