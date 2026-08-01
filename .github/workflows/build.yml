@@ -38,7 +38,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: recursive  # Initialize all submodules
           # Full history so the diff-coverage gate can diff against the
@@ -110,7 +110,7 @@ jobs:
 
       - name: Upload coverage artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-profdata
           path: |
@@ -165,7 +165,7 @@ jobs:
       PKG_CONFIG_PATH: ${{ github.workspace }}/Packages/TailscaleKit:/opt/homebrew/lib/pkgconfig
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: recursive
       - name: Bootstrap libtailscale
@@ -304,7 +304,7 @@ jobs:
             cmd: PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" swift test --package-path Packages/TailscaleKit
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # 'false' for the four legs that omit it — only the TailscaleKit-
           # touching legs need the submodule, and cloning it costs the others
@@ -344,7 +344,7 @@ jobs:
     timeout-minutes: 30
     container: swift:6.3-noble
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
       - name: Install build tools + A/V dev libraries
@@ -435,7 +435,7 @@ jobs:
     timeout-minutes: 30
     container: swift:6.3-noble
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
       - name: Install GTK4 + GL + headless display + A/V + Go
@@ -496,7 +496,7 @@ jobs:
       # ---------------------------------------------------------------------
       - name: Restore the GTK app's build directory
         id: gtk-build-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: Apps/linux-gtk/.build
           key: >-
@@ -512,7 +512,7 @@ jobs:
       # everything.
       - name: Restore the Windows app's Linux typecheck directory
         id: winapp-typecheck-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: Apps/windows/.build
           key: >-
@@ -581,7 +581,7 @@ jobs:
         if: >-
           ${{ !cancelled() && steps.gtk-build-cache.outcome == 'success'
           && steps.gtk-build-cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: |
             Apps/linux-gtk/.build
@@ -594,7 +594,7 @@ jobs:
         if: >-
           ${{ !cancelled() && steps.winapp-typecheck-cache.outcome == 'success'
           && steps.winapp-typecheck-cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: |
             Apps/windows/.build
@@ -640,7 +640,7 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install SwiftLint
         run: brew install swiftlint
       - name: Run SwiftLint (baseline-gated)
@@ -663,7 +663,7 @@ jobs:
     timeout-minutes: 10
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install swift-format
         run: brew install swift-format
       - name: Verify swift-format is available
@@ -693,7 +693,7 @@ jobs:
     env:
       PKG_CONFIG_PATH: ${{ github.workspace }}/Packages/TailscaleKit:/opt/homebrew/lib/pkgconfig
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
       - name: Bootstrap libtailscale

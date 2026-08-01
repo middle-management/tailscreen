@@ -165,7 +165,7 @@ jobs:
         run: git config --global core.symlinks true
 
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
           submodules: recursive
@@ -401,7 +401,7 @@ jobs:
       - name: Restore the app's build directory
         id: app-build-cache
         if: inputs.use_cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: Apps/windows/.build
           key: >-
@@ -642,7 +642,7 @@ jobs:
           ${{ !cancelled() && inputs.use_cache
           && steps.app-build-cache.outcome == 'success'
           && steps.app-build-cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: |
             Apps/windows/.build
@@ -714,7 +714,7 @@ jobs:
       # nothing shipped came out of a cache.
       - name: Cache the Windows App SDK nupkg
         if: inputs.use_cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .winappsdk-cache
           key: winappsdk-nupkg-1.5.250108004
@@ -817,7 +817,7 @@ jobs:
       # anyone can run.
       - name: Upload the app
         if: inputs.upload_dist
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ inputs.dist_artifact_name != '' && inputs.dist_artifact_name || format('tailscreen-windows-{0}', inputs.arch) }}
           path: dist/
@@ -1039,7 +1039,7 @@ jobs:
       # upload would withhold it precisely when it is most useful.
       - name: Upload the MSIX
         if: ${{ inputs.msix && !inputs.zip && !cancelled() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ inputs.msix_artifact_name != '' && inputs.msix_artifact_name || format('tailscreen-windows-msix-{0}', inputs.arch) }}
           path: out/*.msix
@@ -1059,7 +1059,7 @@ jobs:
       # downloadable from the run for a human to try.
       - name: Upload the package artifact
         if: ${{ inputs.zip && !inputs.upload_to_release }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: tailscreen-windows-${{ inputs.arch }}-package
           path: out/

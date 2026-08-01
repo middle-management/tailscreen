@@ -303,7 +303,7 @@ jobs:
             appimage_arch: aarch64
     steps:
       - name: Download the package artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: Tailscreen-${{ needs.version.outputs.version }}-linux-${{ matrix.package_arch }}.tar.gz
 
