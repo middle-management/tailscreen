@@ -90,7 +90,7 @@ jobs:
           submodules: recursive
 
       - name: Install Swift + build dependencies
-        # The GTK app's own deps (see the linux-gtk-viewer CI job) plus the
+        # The GTK app's own deps (see the linux-app CI job) plus the
         # sharer's capture/encode libs (libxcb, libavcodec), plus librsvg so the
         # AppImage script renders a real icon rather than its 1x1 placeholder,
         # plus FUSE for appimagetool.

@@ -299,7 +299,7 @@ jobs:
       # for, but not twice: Linux CI already typechecks every one of them on a
       # cheap runner, and names the file when it fails —
       #
-      #   TailscreenHubUI      → linux-gtk-viewer, "Typecheck the Windows app"
+      #   TailscreenHubUI      → linux-app, "Typecheck the Windows app"
       #   TailscreenSharerWGC  → linux-viewer, "Typecheck the Windows sharer backend"
       #   WinOverlayKit        → linux-viewer, "Typecheck the Windows annotation overlay"
       #   TailscreenProtocol   → linux-packages (linux-protocol)
