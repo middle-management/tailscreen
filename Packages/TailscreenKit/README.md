@@ -81,7 +81,8 @@ that roadmap.
   tests whose subject types live entirely in this package (FEC, NACK,
   retransmit, RR, RTP packet/buffer/audio, receive-loop policy, capture-helper
   wire, screen-share/share-response protocol, share lock, quality settings,
-  instance naming, viewer zoom math, Opus codec). They run on Linux CI
+  instance naming, viewer zoom math, Opus codec, the multi-account
+  `AccountProfileStore` incl. both hosts' migration paths). They run on Linux CI
   (`linux-protocol`). A suite belongs here iff it imports no Apple framework
   and references only package types; anything that mixes in a mac symbol (an
   Apple-framework import, a server/`AppState`/`VideoDecoder`/`VoiceChannel`
