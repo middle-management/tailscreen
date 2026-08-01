@@ -3,7 +3,7 @@ name: Release (Linux)
 # Builds the Linux desktop app (Apps/linux-gtk — the swift-cross-ui/GTK4 app
 # that both views and shares) and uploads an x86_64 AppImage plus an arm64
 # AppImage + tarball to the GitHub Release that triggered the run. The mirror
-# of release.yml, which does the same for the macOS .app.
+# of release-macos.yml, which does the same for the macOS .app.
 #
 # Only the GTK app is packaged. The other Linux executables
 # (tailscreen-sharer-linux, tailscreen-viewer-probe, TailscreenTestSharer) are

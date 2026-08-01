@@ -2,7 +2,7 @@ name: Release (Windows)
 
 # Builds the Windows app (Apps/windows — the swift-cross-ui/WinUI app) for both
 # architectures and uploads a zip + an MSIX per arch to the GitHub Release that
-# triggered the run. The Windows sibling of release-linux.yml (and release.yml,
+# triggered the run. The Windows sibling of release-linux.yml (and release-macos.yml,
 # which does the same for the macOS .app).
 #
 # The build steps used to be windows-build.yml's, "copied faithfully rather

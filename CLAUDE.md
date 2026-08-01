@@ -636,7 +636,7 @@ User-facing strings are localized through SwiftPM resources. `Package.swift` set
 
 **Shared build definitions.** The per-OS app build is defined ONCE and called
 from both its per-push and its release workflow, so a build fix lands in one
-place: `.github/workflows/app-macos.yml` (release.yml + pr-notarized-build.yml),
+place: `.github/workflows/app-macos.yml` (release-macos.yml + pr-notarized-build.yml),
 `app-windows.yml` (windows-build.yml + release-windows.yml), `app-linux.yml`
 (build.yml's `linux-app-arm64` + release-linux.yml's arm64 packaging). Under
 them, `.github/actions/bootstrap` is the composite action every build job runs
