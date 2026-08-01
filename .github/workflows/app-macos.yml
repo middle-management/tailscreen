@@ -215,6 +215,26 @@ jobs:
           Cflags: -I\${includedir}/opus
           PC
 
+      # Rewrite BuildInfo.commit before compiling, so Settings → About names
+      # the commit instead of "dev". The grep is the point: a silently-failed
+      # sed would ship an app claiming to be someone's local build, which is
+      # worse than no stamp at all.
+      #
+      # This landed in release.yml AND pr-notarized-build.yml as two copies on
+      # the same day this consolidation was written — which is the argument for
+      # the consolidation in one line. `sed -i ''` is the BSD spelling and is
+      # why it cannot simply be shared with the Windows stamp, which uses GNU
+      # sed's `sed -i`.
+      - name: Stamp the build
+        run: |
+          set -euo pipefail
+          file=Apps/macOS/Sources/BuildInfo.swift
+          short=$(git rev-parse --short HEAD)
+          sed -i '' "s/static let commit = \"dev\"/static let commit = \"$short\"/" "$file"
+          grep -q "static let commit = \"$short\"" "$file" \
+            || { echo "build stamp did not apply — refusing to ship an app labelled 'dev'" >&2; exit 1; }
+          echo "stamped $short"
+
       - name: Build universal Tailscreen binary
         env:
           # Prepend the universal-static opus dir so COpus's `pkgConfig:

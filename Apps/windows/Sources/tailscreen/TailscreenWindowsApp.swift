@@ -17,6 +17,7 @@ import enum TailscreenProtocol.PeerListFilterStore
 import enum TailscreenProtocol.PeerSharingState
 import struct TailscreenProtocol.QualitySettings
 import struct TailscreenProtocol.TailscreenMetadata
+import enum TailscreenProtocol.ViewerApprovalPreference
 import class TailscreenSharerWGC.WindowsShareSession
 import class TailscreenVideoFFmpeg.FFmpegVideoDecoder
 import class TailscreenViewer.FrameStore
@@ -334,6 +335,17 @@ final class AppUIState: ObservableObject {
     /// of guessing wrong is exactly the screen the user would have reached by
     /// clicking. (The GTK app's picker mode already behaves this way.)
     init() {
+        // Subscribe to share status here rather than on the first Share press.
+        // The approval gate is decided BEFORE a share exists, and a switch
+        // whose value only arrives once you press Share reads wrong at exactly
+        // the moment you are deciding whether to press it.
+        shareSession.onStatus = { [weak self] status in
+            Task { @MainActor in self?.sharing = status }
+        }
+        // Push the persisted choice at the session. It already fails closed on
+        // its own, but "closed" and "what the user asked for" are not the same
+        // answer, and only one of them is this app's to give.
+        shareSession.setRequireApproval(ViewerApprovalPreference.load())
         if Self.hasPreviousLogin() {
             signIn()
         }
@@ -435,11 +447,33 @@ final class AppUIState: ObservableObject {
             // this app has; a request not rendered here is one nobody can
             // answer, which is exactly what happened when the Windows sharer
             // advertised the capability and had nowhere to show the request.
-            prompts: sharing.controlRequests.map {
+            // Approvals lead: a viewer at the gate is stuck on a Connecting
+            // placard with nothing on screen, while a control request comes
+            // from someone already watching. The more blocked person goes
+            // first.
+            prompts: sharing.pendingViewers.map {
                 HubPrompt(
-                    id: $0.id.uuidString,
-                    message: "\($0.displayName) wants to control this machine")
-            },
+                    id: $0.id, message: "\($0.displayName) wants to watch",
+                    acceptLabel: "Accept", declineLabel: "Deny")
+            }
+                + sharing.controlRequests.map {
+                    HubPrompt(
+                        id: $0.id.uuidString,
+                        message: "\($0.displayName) wants to control this machine")
+                },
+            settings: [
+                HubToggle(
+                    label: "Require approval for new viewers",
+                    // Said only while it is off, and said as a consequence
+                    // rather than a warning glyph: this is the one setting on
+                    // the card whose wrong value is invisible in normal use —
+                    // the share looks identical, it just lets strangers in.
+                    caption: sharing.requireApproval
+                        ? nil
+                        : "Anyone on your tailnet who can reach this machine can watch.",
+                    isOn: sharing.requireApproval,
+                    set: { [weak self] in self?.setRequireApproval($0) })
+            ],
             extraAction: sharing.controlGrantedTo.map { holder in
                 HubAction(label: "Take back control from \(holder)") { [weak self] in
                     self?.revokeControl()
@@ -447,14 +481,45 @@ final class AppUIState: ObservableObject {
             },
             onStart: { [weak self] in self?.startSharing() },
             onStop: { [weak self] in self?.stopSharing() },
-            onAccept: { [weak self] id in
-                guard let requestID = UUID(uuidString: id) else { return }
-                self?.grantControl(to: requestID)
-            },
-            onDecline: { [weak self] id in
-                guard let requestID = UUID(uuidString: id) else { return }
-                self?.declineControl(requestID)
-            })
+            onAccept: { [weak self] id in self?.answerPrompt(id, accept: true) },
+            onDecline: { [weak self] id in self?.answerPrompt(id, accept: false) })
+    }
+
+    /// Route a card prompt back to whichever feature raised it.
+    ///
+    /// Two sources share one prompt list and one pair of buttons, so the id
+    /// has to say which. Matched against the live pending list rather than by
+    /// looking at the string's shape: an `"ip:port"` and a UUID happen to be
+    /// distinguishable today, and a dispatch that leans on that is one id
+    /// format change away from granting remote control to someone who asked
+    /// to watch.
+    private func answerPrompt(_ id: String, accept: Bool) {
+        if sharing.pendingViewers.contains(where: { $0.id == id }) {
+            if accept {
+                shareSession.approveViewer(id)
+            } else {
+                shareSession.denyViewer(id)
+            }
+            return
+        }
+        guard let requestID = UUID(uuidString: id) else { return }
+        if accept {
+            grantControl(to: requestID)
+        } else {
+            declineControl(requestID)
+        }
+    }
+
+    /// Flip the approval gate and remember it.
+    ///
+    /// Persisted through the shared `ViewerApprovalPreference` so this app and
+    /// the GTK one cannot disagree about the default or about
+    /// `TAILSCREEN_OPEN_DOOR=1`. The session applies it to a running share as
+    /// well as the next one — turning it off drains whoever is already parked.
+    func setRequireApproval(_ enabled: Bool) {
+        guard enabled != sharing.requireApproval else { return }
+        ViewerApprovalPreference.save(enabled)
+        shareSession.setRequireApproval(enabled)
     }
 
     /// The secondary lines under the share card's status.
@@ -537,9 +602,8 @@ final class AppUIState: ObservableObject {
                 )
                 loginURL = nil
                 phase = .ready
-                status =
-                    transport.accountIdentity.map { "Signed in as \($0)" }
-                    ?? "Signed in"
+                status = hubSignedInSubtitle(
+                    tailnet: transport.tailnetName, account: transport.accountIdentity)
                 refreshPeers()
             } catch {
                 phase = .failed
@@ -689,10 +753,6 @@ final class AppUIState: ObservableObject {
     func startSharing() {
         guard phase == .ready, !sharing.isSharing else { return }
         detail = ""
-
-        shareSession.onStatus = { [weak self] status in
-            Task { @MainActor in self?.sharing = status }
-        }
 
         let item: WGC.CaptureItem?
         do {

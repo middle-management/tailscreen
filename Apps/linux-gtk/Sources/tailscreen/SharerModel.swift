@@ -9,6 +9,24 @@ import TailscreenViewerTsnet
 // SwiftCrossUI's own `Published` / `ObservableObject` shims on Linux.
 import struct TailscreenProtocol.PickerSelection
 import struct TailscreenProtocol.QualitySettings
+import enum TailscreenProtocol.ViewerApprovalPreference
+
+/// A viewer parked at the approval gate, as the share card needs it.
+///
+/// `id` is the server's own viewer key — `"ip:port"`, not the bare IP. That
+/// distinction is the whole reason this is a struct rather than a string:
+/// `approveViewer` and `denyViewer` look the address up in the pending map, and
+/// an IP with the port dropped matches nothing, so both silently no-op. The
+/// sharer gets a row with two buttons that do nothing and the viewer waits
+/// forever. `label` is the readable half — a hostname once the netmap lookup
+/// lands, the IP until then.
+///
+/// File scope rather than nested in `SharerModel`, which is `@MainActor`: the
+/// server's pending callback is not, and it is the code that builds these.
+struct PendingViewer: Identifiable, Equatable, Sendable {
+    let id: String
+    let label: String
+}
 
 /// Drives the *sharing* half of the app: start/stop a share, and publish who's
 /// watching so the chrome can render it.
@@ -37,7 +55,16 @@ final class SharerModel: ObservableObject {
     /// Tailscale IPs of admitted viewers, for the sharing card.
     @Published var viewerIPs: [String] = []
     /// Viewers parked awaiting approval, when the approval gate is on.
-    @Published var pendingIPs: [String] = []
+    @Published var pendingViewers: [PendingViewer] = []
+    /// Whether new viewers have to be let in by hand.
+    ///
+    /// Persisted, and read back at launch through the shared
+    /// `ViewerApprovalPreference` so this app, the Windows app and the macOS
+    /// app cannot disagree about the default (on) or the
+    /// `TAILSCREEN_OPEN_DOOR=1` harness override. Mutate via
+    /// `setRequireApproval` — assigning here would change the switch without
+    /// telling the live server, which is the one place it matters.
+    @Published private(set) var requireApproval: Bool = ViewerApprovalPreference.load()
 
     /// Whether this host can share at all. X11 capture needs a display; on a
     /// Wayland-only or headless session there's nothing to capture, and the UI
@@ -69,8 +96,8 @@ final class SharerModel: ObservableObject {
         case .idle: return unavailableReason ?? "Not sharing"
         case .starting: return "Starting share…"
         case .sharing:
-            if !pendingIPs.isEmpty {
-                return "\(pendingIPs.count) waiting for approval"
+            if !pendingViewers.isEmpty {
+                return "\(pendingViewers.count) waiting for approval"
             }
             return viewerIPs.isEmpty ? "Sharing — nobody watching yet" : "Sharing to \(viewerIPs.count)"
         case .failed(let why): return "Share failed: \(why)"
@@ -100,18 +127,23 @@ final class SharerModel: ObservableObject {
             // their Request Control affordance.
             inputInjector: nil
         )
-        // Approval defaults ON, matching the macOS posture: a desktop app that
-        // silently admits anyone who can reach port 7447 is a worse default
-        // than one extra click. (The headless CLI sharer is open-door because
-        // it's driven by automation, not by a person at a screen.)
-        server.setRequireApproval(true)
+        // The server's own default is OFF — right for the headless CLI sharer
+        // that automation drives, wrong for anything with a person in front of
+        // it — so the gate has to be asserted here on every start. Assert the
+        // user's setting rather than a literal `true`, or the toggle would be
+        // a switch the share ignores.
+        server.setRequireApproval(requireApproval)
         server.onViewersChanged = { viewers in
             let ips = viewers.map(\.tailscaleIP)
             Task { @MainActor [weak self] in self?.viewerIPs = ips }
         }
         server.onPendingViewersChanged = { pending in
-            let ips = pending.map(\.tailscaleIP)
-            Task { @MainActor [weak self] in self?.pendingIPs = ips }
+            // Keyed by the server's `"ip:port"` id, NOT the bare IP — see
+            // `PendingViewer`. Fires off the main actor; hop.
+            let waiting = pending.map {
+                PendingViewer(id: $0.id, label: $0.hostname ?? $0.tailscaleIP)
+            }
+            Task { @MainActor [weak self] in self?.pendingViewers = waiting }
         }
         server.onCaptureStopped = { error in
             Task { @MainActor [weak self] in
@@ -122,7 +154,7 @@ final class SharerModel: ObservableObject {
                     self.phase = .idle
                 }
                 self.viewerIPs = []
-                self.pendingIPs = []
+                self.pendingViewers = []
             }
         }
         self.server = server
@@ -149,15 +181,30 @@ final class SharerModel: ObservableObject {
         }
         self.server = nil
         viewerIPs = []
-        pendingIPs = []
+        pendingViewers = []
         phase = .idle
         Task { await server.stop() }
     }
 
-    /// Admit a viewer parked at the approval gate.
+    /// Admit a viewer parked at the approval gate. `addr` is the
+    /// `PendingViewer.id` (`"ip:port"`), never a bare IP.
     func approve(_ addr: String) { server?.approveViewer(addr: addr) }
     /// Reject a viewer parked at the approval gate.
     func deny(_ addr: String) { server?.denyViewer(addr: addr) }
+
+    /// Flip the approval gate, persist it, and push it at a live share.
+    ///
+    /// Applied mid-share on purpose: `setRequireApproval(false)` drains
+    /// whoever is already parked (minus anyone remembered-deny), so turning
+    /// the gate off is also how you admit a queue in one click. Turning it on
+    /// mid-share affects the next HELLO — viewers already admitted stay
+    /// admitted, exactly as on macOS.
+    func setRequireApproval(_ enabled: Bool) {
+        guard enabled != requireApproval else { return }
+        requireApproval = enabled
+        ViewerApprovalPreference.save(enabled)
+        server?.setRequireApproval(enabled)
+    }
 
     private var isFailed: Bool {
         if case .failed = phase { return true }
