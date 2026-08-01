@@ -33,12 +33,16 @@ Apps/linux/
 │   ├── TailscreenViewerCore/       # library — CI-testable, NO tsnet
 │   │   ├── Adapters.swift          #   FFmpeg → VideoDecoding, ALSA → AudioSink
 │   │   └── ThreadedAudioSink.swift #   off-thread ALSA writes (used by the GTK viewer)
+│   │                               # (the FFmpeg decoder moved to
+│   │                               #  Packages/TailscreenVideoFFmpeg — Windows needs
+│   │                               #  it without ALSA/X11 — and is @_exported from
+│   │                               #  Adapters.swift, so call sites are unchanged)
 │   │                               # (ViewerPipeline — the decoder+sink assembler —
 │   │                               #  lives in TailscreenKit's TailscreenViewer target;
 │   │                               #  it was Foundation-only and needn't drag in libav*)
-│   ├── TailscreenViewerTsnet/      # library — the tsnet transport
-│   │   ├── TsnetTransport.swift    #   node bring-up + discovery + UDP run loop
-│   │   └── ViewerBackChannel.swift #   outbound TCP control/annotation channel
+│                               # (the tsnet transport moved to TailscreenKit's
+│                               #  TailscreenViewerTsnet target — the Windows app
+│                               #  needs it and nothing in it was Linux-specific)
 │   ├── TailscreenTestSharer/       # executable — synthetic sharer for local
 │   │                               #   end-to-end runs (captures nothing)
 │   ├── TailscreenSharerLinux/      # library — the real SHARER capture backend
@@ -53,8 +57,9 @@ Apps/linux/
 
 The package is split so the decode→audio pipeline is provable in CI without the
 tsnet/Go dependency: `TailscreenViewerCore` depends only on the A/V backends and
-the portable core. `TailscreenViewerTsnet` adds the `TailscaleKit` dependency
-(and thus the built `libtailscale.a`).
+the portable core. The transport lives in TailscreenKit as
+`TailscreenViewerTsnet`, which is what adds the `TailscaleKit` dependency (and
+thus the built `libtailscale.a`) for the executables here that consume it.
 
 ## Build & test
 
@@ -74,9 +79,10 @@ make -C ../../Packages/TailscaleKit
 PKG_CONFIG_PATH="$PWD/../../Packages/TailscaleKit" swift test --package-path .
 ```
 
-`swift test` builds and links the whole package (including `TailscreenViewerTsnet`),
-so it needs `libtailscale.a` present — which also makes it the Linux link-check
-for the tsnet transport. The `linux-viewer` CI job runs exactly this.
+`swift test` builds and links the whole package (including the executables that
+pull in `TailscreenViewerTsnet`), so it needs `libtailscale.a` present — which
+also makes it the Linux link-check for the tsnet transport. The `linux-viewer`
+CI job runs exactly this.
 
 ## Running the viewer
 
@@ -106,7 +112,7 @@ eval "$(./scripts/e2e-up-native.sh)"
 swift run --package-path Apps/linux TailscreenTestSharer --fps 10 --size 640x360
 
 # 3. viewer, dialing that address (separate state dir!)
-cd Apps/linux-gtk && swift run tailscreen-viewer-gtk 100.64.0.2 \
+cd Apps/linux-gtk && swift run tailscreen 100.64.0.2 \
     --state-dir /tmp/viewer-state
 
 ./scripts/e2e-down-native.sh   # when done
@@ -173,7 +179,7 @@ To drive it by hand instead (e.g. to watch in the GTK viewer):
 eval "$(./scripts/e2e-up-native.sh)"
 DISPLAY=:0 swift run --package-path Apps/linux tailscreen-sharer-linux \
     --hostname ts-sharer --state-dir /tmp/sharer-state
-cd Apps/linux-gtk && swift run tailscreen-viewer-gtk 100.64.0.1 \
+cd Apps/linux-gtk && swift run tailscreen 100.64.0.1 \
     --state-dir /tmp/viewer-state
 ```
 

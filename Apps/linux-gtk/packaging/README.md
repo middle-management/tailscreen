@@ -2,7 +2,7 @@
 
 Installable-package recipes for the native Linux desktop app (`Apps/linux-gtk`,
 the swift-cross-ui / GTK4 app whose executable product is
-`tailscreen-viewer-gtk`). Three paths:
+`tailscreen`). Three paths:
 
 - **AppImage** — `appimage/build-appimage.sh` — built and uploaded by the
   `Release (Linux)` workflow, so this is the shipping channel today
@@ -16,17 +16,18 @@ the swift-cross-ui / GTK4 app whose executable product is
   channel for a GTK app
 
 All target the same app: id `dev.tailscreen.Tailscreen`, name **Tailscreen**,
-command `tailscreen-viewer-gtk`.
+command `tailscreen`.
 
 **Only the GTK app is packaged.** `Apps/linux` also builds
 `tailscreen-sharer-linux`, `tailscreen-viewer-probe` and `TailscreenTestSharer`
 — development and test tools, not products — and they are deliberately absent
 from every artifact here.
 
-The executable is still named `tailscreen-viewer-gtk` for continuity, though
-the app both views *and* shares since it gained a sharing card. Renaming the
-product is a follow-up that would touch the CI job names, the packaging
-recipes, and anyone's muscle memory, so it hasn't been done casually.
+The executable is plain `tailscreen` — the app is a full sharer *and* viewer,
+same as the macOS and Windows apps, so the old `tailscreen-viewer-gtk` name
+undersold it. The rename kept a one-time migration: an existing
+`~/.config/tailscreen-viewer-gtk` directory (profiles + node state) is moved to
+`~/.config/tailscreen` on first launch.
 
 ## Honest status
 
@@ -71,7 +72,7 @@ plus a Swift 6 toolchain (swift.org).
 `flatpak/dev.tailscreen.Tailscreen.yml` builds from the repo source against the
 GNOME runtime (`org.gnome.Platform//47` / `org.gnome.Sdk//47`), which supplies
 GTK4. It compiles `libtailscale.a` (Go, via the `org.freedesktop.Sdk.Extension.golang`
-SDK extension) and then `swift build -c release --product tailscreen-viewer-gtk`.
+SDK extension) and then `swift build -c release --product tailscreen`.
 
 **The one gap: Swift.** The GNOME SDK does not ship a Swift toolchain, and there
 is no official Swift SDK extension. Two ways to close it:
@@ -80,7 +81,7 @@ is no official Swift SDK extension. Two ways to close it:
    into the build (e.g. add it as an extra `archive` source that installs under
    `/usr/lib/sdk/swift` and prepend it to `append-path`), or base the manifest on
    a community Swift SDK extension if one is available for your runtime version.
-2. **Bundle a host-prebuilt binary** — build `tailscreen-viewer-gtk` on the host
+2. **Bundle a host-prebuilt binary** — build `tailscreen` on the host
    (`swift build -c release`), then change the module to `buildsystem: simple`
    with a single `type: file` source for the binary and `install` it, dropping
    the `swift build` / `make` steps. Simpler, but the binary must match the

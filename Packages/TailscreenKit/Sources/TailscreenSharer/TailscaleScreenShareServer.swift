@@ -549,7 +549,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// Transport capabilities every build advertises back to cap-aware
     /// viewers. Platform-independent: all three ride the portable
     /// loss-recovery core.
-    private static let baseServerCaps: ScreenShareCaps = [.nack, .receiverReport, .fec, .annotations]
+    private static let baseServerCaps: ScreenShareCaps = [.nack, .receiverReport, .fec]
 
     /// What *this* server advertises. `.remoteControl` is added only when the
     /// host supplied an ``InputInjecting`` backend — the bit means "this
@@ -563,8 +563,26 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// mac-only server hard-coded. A host without injection now correctly
     /// omits the bit instead of advertising a capability it can't honour.
     private var serverCaps: ScreenShareCaps {
-        remoteControlInjector == nil ? Self.baseServerCaps : Self.baseServerCaps.union(.remoteControl)
+        var caps = Self.baseServerCaps
+        if remoteControlInjector != nil { caps.insert(.remoteControl) }
+        if rendersAnnotations { caps.insert(.annotations) }
+        return caps
     }
+
+    /// Whether this host DISPLAYS the annotations viewers draw.
+    ///
+    /// Conditional for the same reason `.remoteControl` is, and it was missed
+    /// the first time: `.annotations` sat in the base set as a leftover from
+    /// when the only sharer was macOS, which has always had an overlay window.
+    /// A host without one advertises the bit, the viewer enables its drawing
+    /// tools, and the strokes reach a sharer that renders nothing — so the
+    /// viewer draws confidently at somebody who cannot see it. Withholding the
+    /// bit disables the toolbar instead, which is a smaller disappointment
+    /// delivered honestly.
+    ///
+    /// Defaults to true because macOS and the existing hosts do render them;
+    /// a host that does not must say so.
+    public let rendersAnnotations: Bool
 
     /// Adaptive FEC state (group size + off-gate hysteresis), stepped once
     /// per sweep window by `fecSweepDecision`. `groupSize == 0` means FEC
@@ -697,11 +715,13 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     public init(
         port: UInt16 = NetworkConfig.tailscreenPort,
         captureFactory: (@Sendable () -> any CaptureEncoding)?,
-        inputInjector: (any InputInjecting)?
+        inputInjector: (any InputInjecting)?,
+        rendersAnnotations: Bool = true
     ) {
         self.port = port
         self.captureFactory = captureFactory
         self.remoteControlInjector = inputInjector
+        self.rendersAnnotations = rendersAnnotations
         self.logger = TSLogger()
         self.rtpTimestampOriginNs = DispatchTime.now().uptimeNanoseconds
     }

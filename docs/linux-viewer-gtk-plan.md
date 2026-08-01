@@ -56,7 +56,7 @@ the CI container in ~1 minute.
 ## Architecture
 
 ```
-tailscreen-viewer-gtk (swift-cross-ui App, DefaultBackend = GtkBackend)
+tailscreen (swift-cross-ui App, DefaultBackend = GtkBackend)
  ├─ App / WindowGroup ................ native GTK window + declarative chrome
  │   ├─ GtkVideoView (GtkGLArea) ..... GL YUV→RGB render of the latest frame
  │   ├─ StatsOverlay ................. swift-cross-ui Text/VStack over the video
@@ -115,7 +115,7 @@ Each phase is a PR. The GLArea render path is **CI-gated headlessly** (Xvfb +
 guarantee the SDL path never had.
 
 ### L0 — Foundation: app skeleton + live video
-- Add `swift-cross-ui` as a dependency; add a `tailscreen-viewer-gtk` target to
+- Add `swift-cross-ui` as a dependency; add a `tailscreen` target to
   `Apps/linux` reusing `TailscreenViewerCore` (refactor `TsnetTransport` into
   Core so both the SDL CLI and the GTK app share it).
 - Productise `GtkVideoView` from the spike: GLArea + GL YUV renderer fed by a
@@ -215,7 +215,7 @@ guarantee the SDL path never had.
   String label; no SF Symbols). The header also carries a **Refresh** button
   (re-lists via `discoverPeers` without re-login) and a **multi-account menu**
   (`ProfileStore`: per-profile tsnet state dirs persisted under
-  `$XDG_CONFIG_HOME/tailscreen-viewer-gtk`; switching tears the node down and
+  `$XDG_CONFIG_HOME/tailscreen`; switching tears the node down and
   brings it up under the chosen profile's state dir, Add Account seeds a fresh
   dir → interactive login, and a profile auto-renames to its resolved Tailscale
   login) — the viewer's cut of the mac hub's account switcher. Rows show a green

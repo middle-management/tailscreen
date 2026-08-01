@@ -3,7 +3,6 @@ import TailscaleKit
 import TailscreenProtocol
 import TailscreenTransport
 import TailscreenViewer
-import TailscreenViewerCore
 
 /// Connection parameters for the tsnet-backed viewer transport.
 public struct ViewerConfig: Sendable {
@@ -114,6 +113,19 @@ public final class TsnetTransport {
     /// skips `prepare` (the direct-host path, which dials without discovery).
     private var preparedNode: TailscaleNode?
 
+    /// The live node, for a host that also SHARES.
+    ///
+    /// `TailscaleScreenShareServer.start(existingNode:)` takes this so the
+    /// sharer runs on the same tailnet identity the user signed in with. The
+    /// alternative — letting the server bring up its own — needs a second state
+    /// directory, and a state directory holds a machine key, so it is a second
+    /// machine: a second interactive browser login the user is never prompted
+    /// for, and a share that silently never joins the tailnet. That is exactly
+    /// what the Windows app did before it read this.
+    ///
+    /// Pair it with `retainsNodeAcrossSessions` and a `.shareCapable` role.
+    public var sharedNode: TailscaleNode? { preparedNode }
+
     /// The Tailscale login/identity the prepared node authenticated as (e.g.
     /// "user@github"), resolved during `prepare`. nil before bring-up or after
     /// `teardown`. A GUI host uses it to label the active account.
@@ -172,6 +184,37 @@ public final class TsnetTransport {
         onLoginURL: (@Sendable (URL) -> Void)? = nil
     ) async throws {
         guard preparedNode == nil else { return }
+        // Bring-up runs OFF this actor. `TsnetTransport` is `@MainActor` for
+        // its steady-state loop (see the type's note), and a GUI host's
+        // `Task { try await transport.prepare(...) }` therefore executes the
+        // whole of bring-up on the UI thread. That was enough to hang the
+        // Windows app outright: the window painted "Starting Tailscale…" and
+        // then stopped answering messages, so the login URL it was waiting for
+        // could never be shown — a deadlock the user cannot even read an error
+        // out of.
+        //
+        // Nothing here needs the main actor. Every step is a call into the Go
+        // c-archive or an await on the node actor, and the results are three
+        // values assigned back below. `nonisolated static` puts it on the
+        // global executor, which is where multi-second work belongs.
+        let brought = try await Self.bringUpNode(config: config, onLoginURL: onLoginURL)
+        preparedNode = brought.node
+        accountIdentity = brought.identity
+    }
+
+    /// The bring-up itself: state dir, node, optional IPN-bus login watcher,
+    /// `up()`, and the identity lookup.
+    ///
+    /// `nonisolated` so it does not inherit `@MainActor` — see `prepare`. Each
+    /// step logs before it starts rather than after it finishes, because the
+    /// failure this was written for is a *hang*, and a log line that only
+    /// prints on success tells you nothing about where a hang is.
+    private nonisolated static func bringUpNode(
+        config: ViewerConfig,
+        onLoginURL: (@Sendable (URL) -> Void)?
+    ) async throws -> (node: TailscaleNode, identity: String?) {
+        let logger = StderrLogger()
+        logger.log("prepare: creating state dir \(config.statePath)")
         try? FileManager.default.createDirectory(
             atPath: config.statePath, withIntermediateDirectories: true)
 
@@ -185,6 +228,9 @@ public final class TsnetTransport {
         let nodeID = Self.nodeIdentity(for: config.nodeRole, uniqueSuffix: UUID().uuidString)
         let hostName = nodeID.hostName
         let ephemeral = nodeID.ephemeral
+        // First call into the Go c-archive, so this is also where the Go
+        // runtime initialises.
+        logger.log("prepare: creating tsnet node \(hostName) (ephemeral=\(ephemeral))")
         let node = try TailscaleNode(
             config: Configuration(
                 hostName: hostName,
@@ -203,16 +249,29 @@ public final class TsnetTransport {
         // the user to open. With an auth key this path is skipped entirely.
         var authWatcher: TailscaleIPNWatcher?
         if config.authKey == nil {
-            let watcher = TailscaleIPNWatcher()
-            watcher.onBrowseToURL = { url in
-                if let onLoginURL { onLoginURL(url) } else { Self.surfaceLoginURL(url) }
+            logger.log("prepare: no auth key — subscribing to the IPN bus for the login URL")
+            let watcher = await TailscaleIPNWatcher()
+            await MainActor.run {
+                watcher.onBrowseToURL = { url in
+                    // ALWAYS log it, then hand it to the host.
+                    //
+                    // The host's callback is a GUI update, and a GUI update is
+                    // exactly what is unavailable when the app has stopped
+                    // answering — which is the state this URL is needed to get
+                    // out of, since `up()` will not return until someone visits
+                    // it. A line on stderr is readable from the console the user
+                    // launched from even then, so a frozen window becomes an
+                    // inconvenience rather than a dead end.
+                    Self.surfaceLoginURL(url)
+                    onLoginURL?(url)
+                }
             }
             try await watcher.startWatching(node: node)
             authWatcher = watcher
-            logger.log("No auth key set — waiting for interactive browser login…")
+            logger.log("prepare: IPN bus subscribed — waiting for interactive browser login…")
         }
 
-        logger.log("Bringing up tsnet node \(hostName)…")
+        logger.log("prepare: calling up() — blocks until login completes")
         // Stop the auth watcher on failure too: it subscribed the IPN bus
         // before `up()`, and its MessageProcessor keeps running (retaining the
         // node) unless `stopWatching()` cancels it — a leak on the interactive-
@@ -220,25 +279,29 @@ public final class TsnetTransport {
         do {
             try await node.up()
         } catch {
-            authWatcher?.stopWatching()
+            await authWatcher?.stopWatching()
             throw error
         }
-        authWatcher?.stopWatching()
+        await authWatcher?.stopWatching()
 
+        logger.log("prepare: up() returned — reading addresses")
         let ips = try await node.addrs()
-        logger.log("tsnet up — ip4=\(ips.ip4 ?? "-") ip6=\(ips.ip6 ?? "-")")
+        logger.log("prepare: tsnet up — ip4=\(ips.ip4 ?? "-") ip6=\(ips.ip6 ?? "-")")
 
         // Surface which tailnet identity we actually joined. A viewer that
         // authenticated into the wrong tailnet looks identical to a connected
         // one that just isn't getting frames — printing the account here turns
         // that into an obvious mismatch. Best-effort; never blocks the session.
-        let auth = TailscaleAuth()
+        logger.log("prepare: resolving account identity")
+        let auth = await TailscaleAuth()
         await auth.checkAuthStatus(node: node)
-        let identity = auth.userProfile?.loginName ?? "unknown account"
+        // Read once and reuse: `userProfile` is actor-isolated, so from this
+        // nonisolated context each access is a separate hop.
+        let loginName = await auth.userProfile?.loginName
+        let identity = loginName ?? "unknown account"
         logger.log("▶ Connected as \(identity) — node \(hostName) @ \(ips.ip4 ?? ips.ip6 ?? "?")")
-        accountIdentity = auth.userProfile?.loginName
 
-        preparedNode = node
+        return (node, loginName)
     }
 
     /// List Tailscreen sharers on the tailnet (requires `prepare` first).

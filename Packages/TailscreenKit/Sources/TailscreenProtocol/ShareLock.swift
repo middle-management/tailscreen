@@ -2,11 +2,16 @@ import Foundation
 
 #if canImport(Darwin)
 import Darwin
-#else
+#elseif canImport(Glibc)
 // `Darwin.write` resolves to the module-wide Glibc shim in
 // PortabilityShims.swift; flock/open/close/ftruncate resolve unqualified.
 import Glibc
 #endif
+
+// The implementation below is POSIX (flock/open/ftruncate). Windows has no
+// flock and — more to the point — no `replayd`, so the constraint this type
+// models simply does not exist there. See the Windows variant at the bottom.
+#if !os(Windows)
 
 /// File-lock advisory mutex shared across Tailscreen instances on the
 /// same Mac. macOS's `replayd` enforces a per-bundle constraint that
@@ -27,7 +32,6 @@ public final class ShareLock: @unchecked Sendable {
     public static let path = "/tmp/tailscreen-sharing.lock"
 
     private var fd: Int32 = -1
-
     public init() {}
 
     deinit { release() }
@@ -83,3 +87,37 @@ public final class ShareLock: @unchecked Sendable {
         return errno == EWOULDBLOCK
     }
 }
+
+#else
+
+/// Windows stand-in.
+///
+/// `ShareLock` exists to coordinate around macOS `replayd`'s per-bundle limit
+/// of one `SCStream` session. Windows has no `replayd` and no such limit, so
+/// there is nothing to coordinate and the lock always succeeds.
+///
+/// This is a deliberate no-op, not an unimplemented stub: callers use it to
+/// grey out a Share button pre-emptively, and on Windows the honest answer to
+/// "is another process already sharing?" is "that isn't a constraint here".
+/// If Windows ever grows a real single-capture constraint, this is where a
+/// named mutex (`CreateMutexW`) would go.
+public final class ShareLock: @unchecked Sendable {
+    public static let path = "(unused on Windows)"
+
+    private var held = false
+
+    public init() {}
+
+    public func tryAcquire() -> Bool {
+        held = true
+        return true
+    }
+
+    public func release() { held = false }
+
+    public var isHeldBySelf: Bool { held }
+
+    public static func isHeldByAnyone() -> Bool { false }
+}
+
+#endif

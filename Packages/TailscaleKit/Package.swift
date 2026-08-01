@@ -20,8 +20,22 @@ let package = Package(
         // TailscaleKit Swift wrapper
         .target(
             name: "TailscaleKit",
-            dependencies: ["libtailscale"],
+            dependencies: ["libtailscale", "CGoRuntimeInit"],
             path: "Sources/TailscaleKit"
+        ),
+
+        // Starts the Go runtime inside libtailscale.a on Windows, where
+        // nothing else does — Go asks for it through a `.ctors` section that
+        // only MinGW's startup walks, and Swift links with MSVC's. See
+        // ts_go_runtime.c; it is an empty function everywhere else.
+        //
+        // A dependency of TailscaleKit rather than of the apps, because
+        // TailscaleNode.init is where the call belongs: put it in a host and
+        // every future host has to remember it, and forgetting means a
+        // freeze with no error.
+        .target(
+            name: "CGoRuntimeInit",
+            path: "Sources/CGoRuntimeInit"
         ),
 
         // C library system target

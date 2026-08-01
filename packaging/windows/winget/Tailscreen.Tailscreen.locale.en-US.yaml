@@ -1,0 +1,35 @@
+# winget default-locale manifest TEMPLATE for microsoft/winget-pkgs — see
+# README.md in this directory for the tokens and the submission prerequisites.
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+PackageIdentifier: Tailscreen.Tailscreen
+PackageVersion: "@VERSION@"
+PackageLocale: en-US
+# Publisher here is the human-readable display name (the MSIX's
+# PublisherDisplayName, "Tailscreen"), not the certificate Subject — but it
+# must stay consistent with what the MSIX declares, and the manifest path in
+# winget-pkgs (manifests/t/Tailscreen/Tailscreen/…) is derived from the
+# PackageIdentifier, which matches the MSIX Identity Name.
+Publisher: Tailscreen
+PublisherUrl: https://github.com/middle-management/tailscreen
+PublisherSupportUrl: https://github.com/middle-management/tailscreen/issues
+PackageName: Tailscreen
+PackageUrl: https://github.com/middle-management/tailscreen
+License: MIT
+LicenseUrl: https://github.com/middle-management/tailscreen/blob/main/LICENSE
+Copyright: Copyright (c) Tailscreen contributors
+ShortDescription: Low-latency encrypted peer-to-peer screen sharing over Tailscale.
+Description: |-
+  Tailscreen is a low-latency, encrypted peer-to-peer screen sharing app that
+  runs over your Tailscale tailnet. Share a display, window, or app; view
+  peers' shared screens; draw annotations; talk over the built-in voice
+  channel; and optionally grant a viewer remote control. No accounts beyond
+  your Tailscale login, no relay servers of its own.
+Moniker: tailscreen
+Tags:
+  - p2p
+  - remote-control
+  - screen-sharing
+  - screencast
+  - tailscale
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

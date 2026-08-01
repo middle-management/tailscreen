@@ -57,7 +57,24 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.21'
+          # Version derived from the submodule's go.mod, not pinned here.
+          #
+          # That file says `go 1.25.5`, so a literal '1.21' provisioned a
+          # toolchain Go then immediately replaced itself: the arm64 probe's log
+          # showed `go: downloading go1.25.5 (windows/arm64)` mid-build, ~22s of
+          # it. The pin was simultaneously a fiction and a download — every job
+          # here paid for a toolchain it did not end up using.
+          #
+          # go.mod is now the single source of truth, so a submodule bump moves
+          # CI with it instead of silently re-triggering the same download.
+          go-version-file: Packages/TailscaleKit/upstream/libtailscale/go.mod
+          # Explicit rather than relying on the action's default, and
+          # paired with cache-dependency-path — without a path the
+          # action looks for go.sum in the working directory, finds
+          # none at the repo root, and caches nothing while appearing
+          # configured. Three workflows here were in exactly that state.
+          cache: true
+          cache-dependency-path: Packages/TailscaleKit/upstream/libtailscale/go.sum
 
       - name: Apply libtailscale patches
         working-directory: Packages/TailscaleKit

@@ -1,0 +1,8 @@
+# winget version manifest TEMPLATE for microsoft/winget-pkgs — see README.md
+# in this directory for the tokens and the submission prerequisites.
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.version.1.6.0.schema.json
+PackageIdentifier: Tailscreen.Tailscreen
+PackageVersion: "@VERSION@"
+DefaultLocale: en-US
+ManifestType: version
+ManifestVersion: 1.6.0

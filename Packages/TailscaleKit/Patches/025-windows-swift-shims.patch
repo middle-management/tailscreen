@@ -1,0 +1,204 @@
+diff -ruN before/GlibcShims.swift after/GlibcShims.swift
+--- a/upstream/libtailscale/swift/TailscaleKit/GlibcShims.swift	2026-07-27 19:15:06.580458062 +0000
++++ b/upstream/libtailscale/swift/TailscaleKit/GlibcShims.swift	2026-07-27 18:53:42.297988446 +0000
+@@ -6,7 +6,11 @@
+ // every file in the module (extend it here, not per-file, when a new syscall
+ // needs qualifying). On Apple platforms this file compiles to nothing — the
+ // real Darwin module wins.
+-#if !canImport(Darwin)
++// Gated on Glibc rather than on "not Darwin": Windows is neither, and has its
++// own stand-ins in WindowsShims.swift. `!canImport(Darwin)` silently assumed
++// not-Darwin means Linux and broke the Windows build with `no such module
++// 'Glibc'`.
++#if canImport(Glibc)
+ import Glibc
+ 
+ enum Darwin {
+diff -ruN before/IncomingConnection.swift after/IncomingConnection.swift
+--- a/upstream/libtailscale/swift/TailscaleKit/IncomingConnection.swift	2026-07-27 19:15:06.580626030 +0000
++++ b/upstream/libtailscale/swift/TailscaleKit/IncomingConnection.swift	2026-07-27 19:14:42.687419970 +0000
+@@ -9,7 +9,7 @@
+ 
+ #if canImport(Darwin)
+ import Darwin
+-#else
++#elseif canImport(Glibc)
+ import Glibc
+ 
+ #endif
+diff -ruN before/Listener.swift after/Listener.swift
+--- a/upstream/libtailscale/swift/TailscaleKit/Listener.swift	2026-07-27 19:15:06.580886399 +0000
++++ b/upstream/libtailscale/swift/TailscaleKit/Listener.swift	2026-07-27 19:14:42.687633881 +0000
+@@ -9,7 +9,7 @@
+ 
+ #if canImport(Darwin)
+ import Darwin
+-#else
++#elseif canImport(Glibc)
+ import Glibc
+ 
+ #endif
+@@ -120,7 +120,7 @@
+         }
+         if ret < 0 {
+             close()
+-            throw TailscaleError.fromPosixErrCode(errno, "Poll failed")
++            throw TailscaleError.fromPosixErrCode(tailscaleLastSocketError, "Poll failed")
+         }
+ 
+         logger?.log("Accepting \(proto.rawValue) connection via \(address)")
+diff -ruN before/OutgoingConnection.swift after/OutgoingConnection.swift
+--- a/upstream/libtailscale/swift/TailscaleKit/OutgoingConnection.swift	2026-07-27 19:15:06.585956910 +0000
++++ b/upstream/libtailscale/swift/TailscaleKit/OutgoingConnection.swift	2026-07-27 19:14:42.687906293 +0000
+@@ -12,7 +12,7 @@
+ 
+ #if canImport(Darwin)
+ import Darwin
+-#else
++#elseif canImport(Glibc)
+ import Glibc
+ 
+ #endif
+diff -ruN before/PacketListener.swift after/PacketListener.swift
+--- a/upstream/libtailscale/swift/TailscaleKit/PacketListener.swift	2026-07-27 19:15:06.582233428 +0000
++++ b/upstream/libtailscale/swift/TailscaleKit/PacketListener.swift	2026-07-27 19:14:42.688056587 +0000
+@@ -3,7 +3,7 @@
+ 
+ #if canImport(Darwin)
+ import Darwin
+-#else
++#elseif canImport(Glibc)
+ import Glibc
+ 
+ #endif
+@@ -102,7 +102,7 @@
+                         return
+                     }
+                     if rc < 0 {
+-                        cont.resume(returning: .failure(.fromPosixErrCode(errno, "Poll failed")))
++                        cont.resume(returning: .failure(.fromPosixErrCode(tailscaleLastSocketError, "Poll failed")))
+                         return
+                     }
+ 
+diff -ruN before/SocketError.swift after/SocketError.swift
+--- a/upstream/libtailscale/swift/TailscaleKit/SocketError.swift	1970-01-01 00:00:00.000000000 +0000
++++ b/upstream/libtailscale/swift/TailscaleKit/SocketError.swift	2026-07-27 18:53:42.298697666 +0000
+@@ -0,0 +1,23 @@
++// Copyright (c) Tailscale Inc & AUTHORS
++// SPDX-License-Identifier: BSD-3-Clause
++
++// The last error from a socket operation.
++//
++// This exists because `errno` is the wrong answer on Windows, not merely an
++// unavailable one: Winsock reports failures through WSAGetLastError(), and
++// `errno` would hold an unrelated (often stale, often zero) CRT value. Reading
++// it there wouldn't fail to compile — it would quietly report the wrong error,
++// which is worse.
++#if os(Windows)
++import WinSDK
++
++var tailscaleLastSocketError: Int32 { WSAGetLastError() }
++#elseif canImport(Darwin)
++import Darwin
++
++var tailscaleLastSocketError: Int32 { errno }
++#else
++import Glibc
++
++var tailscaleLastSocketError: Int32 { errno }
++#endif
+diff -ruN before/WindowsShims.swift after/WindowsShims.swift
+--- a/upstream/libtailscale/swift/TailscaleKit/WindowsShims.swift	1970-01-01 00:00:00.000000000 +0000
++++ b/upstream/libtailscale/swift/TailscaleKit/WindowsShims.swift	2026-07-27 18:53:42.298788579 +0000
+@@ -0,0 +1,91 @@
++// Copyright (c) Tailscale Inc & AUTHORS
++// SPDX-License-Identifier: BSD-3-Clause
++
++// Windows stand-ins for the POSIX calls the wrapper makes, mirroring
++// GlibcShims.swift's role on Linux. On Apple platforms and Linux this file
++// compiles to nothing.
++//
++// These are deliberately SOCKET calls, not CRT file calls. The descriptors the
++// wrapper handles come from libtailscale's Go↔C bridge, which on Windows hands
++// over a real Winsock SOCKET (see bridge_windows.go). The CRT's _read/_write
++// don't work on sockets at all, and _close would close the wrong kind of
++// handle — so read/write/close map to recv/send/closesocket.
++//
++// Likewise `poll` maps to WSAPoll rather than to any of the POSIX-looking
++// entry points in Go's or the CRT's surface. Note that several Winsock
++// wrappers elsewhere in this stack (syscall.Accept, Recvfrom, Sendto) compile
++// on Windows but are EWINDOWS stubs that always fail at runtime; WSAPoll is a
++// real call, which is why the whole poll path routes through it.
++#if os(Windows)
++
++import WinSDK
++
++/// The wrapper's C API types descriptors as `Int32`, while Winsock's `SOCKET`
++/// is a `UINT_PTR`. Handle values are 32-bit-significant, which the Windows
++/// bridge spike asserts directly (`TestNativeHandleFitsInCInt`), so the
++/// round-trip is lossless — but go through `bitPattern` rather than a plain
++/// conversion so a negative sentinel can't trap.
++@inline(__always)
++private func sock(_ fd: Int32) -> SOCKET {
++    SOCKET(UInt(bitPattern: Int(fd)))
++}
++
++enum Darwin {
++    @discardableResult
++    static func close(_ fd: Int32) -> Int32 {
++        closesocket(sock(fd))
++    }
++
++    static func read(_ fd: Int32, _ buf: UnsafeMutableRawPointer?, _ count: Int) -> Int {
++        guard let buf, count > 0 else { return 0 }
++        let n = recv(sock(fd), buf.assumingMemoryBound(to: CChar.self), Int32(count), 0)
++        return Int(n)
++    }
++
++    static func write(_ fd: Int32, _ buf: UnsafeRawPointer?, _ count: Int) -> Int {
++        guard let buf, count > 0 else { return 0 }
++        let n = send(
++            sock(fd),
++            UnsafeRawPointer(buf).assumingMemoryBound(to: CChar.self),
++            Int32(count),
++            0
++        )
++        return Int(n)
++    }
++}
++
++/// POSIX-shaped `pollfd` so the call sites read identically on every platform.
++/// `revents` is carried for completeness even though the wrapper only consults
++/// `poll`'s return value today.
++struct pollfd {
++    var fd: Int32
++    var events: Int16
++    var revents: Int16
++
++    init(fd: Int32, events: Int16, revents: Int16) {
++        self.fd = fd
++        self.events = events
++        self.revents = revents
++    }
++}
++
++/// WSAPoll signals readable data as POLLRDNORM; there is no separate POLLIN.
++let POLLIN: Int32 = Int32(POLLRDNORM)
++
++/// `poll(2)` over WSAPoll. Same contract: negative on error, 0 on timeout,
++/// otherwise the number of ready descriptors.
++func poll(_ fds: UnsafeMutablePointer<pollfd>, _ nfds: UInt32, _ timeout: Int32) -> Int32 {
++    let count = Int(nfds)
++    guard count > 0 else { return 0 }
++
++    var wsaFds = (0..<count).map { i in
++        WSAPOLLFD(fd: sock(fds[i].fd), events: fds[i].events, revents: 0)
++    }
++    let rc = WSAPoll(&wsaFds, nfds, timeout)
++    for i in 0..<count {
++        fds[i].revents = wsaFds[i].revents
++    }
++    return rc
++}
++
++#endif  // os(Windows)

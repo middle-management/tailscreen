@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  MSIX manifest for the Windows app. Templated: make-msix.ps1 substitutes the
+  @TOKENS@ below, because two of them cannot be hardcoded.
+
+  @PUBLISHER@ must match the signing certificate's Subject BYTE FOR BYTE. This
+  is the single most common MSIX failure and it does not fail helpfully — the
+  package builds fine and Add-AppxPackage rejects it at install with a
+  publisher-mismatch error that names neither side. So the script derives the
+  manifest's Publisher from the cert it is about to sign with, rather than both
+  of them being independently-maintained literals that agree until they don't.
+
+  @VERSION@ must be a four-part a.b.c.d with the LAST part 0 — Windows reserves
+  the revision field for the Store. A three-part version is a manifest schema
+  error; a non-zero fourth part is accepted by MakeAppx and rejected on Store
+  submission, which is the worse of the two failures.
+
+  EntryPoint is Windows.FullTrustApplication: this is a Win32 desktop app
+  brought into a package, not a UWP app, so there is no activatable class to
+  name. That entry point is what the desktop bridge is, and it is why
+  runFullTrust below is required rather than optional.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap rescap">
+
+  <Identity
+    Name="Tailscreen.Tailscreen"
+    Publisher="@PUBLISHER@"
+    Version="@VERSION@"
+    ProcessorArchitecture="@ARCH@" />
+
+  <Properties>
+    <DisplayName>Tailscreen</DisplayName>
+    <PublisherDisplayName>Tailscreen</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+    <Description>Low-latency encrypted peer-to-peer screen sharing over Tailscale.</Description>
+  </Properties>
+
+  <Dependencies>
+    <!--
+      10.0.17763.0 is the floor for MSIX itself. The app's real floor is higher
+      (WinUI 3 / Windows App SDK), but stating a floor the package format does
+      not require buys nothing and would exclude machines the installer could
+      otherwise at least start on and diagnose.
+    -->
+    <TargetDeviceFamily
+      Name="Windows.Desktop"
+      MinVersion="10.0.17763.0"
+      MaxVersionTested="10.0.22621.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Applications>
+    <Application
+      Id="Tailscreen"
+      Executable="tailscreen.exe"
+      EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="Tailscreen"
+        Description="Low-latency encrypted peer-to-peer screen sharing over Tailscale."
+        BackgroundColor="#26282E"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile
+          Wide310x150Logo="Assets\Wide310x150Logo.png"
+          Square310x310Logo="Assets\Square310x310Logo.png" />
+      </uap:VisualElements>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <!--
+      runFullTrust is a RESTRICTED capability, which is not a warning sign here
+      — it is what every packaged Win32 desktop app declares, and it is what
+      Windows.FullTrustApplication above requires. It is fine for sideloading
+      and for winget; a Store submission needs a justification for it.
+
+      Deliberately NOT declared: graphicsCapture. WGC's picker-based capture is
+      user-consented at pick time and needs no manifest capability, and the
+      Windows sharer only ever captures what the user chose in the picker.
+      Declaring a capability the app does not need would show up in the install
+      consent prompt and make the app look more invasive than it is.
+    -->
+    <rescap:Capability Name="runFullTrust" />
+    <Capability Name="internetClient" />
+    <Capability Name="privateNetworkClientServer" />
+  </Capabilities>
+</Package>

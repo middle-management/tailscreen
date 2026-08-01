@@ -137,6 +137,7 @@ final class ViewerSessionTests: XCTestCase {
         )
 
         let packetizer = H264Packetizer()
+        session.markKeyframeSeenForTesting()
         let nals = AVCCParser.nalUnits(from: makeAVCC(byteCount: 200, marker: 0x41))
         // Small AU → single packet per seq; build a run of single-packet AUs so
         // seq numbers advance one per AU and a hole is a clean one-packet gap.
@@ -223,6 +224,7 @@ final class ViewerSessionTests: XCTestCase {
         session.onPLISent = { plis += 1 }
 
         let packetizer = H264Packetizer()
+        session.markKeyframeSeenForTesting()
         let nals = AVCCParser.nalUnits(from: makeAVCC(byteCount: 200, marker: 0x41))
         var packets: [Data] = []
         for i in 0..<8 {
@@ -314,6 +316,10 @@ final class ViewerSessionTests: XCTestCase {
             audioSink: nil, onControlToSend: control.send)
         let serverCaps: ScreenShareCaps = serverFEC ? fullCaps : [.nack, .receiverReport]
         session.receiveRTP(ScreenShareControlMessage.encodeHelloAck(ssrc: 5, caps: serverCaps))
+        // FEC suites drive P-frame-only streams and assert on recovered frame
+        // counts; open the pre-keyframe gate so the mechanics under test stay
+        // observable.
+        session.markKeyframeSeenForTesting()
         return session
     }
 
@@ -546,6 +552,7 @@ final class ViewerSessionTests: XCTestCase {
         session.receiveRTP(ScreenShareControlMessage.encodeHelloAck(ssrc: 5, caps: fullCaps))
 
         let packetizer = H264Packetizer()
+        session.markKeyframeSeenForTesting()
         let nals = AVCCParser.nalUnits(from: makeAVCC(byteCount: 200, marker: 0x41))
         for packet in packetizer.packetize(nals: nals, timestamp: 9000, ssrc: 5, startSequence: 0) {
             session.receiveRTP(packet)
@@ -569,6 +576,7 @@ final class ViewerSessionTests: XCTestCase {
         )
 
         let packetizer = H264Packetizer()
+        session.markKeyframeSeenForTesting()
         let nals = AVCCParser.nalUnits(from: makeAVCC(byteCount: 200, marker: 0x41))
         for packet in packetizer.packetize(nals: nals, timestamp: 9000, ssrc: 5, startSequence: 0) {
             session.receiveRTP(packet)
@@ -589,5 +597,48 @@ final class ViewerSessionTests: XCTestCase {
         XCTAssertFalse(session.isStopped)
         session.receiveRTP(ScreenShareControlMessage.encode(.serverBye))
         XCTAssertTrue(session.isStopped)
+    }
+
+    // MARK: - Pre-keyframe gating
+
+    func testPreKeyframeAUsAreDroppedAndCounted() {
+        let decoder = StubDecoder()
+        let sink = StubVideoSink()
+        let control = ControlCollector()
+        let session = ViewerSession(
+            caps: fullCaps, decoder: decoder, videoSink: sink,
+            audioSink: nil, onControlToSend: control.send
+        )
+
+        let packetizer = H264Packetizer()
+        // Two P-frames before any keyframe: both must be dropped and counted,
+        // never handed to the decoder (libavcodec would log two lines each).
+        for i in 0..<2 {
+            let p = AVCCParser.nalUnits(from: makeAVCC(byteCount: 200, marker: 0x41))
+            for pkt in packetizer.packetize(
+                nals: p, timestamp: UInt32(9000 + i * 3000), ssrc: 42,
+                startSequence: UInt16(i)) {
+                session.receiveRTP(pkt)
+            }
+        }
+        XCTAssertEqual(decoder.decoded.count, 0, "no AU may reach the decoder before a keyframe")
+        XCTAssertEqual(session.preKeyframeDropCount, 2)
+
+        // The keyframe opens the gate; a P-frame after it decodes normally.
+        // Small IDR on purpose: the default makeAVCC() fragments across several
+        // RTP packets, which would occupy seqs 2..N and collide with the
+        // P-frame at seq 3 — the depacketizer would then drop the P-frame as a
+        // duplicate and this test would fail for sequencing reasons, not
+        // gating ones (it did).
+        let idr = AVCCParser.nalUnits(from: makeAVCC(byteCount: 200))
+        for pkt in packetizer.packetize(nals: idr, timestamp: 15000, ssrc: 42, startSequence: 2) {
+            session.receiveRTP(pkt)
+        }
+        let post = AVCCParser.nalUnits(from: makeAVCC(byteCount: 200, marker: 0x41))
+        for pkt in packetizer.packetize(nals: post, timestamp: 18000, ssrc: 42, startSequence: 3) {
+            session.receiveRTP(pkt)
+        }
+        XCTAssertEqual(decoder.decoded.count, 2, "keyframe + post-keyframe P-frame both decode")
+        XCTAssertEqual(session.preKeyframeDropCount, 2, "the counter stops once the gate opens")
     }
 }

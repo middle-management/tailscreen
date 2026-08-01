@@ -1,0 +1,50 @@
+--- a/Sources/WinAppSDK/Initialize.swift	2026-07-30 13:29:38.783796902 +0000
++++ b/Sources/WinAppSDK/Initialize.swift	2026-07-30 13:30:21.119471652 +0000
+@@ -49,6 +49,9 @@
+     private typealias pfnMddBootstrapInitialize2 = @convention(c) (UInt32, PCWSTR?, PACKAGE_VERSION, MddBootstrapInitializeOptions) -> HRESULT
+     private typealias pfnMddBootstrapShutdown = @convention(c) () -> Void
+     private let bootstrapperDll: HMODULE!
++    // tailscreen-selfcontained: set only when MddBootstrapInitialize2 ran,
++    // so deinit never calls MddBootstrapShutdown unmatched.
++    private var didBootstrap = false
+ 
+     private lazy var Initialize: pfnMddBootstrapInitialize2 = {
+         let pfn = GetProcAddress(bootstrapperDll, "MddBootstrapInitialize2")
+@@ -104,6 +107,23 @@
+             return
+         }
+ 
++        // tailscreen-selfcontained: when the Windows App SDK framework payload
++        // is staged beside the executable, loading the app-local
++        // Microsoft.WindowsAppRuntime.dll is both the detection and the
++        // initialization -- the exact behaviour of WindowsAppSDK's
++        // UndockedRegFreeWinRT auto-initializer. The bootstrapper (which can
++        // only match an INSTALLED framework package) must not run then: on a
++        // machine with no installed 1.5 runtime it would fail or pop the
++        // installer UI even though everything needed is already on disk.
++        // With no staged payload this block is a no-op and behaviour is
++        // unchanged (framework-dependent bootstrap below).
++        let appLocalRuntime = appDirectory
++            .appendingPathComponent("Microsoft.WindowsAppRuntime.dll")
++        if FileManager.default.fileExists(atPath: appLocalRuntime.path),
++            appLocalRuntime.path.withCString(encodedAs: UTF16.self, { LoadLibraryW($0) }) != nil {
++            return
++        }
++
+         let runtimeInstaller = appDirectory
+             .appendingPathComponent("WindowsAppRuntimeInstaller.exe")
+         let installerExists = FileManager.default.fileExists(atPath: runtimeInstaller.path)
+@@ -140,11 +160,12 @@
+ 
+             try doInit(showUIOnNoMatch: false)
+         }
++        didBootstrap = true
+     }
+ 
+     deinit {
+         RoUninitialize()
+-        if !processHasIdentity() {
++        if didBootstrap {
+             Shutdown()
+         }
+         FreeLibrary(bootstrapperDll)
