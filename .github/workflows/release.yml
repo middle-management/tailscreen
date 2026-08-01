@@ -153,9 +153,20 @@ jobs:
   # and FIRST so a failed or cancelled run never leaves a stale label implying
   # the build is still coming. `continue-on-error` because failing to tidy a
   # label must not fail the build the label asked for.
+  # The condition must name the three trigger labels, exactly as `version` does.
+  # It was briefly the looser `github.event_name == 'pull_request'`, which is a
+  # different job: this workflow wakes on EVERY label, so that version deleted
+  # whichever label had just been added to any PR — `bug`, `wontfix`, a release
+  # milestone tag — silently, since the step is `continue-on-error` and succeeds.
+  # The workflow this replaced was correctly gated; the generalization is what
+  # broke it.
   unlabel:
     name: Remove trigger label
-    if: github.event_name == 'pull_request'
+    if: >-
+      github.event_name == 'pull_request' &&
+      (github.event.label.name == 'build-linux-package' ||
+       github.event.label.name == 'build-windows-package' ||
+       github.event.label.name == 'build:notarized')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
