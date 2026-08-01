@@ -99,6 +99,7 @@ jobs:
       github.event.label.name == 'build-windows-package' ||
       github.event.label.name == 'build:notarized'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       tag: ${{ steps.version.outputs.tag }}
       version: ${{ steps.version.outputs.version }}
@@ -156,6 +157,7 @@ jobs:
     name: Remove trigger label
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       pull-requests: write
     steps:
@@ -274,6 +276,7 @@ jobs:
     needs: [version, linux]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -354,6 +357,7 @@ jobs:
     needs: macos
     if: always() && github.event_name == 'pull_request' && github.event.label.name == 'build:notarized'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       pull-requests: write
     steps:

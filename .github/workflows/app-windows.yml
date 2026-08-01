@@ -147,6 +147,7 @@ jobs:
     # NATIVE build, not a cross-compile. That removes the biggest unknown: no
     # sysroot to assemble, no --triple to get wrong.
     runs-on: ${{ inputs.arch == 'arm64' && 'windows-11-arm' || 'windows-latest' }}
+    timeout-minutes: 75
 
     env:
       FFMPEG_FLAVOUR: ${{ inputs.arch == 'arm64' && 'winarm64' || 'win64' }}
@@ -180,8 +181,14 @@ jobs:
       # It also has to come before the bootstrap action's llvm-mingw install:
       # GITHUB_PATH PREPENDS, so whichever writes last wins, and llvm-mingw's
       # clang must outrank Swift's MSVC-targeting one when cgo goes looking.
+      #
+      # `@v1`, not `@latest`: `@latest` is a MOVING TAG on a third-party
+      # action, so an upstream release would change how this repo's Windows
+      # binaries are produced with no commit here — unreproducible builds and
+      # an unreviewed supply-chain edge on the toolchain installer. The v1 line
+      # still picks up patches.
       - name: Setup Swift ${{ inputs.swift_version }}
-        uses: SwiftyLab/setup-swift@latest
+        uses: SwiftyLab/setup-swift@v1
         with:
           swift-version: ${{ inputs.swift_version }}
 

@@ -143,6 +143,7 @@ jobs:
       github.event_name != 'pull_request' ||
       github.event.label.name == 'run-windows-build'
     runs-on: windows-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout code
@@ -184,7 +185,7 @@ jobs:
           cygpath -w "$root/bin" >> "$GITHUB_PATH"
 
       - name: Setup Swift
-        uses: SwiftyLab/setup-swift@latest
+        uses: SwiftyLab/setup-swift@v1
         with:
           swift-version: '6.1'
 
