@@ -1,111 +1,172 @@
-name: Release
+name: macOS app
 
-# Builds a universal (arm64 + x86_64) Tailscreen.app, zips it, and
-# uploads it to the GitHub Release that triggered this run. Cask
-# packaging lives in the tap repo.
+# ONE definition of "build a universal, signed, notarized Tailscreen.app".
 #
-# Signing + notarization run only when ALL of these secrets are set;
-# otherwise the app is built unsigned (suitable for forks / dev runs):
-#   APPLE_DEVELOPER_ID_CERT_P12      base64-encoded .p12 of the
-#                                    "Developer ID Application" cert
-#   APPLE_DEVELOPER_ID_CERT_PASSWORD password protecting the .p12
-#   APPLE_NOTARY_API_KEY_P8          base64-encoded App Store Connect
-#                                    API key (.p8)
-#   APPLE_NOTARY_API_KEY_ID          API key id (10 chars)
-#   APPLE_NOTARY_API_ISSUER_ID       API issuer UUID
+# release-macos.yml and pr-notarized-build.yml used to carry that definition twice,
+# and the two copies shared ELEVEN identical steps: Setup Go, Apply
+# libtailscale patches, Build universal libtailscale.a, Build universal static
+# libopus, Build universal Tailscreen binary, Assemble Tailscreen.app, Check
+# signing availability, Import signing certificate, Codesign, Notarize and
+# staple, Cleanup keychain. Several of them are long, subtle and hard-won — the
+# aarch64-not-arm opus host triple, the otool guard against a Homebrew dylib
+# creeping into the link, the find-identity dump that makes a signing failure
+# debuggable from the log alone. Two copies of that is two chances to fix a
+# bug in one of them.
+#
+# What differs between the callers is genuinely small and is now inputs: which
+# ref, what version string, what the zip is called, and where the result goes
+# (a GitHub Release, or a workflow artifact for a human to try).
+#
+# SECURITY: callers pass `secrets: inherit`. pr-notarized-build.yml triggers on
+# `pull_request` (NOT `pull_request_target`), so a fork PR gets no secrets and
+# falls through to the unsigned path. Nothing here changes that: the signing
+# gate is "are all five secrets non-empty", evaluated at run time.
 
 on:
-  release:
-    types: [published]
-  workflow_dispatch:
+  workflow_call:
     inputs:
-      tag:
-        description: 'Existing release tag to upload assets to (e.g., v1.0.0)'
+      ref:
+        description: Git ref to build.
         required: true
-
-permissions:
-  contents: write   # required for `gh release upload`
+        type: string
+      tag:
+        description: >-
+          Release tag, when there is one. Supplies the version (minus a leading
+          'v') and the zip's label unless those are given explicitly.
+        required: false
+        type: string
+        default: ''
+      version:
+        description: >-
+          CFBundleShortVersionString / CFBundleVersion. Derived from `tag` when
+          empty. macOS wants this numeric, which is why the PR build passes an
+          explicit 0.0.<pr> rather than a tag-shaped string.
+        required: false
+        type: string
+        default: ''
+      label:
+        description: Middle segment of the zip name. Defaults to tag, then version.
+        required: false
+        type: string
+        default: ''
+      include_commit_in_name:
+        description: Append the short commit to the zip label (PR builds do).
+        required: false
+        type: boolean
+        default: false
+      configuration:
+        description: SwiftPM configuration (release for anything shippable).
+        required: false
+        type: string
+        default: release
+      sign:
+        description: Codesign with the Developer ID identity, if the secrets exist.
+        required: false
+        type: boolean
+        default: true
+      notarize:
+        description: >-
+          Submit to notarytool and staple. Separate from `sign` because signing
+          is cheap and notarization is a round trip to Apple.
+        required: false
+        type: boolean
+        default: true
+      upload_artifact:
+        description: Upload the zip as a workflow artifact.
+        required: false
+        type: boolean
+        default: false
+      artifact_name:
+        description: Workflow-artifact name. Defaults to the zip's basename.
+        required: false
+        type: string
+        default: ''
+      upload_to_release:
+        description: >-
+          `gh release upload` the zip + checksums.txt to `tag`. Needs the
+          caller to grant contents: write.
+        required: false
+        type: boolean
+        default: false
+      cache:
+        description: >-
+          Restore libtailscale.a from cache. FALSE for anything that ships: a
+          release artifact is compiled from source on the runner that ships it.
+        required: false
+        type: boolean
+        default: false
+    outputs:
+      version:
+        description: The resolved version string.
+        value: ${{ jobs.build.outputs.version }}
+      short_sha:
+        description: Short commit of the built ref.
+        value: ${{ jobs.build.outputs.short_sha }}
+      zip_name:
+        description: Name of the produced zip.
+        value: ${{ jobs.build.outputs.zip_name }}
+      signed:
+        description: 'true when the app was signed + notarized.'
+        value: ${{ jobs.build.outputs.signed }}
 
 jobs:
-  release:
-    name: Build & upload release assets
+  build:
     runs-on: macos-15
 
     env:
       APP_NAME: Tailscreen
       BUNDLE_ID: se.middlemanagement.tailscreen
 
-    steps:
-      - name: Resolve version
-        id: version
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            tag="${{ github.event.inputs.tag }}"
-          else
-            tag="${{ github.event.release.tag_name }}"
-          fi
-          version="${tag#v}"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      short_sha: ${{ steps.sha.outputs.short }}
+      zip_name: ${{ steps.package.outputs.zip_name }}
+      signed: ${{ steps.signing.outputs.enabled }}
 
+    steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          ref: ${{ steps.version.outputs.tag }}
+          ref: ${{ inputs.ref }}
           submodules: recursive
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          # Version derived from the submodule's go.mod, not pinned here.
-          #
-          # That file says `go 1.25.5`, so a literal '1.21' provisioned a
-          # toolchain Go then immediately replaced itself: the arm64 probe's log
-          # showed `go: downloading go1.25.5 (windows/arm64)` mid-build, ~22s of
-          # it. The pin was simultaneously a fiction and a download — every job
-          # here paid for a toolchain it did not end up using.
-          #
-          # go.mod is now the single source of truth, so a submodule bump moves
-          # CI with it instead of silently re-triggering the same download.
-          go-version-file: Packages/TailscaleKit/upstream/libtailscale/go.mod
-          # Explicit rather than relying on the action's default, and
-          # paired with cache-dependency-path — without a path the
-          # action looks for go.sum in the working directory, finds
-          # none at the repo root, and caches nothing while appearing
-          # configured. Three workflows here were in exactly that state.
-          cache: true
-          cache-dependency-path: Packages/TailscaleKit/upstream/libtailscale/go.sum
+      - name: Resolve short SHA
+        id: sha
+        run: echo "short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Apply libtailscale patches
-        working-directory: Packages/TailscaleKit
-        run: make apply-patches
-
-      - name: Build universal libtailscale.a
-        working-directory: Packages/TailscaleKit/upstream/libtailscale
+      - name: Resolve version
+        id: version
+        env:
+          IN_TAG: ${{ inputs.tag }}
+          IN_VERSION: ${{ inputs.version }}
+          IN_LABEL: ${{ inputs.label }}
+          SHORT: ${{ steps.sha.outputs.short }}
         run: |
-          set -euxo pipefail
+          set -euo pipefail
+          version="$IN_VERSION"
+          if [ -z "$version" ]; then version="${IN_TAG#v}"; fi
+          if [ -z "$version" ]; then
+            # Single quotes: backticks in a double-quoted bash string are
+            # command substitution, so the prose spelling would RUN them.
+            echo '::error::neither the version nor the tag input was supplied' >&2
+            exit 1
+          fi
+          label="$IN_LABEL"
+          if [ -z "$label" ]; then label="${IN_TAG:-$version}"; fi
+          if [ "${{ inputs.include_commit_in_name }}" = "true" ]; then
+            label="$label-$SHORT"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "label=$label" >> "$GITHUB_OUTPUT"
+          echo "version=$version label=$label"
 
-          rm -f libtailscale.a libtailscale.h
-
-          GOARCH=arm64 \
-            CGO_CFLAGS="-arch arm64" \
-            CGO_LDFLAGS="-arch arm64" \
-            make c-archive
-          cp libtailscale.a /tmp/libtailscale-arm64.a
-          rm -f libtailscale.a
-
-          GOARCH=amd64 \
-            CGO_CFLAGS="-arch x86_64" \
-            CGO_LDFLAGS="-arch x86_64" \
-            make c-archive
-          cp libtailscale.a /tmp/libtailscale-amd64.a
-
-          lipo -create \
-            /tmp/libtailscale-arm64.a \
-            /tmp/libtailscale-amd64.a \
-            -output libtailscale.a
-
-          lipo -info libtailscale.a
+      # Patches + Go + the universal (arm64 + x86_64) c-archive, lipo-merged.
+      # See .github/actions/bootstrap.
+      - name: Bootstrap libtailscale (universal)
+        uses: ./.github/actions/bootstrap
+        with:
+          libtailscale: macos-universal
+          cache: ${{ inputs.cache }}
 
       - name: Build universal static libopus
         # OpusKit links libopus. A Homebrew `libopus.dylib` is (a) host-arch
@@ -156,7 +217,14 @@ jobs:
 
       # Rewrite BuildInfo.commit before compiling, so Settings → About names
       # the commit instead of "dev". The grep is the point: a silently-failed
-      # sed would ship an app claiming to be someone's local build.
+      # sed would ship an app claiming to be someone's local build, which is
+      # worse than no stamp at all.
+      #
+      # This landed in release-macos.yml AND pr-notarized-build.yml as two copies on
+      # the same day this consolidation was written — which is the argument for
+      # the consolidation in one line. `sed -i ''` is the BSD spelling and is
+      # why it cannot simply be shared with the Windows stamp, which uses GNU
+      # sed's `sed -i`.
       - name: Stamp the build
         run: |
           set -euo pipefail
@@ -173,33 +241,40 @@ jobs:
           # "opus"` resolves it (not a Homebrew dylib); TailscaleKit
           # still supplies libtailscale.pc.
           PKG_CONFIG_PATH: /tmp/opus-universal/lib/pkgconfig:${{ github.workspace }}/Packages/TailscaleKit
+          CONFIGURATION: ${{ inputs.configuration }}
         working-directory: Apps/macOS
         run: |
           set -euxo pipefail
-          swift build -c release --arch arm64 --arch x86_64
-          # With multiple --arch flags, SwiftPM emits the universal
-          # binary under .build/apple/Products/Release/.
-          lipo -info .build/apple/Products/Release/${APP_NAME}
+          swift build -c "$CONFIGURATION" --arch arm64 --arch x86_64
+          # With multiple --arch flags, SwiftPM emits the universal binary
+          # under .build/apple/Products/<Configuration>/ — capitalised, unlike
+          # the flag.
+          config_dir="$(tr '[:lower:]' '[:upper:]' <<< "${CONFIGURATION:0:1}")${CONFIGURATION:1}"
+          products=".build/apple/Products/${config_dir}"
+          echo "PRODUCTS_DIR=Apps/macOS/${products}" >> "$GITHUB_ENV"
+          lipo -info "${products}/${APP_NAME}"
           # Guard: nothing dynamic from a non-system prefix should have crept
           # into the link (a stray Homebrew opus dylib would break on users'
           # Macs). Fail loudly if otool sees one.
-          if otool -L ".build/apple/Products/Release/${APP_NAME}" | grep -qi 'opus'; then
+          if otool -L "${products}/${APP_NAME}" | grep -qi 'opus'; then
             echo "error: Tailscreen dynamically links libopus — expected static" >&2
-            otool -L ".build/apple/Products/Release/${APP_NAME}" | grep -i opus >&2
+            otool -L "${products}/${APP_NAME}" | grep -i opus >&2
             exit 1
           fi
 
       - name: Assemble Tailscreen.app
+        env:
+          APP_VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euxo pipefail
           APP="${APP_NAME}.app"
           rm -rf "$APP"
           mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-          cp "Apps/macOS/.build/apple/Products/Release/${APP_NAME}" "$APP/Contents/MacOS/"
+          cp "${PRODUCTS_DIR}/${APP_NAME}" "$APP/Contents/MacOS/"
           # SwiftPM resource bundle backing `Bundle.module` (menubar PDFs,
           # WelcomeIcon, etc.). Without this the app fatals on launch with
           # "unable to find bundle named Tailscreen_Tailscreen".
-          cp -R "Apps/macOS/.build/apple/Products/Release/${APP_NAME}_${APP_NAME}.bundle" \
+          cp -R "${PRODUCTS_DIR}/${APP_NAME}_${APP_NAME}.bundle" \
             "$APP/Contents/Resources/"
           cp Apps/macOS/Resources/Tailscreen.icns "$APP/Contents/Resources/${APP_NAME}.icns"
 
@@ -223,9 +298,9 @@ jobs:
               <key>CFBundlePackageType</key>
               <string>APPL</string>
               <key>CFBundleShortVersionString</key>
-              <string>${{ steps.version.outputs.version }}</string>
+              <string>${APP_VERSION}</string>
               <key>CFBundleVersion</key>
-              <string>${{ steps.version.outputs.version }}</string>
+              <string>${APP_VERSION}</string>
               <key>LSMinimumSystemVersion</key>
               <string>15.2</string>
               <key>LSUIElement</key>
@@ -248,6 +323,11 @@ jobs:
           NOTARY_ISSUER: ${{ secrets.APPLE_NOTARY_API_ISSUER_ID }}
         run: |
           set -euo pipefail
+          if [ "${{ inputs.sign }}" != "true" ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Signing disabled by the caller."
+            exit 0
+          fi
           if [ -n "$CERT_P12" ] && [ -n "$CERT_PW" ] \
              && [ -n "$NOTARY_KEY" ] && [ -n "$NOTARY_KEY_ID" ] \
              && [ -n "$NOTARY_ISSUER" ]; then
@@ -255,7 +335,7 @@ jobs:
             echo "Signing + notarization enabled."
           else
             echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::Signing secrets not fully set — building unsigned app."
+            echo "::warning::Signing secrets not fully set (e.g. a fork PR) — building unsigned app."
           fi
 
       - name: Import signing certificate
@@ -322,7 +402,7 @@ jobs:
           /usr/bin/codesign --verify --deep --strict --verbose=2 "${APP_NAME}.app"
 
       - name: Notarize and staple
-        if: steps.signing.outputs.enabled == 'true'
+        if: steps.signing.outputs.enabled == 'true' && inputs.notarize
         env:
           APPLE_NOTARY_API_KEY_P8: ${{ secrets.APPLE_NOTARY_API_KEY_P8 }}
           APPLE_NOTARY_API_KEY_ID: ${{ secrets.APPLE_NOTARY_API_KEY_ID }}
@@ -346,21 +426,33 @@ jobs:
 
           rm -f "$KEY_PATH" "$NOTARIZE_ZIP"
 
-      - name: Package release zip and checksums
+      - name: Package zip and checksums
         id: package
+        env:
+          LABEL: ${{ steps.version.outputs.label }}
         run: |
           set -euxo pipefail
-          ZIP_NAME="${APP_NAME}-${{ steps.version.outputs.tag }}-macOS.zip"
+          ZIP_NAME="${APP_NAME}-${LABEL}-macOS.zip"
           /usr/bin/ditto -c -k --keepParent "${APP_NAME}.app" "$ZIP_NAME"
           shasum -a 256 "$ZIP_NAME" > checksums.txt
           SHA256="$(awk '{print $1}' checksums.txt)"
-          echo "zip_name=$ZIP_NAME"  >> "$GITHUB_OUTPUT"
-          echo "sha256=$SHA256"      >> "$GITHUB_OUTPUT"
+          echo "zip_name=$ZIP_NAME" >> "$GITHUB_OUTPUT"
+          echo "sha256=$SHA256"     >> "$GITHUB_OUTPUT"
+
+      - name: Upload app artifact
+        if: inputs.upload_artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name != '' && inputs.artifact_name || steps.package.outputs.zip_name }}
+          path: ${{ steps.package.outputs.zip_name }}
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Upload release assets
+        if: inputs.upload_to_release
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ steps.version.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
           ZIP_NAME: ${{ steps.package.outputs.zip_name }}
         run: |
           set -euxo pipefail

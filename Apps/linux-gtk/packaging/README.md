@@ -44,7 +44,7 @@ structurally correct and self-documenting — a starting point, not a turnkey
 pipeline.
 
 Separately, the app itself builds and passes its headless GL render self-test in
-the `linux-gtk-viewer` CI job (see `.github/workflows/build.yml`), which is the
+the `linux-app` CI job (see `.github/workflows/build.yml`), which is the
 same `swift build` the packaging wrappers drive.
 
 Packaging deliberately **does not gate merges** — it can't run in the normal CI
@@ -57,7 +57,7 @@ tag rather than at one.
 
 ## Prerequisites (both paths)
 
-The viewer's own build dependencies (see the `linux-gtk-viewer` CI job):
+The viewer's own build dependencies (see the `linux-app` CI job):
 
 ```
 libgtk-4-dev gir1.2-gtk-4.0 libgirepository1.0-dev libepoxy-dev libglib2.0-dev \

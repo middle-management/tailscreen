@@ -69,5 +69,5 @@ exists twice agrees on the day it is written and never again — so it lives her
 swift build --package-path Packages/TailscreenHubUI
 ```
 
-Builds on Linux, macOS and Windows. The `linux-gtk-viewer` CI job builds it
+Builds on Linux, macOS and Windows. The `linux-app` CI job builds it
 transitively; so does the Windows job.

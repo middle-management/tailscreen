@@ -1,0 +1,49 @@
+name: Release (macOS)
+
+# Builds a universal (arm64 + x86_64) Tailscreen.app, zips it, and
+# uploads it to the GitHub Release that triggered this run. Cask
+# packaging lives in the tap repo.
+#
+# The BUILD lives in app-macos.yml, shared with pr-notarized-build.yml — the
+# two carried eleven identical steps between them, several of them long and
+# subtle. This file is now just the release-shaped half: which tag, and that
+# the result goes to the release rather than to a workflow artifact.
+#
+# Signing + notarization run only when ALL of these secrets are set;
+# otherwise the app is built unsigned (suitable for forks / dev runs):
+#   APPLE_DEVELOPER_ID_CERT_P12      base64-encoded .p12 of the
+#                                    "Developer ID Application" cert
+#   APPLE_DEVELOPER_ID_CERT_PASSWORD password protecting the .p12
+#   APPLE_NOTARY_API_KEY_P8          base64-encoded App Store Connect
+#                                    API key (.p8)
+#   APPLE_NOTARY_API_KEY_ID          API key id (10 chars)
+#   APPLE_NOTARY_API_ISSUER_ID       API issuer UUID
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag to upload assets to (e.g., v1.0.0)'
+        required: true
+
+permissions:
+  contents: write   # required for `gh release upload`
+
+jobs:
+  release:
+    name: Build & upload release assets
+    uses: ./.github/workflows/app-macos.yml
+    with:
+      # The tag is both what gets built and what the assets are uploaded to.
+      # `github.event.inputs.tag` is only populated on workflow_dispatch, so the
+      # `&& ||` picks whichever trigger fired.
+      ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.event.release.tag_name }}
+      tag: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.event.release.tag_name }}
+      upload_to_release: true
+      # cache: false is the default for this workflow's shape and is worth
+      # naming anyway — a shipped artifact is compiled from source on the
+      # runner that ships it, never restored from a key CI wrote.
+      cache: false
+    secrets: inherit
