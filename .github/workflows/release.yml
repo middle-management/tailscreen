@@ -249,12 +249,15 @@ jobs:
     uses: ./.github/workflows/app-linux.yml
     with:
       arch: ${{ matrix.arch }}
+      # Both arches produce both deliverables. Previously x86_64 built only an
+      # AppImage and arm64 built an AppImage AND a tarball, for no stated
+      # reason; the tarball is the no-FUSE-needed fallback and both arches want
+      # it.
       package: tarball+appimage
       # For a release/dispatch build, build the tag exactly. For a PR build,
       # take the PR head.
       ref: ${{ github.event_name == 'pull_request' && github.ref || needs.version.outputs.tag }}
       version: ${{ needs.version.outputs.version }}
-      package: ${{ matrix.package }}
       # A shipped artifact is compiled from source on the runner that ships it.
       use_cache: false
 
