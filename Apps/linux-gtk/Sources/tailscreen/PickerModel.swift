@@ -2,9 +2,12 @@ import Foundation
 import SwiftCrossUI
 import TailscreenViewerTsnet
 
-// Targeted import: bringing in all of TailscreenProtocol would collide with
+// Targeted imports: bringing in all of TailscreenProtocol would collide with
 // SwiftCrossUI's own `Published` / `ObservableObject` (both ship reactive shims
-// on Linux, where Combine is absent). We only need the metadata value type.
+// on Linux, where Combine is absent). We only need a handful of value types.
+import struct TailscreenProtocol.PeerListFilter
+import enum TailscreenProtocol.PeerListFilterStore
+import enum TailscreenProtocol.PeerSharingState
 import struct TailscreenProtocol.TailscreenMetadata
 
 /// Drives the sharer-picker chrome: node bring-up → discovery → a native list
@@ -29,6 +32,63 @@ final class PickerModel: ObservableObject {
     /// `DiscoveredSharer.id`. Populated by a lazy metadata sweep after discovery;
     /// a missing entry means status-unknown (never rendered as "not sharing").
     @Published var shareInfo: [String: TailscreenMetadata] = [:]
+
+    /// The header filter menu's state — hide-offline ∧ only-sharing ∧
+    /// any-of-selected-tags. `sharers` stays the RAW discovery result (the tag
+    /// menu enumerates it, and a filter that ate its own input could never be
+    /// undone); `filteredSharers` is the projection the list renders, exactly
+    /// as the macOS hub keeps `availablePeers` raw beside `filteredPeers`.
+    ///
+    /// Persisted through `PeerListFilterStore`, the same store the macOS hub
+    /// uses — not a new persistence layer. On Linux that is
+    /// swift-corelibs-foundation's `UserDefaults`, which writes a plist under
+    /// `$XDG_CONFIG_HOME`; the profile registry's JSON file is deliberately
+    /// left alone, since a filter is not an account. Best-effort by design: if
+    /// the write fails the filter is simply per-session, which is a far better
+    /// failure than refusing to filter.
+    @Published private(set) var filter = PickerModel.loadFilter()
+
+    /// `persist: false` is for `--ui-preview`, which seeds a filter to
+    /// screenshot and has no business overwriting the filter of whoever's
+    /// machine it is running on.
+    func setFilter(_ new: PeerListFilter, persist: Bool = true) {
+        guard new != filter else { return }
+        filter = new
+        if persist { PeerListFilterStore.save(new) }
+    }
+
+    /// First run seeds hide-offline ON.
+    ///
+    /// The picker has always listed online machines only — that was a hard-coded
+    /// `filter { $0.isOnline }` at discovery, which this filter now owns. Taking
+    /// the portable `.default` (hide-offline off) would have upgraders open the
+    /// app to every machine they have ever owned and call it a regression. The
+    /// key's presence is what distinguishes "never chose" from "chose off".
+    private static func loadFilter() -> PeerListFilter {
+        guard UserDefaults.standard.data(forKey: PeerListFilterStore.key) != nil else {
+            return PeerListFilter(hideOffline: true, selectedTags: [], includeUntagged: true)
+        }
+        return PeerListFilterStore.load()
+    }
+
+    /// `sharers` narrowed by `filter` — what the Screens list renders.
+    var filteredSharers: [DiscoveredSharer] {
+        sharers.filter {
+            filter.matches(
+                isOnline: $0.isOnline, tags: $0.tags,
+                sharing: PeerSharingState(fetched: shareInfo[$0.id]))
+        }
+    }
+
+    /// Every ACL tag across the RAW list, for the filter menu's tag rows.
+    /// Sorted so the menu does not reshuffle between discovery sweeps.
+    var knownTags: [String] {
+        Array(Set(sharers.flatMap(\.tags))).sorted()
+    }
+
+    /// How many discovered machines the filter is currently hiding — the
+    /// footnote under the list, so rows never vanish unexplained.
+    var hiddenByFilter: Int { sharers.count - filteredSharers.count }
 
     /// Set by `main` — invoked on the main actor when the user taps a row.
     var onSelect: ((DiscoveredSharer) -> Void)?
