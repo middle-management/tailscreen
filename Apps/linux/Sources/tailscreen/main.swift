@@ -19,7 +19,7 @@ import TailscreenViewerTsnet
 // tailnet, and shows a native list to choose from (L4).
 //
 // The window shows decoded video via the downstream GtkVideoView. The tsnet
-// transport (reused from Apps/linux) runs on the main actor as a Task that
+// transport (reused from Packages/TailscreenLinuxBackends) runs on the main actor as a Task that
 // swift-cross-ui's RunLoop tick services, feeding frames into the shared
 // FrameStore; `present` (main thread) requests a GLArea repaint. The live tsnet
 // leg is local-only. `--render-self-test` is the headless CI render gate (no

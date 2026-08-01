@@ -326,7 +326,7 @@ jobs:
         run: ${{ matrix.cmd }}
 
   # Viewer-integration gate: the portable Linux viewer library package
-  # (Apps/linux) must build and pass its pipeline integration test on Linux.
+  # (Packages/TailscreenLinuxBackends) must build and pass its pipeline integration test on Linux.
   # This is where the concrete backends plug into the portable ViewerSession
   # core — FFmpegKit decode + ALSAKit audio behind the
   # VideoDecoding/VideoSink/AudioSink seams (docs/porting-plan.md, "Viewer
@@ -372,7 +372,7 @@ jobs:
         run: |
           PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" \
             xvfb-run -a --server-args="-screen 0 1280x720x24" \
-            swift test --package-path Apps/linux
+            swift test --package-path Packages/TailscreenLinuxBackends
 
       # The WINDOWS sharer's capture backend, typechecked HERE.
       #
@@ -412,7 +412,7 @@ jobs:
 
   # Was `linux-app`, which had gone stale in both directions.
   #
-  # `Apps/linux-gtk` is not a viewer: it has `SharerModel`, imports
+  # `Apps/linux` is not a viewer: it has `SharerModel`, imports
   # `TailscreenSharer` + `TailscreenSharerLinux`, and carries the approval
   # gate, annotation forwarding and input forwarding. It views AND shares, and
   # its executable has been plain `tailscreen` since the rename. `gtk` is an
@@ -427,8 +427,8 @@ jobs:
   #
   # `linux-app` pairs it with the `linux-app-arm64` sibling below.
   linux-app:
-    # The native GTK desktop viewer (Apps/linux-gtk) — a separate package from
-    # the Apps/linux core so swift-cross-ui + GTK4 don't burden the linux-viewer job.
+    # The native GTK desktop viewer (Apps/linux) — a separate package from
+    # the Packages/TailscreenLinuxBackends core so swift-cross-ui + GTK4 don't burden the linux-viewer job.
     # No libtailscale/Go: this L0a build reaches only TailscreenProtocol/Viewer/
     # Audio + swift-cross-ui, and the render path is gated headlessly.
     runs-on: ubuntu-latest
@@ -442,7 +442,7 @@ jobs:
         # swift-cross-ui's GtkBackend needs gtk4 (+ gobject-introspection for
         # its bindings); CGtkVideo links epoxy + gtk-4; the render self-test runs
         # under a virtual X server with Mesa software GL. The live path reuses
-        # Apps/linux's Core (FFmpeg/ALSA/Opus) + Tsnet (→ libtailscale, hence
+        # Packages/TailscreenLinuxBackends's Core (FFmpeg/ALSA/Opus) + Tsnet (→ libtailscale, hence
         # golang-go/make), though the render self-test itself needs no network.
         run: |
           apt-get update && apt-get install -y --no-install-recommends \
@@ -491,19 +491,19 @@ jobs:
       #     an opaque .a has no such referee.)
       #
       # Two directories, not one, and deliberately NOT a shared
-      # --scratch-path: Apps/windows and Apps/linux-gtk resolve different
+      # --scratch-path: Apps/windows and Apps/linux resolve different
       # build plans from the same dependencies, so sharing would thrash.
       # ---------------------------------------------------------------------
       - name: Restore the GTK app's build directory
         id: gtk-build-cache
         uses: actions/cache/restore@v6
         with:
-          path: Apps/linux-gtk/.build
+          path: Apps/linux/.build
           key: >-
-            linux-gtk-build-swift6.3-noble-${{ runner.os }}-${{ runner.arch
-            }}-debug-${{ hashFiles('Apps/linux-gtk/Package.resolved') }}
+            linux-app-build-swift6.3-noble-${{ runner.os }}-${{ runner.arch
+            }}-debug-${{ hashFiles('Apps/linux/Package.resolved') }}
           restore-keys: |
-            linux-gtk-build-swift6.3-noble-${{ runner.os }}-${{ runner.arch }}-debug-
+            linux-app-build-swift6.3-noble-${{ runner.os }}-${{ runner.arch }}-debug-
 
       # A SECOND cache for the Windows app's Linux typecheck, because it is a
       # second full swift-cross-ui compile. Its key prefix is distinct from
@@ -526,7 +526,7 @@ jobs:
         # Build the executable product specifically so SwiftPM prunes to the
         # Linux subgraph (DefaultBackend→GtkBackend) — a bare `swift build`
         # would also try to compile swift-cross-ui's Windows-only WinUI backend.
-        run: PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" swift build --package-path Apps/linux-gtk --product tailscreen
+        run: PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" swift build --package-path Apps/linux --product tailscreen
       - name: Typecheck the Windows app
         # The Windows app builds HERE, on Linux, and that is the point.
         #
@@ -560,7 +560,7 @@ jobs:
         run: |
           if timeout 90 xvfb-run -a -s "-screen 0 800x600x24" \
             env GDK_BACKEND=x11 LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe \
-            Apps/linux-gtk/.build/debug/tailscreen --render-self-test \
+            Apps/linux/.build/debug/tailscreen --render-self-test \
             > /tmp/gtk-selftest.log 2>&1; then
             status=0
           else
@@ -584,11 +584,11 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: |
-            Apps/linux-gtk/.build
-            !Apps/linux-gtk/.build/**/debug/tailscreen
+            Apps/linux/.build
+            !Apps/linux/.build/**/debug/tailscreen
           key: >-
-            linux-gtk-build-swift6.3-noble-${{ runner.os }}-${{ runner.arch
-            }}-debug-${{ hashFiles('Apps/linux-gtk/Package.resolved') }}
+            linux-app-build-swift6.3-noble-${{ runner.os }}-${{ runner.arch
+            }}-debug-${{ hashFiles('Apps/linux/Package.resolved') }}
 
       - name: Save the Windows app's Linux typecheck directory
         if: >-

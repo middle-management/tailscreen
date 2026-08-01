@@ -70,7 +70,7 @@ tailscreen (swift-cross-ui App, DefaultBackend = GtkBackend)
          └─ onControlToSend → UDP (HELLO / NACK / PLI / RR)
 ```
 
-**Everything below the window is reused unchanged** from today's `Apps/linux`:
+**Everything below the window is reused unchanged** from today's `Packages/TailscreenLinuxBackends`:
 `ViewerSession`, `FFmpegVideoDecoder`, the Opus/`ALSAAudioSink` audio path, and
 `TsnetTransport`. The GTK app only replaces the **sink** (`ThreadedSDLVideoSink`
 → the GLArea renderer) and adds chrome around it.
@@ -116,7 +116,7 @@ guarantee the SDL path never had.
 
 ### L0 — Foundation: app skeleton + live video
 - Add `swift-cross-ui` as a dependency; add a `tailscreen` target to
-  `Apps/linux` reusing `TailscreenViewerCore` (refactor `TsnetTransport` into
+  `Packages/TailscreenLinuxBackends` reusing `TailscreenViewerCore` (refactor `TsnetTransport` into
   Core so both the SDL CLI and the GTK app share it).
 - Productise `GtkVideoView` from the spike: GLArea + GL YUV renderer fed by a
   locked latest-frame box; per-frame `glTexSubImage2D` upload.
@@ -266,7 +266,7 @@ guarantee the SDL path never had.
   prove it with live frames, not synthetic ones.
 - **Two viewers during transition.** The SDL CLI was kept as a
   headless/fallback path during bring-up; **now retired** — the GTK viewer is
-  the sole Linux/Windows viewer, and `Apps/linux` is a library-only core it
+  the sole Linux/Windows viewer, and `Packages/TailscreenLinuxBackends` is a library-only core it
   reuses (the SDL sink, CLI, and `Packages/SDLKit` were removed).
 - **Dependency weight in CI.** GTK4 + swift-cross-ui + swift-syntax add build
   time; mitigated by caching and a dedicated job.
@@ -274,8 +274,8 @@ guarantee the SDL path never had.
 ## Open decisions (resolved)
 
 - **Package layout:** ~~same package vs. separate~~ → a **separate
-  `Apps/linux-gtk` package** (swift-cross-ui + GTK4 shouldn't burden the core's
-  `linux-viewer` CI job), reusing `Apps/linux`'s `TailscreenViewerCore` +
+  `Apps/linux` package** (swift-cross-ui + GTK4 shouldn't burden the core's
+  `linux-viewer` CI job), reusing `Packages/TailscreenLinuxBackends`'s `TailscreenViewerCore` +
   `TailscreenViewerTsnet`.
 - **Retire SDL or keep it?** → **retired.** The GTK viewer superseded it.
 - **swift-cross-ui pin:** → pinned to an exact revision for reproducibility.

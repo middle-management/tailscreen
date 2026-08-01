@@ -1,195 +1,124 @@
-# Apps/linux — Linux platform backends (viewer + sharer)
+# tailscreen (Linux)
 
-Shared **library** package that plugs concrete platform backends into the two
-portable data-plane cores in `Packages/TailscreenKit` — `TailscreenViewer`
-(`ViewerSession`) and `TailscreenSharer` (`TailscaleScreenShareServer`). Where
-the macOS app decodes with VideoToolbox, renders with Metal, plays audio
-through AVAudioEngine, and captures with ScreenCaptureKit, these backends are:
+The native Linux desktop app — a full **sharer and viewer**, the sibling of
+`Apps/macOS` and `Apps/windows`. Package name `tailscreen-linux`; the
+executable is plain `tailscreen`, the same name the Windows app ships.
 
-| Role      | Backend                          | Seam it satisfies |
-|-----------|----------------------------------|-------------------|
-| Decode    | `FFmpegKit` (libavcodec)         | `VideoDecoding`   |
-| Audio     | `ALSAKit` (libasound)            | `AudioSink`       |
-| Transport | `TailscaleKit` (tsnet UDP)       | `receiveRTP` / `onControlToSend` / `tick` |
-| **Capture + encode** | `X11CaptureKit` + `FFmpegKit` | **`CaptureEncoding`** |
+UI is [swift-cross-ui](https://github.com/stackotter/swift-cross-ui) on its GTK4
+backend. Video is a downstream `GtkVideoView` — a swift-cross-ui `View` hosting
+a `GtkGLArea` with an OpenGL BT.709 YUV→RGB renderer — because a declarative
+toolkit has no primitive for "hand me a texture 60 times a second". The hub
+chrome (header, screen rows, login/share cards, session placard) comes from
+`Packages/TailscreenHubUI`, shared verbatim with the Windows app.
 
-The concrete video **render** surface is *not* here — the runnable viewer is
-the native GTK desktop app in **[`Apps/linux-gtk`](../linux-gtk)**, which owns a
-`GtkGLArea` YUV renderer and reuses the two library targets below. (A prior SDL
-CLI viewer was removed once the GTK viewer superseded it.)
+## What it does
 
-All the receive-side *logic* (RTP demux, reassembly, NACK/PLI feedback,
-receiver reports, audio decode) lives in the portable, unit-tested
-`ViewerSession`. The code here is deliberately thin: adapters bridging the
-backends to the protocol seams, plus a tsnet transport that pumps datagrams in
-and ships control bytes out.
+Everything the protocol supports, minus what needs a Mac:
 
-## Layout
+| | |
+|---|---|
+| **View** a shared screen | libavcodec decode → GL render, ALSA audio |
+| **Share** your screen | X11 capture (libxcb + MIT-SHM) → libavcodec encode |
+| Remote control | both directions — send as a viewer, receive as a sharer |
+| Annotations | both directions |
+| Multiple accounts | tsnet state dirs under `$XDG_CONFIG_HOME/tailscreen` |
+
+**Sharing needs X11.** The gate is `$DISPLAY`: with it unset (headless, or a
+Wayland session without XWayland) the share button is disabled and says why,
+rather than offering something that always fails.
+
+Under a Wayland compositor *with* XWayland, `$DISPLAY` is set, so sharing is
+offered — but `X11CaptureKit` sees only the XWayland root window, so native
+Wayland windows won't appear in what viewers get. The ScreenCast portal is the
+real answer and isn't written yet. Viewing is unaffected either way.
+
+## Running it
 
 ```
-Apps/linux/
-├── Package.swift
-├── Sources/
-│   ├── TailscreenViewerCore/       # library — CI-testable, NO tsnet
-│   │   ├── Adapters.swift          #   FFmpeg → VideoDecoding, ALSA → AudioSink
-│   │   └── ThreadedAudioSink.swift #   off-thread ALSA writes (used by the GTK viewer)
-│   │                               # (the FFmpeg decoder moved to
-│   │                               #  Packages/TailscreenVideoFFmpeg — Windows needs
-│   │                               #  it without ALSA/X11 — and is @_exported from
-│   │                               #  Adapters.swift, so call sites are unchanged)
-│   │                               # (ViewerPipeline — the decoder+sink assembler —
-│   │                               #  lives in TailscreenKit's TailscreenViewer target;
-│   │                               #  it was Foundation-only and needn't drag in libav*)
-│                               # (the tsnet transport moved to TailscreenKit's
-│                               #  TailscreenViewerTsnet target — the Windows app
-│                               #  needs it and nothing in it was Linux-specific)
-│   ├── TailscreenTestSharer/       # executable — synthetic sharer for local
-│   │                               #   end-to-end runs (captures nothing)
-│   ├── TailscreenSharerLinux/      # library — the real SHARER capture backend
-│   │   └── X11CaptureEncoder.swift #   X11 capture + libavcodec → CaptureEncoding
-│   ├── tailscreen-sharer-linux/    # executable — the real headless SHARER
-│   └── tailscreen-viewer-probe/    # executable — headless viewer (asserts frames)
-├── Tests/TailscreenViewerCoreTests/
-│   └── PipelineIntegrationTests.swift  # real H.264 → RTP → decode → sink
-└── Tests/TailscreenSharerLinuxTests/
-    └── CaptureEncoderTests.swift       # real capture → encode → decode (Xvfb)
+tailscreen [<sharer-host>] [--port N] [--state-dir PATH] [--control-url URL]
+tailscreen --render-self-test
 ```
 
-The package is split so the decode→audio pipeline is provable in CI without the
-tsnet/Go dependency: `TailscreenViewerCore` depends only on the A/V backends and
-the portable core. The transport lives in TailscreenKit as
-`TailscreenViewerTsnet`, which is what adds the `TailscaleKit` dependency (and
-thus the built `libtailscale.a`) for the executables here that consume it.
+With a host argument the viewer dials it directly. **Without** one it enters
+picker mode: brings the tsnet node up, discovers Tailscreen peers on the
+tailnet, and shows the screen list to choose from.
 
-## Build & test
+| env var | effect |
+|---|---|
+| `TAILSCREEN_TS_AUTHKEY` | pre-auth key; skips interactive login |
+| `TAILSCREEN_TS_CONTROL_URL` | non-default control plane (e.g. local headscale) |
 
-Needs a Swift 6 toolchain and system dev libraries:
+`--render-self-test` is the headless CI gate: it renders a colour-bars frame,
+reads the pixels back through GL, and exits. No network, no tsnet — it exists so
+a broken renderer fails a PR instead of a user's first launch.
+
+## Building it
 
 ```bash
-# Debian/Ubuntu
 sudo apt-get install -y \
-  libavcodec-dev libavutil-dev libasound2-dev libopus-dev \
-  pkg-config golang-go make gcc libc6-dev \
-  libxml2 libcurl4-openssl-dev libedit2 libpython3-dev libz3-dev  # Swift runtime deps
+  libgtk-4-dev gir1.2-gtk-4.0 libgirepository1.0-dev libepoxy-dev \
+  libgl1-mesa-dri libavcodec-dev libavutil-dev libasound2-dev \
+  libopus-dev pkg-config golang-go make gcc libc6-dev
 
-# libtailscale.a (the Tsnet target links it; the Core library + test don't)
-make -C ../../Packages/TailscaleKit
-
-# Build everything + run the pipeline integration test
-PKG_CONFIG_PATH="$PWD/../../Packages/TailscaleKit" swift test --package-path .
+make tailscale                                    # builds libtailscale.a (needs Go)
+swift build --package-path Apps/linux --product tailscreen
 ```
 
-`swift test` builds and links the whole package (including the executables that
-pull in `TailscreenViewerTsnet`), so it needs `libtailscale.a` present — which
-also makes it the Linux link-check for the tsnet transport. The `linux-viewer`
-CI job runs exactly this.
+`make tailscale` first, always: the app pulls `TailscreenViewerTsnet`, which
+links the Go c-archive. Without it the build compiles and then fails at link.
+Run `swift build` from the **repo root** with `--package-path` (which is what CI
+does) so `PKG_CONFIG_PATH` resolves `libtailscale.pc` — the root `Makefile` sets
+it for you.
 
-## Running the viewer
-
-The viewer executable is **[`Apps/linux-gtk`](../linux-gtk)** (the native GTK
-app). See its README for the run instructions, including the OrbStack-from-a-Mac
-setup. A live session needs a real tailnet (or a local headscale), the same
-constraint as every tsnet path in this repo, so it can't run in CI.
-
-## `TailscreenTestSharer` — synthetic sharer for end-to-end runs
-
-The real sharer is macOS-only (ScreenCaptureKit), which used to make the Linux
-viewer end-to-end-untestable: everything past "the node comes up" was only
-compile-gated. `TailscreenTestSharer` stands in for it — a second tsnet node
-speaking the **sharer half** of the wire protocol, so the whole viewer path runs
-on one Linux box. It serves **real H.264** (libavcodec, a moving test pattern),
-so the viewer's FFmpeg decode and GL render do genuine work.
-
-It is a development/test tool, **not** a product sharer: it captures nothing and
-admits every viewer (no approval gate, allow/deny store, or SSRC anti-spoof —
-all of which the macOS sharer implements and its own suites cover).
+Xvfb is additionally needed to run `--render-self-test` headlessly:
 
 ```bash
-# 1. local control plane (writes the env exports)
-eval "$(./scripts/e2e-up-native.sh)"
-
-# 2. synthetic sharer — note the 100.64.x.y address it prints
-swift run --package-path Apps/linux TailscreenTestSharer --fps 10 --size 640x360
-
-# 3. viewer, dialing that address (separate state dir!)
-cd Apps/linux-gtk && swift run tailscreen 100.64.0.2 \
-    --state-dir /tmp/viewer-state
-
-./scripts/e2e-down-native.sh   # when done
+xvfb-run -a --server-args="-screen 0 1280x720x24" \
+  swift run --package-path Apps/linux tailscreen --render-self-test
 ```
 
-Each node needs its **own** `--state-dir`: two tsnet nodes sharing one directory
-reuse a machine key and won't see each other. Verified this way: discovery,
-metadata (the sharing chip), HELLO/admission, RTP video → decode → GL render,
-window-grow-to-video, the caps-gated toolbars, and the annotation / control /
-input back-channel paths (the sharer logs each inbound op and relays annotations
-back). Still local-only — it can't run in CI for the usual tsnet reason.
-
-## The sharer backend
-
-`TailscreenSharerLinux.X11CaptureEncoder` satisfies `CaptureEncoding`: it
-captures the X root window, encodes with libavcodec, and honours the three
-congestion levers (`setBitrate` / `requestKeyframe` / `setFrameInterval`).
-Everything above it — admission, RTP fan-out, NACK/FEC, congestion control — is
-the portable `TailscaleScreenShareServer`, unchanged.
-
-Unlike macOS there is **no helper subprocess**: `replayd`'s slot-release
-behaviour is the only reason capture is isolated there, and Linux has no
-equivalent coupling (`docs/porting-plan.md` #10), so capture runs in-process
-and `stop()` genuinely stops it.
-
-Current limits, deliberately explicit: display shares only (window/app
-selections are *refused*, not silently widened to the whole screen), X11 only,
-no system-audio capture, no preview thumbnails, software encoders only
-(hardware VA-API/NVENC needs `AVHWFramesContext` upload this path doesn't do).
-
-### Running it end to end
-
-`tailscreen-sharer-linux` is a real (headless) sharer; `tailscreen-viewer-probe`
-is a headless viewer that decodes and asserts instead of drawing. Together they
-make the Linux→Linux path scriptable:
-
-```bash
-./scripts/e2e-linux-sharer.sh      # headscale + Xvfb + both nodes + assertions
-```
-
-That script brings its own control plane and display up and tears them down, so
-it's a single command from a clean checkout. A passing run looks like:
+## What it depends on
 
 ```
-[sharer] READY hostname=ts-sharer ip4=100.64.0.1 fps=10
-[sharer] viewers: 1 [100.64.0.2]
-[probe]  admitted by sharer (serverCaps=23)
-[probe]  first frame 1280x720
-[probe]  PROBE_OK frames=16 size=1280x720 nonUniform=true
+Apps/linux                        this package
+├── Packages/TailscreenLinuxBackends   FFmpeg decode, ALSA out, X11 capture+encode
+├── Packages/TailscreenKit             protocol, ViewerSession, the sharer server,
+│                                      and the shared tsnet transport
+├── Packages/TailscreenHubUI           the hub's look, shared with Windows
+└── Packages/TailscaleKit              libtailscale.a
 ```
 
-`nonUniform=true` is the load-bearing part: it means the decoded luma actually
-varies, so the frames carry real captured pixels rather than a flat rectangle
-that would satisfy a frame count. `serverCaps=23` is
-`nack|receiverReport|fec|annotations` — note `remoteControl` (bit 3) is
-**absent**, because this host supplies no `InputInjecting` backend and the
-portable server withholds the bit rather than inviting requests it can't serve.
+The split from `TailscreenLinuxBackends` is deliberate: that package carries no
+UI toolchain, so the `linux-viewer` CI job builds and tests the decode → audio
+pipeline without paying for GTK4 or swift-cross-ui.
 
-Local-only, for the usual tsnet reason: CI can't bring a tailnet up.
+swift-cross-ui is pinned to an **exact revision**, not a range. Its `View`
+protocol is young and reshapes across versions, and our coupling to it
+(`GtkVideoView`) is small enough that a surprise upgrade costs more than it
+gains.
 
-To drive it by hand instead (e.g. to watch in the GTK viewer):
+## Packaging
 
-```bash
-eval "$(./scripts/e2e-up-native.sh)"
-DISPLAY=:0 swift run --package-path Apps/linux tailscreen-sharer-linux \
-    --hostname ts-sharer --state-dir /tmp/sharer-state
-cd Apps/linux-gtk && swift run tailscreen 100.64.0.1 \
-    --state-dir /tmp/viewer-state
-```
+`packaging/` holds the distribution manifests — see
+[`packaging/README.md`](packaging/README.md).
 
-## Not here yet
+- **AppImage** (`packaging/appimage/build-appimage.sh`) — x86_64 and aarch64,
+  built by `release-linux`. The primary download; needs FUSE to self-mount.
+- **Tarball** — the no-FUSE fallback, same contents, both arches.
+- **Flatpak** (`packaging/flatpak/`) — a manifest exists but nothing is
+  published to Flathub yet.
+- **Homebrew** (`packaging/homebrew/`) — the cask links the release AppImage.
 
-- **Mic capture** — the viewer plays sharer/system audio (ALSA out); an ALSA
-  *input* path for the mic is future work.
-- **The ScreenCast portal** — the production Wayland capture path, behind the
-  same `CaptureEncoding` seam. See `Packages/X11CaptureKit/README.md` for why
-  X11 came first (CI can run it; the portal never can).
-- **Windows** — the backends are cross-platform (FFmpeg/tsnet everywhere; audio
-  would swap ALSA for WASAPI, render for a D3D swapchain — see
-  `docs/viewer-windows-plan.md`), but only Linux is wired/tested so far.
+## CI
+
+| job | what it proves |
+|---|---|
+| `linux-app` | builds this package, runs the Xvfb render self-test, and typechecks the **Windows** app on the same runner |
+| `linux-app-arm64` | the same on `ubuntu-24.04-arm`, release config — a hard gate, not compile-only |
+| `linux-viewer` | the backends package's real decode + capture tests |
+
+A **live** tsnet run is local-only: GitHub's runners can't complete the
+userspace-WireGuard handshake, so anything that calls `node.up()` is run by hand
+against a local headscale (`scripts/e2e-up-native.sh`). See
+`scripts/e2e-linux-sharer.sh` for the scripted Linux sharer → Linux viewer
+end-to-end.

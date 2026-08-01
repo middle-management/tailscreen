@@ -217,7 +217,7 @@ Linux CI every PR). The seam work that unblocks that — starting with making
 the decoded video frame opaque to the session so a mac `CVPixelBuffer` flows
 through zero-copy — lives in **`docs/mac-viewer-convergence.md`**.
 
-*Landed:* the **viewer wiring** — `Apps/linux`, a SwiftPM package that plugs
+*Landed:* the **viewer wiring** — `Packages/TailscreenLinuxBackends`, a SwiftPM package that plugs
 the concrete backends into `ViewerSession`: `FFmpegVideoDecoder`
 (FFmpegKit → `VideoDecoding`), `SDLVideoSink` (SDLKit → `VideoSink`),
 `ALSAAudioSink` (ALSAKit → `AudioSink`), a `ViewerPipeline` assembler, and a
@@ -286,7 +286,7 @@ produce the pixels the portable server fans out.
   transport's constraints rather than archival quality: no B-frames, keyframes
   on demand, and parameter sets in-band on **every** keyframe (no
   `GLOBAL_HEADER`), which is what lets a viewer join mid-stream.
-- **`Apps/linux/Sources/TailscreenSharerLinux`** — `X11CaptureEncoder`, which
+- **`Packages/TailscreenLinuxBackends/Sources/TailscreenSharerLinux`** — `X11CaptureEncoder`, which
   satisfies `CaptureEncoding` and honours all three congestion levers. No
   helper subprocess: `replayd` is the only reason macOS isolates capture, and
   Linux has no equivalent (#10 above).

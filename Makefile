@@ -68,12 +68,12 @@ lint-baseline: ## Regenerate the SwiftLint baseline from current state
 # `format` rewrites files in place; `format-check` is the lint-only mode
 # used by CI. Config lives in `.swift-format` at the repo root.
 #
-# The GTK-viewer library target (Apps/linux-gtk/Sources/TailscreenViewerGtk)
-# is under the gate. The executable target (Apps/linux-gtk/Sources/tailscreen-
-# viewer-gtk) and the portable-viewer core (Apps/linux/Sources) are NOT yet
+# The GTK video-surface library (Apps/linux/Sources/TailscreenViewerGtk) is
+# under the gate. The app's executable target (Apps/linux/Sources/tailscreen)
+# and the Linux backends (Packages/TailscreenLinuxBackends/Sources) are NOT yet
 # covered: they still carry pre-existing swift-format violations. Fold each in
 # here once its tree is clean.
-FORMAT_PATHS := Apps/macOS/Sources Apps/macOS/Tests Packages/TailscreenKit/Sources Apps/linux-gtk/Sources/TailscreenViewerGtk
+FORMAT_PATHS := Apps/macOS/Sources Apps/macOS/Tests Packages/TailscreenKit/Sources Apps/linux/Sources/TailscreenViewerGtk
 
 format: ## Run swift-format in-place over the app package
 	@command -v swift-format >/dev/null 2>&1 || { echo "swift-format missing — install Xcode 16+ or run 'brew install swift-format'"; exit 1; }

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # build-appimage.sh — assemble a Tailscreen AppImage from a release build
-# of the swift-cross-ui/GTK viewer (Apps/linux-gtk).
+# of the swift-cross-ui/GTK viewer (Apps/linux).
 #
 # STATUS: structurally complete, NOT verified end-to-end in CI (needs a real GTK4
 # toolchain, GPU/GL libs, and a live network for SwiftPM + the libtailscale Go
@@ -23,12 +23,12 @@
 # resolves swift-cross-ui.
 #
 # Usage:
-#   Apps/linux-gtk/packaging/appimage/build-appimage.sh
-#   OUTPUT=/tmp/Tailscreen.AppImage Apps/linux-gtk/packaging/appimage/build-appimage.sh
+#   Apps/linux/packaging/appimage/build-appimage.sh
+#   OUTPUT=/tmp/Tailscreen.AppImage Apps/linux/packaging/appimage/build-appimage.sh
 #
 set -euo pipefail
 
-# --- Locate the repo root (this script lives at Apps/linux-gtk/packaging/appimage). ---
+# --- Locate the repo root (this script lives at Apps/linux/packaging/appimage). ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
 cd "$REPO_ROOT"
@@ -36,8 +36,8 @@ cd "$REPO_ROOT"
 APP_ID="dev.tailscreen.Tailscreen"
 BIN_NAME="tailscreen"
 ICON_NAME="tailscreen"                 # AppImage icon basename (matches Icon= below)
-BUILD_DIR="Apps/linux-gtk/.build/release"
-APPDIR="${APPDIR:-$REPO_ROOT/Apps/linux-gtk/.build/AppDir}"
+BUILD_DIR="Apps/linux/.build/release"
+APPDIR="${APPDIR:-$REPO_ROOT/Apps/linux/.build/AppDir}"
 # Arch-aware default: linuxdeploy/appimagetool ship aarch64 builds too, and
 # this script is arch-neutral — the tools on PATH decide the target.
 OUTPUT="${OUTPUT:-$REPO_ROOT/Tailscreen-$(uname -m).AppImage}"
@@ -61,7 +61,7 @@ echo "==> Building the viewer (release)"
 # Build the executable product specifically so SwiftPM prunes to the Linux
 # backend subgraph (DefaultBackend -> GtkBackend) and skips WinUI.
 PKG_CONFIG_PATH="$REPO_ROOT/Packages/TailscaleKit${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" \
-  swift build -c release --package-path Apps/linux-gtk --product "$BIN_NAME"
+  swift build -c release --package-path Apps/linux --product "$BIN_NAME"
 
 BIN_PATH="$BUILD_DIR/$BIN_NAME"
 [ -x "$BIN_PATH" ] || { echo "error: expected binary not found at $BIN_PATH" >&2; exit 1; }
@@ -91,7 +91,7 @@ EOF
 # AppImage still assembles (a real icon is a documented follow-up — see README).
 install -d "$APPDIR/usr/share/icons/hicolor/256x256/apps"
 ICON_DEST="$APPDIR/usr/share/icons/hicolor/256x256/apps/$ICON_NAME.png"
-PREBUILT_ICON="Apps/linux-gtk/packaging/icons/$APP_ID.png"
+PREBUILT_ICON="Apps/linux/packaging/icons/$APP_ID.png"
 if [ -f "$PREBUILT_ICON" ]; then
   echo "    using prebuilt icon $PREBUILT_ICON"
   install -Dm644 "$PREBUILT_ICON" "$ICON_DEST"

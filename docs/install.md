@@ -54,7 +54,7 @@ yell at you the first time you open it.
 
 ## Linux
 
-The Linux app is the GTK build under `Apps/linux-gtk` — one window that both
+The Linux app is the GTK build under `Apps/linux` — one window that both
 views a peer's screen and shares this machine's. It ships as an **x86_64
 AppImage** attached to the same GitHub release as the Mac app:
 
@@ -80,13 +80,13 @@ Two things to know:
   backend, which isn't written. The app detects this and says so rather than
   offering a button that always fails.
 
-A Flatpak manifest exists under `Apps/linux-gtk/packaging/flatpak` but isn't
+A Flatpak manifest exists under `Apps/linux/packaging/flatpak` but isn't
 published yet; it needs a Swift SDK extension.
 
 ## From source
 
 This section builds the **macOS** app; for the Linux one see
-`Apps/linux-gtk` and `Apps/linux/README.md` in the repository.
+`Apps/linux` and `Packages/TailscreenLinuxBackends/README.md` in the repository.
 
 The project is Swift Package Manager only — no Xcode project, none
 planned. Builds go through the top-level

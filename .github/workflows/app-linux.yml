@@ -56,7 +56,7 @@ on:
         default: ''
       use_cache:
         description: >-
-          Restore Apps/linux-gtk/.build and libtailscale.a. FALSE for release
+          Restore Apps/linux/.build and libtailscale.a. FALSE for release
           builds — a shipped artifact is compiled cold on the runner that ships
           it.
         required: false
@@ -103,7 +103,7 @@ jobs:
         # swift-cross-ui's GtkBackend needs gtk4 (+ gobject-introspection for
         # its bindings); CGtkVideo links epoxy + gtk-4; the render self-test runs
         # under a virtual X server with Mesa software GL. The live path reuses
-        # Apps/linux's Core (FFmpeg/ALSA/Opus) + Tsnet (→ libtailscale, hence
+        # Packages/TailscreenLinuxBackends's Core (FFmpeg/ALSA/Opus) + Tsnet (→ libtailscale, hence
         # golang-go/make), though the render self-test itself needs no network.
         # All multi-arch in noble.
         run: |
@@ -163,12 +163,12 @@ jobs:
         if: inputs.use_cache
         uses: actions/cache/restore@v6
         with:
-          path: Apps/linux-gtk/.build
+          path: Apps/linux/.build
           key: >-
-            linux-gtk-build-swift6.3-noble-${{ runner.os }}-${{ runner.arch
-            }}-${{ inputs.configuration }}-${{ hashFiles('Apps/linux-gtk/Package.resolved') }}
+            linux-app-build-swift6.3-noble-${{ runner.os }}-${{ runner.arch
+            }}-${{ inputs.configuration }}-${{ hashFiles('Apps/linux/Package.resolved') }}
           restore-keys: |
-            linux-gtk-build-swift6.3-noble-${{ runner.os }}-${{ runner.arch }}-${{ inputs.configuration }}-
+            linux-app-build-swift6.3-noble-${{ runner.os }}-${{ runner.arch }}-${{ inputs.configuration }}-
 
       - name: Build the app
         # PKG_CONFIG_PATH resolves libtailscale.pc for the tsnet transport;
@@ -178,7 +178,7 @@ jobs:
         run: |
           PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" \
             swift build -c ${{ inputs.configuration }} \
-            --package-path Apps/linux-gtk --product tailscreen
+            --package-path Apps/linux --product tailscreen
 
       - name: Headless render self-test (Xvfb + software GL)
         # Renders a 4-bar YUV frame through GtkVideoView, reads the pixels back,
@@ -200,7 +200,7 @@ jobs:
         run: |
           if timeout 90 xvfb-run -a -s "-screen 0 800x600x24" \
             env GDK_BACKEND=x11 LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe \
-            Apps/linux-gtk/.build/${{ inputs.configuration }}/tailscreen --render-self-test \
+            Apps/linux/.build/${{ inputs.configuration }}/tailscreen --render-self-test \
             > /tmp/gtk-selftest.log 2>&1; then
             status=0
           else
@@ -219,7 +219,7 @@ jobs:
         env:
           APPIMAGE_EXTRACT_AND_RUN: '1'
           OUTPUT: Tailscreen-${{ inputs.version }}-${{ env.APPIMAGE_ARCH }}.AppImage
-        run: Apps/linux-gtk/packaging/appimage/build-appimage.sh
+        run: Apps/linux/packaging/appimage/build-appimage.sh
 
       - name: Stage package + checksums
         id: pkg
@@ -240,7 +240,7 @@ jobs:
           APPIMAGE="Tailscreen-${{ inputs.version }}-${APPIMAGE_ARCH}.AppImage"
           STAGE="dist/tailscreen-linux-${PACKAGE_ARCH}"
           mkdir -p "$STAGE"
-          cp "Apps/linux-gtk/.build/${{ inputs.configuration }}/tailscreen" "$STAGE/tailscreen"
+          cp "Apps/linux/.build/${{ inputs.configuration }}/tailscreen" "$STAGE/tailscreen"
           cat > "$STAGE/README.txt" <<EOF
           Tailscreen for Linux (${PACKAGE_ARCH})
           ============================
@@ -254,7 +254,7 @@ jobs:
 
           Sign in happens in your browser on first run (tsnet interactive
           login), or export TAILSCREEN_TS_AUTHKEY. See the repository's
-          Apps/linux-gtk/packaging/README.md for packaged install channels.
+          Apps/linux/packaging/README.md for packaged install channels.
           EOF
           tar -C dist -czf "$FILE" "tailscreen-linux-${PACKAGE_ARCH}"
           echo "tarball=$FILE" >> "$GITHUB_OUTPUT"
@@ -308,8 +308,8 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: |
-            Apps/linux-gtk/.build
-            !Apps/linux-gtk/.build/**/${{ inputs.configuration }}/tailscreen
+            Apps/linux/.build
+            !Apps/linux/.build/**/${{ inputs.configuration }}/tailscreen
           key: >-
-            linux-gtk-build-swift6.3-noble-${{ runner.os }}-${{ runner.arch
-            }}-${{ inputs.configuration }}-${{ hashFiles('Apps/linux-gtk/Package.resolved') }}
+            linux-app-build-swift6.3-noble-${{ runner.os }}-${{ runner.arch
+            }}-${{ inputs.configuration }}-${{ hashFiles('Apps/linux/Package.resolved') }}
