@@ -87,6 +87,35 @@ runs:
     # in patch 021 survived for months). The marker file is what the Makefile
     # uses to know the loop already ran, so writing it here keeps a later
     # `make -C Packages/TailscaleKit` from double-applying the whole series.
+    # Every build step below is gated on `inputs.libtailscale` matching one
+    # exact string, so an unrecognized value does not error — it matches
+    # nothing and quietly produces no archive. The staging step's looser
+    # `startsWith(…, 'windows-')` then fails on a missing file, hundreds of
+    # lines from the actual mistake, and a value wrong in some OTHER direction
+    # would not fail at all: the job would go green having built nothing.
+    #
+    # That is this repo's oldest CI failure mode wearing a new hat (see the
+    # `paths:` holes in windows-build.yml). `windows-x64` — Go calls it
+    # `amd64` — is exactly how it arrived. Reject unknown values here, where
+    # the list of known ones lives.
+    - name: Validate the requested target
+      shell: bash
+      # Through env rather than interpolated into the script body — the value
+      # is ours today, but a `${{ }}` inside `run:` is textual substitution and
+      # this is the one step every build job runs.
+      env:
+        TARGET: ${{ inputs.libtailscale }}
+      run: |
+        case "$TARGET" in
+          none|host|macos-universal|windows-amd64|windows-arm64) ;;
+          *)
+            echo "::error::bootstrap: unknown libtailscale target '$TARGET'." \
+                 "Expected one of: none, host, macos-universal, windows-amd64, windows-arm64." \
+                 "Note Go's arch vocabulary — 'amd64', not 'x64'."
+            exit 1
+            ;;
+        esac
+
     - name: Apply the TailscaleKit patch series
       if: inputs.patches == 'true'
       shell: bash

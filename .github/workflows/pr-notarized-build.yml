@@ -119,4 +119,10 @@ jobs:
           else
             body="❌ Notarized build failed for \`${SHORT:-this commit}\`. See the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details."
           fi
-          gh pr comment "${{ github.event.pull_request.number }}" --body "$body"
+          # --repo is REQUIRED here: this is a bare job with no checkout (it
+          # became its own job because one that `uses:` a reusable workflow can
+          # carry no steps), so gh has no git remote to infer from and exits
+          # with "fatal: not a git repository". The `unlabel` job above never
+          # hit this because `gh api` takes the repo in its path.
+          gh pr comment "${{ github.event.pull_request.number }}" \
+            --repo "${{ github.repository }}" --body "$body"

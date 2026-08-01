@@ -199,11 +199,20 @@ jobs:
       # architecture (including llvm-mingw + the cgo compiler inventory on
       # arm64), and staging it as both libtailscale.a and tailscale.lib with
       # TAILSCALE_LIB exported. See .github/actions/bootstrap.
+      #
+      # `amd64`, not `x64`: this workflow's `arch` input speaks the runner /
+      # MSIX vocabulary (`x64`), the bootstrap action speaks Go's (`amd64`).
+      # They are not the same word and interpolating one into the other built
+      # NOTHING — `windows-x64` matched no build step's `if`, while the staging
+      # step's `startsWith(…, 'windows-')` still ran and died on a missing
+      # archive. The action now rejects an unknown value outright rather than
+      # silently producing no archive; keep this mapping explicit anyway, so
+      # the translation is visible at the call site.
       - name: Bootstrap libtailscale (windows/${{ inputs.arch }})
         uses: ./.github/actions/bootstrap
         with:
           symlinks: 'true'
-          libtailscale: windows-${{ inputs.arch }}
+          libtailscale: windows-${{ inputs.arch == 'arm64' && 'arm64' || 'amd64' }}
           cache: ${{ inputs.use_cache }}
 
       # From W4 the app decodes video, so it links libavcodec.
