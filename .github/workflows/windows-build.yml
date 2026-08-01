@@ -184,10 +184,14 @@ jobs:
           # The DLLs live in bin/ and are needed to RUN the tests, not to link.
           cygpath -w "$root/bin" >> "$GITHUB_PATH"
 
+      # 6.3, matching the app jobs. This job sat on 6.1 after the app moved,
+      # which meant the "libavcodec decodes on Windows" gate was proving that
+      # about a toolchain the shipped app no longer uses — the gate and the
+      # thing it gates have to agree or it is not a gate.
       - name: Setup Swift
         uses: SwiftyLab/setup-swift@v1
         with:
-          swift-version: '6.1'
+          swift-version: '6.3'
 
       # `swift test`, not `swift build`: linking proves the import libraries
       # resolve, but only running proves the DLLs load and that this build
