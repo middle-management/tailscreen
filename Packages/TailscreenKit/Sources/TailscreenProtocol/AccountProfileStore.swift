@@ -160,7 +160,8 @@ public final class AccountProfileStore {
         // creating it first would strand the old registry forever.
         if let legacy = layout.legacyRoot,
             !FileManager.default.fileExists(atPath: layout.root),
-            FileManager.default.fileExists(atPath: legacy) {
+            FileManager.default.fileExists(atPath: legacy)
+        {
             try? FileManager.default.moveItem(atPath: legacy, toPath: layout.root)
         }
         root = layout.root
@@ -171,11 +172,13 @@ public final class AccountProfileStore {
         let url = URL(fileURLWithPath: layout.root).appendingPathComponent("profiles.json")
         if let data = try? Data(contentsOf: url),
             let saved = try? JSONDecoder().decode(Saved.self, from: data),
-            !saved.profiles.isEmpty {
+            !saved.profiles.isEmpty
+        {
             profiles = saved.profiles
             // A stored selection naming a profile that is gone falls back to
             // the first rather than leaving `active` pointing at nothing.
-            activeID = saved.profiles.contains { $0.id == saved.activeID }
+            activeID =
+                saved.profiles.contains { $0.id == saved.activeID }
                 ? saved.activeID : saved.profiles[0].id
         } else {
             // First launch, or a corrupt/unreadable blob: seed one profile
