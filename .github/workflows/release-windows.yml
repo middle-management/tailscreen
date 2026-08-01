@@ -477,6 +477,9 @@ jobs:
       # With the TAILSCREEN_MSIX_PFX_* secrets set, every build signs with the
       # SAME dev certificate — trust it once and every future MSIX installs,
       # and the Publisher/PackageFamilyName stay constant. Still self-signed.
+      # make-msix.ps1 exports the cert's public half beside the package
+      # (out/…-windows-<arch>.cer); it ships with the release so users can do
+      # the trust-once install documented in docs/install.md.
       - name: Build the MSIX
         shell: pwsh
         env:
@@ -501,7 +504,7 @@ jobs:
         shell: bash
         working-directory: out
         run: |
-          sha256sum *.zip *.msix > "checksums-windows-${{ matrix.arch }}.txt"
+          sha256sum *.zip *.msix *.cer > "checksums-windows-${{ matrix.arch }}.txt"
           cat "checksums-windows-${{ matrix.arch }}.txt"
 
       # A PR build proves the packaging still works; it deliberately does NOT
@@ -523,7 +526,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release upload "${{ steps.version.outputs.tag }}" \
-            out/*.zip out/*.msix "out/checksums-windows-${{ matrix.arch }}.txt" --clobber
+            out/*.zip out/*.msix out/*.cer "out/checksums-windows-${{ matrix.arch }}.txt" --clobber
 
       - name: Summary
         shell: bash

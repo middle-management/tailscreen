@@ -17,13 +17,6 @@ Pick your platform: [macOS](#homebrew) (Homebrew or a release download),
 [Linux](#linux) (AppImage or tarball), [Windows](#windows) (zip or MSIX) —
 or [build from source](#from-source).
 
-The Linux and Windows artifacts first appear on releases published after
-v0.9.1 — if the latest release doesn't carry them yet, it predates those
-apps. In the meantime CI uploads runnable Linux and Windows bundles on
-every push to `main` (the workflow run's artifacts; downloading them
-requires a GitHub login).
-{: .note }
-
 ## Homebrew
 
 ```bash
@@ -102,21 +95,51 @@ published yet; it needs a Swift SDK extension.
 
 The Windows app views **and** shares — sign in, watch a peer, or share your
 own screen with remote control and annotations. Each release carries native
-**x64** and **arm64** builds:
+**x64** and **arm64** builds, and two ways in:
 
-- **Zip** (recommended today): download
-  `Tailscreen-<version>-windows-x64.zip` (or `-arm64`), unzip anywhere, run
-  `tailscreen.exe`. Everything it needs — the Swift runtime, the Windows App
-  SDK, FFmpeg — is in the folder; there's no installer and nothing else to
-  install.
-- **MSIX**: a per-arch installer package also sits on the release, but it's
-  currently **self-signed** — Windows won't install it until you trust the
-  signing certificate, which is more hassle than the zip. A trust-chained
-  signature (and with it a `winget install` path) is in progress; until
-  then, use the zip.
+- **Zip**: download `Tailscreen-<version>-windows-x64.zip` (or `-arm64`),
+  unzip anywhere, run `tailscreen.exe`. Everything it needs — the Swift
+  runtime, the Windows App SDK, FFmpeg — is in the folder; no installer, no
+  admin rights, nothing else to install.
+- **MSIX**: a per-arch installer package
+  (`Tailscreen-<version>-windows-<arch>.msix`) for a proper Start-menu
+  install with clean uninstall. It's currently signed with Tailscreen's own
+  certificate rather than one Windows already trusts, so installing takes a
+  one-time extra step — trusting that certificate — described next.
 
 Pick the arch that matches your machine — an arm64 laptop runs the arm64
 build natively, and Windows will refuse a mismatched MSIX outright.
+
+### Installing the MSIX (trusting the certificate)
+
+Each release ships the public half of its signing certificate beside the
+MSIX (`Tailscreen-<version>-windows-<arch>.cer`). Trust it once and the
+MSIX installs like any other package — and since releases sign with the
+same certificate, future upgrades install without repeating this step.
+
+From an **administrator** PowerShell in your download folder:
+
+```powershell
+Import-Certificate -FilePath .\Tailscreen-<version>-windows-x64.cer `
+  -CertStoreLocation Cert:\LocalMachine\TrustedPeople
+Add-AppxPackage .\Tailscreen-<version>-windows-x64.msix
+```
+
+Or without a terminal: double-click the `.cer` → **Install Certificate…** →
+**Local Machine** → **Place all certificates in the following store** →
+Browse → **Trusted People** → Finish. Then double-click the `.msix` and
+click Install.
+
+What you're agreeing to, spelled out: the certificate goes into the
+machine's **Trusted People** store — not a root authority — which tells
+Windows to accept packages signed with exactly that certificate and
+nothing broader. Verify the download against
+`checksums-windows-<arch>.txt` from the release page first, and you can
+remove the trust at any time (`certlm.msc` → Trusted People → delete the
+Tailscreen entry). This whole step disappears once releases are signed
+with a certificate that chains to a trusted root (SignPath's free
+open-source code signing — in progress), which is also what unlocks
+`winget install`.
 
 ## From source
 

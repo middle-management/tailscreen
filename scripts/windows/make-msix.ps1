@@ -8,7 +8,9 @@
   and logo assets, and packs it with MakeAppx. Signs with a self-signed
   certificate by default, which is enough to INSTALL (given the cert is trusted)
   and is not enough to DISTRIBUTE. Real distribution needs a cert whose private
-  key is on FIPS 140-2 hardware; see docs/viewer-windows-plan.md W8.
+  key is on FIPS 140-2 hardware; see docs/viewer-windows-plan.md W8. The
+  signing certificate's public half is exported beside OutFile (.cer) so a
+  release can host it for the trust-once install flow (docs/install.md).
 
   Runs on Windows only — MakeAppx and SignTool are Windows SDK tools.
 
@@ -212,6 +214,17 @@ if ($LASTEXITCODE -ne 0) {
 
 $size = [math]::Round((Get-Item $OutFile).Length / 1MB, 1)
 Write-Host "packed and signed: $OutFile (${size} MB)"
+
+# Export the public half of the signing certificate beside the package. Until a
+# trust-chained signature (SignPath) replaces self-signing, the release hosts
+# this .cer so users can trust it once (Local Machine → Trusted People) and the
+# MSIX installs — docs/install.md documents the flow. Read back off the signed
+# package rather than the pfx so the published cert provably matches the wire.
+$cerFile = [System.IO.Path]::ChangeExtension($OutFile, '.cer')
+$signer = (Get-AuthenticodeSignature $OutFile).SignerCertificate
+if (-not $signer) { throw "no signer certificate readable off $OutFile" }
+Export-Certificate -Cert $signer -FilePath $cerFile -Type CERT | Out-Null
+Write-Host "public signing cert: $cerFile (thumbprint $($signer.Thumbprint))"
 
 "MSIX_PATH=$OutFile" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 "MSIX_PFX=$PfxPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
