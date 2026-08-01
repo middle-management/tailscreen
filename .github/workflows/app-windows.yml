@@ -1,0 +1,1090 @@
+name: Windows app
+
+# ONE definition of "build, stage and package the Windows app".
+#
+# release-windows.yml said in its own header that its steps were
+# "windows-build.yml's `app` and `arm64-probe` jobs, copied faithfully rather
+# than reinvented". They were, and the copy was 545 lines. Between the three
+# call sites — x64 CI, arm64 CI, and the two-arch release matrix — the build
+# spine is identical: symlinks, the patch series, the Go c-archive, staging it
+# under both the Unix and MSVC names, FFmpeg, vcpkg opus, resolve, the
+# swift-winui self-contained patch, the stamp, the app, the probe, stage-app,
+# the Windows App SDK payload, the reg-free manifest, the arch check.
+#
+# What differs is which arch, and which of the tails runs: the per-push
+# diagnostics (probes, app-load, tsnet-node), or the release packaging (zip,
+# versioned MSIX, checksums, upload). Those are inputs. There are more of them
+# than is pretty, and that is the honest shape of the problem — every one maps
+# to a real difference between a per-push diagnostic run and a shipped
+# artifact, and inventing a single behaviour for both would be worse.
+#
+# `use_cache` is the load-bearing one, and it is POLICY, not convenience: CI
+# passes true, release-windows.yml passes FALSE so a shipped binary is compiled
+# cold on the runner that ships it and can never contain an object a per-push
+# workflow's cache key handed it. Sharing one definition is not the same as
+# sharing one policy; the input is what keeps them apart.
+#
+# Pinned to Swift 6.3 by default. A matrix over 6.0.3/6.1/6.2 was used to find
+# which toolchain works on the runner image, and it answered:
+#
+#   6.0.3 — fails with `could not build module 'ucrt'` before compiling any of
+#           our code. Its module maps predate the image's Windows SDK.
+#   6.1   — builds everything on x64, but its WinSDK Swift module is broken on
+#           arm64 (bundled clang's arm64intr.h and the image's Windows SDK
+#           10.0.26100 both define _ARM64_BARRIER_ISH, so the reference is
+#           ambiguous, and patch 025's POSIX shims import WinSDK).
+#   6.2   — dies compiling swift-cross-ui, twice, at the same file
+#           (_RemoveGlobalActorIsolation.swift), with exit code 1 and NO
+#           diagnostic — a frontend killed rather than a source error. Capping
+#           parallelism at -j 2 did not change it, which rules out memory
+#           pressure. Same sources compile clean on 6.1.
+#   6.3   — the 6.2 frontend crash does not reproduce, and it builds BOTH
+#           architectures. One toolchain, no version skew.
+#
+# Steps deliberately do NOT use continue-on-error: a failing step should BE the
+# error, with its compiler output attached, rather than something a later
+# summary step reports second-hand.
+
+on:
+  workflow_call:
+    inputs:
+      arch:
+        description: "'x64' or 'arm64'. Picks the runner, the FFmpeg archive, the vcpkg triplet and the c-archive target."
+        required: true
+        type: string
+      swift_version:
+        required: false
+        type: string
+        default: '6.3'
+      configuration:
+        required: false
+        type: string
+        default: release
+      ref:
+        description: Git ref to build. Empty means the triggering ref.
+        required: false
+        type: string
+        default: ''
+      use_cache:
+        description: >-
+          Restore/save Apps/windows/.build, libtailscale.a and the WinAppSDK
+          nupkg. FALSE for release builds — see this file's header.
+        required: false
+        type: boolean
+        default: true
+      run_probes:
+        description: >-
+          Build the WASAPIKit / WGCCaptureKit / SendInputKit probe EXECUTABLES
+          before the app, so the LINKER runs on them in seconds rather than
+          eleven minutes into the app build.
+        required: false
+        type: boolean
+        default: false
+      lockfile_guard:
+        description: Fail if `swift package resolve` rewrote Package.resolved.
+        required: false
+        type: boolean
+        default: false
+      run_load_check:
+        description: Launch the staged exe and classify the loader's verdict.
+        required: false
+        type: boolean
+        default: false
+      run_tsnet_check:
+        description: Run tsnet-probe and assert tailscale_new() returns.
+        required: false
+        type: boolean
+        default: false
+      upload_dist:
+        required: false
+        type: boolean
+        default: true
+      dist_artifact_name:
+        required: false
+        type: string
+        default: ''
+      zip:
+        description: Produce a release zip of dist/ plus checksums.
+        required: false
+        type: boolean
+        default: false
+      version:
+        description: Version string for the zip / MSIX filenames.
+        required: false
+        type: string
+        default: ''
+      msix:
+        description: Pack and sign an MSIX from dist/.
+        required: false
+        type: boolean
+        default: false
+      msix_version:
+        description: Four-part x.y.z.0 Identity Version. Windows reserves the fourth field.
+        required: false
+        type: string
+        default: '0.0.1.0'
+      msix_artifact_name:
+        required: false
+        type: string
+        default: ''
+      verify_msix:
+        description: Install the MSIX and activate it by AUMID.
+        required: false
+        type: boolean
+        default: false
+      upload_to_release:
+        required: false
+        type: boolean
+        default: false
+      tag:
+        required: false
+        type: string
+        default: ''
+
+jobs:
+  build:
+    # GA for public repositories since Aug 2025, 4 vCPU, free — so arm64 is a
+    # NATIVE build, not a cross-compile. That removes the biggest unknown: no
+    # sysroot to assemble, no --triple to get wrong.
+    runs-on: ${{ inputs.arch == 'arm64' && 'windows-11-arm' || 'windows-latest' }}
+
+    env:
+      FFMPEG_FLAVOUR: ${{ inputs.arch == 'arm64' && 'winarm64' || 'win64' }}
+      VCPKG_TRIPLET: ${{ inputs.arch == 'arm64' && 'arm64-windows' || 'x64-windows' }}
+
+    steps:
+      # Windows checkouts don't create symlinks unless this is on and the
+      # account may create them. TailscaleKit's Sources/ and include/ are
+      # symlinks into the submodule, and without this they arrive as text files
+      # containing their target path — which SwiftPM reports as an invalid
+      # custom path, aborting the entire package graph before anything
+      # compiles. Must precede the checkout, which is why it is not in the
+      # bootstrap action.
+      - name: Allow symlinks in git
+        run: git config --global core.symlinks true
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          submodules: recursive
+
+      # SWIFT BEFORE GO, and on arm64 the ordering is load-bearing twice over.
+      #
+      # The first version of the arm64 job installed Go first, and cgo picked up
+      # whatever `gcc` was on PATH — an x86_64 one — which tried to assemble
+      # runtime/cgo's ARM64 `gcc_arm64.S` and produced `no such instruction: stp
+      # x29,x30`. That is an x86 assembler reading ARM64 assembly, not a bad
+      # file.
+      #
+      # It also has to come before the bootstrap action's llvm-mingw install:
+      # GITHUB_PATH PREPENDS, so whichever writes last wins, and llvm-mingw's
+      # clang must outrank Swift's MSVC-targeting one when cgo goes looking.
+      - name: Setup Swift ${{ inputs.swift_version }}
+        uses: SwiftyLab/setup-swift@latest
+        with:
+          swift-version: ${{ inputs.swift_version }}
+
+      # Prints the target triple, which is a finding in its own right: if the
+      # action resolved an x86_64 toolchain on an arm64 host, everything below
+      # would still build and would be answering a different question.
+      - name: Swift version and target
+        shell: bash
+        run: |
+          swift --version
+          echo "--- target triple ---"
+          swift -print-target-info | grep -i triple || true
+
+      # Patch series, symlink materialization, Go, the c-archive for this
+      # architecture (including llvm-mingw + the cgo compiler inventory on
+      # arm64), and staging it as both libtailscale.a and tailscale.lib with
+      # TAILSCALE_LIB exported. See .github/actions/bootstrap.
+      - name: Bootstrap libtailscale (windows/${{ inputs.arch }})
+        uses: ./.github/actions/bootstrap
+        with:
+          symlinks: 'true'
+          libtailscale: windows-${{ inputs.arch }}
+          cache: ${{ inputs.use_cache }}
+
+      # From W4 the app decodes video, so it links libavcodec.
+      #
+      # A PREBUILT FFmpeg rather than vcpkg: the vcpkg `ffmpeg` port builds from
+      # source and would dominate this job for a dependency we only link
+      # against; BtbN publishes ready-made Windows builds with headers and MSVC
+      # import libraries.
+      #
+      # LGPL, not GPL, and that is a licensing decision rather than a
+      # convenience one: Tailscreen is MIT, and linking a GPL FFmpeg build would
+      # impose GPL on the whole app. The LGPL build has no libx264, so it cannot
+      # ENCODE H.264 — exactly right for a viewer.
+      #
+      # The version is pinned to 7.1 even though the build itself rolls: a fully
+      # floating `master` asset would turn an upstream FFmpeg change into a
+      # mystery failure here.
+      - name: Download FFmpeg (LGPL shared, 7.1, ${{ env.FFMPEG_FLAVOUR }})
+        shell: bash
+        run: |
+          set -euo pipefail
+          url=https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-${FFMPEG_FLAVOUR}-lgpl-shared-7.1.zip
+          curl -fsSL -o "$RUNNER_TEMP/ffmpeg.zip" "$url"
+          mkdir -p "$RUNNER_TEMP/ffmpeg"
+          unzip -q "$RUNNER_TEMP/ffmpeg.zip" -d "$RUNNER_TEMP/ffmpeg"
+          # The archive has one top-level directory whose name embeds the build
+          # date, so discover it rather than reconstructing it.
+          root=$(find "$RUNNER_TEMP/ffmpeg" -mindepth 1 -maxdepth 1 -type d | head -1)
+          [ -n "$root" ] || { echo "unexpected archive layout" >&2; exit 1; }
+          test -f "$root/include/libavcodec/avcodec.h"
+          native=$(cygpath -w "$root" 2>/dev/null || echo "$root")
+          echo "FFMPEG_ROOT=$native" >> "$GITHUB_ENV"
+
+      # libopus for the TailscreenAudio tier. vcpkg ships with the runner
+      # image, so this is an install rather than a bootstrap.
+      #
+      # COpus is a systemLibrary with `pkgConfig: "opus"`, but Windows has no
+      # pkg-config binary, so the header and library paths are passed explicitly
+      # on the build lines below instead. Note the include path ends in /opus:
+      # as COpus/shim.h documents, opus.pc's Cflags point *into* the opus/
+      # header dir, so the include is <opus.h>, not <opus/opus.h>.
+      #
+      # Retried because this step fetches opus's source tarball from github.com
+      # and a `curl error 35 (SSL connect error)` there failed a whole run once.
+      # vcpkg prints "Not a transient network error, won't retry" for code 35,
+      # which is its classification, not a fact — an SSL handshake that fails
+      # against github.com is exactly the kind of thing that succeeds seconds
+      # later. Retrying here rather than arguing with vcpkg's taxonomy.
+      - name: Install libopus (vcpkg, ${{ env.VCPKG_TRIPLET }})
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            if "$VCPKG_INSTALLATION_ROOT/vcpkg.exe" install "opus:$VCPKG_TRIPLET"; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then
+              echo "vcpkg install opus failed after 3 attempts" >&2
+              exit 1
+            fi
+            echo "::warning::vcpkg install opus failed (attempt $attempt), retrying"
+            sleep $((attempt * 15))
+          done
+          root="$VCPKG_INSTALLATION_ROOT/installed/$VCPKG_TRIPLET"
+          echo "OPUS_ROOT=$root" >> "$GITHUB_ENV"
+          ls -la "$root/include/opus/opus.h"
+          ls -la "$root/lib/"
+
+      # ---------------------------------------------------------------------
+      # Only PROBE steps survive here, and that is a deliberate cut.
+      #
+      # This job used to build nine packages before the app: TailscreenProtocol,
+      # WASAPIKit, WGCCaptureKit, SendInputKit, WinOverlayKit, TailscreenHubUI,
+      # TailscreenSharerWGC, TailscreenViewer, TailscreenSharer. Measured on a
+      # warm run they cost 787s of a 1303s job — 60 % — and TailscreenHubUI
+      # alone was 463s, 35 % of the whole thing, because building it standalone
+      # compiles swift-cross-ui from scratch in ITS OWN .build directory.
+      #
+      # Every one of them is a dependency of Apps/windows (directly, or through
+      # TailscreenSharerWGC), so `Build the app` already compiles all of them —
+      # in the .build directory that IS cached. The pre-steps were therefore
+      # doing the same work twice, and the expensive copy was the uncached one.
+      #
+      # What they bought was a precise failure location. That is worth paying
+      # for, but not twice: Linux CI already typechecks every one of them on a
+      # cheap runner, and names the file when it fails —
+      #
+      #   TailscreenHubUI      → linux-gtk-viewer, "Typecheck the Windows app"
+      #   TailscreenSharerWGC  → linux-viewer, "Typecheck the Windows sharer backend"
+      #   WinOverlayKit        → linux-viewer, "Typecheck the Windows annotation overlay"
+      #   TailscreenProtocol   → linux-packages (linux-protocol)
+      #   TailscreenViewer     → linux-viewer, TailscreenSharer → linux-packages
+      #
+      # So localization moved to the runner where it costs three minutes instead
+      # of the one where it cost thirteen.
+      #
+      # The three that remain build PROBE EXECUTABLES, and that is the whole
+      # reason they are not redundant: a SwiftPM library target is compiled but
+      # never LINKED, so Linux typechecking cannot catch a missing import
+      # library — the failure mode that once let WASAPIKit's four undefined GUID
+      # symbols pass their own step and surface eleven minutes later in the app.
+      # Linking is Windows-only, it is what these probes force, and together
+      # they cost 112s.
+      #
+      # If you add a package to the app's graph, do NOT add a build step here.
+      # Add it to the Linux typecheck job instead, and add a probe here only if
+      # it links something new.
+      #
+      # `run_probes: false` on a release build: they answer a per-push question
+      # and a release's gate is that the per-push workflow was green on the
+      # commit being tagged.
+      # ---------------------------------------------------------------------
+
+      # WASAPIKit before the app, not with it. It is a few hundred lines of COM
+      # against SDK headers that nothing off Windows can compile, so a mistake
+      # in it should surface in seconds here rather than eleven minutes into the
+      # app build. No system package: WASAPI ships with Windows. It is not
+      # EXECUTED: this runner has no audio endpoint, so "no device" would fail a
+      # healthy build.
+      - name: WASAPIKit
+        if: inputs.run_probes
+        run: swift build --package-path Packages/WASAPIKit --product wasapi-probe
+
+      # Same reasoning as WASAPIKit, more so: this is raw WinRT ABI against four
+      # import libraries, built early and via its PROBE so the LINKER runs here
+      # in seconds rather than eleven minutes into the app build.
+      - name: WGCCaptureKit
+        if: inputs.run_probes
+        run: swift build --package-path Packages/WGCCaptureKit --product wgc-probe
+
+      # Remote control: Win32 SendInput behind the portable `InputInjecting`
+      # seam. Via its PROBE, so the LINKER runs. Built, not RUN, unlike
+      # wasapi-probe — wasapi-probe's failure mode on a runner is silence; this
+      # one moves a real cursor, and it takes `--inject` before it will.
+      - name: SendInputKit
+        if: inputs.run_probes
+        run: swift build --package-path Packages/SendInputKit --product sendinput-probe
+
+      # Two thirds of this job is compiling swift-cross-ui, swift-winui and the
+      # WindowsAppSDK bindings — ~1,450 compile units against our one app file,
+      # 14m20s of a 21m30s run. They change only when a pinned revision moves,
+      # so the cache key is Package.resolved plus the toolchain: our own sources
+      # changing does NOT invalidate it, and SwiftPM still recompiles the app
+      # target because its inputs changed.
+      #
+      # The tension worth naming: this workflow's job is partly to prove things
+      # build on Windows, and a warm .build weakens that. The key covers the
+      # inputs that would make a stale object wrong (dependency revisions, Swift
+      # version, runner OS, ARCHITECTURE), and the FFmpegKit job plus every
+      # Linux job still build cold — so the cold-build signal survives where it
+      # matters. And release builds pass use_cache: false, so nothing that ships
+      # was ever warm.
+      #
+      # restore-keys falls back to the newest same-toolchain cache when the exact
+      # key misses. An earlier version refused, fearing mixed objects — but
+      # SwiftPM/llbuild track per-target inputs, so a stale .build plus a fresh
+      # resolve rebuilds exactly the targets whose pins moved and reuses the
+      # rest; wrong binaries are not the failure mode here. What IS real is the
+      # cost asymmetry the refusal created: a one-pin bump repaid the full
+      # ~24-minute dependency compile. The toolchain, OS and arch stay in the
+      # prefix, so a Swift upgrade still builds cold — that boundary is the one
+      # llbuild cannot referee (swiftmodule format).
+      #
+      # RESTORE BEFORE RESOLVE, which is the opposite of the original order and
+      # is only possible because Apps/windows/Package.resolved is committed (see
+      # the note in .gitignore). While it was ignored, the key's hashFiles input
+      # did not exist at checkout, so resolve had to run first purely to
+      # manufacture it — 61s of a warm job spent producing something that could
+      # simply be read.
+      #
+      # The key used to hash every manifest in the graph, ours included, and
+      # that was wrong in the expensive direction: swift-cross-ui's objects do
+      # not depend on TailscreenHubUI's manifest, but adding that package to the
+      # graph changed the key and threw away fourteen minutes of third-party
+      # compile. `Package.resolved` is precisely the set of remote revisions and
+      # nothing else, and it also closes the hole without a maintained list: a
+      # local package bumping its OWN remote dependency moves a pin, and a moved
+      # pin is a new key. Path dependencies never appear in it, which is the
+      # whole point — editing our own packages is free.
+      - name: Restore the app's build directory
+        id: app-build-cache
+        if: inputs.use_cache
+        uses: actions/cache/restore@v4
+        with:
+          path: Apps/windows/.build
+          key: >-
+            windows-app-build-${{ inputs.arch }}-${{ inputs.swift_version }}-${{
+            runner.os }}-${{ hashFiles('Apps/windows/Package.resolved') }}
+          restore-keys: |
+            windows-app-build-${{ inputs.arch }}-${{ inputs.swift_version }}-${{ runner.os }}-
+
+      # Now a no-op on the happy path when the cache hit: the restored .build
+      # carries the checkouts and the pins already match. Kept as its own step
+      # because a resolution failure and a compile failure want different fixes.
+      #
+      # An explicit resolve is also what makes the swift-winui checkout exist
+      # before the patch step below on a cold cache — the build's implicit
+      # resolve would come too late.
+      #
+      # SwiftPM 6.3 REWRITES the committed 6.1-format lockfile on resolve —
+      # format/originHash churn, same pins. It is discarded so the cache restore
+      # and save keys keep hashing the same file. Committing a 6.3-format
+      # lockfile (and re-tightening the guard below) is a welcome follow-up.
+      - name: Resolve the app's dependencies
+        shell: bash
+        run: |
+          (cd Apps/windows && swift package resolve)
+          if ! git diff --quiet -- Apps/windows/Package.resolved; then
+            echo "::notice::SwiftPM rewrote Package.resolved (format churn); discarding so cache keys stay consistent"
+            git checkout -- Apps/windows/Package.resolved
+          fi
+
+      # If resolve CHANGED the lockfile for a reason that is NOT format churn,
+      # stop.
+      #
+      # Both cache steps key on hashFiles('Apps/windows/Package.resolved'). A
+      # rewrite mid-job would mean the save key no longer matches the restore
+      # key, so every run would miss, save under a fresh key, and miss again — a
+      # cache that silently does nothing while looking healthy. That is a worse
+      # failure than a red step, and it is exactly the "absence looks like
+      # success" shape this repo has already been burned by.
+      #
+      # A stale lockfile is a real condition: it happens whenever a dependency
+      # requirement in Package.swift moves without the pins being refreshed. The
+      # fix is local and mechanical, so the message says it.
+      - name: Check the lockfile is current
+        if: inputs.lockfile_guard
+        shell: bash
+        run: |
+          if ! git diff --quiet -- Apps/windows/Package.resolved; then
+            # Single quotes: backticks in a double-quoted bash string are command
+            # substitution, so the prose spelling of the command would have RUN
+            # the command.
+            echo '::error::Apps/windows/Package.resolved is stale — swift package resolve rewrote it.'
+            echo "The Windows build cache is keyed on this file, so a rewrite mid-job would"
+            echo "split the restore and save keys and quietly disable the cache."
+            echo ""
+            echo "Fix locally, in Apps/windows:  swift package resolve && git add Package.resolved"
+            echo ""
+            git --no-pager diff -- Apps/windows/Package.resolved
+            exit 1
+          fi
+          echo "lockfile unchanged by resolve — restore and save keys agree"
+
+      # Self-contained Windows App SDK (W9d): patch the resolved swift-winui
+      # checkout so an app-local runtime payload short-circuits the
+      # bootstrapper. Runs after resolve (the checkout must exist) and before
+      # the build (which must carry it). Idempotent across cache restores — a
+      # restored .build already contains the patched checkout and the marker
+      # check no-ops — and a drifted checkout is a hard failure, never a silent
+      # skip. The patch is behaviour-neutral without the staged payload, so the
+      # probe and any non-self-contained run are unaffected.
+      - name: Patch swift-winui for the self-contained runtime
+        shell: bash
+        run: ./scripts/windows/patch-swift-winui.sh
+
+      # Stamp the commit into the binary.
+      #
+      # Without it, "the new counter isn't showing" and "you're running last
+      # hour's exe" are the same observation, and telling them apart costs a
+      # download and a test session each time. The footer names the commit and
+      # the configuration, so the running app answers it.
+      #
+      # The grep is the point of the step, not decoration: a silently-failed
+      # substitution ships a binary that CLAIMS to be a dev build, which is
+      # worse than no stamp at all — and this pipeline has already been bitten
+      # twice by a skippable miss (the absent path filter, the un-staged probe).
+      # Fail loudly instead.
+      #
+      # It was in the x64 CI job and in the release workflow but NOT in the
+      # arm64 CI job, so arm64 artifacts shipped labelled "dev". Defining it
+      # once fixes that by construction.
+      - name: Stamp the build
+        shell: bash
+        run: |
+          set -euo pipefail
+          file=Apps/windows/Sources/tailscreen/BuildInfo.swift
+          short=$(git rev-parse --short HEAD)
+          sed -i "s/static let commit = \"dev\"/static let commit = \"$short\"/" "$file"
+          grep -q "static let commit = \"$short\"" "$file" \
+            || { echo "build stamp did not apply — refusing to ship an exe labelled 'dev'" >&2; exit 1; }
+          echo "stamped $short"
+
+      # RELEASE, not debug, and not only because it ships.
+      #
+      # A real share came back at 1.4 fps with the sharer pinning half a core,
+      # while the viewer's stats showed 17 ms latency and zero loss — so the
+      # network was innocent and the sharer was the bottleneck. The prime
+      # suspect is the config: `BGRAToI420` is a scalar per-pixel loop over two
+      # million pixels per frame, and a Swift debug build keeps bounds checks,
+      # skips inlining and does no cross-module optimisation. That is an order
+      # of magnitude on exactly this kind of code, and it applies equally to the
+      # viewer's `I420Converter` blit.
+      #
+      # Built FROM the package directory, not with --package-path from the repo
+      # root, because the manifest's `-L ../../Packages/TailscaleKit/lib` is
+      # resolved by the linker against ITS working directory. On Linux that
+      # relative flag is unused padding — libtailscale.pc supplies an absolute
+      # path via PKG_CONFIG_PATH — but Windows has no pkg-config (the build log
+      # says so: "couldn't find pc file for libtailscale"), which makes the
+      # manifest flag the only thing pointing at the archive. The absolute
+      # /LIBPATH: is belt and braces on top.
+      #
+      # The opus flags are here as well as on the probe below because from W3
+      # the app's dependency graph reaches them: TailscreenViewerTsnet →
+      # TailscreenViewer → TailscreenAudio → OpusKit → COpus.
+      - name: Build the app
+        shell: bash
+        working-directory: Apps/windows
+        run: |
+          swift build -c "${{ inputs.configuration }}" --product tailscreen \
+            -Xcc -I"$OPUS_ROOT/include/opus" \
+            -Xcc -I"$FFMPEG_ROOT/include" \
+            -Xlinker "/LIBPATH:$OPUS_ROOT/lib" \
+            -Xlinker "/LIBPATH:$FFMPEG_ROOT/lib" \
+            -Xlinker "/LIBPATH:$TAILSCALE_LIB"
+
+      # A console tsnet bring-up, shipped in the artifact beside the app.
+      #
+      # The app cannot tell "libtailscale hangs on Windows" from "the app's
+      # environment hangs it" — it carries WinUI, the Windows App SDK, a COM
+      # apartment and swift-cross-ui's run loop, and cannot subtract any of
+      # them. This links the same archive with none of that, so the two cases
+      # give visibly different answers on the same machine. It also costs one
+      # file and saves a user a second download when the app misbehaves — and
+      # stage-app.sh hard-fails without it, so this step is load-bearing rather
+      # than optional.
+      #
+      # Same link flags as the app minus FFmpeg. The probe imports only the
+      # transport, but the transport depends on TailscreenViewer, which depends
+      # on TailscreenAudio, which links libopus — so "it imports less" does not
+      # mean "it links less", and the first version of this step failed on
+      # `could not open 'opus.lib'`.
+      - name: Build the tsnet probe
+        shell: bash
+        working-directory: Apps/windows
+        run: |
+          swift build -c "${{ inputs.configuration }}" --product tsnet-probe \
+            -Xcc -I"$OPUS_ROOT/include/opus" \
+            -Xlinker "/LIBPATH:$OPUS_ROOT/lib" \
+            -Xlinker "/LIBPATH:$TAILSCALE_LIB"
+
+      # Confirms the linker produced an ARM64 PE and not an x64 one. An
+      # architecture mismatch here fails at load with a message that reads like
+      # a missing file, and a green build below would prove nothing.
+      - name: Check the probe is an ARM64 binary
+        if: inputs.arch == 'arm64'
+        shell: pwsh
+        working-directory: Apps/windows
+        run: |
+          $exe = Get-ChildItem -Recurse -Filter tsnet-probe.exe .build |
+            Select-Object -First 1
+          if (-not $exe) { Write-Error 'no tsnet-probe.exe produced'; exit 1 }
+          Write-Host "probe: $($exe.FullName)"
+          $fs = [System.IO.File]::OpenRead($exe.FullName)
+          $br = New-Object System.IO.BinaryReader($fs)
+          $fs.Position = 0x3C
+          $peOff = $br.ReadInt32()
+          $fs.Position = $peOff + 4
+          $machine = $br.ReadUInt16()
+          $br.Close(); $fs.Close()
+          $hex = '0x{0:X4}' -f $machine
+          Write-Host "PE machine type: $hex (0xAA64 = ARM64, 0x8664 = x64)"
+          if ($machine -ne 0xAA64) {
+            Write-Error "probe is not ARM64 ($hex) — the toolchain targeted the wrong architecture, so a green build below would prove nothing"
+            exit 1
+          }
+
+      # `if: !cancelled()` is the entire reason this is a separate save step
+      # rather than `actions/cache`, whose post step is `post-if: success()` and
+      # so saves NOTHING when a job fails.
+      #
+      # That default is exactly backwards for a build cache. A run that compiles
+      # 1,450 units of swift-cross-ui, swift-winui and the WindowsAppSDK
+      # bindings and then fails on one line of our own Swift has produced every
+      # object worth keeping — and threw all of them away, so the next run,
+      # carrying the one-line fix, paid the twenty-eight minutes over again.
+      # That happened twice in one afternoon.
+      #
+      # Saving a build directory from a failed compile is safe: SwiftPM tracks
+      # inputs per target, so a partial .build is simply fewer finished objects,
+      # and the target that failed recompiles.
+      #
+      # The condition is `!cancelled()`, not `always()`, and it is guarded on
+      # the restore step having run — both because **cache keys are immutable**.
+      # A run cancelled at 20 % (the caller has cancel-in-progress, so that
+      # happens on every rapid push) would otherwise claim the key with a fifth
+      # of a build directory that no later run could replace, and an early
+      # failure would claim it with a `.build` that does not exist yet. One
+      # poisoned key is worse than one cold build.
+      #
+      # The product binaries are excluded from the archive: they are relinked on
+      # every build regardless, and ~200 MB less per generation is real
+      # eviction-pressure relief on the repo's shared 10 GB cache budget — an
+      # overnight eviction of this very cache is why a morning's first build ran
+      # cold. (Exclusions apply at save; restore extracts whatever the archive
+      # holds, so the two path specs need not match.)
+      - name: Save the app's build directory
+        if: >-
+          ${{ !cancelled() && inputs.use_cache
+          && steps.app-build-cache.outcome == 'success'
+          && steps.app-build-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            Apps/windows/.build
+            !Apps/windows/.build/**/release/tailscreen.exe
+            !Apps/windows/.build/**/release/tsnet-probe.exe
+          key: >-
+            windows-app-build-${{ inputs.arch }}-${{ inputs.swift_version }}-${{
+            runner.os }}-${{ hashFiles('Apps/windows/Package.resolved') }}
+
+      # stage-app.sh harvests the Swift runtime DLLs from PATH, and on arm64 the
+      # toolchain carries both architectures' runtimes — so put the ARM64 one on
+      # PATH first, verified by PE machine type. An x64 swiftCore.dll beside an
+      # arm64 exe fails at load with the same unhelpful 0xC0000135 this pipeline
+      # has already decoded twice. x64 needs no such step: the toolchain the
+      # build just ran from already has its runtime on PATH.
+      - name: Put the Swift arm64 runtime on PATH
+        if: inputs.arch == 'arm64'
+        shell: pwsh
+        run: |
+          $root = ($env:SDKROOT -split 'Platforms')[0]
+          $dlls = Get-ChildItem -Recurse -Filter swiftCore.dll $root -ErrorAction SilentlyContinue
+          if (-not $dlls) { Write-Error "no swiftCore.dll under $root"; exit 1 }
+          foreach ($dll in $dlls) {
+            $fs = [System.IO.File]::OpenRead($dll.FullName)
+            $br = New-Object System.IO.BinaryReader($fs)
+            $fs.Position = 0x3C
+            $peOff = $br.ReadInt32()
+            $fs.Position = $peOff + 4
+            $machine = $br.ReadUInt16()
+            $br.Close(); $fs.Close()
+            Write-Host "$($dll.FullName): $('0x{0:X4}' -f $machine)"
+            if ($machine -eq 0xAA64) {
+              $dir = Split-Path -Parent $dll.FullName
+              Write-Host "using ARM64 runtime: $dir"
+              $dir | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+              exit 0
+            }
+          }
+          Write-Error 'found swiftCore.dll but none is ARM64'
+          exit 1
+
+      # Stage the exe TOGETHER WITH THE SWIFT RUNTIME.
+      #
+      # Swift links its runtime dynamically on Windows, so a bare
+      # tailscreen.exe dies before `main` with
+      #
+      #   The code execution cannot proceed because swiftCore.dll was not found
+      #
+      # on any machine without a Swift toolchain installed — which is every
+      # machine we would ask someone to test on. Uploading just the exe made the
+      # artifact runnable only by people who didn't need it.
+      #
+      # Windows searches the executable's own directory first, so co-locating
+      # the DLLs needs no PATH edit, no installer and no admin rights: unzip and
+      # double-click.
+      #
+      # The runtime directory is discovered from PATH rather than hardcoded.
+      # swift-driver is itself a Swift program, so if `swift build` ran at all
+      # then a directory containing swiftCore.dll is necessarily on PATH — which
+      # makes this independent of where the toolchain installer put things, a
+      # layout that has already moved once (C:\Library → %LOCALAPPDATA%).
+      - name: Stage the app with its runtime
+        shell: bash
+        run: ./scripts/windows/stage-app.sh
+
+      # The ~80 MB WinAppSDK nupkg, cached by exact version — nuget.org package
+      # content is immutable, so this key never needs invalidating. Skipped on
+      # release builds, where the cold download is fine and the point is that
+      # nothing shipped came out of a cache.
+      - name: Cache the Windows App SDK nupkg
+        if: inputs.use_cache
+        uses: actions/cache@v4
+        with:
+          path: .winappsdk-cache
+          key: winappsdk-nupkg-1.5.250108004
+
+      # Self-contained runtime payload + the reg-free WinRT manifest it needs
+      # (generated from the same MSIX, verified against the staged DLLs).
+      # Before the arch check on purpose: the payload DLLs go through the same
+      # PE-machine gate as everything else in dist/.
+      - name: Stage the self-contained Windows App SDK
+        shell: bash
+        run: ./scripts/windows/stage-winappsdk.sh ${{ inputs.arch }}
+
+      # Without the embed, the payload is decorative and the app dies at its
+      # first XAML type (REGDB_E_CLASSNOTREG) — see the script's header. After
+      # this step, "Check the app loads" below is the self-contained proof: the
+      # runner-installed runtime (if any) is never consulted, and
+      # WindowsAppRuntimeInstaller.exe is no longer staged to paper over a
+      # broken layout.
+      - name: Embed the reg-free WinRT manifest
+        shell: pwsh
+        working-directory: dist
+        run: ../scripts/windows/embed-regfree-manifest.ps1
+
+      - name: Check the staged binaries match the app's architecture
+        shell: pwsh
+        working-directory: dist
+        run: ../scripts/windows/check-staged-arch.ps1
+
+      - name: Check the app loads
+        if: inputs.run_load_check
+        shell: pwsh
+        working-directory: dist
+        run: |
+          # Capture both streams. A Swift trap prints "Fatal error: ..." on the
+          # way down, and the first version of this step threw that away — which
+          # turned "the app aborted" into an unanswerable question exactly when
+          # linking tsnet made it start aborting. Written to RUNNER_TEMP rather
+          # than dist/ so the capture files don't end up in the artifact.
+          $out = Join-Path $env:RUNNER_TEMP 'app-stdout.txt'
+          $err = Join-Path $env:RUNNER_TEMP 'app-stderr.txt'
+          $p = Start-Process -FilePath .\tailscreen.exe -PassThru `
+            -RedirectStandardOutput $out -RedirectStandardError $err
+
+          function Show-Output {
+            foreach ($f in @($out, $err)) {
+              if ((Test-Path $f) -and (Get-Item $f).Length -gt 0) {
+                Write-Host "--- $(Split-Path $f -Leaf) ---"
+                Get-Content $f | ForEach-Object { Write-Host $_ }
+              }
+            }
+          }
+
+          if (-not $p.WaitForExit(20000)) {
+            Write-Host "still running after 20s — the loader was satisfied"
+            Stop-Process -Id $p.Id -Force
+            Show-Output
+            exit 0
+          }
+          Show-Output
+          try {
+            $code = [System.BitConverter]::ToUInt32([System.BitConverter]::GetBytes([int32]$p.ExitCode), 0)
+          } catch {
+            Write-Host "::warning::could not classify exit code '$($p.ExitCode)': $_"
+            exit 0
+          }
+          $hex = '0x{0:X8}' -f $code
+          Write-Host "exited with $hex"
+          # Compared as STRINGS, not numbers. Every one of these constants is
+          # above Int32.MaxValue, so PowerShell types the literal `0xC0000135`
+          # as a NEGATIVE Int32, and `$code -eq 0xC0000135` — UInt32 against
+          # that — is false no matter what the app did. The first version of
+          # this check printed "exited with 0xC000001D" and then fell through to
+          # the no-match branch, which is how the bug surfaced: the gate meant
+          # to catch a missing DLL could never have fired.
+          #
+          # $hex comes straight from $code via a fixed format, so string
+          # equality is exact, and it is immune to the literal-typing rules that
+          # have now broken this step twice.
+          if ($hex -eq '0xC0000135') {
+            Write-Error "STATUS_DLL_NOT_FOUND — a required DLL is missing from dist/"
+            exit 1
+          }
+          if ($hex -eq '0xC0000139') {
+            Write-Error "STATUS_ENTRYPOINT_NOT_FOUND — a staged DLL is the wrong version"
+            exit 1
+          }
+          # Both forms of "our own code decided to die" are named. A Swift trap
+          # reaches the OS either as an illegal instruction (`ud2`) or through
+          # __fastfail, and BOTH have been observed here from the same sources
+          # on consecutive runs — 0xC000001D then 0xC0000409 — so neither is
+          # the canonical one to test for.
+          if ($hex -eq '0xC000001D' -or $hex -eq '0xC0000409') {
+            Write-Host "::warning::Swift trap ($hex) — every DLL loaded, then the app aborted. SwiftApplication.main turns a failed Windows App SDK init into fatalError, so check the staged resource bundle and the runtime before suspecting the UI code."
+            exit 0
+          }
+          Write-Host "no loader failure; $hex is this app's own business"
+
+      # The whole point of the UI stage: a human runs this on a real desktop.
+      # The artifact is the WHOLE directory — an exe on its own is not a thing
+      # anyone can run.
+      - name: Upload the app
+        if: inputs.upload_dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.dist_artifact_name != '' && inputs.dist_artifact_name || format('tailscreen-windows-{0}', inputs.arch) }}
+          path: dist/
+          retention-days: 14
+          if-no-files-found: error
+
+      # Does the Go c-archive come up on Windows AT ALL?
+      #
+      # The app froze with two lines on stderr — "creating state dir" then
+      # "creating tsnet node" — and nothing after, which puts the stall inside
+      # `TailscaleNode.init` → `tailscale_new()`, the first call into the Go
+      # archive. `tailscale_new()` allocates a server struct: it contacts
+      # nothing, needs no tailnet and needs no desktop, so a headless runner
+      # reaches it exactly as a user's machine does.
+      #
+      # So this asserts the probe gets PAST node creation, by looking for the
+      # next line the transport logs. It deliberately does not wait for `up()` —
+      # with no auth key that blocks on a browser login forever, and that is not
+      # the step under suspicion. A timeout with only the first two lines
+      # present is the reproduction; a third line means the archive is fine on
+      # this machine and the difference is the user's environment.
+      #
+      # FROM dist/, and that placement IS the fix for the second 0xC0000135:
+      # the probe links vcpkg's SHARED libopus, whose opus.dll lives in
+      # installed/<triplet>/bin and is on nobody's PATH. Running from dist/
+      # means the probe sees precisely the DLL set a user's unzipped artifact
+      # would — which is also the more honest test.
+      #
+      # After the upload: a diagnostic must never cost us the artifact a human
+      # is waiting to run.
+      - name: Check tsnet node creation returns
+        if: inputs.run_tsnet_check
+        shell: pwsh
+        working-directory: dist
+        env:
+          ARCH: ${{ inputs.arch }}
+        run: |
+          $err = Join-Path $env:RUNNER_TEMP 'probe-stderr.txt'
+          $out = Join-Path $env:RUNNER_TEMP 'probe-stdout.txt'
+          # inittrace names the Go package if the stall is in runtime init.
+          $env:GODEBUG = 'inittrace=1'
+          $p = Start-Process -FilePath .\tsnet-probe.exe -PassThru `
+            -RedirectStandardOutput $out -RedirectStandardError $err
+
+          # POLL for the marker instead of waiting for exit.
+          #
+          # The probe does not exit on the success path — it goes on to block in
+          # up() waiting for a browser login that never comes — so
+          # WaitForExit(90000) always burned the full 90 seconds, on every run,
+          # including every green one. That was 7 % of this job spent watching a
+          # process we had already learned everything from.
+          #
+          # The marker is what the step asserts on anyway, so appearing is the
+          # real completion condition. 90s stays as the ceiling because node
+          # creation is sub-second when it works, so anything near it is the
+          # hang this step exists to catch.
+          $deadline = 90
+          for ($i = 0; $i -lt $deadline * 2; $i++) {
+            $so_far = ''
+            foreach ($f in @($out, $err)) {
+              if (Test-Path $f) { $so_far += (Get-Content $f -Raw -ErrorAction SilentlyContinue) }
+            }
+            if ($so_far -match 'subscribing to the IPN bus' -or $so_far -match 'calling up\(\)') {
+              Write-Host "marker seen after ~$([math]::Round($i / 2.0, 1))s"
+              break
+            }
+            if ($p.HasExited) { break }
+            Start-Sleep -Milliseconds 500
+          }
+          if (-not $p.HasExited) { $p.Kill() }
+          $p.WaitForExit()
+
+          $text = ''
+          foreach ($f in @($out, $err)) {
+            if (Test-Path $f) {
+              Write-Host "--- $(Split-Path -Leaf $f) ---"
+              Get-Content $f | ForEach-Object { Write-Host $_ }
+              $text += (Get-Content $f -Raw)
+            }
+          }
+
+          # Hex + names, because "-1073741515" cost a decode round. Strings, not
+          # numeric -eq — the constants exceed Int32.MaxValue (see the load
+          # check above for the history).
+          $u = [System.BitConverter]::ToUInt32([System.BitConverter]::GetBytes([int32]$p.ExitCode), 0)
+          $hex = '0x{0:X8}' -f $u
+          Write-Host "exit code: $hex"
+          if ($hex -eq '0xC0000135') {
+            Write-Error 'STATUS_DLL_NOT_FOUND — the probe is missing a DLL from dist/ (on arm64, usually the Swift arm64 runtime)'
+            exit 1
+          }
+
+          if ($text -notmatch 'creating tsnet node') {
+            # On x64 this is a warning, not a failure: the step is then not
+            # measuring what it claims, and saying so beats a red check nobody
+            # can act on. On arm64 it IS the finding — the whole job exists to
+            # answer whether the c-archive initialises there.
+            if ($env:ARCH -eq 'arm64') {
+              Write-Error "probe never reached node creation on arm64 — the failure is before tailscale_new(), so read the output above rather than trusting this step's name"
+              exit 1
+            }
+            Write-Host "::warning::probe never reached node creation — this step is not measuring what it claims"
+            exit 0
+          }
+          # Any line the transport logs after `TailscaleNode.init` returns. The
+          # no-auth-key path is the one the app takes and the one that hangs.
+          if ($text -match 'subscribing to the IPN bus' -or $text -match 'calling up\(\)') {
+            Write-Host "tailscale_new() returned — the Go archive initialises on windows/$($env:ARCH)"
+            exit 0
+          }
+          Write-Error "tsnet-probe stalled inside tailscale_new() — reproduces the app's freeze with no UI, no COM apartment and no WinUI in the process (patch 026 is what starts the Go runtime)"
+          exit 1
+
+      # The zip is the unzip-and-run artifact (no signature gate); its content
+      # is exactly dist/, the layout the per-push workflow's load checks and a
+      # human tester already validated.
+      - name: Zip the staged app
+        if: inputs.zip
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force out | Out-Null
+          $zip = "out/Tailscreen-${{ inputs.version }}-windows-${{ inputs.arch }}.zip"
+          Compress-Archive -Path dist/* -DestinationPath $zip
+          Get-Item $zip | ForEach-Object { Write-Host "$($_.Name): $([math]::Round($_.Length / 1MB, 1)) MB" }
+
+      # ---------------------------------------------------------------------
+      # W8b — does a PACKAGED Tailscreen install and start?
+      #
+      # Not the same question as "does an MSIX build". A packaged WinUI 3 app
+      # is supposed to resolve its Windows App SDK dependency through the
+      # package graph, while an unpackaged one calls the bootstrapper to find
+      # an installed runtime — the mechanism behind two of the staging bugs
+      # this pipeline already carries assertions for. swift-winui initialises
+      # through the bootstrapper either way, and whether that is correct,
+      # harmless or fatal inside a package is not something the docs settle.
+      # So this packs it, installs it and launches it.
+      #
+      # These steps used to be a separate `msix` matrix job (needs: both app
+      # jobs) that downloaded the ~600 MB artifact onto a second runner of the
+      # same type. They now run at the tail of the app job, where dist/ is
+      # already staged — no second runner spin-up, no artifact round-trip.
+      #
+      # A failure here is a finding. The verify script reports which of the
+      # three stages broke — install, activate, or stay alive — because "MSIX
+      # didn't work" is not an actionable answer and each stage has a
+      # different cause.
+      #
+      # Self-signed, so this proves INSTALLABILITY, not distributability. With
+      # the TAILSCREEN_MSIX_PFX_* secrets set, every build signs with the SAME
+      # dev certificate — Windows trusts a certificate, not a build, so a
+      # machine that trusted it once installs every future MSIX without the
+      # trust dance, and the Publisher (derived from the cert by make-msix.ps1)
+      # stays constant, which keeps the PackageFamilyName stable. Absent the
+      # secrets, a per-run throwaway cert is minted instead. SignPath (free OSS
+      # tier) replaces this signing step for distribution; the pack/manifest
+      # half stays as-is.
+      #
+      # A REAL GATE — continue-on-error is deliberately absent. What it gates
+      # is precise, and worth stating so nobody widens it by accident:
+      #
+      #   FATAL   MakeAppx pack, SignTool sign, Add-AppxPackage install, AUMID
+      #           activation, and any loader-level exit (0xC0000135 DLL not
+      #           found, 0xC0000139 missing export). These are packaging
+      #           defects and a headless runner can decide them.
+      #   WARNED  A Swift trap after activation (0xC000001D / 0xC0000409). The
+      #           loader was satisfied and our own code aborted, which on a
+      #           runner with no interactive desktop session is
+      #           indistinguishable from WinUI backend init legitimately
+      #           trapping. The unpackaged `Check the app loads` step above
+      #           already tolerates the same codes for the same reason;
+      #           failing here while accepting there would be an asymmetry
+      #           with no justification behind it.
+      #
+      # So a red MSIX step means the PACKAGE is broken, not that the app did
+      # not launch. The launch verdict needs a human on a real desktop and is
+      # tracked in the plan doc's not-proven list, not here.
+      # ---------------------------------------------------------------------
+      - name: Pack and sign the MSIX
+        if: inputs.msix
+        shell: pwsh
+        env:
+          MSIX_PFX_B64: ${{ secrets.TAILSCREEN_MSIX_PFX_BASE64 }}
+          MSIX_PFX_PASSWORD: ${{ secrets.TAILSCREEN_MSIX_PFX_PASSWORD }}
+          # Through env rather than interpolated into the script body: a
+          # version string is caller-supplied and a bare `${{ }}` inside PowerShell
+          # source is a quoting hazard, not a value.
+          MSIX_OUT: ${{ inputs.version != '' && format('out/Tailscreen-{0}-windows-{1}.msix', inputs.version, inputs.arch) || 'out/Tailscreen.msix' }}
+          MSIX_VERSION: ${{ inputs.msix_version }}
+        run: |
+          $extra = @{}
+          if ($env:MSIX_PFX_B64) {
+            $pfx = Join-Path $env:RUNNER_TEMP 'tailscreen-msix.pfx'
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:MSIX_PFX_B64))
+            $extra.PfxPath = $pfx
+            if ($env:MSIX_PFX_PASSWORD) { $extra.PfxPassword = $env:MSIX_PFX_PASSWORD }
+            Write-Host "signing with the repo's stable dev certificate"
+          }
+          ./scripts/windows/make-msix.ps1 `
+            -StageDir dist `
+            -OutFile $env:MSIX_OUT `
+            -Version $env:MSIX_VERSION @extra
+
+      # The actual finding. Install → activate by AUMID → does it stay up.
+      # make-msix.ps1 wrote MSIX_PATH/MSIX_PFX into GITHUB_ENV above.
+      - name: Install the MSIX and launch it
+        if: inputs.verify_msix
+        shell: pwsh
+        env:
+          MSIX_PFX_PASSWORD: ${{ secrets.TAILSCREEN_MSIX_PFX_PASSWORD }}
+        run: |
+          $extra = @{}
+          if ($env:MSIX_PFX_PASSWORD) { $extra.PfxPassword = $env:MSIX_PFX_PASSWORD }
+          ./scripts/windows/verify-msix.ps1 `
+            -MsixPath $env:MSIX_PATH `
+            -PfxPath $env:MSIX_PFX @extra
+
+      # Uploaded whether or not the launch succeeded: an MSIX that installs but
+      # dies is exactly the artifact worth inspecting by hand, and a green-only
+      # upload would withhold it precisely when it is most useful.
+      - name: Upload the MSIX
+        if: ${{ inputs.msix && !inputs.zip && !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.msix_artifact_name != '' && inputs.msix_artifact_name || format('tailscreen-windows-msix-{0}', inputs.arch) }}
+          path: out/*.msix
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Checksums
+        if: inputs.zip
+        shell: bash
+        working-directory: out
+        run: |
+          sha256sum *.zip *.msix > "checksums-windows-${{ inputs.arch }}.txt"
+          cat "checksums-windows-${{ inputs.arch }}.txt"
+
+      # A PR packaging build proves the packaging still works; it deliberately
+      # does NOT upload to a release (there isn't one). The artifact is
+      # downloadable from the run for a human to try.
+      - name: Upload the package artifact
+        if: ${{ inputs.zip && !inputs.upload_to_release }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: tailscreen-windows-${{ inputs.arch }}-package
+          path: out/
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Upload to the release
+        if: ${{ inputs.zip && inputs.upload_to_release }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ inputs.tag }}" \
+            out/*.zip out/*.msix "out/checksums-windows-${{ inputs.arch }}.txt" --clobber
+
+      - name: Package summary
+        if: inputs.zip
+        shell: bash
+        working-directory: out
+        run: |
+          {
+            echo "## Windows package (${{ inputs.arch }})"
+            echo ""
+            echo "| File | SHA-256 |"
+            echo "|---|---|"
+            while read -r sha file; do
+              echo "| \`$file\` | \`$sha\` |"
+            done < "checksums-windows-${{ inputs.arch }}.txt"
+            echo ""
+            echo "> **The .msix is self-signed and NOT trusted-signed.** It installs"
+            echo "> only after manually trusting its throwaway certificate; winget and"
+            echo "> double-click installs will reject it. Until SignPath signing lands,"
+            echo "> point users at the .zip (unzip and run \`tailscreen.exe\`)."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: CI summary
+        if: ${{ always() && inputs.verify_msix }}
+        shell: bash
+        run: |
+          {
+            if [ "${{ inputs.arch }}" = "arm64" ]; then
+              echo "## W8a — windows/arm64"
+              echo ""
+              echo "Native build on a \`windows-11-arm\` runner. What this answers:"
+              echo ""
+              echo "- Swift has a Windows arm64 toolchain and the action resolves it"
+              echo "- Go builds the patched libtailscale c-archive for GOARCH=arm64 with cgo"
+              echo "- lld-link joins them and produces an ARM64 PE"
+              echo "- patch 026's \`_rt0_arm64_windows_lib\` entry starts the Go runtime"
+              echo ""
+              echo "Not answered here: a live tailnet."
+              echo ""
+            fi
+            echo "## W8b — MSIX (${{ inputs.arch }})"
+            echo ""
+            echo "Packs this job's staged dist/, signs it with a **self-signed**"
+            echo "certificate, trusts that cert, installs the package and"
+            echo "activates it by AUMID. Proves installability, NOT"
+            echo "distributability — a real cert needs its private key on"
+            echo "FIPS 140-2 hardware (SignPath's free OSS tier, or a hardware"
+            echo "token); that is a separate W8 decision. Launching by AUMID"
+            echo "rather than by exe path is deliberate: running the exe out of"
+            echo "WindowsApps gives it NO package identity, so it would re-test"
+            echo "the unpackaged path while appearing to test this one."
+          } >> "$GITHUB_STEP_SUMMARY"

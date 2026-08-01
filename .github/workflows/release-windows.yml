@@ -5,26 +5,33 @@ name: Release (Windows)
 # triggered the run. The Windows sibling of release-linux.yml (and release.yml,
 # which does the same for the macOS .app).
 #
-# The build steps are windows-build.yml's `app` and `arm64-probe` (app-on-arm64)
-# jobs, copied faithfully rather than reinvented — that workflow is the
-# authority on how to build on Windows, and its comments carry the history.
-# Deliberately DROPPED from that pipeline here:
-#   • the probe/app-load/tsnet-node checks — those are per-push diagnostics;
-#     a release build's gate is that windows-build.yml is green on the commit
-#     being tagged,
-#   • the .build cache restore/save — release builds are cold and rare, and a
-#     cache key shared with the per-push workflow would let a stale object into
-#     a shipped binary for a saving nobody needs,
-#   • the WinAppSDK nupkg actions/cache — same reasoning; stage-winappsdk.sh
-#     just downloads the ~80 MB nupkg.
+# The build steps used to be windows-build.yml's, "copied faithfully rather
+# than reinvented" — 545 lines of copy. They now come from app-windows.yml,
+# which both workflows call, so there is one definition and this file supplies
+# the release-shaped inputs. What that copy cost while it lasted: the arm64 leg
+# of the per-push workflow never received the build stamp the release leg had,
+# and shipped artifacts labelled "dev".
 #
-# MSIX signing: SELF-SIGNED for now. make-msix.ps1 mints a throwaway cert, so
-# the uploaded .msix installs only after the user trusts that cert — winget and
-# ordinary double-click installs will reject it. SignPath (free OSS tier)
-# replaces the signing step later: swap make-msix.ps1's self-sign for a submit
-# to SignPath and the rest of this workflow is unchanged. Until then the
-# Summary step marks the MSIX as not-yet-trusted-signed, and the zip (plain
-# unzip-and-run, no signature gate) is the artifact to point users at.
+# Deliberately NOT run here, and these are POLICY rather than omissions — they
+# are `false` inputs, so the difference is stated rather than implied:
+#   • the probe / app-load / tsnet-node checks — those are per-push
+#     diagnostics; a release build's gate is that windows-build.yml is green
+#     on the commit being tagged,
+#   • the .build and libtailscale caches (`use_cache: false`) — release builds
+#     are cold and rare, and a cache key shared with the per-push workflow
+#     would let a stale object into a shipped binary for a saving nobody
+#     needs,
+#   • the WinAppSDK nupkg cache — same reasoning; stage-winappsdk.sh just
+#     downloads the ~80 MB nupkg.
+#
+# MSIX signing: SELF-SIGNED for now. make-msix.ps1 mints a throwaway cert (or
+# uses the repo's stable dev cert when the TAILSCREEN_MSIX_PFX_* secrets are
+# set), so the uploaded .msix installs only after the user trusts that cert —
+# winget and ordinary double-click installs will reject it. SignPath (free OSS
+# tier) replaces the signing step later: swap make-msix.ps1's self-sign for a
+# submit to SignPath and the rest is unchanged. Until then the Summary step
+# marks the MSIX as not-yet-trusted-signed, and the zip (plain unzip-and-run,
+# no signature gate) is the artifact to point users at.
 #
 # Three triggers, mirroring release-linux.yml:
 #   • release published  — the real thing
@@ -48,30 +55,21 @@ permissions:
   contents: write   # required for `gh release upload`
 
 jobs:
-  package:
-    name: Package (${{ matrix.arch }})
+  # Its own job because a job that calls a reusable workflow can carry no steps
+  # of its own, and the version derivation is real logic rather than an
+  # expression. Cheap: one ubuntu runner for a few seconds.
+  version:
+    name: Resolve version
     # Skip every label except ours — `pull_request: [labeled]` fires for all of
     # them, and a packaging build is far too slow to run on an unrelated label.
     if: >-
       github.event_name != 'pull_request' ||
       github.event.label.name == 'build-windows-package'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # The same per-arch split as windows-build.yml's app jobs: x64 on the
-          # hosted x64 image, arm64 NATIVELY on windows-11-arm (no cross-build —
-          # that is what makes llvm-mingw + the host toolchain arrangement work).
-          - arch: x64
-            runner: windows-latest
-            ffmpeg: win64
-            triplet: x64-windows
-          - arch: arm64
-            runner: windows-11-arm
-            ffmpeg: winarm64
-            triplet: arm64-windows
-    runs-on: ${{ matrix.runner }}
-
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+      msix_version: ${{ steps.version.outputs.msix_version }}
     steps:
       - name: Resolve version
         id: version
@@ -106,440 +104,38 @@ jobs:
           echo "msix_version=$msix_version" >> "$GITHUB_OUTPUT"
           echo "tag=$tag version=$version msix_version=$msix_version"
 
-      # Windows checkouts don't create symlinks unless this is on and the
-      # account may create them. TailscaleKit's Sources/ and include/ are
-      # symlinks into the submodule — see windows-build.yml.
-      - name: Allow symlinks in git
-        run: git config --global core.symlinks true
-
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          # For a release/dispatch build, build the tag exactly. For a PR build,
-          # take the PR head (the default checkout ref).
-          ref: ${{ github.event_name == 'pull_request' && github.ref || steps.version.outputs.tag }}
-          submodules: recursive
-
-      # Patches BEFORE materializing, or you copy pristine upstream and lose
-      # bridge_windows.go — see windows-build.yml's app job for the history.
-      - name: Apply the TailscaleKit patch series
-        shell: bash
-        working-directory: Packages/TailscaleKit
-        run: |
-          for p in Patches/*.patch; do
-            echo "applying $(basename "$p")"
-            patch -p1 -N -F0 -r - --no-backup-if-mismatch < "$p"
-          done
-          grep -n 'canImport(Combine)' Sources/TailscaleKit/IncomingConnection.swift \
-            || { echo "patches did not take: Combine import still ungated" >&2; exit 1; }
-
-      - name: Materialize symlinks
-        shell: bash
-        run: ./scripts/materialize-symlinks.sh --force
-
-      # Swift BEFORE Go, following the arm64 job's ordering (harmless on x64):
-      # on arm64 the Swift toolchain must exist before cgo picks a compiler.
-      # 6.3 on both architectures — see windows-build.yml's header for why the
-      # matrix collapsed to 6.3 (6.1's WinSDK module is broken on arm64).
-      - name: Setup Swift
-        uses: SwiftyLab/setup-swift@latest
-        with:
-          swift-version: '6.3'
-
-      - name: Swift version
-        run: swift --version
-
-      # THE fix for cgo's -mthreads failure on arm64: llvm-mingw supplies the
-      # aarch64 MinGW driver so cgo stops reaching for Swift's MSVC clang.
-      # Copied from windows-build.yml's arm64 job — see its comments. Pinned to
-      # a dated release, not "latest", so a green run stays reproducible.
-      - name: Install llvm-mingw (for cgo's aarch64 target)
-        if: matrix.arch == 'arm64'
-        shell: pwsh
-        env:
-          LLVM_MINGW_RELEASE: '20250910'
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $rel = $env:LLVM_MINGW_RELEASE
-          $dest = Join-Path $env:RUNNER_TEMP 'llvm-mingw'
-          New-Item -ItemType Directory -Path $dest -Force | Out-Null
-
-          $ok = $false
-          foreach ($hostArch in @('aarch64', 'x86_64')) {
-            $name = "llvm-mingw-$rel-ucrt-$hostArch"
-            $url  = "https://github.com/mstorsjo/llvm-mingw/releases/download/$rel/$name.zip"
-            $zip  = Join-Path $env:RUNNER_TEMP "$name.zip"
-            Write-Host "trying $name"
-            try {
-              Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
-            } catch {
-              Write-Host "  download failed: $($_.Exception.Message)"
-              continue
-            }
-            Expand-Archive -Path $zip -DestinationPath $dest -Force
-            $bin = Join-Path $dest "$name\bin"
-            if (-not (Test-Path $bin)) { Write-Host '  no bin/ in the archive'; continue }
-
-            # Does its aarch64 driver actually EXECUTE on this host? A mismatched
-            # archive fails here rather than 90 seconds deep inside runtime/cgo.
-            $cc = Join-Path $bin 'aarch64-w64-mingw32-gcc.exe'
-            if (-not (Test-Path $cc)) { Write-Host '  no aarch64-w64-mingw32-gcc.exe'; continue }
-            $machine = & $cc -dumpmachine 2>$null
-            if ($LASTEXITCODE -ne 0 -or -not $machine) {
-              Write-Host '  driver present but will not run on this host'
-              continue
-            }
-            Write-Host "  OK: $cc"
-            Write-Host "  -dumpmachine: $machine"
-            "$bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
-            $ok = $true
-            break
-          }
-          if (-not $ok) { throw 'could not install an aarch64-targeting MinGW toolchain' }
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          # Version derived from the submodule's go.mod, not pinned here —
-          # go.mod is the single source of truth, so a submodule bump moves
-          # this workflow with it (see windows-build.yml for the history).
-          go-version-file: Packages/TailscaleKit/upstream/libtailscale/go.mod
-          # Module cache (not a build cache): keyed on the submodule's go.sum,
-          # same as every sibling workflow.
-          cache: true
-          cache-dependency-path: Packages/TailscaleKit/upstream/libtailscale/go.sum
-
-      # Which C compilers exist here, and what does each target BY DEFAULT?
-      # cgo's compiler choice is implicit and its failure mode is an assembler
-      # error deep in runtime/cgo — the inventory makes that readable.
-      - name: Inventory C compilers
-        if: matrix.arch == 'arm64'
-        shell: bash
-        run: |
-          pick=""
-          for cc in clang aarch64-w64-mingw32-gcc gcc cc; do
-            path=$(command -v "$cc" 2>/dev/null) || continue
-            echo "--- $cc -> $path"
-            "$cc" --version 2>&1 | head -2 || true
-            machine=$("$cc" -dumpmachine 2>/dev/null || echo '?')
-            echo "    -dumpmachine: $machine"
-            case "$machine" in
-              aarch64*|arm64*)
-                if [ -z "$pick" ]; then pick="$cc"; native=1; fi ;;
-            esac
-          done
-
-          # No compiler defaults to ARM64: fall back to clang with an explicit
-          # target — its integrated assembler understands gcc_arm64.S's syntax.
-          if [ -z "$pick" ] && command -v clang >/dev/null 2>&1; then
-            pick=clang
-            native=0
-          fi
-          if [ -z "$pick" ]; then
-            echo "no usable C compiler found — cgo cannot build for arm64" >&2
-            exit 1
-          fi
-
-          echo "CGO_CC=$pick" >> "$GITHUB_ENV"
-          if [ "${native:-0}" = "1" ]; then
-            echo "chose $pick (natively targets arm64, no --target needed)"
-            echo "CGO_TARGET_FLAGS=" >> "$GITHUB_ENV"
-          else
-            echo "chose $pick with an explicit aarch64 target"
-            echo "CGO_TARGET_FLAGS=--target=aarch64-unknown-windows-msvc" >> "$GITHUB_ENV"
-          fi
-
-      - name: Build libtailscale.a for windows/amd64
-        if: matrix.arch == 'x64'
-        shell: bash
-        working-directory: Packages/TailscaleKit/upstream/libtailscale
-        env:
-          CGO_ENABLED: '1'
-        run: |
-          go build -buildmode=c-archive -o libtailscale.a .
-          ls -la libtailscale.a libtailscale.h
-
-      # GOARCH explicit rather than inherited; CC explicit because left
-      # implicit, cgo reaches for an x86_64 gcc and fails inside runtime/cgo.
-      - name: Build libtailscale.a for windows/arm64
-        if: matrix.arch == 'arm64'
-        shell: bash
-        working-directory: Packages/TailscaleKit/upstream/libtailscale
-        env:
-          CGO_ENABLED: '1'
-          GOOS: windows
-          GOARCH: arm64
-        run: |
-          export CC="$CGO_CC"
-          export CGO_CFLAGS="$CGO_TARGET_FLAGS"
-          export CGO_LDFLAGS="$CGO_TARGET_FLAGS"
-          echo "CC=$CC  CGO_CFLAGS=$CGO_CFLAGS"
-          go env CC CGO_ENABLED GOOS GOARCH
-          go build -buildmode=c-archive -o libtailscale.a .
-          ls -la libtailscale.a libtailscale.h
-
-      # MSVC wants tailscale.lib (the module map says `link "tailscale"`), the
-      # Unix convention is libtailscale.a. Stage both. rm FIRST: lib/ holds a
-      # symlink whose target is exactly the source archive, so copying onto it
-      # is copying the file over itself. See windows-build.yml.
-      - name: Stage libtailscale for the linker
-        shell: bash
-        run: |
-          lib=Packages/TailscaleKit/lib
-          src=Packages/TailscaleKit/upstream/libtailscale/libtailscale.a
-          mkdir -p "$lib"
-          rm -f "$lib/libtailscale.a" "$lib/tailscale.lib"
-          cp "$src" "$lib/libtailscale.a"
-          cp "$src" "$lib/tailscale.lib"
-          # The module map reads include/tailscale.h — the hand-written API
-          # header. Materialization already made it a real file; assert that.
-          test -f Packages/TailscaleKit/include/tailscale.h
-
-          # A native path for the linker's /LIBPATH:, which does not understand
-          # the MSYS /d/a/... form bash reports.
-          native=$(cygpath -w "$lib" 2>/dev/null || echo "$lib")
-          echo "TAILSCALE_LIB=$native" >> "$GITHUB_ENV"
-          ls -la "$lib"
-
-      # Same prebuilt LGPL build windows-build.yml gates on — LGPL is a
-      # licensing requirement (Tailscreen is MIT), not a convenience. The
-      # archive name differs per arch (win64 vs winarm64), nothing else.
-      - name: Download FFmpeg (LGPL shared, 7.1, ${{ matrix.ffmpeg }})
-        shell: bash
-        run: |
-          set -euo pipefail
-          url=https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-${{ matrix.ffmpeg }}-lgpl-shared-7.1.zip
-          curl -fsSL -o "$RUNNER_TEMP/ffmpeg.zip" "$url"
-          mkdir -p "$RUNNER_TEMP/ffmpeg"
-          unzip -q "$RUNNER_TEMP/ffmpeg.zip" -d "$RUNNER_TEMP/ffmpeg"
-          root=$(find "$RUNNER_TEMP/ffmpeg" -mindepth 1 -maxdepth 1 -type d | head -1)
-          [ -n "$root" ] || { echo "unexpected archive layout" >&2; exit 1; }
-          test -f "$root/include/libavcodec/avcodec.h"
-          native=$(cygpath -w "$root" 2>/dev/null || echo "$root")
-          echo "FFMPEG_ROOT=$native" >> "$GITHUB_ENV"
-
-      # libopus via vcpkg (ships with the runner image). Retried because the
-      # source-tarball fetch has failed on transient SSL errors that vcpkg
-      # misclassifies as permanent — see windows-build.yml.
-      - name: Install libopus (vcpkg)
-        shell: bash
-        run: |
-          for attempt in 1 2 3; do
-            if "$VCPKG_INSTALLATION_ROOT/vcpkg.exe" install opus:${{ matrix.triplet }}; then
-              break
-            fi
-            if [ "$attempt" = 3 ]; then
-              echo "vcpkg install opus failed after 3 attempts" >&2
-              exit 1
-            fi
-            echo "::warning::vcpkg install opus failed (attempt $attempt), retrying"
-            sleep $((attempt * 15))
-          done
-          root="$VCPKG_INSTALLATION_ROOT/installed/${{ matrix.triplet }}"
-          echo "OPUS_ROOT=$root" >> "$GITHUB_ENV"
-          ls -la "$root/include/opus/opus.h"
-
-      # An explicit resolve so the swift-winui checkout exists before the patch
-      # step (the build's implicit resolve would come too late). SwiftPM 6.3
-      # rewrites the committed 6.1-format lockfile on resolve — format churn,
-      # same pins — so the rewrite is discarded to keep the tree clean, exactly
-      # as windows-build.yml's arm64 job does.
-      - name: Resolve the app's dependencies
-        shell: bash
-        run: |
-          (cd Apps/windows && swift package resolve)
-          if ! git diff --quiet -- Apps/windows/Package.resolved; then
-            echo "::notice::SwiftPM rewrote Package.resolved (format churn); discarding"
-            git checkout -- Apps/windows/Package.resolved
-          fi
-
-      # Self-contained Windows App SDK: patch the resolved swift-winui checkout
-      # so an app-local runtime payload short-circuits the bootstrapper. After
-      # resolve (the checkout must exist), before the build (which must carry
-      # it). See windows-build.yml and the script's own header.
-      - name: Patch swift-winui for the self-contained runtime
-        shell: bash
-        run: ./scripts/windows/patch-swift-winui.sh
-
-      # Stamp the commit into the binary — a release exe that claims to be a
-      # "dev" build is worse than no stamp, hence the grep (see
-      # windows-build.yml's step for the two misses that justify it).
-      - name: Stamp the build
-        shell: bash
-        run: |
-          set -euo pipefail
-          file=Apps/windows/Sources/tailscreen/BuildInfo.swift
-          short=$(git rev-parse --short HEAD)
-          sed -i "s/static let commit = \"dev\"/static let commit = \"$short\"/" "$file"
-          grep -q "static let commit = \"$short\"" "$file" \
-            || { echo "build stamp did not apply — refusing to ship an exe labelled 'dev'" >&2; exit 1; }
-          echo "stamped $short"
-
-      # Same flags as windows-build.yml's app builds: the manifest's relative
-      # `-L ../../Packages/TailscaleKit/lib` only resolves from the package
-      # directory, and Windows has no pkg-config, so the explicit /LIBPATH:
-      # flags are what point the linker at opus, FFmpeg and libtailscale.
-      - name: Build the app
-        shell: bash
-        working-directory: Apps/windows
-        run: |
-          swift build -c release --product tailscreen \
-            -Xcc -I"$OPUS_ROOT/include/opus" \
-            -Xcc -I"$FFMPEG_ROOT/include" \
-            -Xlinker "/LIBPATH:$OPUS_ROOT/lib" \
-            -Xlinker "/LIBPATH:$FFMPEG_ROOT/lib" \
-            -Xlinker "/LIBPATH:$TAILSCALE_LIB"
-
-      # The console tsnet diagnostic ships in the artifact beside the app (it
-      # shares every staged DLL, costs one file, and saves a user a second
-      # download when the app misbehaves) — and stage-app.sh hard-fails
-      # without it, so this build step is load-bearing, not optional. Opus but
-      # no FFmpeg: the probe's dependency graph reaches TailscreenAudio.
-      - name: Build the tsnet probe
-        shell: bash
-        working-directory: Apps/windows
-        run: |
-          swift build -c release --product tsnet-probe \
-            -Xcc -I"$OPUS_ROOT/include/opus" \
-            -Xlinker "/LIBPATH:$OPUS_ROOT/lib" \
-            -Xlinker "/LIBPATH:$TAILSCALE_LIB"
-
-      # stage-app.sh harvests the Swift runtime DLLs from PATH, and on arm64
-      # the toolchain carries both architectures' runtimes — so put the ARM64
-      # one on PATH first, verified by PE machine type. x64 needs no such step:
-      # the toolchain the build just ran from already has its runtime on PATH.
-      - name: Put the Swift arm64 runtime on PATH
-        if: matrix.arch == 'arm64'
-        shell: pwsh
-        run: |
-          $root = ($env:SDKROOT -split 'Platforms')[0]
-          $dlls = Get-ChildItem -Recurse -Filter swiftCore.dll $root -ErrorAction SilentlyContinue
-          if (-not $dlls) { Write-Error "no swiftCore.dll under $root"; exit 1 }
-          foreach ($dll in $dlls) {
-            $fs = [System.IO.File]::OpenRead($dll.FullName)
-            $br = New-Object System.IO.BinaryReader($fs)
-            $fs.Position = 0x3C
-            $peOff = $br.ReadInt32()
-            $fs.Position = $peOff + 4
-            $machine = $br.ReadUInt16()
-            $br.Close(); $fs.Close()
-            Write-Host "$($dll.FullName): $('0x{0:X4}' -f $machine)"
-            if ($machine -eq 0xAA64) {
-              $dir = Split-Path -Parent $dll.FullName
-              Write-Host "using ARM64 runtime: $dir"
-              $dir | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
-              exit 0
-            }
-          }
-          Write-Error 'found swiftCore.dll but none is ARM64'
-          exit 1
-
-      # The SAME scripts as windows-build.yml — that is the point of having
-      # extracted them. Exe + probe + Swift runtime + opus/FFmpeg DLLs → dist/.
-      - name: Stage the app with its runtime
-        shell: bash
-        run: ./scripts/windows/stage-app.sh
-
-      # Self-contained Windows App SDK payload + the reg-free manifest it
-      # needs. No nupkg cache here (unlike windows-build.yml) — release builds
-      # are rare, the ~80 MB download is fine cold.
-      - name: Stage the self-contained Windows App SDK
-        shell: bash
-        run: ./scripts/windows/stage-winappsdk.sh ${{ matrix.arch }}
-
-      # Without the embed the payload is decorative and the app dies at its
-      # first XAML type (REGDB_E_CLASSNOTREG) — see the script's header.
-      - name: Embed the reg-free WinRT manifest
-        shell: pwsh
-        working-directory: dist
-        run: ../scripts/windows/embed-regfree-manifest.ps1
-
-      - name: Check the staged binaries match the app's architecture
-        shell: pwsh
-        working-directory: dist
-        run: ../scripts/windows/check-staged-arch.ps1
-
-      # The zip is the unzip-and-run artifact (no signature gate); its content
-      # is exactly dist/, the layout the per-push workflow's load checks and
-      # a human tester already validated.
-      - name: Zip the staged app
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force out | Out-Null
-          $zip = "out/Tailscreen-${{ steps.version.outputs.version }}-windows-${{ matrix.arch }}.zip"
-          Compress-Archive -Path dist/* -DestinationPath $zip
-          Get-Item $zip | ForEach-Object { Write-Host "$($_.Name): $([math]::Round($_.Length / 1MB, 1)) MB" }
-
-      # SELF-SIGNED for now — installable only after trusting the throwaway
-      # cert, NOT distributable. SignPath (free OSS tier) replaces this signing
-      # step later; the pack/manifest half stays as-is. The Version is the
-      # 4-part derivation from the Resolve version step.
-      # With the TAILSCREEN_MSIX_PFX_* secrets set, every build signs with the
-      # SAME dev certificate — trust it once and every future MSIX installs,
-      # and the Publisher/PackageFamilyName stay constant. Still self-signed.
-      - name: Build the MSIX
-        shell: pwsh
-        env:
-          MSIX_PFX_B64: ${{ secrets.TAILSCREEN_MSIX_PFX_BASE64 }}
-          MSIX_PFX_PASSWORD: ${{ secrets.TAILSCREEN_MSIX_PFX_PASSWORD }}
-        run: |
-          $extra = @{}
-          if ($env:MSIX_PFX_B64) {
-            $pfx = Join-Path $env:RUNNER_TEMP 'tailscreen-msix.pfx'
-            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:MSIX_PFX_B64))
-            $extra.PfxPath = $pfx
-            if ($env:MSIX_PFX_PASSWORD) { $extra.PfxPassword = $env:MSIX_PFX_PASSWORD }
-            Write-Host "signing with the repo's stable dev certificate"
-          }
-          ./scripts/windows/make-msix.ps1 `
-            -StageDir dist `
-            -OutFile "out/Tailscreen-${{ steps.version.outputs.version }}-windows-${{ matrix.arch }}.msix" `
-            -Version "${{ steps.version.outputs.msix_version }}" @extra
-
-      - name: Checksums
-        id: pkg
-        shell: bash
-        working-directory: out
-        run: |
-          sha256sum *.zip *.msix > "checksums-windows-${{ matrix.arch }}.txt"
-          cat "checksums-windows-${{ matrix.arch }}.txt"
-
-      # A PR build proves the packaging still works; it deliberately does NOT
-      # upload to a release (there isn't one). The artifact is downloadable
-      # from the run for a human to try — mirroring release-linux.yml.
-      - name: Upload build artifact (PR builds)
-        if: github.event_name == 'pull_request'
-        uses: actions/upload-artifact@v4
-        with:
-          name: tailscreen-windows-${{ matrix.arch }}-package
-          path: out/
-          retention-days: 14
-          if-no-files-found: error
-
-      - name: Upload to the release
-        if: github.event_name != 'pull_request'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release upload "${{ steps.version.outputs.tag }}" \
-            out/*.zip out/*.msix "out/checksums-windows-${{ matrix.arch }}.txt" --clobber
-
-      - name: Summary
-        shell: bash
-        working-directory: out
-        run: |
-          {
-            echo "## Windows package (${{ matrix.arch }})"
-            echo ""
-            echo "| File | SHA-256 |"
-            echo "|---|---|"
-            while read -r sha file; do
-              echo "| \`$file\` | \`$sha\` |"
-            done < "checksums-windows-${{ matrix.arch }}.txt"
-            echo ""
-            echo "> **The .msix is self-signed and NOT trusted-signed.** It installs"
-            echo "> only after manually trusting its throwaway certificate; winget and"
-            echo "> double-click installs will reject it. Until SignPath signing lands,"
-            echo "> point users at the .zip (unzip and run \`tailscreen.exe\`)."
-          } >> "$GITHUB_STEP_SUMMARY"
+  package:
+    name: Package (${{ matrix.arch }})
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        # The same per-arch split as windows-build.yml: x64 on the hosted x64
+        # image, arm64 NATIVELY on windows-11-arm (no cross-build — that is
+        # what makes llvm-mingw + the host toolchain arrangement work). The
+        # runner, the FFmpeg archive name and the vcpkg triplet all follow from
+        # `arch` inside app-windows.yml.
+        arch: [x64, arm64]
+    uses: ./.github/workflows/app-windows.yml
+    with:
+      arch: ${{ matrix.arch }}
+      # For a release/dispatch build, build the tag exactly. For a PR build,
+      # take the PR head.
+      ref: ${{ github.event_name == 'pull_request' && github.ref || needs.version.outputs.tag }}
+      version: ${{ needs.version.outputs.version }}
+      msix_version: ${{ needs.version.outputs.msix_version }}
+      tag: ${{ needs.version.outputs.tag }}
+      # See this file's header: every one of these is a deliberate release
+      # policy, not an omission.
+      use_cache: false
+      run_probes: false
+      run_load_check: false
+      run_tsnet_check: false
+      # The zip IS the deliverable; dist/ is what it is made of, so uploading
+      # both would double the storage for one artifact.
+      upload_dist: false
+      zip: true
+      msix: true
+      verify_msix: false
+      upload_to_release: ${{ github.event_name != 'pull_request' }}
+    secrets: inherit
