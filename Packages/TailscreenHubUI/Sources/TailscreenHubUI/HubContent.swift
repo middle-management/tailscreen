@@ -24,6 +24,12 @@ public struct PickerContent: View {
     /// What to say when discovery found nothing. Both apps mean the same thing
     /// and neither should have to guess at the wording.
     var emptyMessage = "No Tailscreen screens found on your tailnet."
+    /// How many discovered screens the host's `PeerListFilter` removed before
+    /// handing `screens` over. Purely for the footnote under the list: rows that
+    /// vanish with no explanation read as a broken discovery, which is the
+    /// complaint the macOS hub's identical line answers. `screens` stays the
+    /// already-filtered projection — this chrome never filters anything itself.
+    var hiddenByFilter = 0
 
     /// Transient search text narrowing the list (the macOS hub's search field).
     @State private var searchText = ""
@@ -37,6 +43,7 @@ public struct PickerContent: View {
         loginURL: String?,
         autoExpandFirst: Bool = false,
         emptyMessage: String = "No Tailscreen screens found on your tailnet.",
+        hiddenByFilter: Int = 0,
         onSelect: @escaping @MainActor @Sendable (String) -> Void,
         onOpenLogin: (@MainActor @Sendable () -> Void)? = nil,
         shareCard: ShareCard? = nil
@@ -46,6 +53,7 @@ public struct PickerContent: View {
         self.screens = screens
         self.loginURL = loginURL
         self.emptyMessage = emptyMessage
+        self.hiddenByFilter = hiddenByFilter
         self.onSelect = onSelect
         self.onOpenLogin = onOpenLogin
         self.shareCard = shareCard
@@ -98,7 +106,15 @@ public struct PickerContent: View {
     }
 
     @ViewBuilder private var listContent: some View {
-        if screens.isEmpty {
+        if screens.isEmpty && hiddenByFilter > 0 {
+            // Machines were found and the filter hid all of them. Saying "none
+            // found" here would send someone debugging their tailnet over a
+            // toggle they set.
+            Text("No screens match your filters.")
+                .font(.callout)
+                .foregroundColor(HubStyle.secondaryText)
+                .padding(8)
+        } else if screens.isEmpty {
             Text(emptyMessage)
                 .font(.callout)
                 .foregroundColor(HubStyle.secondaryText)
@@ -126,6 +142,12 @@ public struct PickerContent: View {
                             sharingCaption: screen.sharingCaption,
                             onView: { onSelect(screen.id) })
                     }
+                }
+                if hiddenByFilter > 0 && searchText.isEmpty {
+                    Text("\(hiddenByFilter) hidden by filters")
+                        .font(.caption)
+                        .foregroundColor(HubStyle.tertiaryText)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
         }

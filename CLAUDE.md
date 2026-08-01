@@ -83,7 +83,11 @@ tailscreen/
 │   │                           #   apps (GTK viewer + Windows app): HubStyle
 │   │                           #   tokens, the header, the screen rows and
 │   │                           #   their detail panes, the login/share cards,
-│   │                           #   the session placard, the over-video chrome.
+│   │                           #   the session placard, the over-video chrome,
+│   │                           #   and the header's PeerListFilter menu (a
+│   │                           #   Menu of Toggles — swift-cross-ui has no
+│   │                           #   popover and no custom menu label, but both
+│   │                           #   its backends render checked menu rows).
 │   │                           #   Extracted from Apps/linux-gtk when the
 │   │                           #   Windows app needed the same design system —
 │   │                           #   SwiftCrossUI + TailscreenProtocol only, no
