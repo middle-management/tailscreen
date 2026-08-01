@@ -114,7 +114,14 @@ Linking with `/SUBSYSTEM:WINDOWS` is the fix once the app reliably starts.
 A window should appear with a status line reading **Not signed in** and a **Sign
 in to Tailscale** button. Clicking it:
 
-1. Creates a tsnet node under `%LOCALAPPDATA%\Tailscreen\tailscale`.
+1. Creates a tsnet node under the active account's state directory —
+   `%LOCALAPPDATA%\Tailscreen\tailscale` for the first account, which is the
+   single fixed directory this app used before it had accounts, so upgrading
+   keeps you signed in. Further accounts get
+   `%LOCALAPPDATA%\Tailscreen\profiles\<uuid>`, and the registry itself is
+   `%LOCALAPPDATA%\Tailscreen\profiles.json` (shared `AccountProfileStore`, see
+   `Packages/TailscreenKit`). The header's account menu switches between them,
+   adds one, and carries **Sign out**.
 2. Shows a login URL — as selectable text *and* an **Open in browser** button,
    because launching a browser is the step most likely to fail and a URL you can
    paste always works.

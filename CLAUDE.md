@@ -477,6 +477,7 @@ types live entirely in `TailscreenProtocol`/`TailscreenAudio`
 `CaptureHelperWireTests`, `ScreenShareProtocolTests`,
 `ShareResponseProtocolTests`, `ShareLockTests`, `QualitySettingsTests`,
 `TailscreenInstanceTests`, `ViewerZoomMathTests`, `OpusAudioCodecTests`,
+`AccountProfileStoreTests`,
 `AnnotationGeometryTests` — the latter covering `AnnotationGeometry`, the
 **shared** derivation of a stroke's outline from its stored anchor+current
 points (rectangle corners, ellipse arc, arrowhead barbs, click ring). It lives
@@ -497,7 +498,30 @@ person in front of it — so each host has to assert the safe value, and a
 wrong answer here is silent: the share works perfectly and admits
 strangers),
 so they run on Linux CI (`linux-protocol`) instead of only in the mac
-build. Suites that touch mac-only symbols stay in
+build.
+
+`AccountProfileStoreTests` covers `AccountProfileStore` — the multi-account
+registry the **GTK viewer and the Windows app share**. A profile IS a tsnet
+state directory; the platform part is an injected `AccountProfileLayout`
+(`.xdg()` / `.windowsLocalAppData()`), which is what lets Linux CI test the
+Windows layout. Its two migration knobs are deliberately separate, because each
+exists for one host only: `legacyRoot` renames a previous config ROOT onto the
+new one, once, and only while the new one is absent (GTK's
+`tailscreen-viewer-gtk` → `tailscreen`), while `seedStatePath` makes the first
+seeded profile adopt a pre-existing STATE DIRECTORY that sits outside the
+`profiles/` subtree (Windows' `%LOCALAPPDATA%\Tailscreen\tailscale`, so
+introducing accounts signs nobody out — adopted unconditionally, so a first run
+that never logged in and the run after it agree, and so a corrupt registry
+re-seeds onto the login still on disk instead of orphaning it). The type is
+neither `ObservableObject` (the stand-in this module ships on Linux is a
+different protocol from the identically-named one swift-cross-ui hosts observe,
+so each host owns the reactive wrapper — the mutators return whether they
+changed anything for exactly that) nor `Sendable` (one unlocked JSON file, kept
+inside one `@MainActor` model by strict checking). The macOS app keeps its own
+UserDefaults-backed `ProfileStore`/`TailscreenProfile`, whose names would
+collide through `ProtocolReexports`'s `@_exported import`.
+
+Suites that touch mac-only symbols stay in
 `Apps/macOS/Tests/TailscreenTests`: anything importing an Apple framework,
 the server/`AppState`/`VideoDecoder`/`VoiceChannel` decision suites, and the
 impairment/fuzz cluster (`RTPLossyChannelTests`, `ParserFuzzTests`,

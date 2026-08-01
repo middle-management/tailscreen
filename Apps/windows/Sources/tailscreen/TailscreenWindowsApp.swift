@@ -10,6 +10,8 @@ import TailscreenHubUI
 // Targeted imports: pulling all of TailscreenProtocol collides with SwiftCrossUI's
 // own `Published` / `ObservableObject` shims, the same collision the GTK app
 // hits and solves the same way.
+import struct TailscreenProtocol.AccountProfileLayout
+import class TailscreenProtocol.AccountProfileStore
 import struct TailscreenProtocol.CaptureTimings
 import struct TailscreenProtocol.ControlRequestInfo
 import struct TailscreenProtocol.PeerListFilter
@@ -111,7 +113,11 @@ struct TailscreenWindowsApp: App {
             showSpinner: state.showsSpinner,
             filter: headerFilter,
             onRefresh: headerRefresh,
-            secondaryAction: headerSignOut)
+            accountName: state.accountMenuLabel,
+            accounts: state.accountMenuEntries,
+            activeAccountID: state.activeAccountID,
+            onSelectAccount: headerSelectAccount,
+            onAddAccount: headerAddAccount)
     }
 
     /// The peer-list filter, offered from the same settled signed-in state as
@@ -150,10 +156,23 @@ struct TailscreenWindowsApp: App {
         return { model.refreshPeers() }
     }
 
-    private var headerSignOut: HubAction? {
-        guard state.phase == .ready, state.watching == nil else { return nil }
+    /// The account menu, which replaces what used to be a bare Sign out
+    /// button. Sign out did not go away — it rides INSIDE the menu as a row
+    /// (see `AppUIState.accountMenuEntries`), because the shared header takes
+    /// a list of accounts and one selection callback and nothing else, and a
+    /// second button beside the menu is the arrangement the menu exists to
+    /// replace. The GTK viewer has had this menu since it grew profiles;
+    /// this is the same one, over the same registry.
+    private var headerSelectAccount: (@MainActor @Sendable (String) -> Void)? {
+        guard state.showsAccountMenu else { return nil }
         let model = state
-        return HubAction(label: "Sign out") { model.signOut() }
+        return { model.selectAccountMenuEntry($0) }
+    }
+
+    private var headerAddAccount: (@MainActor @Sendable () -> Void)? {
+        guard state.showsAccountMenu else { return nil }
+        let model = state
+        return { model.addAccount() }
     }
 
     @ViewBuilder private var content: some View {
@@ -325,6 +344,15 @@ final class AppUIState: ObservableObject {
     /// actor on purpose — see its type comment).
     @Published var sharing = WindowsShareSession.Status()
 
+    /// The signed-in accounts, mirrored out of `profileStore` so the header
+    /// re-renders on switch / add / relabel. Mirrored rather than read through,
+    /// because the registry is deliberately not observable — it is portable
+    /// Foundation, and the `ObservableObject` this app observes is
+    /// SwiftCrossUI's.
+    @Published private(set) var accounts: [HubAccount] = []
+    @Published private(set) var activeAccountID = ""
+    @Published private(set) var activeAccountName = ""
+
     /// Auto-resume: a non-empty tsnet state directory means a previous login
     /// whose node can come up with no browser interaction, so the app goes
     /// straight for the peer list instead of parking on a Sign in button the
@@ -346,12 +374,13 @@ final class AppUIState: ObservableObject {
         // its own, but "closed" and "what the user asked for" are not the same
         // answer, and only one of them is this app's to give.
         shareSession.setRequireApproval(ViewerApprovalPreference.load())
-        if Self.hasPreviousLogin() {
+        syncAccounts()
+        if hasPreviousLogin() {
             signIn()
         }
     }
 
-    private static func hasPreviousLogin() -> Bool {
+    private func hasPreviousLogin() -> Bool {
         let entries =
             (try? FileManager.default.contentsOfDirectory(atPath: stateDirectory())) ?? []
         return !entries.isEmpty
@@ -359,6 +388,15 @@ final class AppUIState: ObservableObject {
 
     private let transport = TsnetTransport()
     private let shareSession = WindowsShareSession()
+    /// The multi-account registry, shared with the GTK viewer and unit-tested
+    /// on Linux CI. A profile IS a tsnet state directory, so switching accounts
+    /// is a node teardown and a fresh bring-up under a different one.
+    ///
+    /// `.windowsLocalAppData()` seeds account #1 onto
+    /// `%LOCALAPPDATA%\Tailscreen\tailscale` — the single fixed directory this
+    /// app used before it had accounts — so introducing the registry signs
+    /// nobody out.
+    private let profileStore = AccountProfileStore(layout: .windowsLocalAppData())
     /// The renderer hand-off, shared with `WinUIVideoView`. Portable, lock-
     /// guarded, and the same type the GTK viewer polls from its draw callback.
     let frameStore = FrameStore()
@@ -582,7 +620,7 @@ final class AppUIState: ObservableObject {
                         // session starts. Discovery never reads it, and this
                         // stage stops before dialing.
                         hostname: "",
-                        statePath: Self.stateDirectory(),
+                        statePath: stateDirectory(),
                         // Share-capable, so the node registers under
                         // `tailscreen-<machine>` rather than the viewer prefix
                         // that discovery deliberately EXCLUDES. A viewer-only
@@ -604,6 +642,7 @@ final class AppUIState: ObservableObject {
                 phase = .ready
                 status = hubSignedInSubtitle(
                     tailnet: transport.tailnetName, account: transport.accountIdentity)
+                labelActiveAccount()
                 refreshPeers()
             } catch {
                 phase = .failed
@@ -709,7 +748,7 @@ final class AppUIState: ObservableObject {
                         // that this sidesteps the from == dest hostname
                         // mismatch the CLI host path warns about.
                         hostname: peer.tailscaleIP,
-                        statePath: Self.stateDirectory()
+                        statePath: stateDirectory()
                     ),
                     decoder: FFmpegVideoDecoder(),
                     videoSink: sink,
@@ -738,6 +777,96 @@ final class AppUIState: ObservableObject {
 
     func disconnect() {
         stopRequested = true
+    }
+
+    // MARK: Accounts
+
+    /// Reserved row id for the Sign out entry inside the account menu.
+    ///
+    /// `ViewerHeader` renders a flat list of accounts and hands back the id
+    /// that was picked, which is all the menu it has. Sign out travels as a row
+    /// with an id no UUID can collide with, rather than as a second header
+    /// control — the bare Sign out button beside the menu is exactly what the
+    /// menu replaces.
+    static let signOutEntryID = "__tailscreen.signOut__"
+
+    /// The account menu is hidden during a viewing session: the video owns the
+    /// window then, and every entry in it would tear that session down.
+    var showsAccountMenu: Bool { watching == nil }
+
+    /// Menu button label — nil hides the whole menu (the header's convention:
+    /// a quiet header reads as chrome, a header of dead controls does not).
+    var accountMenuLabel: String? { showsAccountMenu ? activeAccountName : nil }
+
+    /// The accounts, plus Sign out once there is a session to sign out of.
+    var accountMenuEntries: [HubAccount] {
+        guard phase == .ready else { return accounts }
+        return accounts + [HubAccount(id: Self.signOutEntryID, name: "Sign out")]
+    }
+
+    func selectAccountMenuEntry(_ id: String) {
+        if id == Self.signOutEntryID {
+            signOut()
+        } else {
+            switchAccount(to: id)
+        }
+    }
+
+    /// Switching closes the node, so every non-idle state blocks it — the same
+    /// rule as the macOS app's `canSwitchProfile`. A share still starting or a
+    /// session still connecting would be torn out from under itself.
+    var canSwitchAccount: Bool {
+        watching == nil && sessionTask == nil && !sharing.isSharing && phase != .starting
+    }
+
+    func switchAccount(to id: String) {
+        guard canSwitchAccount, profileStore.setActive(id) else { return }
+        syncAccounts()
+        restartUnderActiveAccount()
+    }
+
+    /// Add an account and switch to it. Its state directory is fresh and empty,
+    /// which is precisely what makes the bring-up below hand back an
+    /// interactive login URL instead of resuming.
+    func addAccount() {
+        guard canSwitchAccount else { return }
+        profileStore.addProfile()
+        syncAccounts()
+        restartUnderActiveAccount()
+    }
+
+    private func syncAccounts() {
+        accounts = profileStore.profiles.map { HubAccount(id: $0.id, name: $0.name) }
+        activeAccountID = profileStore.activeID
+        activeAccountName = profileStore.active.name
+    }
+
+    /// Bring the node down and back up under the active account's state
+    /// directory. Teardown first, and `signIn()` only after it returns: the two
+    /// accounts must never have a node up at the same time, since a tsnet node
+    /// is one machine key and one identity.
+    ///
+    /// The previous account stays signed in *on disk* — its state directory is
+    /// untouched — so switching back resumes without a browser round trip.
+    private func restartUnderActiveAccount() {
+        phase = .idle
+        status = "Switching account…"
+        detail = ""
+        peers = []
+        loginURL = nil
+        Task { [weak self] in
+            await self?.transport.teardown()
+            self?.signIn()
+        }
+    }
+
+    /// Relabel the active account with the resolved login once the tailnet can
+    /// say who it is. "Account 2" is only useful until then.
+    private func labelActiveAccount() {
+        guard let identity = transport.accountIdentity,
+            profileStore.rename(profileStore.activeID, to: identity)
+        else { return }
+        syncAccounts()
     }
 
     // MARK: Sharing
@@ -774,7 +903,7 @@ final class AppUIState: ObservableObject {
                     // signature stays honest about what a standalone bring-up
                     // would have used.
                     hostname: Self.machineName(),
-                    statePath: Self.stateDirectory(),
+                    statePath: stateDirectory(),
                     quality: quality,
                     // THE app's node, not a new one. A second node means a
                     // second machine key, a second browser login nobody is
@@ -838,19 +967,16 @@ final class AppUIState: ObservableObject {
         }
     }
 
-    /// Where the tsnet node keeps its state (machine key, netmap).
+    /// Where the ACTIVE account's tsnet node keeps its state (machine key,
+    /// netmap) — which is what a profile is.
     ///
     /// Under `%LOCALAPPDATA%` because it is per-machine, per-user data that
     /// should not roam: the machine key identifies *this* device to the tailnet,
-    /// and a roaming profile would carry it to another one.
-    private static func stateDirectory() -> String {
-        let base =
-            ProcessInfo.processInfo.environment["LOCALAPPDATA"]
-            ?? NSHomeDirectory()
-        return URL(fileURLWithPath: base)
-            .appendingPathComponent("Tailscreen")
-            .appendingPathComponent("tailscale")
-            .path
+    /// and a roaming profile would carry it to another one. Account #1 is
+    /// seeded onto the exact directory this method used to return outright, so
+    /// an existing install keeps its login.
+    private func stateDirectory() -> String {
+        profileStore.active.statePath
     }
 
     /// This machine's name, as the tailnet sees it.
