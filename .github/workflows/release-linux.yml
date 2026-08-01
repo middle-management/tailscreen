@@ -2,13 +2,22 @@ name: Release (Linux)
 
 # Builds the Linux desktop app (Apps/linux-gtk — the swift-cross-ui/GTK4 app
 # that both views and shares) and uploads an x86_64 AppImage plus an arm64
-# tarball to the GitHub Release that triggered the run. The mirror of
-# release.yml, which does the same for the macOS .app.
+# AppImage + tarball to the GitHub Release that triggered the run. The mirror
+# of release.yml, which does the same for the macOS .app.
 #
 # Only the GTK app is packaged. The other Linux executables
 # (tailscreen-sharer-linux, tailscreen-viewer-probe, TailscreenTestSharer) are
 # development and test tools, not products, and are deliberately left out of
 # the artifact.
+#
+# The arm64 leg's steps live in app-linux.yml, shared with build.yml's
+# `linux-app-arm64` gate. The x86_64 leg below is still spelled out, because it
+# runs on a HOST runner with swift-actions/setup-swift and sudo apt rather than
+# in the swift:6.1-noble container the arm64 leg (and every other Linux job)
+# uses. Folding it in is a plausible follow-up — the arm64 leg proves the
+# AppImage assembles fine inside the container — but it builds the artifact
+# most users download, and moving its toolchain is not a change to make
+# without running it.
 #
 # Three triggers:
 #   • release published  — the real thing, same as macOS
@@ -33,19 +42,21 @@ permissions:
   contents: write   # required for `gh release upload`
 
 jobs:
-  appimage:
-    name: Build AppImage
+  # One derivation, three consumers. It used to be copy-pasted into each of
+  # them, and `tarball-arm64` is now a reusable-workflow call, which can carry
+  # no steps of its own — so a separate job is both the tidier and the only
+  # option.
+  version:
+    name: Resolve version
     # Skip every label except ours — `pull_request: [labeled]` fires for all of
     # them, and a packaging build is far too slow to run on an unrelated label.
     if: >-
       github.event_name != 'pull_request' ||
       github.event.label.name == 'build-linux-package'
     runs-on: ubuntu-latest
-
-    env:
-      APP_ID: dev.tailscreen.Tailscreen
-      PRODUCT: tailscreen
-
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
     steps:
       - name: Resolve version
         id: version
@@ -60,12 +71,22 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
 
+  appimage:
+    name: Build AppImage
+    needs: version
+    runs-on: ubuntu-latest
+
+    env:
+      APP_ID: dev.tailscreen.Tailscreen
+      PRODUCT: tailscreen
+
+    steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           # For a release/dispatch build, build the tag exactly. For a PR build,
           # take the PR head (the default checkout ref).
-          ref: ${{ github.event_name == 'pull_request' && github.ref || steps.version.outputs.tag }}
+          ref: ${{ github.event_name == 'pull_request' && github.ref || needs.version.outputs.tag }}
           submodules: recursive
 
       - name: Install Swift + build dependencies
@@ -111,13 +132,13 @@ jobs:
         env:
           # appimagetool needs this on runners without a usable FUSE mount.
           APPIMAGE_EXTRACT_AND_RUN: '1'
-          OUTPUT: Tailscreen-${{ steps.version.outputs.version }}-x86_64.AppImage
+          OUTPUT: Tailscreen-${{ needs.version.outputs.version }}-x86_64.AppImage
         run: Apps/linux-gtk/packaging/appimage/build-appimage.sh
 
       - name: Checksums
         id: pkg
         run: |
-          FILE="Tailscreen-${{ steps.version.outputs.version }}-x86_64.AppImage"
+          FILE="Tailscreen-${{ needs.version.outputs.version }}-x86_64.AppImage"
           sha256sum "$FILE" > checksums-linux.txt
           echo "file=$FILE" >> "$GITHUB_OUTPUT"
           echo "sha256=$(awk '{print $1}' checksums-linux.txt)" >> "$GITHUB_OUTPUT"
@@ -141,7 +162,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload "${{ steps.version.outputs.tag }}" \
+          gh release upload "${{ needs.version.outputs.tag }}" \
             "${{ steps.pkg.outputs.file }}" checksums-linux.txt --clobber
 
       - name: Summary
@@ -157,186 +178,42 @@ jobs:
             echo "The SHA-256 is what the tap's cask needs in its \`on_linux\` block."
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # The arm64 leg — an AppImage AND a plain tarball. An earlier version of
-  # this job claimed linuxdeploy/appimagetool publish no arm64 binaries and
-  # shipped only the tarball; that claim was checked and is false — both
-  # projects' `continuous` releases carry *-aarch64.AppImage builds — so the
-  # AppImage is built here with the same script as the x86_64 job, just with
-  # aarch64 tools. The tarball stays: it needs neither FUSE nor an AppImage
-  # runtime on the target box, which some arm devices lack.
+  # The arm64 leg — an AppImage AND a plain tarball. An earlier version of this
+  # job claimed linuxdeploy/appimagetool publish no arm64 binaries and shipped
+  # only the tarball; that claim was checked and is false — both projects'
+  # `continuous` releases carry *-aarch64.AppImage builds — so the AppImage is
+  # built with the same script as the x86_64 job, just with aarch64 tools. The
+  # tarball stays: it needs neither FUSE nor an AppImage runtime on the target
+  # box, which some arm devices lack.
   #
-  # This job mirrors build.yml's `linux-app-arm64` gate: same runner
-  # (GitHub's free ubuntu-24.04-arm), same multi-arch swift:6.1-noble
-  # container, same apt set, same release build of product `tailscreen`, and
-  # the same Xvfb GL YUV-readback self-test — so the tarball this uploads is
-  # gated on actually rendering, not just compiling.
+  # The steps live in app-linux.yml, shared with build.yml's `linux-app-arm64`
+  # gate — same runner, same container, same apt set, same release build, same
+  # Xvfb GL YUV-readback self-test, and the same hand-written README.txt inside
+  # the tarball, which was duplicated down to its wording. So the tarball this
+  # uploads is gated on actually rendering rather than merely compiling, and
+  # the gate and the artifact come from ONE definition rather than from two
+  # that happened to agree.
   #
-  # Container caveat: `gh` is NOT installed in swift:6.1-noble, so this job
-  # cannot `gh release upload` itself. Rather than bolting the GitHub CLI apt
-  # repo (keyring + sources.list + update) onto the container, the tarball is
-  # handed to a follow-on non-container job via an artifact and uploaded from
-  # ubuntu-latest, where gh is preinstalled — fewer moving parts, and the
+  # `use_cache: false`: a shipped artifact is compiled cold on the runner that
+  # ships it.
+  #
+  # Container caveat, and the reason `upload-arm64` exists below: `gh` is NOT
+  # installed in swift:6.1-noble, so that job cannot `gh release upload`
+  # itself. Rather than bolting the GitHub CLI apt repo (keyring +
+  # sources.list + update) onto the container, the package is handed to a
+  # follow-on non-container job via an artifact — fewer moving parts, and the
   # artifact doubles as the PR-build deliverable exactly like the appimage
   # job's split.
   tarball-arm64:
     name: Build arm64 package
-    if: >-
-      github.event_name != 'pull_request' ||
-      github.event.label.name == 'build-linux-package'
-    runs-on: ubuntu-24.04-arm
-    container: swift:6.1-noble
-
-    steps:
-      - name: Resolve version
-        id: version
-        run: |
-          case "${{ github.event_name }}" in
-            workflow_dispatch) tag="${{ github.event.inputs.tag }}" ;;
-            release)           tag="${{ github.event.release.tag_name }}" ;;
-            *)                 tag="pr-${{ github.event.pull_request.number }}" ;;
-          esac
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
-
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event_name == 'pull_request' && github.ref || steps.version.outputs.tag }}
-          submodules: recursive
-
-      - name: Install GTK4 + GL + headless display + A/V + Go
-        # Same set as build.yml's linux-app-arm64 job — see linux-gtk-viewer's
-        # comment there for why each package is needed — plus the AppImage
-        # assembly extras the x86_64 job installs (librsvg for the icon,
-        # desktop-file-utils + file for linuxdeploy, curl to fetch the tools).
-        # All multi-arch in noble.
-        run: |
-          apt-get update && apt-get install -y --no-install-recommends \
-            libgtk-4-dev gir1.2-gtk-4.0 libgirepository1.0-dev libepoxy-dev \
-            libgl1-mesa-dri xvfb libopus-dev pkg-config \
-            golang-go make gcc libc6-dev \
-            libavcodec-dev libavutil-dev libasound2-dev \
-            librsvg2-bin file desktop-file-utils curl ca-certificates
-
-      - name: Install linuxdeploy + appimagetool (aarch64)
-        # The aarch64 twins of the x86_64 job's tools — both projects publish
-        # them on their `continuous` releases. The gtk plugin is an
-        # arch-neutral shell script.
-        run: |
-          mkdir -p "$HOME/.local/bin"
-          base=https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous
-          curl -fsSL "$base/linuxdeploy-aarch64.AppImage" -o "$HOME/.local/bin/linuxdeploy"
-          curl -fsSL "https://github.com/linuxdeploy/linuxdeploy-plugin-gtk/raw/master/linuxdeploy-plugin-gtk.sh" \
-            -o "$HOME/.local/bin/linuxdeploy-plugin-gtk.sh"
-          curl -fsSL "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-aarch64.AppImage" \
-            -o "$HOME/.local/bin/appimagetool"
-          chmod +x "$HOME/.local/bin/linuxdeploy" "$HOME/.local/bin/linuxdeploy-plugin-gtk.sh" "$HOME/.local/bin/appimagetool"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
-      - name: Build libtailscale (patched) for linux/arm64
-        # Go targets the host arch — arm64 here. apt's Go, like every sibling
-        # container job. cache: false — release artifacts build cold.
-        uses: ./.github/actions/bootstrap
-        with:
-          go: preinstalled
-          libtailscale: host
-          cache: 'false'
-
-      - name: Build the app (release)
-        # PKG_CONFIG_PATH resolves libtailscale.pc for the tsnet transport;
-        # building the executable product prunes SwiftPM to the Linux subgraph.
-        run: PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" swift build -c release --package-path Apps/linux-gtk --product tailscreen
-
-      - name: Headless render self-test (Xvfb + software GL)
-        # Identical to build.yml's gate, pointed at the release binary this
-        # job ships — the proof this leg renders on arm64, not compile-only.
-        run: |
-          if timeout 90 xvfb-run -a -s "-screen 0 800x600x24" \
-            env GDK_BACKEND=x11 LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe \
-            Apps/linux-gtk/.build/release/tailscreen --render-self-test \
-            > /tmp/gtk-selftest.log 2>&1; then
-            status=0
-          else
-            status=$?
-          fi
-          cat /tmp/gtk-selftest.log
-          test "$status" -eq 0
-          grep -q 'CGTKVIDEO_SELFTEST result=PASS' /tmp/gtk-selftest.log
-
-      - name: Build the AppImage
-        # Same script as the x86_64 job. The app + c-archive are already built
-        # by the steps above, so the script's own build steps are incremental
-        # no-ops; what runs here is the AppDir assembly + linuxdeploy. The
-        # container has no FUSE, hence APPIMAGE_EXTRACT_AND_RUN — the same
-        # arrangement the x86_64 job uses on the hosted runner.
-        env:
-          APPIMAGE_EXTRACT_AND_RUN: '1'
-          OUTPUT: Tailscreen-${{ steps.version.outputs.version }}-aarch64.AppImage
-        run: Apps/linux-gtk/packaging/appimage/build-appimage.sh
-
-      - name: Stage tarball + checksums
-        id: pkg
-        # Launch notes generated here, same approach (and same text) as
-        # build.yml's linux-app-arm64 job — the artifact's inputs stay the
-        # binary + this workflow file.
-        run: |
-          set -eu
-          APPIMAGE="Tailscreen-${{ steps.version.outputs.version }}-aarch64.AppImage"
-          FILE="Tailscreen-${{ steps.version.outputs.version }}-linux-arm64.tar.gz"
-          STAGE=dist/tailscreen-linux-arm64
-          mkdir -p "$STAGE"
-          cp Apps/linux-gtk/.build/release/tailscreen "$STAGE/tailscreen"
-          cat > "$STAGE/README.txt" <<'EOF'
-          Tailscreen for Linux (arm64)
-          ============================
-
-          Run:  ./tailscreen            (picker mode)
-                ./tailscreen <host>     (dial a sharer directly)
-
-          Runtime dependencies (Ubuntu 24.04 arm64 package names):
-            libgtk-4-1 libepoxy0 libavcodec60 libavutil58 libasound2t64
-            libopus0 mesa/OpenGL drivers
-
-          Sign in happens in your browser on first run (tsnet interactive
-          login), or export TAILSCREEN_TS_AUTHKEY. See the repository's
-          Apps/linux-gtk/packaging/README.md for packaged install channels.
-          EOF
-          tar -C dist -czf "$FILE" tailscreen-linux-arm64
-          sha256sum "$FILE" "$APPIMAGE" > checksums-linux-arm64.txt
-          echo "file=$FILE" >> "$GITHUB_OUTPUT"
-          echo "appimage=$APPIMAGE" >> "$GITHUB_OUTPUT"
-          # NR==1: the checksums file has two lines now, and a multi-line
-          # value fed to $GITHUB_OUTPUT this way is rejected ("Invalid
-          # format") — which failed the job AFTER the first arm64 AppImage
-          # had already built successfully.
-          echo "sha256=$(awk 'NR==1{print $1}' checksums-linux-arm64.txt)" >> "$GITHUB_OUTPUT"
-          cat checksums-linux-arm64.txt
-
-      # Uploaded on EVERY trigger, unlike the appimage job's PR-only artifact:
-      # for a PR build it is the deliverable, for a release build it is the
-      # hand-off to `upload-arm64` below (gh isn't in this container).
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ steps.pkg.outputs.file }}
-          path: |
-            ${{ steps.pkg.outputs.file }}
-            ${{ steps.pkg.outputs.appimage }}
-            checksums-linux-arm64.txt
-          retention-days: 14
-          if-no-files-found: error
-
-      - name: Summary
-        run: |
-          {
-            echo "## Linux package (arm64)"
-            echo ""
-            echo "| | |"
-            echo "|---|---|"
-            echo "| AppImage | \`${{ steps.pkg.outputs.appimage }}\` |"
-            echo "| Tarball | \`${{ steps.pkg.outputs.file }}\` |"
-            echo "| SHA-256 (tarball) | \`${{ steps.pkg.outputs.sha256 }}\` |"
-          } >> "$GITHUB_STEP_SUMMARY"
+    needs: version
+    uses: ./.github/workflows/app-linux.yml
+    with:
+      arch: arm64
+      ref: ${{ github.event_name == 'pull_request' && github.ref || needs.version.outputs.tag }}
+      version: ${{ needs.version.outputs.version }}
+      package: tarball+appimage
+      use_cache: false
 
   # The non-container half of tarball-arm64: swift:6.1-noble has no `gh`, so
   # the release upload runs here on ubuntu-latest (gh preinstalled) from the
@@ -344,34 +221,21 @@ jobs:
   # there is no release to upload to.
   upload-arm64:
     name: Upload arm64 package to the release
-    needs: tarball-arm64
+    needs: [version, tarball-arm64]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
 
     steps:
-      - name: Resolve version
-        id: version
-        # Same derivation as tarball-arm64 — only the release/dispatch cases
-        # can reach this job, and both yield the same tag both times.
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            tag="${{ github.event.inputs.tag }}"
-          else
-            tag="${{ github.event.release.tag_name }}"
-          fi
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
-
       - name: Download the package artifact
         uses: actions/download-artifact@v4
         with:
-          name: Tailscreen-${{ steps.version.outputs.version }}-linux-arm64.tar.gz
+          name: Tailscreen-${{ needs.version.outputs.version }}-linux-arm64.tar.gz
 
       - name: Upload to the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload "${{ steps.version.outputs.tag }}" \
-            "Tailscreen-${{ steps.version.outputs.version }}-linux-arm64.tar.gz" \
-            "Tailscreen-${{ steps.version.outputs.version }}-aarch64.AppImage" \
+          gh release upload "${{ needs.version.outputs.tag }}" \
+            "Tailscreen-${{ needs.version.outputs.version }}-linux-arm64.tar.gz" \
+            "Tailscreen-${{ needs.version.outputs.version }}-aarch64.AppImage" \
             checksums-linux-arm64.txt --clobber
