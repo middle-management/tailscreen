@@ -12,7 +12,11 @@ import TailscreenHubUI
 // hits and solves the same way.
 import struct TailscreenProtocol.CaptureTimings
 import struct TailscreenProtocol.ControlRequestInfo
+import struct TailscreenProtocol.PeerListFilter
+import enum TailscreenProtocol.PeerListFilterStore
+import enum TailscreenProtocol.PeerSharingState
 import struct TailscreenProtocol.QualitySettings
+import struct TailscreenProtocol.TailscreenMetadata
 import class TailscreenSharerWGC.WindowsShareSession
 import class TailscreenVideoFFmpeg.FFmpegVideoDecoder
 import class TailscreenViewer.FrameStore
@@ -104,8 +108,30 @@ struct TailscreenWindowsApp: App {
         ViewerHeader(
             subtitle: state.status,
             showSpinner: state.showsSpinner,
+            filter: headerFilter,
             onRefresh: headerRefresh,
             secondaryAction: headerSignOut)
+    }
+
+    /// The peer-list filter, offered from the same settled signed-in state as
+    /// Refresh — there is nothing to filter while the node is still coming up
+    /// or while a session owns the window.
+    ///
+    /// All three axes are live: this app has always kept offline machines in
+    /// `peers`, `DiscoveredSharer` carries the netmap's ACL tags, and
+    /// `sweepShareStatus` fills the sharing axis's input off every discovery.
+    ///
+    /// A computed property with an explicit type for the same reason
+    /// `headerRefresh` is one: an optional built at the call site inside a
+    /// result builder is how this file previously got "failed to produce
+    /// diagnostic for expression" out of the Windows compiler.
+    private var headerFilter: HubFilter? {
+        guard state.phase == .ready, state.watching == nil else { return nil }
+        let model = state
+        return HubFilter(
+            filter: model.filter,
+            tags: model.knownTags,
+            onChange: { model.setFilter($0) })
     }
 
     /// Refresh, offered only from the settled signed-in state.
@@ -179,6 +205,7 @@ struct TailscreenWindowsApp: App {
             screens: state.hubScreens,
             loginURL: state.loginURL,
             emptyMessage: "No Tailscreen screens found on your tailnet.",
+            hiddenByFilter: state.hiddenByFilter,
             onSelect: { id in model.connect(toID: id) },
             onOpenLogin: { model.openLoginURL() },
             shareCard: state.shareCard)
@@ -266,7 +293,26 @@ final class AppUIState: ObservableObject {
     @Published var status = "Not signed in"
     @Published var detail = ""
     @Published var loginURL: String?
+    /// The RAW discovery result. Stays unfiltered on purpose: the filter menu
+    /// enumerates its tags, `connect(toID:)` resolves against it, and a filter
+    /// that ate its own input could never be undone. `hubScreens` is the
+    /// projection — the same split the macOS hub keeps between `availablePeers`
+    /// and `filteredPeers`.
     @Published var peers: [DiscoveredSharer] = []
+    /// Per-peer live share status from the metadata sweep, keyed by peer id.
+    /// A missing entry is status-UNKNOWN, never "not sharing" — every failure
+    /// mode of `fetchMetadata` (timeout, EOF, a legacy peer dropping the
+    /// unknown byte) collapses to nil, and rendering that as "idle" would be a
+    /// claim the app cannot support.
+    @Published var shareInfo: [String: TailscreenMetadata] = [:]
+    /// Header filter state, persisted through the portable `PeerListFilterStore`
+    /// the macOS hub uses — not a new persistence layer. On Windows that is
+    /// swift-corelibs-foundation's `UserDefaults`; if the write does not stick
+    /// the filter is per-session, which is a far better failure than refusing to
+    /// filter at all. Unlike the GTK picker there is no legacy online-only list
+    /// to preserve here — this app has always shown offline machines — so the
+    /// portable `.default` (every axis off) is the right first-run state.
+    @Published private(set) var filter = PeerListFilterStore.load()
     @Published var isSearching = false
     /// Non-nil while a viewing session is running — the hostname on screen.
     @Published var watching: String?
@@ -330,18 +376,42 @@ final class AppUIState: ObservableObject {
     /// Refresh is offered only from the settled signed-in state.
     var canRefresh: Bool { phase == .ready && watching == nil && !isSearching }
 
-    /// The discovered peers as hub rows.
+    /// The discovered peers, narrowed by the header filter, as hub rows.
     ///
-    /// No metadata: the Windows app has no equivalent of the macOS sharing
-    /// sweep yet, so no row claims a green "Sharing" chip. Absent rather than
-    /// guessed — a chip that appears when a machine is merely reachable would
-    /// be a lie, and the chip is the one thing on the row people act on.
+    /// The sweep's answer rides along so the shared chrome derives the green
+    /// "Sharing" chip — and a peer we got no answer from gets no chip, because
+    /// one that appeared when a machine was merely reachable would be a lie,
+    /// and the chip is the one thing on the row people act on.
     var hubScreens: [HubScreen] {
-        peers.map {
+        filteredPeers.map {
             HubScreen(
                 id: $0.id, hostname: $0.hostname, tailscaleIP: $0.tailscaleIP,
-                isOnline: $0.isOnline)
+                isOnline: $0.isOnline, metadata: shareInfo[$0.id])
         }
+    }
+
+    /// `peers` narrowed by `filter` — hide-offline ∧ only-sharing ∧
+    /// any-of-selected-tags, with the tri-state sharing input the sweep fills.
+    var filteredPeers: [DiscoveredSharer] {
+        peers.filter {
+            filter.matches(
+                isOnline: $0.isOnline, tags: $0.tags,
+                sharing: PeerSharingState(fetched: shareInfo[$0.id]))
+        }
+    }
+
+    /// Every ACL tag across the RAW list, for the filter menu's tag rows.
+    /// Sorted so the menu does not reshuffle between discovery sweeps.
+    var knownTags: [String] { Array(Set(peers.flatMap(\.tags))).sorted() }
+
+    /// How many discovered machines the filter is hiding right now — the
+    /// footnote under the list, so rows never vanish unexplained.
+    var hiddenByFilter: Int { peers.count - filteredPeers.count }
+
+    func setFilter(_ new: PeerListFilter) {
+        guard new != filter else { return }
+        filter = new
+        PeerListFilterStore.save(new)
     }
 
     /// The sharing half of the hub, or nil on a build that cannot capture.
@@ -487,11 +557,49 @@ final class AppUIState: ObservableObject {
 
         Task {
             do {
-                peers = try await transport.discoverPeers()
+                let found = try await transport.discoverPeers()
+                peers = found
+                // Drop answers for machines that are no longer discovered, so a
+                // stale entry can never keep a departed peer looking like it is
+                // sharing.
+                let ids = Set(found.map(\.id))
+                shareInfo = shareInfo.filter { ids.contains($0.key) }
+                isSearching = false
+                await sweepShareStatus(found)
             } catch {
                 detail = "Discovery failed: \(error)"
+                isSearching = false
             }
-            isSearching = false
+        }
+    }
+
+    /// Lazy per-peer share-status sweep — the input to the filter's "Only
+    /// screens being shared" axis and to the rows' sharing chips.
+    ///
+    /// The same portable path the GTK picker uses (`TsnetTransport.fetchMetadata`
+    /// → `TailscreenMetadataClient` over TCP/7447), and lazy for the same reason
+    /// the macOS `refreshPeerShareStatus()` is: it is a real dial per peer, so
+    /// it rides discovery rather than a timer. Offline peers are skipped —
+    /// dialing a machine tsnet says is down buys nothing but a timeout — which
+    /// correctly leaves them `.unknown`, and therefore hidden while the sharing
+    /// axis is on. A no-answer REMOVES the entry rather than leaving the last
+    /// one in place, so the status can never go stale-positive.
+    private func sweepShareStatus(_ found: [DiscoveredSharer]) async {
+        let online = found.filter(\.isOnline)
+        guard !online.isEmpty else { return }
+        // The child tasks capture the transport, not `self`, and are NOT
+        // annotated `@MainActor` — the GTK sweep's exact shape. Annotating them
+        // makes the closure main-actor-isolated and therefore non-`Sendable`,
+        // which `addTask`'s `sending` parameter rejects; leaving them
+        // nonisolated lets each simply `await` the main-actor `fetchMetadata`.
+        let transport = self.transport
+        await withTaskGroup(of: (String, TailscreenMetadata?).self) { group in
+            for peer in online {
+                group.addTask { (peer.id, await transport.fetchMetadata(ip: peer.tailscaleIP)) }
+            }
+            for await (id, metadata) in group {
+                shareInfo[id] = metadata
+            }
         }
     }
 
