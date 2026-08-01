@@ -43,7 +43,7 @@ Pulls the signed, notarized universal build from the latest release. Cask formul
 
 Grab the latest `Tailscreen-<version>-macOS.zip` from [Releases](https://github.com/middle-management/tailscreen/releases), unzip, drag to `/Applications`. The release zip is a universal binary, signed and notarized when the build secrets are configured.
 
-The same release carries the **Linux** build (x86_64 AppImage + arm64 tarball) and the **Windows** build (x64 + arm64 zip and MSIX) — see the [Install docs](https://tailscreen.dev/install/) for those.
+The same release carries the **Linux** build (x86_64 + arm64 AppImages, plus an arm64 tarball) and the **Windows** build (x64 + arm64 zip and MSIX) — see the [Install docs](https://tailscreen.dev/install/) for those. (Releases up to v0.9.1 predate the Linux and Windows apps and carry only the Mac zip.)
 
 ### From source
 

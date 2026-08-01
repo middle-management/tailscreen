@@ -17,6 +17,13 @@ Pick your platform: [macOS](#homebrew) (Homebrew or a release download),
 [Linux](#linux) (AppImage or tarball), [Windows](#windows) (zip or MSIX) —
 or [build from source](#from-source).
 
+The Linux and Windows artifacts first appear on releases published after
+v0.9.1 — if the latest release doesn't carry them yet, it predates those
+apps. In the meantime CI uploads runnable Linux and Windows bundles on
+every push to `main` (the workflow run's artifacts; downloading them
+requires a GitHub login).
+{: .note }
+
 ## Homebrew
 
 ```bash
@@ -58,7 +65,9 @@ The Linux app is the GTK build under `Apps/linux-gtk` — one window that both
 views a peer's screen and shares this machine's. It ships in two flavors,
 attached to the same GitHub release as the Mac app:
 
-- **x86_64 AppImage** — self-contained, no install step:
+- **AppImage** — self-contained, no install step, for both architectures
+  (`Tailscreen-<version>-x86_64.AppImage` /
+  `Tailscreen-<version>-aarch64.AppImage`):
 
   ```bash
   chmod +x Tailscreen-<version>-x86_64.AppImage
@@ -66,9 +75,9 @@ attached to the same GitHub release as the Mac app:
   ```
 
 - **arm64 tarball** (`Tailscreen-<version>-linux-arm64.tar.gz`) — the same
-  app as a plain tarball (the AppImage tooling doesn't ship arm64 builds
-  yet). Unpack it and run the bundled `tailscreen` binary; it needs the
-  distro's GTK4 and GL libraries installed.
+  app as a plain tarball for machines without FUSE. Unpack it and run the
+  bundled `tailscreen` binary; it needs the distro's GTK4 and GL libraries
+  installed.
 
 The executable is plain `tailscreen`. If you used an earlier release, your
 sign-in carries over — the app migrates the old

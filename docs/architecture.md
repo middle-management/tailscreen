@@ -352,7 +352,8 @@ modifying:
   P2P fails. Even DERP traffic is end-to-end encrypted; the relay only
   sees ciphertext.
 - **No recording.** Frames go from capture → encoder → wire → decoder →
-  screen and are never written to disk. The Tailscale state directory at
-  `~/Library/Application Support/Tailscreen/tailscale` holds ephemeral
-  node state, and the viewer allow/deny list plus your settings live in
-  `UserDefaults`. That's it.
+  screen and are never written to disk. The Tailscale state directory
+  (`~/Library/Application Support/Tailscreen/tailscale` on macOS,
+  `~/.config/tailscreen` on Linux) holds ephemeral node state, and the
+  viewer allow/deny list plus your settings live in `UserDefaults` (or the
+  platform equivalent). That's it.
