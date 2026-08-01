@@ -240,6 +240,21 @@ struct SettingsView: View {
 
             Section(L("About")) {
                 LabeledContent(L("Version"), value: Self.versionString)
+                // The build/environment line the GTK and Windows apps show in
+                // their window footer. macOS has a Settings scene, so it lives
+                // here rather than under the peer list — diagnostics belong
+                // behind ⌘, on this platform, not in the hub chrome.
+                //
+                // Selectable on purpose: the entire point of the line is
+                // pasting it into a bug report, and a diagnostic you can't
+                // copy is half a diagnostic.
+                LabeledContent(L("Build")) {
+                    Text(environmentLine)
+                        .font(.caption.monospaced())
+                        .textSelection(.enabled)
+                        .multilineTextAlignment(.trailing)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 Link(L("Project on GitHub"), destination: Self.projectURL)
             }
         }
@@ -270,6 +285,24 @@ struct SettingsView: View {
                 return (name: app.localizedName ?? bundleID, bundleID: bundleID)
             }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    /// Build stamp + running architecture + the quality knobs actually in
+    /// force — the macOS counterpart of `AppUIState.environmentLine` in the
+    /// Windows and GTK apps. The stamp leads because every other number on
+    /// screen depends on it being right.
+    ///
+    /// Reads `appState.qualitySettings`, not `QualitySettings.default` as the
+    /// footer-only hosts do: this app has the Quality pickers directly above,
+    /// so the line must name what this Mac will actually encode with —
+    /// including a Custom preset — or it would contradict the control that
+    /// set it.
+    private var environmentLine: String {
+        let quality = appState.qualitySettings
+        let build = BuildInfo.summary
+        let arch = BuildInfo.architecture
+        let codec = quality.codecPreference.rawValue
+        return L("\(build) · \(arch) · fps cap \(quality.fpsCap) · codec \(codec)")
     }
 
     /// Marketing version, with the build number appended only when it

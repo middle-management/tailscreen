@@ -175,6 +175,20 @@ jobs:
           Cflags: -I\${includedir}/opus
           PC
 
+      # Rewrite BuildInfo.commit before compiling. This artifact is the one
+      # people download and then wonder whether it contains the fix, so
+      # Settings → About must name the PR head commit, not "dev".
+      - name: Stamp the build
+        env:
+          SHORT_SHA: ${{ steps.sha.outputs.short }}
+        run: |
+          set -euo pipefail
+          file=Apps/macOS/Sources/BuildInfo.swift
+          sed -i '' "s/static let commit = \"dev\"/static let commit = \"$SHORT_SHA\"/" "$file"
+          grep -q "static let commit = \"$SHORT_SHA\"" "$file" \
+            || { echo "build stamp did not apply — refusing to ship an app labelled 'dev'" >&2; exit 1; }
+          echo "stamped $SHORT_SHA"
+
       - name: Build universal Tailscreen binary
         env:
           PKG_CONFIG_PATH: /tmp/opus-universal/lib/pkgconfig:${{ github.workspace }}/Packages/TailscaleKit
