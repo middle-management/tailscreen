@@ -144,6 +144,18 @@ public final class TsnetTransport {
     /// `teardown`. A GUI host uses it to label the active account.
     public private(set) var accountIdentity: String?
 
+    /// The tailnet the prepared node joined (e.g. "example.org.github"),
+    /// resolved during `prepare`. nil before bring-up, after `teardown`, or
+    /// when the control plane does not report one.
+    ///
+    /// Distinct from `accountIdentity` on purpose, and the more useful of the
+    /// two in a header: the login says *who* you are, the tailnet says *which
+    /// namespace the screen list belongs to*, and it is the tailnet that
+    /// explains why an expected machine is missing. The macOS hub shows the
+    /// tailnet for exactly this reason, falling back to the login when the
+    /// control plane reports no name (headscale often does not).
+    public private(set) var tailnetName: String?
+
     public init() {}
 
     /// Keep the tsnet node up when a viewing session ends, instead of taking it
@@ -213,6 +225,7 @@ public final class TsnetTransport {
         let brought = try await Self.bringUpNode(config: config, onLoginURL: onLoginURL)
         preparedNode = brought.node
         accountIdentity = brought.identity
+        tailnetName = brought.tailnet
     }
 
     /// The bring-up itself: state dir, node, optional IPN-bus login watcher,
@@ -225,7 +238,7 @@ public final class TsnetTransport {
     private nonisolated static func bringUpNode(
         config: ViewerConfig,
         onLoginURL: (@Sendable (URL) -> Void)?
-    ) async throws -> (node: TailscaleNode, identity: String?) {
+    ) async throws -> (node: TailscaleNode, identity: String?, tailnet: String?) {
         let logger = StderrLogger()
         logger.log("prepare: creating state dir \(config.statePath)")
         try? FileManager.default.createDirectory(
@@ -312,9 +325,18 @@ public final class TsnetTransport {
         // nonisolated context each access is a separate hop.
         let loginName = await auth.userProfile?.loginName
         let identity = loginName ?? "unknown account"
-        logger.log("▶ Connected as \(identity) — node \(hostName) @ \(ips.ip4 ?? ips.ip6 ?? "?")")
+        // The tailnet is a second best-effort read off the same status the
+        // discovery seed already uses. Empty is a real answer from some control
+        // planes (headscale commonly reports none), so it is normalised to nil
+        // here rather than surfacing as a blank header.
+        let statusClient = LocalAPIClient(localNode: node, logger: logger)
+        let tailnet = try? await statusClient.backendStatus().CurrentTailnet?.Name
+        let namedTailnet = (tailnet?.isEmpty ?? true) ? nil : tailnet
+        logger.log(
+            "▶ Connected as \(identity) on \(namedTailnet ?? "an unnamed tailnet") "
+                + "— node \(hostName) @ \(ips.ip4 ?? ips.ip6 ?? "?")")
 
-        return (node, loginName)
+        return (node, loginName, namedTailnet)
     }
 
     /// List Tailscreen sharers on the tailnet (requires `prepare` first).
@@ -353,6 +375,7 @@ public final class TsnetTransport {
         }
         preparedNode = nil
         accountIdentity = nil
+        tailnetName = nil
     }
 
     /// Connect and run until the sharer says goodbye or `shouldClose` fires.

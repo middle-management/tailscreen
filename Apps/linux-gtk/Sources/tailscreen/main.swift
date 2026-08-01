@@ -292,6 +292,11 @@ if gSelfTest {
                     // says is down buys nothing but a timeout.
                     gPicker.sharers = peers
                     let online = peers.filter { $0.isOnline }
+                    // Label the header with the tailnet these rows belong to
+                    // (falling back to the login) — set before `.picking`, so
+                    // the placard never flashes the old guidance text.
+                    gPicker.tailnetName = transport.tailnetName
+                    gPicker.accountIdentity = transport.accountIdentity
                     gPicker.phase = .picking
                     // Lazy per-sharer metadata sweep (the sharing chip + res).
                     await withTaskGroup(of: (String, TailscreenMetadata?).self) { group in
