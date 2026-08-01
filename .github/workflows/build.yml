@@ -44,27 +44,12 @@ jobs:
           # PR's base (origin/main).
           fetch-depth: 0
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
+      # Patches + Go + libtailscale.a. `make build` below re-enters
+      # `make tailscale`, which is a no-op once the archive is in place.
+      - name: Bootstrap libtailscale
+        uses: ./.github/actions/bootstrap
         with:
-          # Version derived from the submodule's go.mod, not pinned here.
-          #
-          # That file says `go 1.25.5`, so a literal '1.21' provisioned a
-          # toolchain Go then immediately replaced itself: the arm64 probe's log
-          # showed `go: downloading go1.25.5 (windows/arm64)` mid-build, ~22s of
-          # it. The pin was simultaneously a fiction and a download — every job
-          # here paid for a toolchain it did not end up using.
-          #
-          # go.mod is now the single source of truth, so a submodule bump moves
-          # CI with it instead of silently re-triggering the same download.
-          go-version-file: Packages/TailscaleKit/upstream/libtailscale/go.mod
-          # Explicit rather than relying on the action's default, and
-          # paired with cache-dependency-path — without a path the
-          # action looks for go.sum in the working directory, finds
-          # none at the repo root, and caches nothing while appearing
-          # configured. Three workflows here were in exactly that state.
-          cache: true
-          cache-dependency-path: Packages/TailscaleKit/upstream/libtailscale/go.sum
+          libtailscale: host
 
       - name: Install libopus
         # OpusKit's COpus systemLibrary resolves libopus via pkg-config; the
@@ -181,31 +166,12 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: recursive
-      - name: Setup Go
-        uses: actions/setup-go@v5
+      - name: Bootstrap libtailscale
+        uses: ./.github/actions/bootstrap
         with:
-          # Version derived from the submodule's go.mod, not pinned here.
-          #
-          # That file says `go 1.25.5`, so a literal '1.21' provisioned a
-          # toolchain Go then immediately replaced itself: the arm64 probe's log
-          # showed `go: downloading go1.25.5 (windows/arm64)` mid-build, ~22s of
-          # it. The pin was simultaneously a fiction and a download — every job
-          # here paid for a toolchain it did not end up using.
-          #
-          # go.mod is now the single source of truth, so a submodule bump moves
-          # CI with it instead of silently re-triggering the same download.
-          go-version-file: Packages/TailscaleKit/upstream/libtailscale/go.mod
-          # Explicit rather than relying on the action's default, and
-          # paired with cache-dependency-path — without a path the
-          # action looks for go.sum in the working directory, finds
-          # none at the repo root, and caches nothing while appearing
-          # configured. Three workflows here were in exactly that state.
-          cache: true
-          cache-dependency-path: Packages/TailscaleKit/upstream/libtailscale/go.sum
+          libtailscale: host
       - name: Install libopus
         run: brew install opus
-      - name: Build libtailscale
-        run: make tailscale
       - name: Build (release)
         working-directory: Apps/macOS
         run: swift build -c release
@@ -231,15 +197,18 @@ jobs:
           # The TailscreenTransport target depends on TailscaleKit, whose
           # sources are symlinks into the submodule.
           submodules: recursive
-      - name: Install make + libopus
-        # The swift:*-noble images are slim — no make (or gcc). The patch
-        # loop lives in Packages/TailscaleKit/Makefile, so make is required.
-        # libopus-dev + pkg-config are for the TailscreenAudio target's
-        # OpusKit dependency (opus.pc is on the Linux default search path,
-        # so no PKG_CONFIG_PATH entry is needed for it).
-        run: apt-get update && apt-get install -y --no-install-recommends make libopus-dev pkg-config
+      - name: Install libopus
+        # The swift:*-noble images are slim. libopus-dev + pkg-config are for
+        # the TailscreenAudio target's OpusKit dependency (opus.pc is on the
+        # Linux default search path, so no PKG_CONFIG_PATH entry is needed for
+        # it). `make` used to be here too, purely so the Makefile's patch loop
+        # could run; the bootstrap action inlines that loop, so it is gone.
+        run: apt-get update && apt-get install -y --no-install-recommends libopus-dev pkg-config
       - name: Apply TailscaleKit patches (header only, no Go build)
-        run: make -C Packages/TailscaleKit apply-patches
+        uses: ./.github/actions/bootstrap
+        with:
+          go: none
+          libtailscale: none
       - name: Build + test TailscreenKit on Linux
         # Builds every tier — including TailscreenSharer, the sharer data
         # plane. That target needs only the patched TailscaleKit *header*
@@ -317,13 +286,12 @@ jobs:
         # present, and cgo wants gcc (the image only guarantees clang).
         run: apt-get update && apt-get install -y --no-install-recommends golang-go make gcc libc6-dev
       - name: Build libtailscale (patched) on Linux
-        env:
-          # The job runs as root in the container while the checkout is
-          # owned by the runner uid, so git inside the submodule reports
-          # "dubious ownership" and Go's VCS stamping dies with exit 128.
-          # The stamp is worthless for a c-archive — skip it.
-          GOFLAGS: -buildvcs=false
-        run: make -C Packages/TailscaleKit
+        uses: ./.github/actions/bootstrap
+        with:
+          # apt's Go, not setup-go's — its tool cache doesn't apply inside
+          # this container, so the image's own toolchain is the pattern here.
+          go: preinstalled
+          libtailscale: host
       - name: Test TailscaleKit on Linux
         run: PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" swift test --package-path Packages/TailscaleKit
 
@@ -361,9 +329,10 @@ jobs:
             libavcodec-dev libavutil-dev libasound2-dev libopus-dev \
             libxcb1-dev libxcb-shm0-dev xvfb
       - name: Build libtailscale (patched) on Linux
-        env:
-          GOFLAGS: -buildvcs=false
-        run: make -C Packages/TailscaleKit
+        uses: ./.github/actions/bootstrap
+        with:
+          go: preinstalled
+          libtailscale: host
       - name: Build + test the Linux viewer + sharer package
         # PKG_CONFIG_PATH resolves libtailscale.pc (→ -L for libtailscale.a);
         # the A/V libs are on the default pkg-config path. xvfb-run supplies
@@ -452,9 +421,10 @@ jobs:
             golang-go make gcc libc6-dev \
             libavcodec-dev libavutil-dev libasound2-dev
       - name: Build libtailscale (patched) on Linux
-        env:
-          GOFLAGS: -buildvcs=false
-        run: make -C Packages/TailscaleKit
+        uses: ./.github/actions/bootstrap
+        with:
+          go: preinstalled
+          libtailscale: host
       - name: Build the GTK viewer
         # PKG_CONFIG_PATH resolves libtailscale.pc for the tsnet transport.
         # Build the executable product specifically so SwiftPM prunes to the
@@ -549,12 +519,13 @@ jobs:
             golang-go make gcc libc6-dev \
             libavcodec-dev libavutil-dev libasound2-dev
       - name: Build libtailscale (patched) for linux/arm64
-        # Go targets the host arch — arm64 here — so the same make
-        # invocation as the x64 jobs emits an arm64 c-archive. GOFLAGS:
-        # see linux-tailscalekit (dubious-ownership VCS stamping).
-        env:
-          GOFLAGS: -buildvcs=false
-        run: make -C Packages/TailscaleKit
+        # Go targets the host arch — arm64 here — so the same `host` target as
+        # the x64 jobs emits an arm64 c-archive, and runner.arch keeps the two
+        # in separate cache namespaces.
+        uses: ./.github/actions/bootstrap
+        with:
+          go: preinstalled
+          libtailscale: host
       - name: Build the app (release)
         # PKG_CONFIG_PATH resolves libtailscale.pc for the tsnet transport;
         # building the executable product specifically prunes SwiftPM to the
@@ -669,30 +640,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - uses: actions/setup-go@v5
+      - name: Bootstrap libtailscale
+        uses: ./.github/actions/bootstrap
         with:
-          # Version derived from the submodule's go.mod, not pinned here.
-          #
-          # That file says `go 1.25.5`, so a literal '1.21' provisioned a
-          # toolchain Go then immediately replaced itself: the arm64 probe's log
-          # showed `go: downloading go1.25.5 (windows/arm64)` mid-build, ~22s of
-          # it. The pin was simultaneously a fiction and a download — every job
-          # here paid for a toolchain it did not end up using.
-          #
-          # go.mod is now the single source of truth, so a submodule bump moves
-          # CI with it instead of silently re-triggering the same download.
-          go-version-file: Packages/TailscaleKit/upstream/libtailscale/go.mod
-          # Explicit rather than relying on the action's default, and
-          # paired with cache-dependency-path — without a path the
-          # action looks for go.sum in the working directory, finds
-          # none at the repo root, and caches nothing while appearing
-          # configured. Three workflows here were in exactly that state.
-          cache: true
-          cache-dependency-path: Packages/TailscaleKit/upstream/libtailscale/go.sum
+          libtailscale: host
       - name: Install libopus
         run: brew install opus
-      - name: Build libtailscale
-        run: make tailscale
       - name: Run tests under TSan
         run: make test-tsan
 
