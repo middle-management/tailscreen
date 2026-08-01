@@ -415,10 +415,31 @@ jobs:
       # format/originHash churn, same pins. It is discarded so the cache restore
       # and save keys keep hashing the same file. Committing a 6.3-format
       # lockfile (and re-tightening the guard below) is a welcome follow-up.
+      #
+      # Retried ONCE because SwiftPM 6.3 on Windows segfaults (exit 139) at the
+      # end of a COLD resolve — after fetching every dependency, computing every
+      # version and creating every working copy. Observed on the x64 leg the
+      # first time this job's cache key rotated. Retrying is honest rather than
+      # papering over: the second attempt finds the checkouts already on disk,
+      # and a REAL resolution failure (bad pin, unreachable host, unsatisfiable
+      # graph) fails identically both times and still stops the job.
+      #
+      # This matters past the one incident — a cold resolve happens on every
+      # cache-key rotation (a Swift bump, a Package.swift edit), so without the
+      # retry each of those is a red build that a re-run makes green.
       - name: Resolve the app's dependencies
         shell: bash
         run: |
-          (cd Apps/windows && swift package resolve)
+          # `$?` is captured here, not read inside the `then` branch: within
+          # `if ! cmd`, `$?` is the negation's result (always 0) rather than
+          # the command's, so the branch would report a failure as "exit 0".
+          status=0
+          (cd Apps/windows && swift package resolve) || status=$?
+          if [ "$status" -ne 0 ]; then
+            echo "::warning::swift package resolve failed (exit $status); retrying once —" \
+                 "SwiftPM 6.3 crashes at the tail of a cold resolve on Windows"
+            (cd Apps/windows && swift package resolve)
+          fi
           if ! git diff --quiet -- Apps/windows/Package.resolved; then
             echo "::notice::SwiftPM rewrote Package.resolved (format churn); discarding so cache keys stay consistent"
             git checkout -- Apps/windows/Package.resolved
