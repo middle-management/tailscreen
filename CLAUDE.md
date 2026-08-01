@@ -486,6 +486,16 @@ strokes, so the constants (`arrowHeadLength` = mac's `max(12, width*4)`,
 `.arrow` looks different depending on who drew it. The Linux/GTK viewer
 consumes it today; the macOS overlay still has its own inline copy of the same
 formulas, and adopting this one is a queued follow-up),
+plus `ViewerApprovalPreferenceTests` (`ViewerApprovalPreference` — the
+"Require approval for new viewers" value the GTK and Windows apps push into
+`setRequireApproval`: default-on, the tri-state `object(forKey:)` migration
+that tells a never-touched install from an explicit opt-out, the
+exactly-`"1"` `TAILSCREEN_OPEN_DOOR` override, and that the override never
+clobbers the stored choice. Portable because the server's own gate defaults
+**off** — right for a headless automation sharer, wrong for every app with a
+person in front of it — so each host has to assert the safe value, and a
+wrong answer here is silent: the share works perfectly and admits
+strangers),
 so they run on Linux CI (`linux-protocol`) instead of only in the mac
 build. Suites that touch mac-only symbols stay in
 `Apps/macOS/Tests/TailscreenTests`: anything importing an Apple framework,

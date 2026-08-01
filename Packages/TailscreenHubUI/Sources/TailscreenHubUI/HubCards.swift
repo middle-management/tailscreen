@@ -69,6 +69,12 @@ public struct HubLoginCard: View {
 /// two: this window is the *only* surface these apps have — there is no
 /// menubar to fall back on — so a prompt that is not rendered here is a prompt
 /// nobody will ever answer, and the viewer on the other end waits forever.
+///
+/// `settings` is the other half of that argument. A prompt only appears if
+/// something *asks*, and the switch that decides whether anyone has to ask —
+/// "Require approval for new viewers" — has nowhere else to live either. A
+/// card that can render the prompts but not the gate is a card where the gate
+/// can only be off.
 public struct ShareCard: View {
     let title: String
     let statusLine: String
@@ -80,6 +86,11 @@ public struct ShareCard: View {
     /// time goes, why a capability is unavailable.
     let notes: [String]
     let prompts: [HubPrompt]
+    /// Persistent on/off controls for this share — today the approval gate.
+    /// Rendered as the card's footer, below the prompts and notes: a setting
+    /// is the least urgent thing on the card, and a viewer waiting to be let
+    /// in is the most.
+    let settings: [HubToggle]
     /// An extra action the current state calls for, e.g. taking control back.
     let extraAction: HubAction?
     let onStart: @MainActor @Sendable () -> Void
@@ -96,6 +107,7 @@ public struct ShareCard: View {
         stopLabel: String = "Stop sharing",
         notes: [String] = [],
         prompts: [HubPrompt] = [],
+        settings: [HubToggle] = [],
         extraAction: HubAction? = nil,
         onStart: @escaping @MainActor @Sendable () -> Void,
         onStop: @escaping @MainActor @Sendable () -> Void,
@@ -110,6 +122,7 @@ public struct ShareCard: View {
         self.stopLabel = stopLabel
         self.notes = notes
         self.prompts = prompts
+        self.settings = settings
         self.extraAction = extraAction
         self.onStart = onStart
         self.onStop = onStop
@@ -149,6 +162,35 @@ public struct ShareCard: View {
                     Text(note.element)
                         .font(.caption)
                         .foregroundColor(HubStyle.secondaryText)
+                }
+                ForEach(Array(settings.enumerated()), id: \.offset) { setting in
+                    VStack(alignment: .leading, spacing: 2) {
+                        // The value and the setter are separate on the way in
+                        // (see `HubToggle`) and are stitched back together
+                        // here, because `Toggle` speaks only `Binding`. The
+                        // getter closes over the value this render was built
+                        // with, so the switch tracks the host's state rather
+                        // than a copy of it that could drift.
+                        Toggle(
+                            setting.element.label,
+                            isOn: Binding(
+                                get: { setting.element.isOn },
+                                set: { setting.element.set($0) })
+                        )
+                        // SwiftCrossUI defaults `toggleStyle` to `.button`,
+                        // which draws a *button* that happens to be accented
+                        // while on. On a settings row that is two mistakes:
+                        // it invites a press as if it were an action, and its
+                        // state is carried by a colour a glance can miss. A
+                        // switch says "setting", and says which way it is set
+                        // — which for the approval gate is the whole point.
+                        .toggleStyle(.switch)
+                        if let caption = setting.element.caption {
+                            Text(caption)
+                                .font(.caption)
+                                .foregroundColor(HubStyle.secondaryText)
+                        }
+                    }
                 }
             }
             .padding(12)
