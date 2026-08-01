@@ -94,12 +94,25 @@ public struct DiscoveredSharer: Sendable, Identifiable, Equatable {
     public let hostname: String
     public let tailscaleIP: String
     public let isOnline: Bool
+    /// Tailscale ACL tags ("tag:server"), straight off the netmap
+    /// `TailscalePeerDiscovery` already parses — the tag axis of
+    /// `PeerListFilter`. Empty for untagged nodes, which is a filterable state
+    /// in its own right (`includeUntagged`), not an absence of data.
+    ///
+    /// Defaulted in the initialiser so the field is additive: the GTK app's
+    /// `--ui-preview` seeds `DiscoveredSharer`s by hand, and a required
+    /// parameter would have made a display-only field a breaking change.
+    public let tags: [String]
 
-    public init(id: String, hostname: String, tailscaleIP: String, isOnline: Bool) {
+    public init(
+        id: String, hostname: String, tailscaleIP: String, isOnline: Bool,
+        tags: [String] = []
+    ) {
         self.id = id
         self.hostname = hostname
         self.tailscaleIP = tailscaleIP
         self.isOnline = isOnline
+        self.tags = tags
     }
 }
 
@@ -315,7 +328,7 @@ public final class TsnetTransport {
         return discovery.availablePeers.map {
             DiscoveredSharer(
                 id: $0.id, hostname: $0.hostname,
-                tailscaleIP: $0.tailscaleIP, isOnline: $0.isOnline)
+                tailscaleIP: $0.tailscaleIP, isOnline: $0.isOnline, tags: $0.tags)
         }
     }
 

@@ -30,6 +30,9 @@ public struct HubAccount: Identifiable, Sendable, Equatable {
 public struct ViewerHeader: View {
     let subtitle: String
     var showSpinner = false
+    /// The peer-list filter menu (nil ⇒ hidden — a host with no list to filter,
+    /// or a surface that is not showing one right now).
+    var filter: HubFilter?
     var onRefresh: (@MainActor @Sendable () -> Void)?
     /// One more header button, for whatever this app's header needs that the
     /// other's does not — Sign out, on a build with no account menu to hang it
@@ -46,6 +49,7 @@ public struct ViewerHeader: View {
     public init(
         subtitle: String,
         showSpinner: Bool = false,
+        filter: HubFilter? = nil,
         onRefresh: (@MainActor @Sendable () -> Void)? = nil,
         secondaryAction: HubAction? = nil,
         accountName: String? = nil,
@@ -56,6 +60,7 @@ public struct ViewerHeader: View {
     ) {
         self.subtitle = subtitle
         self.showSpinner = showSpinner
+        self.filter = filter
         self.onRefresh = onRefresh
         self.secondaryAction = secondaryAction
         self.accountName = accountName
@@ -74,6 +79,12 @@ public struct ViewerHeader: View {
             Spacer()
             if showSpinner {
                 ProgressView()
+            }
+            // Filter sits before Refresh, mirroring the macOS header's order
+            // (filter, refresh, account): both act on the list below, and the
+            // one that changes what the list *means* reads first.
+            if let filter {
+                HubFilterMenu(model: filter)
             }
             if let onRefresh {
                 Button("Refresh", action: onRefresh)

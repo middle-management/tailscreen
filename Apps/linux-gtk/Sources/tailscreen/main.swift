@@ -120,11 +120,21 @@ if gSelfTest {
     // hub without any networking, so the UI can be screenshotted / reviewed.
     gPickerMode = true
     gPicker.phase = .picking
+    // Tagged and untagged, online and offline, so the header's filter menu has
+    // every axis to show in a screenshot.
     gPicker.sharers = [
         DiscoveredSharer(id: "1", hostname: "robert-macbook", tailscaleIP: "100.64.0.12", isOnline: true),
-        DiscoveredSharer(id: "2", hostname: "studio-imac", tailscaleIP: "100.64.0.31", isOnline: true),
-        DiscoveredSharer(id: "3", hostname: "living-room-tv", tailscaleIP: "100.64.0.44", isOnline: false),
+        DiscoveredSharer(
+            id: "2", hostname: "studio-imac", tailscaleIP: "100.64.0.31", isOnline: true,
+            tags: ["tag:studio"]),
+        DiscoveredSharer(
+            id: "3", hostname: "living-room-tv", tailscaleIP: "100.64.0.44", isOnline: false,
+            tags: ["tag:media"]),
     ]
+    // The preview is a screenshot surface, not a returning user: show the whole
+    // seeded list (including the offline row) regardless of what this machine
+    // happens to have persisted.
+    gPicker.setFilter(.default, persist: false)
     gPicker.shareInfo = [
         "1": TailscreenMetadata(
             shareName: "robert's Screen", hostname: "robert-macbook",
@@ -274,8 +284,14 @@ if gSelfTest {
                 do {
                     gPicker.phase = .discovering
                     let peers = try await transport.discoverPeers()
+                    // Raw and unfiltered: the source of truth the header's
+                    // filter projects from (and what its tag menu enumerates).
+                    // Hiding offline machines is now the filter's job — and it
+                    // defaults to on, so the list looks unchanged. Only the
+                    // metadata sweep stays online-only: dialing a machine tsnet
+                    // says is down buys nothing but a timeout.
+                    gPicker.sharers = peers
                     let online = peers.filter { $0.isOnline }
-                    gPicker.sharers = online
                     gPicker.phase = .picking
                     // Lazy per-sharer metadata sweep (the sharing chip + res).
                     await withTaskGroup(of: (String, TailscreenMetadata?).self) { group in
@@ -304,8 +320,8 @@ if gSelfTest {
                 guard case .picking = gPicker.phase else { return }
                 guard let peers = try? await transport.discoverPeers() else { return }
                 guard case .picking = gPicker.phase else { return }  // re-check after await
+                gPicker.sharers = peers
                 let online = peers.filter { $0.isOnline }
-                gPicker.sharers = online
                 let ids = Set(online.map(\.id))
                 gPicker.shareInfo = gPicker.shareInfo.filter { ids.contains($0.key) }
                 await withTaskGroup(of: (String, TailscreenMetadata?).self) { group in
@@ -454,6 +470,20 @@ struct ViewerApp: App {
         return { gPicker.refresh() }
     }
 
+    /// The peer-list filter, offered from the same settled picking state as
+    /// Refresh — there is nothing to filter while the node is still coming up.
+    /// All three axes are live here: the picker keeps the raw peer list
+    /// (including offline machines), `DiscoveredSharer` now carries the netmap's
+    /// ACL tags, and the existing metadata sweep already fills `shareInfo`,
+    /// which is the sharing axis's input.
+    private var headerFilter: HubFilter? {
+        guard gPickerMode && showingPickerList else { return nil }
+        return HubFilter(
+            filter: picker.filter,
+            tags: picker.knownTags,
+            onChange: { gPicker.setFilter($0) })
+    }
+
     var body: some Scene {
         WindowGroup("Tailscreen viewer") {
             rootView
@@ -518,8 +548,11 @@ struct ViewerApp: App {
 
     /// The picker's discovered machines as hub rows, with the metadata sweep's
     /// answer folded in so the shared chrome derives the sharing chip.
+    ///
+    /// Built from the FILTERED projection; `picker.sharers` stays raw so the tag
+    /// menu and any future auto-connect still see every machine.
     private var hubScreens: [HubScreen] {
-        picker.sharers.map { sharer in
+        picker.filteredSharers.map { sharer in
             HubScreen(
                 id: sharer.id, hostname: sharer.hostname, tailscaleIP: sharer.tailscaleIP,
                 isOnline: sharer.isOnline, metadata: picker.shareInfo[sharer.id])
@@ -595,6 +628,7 @@ struct ViewerApp: App {
                 ViewerHeader(
                     subtitle: headerSubtitle,
                     showSpinner: headerShowsSpinner,
+                    filter: headerFilter,
                     onRefresh: headerOnRefresh,
                     accountName: gPickerMode ? profileStore.active.name : nil,
                     accounts: profileStore.profiles.map {
@@ -611,6 +645,7 @@ struct ViewerApp: App {
                         screens: hubScreens,
                         loginURL: picker.loginURL,
                         autoExpandFirst: gUIPreview,
+                        hiddenByFilter: picker.hiddenByFilter,
                         // The chrome hands back the row's id rather than a
                         // transport type it deliberately does not import.
                         onSelect: { id in
