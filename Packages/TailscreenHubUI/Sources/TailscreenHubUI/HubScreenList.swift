@@ -20,6 +20,20 @@ public struct HubScreen: Identifiable, Sendable {
     /// "robert's Screen · 1920 × 1080 · HEVC", for the expanded detail pane.
     public let sharingCaption: String?
 
+    /// The row's second line.
+    ///
+    /// Deliberately a STATUS and not the tailnet IP, which is what these rows
+    /// used to show while online. macOS puts a status word here and the address
+    /// in the expanded detail pane — which is the right split, because that is
+    /// where the address is actually actionable (selectable, next to the rest
+    /// of the connection facts). A bare `100.122.40.62` on the resting list
+    /// reads as debug output, and it is the one line that never changes when
+    /// the thing you are watching for — whether the machine is reachable — does.
+    ///
+    /// Sharing is not repeated here: it already has the green chip, and saying
+    /// it twice in one row costs a line and adds nothing.
+    public var statusLine: String { isOnline ? "Online" : "Offline" }
+
     public init(
         id: String, hostname: String, tailscaleIP: String, isOnline: Bool,
         sharingName: String? = nil, sharingCaption: String? = nil

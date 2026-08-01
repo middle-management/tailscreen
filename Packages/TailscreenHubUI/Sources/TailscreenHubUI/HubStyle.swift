@@ -130,3 +130,17 @@ public struct HubPrompt: Identifiable, Sendable {
         self.declineLabel = declineLabel
     }
 }
+
+/// The header's signed-in line, decided once so both hubs say the same thing.
+///
+/// Prefers the TAILNET over the login, which is the macOS hub's choice and the
+/// more useful of the two here: the login answers "who am I", but the screen
+/// list below is scoped to a tailnet, so the tailnet is what explains an
+/// expected machine being absent. The login is the fallback because some
+/// control planes (headscale commonly) report no tailnet name at all, and a
+/// blank header is worse than a less-specific one.
+public func hubSignedInSubtitle(tailnet: String?, account: String?) -> String {
+    if let tailnet, !tailnet.isEmpty { return tailnet }
+    if let account, !account.isEmpty { return account }
+    return "Signed in"
+}

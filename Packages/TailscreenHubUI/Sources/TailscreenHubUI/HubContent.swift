@@ -129,7 +129,7 @@ public struct PickerContent: View {
                 ForEach(visibleScreens, id: \.id) { screen in
                     SharerRow(
                         hostname: screen.hostname,
-                        subtitle: screen.isOnline ? screen.tailscaleIP : "Offline",
+                        subtitle: screen.statusLine,
                         isOnline: screen.isOnline,
                         isExpanded: expandedID == screen.id,
                         sharingName: screen.sharingName,

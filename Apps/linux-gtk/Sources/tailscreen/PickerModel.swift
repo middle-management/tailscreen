@@ -1,5 +1,6 @@
 import Foundation
 import SwiftCrossUI
+import TailscreenHubUI
 import TailscreenViewerTsnet
 
 // Targeted imports: bringing in all of TailscreenProtocol would collide with
@@ -95,12 +96,25 @@ final class PickerModel: ObservableObject {
     /// Set by `main` — re-runs discovery when the header Refresh is tapped.
     var onRefresh: (@MainActor @Sendable () -> Void)?
 
+    /// The tailnet this node joined, and the login it authenticated as — set by
+    /// `main` once bring-up resolves them. Both optional: neither is required
+    /// for the picker to work, and headscale commonly reports no tailnet name.
+    var tailnetName: String?
+    var accountIdentity: String?
+
     /// A short human-readable line for the placard while the picker works.
+    ///
+    /// Settled on the list, this shows the tailnet rather than "Choose a
+    /// screen to view" — matching the macOS hub. The guidance was worth having
+    /// when the header said nothing else, but a list of machines already
+    /// implies choosing one, whereas *which tailnet those machines are on* is
+    /// not deducible from anything else on screen.
     var statusLine: String {
         switch phase {
         case .startingNode: return loginURL == nil ? "Starting Tailscale…" : "Waiting for login…"
         case .discovering: return "Looking for screens…"
-        case .picking: return sharers.isEmpty ? "No screens found" : "Choose a screen to view"
+        case .picking:
+            return hubSignedInSubtitle(tailnet: tailnetName, account: accountIdentity)
         case .connecting(let host): return "Connecting to \(host)…"
         }
     }

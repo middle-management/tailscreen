@@ -602,9 +602,8 @@ final class AppUIState: ObservableObject {
                 )
                 loginURL = nil
                 phase = .ready
-                status =
-                    transport.accountIdentity.map { "Signed in as \($0)" }
-                    ?? "Signed in"
+                status = hubSignedInSubtitle(
+                    tailnet: transport.tailnetName, account: transport.accountIdentity)
                 refreshPeers()
             } catch {
                 phase = .failed
