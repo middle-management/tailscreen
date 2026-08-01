@@ -75,6 +75,37 @@ public struct HubAction: Sendable {
     }
 }
 
+/// A labelled on/off setting the chrome renders and the host owns.
+///
+/// Plain value + closure rather than a `Binding`, for the same reason
+/// `HubAction` is a struct: this package must not know where the setting is
+/// stored. The host reads it from wherever it persists (or does not), and the
+/// card turns the pair back into the `Binding` SwiftCrossUI's `Toggle` wants.
+/// A `Binding` in the public API would have made the card's caller reach for
+/// `@State` it does not own — both apps rebuild their `ShareCard` from a
+/// computed property on every model change, so there is no view-local state to
+/// bind to.
+///
+/// `caption` carries what the setting means when the label alone is a noun
+/// phrase. Turning a security gate off is the kind of thing that should say
+/// what it will do before it does it.
+public struct HubToggle: Sendable {
+    public let label: String
+    public let caption: String?
+    public let isOn: Bool
+    public let set: @MainActor @Sendable (Bool) -> Void
+
+    public init(
+        label: String, caption: String? = nil, isOn: Bool,
+        set: @escaping @MainActor @Sendable (Bool) -> Void
+    ) {
+        self.label = label
+        self.caption = caption
+        self.isOn = isOn
+        self.set = set
+    }
+}
+
 /// Something asking the person at this machine for a yes or a no.
 ///
 /// One type for what were two features: a viewer waiting to be admitted, and a

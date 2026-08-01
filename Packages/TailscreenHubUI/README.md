@@ -31,10 +31,10 @@ exists twice agrees on the day it is written and never again — so it lives her
 | `SharerRow` / `SharerDetail` | The list row and its inline detail pane. |
 | `PickerContent` | The content column: login card → share card → Screens list (searchable) or status pane. |
 | `HubStatusPane` / `HubLoginCard` | Centered spinner + status; the interactive-login placard. |
-| `ShareCard` | The sharing half of the hub: start/stop, notes, and prompts. |
+| `ShareCard` | The sharing half of the hub: start/stop, notes, prompts, and the per-share settings switches. |
 | `SessionPlacard` / `HubSessionPhase` | Connecting / awaiting approval / declined / ended. |
 | `AnnotationToolbar`, `StatsHUD`, `RemoteControlBar` | The over-video chrome. |
-| `HubAction`, `HubPrompt` | The two small value types the cards take actions through. |
+| `HubAction`, `HubPrompt`, `HubToggle` | The small value types the cards take actions and settings through. |
 
 ## Rules
 
@@ -51,7 +51,17 @@ exists twice agrees on the day it is written and never again — so it lives her
 - **Prompts are one shape.** A viewer waiting to be admitted and a viewer asking
   for control are the same interaction — a sentence and two buttons — and both
   go through `HubPrompt`. These apps have one window and no menubar to fall back
-  on, so a prompt that is not rendered here is one nobody can ever answer.
+  on, so a prompt that is not rendered here is one nobody can ever answer. The
+  switch that decides whether anyone has to ask — "Require approval for new
+  viewers" — has nowhere else to live either, which is why `ShareCard` takes
+  `settings` as well: a card that renders the prompts but not the gate is a
+  card where the gate can only be off.
+- **Values in, closures out — never a `Binding`.** `HubToggle` carries a `Bool`
+  and a setter rather than a `Binding` because this package must not know where
+  a setting is stored, and because both hosts rebuild their `ShareCard` from a
+  computed property on every model change — there is no view-local state for a
+  caller to bind to. The card stitches the pair back into the `Binding`
+  SwiftCrossUI's `Toggle` wants.
 
 ## Building
 
