@@ -2,7 +2,7 @@ name: Windows app
 
 # ONE definition of "build, stage and package the Windows app".
 #
-# release-windows.yml said in its own header that its steps were
+# release.yml said in its own header that its steps were
 # "windows-build.yml's `app` and `arm64-probe` jobs, copied faithfully rather
 # than reinvented". They were, and the copy was 545 lines. Between the three
 # call sites — x64 CI, arm64 CI, and the two-arch release matrix — the build
@@ -19,7 +19,7 @@ name: Windows app
 # artifact, and inventing a single behaviour for both would be worse.
 #
 # `use_cache` is the load-bearing one, and it is POLICY, not convenience: CI
-# passes true, release-windows.yml passes FALSE so a shipped binary is compiled
+# passes true, release.yml passes FALSE so a shipped binary is compiled
 # cold on the runner that ships it and can never contain an object a per-push
 # workflow's cache key handed it. Sharing one definition is not the same as
 # sharing one policy; the input is what keeps them apart.

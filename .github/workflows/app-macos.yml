@@ -2,7 +2,7 @@ name: macOS app
 
 # ONE definition of "build a universal, signed, notarized Tailscreen.app".
 #
-# release-macos.yml and pr-notarized-build.yml used to carry that definition twice,
+# release.yml and pr-notarized-build.yml used to carry that definition twice,
 # and the two copies shared ELEVEN identical steps: Setup Go, Apply
 # libtailscale patches, Build universal libtailscale.a, Build universal static
 # libopus, Build universal Tailscreen binary, Assemble Tailscreen.app, Check
@@ -220,7 +220,7 @@ jobs:
       # sed would ship an app claiming to be someone's local build, which is
       # worse than no stamp at all.
       #
-      # This landed in release-macos.yml AND pr-notarized-build.yml as two copies on
+      # This landed in release.yml AND pr-notarized-build.yml as two copies on
       # the same day this consolidation was written — which is the argument for
       # the consolidation in one line. `sed -i ''` is the BSD spelling and is
       # why it cannot simply be shared with the Windows stamp, which uses GNU

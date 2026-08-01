@@ -6,7 +6,7 @@ name: PR Notarized Build
 # UNUserNotificationCenter, TCC prompts, Gatekeeper — which a plain
 # `swift build` debug binary can't exercise (no CFBundleIdentifier).
 #
-# The BUILD lives in app-macos.yml, shared with release-macos.yml. What
+# The BUILD lives in app-macos.yml, shared with release.yml. What
 # remains here is the PR-shaped half: the label dance and the result comment.
 # Those are separate JOBS rather than steps because a job that calls a reusable
 # workflow can carry no steps of its own — that is the one structural cost of

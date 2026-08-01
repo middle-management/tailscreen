@@ -612,11 +612,11 @@ jobs:
   #     compile-only,
   #   • stages + uploads `tailscreen-linux-arm64.tar.gz`. A plain tarball here
   #     on purpose: the arm64 AppImage exists, but it lives in
-  #     release-linux.yml (aarch64 linuxdeploy + appimagetool) — AppImage
+  #     release.yml (aarch64 linuxdeploy + appimagetool) — AppImage
   #     assembly is a packaging concern, not a per-PR gate, exactly as the
   #     x86_64 AppImage is release-only too.
   #
-  # The steps live in app-linux.yml, shared with release-linux.yml's arm64
+  # The steps live in app-linux.yml, shared with release.yml's arm64
   # packaging job — which was this job plus a tarball rename, down to the
   # duplicated README.txt wording inside the tarball.
   #

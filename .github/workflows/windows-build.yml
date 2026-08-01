@@ -4,7 +4,7 @@ name: Windows build
 # check it loads, check the Go c-archive initialises, and pack/install/launch
 # an MSIX from each.
 #
-# The BUILD itself lives in app-windows.yml, shared with release-windows.yml —
+# The BUILD itself lives in app-windows.yml, shared with release.yml —
 # whose header used to say, accurately, that its steps were this workflow's
 # "copied faithfully rather than reinvented". 545 lines of faithful copy is 545
 # lines that can drift, and it had: the arm64 leg here never got the build
