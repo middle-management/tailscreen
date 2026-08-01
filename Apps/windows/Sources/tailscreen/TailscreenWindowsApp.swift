@@ -278,6 +278,27 @@ final class AppUIState: ObservableObject {
     /// actor on purpose — see its type comment).
     @Published var sharing = WindowsShareSession.Status()
 
+    /// Auto-resume: a non-empty tsnet state directory means a previous login
+    /// whose node can come up with no browser interaction, so the app goes
+    /// straight for the peer list instead of parking on a Sign in button the
+    /// user would always press. A fresh install still lands on the sign-in
+    /// card — auto-starting THERE would be a surprise browser prompt. If the
+    /// stored login has expired, `prepare` falls back to the interactive URL
+    /// and the UI shows the usual waiting-for-browser card, so the worst case
+    /// of guessing wrong is exactly the screen the user would have reached by
+    /// clicking. (The GTK app's picker mode already behaves this way.)
+    init() {
+        if Self.hasPreviousLogin() {
+            signIn()
+        }
+    }
+
+    private static func hasPreviousLogin() -> Bool {
+        let entries =
+            (try? FileManager.default.contentsOfDirectory(atPath: stateDirectory())) ?? []
+        return !entries.isEmpty
+    }
+
     private let transport = TsnetTransport()
     private let shareSession = WindowsShareSession()
     /// The renderer hand-off, shared with `WinUIVideoView`. Portable, lock-
