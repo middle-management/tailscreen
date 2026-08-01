@@ -147,7 +147,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # A PREBUILT FFmpeg rather than vcpkg. The vcpkg `ffmpeg` port builds from
       # source and would dominate this job's runtime for a dependency we only

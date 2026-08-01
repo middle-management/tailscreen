@@ -38,7 +38,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: recursive  # Initialize all submodules
           # Full history so the diff-coverage gate can diff against the
@@ -110,7 +110,7 @@ jobs:
 
       - name: Upload coverage artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-profdata
           path: |
@@ -165,7 +165,7 @@ jobs:
       PKG_CONFIG_PATH: ${{ github.workspace }}/Packages/TailscaleKit:/opt/homebrew/lib/pkgconfig
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: recursive
       - name: Bootstrap libtailscale
@@ -304,7 +304,7 @@ jobs:
             cmd: PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" swift test --package-path Packages/TailscaleKit
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # 'false' for the four legs that omit it — only the TailscaleKit-
           # touching legs need the submodule, and cloning it costs the others
@@ -344,7 +344,7 @@ jobs:
     timeout-minutes: 30
     container: swift:6.3-noble
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
       - name: Install build tools + A/V dev libraries
@@ -435,7 +435,7 @@ jobs:
     timeout-minutes: 30
     container: swift:6.3-noble
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
       - name: Install GTK4 + GL + headless display + A/V + Go
@@ -496,7 +496,7 @@ jobs:
       # ---------------------------------------------------------------------
       - name: Restore the GTK app's build directory
         id: gtk-build-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: Apps/linux-gtk/.build
           key: >-
@@ -512,7 +512,7 @@ jobs:
       # everything.
       - name: Restore the Windows app's Linux typecheck directory
         id: winapp-typecheck-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: Apps/windows/.build
           key: >-
@@ -581,7 +581,7 @@ jobs:
         if: >-
           ${{ !cancelled() && steps.gtk-build-cache.outcome == 'success'
           && steps.gtk-build-cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: |
             Apps/linux-gtk/.build
@@ -594,7 +594,7 @@ jobs:
         if: >-
           ${{ !cancelled() && steps.winapp-typecheck-cache.outcome == 'success'
           && steps.winapp-typecheck-cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: |
             Apps/windows/.build
@@ -640,7 +640,7 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install SwiftLint
         run: brew install swiftlint
       - name: Run SwiftLint (baseline-gated)
@@ -663,7 +663,7 @@ jobs:
     timeout-minutes: 10
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install swift-format
         run: brew install swift-format
       - name: Verify swift-format is available
@@ -693,7 +693,7 @@ jobs:
     env:
       PKG_CONFIG_PATH: ${{ github.workspace }}/Packages/TailscaleKit:/opt/homebrew/lib/pkgconfig
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
       - name: Bootstrap libtailscale
@@ -714,76 +714,3 @@ jobs:
   # handshake / DERP-STUN (:3478/udp) complete. `node.up()` has no internal
   # timeout, so the job just stalled. These suites are local-only; run them with
   # `make test-e2e-local` (Docker) or `scripts/e2e-up-native.sh` (Docker-free).
-
-  # TEMPORARY DIAGNOSTIC — remove once the cache-reservation failure is
-  # understood. See the W12 PR discussion.
-  #
-  # Every `Apps/*/.build` cache save in this workflow fails, on every run, with
-  # "Unable to reserve cache with key <k>, another job may be creating this
-  # cache" — for two different keys, with no other job referencing either, and
-  # with the restores missing every time. Because the saves never land, the
-  # builds stay cold AND pay ~75 s of tar-and-upload for nothing, which makes
-  # this workflow about a minute SLOWER than before the caches were added.
-  #
-  # The leading hypothesis is the repo's 10 GB Actions cache budget: one save
-  # (Windows x64, 313 MB) has been seen to succeed, so the mechanism works, and
-  # a full bucket is one of the few things that fails a reservation rather than
-  # a restore. That is unfalsifiable from job logs alone — it needs the cache
-  # API, which needs a token no local checkout has but every workflow run does.
-  # Hence a job: run the query where the credential already is.
-  cache-audit:
-    name: cache-audit
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    # A diagnostic must never be the reason a PR is red. `set -euo pipefail`
-    # below is there so a broken query is visible in THIS job rather than
-    # silently printing zeroes; continue-on-error keeps that visibility from
-    # blocking anything else.
-    continue-on-error: true
-    permissions:
-      actions: read       # the caches API is gated on this, and nothing else here needs it
-    steps:
-      - name: Inventory the repository's Actions caches
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          # One row per cache so the sum is computed here rather than trusted
-          # from a summary field.
-          gh api --paginate "repos/$REPO/actions/caches?per_page=100" \
-            --jq '.actions_caches[] | [.size_in_bytes, .ref, .key] | @tsv' > rows.tsv
-
-          count=$(wc -l < rows.tsv | tr -d ' ')
-          total=$(awk -F'\t' '{s+=$1} END {print s+0}' rows.tsv)
-          # GitHub's documented per-repository ceiling. Printed as the ratio
-          # because "9.6 GB" only means something next to it.
-          limit=$((10 * 1024 * 1024 * 1024))
-          pct=$(awk -v t="$total" -v l="$limit" 'BEGIN {printf "%.1f", (t*100)/l}')
-
-          {
-            echo "## Actions cache inventory"
-            echo ""
-            echo "- entries: **$count**"
-            echo "- total: **$(awk -v b="$total" 'BEGIN {printf "%.2f", b/1073741824}') GiB** of 10 GiB (**${pct}%**)"
-            echo ""
-            echo "### Largest 20"
-            echo ""
-            echo '```'
-            sort -t$'\t' -k1,1nr rows.tsv | head -20 \
-              | awk -F'\t' '{printf "%8.2f MiB  %-28s %s\n", $1/1048576, $2, $3}'
-            echo '```'
-            echo ""
-            echo "### Do this workflow's own keys exist?"
-            echo ""
-            echo '```'
-            for prefix in linux-gtk-build linux-typecheck-windows-app windows-app-build libtailscale; do
-              n=$(cut -f3 rows.tsv | grep -c "^$prefix" || true)
-              echo "$prefix: $n"
-            done
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          # Also to the job log, so this is readable without opening the summary.
-          echo "entries=$count total=$total (${pct}% of 10 GiB)"
-          sort -t$'\t' -k1,1nr rows.tsv | head -20 | awk -F'\t' '{printf "%8.2f MiB  %-28s %s\n", $1/1048576, $2, $3}'

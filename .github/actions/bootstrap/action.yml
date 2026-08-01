@@ -172,7 +172,7 @@ runs:
     - name: Restore libtailscale.a
       id: libtailscale-cache
       if: inputs.libtailscale != 'none' && inputs.cache == 'true'
-      uses: actions/cache/restore@v4
+      uses: actions/cache/restore@v6
       with:
         path: |
           Packages/TailscaleKit/upstream/libtailscale/libtailscale.a
@@ -307,7 +307,7 @@ runs:
     # toolchain, only the archive it produces.
     - name: Setup Go
       if: inputs.go == 'setup-go' && (inputs.libtailscale == 'none' || steps.libtailscale-cache.outputs.cache-hit != 'true')
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@v7
       with:
         # Version derived from the submodule's go.mod, not pinned here.
         #
@@ -420,7 +420,7 @@ runs:
         !cancelled() && inputs.libtailscale != 'none' && inputs.cache == 'true'
         && steps.libtailscale-cache.outcome == 'success'
         && steps.libtailscale-cache.outputs.cache-hit != 'true'
-      uses: actions/cache/save@v4
+      uses: actions/cache/save@v6
       with:
         path: |
           Packages/TailscaleKit/upstream/libtailscale/libtailscale.a

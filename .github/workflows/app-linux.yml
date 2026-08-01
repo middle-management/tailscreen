@@ -94,7 +94,7 @@ jobs:
       appimage: ${{ steps.pkg.outputs.appimage }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
           submodules: recursive
@@ -161,7 +161,7 @@ jobs:
       - name: Restore the app's build directory
         id: gtk-build-cache
         if: inputs.use_cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: Apps/linux-gtk/.build
           key: >-
@@ -274,7 +274,7 @@ jobs:
       # upload cannot happen here.
       - name: Upload build artifact
         if: inputs.package != 'none'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ inputs.artifact_name != '' && inputs.artifact_name || steps.pkg.outputs.tarball }}
           path: |
@@ -305,7 +305,7 @@ jobs:
           ${{ !cancelled() && inputs.use_cache
           && steps.gtk-build-cache.outcome == 'success'
           && steps.gtk-build-cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: |
             Apps/linux-gtk/.build
