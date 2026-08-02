@@ -45,10 +45,23 @@ public struct AudioInputFormat: Equatable, Sendable {
 /// That is the same rule `InputInjecting` follows on a machine with no XTEST:
 /// the absence is what makes the UI honest.
 public protocol MicrophoneCapturing: AnyObject, Sendable {
-    /// Interleaved Float32 frames at `format`. The format is passed with every
-    /// buffer rather than read once, because a device can be reconfigured
-    /// underneath a running stream and a pipeline that cached the old rate
-    /// would resample against it forever.
+    /// Interleaved Float32 frames at `format`.
+    ///
+    /// **`format` describes the BUFFER, not the device.** That distinction is
+    /// the one way to misuse this seam, and it is invisible when you do: both
+    /// shipped backends fold to mono themselves and separately publish the
+    /// device's own channel count (`ALSA.PCMRecorder.format.channels`,
+    /// `WASAPI.Recorder.format`), because a sharer wants to know their
+    /// interface is 8-channel. An adapter that forwards *that* number alongside
+    /// already-mono samples makes `CapturePCMConverter` downmix a second time —
+    /// reading N mono samples as N/2 stereo frames, which halves the rate and
+    /// drops the pitch an octave. Nothing errors; the call just sounds wrong.
+    /// A backend handing over mono reports `channelCount: 1`, whatever its
+    /// hardware is.
+    ///
+    /// The format is passed with every buffer rather than read once, because a
+    /// device can be reconfigured underneath a running stream and a pipeline
+    /// that cached the old rate would resample against it forever.
     var onPCM: (([Float], AudioInputFormat) -> Void)? { get set }
 
     /// The capture stopped. Nil means the caller asked; an error means the

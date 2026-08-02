@@ -39,6 +39,26 @@ final class MicrophoneCaptureTests: XCTestCase {
         XCTAssertEqual(out.count, 2)
     }
 
+    func testAlreadyMonoDataMustDeclareOneChannel() {
+        let converter = CapturePCMConverter()
+        // The seam's one way to be misused, pinned as arithmetic. Both shipped
+        // backends fold to mono THEMSELVES and separately publish the device's
+        // channel count, because a sharer wants to know their interface is
+        // 8-channel. An adapter that forwards that number alongside
+        // already-mono samples lands here: 960 mono samples read as 480 stereo
+        // frames, which halves the rate and drops the pitch an octave. Nothing
+        // errors — it just sounds wrong.
+        let mono = [Float](repeating: 0.5, count: 960)
+        let honest = converter.convert(mono, from: AudioInputFormat(sampleRate: 48_000, channelCount: 1))
+        XCTAssertEqual(honest.count, 960)
+
+        let mistaken = CapturePCMConverter().convert(
+            mono, from: AudioInputFormat(sampleRate: 48_000, channelCount: 2))
+        XCTAssertEqual(
+            mistaken.count, 480,
+            "this is the bug, asserted so the doc comment on `onPCM` has teeth")
+    }
+
     // MARK: Resampling
 
     func testDownsamplingProducesRoughlyTheRightCount() {
