@@ -8,40 +8,54 @@
 
 📖 **Documentation:** <https://tailscreen.dev>
 
-Lightweight screen sharing between Macs, for the times when spinning up a full conferencing app feels like overkill.
+Lightweight screen sharing between your own machines, for the times when spinning up a full conferencing app feels like overkill.
 
-Tailscreen is a tiny macOS app that streams one Mac's screen to another Mac over [Tailscale](https://tailscale.com/). It uses ScreenCaptureKit to grab pixels, VideoToolbox to encode HEVC (with H.264 as a fallback for older hardware), and Tailscale's WireGuard tunnel to move bytes. There is no server, no port to forward, and no account to create beyond Tailscale itself.
+Tailscreen streams one machine's screen to another over [Tailscale](https://tailscale.com/). There is no server, no port to forward, and no account to create beyond Tailscale itself.
 
 You click your display, the other person clicks your machine in their device list, a window opens. That's the whole thing.
 
 ## What you get
 
-- 60 fps full-Retina hardware-encoded HEVC (or H.264 on Macs whose VideoToolbox can't do HEVC) over the same WireGuard tunnel that Tailscale already gives you. Direct peer-to-peer when the network allows; Tailscale's DERP relays when it doesn't.
+- Hardware-encoded HEVC or H.264 over the same WireGuard tunnel Tailscale already gives you — up to 60 fps at full Retina resolution on macOS. Direct peer-to-peer when the network allows; Tailscale's DERP relays when it doesn't.
 - Automatic peer discovery — Tailscreen probes your tailnet and lists which machines are sharing. No IP-typing.
 - Ephemeral tsnet nodes. Each session spins up a fresh node and Tailscale tears it down when you're done; your admin console doesn't fill up with ghosts.
 - Two-way annotations over a reliable TCP back-channel, so strokes don't get dropped when video does.
-- A small, ordinary Mac app: one window for finding peers and signing in, and a menubar icon that carries the sharing controls while you share.
+- Opt-in remote control, granted to one viewer at a time and revocable instantly (including a panic hotkey).
+- Small, ordinary desktop apps — on macOS, a window for finding peers plus a menubar icon carrying the sharing controls.
+
+## Platforms
+
+| | Share | View | Capture | Download |
+| :--- | :--- | :--- | :--- | :--- |
+| **macOS** 15.2+ | ✅ | ✅ | ScreenCaptureKit | signed + notarized `.app` |
+| **Linux** | ✅ | ✅ | X11 (`libxcb`) | AppImage + tarball, x86_64 and aarch64 |
+| **Windows** 10/11 | ✅ | ✅ | Windows.Graphics.Capture | zip + MSIX, x64 and arm64 |
+
+macOS is the mature one and the only platform whose downloads are signed by a trusted authority. The Linux and Windows apps are newer: they build, ship artifacts, and are gated in CI on real work (a headless GL render self-test on Linux; MSIX install-and-launch on Windows), but they've had far less time in front of real users. Wayland can't be *shared* from yet — capture is X11-only — and the Windows MSIX is self-signed, so it installs only after you trust its certificate.
 
 ## What you need
 
-- macOS 15.2 (Sequoia) or later. Earlier macOS versions, iOS, and Linux aren't supported.
-- Swift 6 toolchain if you're building from source. Otherwise just grab a release.
 - A Tailscale account, or a self-hosted control plane like [headscale](https://github.com/juanfont/headscale). The free Tailscale personal tier is fine; see [Self-hosted control planes](https://tailscreen.dev/self-hosted/) if you'd rather not depend on Tailscale Inc.
-- Screen Recording permission. macOS will ask the first time.
+- Swift 6 toolchain if you're building from source. Otherwise just grab a release.
+- Screen Recording permission on macOS — it'll ask the first time.
 
 ## Install
 
 ### Homebrew
 
 ```bash
-brew install middle-management/tap/tailscreen
+brew install --cask middle-management/tap/tailscreen
 ```
 
-Pulls the signed, notarized universal build from the latest release. Cask formula lives in [middle-management/homebrew-tap](https://github.com/middle-management/homebrew-tap).
+On macOS this pulls the signed, notarized universal build from the latest release; on Linux the *same* cask links the release AppImage instead, branching on `on_macos` / `on_linux`. The formula lives in [middle-management/homebrew-tap](https://github.com/middle-management/homebrew-tap).
 
 ### From a release
 
-Grab the latest `Tailscreen-<version>-macOS.zip` from [Releases](https://github.com/middle-management/tailscreen/releases), unzip, drag to `/Applications`. The release zip is a universal binary, signed and notarized when the build secrets are configured.
+Everything is attached to the same [GitHub release](https://github.com/middle-management/tailscreen/releases).
+
+- **macOS** — `Tailscreen-<version>-macOS.zip`. Unzip, drag to `/Applications`. Universal binary, signed and notarized when the build secrets are configured.
+- **Linux** — `Tailscreen-<version>-<x86_64|aarch64>.AppImage`; `chmod +x` and run. AppImages need FUSE to self-mount, so `Tailscreen-<version>-linux-<x86_64|arm64>.tar.gz` is there for systems without it.
+- **Windows** — `Tailscreen-<version>-windows-<x64|arm64>.zip`, which is unzip-and-run. There's also an `.msix`, but it is **self-signed**: Windows rejects it until you trust the certificate, so the zip is the easier path. Proper signing (and winget) is pending.
 
 ### From source
 
@@ -75,14 +89,37 @@ make release      # → Apps/macOS/.build/release/Tailscreen
 make install      # → ~/bin/Tailscreen
 ```
 
-More detail in the [Install docs](https://tailscreen.dev/install/).
+The `Makefile` targets build the **macOS** app. The other two live beside it and are built directly:
+
+```bash
+swift build --package-path Apps/linux   --product tailscreen   # needs GTK4 + libav* + ALSA
+swift build --package-path Apps/windows --product tailscreen   # needs the Windows App SDK
+```
+
+Both still want `make tailscale` first, for the same `libtailscale.a`. Per-platform prerequisites are in [`Apps/linux/README.md`](Apps/linux/README.md) and [`Apps/windows/README.md`](Apps/windows/README.md). More detail in the [Install docs](https://tailscreen.dev/install/).
 
 ## Run it
 
 ```bash
-cd Apps/macOS && swift run     # or: make run
+cd Apps/macOS && swift run                 # or: make run
 Apps/macOS/.build/release/Tailscreen       # after `make release`
 ```
+
+On Linux and Windows the executable is `tailscreen`; run it with no arguments to get the peer list, or pass a hostname to dial it directly.
+
+## Repo layout
+
+```
+Apps/          one runnable app per platform — linux, macOS, windows
+               (each owns its own packaging/ where it has any)
+Packages/      local SwiftPM packages: the portable protocol core
+               (TailscreenKit), the per-platform backends, and the
+               system-library wrappers
+scripts/       build, packaging and end-to-end helpers
+docs/          the tailscreen.dev site
+```
+
+The interesting split is `Packages/TailscreenKit`: the wire protocol, the viewer and sharer data planes, and every pure decision they make live there, build on Linux, and are unit-tested on Linux CI. Each app supplies only its platform's capture, encode, decode, render and audio behind those seams. [`CLAUDE.md`](CLAUDE.md) is the detailed map.
 
 ## Use it
 
@@ -133,6 +170,8 @@ make test-e2e-harness   # Two real Tailscreen instances, asserted by log marker
 
 First run of either pops a Screen Recording permission prompt on `Apps/macOS/.build/debug/Tailscreen`; grant it and re-run. See [CLAUDE.md](CLAUDE.md#local-screen-share-e2e-local-only) for the env-var hooks the harness uses.
 
+Linux has its own asserted equivalent — `scripts/e2e-linux-sharer.sh` brings up a local headscale and an Xvfb display, runs a real sharer and a headless viewer, and checks not just that frames arrived but that they're **non-uniform**, i.e. actual captured pixels rather than a flat rectangle a frame count would happily accept.
+
 ### Voice (manual)
 
 Two-way voice rides on the same UDP socket as video, gated to active share sessions. Both ends are muted by default — unmute via the toolbar mic button (viewer) or **File → Microphone** (sharer). The first unmute prompts for microphone access; macOS uses VoiceProcessingIO for built-in echo cancellation.
@@ -170,7 +209,7 @@ More detail in the [Network Protocol docs](https://tailscreen.dev/protocol/).
 
 - **Encrypted.** All four channels ride inside Tailscale's WireGuard tunnel. There is no plaintext fallback and no separate Tailscreen-level TLS layer.
 - **No server.** The authors don't operate any infrastructure that touches your traffic. Tailscale's control plane and DERP relays are the only third-party components, and DERP can't decrypt your traffic — it's a TLS dumb pipe carrying ciphertext.
-- **No recording.** Pixels are captured, encoded, transmitted, and discarded. Nothing on disk except the ephemeral tsnet node state, which lives at `~/Library/Application Support/Tailscreen/tailscale`.
+- **No recording.** Pixels are captured, encoded, transmitted, and discarded. Nothing on disk except the ephemeral tsnet node state — `~/Library/Application Support/Tailscreen/tailscale` on macOS, `$XDG_CONFIG_HOME/tailscreen` (or `~/.config/tailscreen`) on Linux, `%LOCALAPPDATA%\Tailscreen` on Windows.
 - **Ephemeral nodes.** Tailscale removes the node when the session ends.
 - **Tailscale ACLs are your access-control plane.** Allow TCP+UDP/7447 from the principals you trust; reject everyone else.
 
@@ -196,7 +235,9 @@ The full list lives in the [Troubleshooting docs](https://tailscreen.dev/trouble
 
 ## CI/CD
 
-CI builds and tests on every PR. A published GitHub release triggers a universal-binary build, which codesigns and notarizes when the Apple secrets are configured and uploads the zipped `.app` plus a checksums file. Docs are deployed when `docs/` changes.
+CI builds and tests on every PR — the macOS app plus the Linux and Windows apps and every portable package, with the portable tier's suites running on Linux.
+
+A published GitHub release runs one workflow that fans out to a job per deliverable: the universal macOS `.app` (codesigned and notarized when the Apple secrets are configured), Linux AppImages and tarballs for both arches, and Windows zips and MSIXes for both arches. Packaging is slow enough that it can't be a required gate, so it's also runnable on demand by labelling a PR `build-linux-package`, `build-windows-package` or `build:notarized`. Docs deploy when `docs/` changes.
 
 To cut a release:
 
