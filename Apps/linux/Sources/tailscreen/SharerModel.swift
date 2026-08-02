@@ -14,6 +14,7 @@ import class TailscreenProtocol.PeerAccessStore
 import class TailscreenProtocol.SharerAccessCoordinator
 import struct TailscreenProtocol.PickerSelection
 import struct TailscreenProtocol.QualitySettings
+import enum TailscreenProtocol.QualitySettingsStore
 import struct TailscreenProtocol.PendingShareRequest
 import enum TailscreenProtocol.ScreenShareMessage
 import struct TailscreenProtocol.ShareRequestInbox
@@ -108,6 +109,16 @@ final class SharerModel: ObservableObject {
     /// `setRequireApproval` — assigning here would change the switch without
     /// telling the live server, which is the one place it matters.
     @Published private(set) var requireApproval: Bool = ViewerApprovalPreference.load()
+
+    /// The encoder knobs the next share will start with.
+    ///
+    /// Persisted through the portable `QualitySettingsStore` — the same store
+    /// and the same key the macOS Settings pane writes, so the model's clamps
+    /// and its decode-with-fallback are shared rather than reimplemented.
+    /// Read at start rather than pushed live: both non-mac capture backends
+    /// take their settings at construction, so a mid-share change lands on the
+    /// NEXT share and the card's caption says exactly that.
+    @Published private(set) var quality: QualitySettings = QualitySettingsStore.load()
 
     /// Whether this host can share at all. X11 capture needs a display; on a
     /// Wayland-only or headless session there's nothing to capture, and the UI
@@ -329,7 +340,7 @@ final class SharerModel: ObservableObject {
             do {
                 try await server.start(
                     filterData: selectionData,
-                    quality: .default,
+                    quality: quality,
                     existingNode: node,
                     // The app's long-lived listener, so the share does not
                     // create a second one competing for port 7447 — and so
@@ -577,6 +588,18 @@ final class SharerModel: ObservableObject {
     /// the gate off is also how you admit a queue in one click. Turning it on
     /// mid-share affects the next HELLO — viewers already admitted stay
     /// admitted, exactly as on macOS.
+    /// Change the encoder knobs and remember them.
+    ///
+    /// Deliberately does NOT touch a running share: the capture backend was
+    /// built with the old values and there is no re-push path on this host, so
+    /// pretending otherwise would be a control that appears to work.
+    func setQuality(_ new: QualitySettings) {
+        let normalized = new.normalized()
+        guard normalized != quality else { return }
+        quality = normalized
+        QualitySettingsStore.save(normalized)
+    }
+
     func setRequireApproval(_ enabled: Bool) {
         guard enabled != requireApproval else { return }
         requireApproval = enabled

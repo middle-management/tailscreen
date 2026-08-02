@@ -11,9 +11,11 @@ public final class GtkVideoSink: VideoSink, @unchecked Sendable {
     private let uiState: ViewerUIState?
     // Touched only on `present`, which the session drives serially.
     private var announcedVideo = false
-    // fps accounting over a ~1 s window (present is called serially).
-    private var windowStartNs: UInt64 = 0
-    private var framesInWindow = 0
+    // fps accounting over a ~1 s window (present is called serially). The
+    // arithmetic moved to the portable tier when the Windows viewer needed the
+    // identical thing — and gained tests, which caught that the old `0`
+    // window-start sentinel is a legitimate timestamp.
+    private var frameRate = FrameRateCounter()
 
     public init(store: FrameStore, uiState: ViewerUIState? = nil) {
         self.store = store
@@ -25,8 +27,7 @@ public final class GtkVideoSink: VideoSink, @unchecked Sendable {
     /// Call on the session-driving context before a new `run`.
     public func resetForNewSession() {
         announcedVideo = false
-        windowStartNs = 0
-        framesInWindow = 0
+        frameRate.reset()
     }
 
     public func present(_ frame: any DecodedFrame) {
@@ -42,16 +43,10 @@ public final class GtkVideoSink: VideoSink, @unchecked Sendable {
             uiState?.markVideoFlowing()  // hides the connecting placard
             uiState?.post(sessionPhase: .viewing)
         }
-        // fps HUD: count frames per ~1 s window; publish fps + resolution.
-        let now = DispatchTime.now().uptimeNanoseconds
-        if windowStartNs == 0 { windowStartNs = now }
-        framesInWindow += 1
-        let elapsed = now &- windowStartNs
-        if elapsed >= 1_000_000_000 {
-            let fps = Int((Double(framesInWindow) * 1_000_000_000.0 / Double(elapsed)).rounded())
+        // fps HUD: publish only when a window closes, which is what keeps this
+        // off the per-frame path.
+        if let fps = frameRate.record(nowNs: DispatchTime.now().uptimeNanoseconds) {
             uiState?.post(fps: fps, width: frame.width, height: frame.height)
-            windowStartNs = now
-            framesInWindow = 0
         }
     }
 }

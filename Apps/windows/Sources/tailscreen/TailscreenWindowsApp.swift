@@ -20,6 +20,7 @@ import struct TailscreenProtocol.PeerListFilter
 import enum TailscreenProtocol.PeerListFilterStore
 import enum TailscreenProtocol.PeerSharingState
 import struct TailscreenProtocol.QualitySettings
+import enum TailscreenProtocol.QualitySettingsStore
 import enum TailscreenProtocol.ScreenShareMessage
 import struct TailscreenProtocol.ShareRequestInbox
 import struct TailscreenProtocol.TailscreenMetadata
@@ -200,12 +201,31 @@ struct TailscreenWindowsApp: App {
                     .font(.caption)
                     .foregroundColor(HubStyle.secondaryText)
                 Spacer()
+                // In the toolbar rather than over the video: the overlay is
+                // where the numbers go, but the control that summons them has
+                // to be reachable when they are not on screen.
+                Button(state.showStats ? "Hide stats" : "Stats") {
+                    model.showStats.toggle()
+                }
                 Button("Stop") { model.disconnect() }
             }
             .padding(.horizontal, 16)
             .frame(height: Double(HubStyle.toolbarHeight))
             .frame(maxWidth: .infinity)
             .background(HubStyle.barFill)
+            // Drawn only once the first fps window has closed. Before that the
+            // numbers are all zero, and "0×0 · 0 fps" over a stream that is
+            // plainly running reads as a broken overlay rather than a warming
+            // one.
+            if state.showStats && state.fps > 0 {
+                HStack {
+                    StatsHUD(
+                        width: state.videoWidth, height: state.videoHeight, fps: state.fps)
+                    Spacer()
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+            }
             WinUIVideoView(store: state.frameStore, generation: state.frameGeneration)
         }
     }
@@ -338,6 +358,29 @@ final class AppUIState: ObservableObject {
     /// times the sweep above rather than adding a second dial. Absent means no
     /// probe has completed — never "fast".
     @Published var latencyMs: [String: Int] = [:]
+
+    /// The encoder knobs the next share will start with.
+    ///
+    /// Persisted through the portable `QualitySettingsStore`, the same store
+    /// and key the macOS Settings pane writes, so the clamps and the
+    /// decode-with-fallback are shared rather than reimplemented. Read at
+    /// share start: `WGCCaptureEncoder` takes its settings at construction, so
+    /// a mid-share change lands on the NEXT share and the card says so.
+    @Published private(set) var quality: QualitySettings = QualitySettingsStore.load()
+
+    /// Live video stats for the HUD, counted at the sink.
+    ///
+    /// Zero until the first window closes — about a second in — which is why
+    /// the HUD is only drawn once there is something to draw. Showing
+    /// "0×0 · 0 fps" over a stream that is plainly running would read as a
+    /// broken overlay rather than a warming-up one.
+    @Published private(set) var videoWidth = 0
+    @Published private(set) var videoHeight = 0
+    @Published private(set) var fps = 0
+    /// Whether the stats HUD is shown. Session-scoped rather than persisted:
+    /// it is a debugging glance, not a preference, and the GTK viewer treats
+    /// it the same way.
+    @Published var showStats = false
     /// Header filter state, persisted through the portable `PeerListFilterStore`
     /// the macOS hub uses — not a new persistence layer. On Windows that is
     /// swift-corelibs-foundation's `UserDefaults`; if the write does not stick
@@ -450,7 +493,9 @@ final class AppUIState: ObservableObject {
     /// was the entire point of that stage; now that the same binary runs a tsnet
     /// node, it is a footer.
     var environmentLine: String {
-        let quality = QualitySettings.default
+        // The CONFIGURED value, not `.default` — a footer that reports a
+        // number the next share will not use is worse than no footer.
+        let quality = self.quality
         // The build stamp leads, because it is the one thing you need before
         // any other number on screen can be trusted: "the new counter isn't
         // there" and "this is yesterday's exe" are indistinguishable without
@@ -592,6 +637,10 @@ final class AppUIState: ObservableObject {
                     isOn: sharing.requireApproval,
                     set: { [weak self] in self?.setRequireApproval($0) })
             ],
+            quality: HubQuality(
+                settings: quality,
+                isSharing: sharing.isSharing,
+                onChange: { [weak self] in self?.setQuality($0) }),
             extraAction: sharing.controlGrantedTo.map { holder in
                 HubAction(label: "Take back control from \(holder)") { [weak self] in
                     self?.revokeControl()
@@ -643,6 +692,18 @@ final class AppUIState: ObservableObject {
     /// the GTK one cannot disagree about the default or about
     /// `TAILSCREEN_OPEN_DOOR=1`. The session applies it to a running share as
     /// well as the next one — turning it off drains whoever is already parked.
+    /// Change the encoder knobs and remember them.
+    ///
+    /// Deliberately does not touch a running share: the WGC encoder was built
+    /// with the old values and this host has no re-push path, so applying it
+    /// live would be a control that appears to work.
+    func setQuality(_ new: QualitySettings) {
+        let normalized = new.normalized()
+        guard normalized != quality else { return }
+        quality = normalized
+        QualitySettingsStore.save(normalized)
+    }
+
     func setRequireApproval(_ enabled: Bool) {
         guard enabled != sharing.requireApproval else { return }
         ViewerApprovalPreference.save(enabled)
@@ -829,9 +890,21 @@ final class AppUIState: ObservableObject {
 
         sessionTask = Task { [weak self] in
             guard let self else { return }
-            let sink = WindowsVideoSink(store: frameStore) { [weak self] in
-                Task { @MainActor in self?.frameGeneration &+= 1 }
-            }
+            let sink = WindowsVideoSink(
+                store: frameStore,
+                onFrame: { [weak self] in
+                    Task { @MainActor in self?.frameGeneration &+= 1 }
+                },
+                onStats: { [weak self] width, height, fps in
+                    // Fires roughly once a second off the session's thread; the
+                    // published values are main-actor state.
+                    Task { @MainActor in
+                        self?.videoWidth = width
+                        self?.videoHeight = height
+                        self?.fps = fps
+                    }
+                })
+            sink.resetForNewSession()
             // Off-thread on purpose. The transport is serviced by the WinUI main
             // thread, so a blocking WASAPI write inline in `handleAudio` — up to
             // a device buffer, ~50×/s — would stall the UI loop and freeze
@@ -991,7 +1064,7 @@ final class AppUIState: ObservableObject {
         // Dismissing the picker is a decision, not a failure. Say nothing.
         guard let item else { return }
 
-        let quality = QualitySettings.default
+        let quality = self.quality
         Task { [weak self] in
             guard let self else { return }
             do {

@@ -633,6 +633,10 @@ struct ViewerApp: App {
                     isOn: sharer.requireApproval,
                     set: { gSharer.setRequireApproval($0) })
             ],
+            quality: HubQuality(
+                settings: sharer.quality,
+                isSharing: sharer.phase == .sharing,
+                onChange: { gSharer.setQuality($0) }),
             onStart: { gSharer.startSharing() },
             onStop: { gSharer.stopSharing() },
             onAccept: { Self.answerPrompt($0, accept: true) },

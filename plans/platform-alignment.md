@@ -219,6 +219,38 @@ Kind B. Sequenced by how many rows each unblocks.
   it unblocks three rows at once: share a single window, share an app, and
   **Wayland capture at all**. Today the sharer gates on `$DISPLAY` and sees only
   the XWayland root, so native Wayland windows never reach viewers.
+
+  *First increment landed: `Packages/PortalCaptureKit` — the D-Bus handshake
+  (CreateSession → SelectSources → Start → OpenPipeWireRemote), the PipeWire
+  stream, a Swift wrapper and `portal-probe`. **No row moves yet**: it is not
+  wired into `Apps/linux`, there is no `CaptureEncoding` conformance, and no
+  frame has been captured through it. Three things from it are worth carrying
+  forward.*
+
+  - **The consent dialog is not an obstacle to be engineered around, and it is
+    also why no CI leg here can ever gate capture.** The `linux-portal` leg is
+    named a *compile, link and D-Bus-protocol* gate for that reason. It is a
+    real gate — deliberately breaking the Request-path derivation makes it fail
+    — but it proves nothing about a real portal, PipeWire, or a pixel, and the
+    workflow comment and the package README both say so at length. This repo has
+    shipped gates that could not fail; a gate that overstates itself is the same
+    bug wearing a green check.
+  - **A declined request must not be an error.** `Failure.cancelled` is its own
+    case and has its own gate. Folding it into a generic failure would put an
+    error dialog in front of somebody who did exactly what they meant to.
+  - **Colour was closed by subtraction.** The package converts nothing: it hands
+    back BGRA and the portable `BGRAToI420` converts, exactly as
+    `WGCCaptureKit` → `TailscreenSharerWGC` does on Windows. There are already
+    two implementations of that arithmetic plus the viewer's shader inverting
+    it, all of which must agree or every frame is washed out with no error
+    anywhere; a third was the thing to avoid, not a thing to write.
+
+  *Next: verify the PipeWire half against a local daemon and a synthetic
+  producer — that half is unverified beyond linking and is now the largest
+  unknown — then the `CaptureEncoding` conformance, then backend selection.
+  Note that selection is **not** "Wayland → portal": the portal is the better
+  path on X11 sessions too, because it is the only one that can share a single
+  window.*
 - **3.4 · Change source mid-share, preview thumbnail** — smaller, and both
   become easier once 3.3 exists on Linux.
 
@@ -247,11 +279,38 @@ two platforms** — the best ratio in the plan and a good place to put spare tim
   words next to the number rather than shown as a coloured dot. macOS puts the
   meaning in a tooltip, which its own accessibility rule says doesn't count —
   and swift-cross-ui has no tooltip to hide it in anyway.
-- **4.2 · Quality settings UI.** Both hosts consume `QualitySettings.default`
-  with no way to change it. The model, its clamps and its persistence are
-  portable and tested already; this is a card and two pickers.
-- **4.3 · Connection stats overlay.** `StatsHUD` already exists in
-  `TailscreenHubUI` and the GTK viewer shows it; Windows does not.
+- **4.2 · Quality settings UI.** ✅ **Done.** The model, its clamps, its preset
+  mapping and its persistence were portable and tested already, so this really
+  was just the control — `HubQualityMenu` on the share card, one component for
+  both hosts.
+
+  It is a **menu of checked rows rather than a `Picker`**, which is where the
+  guessing stopped and the reading started: swift-cross-ui's `Picker` labels
+  its options by string-interpolating the value (`options.map { "\($0)" }`), so
+  a `Preset` would render as `low` / `balanced` / `high` — enum case names, in
+  a user-facing control — and its availability is backend-conditional. A menu
+  of `Toggle`s is what `HubFilterMenu` already proves both backends render.
+  The rows are radio-shaped: picking one selects it, un-picking the active one
+  does nothing, because "no preset" is not a state this model has.
+
+  The honest part is the caption. Both non-mac capture backends take their
+  settings **at construction**, so a change made mid-share does nothing until
+  the next one — the card says "Applies to your next share" rather than
+  offering a control that appears to work. macOS re-pushes through its
+  helper-restart path; neither of these hosts has one, and inventing one was
+  not this item.
+- **4.3 · Connection stats overlay.** ✅ **Done**, which completes Phase 4.
+  `StatsHUD` already existed and the GTK viewer already showed it; what was
+  missing on Windows was the *numbers*, not the component.
+
+  The fps accounting behind them was inline in the GTK sink, so it moved to
+  the portable tier as `FrameRateCounter` — same reasoning as `I420Converter`
+  and `MonoPCMConverter`: arithmetic every renderer backend needs, no backend
+  can test in place, one copy per host otherwise. Writing the tests
+  immediately found a defect the inline version had carried all along: the
+  window start used `0` as "not started", and zero is a legitimate timestamp.
+  The GTK sink survived it only because `DispatchTime.now()` never returns 0 —
+  a property of the caller, not of the arithmetic.
 
 ## Phase 5 · Sharer surfaces
 
