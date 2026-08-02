@@ -15,17 +15,23 @@ import class TailscreenProtocol.AccountProfileStore
 import struct TailscreenProtocol.CaptureTimings
 import struct TailscreenProtocol.ControlRequestInfo
 import enum TailscreenProtocol.PeerPolicy
+import struct TailscreenProtocol.PendingShareRequest
 import struct TailscreenProtocol.PeerListFilter
 import enum TailscreenProtocol.PeerListFilterStore
 import enum TailscreenProtocol.PeerSharingState
 import struct TailscreenProtocol.QualitySettings
+import enum TailscreenProtocol.QualitySettingsStore
+import enum TailscreenProtocol.ScreenShareMessage
+import struct TailscreenProtocol.ShareRequestInbox
 import struct TailscreenProtocol.TailscreenMetadata
 import enum TailscreenProtocol.ViewerApprovalPreference
 import class TailscreenSharerWGC.WindowsShareSession
+import class TailscreenTransport.TailscreenControlListener
 import class TailscreenVideoFFmpeg.FFmpegVideoDecoder
 import class TailscreenViewer.FrameStore
 import class TailscreenViewer.ThreadedAudioSink
 import struct TailscreenViewerTsnet.DiscoveredSharer
+import struct TailscreenViewerTsnet.PeerProbe
 import class TailscreenViewerTsnet.TsnetTransport
 import struct TailscreenViewerTsnet.ViewerConfig
 import enum WGCCaptureKit.WGC
@@ -227,7 +233,10 @@ struct TailscreenWindowsApp: App {
             loginURL: state.loginURL,
             emptyMessage: "No Tailscreen screens found on your tailnet.",
             hiddenByFilter: state.hiddenByFilter,
+            askingIDs: state.asking,
+            askNotes: state.askOutcome,
             onSelect: { id in model.connect(toID: id) },
+            onAskToShare: { id in model.askToShare(id: id) },
             onOpenLogin: { model.openLoginURL() },
             shareCard: state.shareCard)
     }
@@ -326,6 +335,19 @@ final class AppUIState: ObservableObject {
     /// unknown byte) collapses to nil, and rendering that as "idle" would be a
     /// claim the app cannot support.
     @Published var shareInfo: [String: TailscreenMetadata] = [:]
+    /// Round-trip time of the last successful probe, by peer id. Free: it
+    /// times the sweep above rather than adding a second dial. Absent means no
+    /// probe has completed — never "fast".
+    @Published var latencyMs: [String: Int] = [:]
+
+    /// The encoder knobs the next share will start with.
+    ///
+    /// Persisted through the portable `QualitySettingsStore`, the same store
+    /// and key the macOS Settings pane writes, so the clamps and the
+    /// decode-with-fallback are shared rather than reimplemented. Read at
+    /// share start: `WGCCaptureEncoder` takes its settings at construction, so
+    /// a mid-share change lands on the NEXT share and the card says so.
+    @Published private(set) var quality: QualitySettings = QualitySettingsStore.load()
     /// Header filter state, persisted through the portable `PeerListFilterStore`
     /// the macOS hub uses — not a new persistence layer. On Windows that is
     /// swift-corelibs-foundation's `UserDefaults`; if the write does not stick
@@ -389,6 +411,35 @@ final class AppUIState: ObservableObject {
 
     private let transport = TsnetTransport()
     private let shareSession = WindowsShareSession()
+
+    /// Peers asking this machine to share, coalesced and bounded by the
+    /// portable `ShareRequestInbox` — the same type the GTK app uses, so the
+    /// two cannot disagree about the cap or the dedupe key.
+    @Published private(set) var shareRequests: [PendingShareRequest] = []
+    private var inbox = ShareRequestInbox()
+
+    /// This app's OWN control listener, alive for as long as the node is.
+    ///
+    /// Not the one a share creates. `TailscaleScreenShareServer` builds a
+    /// listener when none is supplied, but only for the share's lifetime — and
+    /// a request to share arrives exactly when this machine is NOT sharing.
+    /// Without a long-lived one the port answers nothing while idle, and every
+    /// ask reads to the asker as "no answer", indistinguishable from a peer
+    /// that is away.
+    private var controlListener: TailscreenControlListener?
+    /// The node the listener was started against, held only for identity.
+    ///
+    /// `AnyObject` rather than `TailscaleNode` on purpose: this file keeps
+    /// TailscaleKit out of the app target (see `beginSharing`'s note about
+    /// `kDefaultControlURL`), and identity comparison is the entire use — a
+    /// profile switch brings a different node up, and the listener has to
+    /// follow it rather than stay bound to one that is going away.
+    private var listenerNode: AnyObject?
+
+    /// Screens with an outstanding "please share" ask, by `DiscoveredSharer.id`.
+    @Published private(set) var asking: Set<String> = []
+    /// How the last ask to each screen ended, by screen id.
+    @Published private(set) var askOutcome: [String: String] = [:]
     /// The multi-account registry, shared with the GTK viewer and unit-tested
     /// on Linux CI. A profile IS a tsnet state directory, so switching accounts
     /// is a node teardown and a fresh bring-up under a different one.
@@ -409,7 +460,9 @@ final class AppUIState: ObservableObject {
     /// was the entire point of that stage; now that the same binary runs a tsnet
     /// node, it is a footer.
     var environmentLine: String {
-        let quality = QualitySettings.default
+        // The CONFIGURED value, not `.default` — a footer that reports a
+        // number the next share will not use is worse than no footer.
+        let quality = self.quality
         // The build stamp leads, because it is the one thing you need before
         // any other number on screen can be trusted: "the new counter isn't
         // there" and "this is yesterday's exe" are indistinguishable without
@@ -437,7 +490,8 @@ final class AppUIState: ObservableObject {
         filteredPeers.map {
             HubScreen(
                 id: $0.id, hostname: $0.hostname, tailscaleIP: $0.tailscaleIP,
-                isOnline: $0.isOnline, metadata: shareInfo[$0.id])
+                isOnline: $0.isOnline, metadata: shareInfo[$0.id],
+                route: $0.route, latencyMs: latencyMs[$0.id], tags: $0.tags)
         }
     }
 
@@ -525,6 +579,17 @@ final class AppUIState: ObservableObject {
                     HubPrompt(
                         id: $0.id.uuidString,
                         message: "\($0.displayName) wants to control this machine")
+                }
+                // Somebody asking this machine to START sharing. Third source
+                // into the one prompt list, and last because the other two are
+                // about people who are already blocked on an answer: a viewer
+                // sits on a Connecting placard with nothing on screen, and a
+                // control request comes from someone already watching.
+                + shareRequests.map {
+                    HubPrompt(
+                        id: $0.id.uuidString,
+                        message: "\($0.fromHostname) wants you to share your screen",
+                        acceptLabel: "Share", declineLabel: "Decline")
                 },
             settings: [
                 HubToggle(
@@ -539,6 +604,10 @@ final class AppUIState: ObservableObject {
                     isOn: sharing.requireApproval,
                     set: { [weak self] in self?.setRequireApproval($0) })
             ],
+            quality: HubQuality(
+                settings: quality,
+                isSharing: sharing.isSharing,
+                onChange: { [weak self] in self?.setQuality($0) }),
             extraAction: sharing.controlGrantedTo.map { holder in
                 HubAction(label: "Take back control from \(holder)") { [weak self] in
                     self?.revokeControl()
@@ -568,6 +637,15 @@ final class AppUIState: ObservableObject {
             return
         }
         guard let requestID = UUID(uuidString: id) else { return }
+        // Three sources now share one id space, so each is matched against its
+        // own live list. Both UUID-shaped, which is exactly why the shape is
+        // not consulted: an ask to share and a request for control are very
+        // different things to say yes to.
+        if shareRequests.contains(where: { $0.id == requestID }) {
+            answerShareRequest(id: requestID, accept: accept)
+            return
+        }
+        guard sharing.controlRequests.contains(where: { $0.id == requestID }) else { return }
         if accept {
             grantControl(to: requestID)
         } else {
@@ -581,6 +659,18 @@ final class AppUIState: ObservableObject {
     /// the GTK one cannot disagree about the default or about
     /// `TAILSCREEN_OPEN_DOOR=1`. The session applies it to a running share as
     /// well as the next one — turning it off drains whoever is already parked.
+    /// Change the encoder knobs and remember them.
+    ///
+    /// Deliberately does not touch a running share: the WGC encoder was built
+    /// with the old values and this host has no re-push path, so applying it
+    /// live would be a control that appears to work.
+    func setQuality(_ new: QualitySettings) {
+        let normalized = new.normalized()
+        guard normalized != quality else { return }
+        quality = normalized
+        QualitySettingsStore.save(normalized)
+    }
+
     func setRequireApproval(_ enabled: Bool) {
         guard enabled != sharing.requireApproval else { return }
         ViewerApprovalPreference.save(enabled)
@@ -670,6 +760,11 @@ final class AppUIState: ObservableObject {
                 status = hubSignedInSubtitle(
                     tailnet: transport.tailnetName, account: transport.accountIdentity)
                 labelActiveAccount()
+                // Start answering asks to share. The node is up and shared at
+                // this point, and the call is idempotent per node — so a later
+                // profile switch re-points it rather than leaving it bound to
+                // a node that is going away.
+                ensureControlListener()
                 refreshPeers()
             } catch {
                 phase = .failed
@@ -723,12 +818,16 @@ final class AppUIState: ObservableObject {
         // which `addTask`'s `sending` parameter rejects; leaving them
         // nonisolated lets each simply `await` the main-actor `fetchMetadata`.
         let transport = self.transport
-        await withTaskGroup(of: (String, TailscreenMetadata?).self) { group in
+        await withTaskGroup(of: (String, PeerProbe).self) { group in
             for peer in online {
-                group.addTask { (peer.id, await transport.fetchMetadata(ip: peer.tailscaleIP)) }
+                group.addTask { (peer.id, await transport.probePeer(ip: peer.tailscaleIP)) }
             }
-            for await (id, metadata) in group {
-                shareInfo[id] = metadata
+            for await (id, probe) in group {
+                shareInfo[id] = probe.metadata
+                // Only on a completed round trip: a latency recorded for a
+                // probe that never answered would read as a fast link to a
+                // machine that is gone.
+                latencyMs[id] = probe.latencyMs
             }
         }
     }
@@ -920,7 +1019,7 @@ final class AppUIState: ObservableObject {
         // Dismissing the picker is a decision, not a failure. Say nothing.
         guard let item else { return }
 
-        let quality = QualitySettings.default
+        let quality = self.quality
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -936,7 +1035,11 @@ final class AppUIState: ObservableObject {
                     // second machine key, a second browser login nobody is
                     // prompted for, and a share that waits at that login
                     // forever without ever joining the tailnet.
-                    existingNode: transport.sharedNode
+                    existingNode: transport.sharedNode,
+                    // The app's long-lived listener, so the share does not bind
+                    // a second one to port 7447 and `onRequestToShare` keeps
+                    // pointing at this model.
+                    controlListener: controlListener
                 )
             } catch {
                 self.detail = "Could not start sharing: \(error)"
@@ -946,6 +1049,110 @@ final class AppUIState: ObservableObject {
 
     func stopSharing() {
         Task { [weak self] in await self?.shareSession.stopSharing() }
+    }
+
+    // MARK: Asks to share
+
+    /// Bring up (or re-point) the idle control listener.
+    ///
+    /// Idempotent per node, and safe to call on every discovery — which is how
+    /// it is called, because there is no single observable "the node is ready"
+    /// moment here. A listener already bound to this node is left alone.
+    func ensureControlListener() {
+        guard let node = transport.sharedNode else { return }
+        if controlListener != nil, listenerNode === node { return }
+        if let previous = controlListener { Task { await previous.stop() } }
+
+        let listener = TailscreenControlListener()
+        listener.onRequestToShare = { [weak self] hostname, connectionID, sourceAddr in
+            // Fires on the listener's own thread; the inbox and its published
+            // projection are main-actor state.
+            Task { @MainActor [weak self] in
+                self?.noteShareRequest(
+                    from: hostname, sourceAddr: sourceAddr, connectionID: connectionID)
+            }
+        }
+        controlListener = listener
+        listenerNode = node
+        Task { [weak self] in
+            do {
+                try await listener.start(node: node)
+            } catch {
+                // Surfaced rather than swallowed: sharing still works and this
+                // machine simply never hears an ask, which from the other end
+                // looks exactly like nobody being home.
+                await MainActor.run { [weak self] in
+                    self?.detail = "Not listening for share requests: \(error)"
+                }
+            }
+        }
+    }
+
+    /// Matches the requester's own wait (`TailscreenRequestToShareClient`'s
+    /// 120 s default). A row that outlives it is a button that does nothing.
+    private static let shareRequestTTLNs: UInt64 = 120 * 1_000_000_000
+
+    private func noteShareRequest(from hostname: String, sourceAddr: String?, connectionID: UUID) {
+        let nowNs = DispatchTime.now().uptimeNanoseconds
+        // Expire first, so a row the asker has already given up on cannot hold
+        // a slot against a live one.
+        _ = inbox.pruneExpired(nowNs: nowNs, ttlNs: Self.shareRequestTTLNs)
+        guard
+            inbox.record(
+                fromHostname: hostname, sourceAddr: sourceAddr,
+                connectionID: connectionID, nowNs: nowNs)
+        else { return }
+        shareRequests = inbox.requests
+    }
+
+    /// Answer an ask: reply on its own connection, and on accept invite the
+    /// asker past the approval gate and open the capture picker.
+    func answerShareRequest(id: UUID, accept: Bool) {
+        guard let request = inbox.remove(id: id) else { return }
+        shareRequests = inbox.requests
+
+        if let connectionID = request.connectionID, let listener = controlListener {
+            Task {
+                // Best effort. The asker may already have given up and closed,
+                // in which case their side has settled on `.noAnswer` and
+                // there is nothing here worth reporting.
+                await listener.send(.shareResponse(accepted: accept), to: connectionID)
+            }
+        }
+        guard accept else { return }
+        // Before the picker, so the invitee is known to the gate by the time
+        // the share is up and their HELLO lands.
+        shareSession.preApproveViewer(ip: request.sourceKey)
+        startSharing()
+    }
+
+    /// Ask a machine to start sharing.
+    ///
+    /// Nothing awaits this inline: the ask parks for up to two minutes on the
+    /// far side, and freezing the window for that would also stop somebody
+    /// viewing a different screen that came free meanwhile.
+    func askToShare(id: String) {
+        guard let peer = peers.first(where: { $0.id == id }), !asking.contains(id) else { return }
+        asking.insert(id)
+        askOutcome[id] = nil
+        let ip = peer.tailscaleIP
+        Task { [weak self] in
+            guard let self else { return }
+            let outcome = await transport.requestToShare(ip: ip, from: Self.machineName())
+            asking.remove(id)
+            switch outcome {
+            case .accepted:
+                // Not a success message — they are still choosing what to
+                // show. Their share turns up in this list on its own.
+                askOutcome[id] = "Accepted — they're choosing what to share"
+            case .declined:
+                askOutcome[id] = "Declined"
+            case .noAnswer:
+                // One wording for away, closed, and too old to understand the
+                // request: the asker cannot act on the difference.
+                askOutcome[id] = "No reply"
+            }
+        }
     }
 
     func grantControl(to requestID: UUID) {

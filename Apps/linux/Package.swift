@@ -113,6 +113,11 @@ let package = Package(
                 // "TailscreenLinuxBackends" and not "tailscreen-linux".
                 .product(name: "TailscreenViewerCore", package: "TailscreenLinuxBackends"),
                 .product(name: "TailscreenViewerTsnet", package: "TailscreenKit"),
+                // `TailscreenControlListener` — the idle TCP/7447 listener that
+                // answers an incoming "please share". Kept separate from the
+                // share's own listener on purpose: an ask arrives exactly when
+                // this machine is not sharing.
+                .product(name: "TailscreenTransport", package: "TailscreenKit"),
                 .product(name: "TailscreenHubUI", package: "TailscreenHubUI"),
             ],
             linkerSettings: [

@@ -33,6 +33,11 @@ final class PickerModel: ObservableObject {
     /// `DiscoveredSharer.id`. Populated by a lazy metadata sweep after discovery;
     /// a missing entry means status-unknown (never rendered as "not sharing").
     @Published var shareInfo: [String: TailscreenMetadata] = [:]
+    /// Round-trip time of the last successful probe, by `DiscoveredSharer.id`.
+    ///
+    /// Free: it times the metadata sweep that already runs, rather than adding
+    /// a second dial. Absent means no probe has completed — never "fast".
+    @Published var latencyMs: [String: Int] = [:]
 
     /// The header filter menu's state — hide-offline ∧ only-sharing ∧
     /// any-of-selected-tags. `sharers` stays the RAW discovery result (the tag
@@ -91,8 +96,30 @@ final class PickerModel: ObservableObject {
     /// footnote under the list, so rows never vanish unexplained.
     var hiddenByFilter: Int { sharers.count - filteredSharers.count }
 
+    /// Screens with an outstanding "please share" ask, by `DiscoveredSharer.id`.
+    ///
+    /// A set, not a flag: nothing stops somebody asking two machines, and a
+    /// single-slot version would show the second ask's state on the first row.
+    @Published private(set) var asking: Set<String> = []
+    /// The last answer per screen, so the row can say what happened rather
+    /// than silently reverting to a button — which is what an ask that was
+    /// *declined* would otherwise look like.
+    @Published private(set) var askOutcome: [String: String] = [:]
+
+    func beginAsking(_ id: String) {
+        asking.insert(id)
+        askOutcome[id] = nil
+    }
+
+    func finishAsking(_ id: String, outcome: String?) {
+        asking.remove(id)
+        askOutcome[id] = outcome
+    }
+
     /// Set by `main` — invoked on the main actor when the user taps a row.
     var onSelect: ((DiscoveredSharer) -> Void)?
+    /// Set by `main` — asks the given machine to start sharing.
+    var onAskToShare: ((DiscoveredSharer) -> Void)?
     /// Set by `main` — re-runs discovery when the header Refresh is tapped.
     var onRefresh: (@MainActor @Sendable () -> Void)?
 
@@ -123,6 +150,17 @@ final class PickerModel: ObservableObject {
         guard case .picking = phase else { return }
         phase = .connecting(sharer.hostname)
         onSelect?(sharer)
+    }
+
+    /// Ask a machine to start sharing.
+    ///
+    /// Unlike `select`, this does NOT move the picker out of `.picking`: the
+    /// ask parks for up to two minutes on the other person, and locking the
+    /// window for that would be worse than useless — it would stop somebody
+    /// viewing a screen that came free while they waited.
+    func askToShare(_ sharer: DiscoveredSharer) {
+        guard case .picking = phase, !asking.contains(sharer.id) else { return }
+        onAskToShare?(sharer)
     }
 
     /// Header Refresh: re-run discovery, but only from the settled picking

@@ -51,6 +51,11 @@ let package = Package(
                 .product(name: "FFmpegKit", package: "FFmpegKit"),
                 .product(name: "TailscreenProtocol", package: "TailscreenKit"),
                 .product(name: "TailscreenSharer", package: "TailscreenKit"),
+                // `TailscreenControlListener`: the app owns one for the whole
+                // session so an incoming "please share" is answerable while
+                // idle, and hands it to the share so a second one is never
+                // bound to the same port.
+                .product(name: "TailscreenTransport", package: "TailscreenKit"),
                 .product(name: "SendInputKit", package: "SendInputKit"),
                 // For `TailscaleNode`: the share runs on the app's already-signed-in
                 // node rather than bringing up a second one. See beginSharing.

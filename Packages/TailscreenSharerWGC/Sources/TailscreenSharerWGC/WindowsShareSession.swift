@@ -3,6 +3,7 @@ import SendInputKit
 import TailscaleKit
 import TailscreenProtocol
 import TailscreenSharer
+import TailscreenTransport
 import WGCCaptureKit
 import WinOverlayKit
 
@@ -177,6 +178,8 @@ public final class WindowsShareSession: @unchecked Sendable {
     /// desktop app that forgets to say otherwise — so this wrapper's job is to
     /// make forgetting fail closed.
     private var requireApproval = true
+    /// IPs invited before there was a server to tell. Guarded by `lock`.
+    private var pendingPreApprovedIPs: Set<String> = []
 
     /// Whether this machine can capture at all — checked before any UI is
     /// offered, so an unsupported Windows build is a sentence rather than a
@@ -217,7 +220,8 @@ public final class WindowsShareSession: @unchecked Sendable {
         hostname: String,
         statePath: String,
         quality: QualitySettings,
-        existingNode: TailscaleNode? = nil
+        existingNode: TailscaleNode? = nil,
+        controlListener: TailscreenControlListener? = nil
     ) async throws {
         // A capture FACTORY, not an instance, because the server respawns the
         // backend to restart capture. Closing over the item is what makes a
@@ -338,11 +342,17 @@ public final class WindowsShareSession: @unchecked Sendable {
         // stale value. Doing it after `start` would leave a window, short but
         // exactly the one an already-waiting peer's HELLO arrives in, where
         // the share is open door.
-        let gate = lock.withLock { () -> Bool in
+        let (gate, invited) = lock.withLock { () -> (Bool, Set<String>) in
             server = newServer
-            return requireApproval
+            let invited = pendingPreApprovedIPs
+            pendingPreApprovedIPs.removeAll()
+            return (requireApproval, invited)
         }
         newServer.setRequireApproval(gate)
+        // Anyone whose ask this machine accepted before the server existed.
+        // Replayed here, in the same window as the gate and the policies, so
+        // an invitee's HELLO cannot arrive before the server knows about them.
+        for ip in invited { newServer.preApproveViewer(ip: ip) }
         // Before the first HELLO can arrive, so a blocked peer is rejected on
         // its first attempt rather than admitted and swept out a moment later.
         newServer.setAccessPolicies(access.policies)
@@ -373,12 +383,12 @@ public final class WindowsShareSession: @unchecked Sendable {
                 try await newServer.start(
                     hostname: hostname, authKey: authKey, path: statePath,
                     controlURL: controlURL, filterData: selectionData, quality: quality,
-                    existingNode: existingNode)
+                    existingNode: existingNode, controlListener: controlListener)
             } else {
                 try await newServer.start(
                     hostname: hostname, authKey: authKey, path: statePath,
                     filterData: selectionData, quality: quality,
-                    existingNode: existingNode)
+                    existingNode: existingNode, controlListener: controlListener)
             }
         } catch {
             lock.withLock { server = nil }
@@ -482,6 +492,25 @@ public final class WindowsShareSession: @unchecked Sendable {
         }
         server?.setRequireApproval(enabled)
         update { $0.requireApproval = enabled }
+    }
+
+    /// Waive the approval gate once for a peer this machine INVITED.
+    ///
+    /// Accepting somebody's ask to share and then making them wait at the
+    /// approval gate is the same person being asked twice, seconds apart, and
+    /// the second prompt arrives with no context. Held until a server exists,
+    /// because accept necessarily happens before the share starts — the whole
+    /// point of accepting is that there is not one yet.
+    ///
+    /// One-time and non-overriding: `preApproveViewer` does not beat a
+    /// remembered `.deny`, so inviting somebody previously blocked does not
+    /// silently unblock them.
+    public func preApproveViewer(ip: String) {
+        let server: TailscaleScreenShareServer? = lock.withLock {
+            if self.server == nil { pendingPreApprovedIPs.insert(ip) }
+            return self.server
+        }
+        server?.preApproveViewer(ip: ip)
     }
 
     /// Admit a viewer parked at the gate. `id` is a `PendingViewer.id`.

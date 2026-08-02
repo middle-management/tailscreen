@@ -172,84 +172,26 @@ class TailscreenMetadataService: ObservableObject {
         via node: TailscaleNode,
         responseTimeout: TimeInterval = 120
     ) async throws -> ShareRequestOutcome {
-        guard let tailscaleHandle = await node.tailscale else {
-            throw TailscaleError.badInterfaceHandle
-        }
-        let target = "\(host):\(port)"
-        let conn = try await TailscalePeerDiscovery.withWatchdog(seconds: 5) {
-            try await OutgoingConnection(
-                tailscale: tailscaleHandle,
-                to: target,
-                proto: .tcp,
-                logger: TSLogger()
-            )
-        }
-        try await TailscalePeerDiscovery.withWatchdog(seconds: 8) {
-            try await conn.connect()
-        }
-        let frame = ScreenShareMessage.requestToShare(fromHostname: hostname).encode()
-        try await conn.send(frame)
-        let outcome = await Self.awaitShareResponse(on: conn, timeout: responseTimeout)
-        await conn.close()
-        return outcome
-    }
-
-    /// Drain frames off the request connection until a `.shareResponse`
-    /// arrives, the peer closes the connection, or `timeout` elapses. The
-    /// banner on the far side may sit unanswered for minutes (it's
-    /// suppressed while the peer is busy), so the default timeout is
-    /// generous; anything else on the wire is ignored.
-    private static func awaitShareResponse(
-        on conn: OutgoingConnection, timeout: TimeInterval
-    ) async -> ShareRequestOutcome {
-        var parser = ScreenShareMessageParser()
-        let deadlineNs =
-            DispatchTime.now().uptimeNanoseconds &+ UInt64(timeout * 1_000_000_000)
-        while DispatchTime.now().uptimeNanoseconds < deadlineNs {
-            let recvStartNs = DispatchTime.now().uptimeNanoseconds
-            do {
-                let chunk = try await conn.receive(maximumLength: 16 * 1024, timeout: 5_000)
-                parser.append(chunk)
-                while let message = parser.next() {
-                    if case .shareResponse(let accepted) = message {
-                        return accepted ? .accepted : .declined
-                    }
-                }
-            } catch TailscaleError.readFailed {
-                // `OutgoingConnection.receive` throws readFailed for BOTH a
-                // benign poll timeout AND a dead/closed fd (EOF returns
-                // instantly). Elapsed time tells them apart — the same
-                // classification the UDP receive loops use: a near-instant
-                // readFailed is a dead socket (peer closed without
-                // answering), so stop waiting instead of hot-spinning the
-                // closed connection for the full timeout; a full-interval
-                // one is just a poll timeout, so keep waiting.
-                let elapsedNs = DispatchTime.now().uptimeNanoseconds &- recvStartNs
-                if ReceiveLoopPolicy.classifyReadFailedAsError(elapsedNs: elapsedNs) {
-                    return .noAnswer
-                }
-                continue  // poll timeout — keep waiting for an answer
-            } catch {
-                return .noAnswer
-            }
-        }
-        return .noAnswer
+        // Forwards to the portable client, which is this method's own body
+        // moved into `TailscreenTransport` so the Linux and Windows apps could
+        // ask too. Kept as a method rather than deleted because every call
+        // site here reads better against the service that owns the other half
+        // of this conversation — `pendingRequests` and `handleRequestToShare`
+        // are right here.
+        //
+        // One behaviour improved in the move: an EOF now settles the wait
+        // immediately instead of polling on to the full timeout. A peer that
+        // closes without answering used to cost the requester two minutes of
+        // "asking…" for an answer that was never coming.
+        try await TailscreenRequestToShareClient.requestToShare(
+            toIP: host, port: port, from: hostname, via: node,
+            responseTimeout: responseTimeout)
     }
 }
 
-/// Outcome of a request-to-share round-trip, as seen by the requester.
-enum ShareRequestOutcome: Sendable, Equatable {
-    /// The peer clicked Share — they're choosing what to share now.
-    case accepted
-    /// The peer clicked Decline.
-    case declined
-    /// The peer never answered within the timeout, or closed the connection
-    /// without responding. Old Tailscreen builds that don't speak
-    /// `shareResponse` always land here.
-    case noAnswer
-}
-
-private struct TSLogger: LogSink {
-    var logFileHandle: Int32?
-    func log(_ message: String) { print("[Metadata] \(message)") }
-}
+// `ShareRequestOutcome` now lives in `TailscreenTransport` beside the client
+// that produces it, and reaches this file through `ProtocolReexports`. The
+// local copy was deleted rather than renamed: two identical enums, one of them
+// shadowing the other through an `@_exported import`, is the ambiguity
+// CLAUDE.md warns about for `ProfileStore` — and here there was no reason for
+// a second one to exist.
