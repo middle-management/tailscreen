@@ -289,7 +289,10 @@ final class WindowsViewerInteraction: ObservableObject {
         let stream = outbound
         Task { [weak self] in
             for await item in stream {
-                guard let channel = await self?.channel else { continue }
+                // No `await`: the Task inherits this @MainActor context, so
+                // the read is already isolated — and the compiler flags a
+                // needless await as a warning, which `--strict` turns red.
+                guard let channel = self?.channel else { continue }
                 switch item {
                 case .annotation(let op): await channel.sendAnnotation(op)
                 case .input(let event): await channel.sendInputEvent(event)

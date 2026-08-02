@@ -232,6 +232,12 @@ struct WinUIVideoView: WinUIElementRepresentable {
             element.keyUp { [weak self] sender, args in
                 self?.handleKey(sender, args, interaction, down: false)
             }
+            // An element that loses focus stops receiving key-up events, so a
+            // modifier held at that moment would stay "held" forever — and
+            // silently turn the next plain click into a modified one.
+            element.lostFocus { [weak self] _, _ in
+                self?.clearModifiers()
+            }
             element.doubleTapped { [weak self] sender, args in
                 guard let self, let element = sender as? WinUI.Image else { return }
                 let point = args?.getPosition(element) ?? Point(x: 0, y: 0)
@@ -293,7 +299,7 @@ struct WinUIVideoView: WinUIElementRepresentable {
                     .mouseDown(
                         x: norm.x, y: norm.y,
                         button: Self.button(args, element),
-                        modifiers: Self.modifiers()))
+                        modifiers: modifiers()))
             } else if interaction.isZoomed {
                 // Only while zoomed: at fit there is nothing to pan over, and
                 // treating a plain click as a pan gesture would swallow it.
@@ -344,7 +350,7 @@ struct WinUIVideoView: WinUIElementRepresentable {
                     .mouseUp(
                         x: norm.x, y: norm.y,
                         button: Self.button(args, element),
-                        modifiers: Self.modifiers()))
+                        modifiers: modifiers()))
             case .panning, nil:
                 break
             }
@@ -355,7 +361,10 @@ struct WinUIVideoView: WinUIElementRepresentable {
             _ interaction: WindowsViewerInteraction
         ) {
             guard let element = sender as? WinUI.Image, let args else { return }
-            let properties = args.getCurrentPoint(element).properties
+            // Same optional/throwing shape as `button` — a wheel event whose
+            // delta cannot be read is dropped, because unlike a click there is
+            // no sensible default direction to guess.
+            guard let properties = try? args.getCurrentPoint(element).properties else { return }
             let deltaLines = Double(properties.mouseWheelDelta) / 120.0
             let point = args.getPosition(element)
 
@@ -363,7 +372,7 @@ struct WinUIVideoView: WinUIElementRepresentable {
             // grant is held. The split matters: without it, zooming would be
             // unreachable while controlling, and scrolling unreachable while
             // not.
-            if Self.modifiers().contains(.control) || !interaction.forwardsInput {
+            if modifiers().contains(.control) || !interaction.forwardsInput {
                 let step =
                     deltaLines > 0
                     ? ViewerZoomMath.menuZoomStep : 1 / ViewerZoomMath.menuZoomStep
@@ -375,7 +384,7 @@ struct WinUIVideoView: WinUIElementRepresentable {
                 interaction.forward(
                     .scroll(
                         x: norm.x, y: norm.y, deltaX: 0, deltaY: deltaLines,
-                        modifiers: Self.modifiers()))
+                        modifiers: modifiers()))
             }
         }
 
@@ -390,15 +399,17 @@ struct WinUIVideoView: WinUIElementRepresentable {
             // as every injector in this repo drops one.
             guard let usage = WindowsKeyCodeMapping.hidUsage(forVirtualKey: UInt16(args.key.rawValue))
             else { return }
-            // Modifier keys are NOT sent as standalone events — their held
-            // state rides every event's `modifiers` field, which is what keeps
-            // a mid-stream join stateless and stops a dropped connection
-            // stranding a modifier down on the sharer's machine.
-            guard !(0xE0...0xE7).contains(usage) else { return }
+            // Modifier keys update the tracked snapshot and are NOT forwarded
+            // as standalone events — their held state rides every event's
+            // `modifiers` field, which keeps a mid-stream join stateless and
+            // stops a dropped connection stranding a modifier down on the
+            // sharer's machine. Tracked BEFORE the drop, or the very first
+            // Ctrl+C would send C with no Ctrl.
+            guard !trackModifier(usage: usage, down: down) else { return }
             interaction.forward(
                 down
-                    ? .keyDown(key: usage, modifiers: Self.modifiers())
-                    : .keyUp(key: usage, modifiers: Self.modifiers()))
+                    ? .keyDown(key: usage, modifiers: modifiers())
+                    : .keyUp(key: usage, modifiers: modifiers()))
         }
 
         /// Which button a pointer event carries. WinUI reports button state as
@@ -414,33 +425,56 @@ struct WinUIVideoView: WinUIElementRepresentable {
             return .left
         }
 
-        /// The modifier snapshot, read from the keyboard's live state.
+        /// The modifier snapshot that rides every event.
         ///
-        /// `CoreWindow.getKeyState` rather than an event field, because WinUI's
-        /// pointer args carry no modifier information at all — and the wire
-        /// wants a snapshot on every event regardless, so a modified click
-        /// works without tracking key events.
-        private static func modifiers() -> KeyModifiers {
-            var mods: KeyModifiers = []
-            func held(_ key: VirtualKey) -> Bool {
-                guard let window = CoreWindow.getForCurrentThread(),
-                    let state = try? window.getKeyState(key)
-                else { return false }
-                return state.contains(.down)
+        /// TRACKED from the key events this element already receives, rather
+        /// than queried from the system. The obvious query — `CoreWindow` —
+        /// does not exist in a WinAppSDK app at all (it is UWP), and the
+        /// alternatives (`InputKeyboardSource`, `PointerRoutedEventArgs`'
+        /// modifier field) vary by binding version, which is a bet this file
+        /// cannot check on Linux and costs forty minutes per attempt to check
+        /// on Windows. Tracking uses only `args.key`, which is already in hand
+        /// — no extra API surface, and identical on both architectures.
+        ///
+        /// The cost is that modifiers held BEFORE this element took focus are
+        /// unknown. That is why `clearModifiers` exists and is wired to focus
+        /// loss: an unknown modifier state must decay to "none held", never
+        /// persist as a phantom Ctrl that silently turns the viewer's next
+        /// click into a Ctrl-click on the sharer's desktop.
+        private var trackedModifiers: KeyModifiers = []
+
+        /// Update the tracked set from a modifier key event. Returns true when
+        /// the key WAS a modifier, so the caller can drop it rather than
+        /// forwarding it — their held state rides every event's `modifiers`
+        /// field, which is what keeps a mid-stream join stateless.
+        private func trackModifier(usage: UInt16, down: Bool) -> Bool {
+            let flag: KeyModifiers
+            switch usage {
+            case 0xE1, 0xE5: flag = .shift
+            case 0xE0, 0xE4: flag = .control
+            case 0xE2, 0xE6: flag = .alt
+            case 0xE3, 0xE7: flag = .meta
+            case 0x39:
+                // Caps Lock is a TOGGLE, not a held key: its down-event means
+                // the state flipped, and there is no up-event to clear it.
+                if down { trackedModifiers.formSymmetricDifference(.capsLock) }
+                return true
+            default: return false
             }
-            func locked(_ key: VirtualKey) -> Bool {
-                guard let window = CoreWindow.getForCurrentThread(),
-                    let state = try? window.getKeyState(key)
-                else { return false }
-                return state.contains(.locked)
+            if down {
+                trackedModifiers.insert(flag)
+            } else {
+                trackedModifiers.remove(flag)
             }
-            if held(.shift) { mods.insert(.shift) }
-            if held(.control) { mods.insert(.control) }
-            if held(.menu) { mods.insert(.alt) }
-            if held(.leftWindows) || held(.rightWindows) { mods.insert(.meta) }
-            if locked(.capitalLock) { mods.insert(.capsLock) }
-            return mods
+            return true
         }
+
+        /// Forget every held modifier. Wired to focus loss — see
+        /// `trackedModifiers`.
+        func clearModifiers() { trackedModifiers = [] }
+
+        private func modifiers() -> KeyModifiers { trackedModifiers }
+
     }
 }
 

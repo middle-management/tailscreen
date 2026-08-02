@@ -46,6 +46,11 @@ public final class AnnotationStore: @unchecked Sendable {
     /// Tool the in-progress stroke was started with — latched at `beginStroke`
     /// so switching tools mid-drag can't reshape the stroke under way.
     private var liveTool: AnnotationTool = .pen
+    /// Identity of the in-progress stroke, minted per drag. Stable for the
+    /// drag's whole life so `visibleAnnotations` reports one stroke growing
+    /// rather than a new one per frame; per-store rather than a shared
+    /// sentinel, so two canvases can never collide.
+    private var liveID = UUID()
     private var requestRedraw: (() -> Void)?
 
     /// Current drawing mode (main-thread only: the toolbar sets it, capture
@@ -56,8 +61,7 @@ public final class AnnotationStore: @unchecked Sendable {
     /// `paletteColor(forIdentity: localIdentity())` rather than offering a
     /// picker — so each participant always draws in the same color, and the
     /// same machine keeps its color across reconnects and relaunches.
-    public var color: Annotation.RGBA = Annotation.RGBA.paletteColor(
-        forIdentity: AnnotationStore.localIdentity())
+    public var color = Annotation.RGBA.paletteColor(forIdentity: AnnotationStore.localIdentity())
 
     /// Stable per-machine drawing identity, mirroring the mac's
     /// `Host.current().localizedName + TailscreenInstance.hostnameSuffix`.
@@ -119,6 +123,7 @@ public final class AnnotationStore: @unchecked Sendable {
     public func beginStroke(at point: CGPoint) {
         lock.lock()
         live = [point]
+        liveID = UUID()
         liveTool = mode.tool ?? .pen
         lock.unlock()
         redraw()
@@ -192,32 +197,27 @@ public final class AnnotationStore: @unchecked Sendable {
     /// rather than feeding a shader — the WinUI viewer draws these straight
     /// into the decoded frame with ``AnnotationRasterizer/draw(_:into:)``.
     ///
-    /// The live stroke is synthesized with a **stable id** derived from nothing
-    /// (a fresh UUID each call would be fine here since nothing dedupes on it),
-    /// but it is deliberately materialized rather than omitted: a viewer that
+    /// The live stroke is materialized rather than omitted: a viewer that
     /// cannot see its own stroke until the drag ends has no idea whether
-    /// drawing is working.
+    /// drawing is working. Its id is stable for the whole drag (minted at
+    /// `beginStroke`), so a renderer that diffs by id sees one stroke growing
+    /// rather than a new one every frame — the same upsert-not-append rule
+    /// `ReceivedAnnotations` documents for the relayed side.
     public var visibleAnnotations: [Annotation] {
         lock.lock()
         let committed = strokes
         let livePoints = live
         let liveShape = liveTool
         let liveColor = color
+        let liveID = self.liveID
         lock.unlock()
         guard !livePoints.isEmpty else { return committed }
         return committed + [
             Annotation(
-                id: Self.liveStrokeID, tool: liveShape, points: livePoints,
+                id: liveID, tool: liveShape, points: livePoints,
                 color: liveColor, width: Annotation.defaultWidth)
         ]
     }
-
-    /// Identity for the in-progress stroke. Fixed rather than fresh so a
-    /// renderer that diffs by id sees one stroke growing rather than a new one
-    /// every frame — the same upsert-not-append rule `ReceivedAnnotations`
-    /// documents for the relayed side.
-    private static let liveStrokeID = UUID(
-        uuidString: "00000000-0000-0000-0000-0000000000FF") ?? UUID()
 
     /// Flattened stroke geometry for `cgtkvideo_draw_annotations`: normalized
     /// x,y pairs, per-stroke vertex counts, per-stroke rgba (4 each), per-stroke
