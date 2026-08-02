@@ -271,6 +271,26 @@ jobs:
             apt: libasound2-dev pkg-config
             cmd: swift test --package-path Packages/ALSAKit
 
+          # WASAPIKit's PORTABLE half — the Windows audio backend's sample
+          # arithmetic and error mapping. Not a portability gate like its
+          # neighbours: there is no WASAPI here to exercise and no null endpoint
+          # to stand in for one, so this leg deliberately does NOT claim to
+          # verify WASAPI. What it verifies is the code that was written to be
+          # verifiable — the capture path's mono downmix (averaging, rebased
+          # slices, partial frames, a nonsense channel count) and the shim's
+          # return-code→case mapping — plus the non-Windows syntax of the whole
+          # wrapper, since everything platform-specific in it sits behind
+          # `#if os(Windows)`.
+          #
+          # It runs at all because a downmix that is silently wrong is a
+          # microphone that sounds quiet or clipped, with nothing anywhere
+          # saying so, and the alternative place to catch it is a human at a
+          # Windows desk. No apt, no submodules, no Go: the package's only
+          # inputs on this platform are Foundation and an empty translation
+          # unit.
+          - name: linux-wasapi
+            cmd: swift test --package-path Packages/WASAPIKit
+
           # Screen-capture-portability gate: X11CaptureKit (a C shim over
           # libxcb + MIT-SHM, plus the BGRA→I420 conversion) must build and
           # pass its tests on Linux. The colour-conversion half runs anywhere;
@@ -398,6 +418,12 @@ jobs:
       - name: Install ${{ matrix.apt }}
         # The swift:*-noble images are slim, so every leg brings its own
         # system libraries. One apt invocation, one place to fix.
+        #
+        # Skipped outright for a leg that omits `apt` rather than run with an
+        # empty package list: `linux-wasapi` wraps an API that ships with
+        # Windows and has nothing to install, and an install step listing
+        # nothing reads as a leg whose dependencies were forgotten.
+        if: matrix.apt != ''
         run: apt-get update && apt-get install -y --no-install-recommends ${{ matrix.apt }}
       - name: Bootstrap TailscaleKit
         # Only the submodule legs. Skipping it entirely on the others is what
