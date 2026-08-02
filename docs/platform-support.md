@@ -68,29 +68,36 @@ Windows is only microphone **capture** and hooking it to the existing encoder.
 | | macOS | Linux | Windows |
 | :--- | :---: | :---: | :---: |
 | Draw annotations as a viewer | ✅ | ✅ | ❌ |
-| Render viewers' annotations as a sharer | ✅ | ❌ | ✅ |
+| Render viewers' annotations as a sharer | ✅ | ✅ | ✅ |
 | Request remote control as a viewer | ✅ | ✅ | ❌ |
 | Grant + inject remote control as a sharer | ✅ | ❌ | ✅ |
 | Revoke hotkey / panic key | ✅ | ❌ | ❌ |
 | Zoom + pan the viewer | ✅ | ✅ | ❌ |
 
-**Linux and Windows are mirror images here**, which is an accident of the order
-things were built rather than a design: Linux grew the viewer half first, Windows
-the sharer half. Closing either direction is mostly wiring — the protocol, the
-grant gate, the coordinate mapping and the neutral key model are all portable and
-already tested.
+**Linux and Windows are near mirror images here**, which is an accident of the
+order things were built rather than a design: Linux grew the viewer half first,
+Windows the sharer half. Closing either direction is mostly wiring — the
+protocol, the grant gate, the coordinate mapping and the neutral key model are
+all portable and already tested. The annotation-rendering row is the first one
+closed from the Linux side, which leaves control injection as the remaining
+sharer-half gap there.
 
 Two specifics worth knowing:
 
-- **The Linux sharer no longer claims annotation support it lacks.** It used
-  to: `rendersAnnotations` defaulted to `true`, so a sharer with no overlay
-  advertised the capability, every viewer enabled its drawing tools, and strokes
-  were relayed to *other* viewers while never appearing on the Linux sharer's
-  own screen — with one viewer, the common case, drawing silently did nothing.
-  The default now **withholds**, so the row above is an honest ❌ and viewers
-  correctly disable their toolbar. Actually rendering them is Phase 1.4 of
-  `plans/platform-alignment.md`. The behaviour did not improve; it stopped
-  lying, which is the prerequisite.
+- **The Linux sharer's ✅ has a condition: the session must be composited.**
+  The overlay is an ARGB window, and on uncomposited X11 there is no per-pixel
+  alpha — what should be transparent paints as opaque black, so the "overlay"
+  would be a black rectangle over the sharer's whole screen. It therefore
+  refuses to exist there, and the capability bit is withheld with it, so
+  viewers see disabled drawing tools rather than strokes reaching nobody. Every
+  mainstream desktop composites; headless and bare-X setups don't.
+
+  This row was ❌ until recently for a more embarrassing reason: the sharer
+  *claimed* annotations it could not render. `rendersAnnotations` defaulted to
+  `true`, so every viewer enabled its drawing tools and strokes were relayed to
+  *other* viewers while never appearing on the sharer's own screen — with one
+  viewer, the common case, drawing silently did nothing. The default now
+  withholds, and each host derives the bit from something it actually has.
 - **Windows gates control and annotations on resolving the capture item's screen
   rect.** A WGC `GraphicsCaptureItem` carries no HMONITOR, so its size is matched
   against the enumerated monitors; a *window* capture, or two identical monitors,
