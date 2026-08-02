@@ -186,6 +186,16 @@ class AppState: ObservableObject {
     /// SwiftUI views bind to this via `appState.requireViewerApproval`;
     /// the setter syncs the live server too so the toggle takes effect
     /// mid-share.
+    /// True only when we *know* macOS will not display our notifications —
+    /// the user explicitly denied them. Never true for "not asked yet", which
+    /// would be crying wolf.
+    ///
+    /// Deliberately one-directional: `false` does **not** mean notifications
+    /// will arrive. A Focus can filter us, Time Sensitive can be revoked, and
+    /// the alert style can be None, none of which is visible to the app. So the
+    /// UI built on this only ever renders a warning, and never reassures.
+    @Published private(set) var notificationsDenied = false
+
     @Published var requireViewerApproval: Bool = ViewerApprovalDefaults.load() {
         didSet {
             ViewerApprovalDefaults.save(requireViewerApproval)
@@ -1037,7 +1047,12 @@ class AppState: ObservableObject {
         // prompt is answered once, but the user can revoke it in System
         // Settings at any time afterwards — and with approval defaulting on,
         // a sharer whose approval banners will never appear is a sharer who
-        // strands viewers without ever learning why.
+        // strands viewers without ever learning why. The answer arrives
+        // asynchronously and lands on `notificationsDenied`, which the sharing
+        // card watches.
+        ViewerJoinNotifier.shared.onAuthorizationChanged = { [weak self] state in
+            self?.notificationsDenied = (state == .denied)
+        }
         ViewerJoinNotifier.shared.refreshAuthorization()
         // Decode the picker selection so the sharer overlay (built lazily
         // when the first annotation arrives or "Draw on Screen" is toggled)

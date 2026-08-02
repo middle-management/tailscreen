@@ -70,13 +70,48 @@ final class ViewerJoinNotifier {
     private var didRequestAuthorization = false
     private let isBundled = Bundle.main.bundleIdentifier != nil
 
-    /// Whether macOS will actually display what we post. Starts optimistic —
-    /// nothing is known until the first `requestAuthorization` or
-    /// `refreshAuthorization` answers, and claiming "notifications are off"
-    /// before asking would be its own lie.
-    private(set) var isAuthorized = true
+    /// What we know about whether macOS will display what we post.
+    ///
+    /// Deliberately four states rather than a `Bool`, because "we have not
+    /// asked yet" and "the user said no" must not be the same value — a UI
+    /// that warns on the first is crying wolf, and one that stays quiet on the
+    /// second is the exact confusion this exists to remove.
+    ///
+    /// Note what this can and cannot see. It knows about authorization; it
+    /// knows nothing about a Focus filtering us, Time Sensitive being revoked,
+    /// or the alert style being set to None. So `authorized` is **not** a
+    /// promise that a banner will appear — which is why the UI built on this
+    /// only ever renders the negative, and never claims notifications are
+    /// working.
+    enum Authorization: Sendable, Equatable {
+        /// Not asked yet, so nothing is known.
+        case unknown
+        /// The user allowed it. Necessary, not sufficient — see above.
+        case authorized
+        /// The user said no. Permanent until they change it in System Settings.
+        case denied
+        /// Unbundled dev build; `UNUserNotificationCenter` is unusable here at
+        /// all, and no prompt will ever be shown.
+        case unavailable
+    }
 
-    private init() {}
+    private(set) var authorization: Authorization
+
+    /// Fired whenever `authorization` changes, so `AppState` can mirror it into
+    /// a `@Published` the views observe. A callback rather than making this
+    /// type an `ObservableObject`: it is a plain notification wrapper, and
+    /// `AppState` is already the thing every view watches.
+    var onAuthorizationChanged: ((Authorization) -> Void)?
+
+    private init() {
+        authorization = Bundle.main.bundleIdentifier == nil ? .unavailable : .unknown
+    }
+
+    private func setAuthorization(_ value: Authorization) {
+        guard authorization != value else { return }
+        authorization = value
+        onAuthorizationChanged?(value)
+    }
 
     func postJoined(label: String) {
         post(
@@ -170,11 +205,13 @@ final class ViewerJoinNotifier {
         // The result is no longer discarded: a denial is permanent and
         // otherwise completely silent — every later post is accepted by the
         // API and displays nothing, so the sharer believes they are being
-        // told about waiting viewers and is not. `isAuthorized` lets a caller
+        // told about waiting viewers and is not. `authorization` lets the UI
         // say so; `TailscreenNotificationDelegate` is what makes an
         // authorized post actually appear.
         let record: @Sendable (Bool, (any Error)?) -> Void = { granted, _ in
-            Task { @MainActor in ViewerJoinNotifier.shared.isAuthorized = granted }
+            Task { @MainActor in
+                ViewerJoinNotifier.shared.setAuthorization(granted ? .authorized : .denied)
+            }
         }
         UNUserNotificationCenter.current().requestAuthorization(
             options: [.alert, .sound], completionHandler: record)
@@ -194,18 +231,24 @@ final class ViewerJoinNotifier {
         // that queue, so only a `Bool` crosses to the MainActor —
         // `UNNotificationSettings` never does.
         let apply: @Sendable (UNNotificationSettings) -> Void = { settings in
-            let granted =
-                settings.authorizationStatus == .authorized
-                || settings.authorizationStatus == .provisional
-            if !granted {
+            // `.notDetermined` stays `unknown`: the user has not been asked,
+            // so there is nothing to warn them about yet. Only an explicit
+            // refusal warns.
+            let state: Authorization
+            switch settings.authorizationStatus {
+            case .authorized, .provisional, .ephemeral: state = .authorized
+            case .denied: state = .denied
+            case .notDetermined: state = .unknown
+            @unknown default: state = .unknown
+            }
+            if state == .denied {
                 // The whole point of reading this back. Approval defaults on,
                 // so without banners the sharer's only sign that somebody is
                 // waiting is a row in a popover they have no reason to open.
                 TSLogger().log(
-                    "Notifications not authorized (status=\(settings.authorizationStatus.rawValue))"
-                        + " — viewer approval prompts will only appear in the app")
+                    "Notifications denied — viewer approval prompts will only appear in the app")
             }
-            Task { @MainActor in ViewerJoinNotifier.shared.isAuthorized = granted }
+            Task { @MainActor in ViewerJoinNotifier.shared.setAuthorization(state) }
         }
         UNUserNotificationCenter.current().getNotificationSettings(completionHandler: apply)
     }
