@@ -92,6 +92,9 @@ let package = Package(
                 // to the Linux viewer. No system package to install: WASAPI is
                 // part of Windows.
                 .product(name: "WASAPIKit", package: "WASAPIKit"),
+                // The Opus codec, the microphone seam and the RTP voice
+                // uplink/downlink — the voice path both endpoints share.
+                .product(name: "TailscreenAudio", package: "TailscreenKit"),
                 // Sharing. A package of its own so it carries no WinUI and
                 // Linux CI can typecheck it — which covers the capture loop AND
                 // `WindowsShareSession`, whose off-the-main-actor discipline is

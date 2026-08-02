@@ -297,9 +297,9 @@ struct WinUIVideoView: WinUIElementRepresentable {
             x: Double, y: Double
         ) {
             ViewerPointerMapping.normalize(
-                pointX: x, pointY: y,
-                paneWidth: element.actualWidth, paneHeight: element.actualHeight,
-                videoWidth: lastVideoWidth, videoHeight: lastVideoHeight)
+                point: (x: x, y: y),
+                paneSize: (width: element.actualWidth, height: element.actualHeight),
+                videoSize: (width: lastVideoWidth, height: lastVideoHeight))
         }
 
         /// Everything a pointer handler needs, resolved in one call.

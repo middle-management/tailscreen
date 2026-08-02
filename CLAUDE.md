@@ -433,15 +433,42 @@ which mac Foundation re-exports) compiles on Linux via
 `$prop.values`-compatible AsyncStream because `TailscalePeerDiscovery`
 consumes `watcher.$peers.values`.
 
-And a third tier: target **`TailscreenAudio`** (`OpusVoiceEncoder` /
-`OpusVoiceDecoder` / `OpusPCM` — the Opus codec wrapper + Float32↔Int16 /
-960-sample framing over `OpusKit`/libopus, `@_exported`ing OpusKit so
-`Opus.Application` is visible). Foundation + OpusKit only — it also builds
-on Linux, so a future non-macOS client reuses the exact codec while
-supplying its own platform audio I/O (`VoiceChannel`/`SystemAudioTap` are
-the mac-side consumers). It's kept out of `TailscreenProtocol` so that tier
-stays dependency-free; the `linux-protocol` job installs `libopus-dev` +
-`pkg-config` for it (opus.pc is on Linux's default pkg-config path).
+And a third tier: target **`TailscreenAudio`** — the voice path **both
+endpoints share**. The codec (`OpusVoiceEncoder` / `OpusVoiceDecoder` /
+`OpusPCM` — Float32↔Int16 / 960-sample framing over `OpusKit`/libopus,
+`@_exported`ing OpusKit so `Opus.Application` is visible), the microphone
+seam (`MicrophoneCapturing` + `CapturePCMConverter`, `MicrophonePipeline`,
+and `BlockingPCMSource`/`ThreadedMicrophone` — the capture thread, written
+once, because both shipped backends block and both GUI hosts service their
+transport from the UI thread), and the RTP ends: **`VoiceUplink`** (mic →
+downmix/resample → framing → Opus → RTP PT 98 → send) and
+**`VoiceDownlink`** (the inverse, one Opus decoder per SSRC, bounded and
+LRU-evicted), plus **`SharerVoice`** — the sharer's pairing of the two, whose
+SSRC is fixed rather than a parameter because viewers key their decoders on it. One type per direction rather than one per endpoint: a
+sharer's voice and a viewer's voice are the same stream in opposite
+directions, differing only in the SSRC they carry — and writing it twice
+would be writing the mute latch twice. Three decisions worth knowing:
+**audio is withheld until an SSRC is assigned** (an unassigned viewer
+stream would go out as SSRC 0, the sharer's own reserved voice SSRC, which
+the sharer's anti-spoof gate then drops); **nothing is delivered after
+`ThreadedMicrophone.stop()` returns**, which is why the running flag is
+read *and* `onPCM` invoked under one lock — the obvious check-then-call
+version loses a race a few instructions wide, and the test for it is a
+timing assertion because a test that races for the window passes every
+time against the bug; and a **device glitch reaches
+`MicrophonePipeline.noteDiscontinuity()`**, which resets the resampler's
+carried neighbour and deliberately *not* the framer's carry, since those
+are samples somebody actually said. Depends on Foundation + OpusKit +
+`TailscreenProtocol` (the edge points AT the dependency-free tier, which
+is what keeps that tier dependency-free) — it also builds on Linux, so a
+non-macOS client reuses the exact codec while supplying its own platform
+audio I/O (`VoiceChannel`/`SystemAudioTap` are the mac-side consumers;
+`ALSAMicrophoneSource` and `WASAPIMicrophoneSource` are the two
+`BlockingPCMSource` adapters, each ~40 lines and both reporting
+`channelCount: 1` whatever the hardware is — see the double-downmix note
+on `MicrophoneCapturing.onPCM`). The `linux-protocol` job installs
+`libopus-dev` + `pkg-config` for it (opus.pc is on Linux's default
+pkg-config path).
 
 And a fourth tier: target **`TailscreenViewer`** (`ViewerSession` + the
 `VideoDecoding` / `VideoSink` / `AudioSink` protocols and the
@@ -541,6 +568,13 @@ types live entirely in `TailscreenProtocol`/`TailscreenAudio`
 `CaptureHelperWireTests`, `ScreenShareProtocolTests`,
 `ShareResponseProtocolTests`, `ShareLockTests`, `QualitySettingsTests`,
 `TailscreenInstanceTests`, `ViewerZoomMathTests`, `OpusAudioCodecTests`,
+`VoicePathTests` (the voice path end to end through fakes: the capture
+thread's delivery, error-vs-asked-for-stop and stop-waits-for-an-in-flight
+delivery legs; the uplink's withhold-without-an-SSRC, mute-on-the-wire and
+SSRC-change-restarts-the-stream legs; the downlink's per-SSRC decode, bound
+and stalest-first eviction — the last asserted per stream, because a bound
+that holds while the policy evicts whoever is talking is a green check over
+a broken call),
 `AccountProfileStoreTests`, `SharerNoticeTests`, `ShortcutCatalogTests`,
 `AnnotationGeometryTests` — the latter covering `AnnotationGeometry`, the
 **shared** derivation of a stroke's outline from its stored anchor+current
@@ -740,6 +774,21 @@ User-facing strings are localized through SwiftPM resources. `Package.swift` set
 - **Don't present `SCContentSharingPicker` from the main process either.** Same family of APIs, same defensive isolation — spawn `--picker-helper` instead. The picker subprocess exits the moment the user picks, so its XPC handles never live alongside the long-running main process.
 - **Don't deserialize an `SCContentFilter` in the main process.** The decoded filter retains XPC handles to system services; the unarchive happens only inside the capture-helper.
 - **Don't add SCStream lifecycle to the main process.** All capture lives in the helper subprocess. The main-process screen-share server only spawns the helper and broadcasts what comes back.
+- **`lint` fails with a violation that names no file.** The `lint` job's
+  reporter is `github-actions-logging`, which puts the path in GitHub
+  *annotation metadata* — the log API strips it, so the failure reads as a bare
+  "Function should have 5 parameters or less" with nothing to grep for. Don't
+  guess at it by eye; SwiftLint's own parser disagrees with hand-written
+  scanners in exactly the cases that matter. Build the real thing
+  (`git clone --branch <version> https://github.com/realm/SwiftLint && swift
+  build -c release`) and run it as CI does:
+  `LD_LIBRARY_PATH=/opt/swift/usr/lib swiftlint lint --baseline
+  .swiftlint-baseline.json --strict --quiet` — the `LD_LIBRARY_PATH` is not
+  optional on Linux (without it, it dies in `Loading libsourcekitdInProc.so
+  failed`). Check `origin/main` in a worktree at the same time: a violation
+  that reproduces there is one an earlier merge shipped, not one you wrote.
+  That has happened — a PR merged on a green that predated its own conflict
+  resolution left `main` red for three merges before anyone chased it.
 - **Linux CI (`linux-protocol`) fails after touching a package file** — you added an Apple-only dependency to a file in `Packages/TailscreenKit/Sources/`. Keep package files Foundation-only (see the package README's whitelist) or move the mac-bound piece into the app target. Reproduce with `make test-protocol` (works on macOS too).
 - **App fails to compile against a package type** ("initializer is inaccessible", "cannot find X in scope") — the declaration is `internal` in TailscreenKit. Mark what the app needs `public` (structs the app constructs need explicit public inits — Swift never synthesizes memberwise inits as public). Test-only seams should stay internal; tests use `@testable import TailscreenProtocol`/`TailscreenTransport`.
 - **On Windows, the VIEWER's drawing or typing silently does nothing** — check the two gates in order. Both affordances are hidden unless the sharer advertised the matching `ScreenShareCaps` bit, so a sharer with no overlay or no injector correctly produces a plainer window (`WindowsViewerInteraction.setCaps`). Then: **drawing wins over controlling** — with an annotation tool armed a drag is a stroke, not a click, and `forwardsInput` is the one place that precedence lives. Typing specifically needs the `WinUI.Image` to be focusable AND focused: it is not a focus target by default and `keyDown` never fires on an element that cannot take focus, so remote typing does nothing while the pointer works fine. Two more things worth knowing: annotations are composited INTO the decoded frame by `AnnotationRasterizer.draw` (the no-clear half of `render`) rather than onto a second surface, so they zoom and letterbox with the video for free; and Ctrl+wheel zooms while a plain wheel scrolls the sharer, because without that split one of the two is unreachable.

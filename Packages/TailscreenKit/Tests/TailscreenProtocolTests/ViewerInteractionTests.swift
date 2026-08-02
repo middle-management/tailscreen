@@ -11,8 +11,8 @@ final class ViewerPointerMappingTests: XCTestCase {
         // 16:9 video in a 16:9 pane: the content fills it, so the centre is
         // the centre and the corners are the corners.
         let mid = ViewerPointerMapping.normalize(
-            pointX: 320, pointY: 180, paneWidth: 640, paneHeight: 360,
-            videoWidth: 1920, videoHeight: 1080)
+            point: (x: 320, y: 180), paneSize: (width: 640, height: 360),
+            videoSize: (width: 1920, height: 1080))
         XCTAssertEqual(mid.x, 0.5, accuracy: 0.0001)
         XCTAssertEqual(mid.y, 0.5, accuracy: 0.0001)
     }
@@ -22,12 +22,12 @@ final class ViewerPointerMappingTests: XCTestCase {
         // pane, so there are 40-px bars either side — and a click at the pane's
         // left edge must read as the video's left edge, not as −0.06.
         let left = ViewerPointerMapping.normalize(
-            pointX: 40, pointY: 0, paneWidth: 720, paneHeight: 360,
-            videoWidth: 1920, videoHeight: 1080)
+            point: (x: 40, y: 0), paneSize: (width: 720, height: 360),
+            videoSize: (width: 1920, height: 1080))
         XCTAssertEqual(left.x, 0, accuracy: 0.0001)
         let right = ViewerPointerMapping.normalize(
-            pointX: 680, pointY: 360, paneWidth: 720, paneHeight: 360,
-            videoWidth: 1920, videoHeight: 1080)
+            point: (x: 680, y: 360), paneSize: (width: 720, height: 360),
+            videoSize: (width: 1920, height: 1080))
         XCTAssertEqual(right.x, 1, accuracy: 0.0001)
     }
 
@@ -36,12 +36,12 @@ final class ViewerPointerMappingTests: XCTestCase {
         // wrong silently: it is correct on a wide window and offset on a tall
         // one, so a developer resizing to landscape never sees it.
         let top = ViewerPointerMapping.normalize(
-            pointX: 0, pointY: 90, paneWidth: 640, paneHeight: 540,
-            videoWidth: 1920, videoHeight: 1080)
+            point: (x: 0, y: 90), paneSize: (width: 640, height: 540),
+            videoSize: (width: 1920, height: 1080))
         XCTAssertEqual(top.y, 0, accuracy: 0.0001)
         let bottom = ViewerPointerMapping.normalize(
-            pointX: 640, pointY: 450, paneWidth: 640, paneHeight: 540,
-            videoWidth: 1920, videoHeight: 1080)
+            point: (x: 640, y: 450), paneSize: (width: 640, height: 540),
+            videoSize: (width: 1920, height: 1080))
         XCTAssertEqual(bottom.y, 1, accuracy: 0.0001)
     }
 
@@ -51,21 +51,21 @@ final class ViewerPointerMappingTests: XCTestCase {
         // and a value outside [0,1] would simply be clamped there instead —
         // silently, and after a round trip.
         let inBar = ViewerPointerMapping.normalize(
-            pointX: 5, pointY: 180, paneWidth: 720, paneHeight: 360,
-            videoWidth: 1920, videoHeight: 1080)
+            point: (x: 5, y: 180), paneSize: (width: 720, height: 360),
+            videoSize: (width: 1920, height: 1080))
         XCTAssertEqual(inBar.x, 0, accuracy: 0.0001)
     }
 
     func testDegenerateInputsDoNotTrap() {
         XCTAssertEqual(
             ViewerPointerMapping.normalize(
-                pointX: 10, pointY: 10, paneWidth: 0, paneHeight: 0,
-                videoWidth: 1920, videoHeight: 1080
+                point: (x: 10, y: 10), paneSize: (width: 0, height: 0),
+                videoSize: (width: 1920, height: 1080)
             ).x, 0)
         XCTAssertEqual(
             ViewerPointerMapping.normalize(
-                pointX: .nan, pointY: 10, paneWidth: 640, paneHeight: 360,
-                videoWidth: 1920, videoHeight: 1080
+                point: (x: .nan, y: 10), paneSize: (width: 640, height: 360),
+                videoSize: (width: 1920, height: 1080)
             ).x, 0)
     }
 }

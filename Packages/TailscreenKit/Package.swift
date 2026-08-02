@@ -17,10 +17,12 @@ import PackageDescription
 //     patches applied — `make -C ../TailscaleKit apply-patches`);
 //     compiling it needs only the patched header, not the built
 //     libtailscale.a (that's a link-time input).
-//   - TailscreenAudio: the Opus voice/system-audio codec (Float32↔Int16 +
-//     960-sample framing over OpusKit/libopus). Foundation + OpusKit only —
-//     also builds on Linux (needs libopus-dev + pkg-config). Kept out of
-//     TailscreenProtocol so that tier stays dependency-free.
+//   - TailscreenAudio: the voice path both endpoints share — the Opus codec
+//     (Float32↔Int16 + 960-sample framing over OpusKit/libopus), the
+//     microphone seam and its capture thread, and the RTP uplink/downlink.
+//     Foundation + OpusKit + TailscreenProtocol — also builds on Linux (needs
+//     libopus-dev + pkg-config). Kept out of TailscreenProtocol so that tier
+//     stays dependency-free; the edge runs the other way.
 //   - TailscreenViewer: the host-agnostic viewer data plane (ViewerSession
 //     + the decoder/sink seams, ViewerPipeline, FrameStore).
 //   - TailscreenSharer: the host-agnostic sharer data plane
@@ -81,6 +83,12 @@ let package = Package(
         .target(
             name: "TailscreenAudio",
             dependencies: [
+                // The RTP audio packetizer/depacketizer, for VoiceUplink and
+                // VoiceDownlink. This edge points AT the dependency-free tier,
+                // so it costs nothing a consumer of the codec was not already
+                // going to link, and it is what lets the two endpoints share
+                // one voice path instead of one each.
+                "TailscreenProtocol",
                 .product(name: "OpusKit", package: "OpusKit")
             ],
             path: "Sources/TailscreenAudio"
@@ -120,6 +128,10 @@ let package = Package(
             name: "TailscreenViewerTsnet",
             dependencies: [
                 "TailscreenProtocol",
+                // The viewer's own voice: `run` builds a `VoiceUplink` over a
+                // host-supplied microphone and sends it out through the same
+                // ordered queue as the control bytes.
+                "TailscreenAudio",
                 "TailscreenTransport",
                 "TailscreenViewer",
                 .product(name: "TailscaleKit", package: "TailscaleKit")

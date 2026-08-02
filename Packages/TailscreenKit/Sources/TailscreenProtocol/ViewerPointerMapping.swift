@@ -30,14 +30,24 @@ public enum ViewerPointerMapping {
     /// Ratio-based throughout, so it is independent of display scaling: a
     /// HiDPI pane and its logical size share an aspect, which is the only thing
     /// that matters here.
+    /// Grouped as three pairs rather than six scalars, which is what the
+    /// arithmetic actually takes: a position, the pane it was in, and the frame
+    /// being shown. Six positional `Double`s next to each other is also an
+    /// invitation to transpose a width and a height at a call site — a mistake
+    /// that compiles, and whose symptom is the same silent offset this whole
+    /// type exists to prevent.
     public static func normalize(
-        pointX: Double, pointY: Double,
-        paneWidth: Double, paneHeight: Double,
-        videoWidth: Int, videoHeight: Int
+        point: (x: Double, y: Double),
+        paneSize: (width: Double, height: Double),
+        videoSize: (width: Int, height: Int)
     ) -> (x: Double, y: Double) {
-        guard paneWidth > 0, paneHeight > 0, videoWidth > 0, videoHeight > 0 else { return (0, 0) }
+        let paneWidth = paneSize.width
+        let paneHeight = paneSize.height
+        guard paneWidth > 0, paneHeight > 0, videoSize.width > 0, videoSize.height > 0 else {
+            return (0, 0)
+        }
         let paneAspect = paneWidth / paneHeight
-        let frameAspect = Double(videoWidth) / Double(videoHeight)
+        let frameAspect = Double(videoSize.width) / Double(videoSize.height)
         var contentWidth = paneWidth
         var contentHeight = paneHeight
         if frameAspect > paneAspect {
@@ -47,8 +57,8 @@ public enum ViewerPointerMapping {
         }
         let offsetX = (paneWidth - contentWidth) / 2
         let offsetY = (paneHeight - contentHeight) / 2
-        let nx = (pointX - offsetX) / contentWidth
-        let ny = (pointY - offsetY) / contentHeight
+        let nx = (point.x - offsetX) / contentWidth
+        let ny = (point.y - offsetY) / contentHeight
         return (clampUnit(nx), clampUnit(ny))
     }
 

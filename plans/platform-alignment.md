@@ -235,6 +235,51 @@ Kind B. Sequenced by how many rows each unblocks.
   codec, framing, jitter buffer, concealment, SSRC relay. What's missing is
   capture and the hookup. ALSA/PulseAudio in on Linux, WASAPI capture on Windows
   (the render half already exists in `WASAPIKit`).
+
+  *Landed: the capture backends (`ALSA.PCMRecorder`, `WASAPI.Recorder`), the
+  portable seam and pipeline, and **both halves wired end to end** — a viewer
+  can unmute and be heard, a sharer can speak to every viewer and hear them
+  back. Two mic controls, both from shared chrome: `MicrophoneButton` over the
+  video for the viewer, and the same button on the share card for the sharer.
+  **Still open: `mute from outside the window` and the `mute hotkey`** — this
+  is the in-window control only, so a person who has alt-tabbed away cannot
+  mute themselves, which is exactly when they most want to.*
+
+  Four things from it are worth carrying forward.
+
+  - **One type per direction, not per endpoint.** A sharer's voice and a
+    viewer's voice are the same stream in opposite directions, differing only
+    in the SSRC. Writing them separately would have meant writing the mute
+    latch twice, and a mute that works on one side and leaks on the other is
+    the worst possible split. `SharerVoice` then pairs the two, and the SSRC
+    is deliberately **not a parameter** on it: viewers key their Opus decoders
+    on the sharer's reserved SSRC, so there is no correct second answer and
+    therefore nothing for a host to get wrong.
+  - **The capture device is opened per share, not per process.** A long-lived
+    open keeps the OS microphone indicator lit while the app is idle, which
+    reads to a person as "this app is listening" — so a share start opens it
+    and every teardown path releases it, including the one where capture died
+    on its own.
+  - **A viewer's audio is withheld until the sharer assigns an SSRC.** Not
+    an optimisation: an unassigned stream goes out as SSRC 0, which is the
+    *sharer's* reserved voice SSRC, and the sharer's own anti-spoof gate then
+    drops it. The failure mode without this is a viewer talking into a void
+    with nothing logged anywhere.
+  - **Both adapters report `channelCount: 1` whatever the hardware is**,
+    because both recorders fold to mono themselves. Forwarding the device's
+    real channel count — the obvious thing, and the number the recorders
+    publish for the sharer's own information — makes the portable converter
+    downmix a second time, reading N mono samples as N/2 stereo frames. That
+    halves the rate and drops every voice an octave, with nothing to catch it
+    but an ear.
+  - **A test that races for a narrow window is not a test.** The capture
+    thread's "nothing is delivered after `stop()` returns" guarantee was first
+    asserted by watching for a stray delivery; that version passed every time
+    against the deliberately-broken check-then-call implementation. Driving it
+    from the other end — stopping *during* a slow delivery must block —
+    fails against the bug every time. The same review caught a decoder-eviction
+    test that asserted only the bound and would have accepted a policy that
+    evicts whoever is currently talking.
 - **3.2 · Sharer-side drawing surface** — unblocks *toggle drawing* and
   completes 1.4. On Windows this cannot be `WinOverlayKit`'s window:
   `WS_EX_TRANSPARENT` is load-bearing while drawing is *off* or it swallows
