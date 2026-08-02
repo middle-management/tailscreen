@@ -467,6 +467,14 @@ public final class TsnetTransport {
     ///   - onBackChannelReady: called once the outbound TCP back-channel is
     ///     dialing, handing the host a `ViewerBackChannel` to send annotation
     ///     ops / control requests / input events (nil ⇒ receive-only).
+    /// Run one viewing session to completion.
+    ///
+    /// `onVoiceReady` is MainActor-isolated, unlike the other callbacks here:
+    /// the uplink is a session-scoped object the host holds for the session's
+    /// lifetime, and every host that holds one holds it in main-actor UI
+    /// state. This transport is already MainActor-isolated, so the isolation
+    /// costs nothing and saves each host a hop that would let the session end
+    /// first.
     public func run(
         config: ViewerConfig,
         decoder: VideoDecoding,
@@ -475,11 +483,6 @@ public final class TsnetTransport {
         shouldClose: @escaping () -> Bool,
         backChannelHandlers: ViewerBackChannel.Handlers = ViewerBackChannel.Handlers(),
         microphone: MicrophoneCapturing? = nil,
-        // MainActor, unlike the other callbacks here: the uplink is a
-        // session-scoped object the host holds for the session's lifetime, and
-        // every host that holds one holds it in main-actor UI state. The
-        // transport is already MainActor-isolated, so this costs nothing and
-        // saves each host a hop that would let the session end first.
         onVoiceReady: (@MainActor @Sendable (VoiceUplink) -> Void)? = nil,
         onBackChannelReady: (@Sendable (ViewerBackChannel) -> Void)? = nil,
         onAdmitted: (@Sendable (ScreenShareCaps) -> Void)? = nil,

@@ -93,9 +93,7 @@ public protocol DiscontinuityReporting: AnyObject {
 /// on a thread it does not know exists. The flag is therefore read *and* the
 /// callback invoked under one lock, so `stop()` either precedes a delivery
 /// entirely or waits for it.
-public final class ThreadedMicrophone: MicrophoneCapturing, DiscontinuityReporting,
-    @unchecked Sendable
-{
+public final class ThreadedMicrophone: MicrophoneCapturing, @unchecked Sendable {
     public var onPCM: (([Float], AudioInputFormat) -> Void)?
     public var onStopped: ((Error?) -> Void)?
     public var onDiscontinuity: (() -> Void)?
@@ -219,3 +217,8 @@ public final class ThreadedMicrophone: MicrophoneCapturing, DiscontinuityReporti
         callback?(error)
     }
 }
+
+// Declared in an extension rather than on the type so the class line stays a
+// single line: with three conformances it wraps, and a wrapped declaration puts
+// the opening brace on its own line, which this repo's lint rejects.
+extension ThreadedMicrophone: DiscontinuityReporting {}
