@@ -516,6 +516,12 @@ private struct ShareStatusSection: View {
                     }
                     .accessibilityHint(L("Disconnects all viewers and ends the screen share"))
                 }
+                // Same reasoning as the decision surfaces below: a sharer who
+                // will never see an approval banner needs telling on whichever
+                // surface they are actually looking at.
+                if appState.notificationsDenied {
+                    NotificationsOffNotice()
+                }
                 // The sharer's decision surfaces, shared with the menubar
                 // popover — approvals shouldn't require leaving the window.
                 if !appState.pendingViewers.isEmpty {

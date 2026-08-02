@@ -285,6 +285,10 @@
 "%@ wants you to share your screen" = "%@ vill att du delar din skärm";
 "Viewer Connected" = "Tittare ansluten";
 "%@ is now viewing your screen." = "%@ visar nu din skärm.";
+"Notifications are turned off for Tailscreen." = "Aviseringar är avstängda för Tailscreen.";
+"Requests to view or control will only appear here." = "Förfrågningar om att visa eller styra visas bara här.";
+"Viewer Disconnected" = "Tittare frånkopplad";
+"%@ stopped viewing your screen." = "%@ visar inte längre din skärm.";
 "Viewer Wants to Connect" = "Tittare vill ansluta";
 "%@ is asking to view your screen. Open Tailscreen to Accept or Deny." = "%@ vill visa din skärm. Öppna Tailscreen för att acceptera eller neka.";
 
