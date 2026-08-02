@@ -30,6 +30,10 @@ let package = Package(
         .package(path: "../../Packages/TailscreenKit"),
         .package(path: "../../Packages/TailscreenLinuxBackends"),
         .package(path: "../../Packages/TailscaleKit"),
+        // X11 root capture — used by the overlay self-test to read the screen
+        // back. Already in the graph transitively via TailscreenLinuxBackends;
+        // declared here because this package imports it directly.
+        .package(path: "../../Packages/X11CaptureKit"),
         // The hub's look — header, screen rows, cards, placards — shared with
         // the Windows app. It used to live in this executable as
         // `ViewerChrome.swift`; it moved out when a second swift-cross-ui app
@@ -48,6 +52,24 @@ let package = Package(
                 .linkedLibrary("gtk-4"),
                 .linkedLibrary("glib-2.0"),
             ]
+        ),
+        // GTK4's headers for the C targets below. See the module map for why
+        // this is declared here rather than reused from swift-cross-ui.
+        .systemLibrary(
+            name: "CGtk4Sys",
+            path: "Sources/CGtk4Sys",
+            pkgConfig: "gtk4-x11",
+            providers: [.apt(["libgtk-4-dev"])]
+        ),
+        // The sharer's annotation overlay: a click-through, always-on-top
+        // window showing viewers' strokes on the sharer's own screen. C
+        // because the two things it does that GTK4 will not — override-redirect
+        // placement and stacking — are raw X11, and because the interesting
+        // halves (`ReceivedAnnotations`, `AnnotationRasterizer`) already live
+        // in the portable tier where Linux CI tests them.
+        .target(
+            name: "CGtkOverlay",
+            dependencies: ["CGtk4Sys"]
         ),
         // GtkVideoView + the video sink + frame store: the downstream video
         // surface, reusable by the live app and the render self-test.
@@ -74,6 +96,12 @@ let package = Package(
                 .product(name: "TailscaleKit", package: "TailscaleKit"),
                 .product(name: "TailscreenSharerLinux", package: "TailscreenLinuxBackends"),
                 "TailscreenViewerGtk",
+                "CGtkOverlay",
+                // X11 root capture, for the overlay self-test: it draws a known
+                // pattern and then reads the screen back to prove the pixels
+                // actually landed. Already in the graph via TailscreenSharerLinux;
+                // named explicitly because this target imports it directly.
+                .product(name: "X11CaptureKit", package: "X11CaptureKit"),
                 .product(name: "SwiftCrossUI", package: "swift-cross-ui"),
                 .product(name: "DefaultBackend", package: "swift-cross-ui"),
                 .product(name: "TailscreenViewer", package: "TailscreenKit"),

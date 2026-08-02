@@ -82,7 +82,7 @@ grant gate, the coordinate mapping and the neutral key model were all portable
 and already tested, so what was missing each time was the host call rather than
 a capability.
 
-Two specifics worth knowing:
+Three specifics worth knowing:
 
 - **The Linux sharer's ✅ has a condition: the session must be composited.**
   The overlay is an ARGB window, and on uncomposited X11 there is no per-pixel
@@ -98,6 +98,13 @@ Two specifics worth knowing:
   *other* viewers while never appearing on the sharer's own screen — with one
   viewer, the common case, drawing silently did nothing. The default now
   withholds, and each host derives the bit from something it actually has.
+- **The Linux sharer injects through XTEST, which is an optional X11
+  extension.** Without it every call succeeds and injects nothing, so its
+  presence is probed at open and the capability is withheld when absent —
+  viewers aren't offered Request Control rather than being granted control
+  whose clicks vanish. The headless sharer additionally defaults control off
+  behind `--allow-control`: an unattended process shouldn't invite a peer to
+  take the pointer merely because it can.
 - **Windows gates control and annotations on resolving the capture item's screen
   rect.** A WGC `GraphicsCaptureItem` carries no HMONITOR, so its size is matched
   against the enumerated monitors; a *window* capture, or two identical monitors,
@@ -123,7 +130,10 @@ different kind of missing than software-vs-hardware encode.
 The approval gate itself was always portable and every host asserts it (the
 server's own default is *off*, which is right for a headless automation sharer
 and wrong for anything with a person in front of it). What the other two lacked
-was the persistent per-peer store and somewhere to drive it from.
+was the persistent per-peer store and somewhere to drive it from. Both now come
+from shared code: the decision logic and the StableNodeID-keyed intent queue
+live in the portable tier (`ViewerRosterDecision` + `SharerAccessCoordinator`),
+and the hub renders one viewer-row component on every host.
 
 Two things behind the ✅s are worth knowing:
 

@@ -99,10 +99,18 @@ enum AppMenu {
         disconnect.target = ViewerCommands.shared
         fileMenu.addItem(disconnect)
 
+        // Mirrors the ⌃⌥M global hotkey, exactly as Stop Remote Control below
+        // mirrors ⌃⌥.. A menu key equivalent only fires while Tailscreen is
+        // frontmost — the global registration covers the rest — but printing
+        // it here is what makes the shortcut *findable*: the menu is the first
+        // place a Mac user looks, and it is also what feeds Help-menu search,
+        // VoiceOver, and remapping in System Settings → Keyboard Shortcuts.
+        // Registered and undocumented is the same as not registered.
         let micItem = NSMenuItem(
             title: L("Microphone"),
             action: #selector(ViewerCommands.toggleMicrophone(_:)),
-            keyEquivalent: "")
+            keyEquivalent: "m")
+        micItem.keyEquivalentModifierMask = [.control, .option]
         micItem.target = ViewerCommands.shared
         fileMenu.addItem(micItem)
 

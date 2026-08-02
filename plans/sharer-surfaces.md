@@ -130,10 +130,41 @@ to dedupe is pure logic and belongs where Linux CI can test it. macOS already ha
 inventing a second set.
 
 ```
-enum SharerNotice { case viewerPending(label:), controlRequested(label:), viewerJoined(label:) }
+enum SharerNoticeKind { case viewerPending, controlRequested, requestToShare,
+                             viewerJoined, viewerLeft }
 enum NoticeAction { case approve, deny, dismiss }
-func noticeToPost(...) -> SharerNotice?     // dedupe + staleness live here
+func noticesToPost(...) -> [SharerNotice]   // dedupe + staleness live here
 ```
+
+**Urgency is narrower than actionability**, and conflating them is the easy
+mistake — the first cut of this had only three kinds, where the two axes
+happened to coincide. `requestToShare` has buttons but is *not* urgent: it
+arrives while the machine is idle, nobody is mid-flow, and an invitation has a
+natural retry. The two mid-share asks arrive with somebody watching a "waiting
+for approval" placard or unable to click anything, and only those get the
+break-through-Focus level.
+
+The argument that settles it is mechanical rather than aesthetic: every platform
+revokes its Focus exemption **per app**, not per notification. A kind that claims
+urgency without needing it raises the odds the user turns the exemption off,
+which disarms the kinds that do need it. Spend it only where somebody is stuck.
+
+`viewerJoined`/`viewerLeft` are a matched pair. A sharer told somebody arrived
+and never told they left has to go looking to find out whether anyone is still
+watching — the same ask-the-app problem notifications exist to remove. Both are
+informational, neither is actionable, and the departure has two gates so it
+stays news rather than noise: only viewers whose *arrival* was announced get a
+departure, and nothing posts during teardown (stopping a share expels every
+viewer at once, which would otherwise fire one banner per viewer at the exact
+moment the sharer already decided to stop).
+
+> **Landed** as `TailscreenProtocol/SharerNotice.swift`, **not** in
+> `TailscreenHubUI` as this plan first said: HubUI carries SwiftCrossUI, which
+> the macOS app does not build, and macOS is the first consumer. Building it
+> also turned up that macOS has *three* ad-hoc dedupe mechanisms for this one
+> decision, not one — which is a stronger argument for the shared layer than
+> "the other two platforms need it too."
+
 
 #### macOS: fix delivery before adding actions
 
@@ -182,11 +213,18 @@ layer against a working implementation.
 screen being captured, and viewers see it — ours and every other app's. Two
 concrete leaks, both worth closing in the same pass:
 
-- *Visually*: Cloaked Apps already has the machinery. `AppCloak.effectiveExclusions`
-  (`AppCloak.swift:112`) is `.display`-only and feeds
-  `SCContentFilter(display:excludingApplications:)`, so `com.apple.notificationcenterui`
-  is the natural entry. Needs verifying that Notification Center actually appears
-  in `SCShareableContent.applications` — system UI windows are not guaranteed to.
+- *Visually*: **deferred, deliberately.** Cloaked Apps already has the machinery
+  — `AppCloak.effectiveExclusions` (`AppCloak.swift:112`) is `.display`-only and
+  feeds `SCContentFilter(display:excludingApplications:)`, so
+  `com.apple.notificationcenterui` is the natural entry. Two things must be
+  checked on a real desktop first, and neither can be checked from CI: whether
+  that process even appears in `SCShareableContent.applications` (system UI
+  windows are not guaranteed to), and — the reason this did not ship with the
+  audible half — whether excluding it also removes the **menu bar** from the
+  capture, since on modern macOS the same process owns the menu-bar extras area
+  and the Notification Center panel. A silent no-op and a silently missing menu
+  bar are very different failures, and only one of them is acceptable to find in
+  production.
 - *Audibly*: `content.sound = .default` on all four sites. With system-audio
   sharing on, the helper captures the system mix and `excludesCurrentProcessAudio`
   drops only *our own* audio — a notification ding comes from another process, so
@@ -251,7 +289,16 @@ and the only work is deciding whether to keep the system border or opt out
 (which needs a restricted capability) in favour of a branded one. Keeping it is
 almost certainly right.
 
-**macOS needs no new shim either.** `SharerOverlayWindow` is already a
+**macOS needs no new shim** — but it does need a new *window*. Landed as
+`CaptureOutlineWindow`: it reuses `SharerOverlayWindow`'s frame statics and miss
+threshold, but cannot reuse the panel itself, because that one is built lazily
+(so it does not exist for an ordinary share) and in display mode deliberately
+sits *inside* the capture region so sharer strokes reach viewers. Both are
+exactly wrong for an outline. Shared tracking, separate window — small, not
+free. The keep-it-out-of-the-video rule is `sharingType = .none`, which is the
+one assumption in the feature that needs a real-desktop check; the fallback is
+to pass the window's `CGWindowID` to the capture helper and exclude it in
+`SCContentFilter`. `SharerOverlayWindow` is already a
 `.statusBar`-level, `ignoresMouseEvents = true` panel whose `Mode` is
 display / window / application and which already re-derives its frame on display
 reconfiguration (`:259`) and tracks a shared window live with a miss-threshold
@@ -420,6 +467,36 @@ silently stranding a viewer at the approval gate — on Linux and Windows becaus
 nothing is posted, and on macOS because what is posted loses to Focus. Step 8 is
 independently shippable and touches only macOS.
 
+## Status
+
+| Step | State |
+|---|---|
+| 1 · macOS notification delivery | **done** — interruption level (mid-share asks only), the UN delegate, authorization read-back, sound leak, viewer-left |
+| 2 · portable `SharerNotice` | **done** — `TailscreenProtocol`, 17 tests on Linux CI |
+| 3 · macOS categories + actions | not started — the step that collapses macOS's three dedupe mechanisms onto (2) |
+| 4 · Windows notification shim | not started |
+| 5 · Linux notification backend | not started — needs a GDBus C shim in the `CGtkVideo` mould |
+| 6 · confirm the Windows WGC border | **needs a real desktop**, not code |
+| 7 · outline: macOS | **done** — `CaptureOutlineWindow` |
+| 7 · outline: Linux | not started — the one piece with no existing machinery |
+| 8 · macOS roster + hotkey docs | **done** — roster in the hub, ⌃⌥M in the menu, ⌃⌥. in the sheet, `isRegistered` |
+| 9 · portable `ShortcutCatalog` | **done** — 18 tests on Linux CI |
+| 10 · Windows/Linux hotkeys | not started |
+| 11 · mic capture, sharer drawing | not started (the two large tracks) |
+
+Two things landed but are **not yet consumed**, which is deliberate and worth
+not forgetting: nothing calls `SharerNotice` (macOS adopts it in step 3), and
+nothing reads `GlobalHotkey.isRegistered` (its consumer is the cheat sheet,
+which is still trapped inside `ensureViewer()` — see step 8's remainder below).
+
+**Still open from step 8:** lifting the shortcut cheat sheet off the viewer
+window. `ViewerShortcutsOverlayHost` is built in `AppState.ensureViewer()` and
+`ViewerCommands` validates on `shortcutsModel != nil`, so Help → Keyboard
+Shortcuts is greyed out and ⌘? does nothing unless you are currently *watching*
+someone. The sharer — the one with the global hotkeys — still cannot open it.
+That change is also where `ShortcutCatalog` and `isRegistered` find their first
+reader.
+
 ## Files to change / add
 
 ```
@@ -511,6 +588,40 @@ No `WinTrayKit`, and no tray entry on Linux — see the decision above.
 | Configurable hotkeys (recorder + conflict UI) | medium — optional, the real fix for a collision |
 | **Microphone capture** | **large** — gates the mute toggle |
 | **Sharer-side drawing** | **large** — gates the draw toggle |
+
+## Future: request to annotate
+
+Not scheduled — recorded because the shape is already sitting in the codebase
+and it would be a shame to rediscover it later.
+
+Annotation is currently **ungated**: any admitted viewer can draw, and every
+stroke is fanned out to the sharer and to every other viewer. That is right for
+the common case of one or two people. It stops being right as the audience
+grows — a dozen viewers with pens is a whiteboard nobody asked for, and the
+sharer's only remedy today is `.clearAll` after the fact.
+
+Remote control already solved exactly this problem, and the machinery
+generalizes almost unchanged:
+
+- a viewer-initiated request (`.controlRequest` → `.annotateRequest`)
+- a sharer-side grant gate keyed by `connectionID`, unspoofable across a NAT
+  rebind (`RemoteControlPolicy.shouldInject` → the annotation ingest path,
+  which already threads each connection's `remoteAddress` for the
+  admitted-viewer check)
+- the same notice kind and dedupe rules as `controlRequested`
+- the same auto-revoke triggers: disconnect, idle sweep, expel, Stop Sharing
+
+Two differences worth thinking about before building it. Control is
+**single-grantee** by design — two people fighting over one cursor is
+incoherent — but annotation is naturally *multi*-grantee, so the grant is a set
+rather than a slot. And unlike control, the sensible default is arguably
+"everyone may draw", flipping to request-based only above some viewer count or
+when the sharer turns it on; a feature that makes the two-person case worse to
+fix the twelve-person case is a bad trade.
+
+The capability bit already exists (`ScreenShareCaps.annotations`, bit 4) and is
+advertised per sharer, so a viewer's toolbar already knows how to disable itself
+— which is the hard part of introducing a gate without breaking old peers.
 
 ## What would revive the tray
 

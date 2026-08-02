@@ -39,10 +39,11 @@ The honest differences:
 - **Sharing works everywhere**, with one Linux caveat: capture goes through
   X11, so a Wayland session can view but not yet share — the app detects
   this and says so.
-- **Remote control** can be requested from any viewer, but only a macOS or
-  Windows sharer can grant it. The Linux sharer can't inject input yet, so
-  it doesn't advertise the capability and its viewers never see a Request
-  Control button.
+- **Remote control** can be granted by a sharer on any platform (Linux
+  injects via X11's XTEST extension — when it's absent, the capability
+  isn't advertised and viewers never see a Request Control button).
+  Requesting control as a *viewer* works from macOS and Linux; the Windows
+  viewer doesn't offer it yet.
 - **Audio capture is macOS-only today.** The mic button and **Share System
   Audio** exist on the macOS app; Linux and Windows endpoints play back the
   audio they receive but don't capture any.

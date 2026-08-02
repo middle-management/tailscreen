@@ -18,6 +18,7 @@ import TailscreenSharerLinux
 //   tailscreen-sharer-linux --hostname NAME --state-dir DIR
 //                           [--control-url URL] [--auth-key KEY]
 //                           [--display :N] [--fps N] [--seconds N]
+//                           [--allow-control]
 //
 // TAILSCREEN_TS_AUTHKEY / TAILSCREEN_TS_CONTROL_URL are honoured as defaults,
 // matching the rest of the repo's e2e tooling.
@@ -29,6 +30,17 @@ struct Config: Sendable {
     var authKey: String?
     var display: String?
     var fps = 15
+    /// Offer remote control to viewers.
+    ///
+    /// **Off by default, unlike the app.** This binary is what automation and
+    /// the e2e harness drive, often unattended and often on a box whose
+    /// display nobody is watching — inviting a peer to take the pointer is not
+    /// something an unattended process should do because it *can*. The GTK app
+    /// has a person in front of it and offers control whenever XTEST is
+    /// present; here it takes a flag. (Same asymmetry, same reasoning, as the
+    /// approval gate: the server default is right for automation and wrong for
+    /// anything with a user.)
+    var allowControl = false
     /// Run for this long then stop. 0 = until killed. A bounded default keeps
     /// an automated harness from leaking a sharer if the viewer never arrives.
     var seconds = 0
@@ -47,6 +59,7 @@ struct Config: Sendable {
             case "--auth-key": c.authKey = it.next()
             case "--display": c.display = it.next()
             case "--fps": c.fps = Int(it.next() ?? "") ?? c.fps
+            case "--allow-control": c.allowControl = true
             case "--seconds": c.seconds = Int(it.next() ?? "") ?? c.seconds
             default: FileHandle.standardError.write(Data("unknown argument \(a)\n".utf8))
             }
@@ -74,12 +87,27 @@ guard let selectionData = try? JSONEncoder().encode(selection) else {
     exit(2)
 }
 
+// Built before the server because whether it exists is what the server
+// advertises. `isTrusted()` is the real question: XTEST is an OPTIONAL X11
+// extension, and without it every injected click silently vanishes.
+let injector: X11InputInjector? = {
+    guard config.allowControl else { return nil }
+    let candidate = X11InputInjector(display: config.display)
+    guard candidate.isTrusted() else {
+        log("--allow-control given but this X server has no XTEST extension; control stays off")
+        return nil
+    }
+    return candidate
+}()
+
 let server = TailscaleScreenShareServer(
     captureFactory: { X11CaptureEncoder(display: config.display) },
-    // No injector: this host can't inject input, so the server correctly
-    // withholds `ScreenShareCaps.remoteControl` and viewers hide their Request
-    // Control affordance rather than sending requests nothing can serve.
-    inputInjector: nil
+    // Present only with `--allow-control`, and only when this X server
+    // actually has XTEST. The server derives `ScreenShareCaps.remoteControl`
+    // from this being non-nil, so in every other case viewers hide their
+    // Request Control affordance rather than sending requests nothing can
+    // serve.
+    inputInjector: injector
 )
 
 server.onViewersChanged = { viewers in

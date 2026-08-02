@@ -85,6 +85,14 @@ public struct ShareCard: View {
     /// Secondary lines under the status — who is watching, where the frame
     /// time goes, why a capability is unavailable.
     let notes: [String]
+    /// Who is currently watching, and what can be done about each of them.
+    ///
+    /// A structured roster rather than more `notes` lines, because this is the
+    /// one place a sharer can change their mind about somebody already
+    /// admitted. It sits ABOVE the notes and BELOW the prompts: a person
+    /// waiting to be let in is more urgent than a person already watching,
+    /// and both are more urgent than a frame-time statistic.
+    let viewers: [HubViewerRow]
     let prompts: [HubPrompt]
     /// Persistent on/off controls for this share — today the approval gate.
     /// Rendered as the card's footer, below the prompts and notes: a setting
@@ -106,6 +114,7 @@ public struct ShareCard: View {
         startLabel: String = "Share my screen",
         stopLabel: String = "Stop sharing",
         notes: [String] = [],
+        viewers: [HubViewerRow] = [],
         prompts: [HubPrompt] = [],
         settings: [HubToggle] = [],
         extraAction: HubAction? = nil,
@@ -121,6 +130,7 @@ public struct ShareCard: View {
         self.startLabel = startLabel
         self.stopLabel = stopLabel
         self.notes = notes
+        self.viewers = viewers
         self.prompts = prompts
         self.settings = settings
         self.extraAction = extraAction
@@ -157,6 +167,9 @@ public struct ShareCard: View {
                         Button(prompt.acceptLabel) { onAccept(prompt.id) }
                         Button(prompt.declineLabel) { onDecline(prompt.id) }
                     }
+                }
+                ForEach(viewers, id: \.id) { viewer in
+                    HubViewerRowView(viewer: viewer)
                 }
                 ForEach(Array(notes.enumerated()), id: \.offset) { note in
                     Text(note.element)

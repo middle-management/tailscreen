@@ -186,6 +186,16 @@ class AppState: ObservableObject {
     /// SwiftUI views bind to this via `appState.requireViewerApproval`;
     /// the setter syncs the live server too so the toggle takes effect
     /// mid-share.
+    /// True only when we *know* macOS will not display our notifications —
+    /// the user explicitly denied them. Never true for "not asked yet", which
+    /// would be crying wolf.
+    ///
+    /// Deliberately one-directional: `false` does **not** mean notifications
+    /// will arrive. A Focus can filter us, Time Sensitive can be revoked, and
+    /// the alert style can be None, none of which is visible to the app. So the
+    /// UI built on this only ever renders a warning, and never reassures.
+    @Published private(set) var notificationsDenied = false
+
     @Published var requireViewerApproval: Bool = ViewerApprovalDefaults.load() {
         didSet {
             ViewerApprovalDefaults.save(requireViewerApproval)
@@ -287,6 +297,11 @@ class AppState: ObservableObject {
     /// arrive whether or not we're sharing. Torn down on sign-out.
     private var controlListener: TailscreenControlListener?
     private var sharerOverlay: SharerOverlayWindow?
+    /// Border drawn around the captured region for the whole share. Unlike
+    /// `sharerOverlay` this is NOT lazy — its entire job is to be present
+    /// whenever a capture is running, including the ordinary share where
+    /// nobody ever draws anything.
+    private var captureOutline: CaptureOutlineWindow?
     /// Decoded picker selection backing the current share. Captured in
     /// `startSharing(filterData:)` and consumed by `ensureSharerOverlay`
     /// so the overlay panel can scope itself to the shared window/app
@@ -1003,6 +1018,10 @@ class AppState: ObservableObject {
         if wasDrawing {
             ensureSharerOverlay().setInputEnabled(true)
         }
+        // Same reason, same immutability: the outline's mode is fixed at
+        // construction, so a mid-share source change has to rebuild it or it
+        // would keep framing the region that is no longer being shared.
+        showCaptureOutline()
 
         // Refresh the metadata served to peers (share name / resolution)
         // and drop the stale thumbnail — the fresh helper repopulates it
@@ -1033,6 +1052,17 @@ class AppState: ObservableObject {
             )
             return
         }
+        // Re-read notification authorization at every share start. The one-shot
+        // prompt is answered once, but the user can revoke it in System
+        // Settings at any time afterwards — and with approval defaulting on,
+        // a sharer whose approval banners will never appear is a sharer who
+        // strands viewers without ever learning why. The answer arrives
+        // asynchronously and lands on `notificationsDenied`, which the sharing
+        // card watches.
+        ViewerJoinNotifier.shared.onAuthorizationChanged = { [weak self] state in
+            self?.notificationsDenied = (state == .denied)
+        }
+        ViewerJoinNotifier.shared.refreshAuthorization()
         // Decode the picker selection so the sharer overlay (built lazily
         // when the first annotation arrives or "Draw on Screen" is toggled)
         // can scope its panel to the shared window/app instead of the
@@ -1053,6 +1083,11 @@ class AppState: ObservableObject {
             if sharingState == .starting {
                 sharingState = .idle
                 shareLock.release()
+                // Honour the same contract for the outline: a share that
+                // never reached `.active` must not leave a border on screen
+                // claiming one is running.
+                captureOutline?.hide()
+                captureOutline = nil
             }
         }
         do {
@@ -1302,6 +1337,11 @@ class AppState: ObservableObject {
             // placeholder and lands with the live thumbnail visible.
             await waitForFirstPreview(timeout: .milliseconds(500))
 
+            // Raise the capture outline once capture is genuinely running.
+            // Earlier would draw a boundary around a share that may still
+            // fail to start, which is the same lie as an outline that lags.
+            showCaptureOutline()
+
             sharingState = .active
         } catch {
             presentError(.sharingGeneric(error))
@@ -1359,6 +1399,8 @@ class AppState: ObservableObject {
         sharerOverlay?.hide()
         sharerOverlay = nil
         isSharerOverlayVisible = false
+        captureOutline?.hide()
+        captureOutline = nil
         currentSelection = nil
 
         sharingState = .idle
@@ -1379,6 +1421,20 @@ class AppState: ObservableObject {
                 pending.resume()
             }
         }
+    }
+
+    /// (Re)build the capture outline for the current selection and show it.
+    ///
+    /// Called at share start and again after a mid-share "Change Source…",
+    /// because the outline's mode — like the annotation overlay's — is fixed
+    /// at construction. It reuses `overlayMode(for:)`, the same pure
+    /// projection `OverlayModeDecisionTests` covers, so the outline and the
+    /// annotation panel can never disagree about where the shared region is.
+    private func showCaptureOutline() {
+        captureOutline?.hide()
+        let outline = CaptureOutlineWindow(mode: Self.overlayMode(for: currentSelection))
+        outline.show()
+        captureOutline = outline
     }
 
     /// Create the sharer overlay lazily so it's always present when needed —
@@ -2905,7 +2961,7 @@ class AppState: ObservableObject {
     }
 
     /// Diff the new viewer roster against the previous one to fire a
-    /// per-join user notification exactly once per `id`. Reuses
+    /// per-join and per-leave user notification exactly once per `id`. Reuses
     /// `notifiedViewerIDs` so a hostname-resolution update that
     /// re-emits the same `id` doesn't ping twice. Notifications are
     /// best-effort: dev builds without a bundle ID won't be authorized
@@ -2915,6 +2971,21 @@ class AppState: ObservableObject {
         let previousIDs = Set(currentViewers.map { $0.id })
         let newIDs = Set(viewers.map { $0.id })
         let joinedIDs = newIDs.subtracting(previousIDs)
+        // Departure labels must be read from the OUTGOING roster: a viewer who
+        // left is, by definition, absent from `viewers`.
+        //
+        // Two gates, both there to stop this being noise rather than news.
+        // Only viewers whose *arrival* was announced get a departure — a
+        // "left" with no matching "joined" is a non-sequitur. And nothing is
+        // posted while the share is being torn down: `await server?.stop()`
+        // expels every viewer, which would otherwise fire one banner per
+        // viewer at the exact moment the sharer has already decided to stop.
+        let departedLabels =
+            isStoppingShare
+            ? []
+            : currentViewers
+                .filter { !newIDs.contains($0.id) && notifiedViewerIDs.contains($0.id) }
+                .map { $0.hostname ?? $0.tailscaleIP }
         currentViewers = viewers
         refreshRememberedDisplayNames(stableIDHostnamePairs: viewers.map { ($0.stableID, $0.hostname) })
         applyQueuedPolicyIntents(
@@ -2922,6 +2993,9 @@ class AppState: ObservableObject {
         // Forget IDs that have left so a reconnect from the same
         // address fires a new notification.
         notifiedViewerIDs.formIntersection(newIDs)
+        for label in departedLabels {
+            ViewerJoinNotifier.shared.postLeft(label: label)
+        }
         for id in joinedIDs where !notifiedViewerIDs.contains(id) {
             notifiedViewerIDs.insert(id)
             guard let viewer = viewers.first(where: { $0.id == id }) else { continue }

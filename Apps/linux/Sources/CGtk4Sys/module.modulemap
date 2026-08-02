@@ -1,0 +1,20 @@
+// GTK4's own headers, for the C targets in this package that need them.
+//
+// swift-cross-ui vendors an equivalent for its own Gtk bindings, but does not
+// export it as a product, so a downstream C target cannot depend on it. This
+// declares the same system library independently; both resolve to the same
+// installed gtk4 and neither compiles the other's headers.
+//
+// `gtk4-x11` rather than `gtk4`: the overlay reaches past GDK to X11 for
+// override-redirect and stacking (GTK4 offers neither), so it needs Xlib's
+// headers and -lX11. That .pc is a superset — it emits gtk4's own cflags plus
+// the X11 ones.
+module CGtk4Sys [system] {
+    header "shim.h"
+    link "gtk-4"
+    link "gobject-2.0"
+    link "glib-2.0"
+    link "cairo"
+    link "X11"
+    export *
+}

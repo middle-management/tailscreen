@@ -1,6 +1,56 @@
 import Foundation
 import UserNotifications
 
+/// The app's `UNUserNotificationCenterDelegate`.
+///
+/// Without one, a notification posted while Tailscreen is frontmost displays
+/// **nothing at all** — the system's default for a foreground app is to
+/// suppress it, and `add(_:)` reports success either way. There was no delegate
+/// anywhere in the target, so every post made while the user had the app in
+/// front was silently dropped: exactly the moment someone has just clicked the
+/// menubar item and a viewer arrives.
+///
+/// This is also where a notification *action* reports back
+/// (`didReceive response:`) once the approve/deny buttons land, so the object
+/// is needed regardless of the foreground case.
+/// Stateless, so `@unchecked Sendable` costs nothing to guarantee — it exists
+/// only to satisfy the `static let shared` a delegate needs in order to be
+/// retained (`UNUserNotificationCenter.delegate` is weak).
+///
+/// The protocol conformance lives in the extension below rather than on this
+/// line, so the declaration fits on one line: swift-format wraps a longer one
+/// and puts the opening brace on its own line, which swiftlint's
+/// `opening_brace` rule rejects — the two tools cannot both be satisfied by a
+/// wrapped declaration, so the fix is to not need one. Same reasoning as
+/// `AccountProfileStore.init`'s `fm` local.
+final class TailscreenNotificationDelegate: NSObject, @unchecked Sendable {
+    static let shared = TailscreenNotificationDelegate()
+
+    /// Install once at launch. No-op on unbundled builds, where
+    /// `UNUserNotificationCenter.current()` raises rather than degrading.
+    @MainActor
+    static func install() {
+        guard Bundle.main.bundleIdentifier != nil else { return }
+        UNUserNotificationCenter.current().delegate = shared
+    }
+}
+
+extension TailscreenNotificationDelegate: UNUserNotificationCenterDelegate {
+    /// Show banners even when Tailscreen is the active app. `.list` keeps it
+    /// in Notification Center so a sharer who looks away mid-share can still
+    /// find out somebody is waiting; `.sound` is honoured only for posts that
+    /// asked for one, and the sharer-facing posts deliberately do not (see
+    /// `ViewerJoinNotifier.post`).
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler:
+            @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .list, .sound])
+    }
+}
+
 /// Posts macOS notifications for events that happen while the menubar
 /// popover is closed — primarily incoming request-to-share prompts, which
 /// otherwise sit invisible in `pendingRequests` until the user happens to
@@ -47,7 +97,22 @@ final class TailscreenUserNotifications {
             let content = UNMutableNotificationContent()
             content.title = L("Tailscreen request")
             content.body = L("\(fromHostname) wants you to share your screen")
+            // Kept, unlike the sharer-facing posts in `ViewerJoinNotifier`:
+            // a request-to-share arrives while this machine is *idle*, so
+            // there is no capture running for the sound to leak into.
             content.sound = .default
+            // Deliberately NOT `.timeSensitive`, unlike the two mid-share asks
+            // in `ViewerJoinNotifier`. This one arrives while the machine is
+            // *idle*: nobody is mid-flow, and an invitation has a natural retry
+            // — the peer asks again, or messages you. The others arrive while
+            // you are already sharing, with somebody watching a "waiting for
+            // approval" placard or unable to click anything.
+            //
+            // The mechanical argument matters more than the aesthetic one:
+            // Time Sensitive is revoked per *app*, not per notification. Every
+            // kind that claims the exemption without needing it raises the
+            // odds the user turns it off, which disarms the kinds that do.
+            content.interruptionLevel = .active
             content.userInfo = ["fromHostname": fromHostname]
             let request = UNNotificationRequest(
                 identifier: UUID().uuidString,

@@ -151,9 +151,10 @@ Remote control is off until granted, per session, per viewer:
   display shares you're watching.
 - **On macOS, the OS has a say too.** Injection requires the Accessibility
   permission, granted by you in System Settings. Without it, a grant is
-  refused rather than silently installed. (A Linux sharer can't inject at
-  all today and doesn't advertise the capability, so viewers aren't even
-  offered the request.)
+  refused rather than silently installed. (On Linux, injection needs X11's
+  XTEST extension — when it's absent the capability isn't advertised, so
+  viewers aren't even offered the request rather than being granted
+  control whose clicks vanish.)
 
 ## Resource-exhaustion bounds
 

@@ -280,6 +280,10 @@
 "%@ wants you to share your screen" = "%@ wants you to share your screen";
 "Viewer Connected" = "Viewer Connected";
 "%@ is now viewing your screen." = "%@ is now viewing your screen.";
+"Notifications are turned off for Tailscreen." = "Notifications are turned off for Tailscreen.";
+"Requests to view or control will only appear here." = "Requests to view or control will only appear here.";
+"Viewer Disconnected" = "Viewer Disconnected";
+"%@ stopped viewing your screen." = "%@ stopped viewing your screen.";
 "Viewer Wants to Connect" = "Viewer Wants to Connect";
 "%@ is asking to view your screen. Open Tailscreen to Accept or Deny." = "%@ is asking to view your screen. Open Tailscreen to Accept or Deny.";
 
@@ -312,7 +316,9 @@
 /* MARK: - Shortcuts overlay (ViewerShortcutsOverlay.swift) */
 "Tools" = "Tools";
 "Annotation" = "Annotation";
+"Remote Control" = "Remote Control";
 "Window" = "Window";
+"Revoke remote control (system-wide)" = "Revoke remote control (system-wide)";
 "Pinch" = "Pinch";
 "⌥ Scroll" = "⌥ Scroll";
 "Scroll" = "Scroll";
