@@ -30,6 +30,7 @@ import class TailscreenVideoFFmpeg.FFmpegVideoDecoder
 import class TailscreenViewer.FrameStore
 import class TailscreenViewer.ThreadedAudioSink
 import struct TailscreenViewerTsnet.DiscoveredSharer
+import struct TailscreenViewerTsnet.PeerProbe
 import class TailscreenViewerTsnet.TsnetTransport
 import struct TailscreenViewerTsnet.ViewerConfig
 import enum WGCCaptureKit.WGC
@@ -333,6 +334,10 @@ final class AppUIState: ObservableObject {
     /// unknown byte) collapses to nil, and rendering that as "idle" would be a
     /// claim the app cannot support.
     @Published var shareInfo: [String: TailscreenMetadata] = [:]
+    /// Round-trip time of the last successful probe, by peer id. Free: it
+    /// times the sweep above rather than adding a second dial. Absent means no
+    /// probe has completed — never "fast".
+    @Published var latencyMs: [String: Int] = [:]
     /// Header filter state, persisted through the portable `PeerListFilterStore`
     /// the macOS hub uses — not a new persistence layer. On Windows that is
     /// swift-corelibs-foundation's `UserDefaults`; if the write does not stick
@@ -473,7 +478,8 @@ final class AppUIState: ObservableObject {
         filteredPeers.map {
             HubScreen(
                 id: $0.id, hostname: $0.hostname, tailscaleIP: $0.tailscaleIP,
-                isOnline: $0.isOnline, metadata: shareInfo[$0.id])
+                isOnline: $0.isOnline, metadata: shareInfo[$0.id],
+                route: $0.route, latencyMs: latencyMs[$0.id], tags: $0.tags)
         }
     }
 
@@ -784,12 +790,16 @@ final class AppUIState: ObservableObject {
         // which `addTask`'s `sending` parameter rejects; leaving them
         // nonisolated lets each simply `await` the main-actor `fetchMetadata`.
         let transport = self.transport
-        await withTaskGroup(of: (String, TailscreenMetadata?).self) { group in
+        await withTaskGroup(of: (String, PeerProbe).self) { group in
             for peer in online {
-                group.addTask { (peer.id, await transport.fetchMetadata(ip: peer.tailscaleIP)) }
+                group.addTask { (peer.id, await transport.probePeer(ip: peer.tailscaleIP)) }
             }
-            for await (id, metadata) in group {
-                shareInfo[id] = metadata
+            for await (id, probe) in group {
+                shareInfo[id] = probe.metadata
+                // Only on a completed round trip: a latency recorded for a
+                // probe that never answered would read as a fast link to a
+                // machine that is gone.
+                latencyMs[id] = probe.latencyMs
             }
         }
     }

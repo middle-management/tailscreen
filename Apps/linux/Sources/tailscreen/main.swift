@@ -331,13 +331,17 @@ if gSelfTest {
                     // re-points it after a profile switch brings a different
                     // node up.
                     gSharer.ensureControlListener()
-                    // Lazy per-sharer metadata sweep (the sharing chip + res).
-                    await withTaskGroup(of: (String, TailscreenMetadata?).self) { group in
+                    // Lazy per-sharer probe: the sharing chip + resolution, and
+                    // the round-trip time behind the detail pane's Route line —
+                    // one dial, not two, since this was already a TCP round trip
+                    // over the live path.
+                    await withTaskGroup(of: (String, PeerProbe).self) { group in
                         for sharer in online {
-                            group.addTask { (sharer.id, await transport.fetchMetadata(ip: sharer.tailscaleIP)) }
+                            group.addTask { (sharer.id, await transport.probePeer(ip: sharer.tailscaleIP)) }
                         }
-                        for await (id, meta) in group {
-                            if let meta { gPicker.shareInfo[id] = meta } else { gPicker.shareInfo[id] = nil }
+                        for await (id, probe) in group {
+                            gPicker.shareInfo[id] = probe.metadata
+                            gPicker.latencyMs[id] = probe.latencyMs
                         }
                     }
                 } catch {
@@ -362,12 +366,16 @@ if gSelfTest {
                 let online = peers.filter { $0.isOnline }
                 let ids = Set(online.map(\.id))
                 gPicker.shareInfo = gPicker.shareInfo.filter { ids.contains($0.key) }
-                await withTaskGroup(of: (String, TailscreenMetadata?).self) { group in
+                await withTaskGroup(of: (String, PeerProbe).self) { group in
                     for sharer in online {
-                        group.addTask { (sharer.id, await transport.fetchMetadata(ip: sharer.tailscaleIP)) }
+                        group.addTask { (sharer.id, await transport.probePeer(ip: sharer.tailscaleIP)) }
                     }
-                    for await (id, meta) in group where meta != nil {
-                        gPicker.shareInfo[id] = meta
+                    // The quiet refresh keeps a previous answer rather than
+                    // blanking on one failed probe — a peer that briefly does
+                    // not answer should not make the row flicker.
+                    for await (id, probe) in group where probe.metadata != nil {
+                        gPicker.shareInfo[id] = probe.metadata
+                        gPicker.latencyMs[id] = probe.latencyMs
                     }
                 }
             }
@@ -663,7 +671,9 @@ struct ViewerApp: App {
         picker.filteredSharers.map { sharer in
             HubScreen(
                 id: sharer.id, hostname: sharer.hostname, tailscaleIP: sharer.tailscaleIP,
-                isOnline: sharer.isOnline, metadata: picker.shareInfo[sharer.id])
+                isOnline: sharer.isOnline, metadata: picker.shareInfo[sharer.id],
+                route: sharer.route, latencyMs: picker.latencyMs[sharer.id],
+                tags: sharer.tags)
         }
     }
 

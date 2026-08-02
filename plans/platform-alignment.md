@@ -227,8 +227,31 @@ Kind B. Sequenced by how many rows each unblocks.
 Linux and Windows share `TailscreenHubUI`, so each of these is **one change for
 two platforms** — the best ratio in the plan and a good place to put spare time.
 
-Peer detail (route, latency, ACL tags) · quality settings UI (both hosts consume
-`QualitySettings.default` with no way to change it) · connection stats overlay.
+- **4.1 · Peer detail: route, latency, ACL tags.** ✅ **Done**, and it cost
+  almost nothing, which is the thesis of this phase. All three inputs already
+  existed and were being thrown away: `TailscalePeerDiscovery` parses `curAddr`
+  and `relay` off the LocalAPI seed, `DiscoveredSharer` simply dropped them;
+  `tags` were already carried for the filter menu; and the latency is the
+  *existing* metadata sweep timed, since that sweep is already a TCP round trip
+  over the live path. One clock read, not a second dial — and no probe on a
+  round trip that never completed, which would read as a fast link to a machine
+  that is gone.
+
+  `PeerRoute` and `ConnectionQualityTier` moved from `Apps/macOS/Sources/` into
+  `TailscreenProtocol` **and the macOS copies were deleted, not duplicated** —
+  a new public type in that tier lands in macOS's namespace through
+  `ProtocolReexports`, so leaving both would be the `ProfileStore` ambiguity
+  again. (This is the second time that hazard bit in one sitting; see 2.4.)
+
+  One deliberate divergence from macOS: the quality tier is spelled out in
+  words next to the number rather than shown as a coloured dot. macOS puts the
+  meaning in a tooltip, which its own accessibility rule says doesn't count —
+  and swift-cross-ui has no tooltip to hide it in anyway.
+- **4.2 · Quality settings UI.** Both hosts consume `QualitySettings.default`
+  with no way to change it. The model, its clamps and its persistence are
+  portable and tested already; this is a card and two pickers.
+- **4.3 · Connection stats overlay.** `StatsHUD` already exists in
+  `TailscreenHubUI` and the GTK viewer shows it; Windows does not.
 
 ## Phase 5 · Sharer surfaces
 

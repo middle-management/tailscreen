@@ -177,6 +177,9 @@ public struct PickerContent: View {
                             isOnline: screen.isOnline,
                             sharingCaption: screen.sharingCaption,
                             onView: { onSelect(screen.id) },
+                            route: screen.route,
+                            latencyMs: screen.latencyMs,
+                            tags: screen.tags,
                             onAskToShare: askAction(for: screen),
                             isAsking: askingIDs.contains(screen.id),
                             askNote: askNotes[screen.id])
