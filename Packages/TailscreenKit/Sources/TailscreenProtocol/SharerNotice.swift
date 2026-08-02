@@ -1,0 +1,145 @@
+import Foundation
+
+/// The things a sharer needs to be interrupted about, and the rules for when
+/// to interrupt them.
+///
+/// A sharer cannot poll. "Require approval for new viewers" defaults **on**,
+/// so a sharer who is not watching the app silently strands whoever tries to
+/// connect — there is nothing on screen to notice and no way to find out. A
+/// notification is the only surface that reaches someone whose attention is on
+/// the thing they are sharing.
+///
+/// *What* to say and *when* is pure logic, so it lives here rather than in
+/// three host-specific notification backends. Each host supplies only delivery:
+/// `UNUserNotificationCenter` on macOS, `org.freedesktop.Notifications` on
+/// Linux, `AppNotificationManager` on Windows.
+public enum SharerNoticeKind: String, Codable, Sendable, CaseIterable {
+    /// A viewer is parked at the approval gate, waiting on Accept/Deny.
+    case viewerPending
+    /// An admitted viewer is asking for remote control.
+    case controlRequested
+    /// A viewer's video started flowing. Informational.
+    case viewerJoined
+}
+
+extension SharerNoticeKind {
+    /// Buttons this notice offers.
+    ///
+    /// Only the two *asks* are actionable — `viewerJoined` reports something
+    /// that already happened, and a notification that offers a choice with no
+    /// consequence trains people to ignore the ones that have one.
+    public var actions: [NoticeAction] {
+        switch self {
+        case .viewerPending, .controlRequested: [.approve, .deny]
+        case .viewerJoined: []
+        }
+    }
+
+    /// Whether missing this notice leaves a peer blocked.
+    ///
+    /// Hosts should map this onto their platform's "break through Do Not
+    /// Disturb" level — `UNNotificationInterruptionLevel.timeSensitive` on
+    /// macOS, urgency `1`/`2` on freedesktop, `Urgent` on Windows. The
+    /// distinction is not decoration: a sharer running a presentation Focus is
+    /// precisely the sharer most likely to have someone waiting on them.
+    public var blocksSomeone: Bool {
+        switch self {
+        case .viewerPending, .controlRequested: true
+        case .viewerJoined: false
+        }
+    }
+}
+
+/// What the user chose on a notice, normalized across platforms.
+public enum NoticeAction: String, Codable, Sendable, CaseIterable {
+    case approve
+    case deny
+    /// Closed without choosing. Distinct from `deny` on purpose: dismissing a
+    /// banner must never be read as a decision about a peer.
+    case dismiss
+}
+
+/// One thing worth telling the sharer about.
+public struct SharerNotice: Equatable, Sendable, Identifiable {
+    public let kind: SharerNoticeKind
+    /// The dedupe key — see `SharerNoticeDecision.noticesToPost` for what
+    /// makes a good one.
+    public let identity: String
+    /// Human-facing name for the peer: hostname, else its Tailscale IP.
+    public let label: String
+
+    /// Unique across kinds, so one host-side notified-set can serve all three
+    /// without a peer's pending notice suppressing its later control request.
+    public var id: String { "\(kind.rawValue):\(identity)" }
+
+    public init(kind: SharerNoticeKind, identity: String, label: String) {
+        self.kind = kind
+        self.identity = identity
+        self.label = label
+    }
+}
+
+/// A row a host is considering notifying about, reduced to the two fields the
+/// decision needs. Hosts project their own types (`PendingViewerInfo`,
+/// `ControlRequestInfo`, …) into this.
+public struct NoticeCandidate: Equatable, Sendable {
+    public let identity: String
+    public let label: String
+
+    public init(identity: String, label: String) {
+        self.identity = identity
+        self.label = label
+    }
+}
+
+/// Pure decisions behind sharer notifications.
+public enum SharerNoticeDecision {
+    /// Which of `candidates` should fire a notification, given who has already
+    /// been notified — and the notified-set to carry into the next call.
+    ///
+    /// **Forget-on-leave.** An identity absent from `candidates` is pruned, so
+    /// a peer that gives up and genuinely asks again is announced again, while
+    /// a snapshot re-emitted for an unrelated reason (a hostname finally
+    /// resolving, another row changing) announces nothing. Every host delivers
+    /// these as whole-list snapshots rather than deltas, which is what makes a
+    /// set-intersection the right shape.
+    ///
+    /// **`identity` must be stable across reconnects at the level you want
+    /// deduped.** Keying on something per-connection is a spam vector: a peer
+    /// that drops and redials mints a fresh connection id every time and would
+    /// notify on every one. macOS learned this on the control path and keys by
+    /// viewer **IP**; its viewer-roster path keys by `ip:port` deliberately, so
+    /// a genuine rejoin does ping again. Both are correct — the choice belongs
+    /// to the caller, which is why this takes an opaque string.
+    ///
+    /// Order is preserved: hosts post in the order the platform received them.
+    public static func noticesToPost(
+        kind: SharerNoticeKind,
+        candidates: [NoticeCandidate],
+        alreadyNotified: Set<String>
+    ) -> (post: [SharerNotice], notified: Set<String>) {
+        var notified = alreadyNotified.intersection(candidates.map(\.identity))
+        var post: [SharerNotice] = []
+        for candidate in candidates where !notified.contains(candidate.identity) {
+            notified.insert(candidate.identity)
+            post.append(
+                SharerNotice(kind: kind, identity: candidate.identity, label: candidate.label))
+        }
+        return (post, notified)
+    }
+
+    /// Whether a snapshot carrying `generation` should be dropped because a
+    /// newer one was already applied.
+    ///
+    /// The sharer server stamps `onControlGrantChanged` with a monotonic
+    /// generation because every GUI host hops that callback to its UI thread,
+    /// and a hop can reorder. Applying a stale `nil` snapshot last would clear
+    /// a grant that is actually live — on macOS that unregisters the ⌃⌥. panic
+    /// hotkey while a viewer is still controlling the machine.
+    ///
+    /// Equal generations are **not** stale: two racing notifies can legitimately
+    /// observe the same pair, and re-applying it is idempotent.
+    public static func isStale(generation: UInt64, lastApplied: UInt64) -> Bool {
+        generation < lastApplied
+    }
+}
