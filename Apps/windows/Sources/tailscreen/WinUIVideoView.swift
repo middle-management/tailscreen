@@ -113,6 +113,15 @@ struct WinUIVideoView: WinUIElementRepresentable {
         /// decided at press time — switching tools mid-drag must not reshape it.
         private var activeGesture: Gesture?
         private var lastPanPoint: CGPoint = .zero
+        /// Which button opened the current `.controlling` drag.
+        ///
+        /// Remembered rather than re-read on release, because the button-state
+        /// flags say what is *currently* pressed and by release time nothing
+        /// is: a right-drag would otherwise send `mouseDown(.right)` followed
+        /// by `mouseUp(.left)` and strand the right button down on the
+        /// sharer's machine — the same stuck-button failure `SendInputInjector`
+        /// synthesizes a button-up to avoid on revoke.
+        private var pressedButton: InputEvent.MouseButton = .left
 
         private enum Gesture {
             case drawing
@@ -207,42 +216,49 @@ struct WinUIVideoView: WinUIElementRepresentable {
             element.isTabStop = true
             element.isHitTestVisible = true
 
-            element.pointerPressed { [weak self] sender, args in
+            element.pointerPressed.addHandler { [weak self] sender, args in
                 self?.handlePressed(sender, args, interaction)
             }
-            element.pointerMoved { [weak self] sender, args in
+            element.pointerMoved.addHandler { [weak self] sender, args in
                 self?.handleMoved(sender, args, interaction)
             }
-            element.pointerReleased { [weak self] sender, args in
+            element.pointerReleased.addHandler { [weak self] sender, args in
                 self?.handleReleased(sender, args, interaction)
             }
             // A capture loss ends the gesture exactly like a release. Without
             // it, dragging out of the window and letting go leaves the stroke
             // live forever and — worse, under a control grant — leaves a button
             // held down on the sharer's desktop.
-            element.pointerCaptureLost { [weak self] sender, args in
+            element.pointerCaptureLost.addHandler { [weak self] sender, args in
                 self?.handleReleased(sender, args, interaction)
             }
-            element.pointerWheelChanged { [weak self] sender, args in
+            element.pointerWheelChanged.addHandler { [weak self] sender, args in
                 self?.handleWheel(sender, args, interaction)
             }
-            element.keyDown { [weak self] sender, args in
+            element.keyDown.addHandler { [weak self] sender, args in
                 self?.handleKey(sender, args, interaction, down: true)
             }
-            element.keyUp { [weak self] sender, args in
+            element.keyUp.addHandler { [weak self] sender, args in
                 self?.handleKey(sender, args, interaction, down: false)
             }
             // An element that loses focus stops receiving key-up events, so a
             // modifier held at that moment would stay "held" forever — and
             // silently turn the next plain click into a modified one.
-            element.lostFocus { [weak self] _, _ in
+            element.lostFocus.addHandler { [weak self] _, _ in
                 self?.clearModifiers()
             }
-            element.doubleTapped { [weak self] sender, args in
-                guard let self, let element = sender as? WinUI.Image else { return }
-                let point = args?.getPosition(element) ?? Point(x: 0, y: 0)
-                interaction.smartMagnify(
-                    anchor: CGPoint(x: point.x, y: point.y), fit: self.fitRect(of: element))
+            element.doubleTapped.addHandler { [weak self] sender, args in
+                guard let self, let element = sender as? WinUI.Image, let args else { return }
+                // `DoubleTappedRoutedEventArgs` DOES carry `getPosition` — it
+                // is `PointerRoutedEventArgs` that does not — but it throws.
+                // An unreadable anchor falls back to the element's centre,
+                // which is where a fit-to-window zoom would land anyway.
+                let fit = self.fitRect(of: element)
+                let anchor =
+                    (try? args.getPosition(element)).map {
+                        CGPoint(x: Double($0.x), y: Double($0.y))
+                    } ?? CGPoint(x: fit.midX, y: fit.midY)
+                interaction.smartMagnify(anchor: anchor, fit: fit)
             }
         }
 
@@ -273,32 +289,82 @@ struct WinUIVideoView: WinUIElementRepresentable {
         }
 
         /// Pointer position as normalized `[0, 1]` over the video content.
-        private func normalized(_ point: Point, in element: WinUI.Image) -> (x: Double, y: Double) {
+        ///
+        /// Takes loose `Double`s rather than a `Point` because WinRT's
+        /// `Point` carries `Float`s and every caller has already had to widen
+        /// them — `CGPoint` and `ViewerPointerMapping` both speak `Double`.
+        private func normalized(x: Double, y: Double, in element: WinUI.Image) -> (
+            x: Double, y: Double
+        ) {
             ViewerPointerMapping.normalize(
-                pointX: point.x, pointY: point.y,
+                pointX: x, pointY: y,
                 paneWidth: element.actualWidth, paneHeight: element.actualHeight,
                 videoWidth: lastVideoWidth, videoHeight: lastVideoHeight)
+        }
+
+        /// Everything a pointer handler needs, resolved in one call.
+        ///
+        /// WinUI reports position *and* button state on a `PointerPoint`, not
+        /// as fields on the event args: `PointerRoutedEventArgs` has no
+        /// `getPosition` at all (that lives on the *tapped* args, which is a
+        /// different event). `getCurrentPoint` throws and its `properties` is
+        /// optional, so resolving both at once is one failure path instead of
+        /// three.
+        ///
+        /// A point with no readable `properties` still yields a position: the
+        /// button degrades to left rather than dropping the event, because a
+        /// click that arrives as the wrong button is a bad day while a click
+        /// that never arrives — with the pointer visibly moving — is a broken
+        /// feature with no error anywhere.
+        private struct PointerSample {
+            let x: Double
+            let y: Double
+            let button: InputEvent.MouseButton
+            let wheelLines: Double
+            let isHorizontalWheel: Bool
+        }
+
+        private static func sample(_ args: PointerRoutedEventArgs, _ element: WinUI.Image)
+            -> PointerSample?
+        {
+            guard let point = try? args.getCurrentPoint(element) else { return nil }
+            let x = Double(point.position.x)
+            let y = Double(point.position.y)
+            guard let properties = point.properties else {
+                return PointerSample(
+                    x: x, y: y, button: .left, wheelLines: 0, isHorizontalWheel: false)
+            }
+            let button: InputEvent.MouseButton =
+                properties.isRightButtonPressed
+                ? .right : (properties.isMiddleButtonPressed ? .middle : .left)
+            return PointerSample(
+                x: x, y: y, button: button,
+                // `WHEEL_DELTA` is 120 per detent on both ends of this wire.
+                wheelLines: Double(properties.mouseWheelDelta) / 120.0,
+                isHorizontalWheel: properties.isHorizontalMouseWheel)
         }
 
         private func handlePressed(
             _ sender: Any?, _ args: PointerRoutedEventArgs?,
             _ interaction: WindowsViewerInteraction
         ) {
-            guard let element = sender as? WinUI.Image, let args else { return }
+            guard let element = sender as? WinUI.Image, let args,
+                let point = Self.sample(args, element)
+            else { return }
             _ = try? element.focus(.pointer)
             _ = try? element.capturePointer(args.pointer)
-            let point = args.getPosition(element)
-            let norm = normalized(point, in: element)
+            let norm = normalized(x: point.x, y: point.y, in: element)
 
             if interaction.activeTool != nil {
                 activeGesture = .drawing
                 interaction.annotations.beginStroke(at: CGPoint(x: norm.x, y: norm.y))
             } else if interaction.forwardsInput {
                 activeGesture = .controlling
+                pressedButton = point.button
                 interaction.forward(
                     .mouseDown(
                         x: norm.x, y: norm.y,
-                        button: Self.button(args, element),
+                        button: point.button,
                         modifiers: modifiers()))
             } else if interaction.isZoomed {
                 // Only while zoomed: at fit there is nothing to pan over, and
@@ -314,9 +380,10 @@ struct WinUIVideoView: WinUIElementRepresentable {
             _ sender: Any?, _ args: PointerRoutedEventArgs?,
             _ interaction: WindowsViewerInteraction
         ) {
-            guard let element = sender as? WinUI.Image, let args else { return }
-            let point = args.getPosition(element)
-            let norm = normalized(point, in: element)
+            guard let element = sender as? WinUI.Image, let args,
+                let point = Self.sample(args, element)
+            else { return }
+            let norm = normalized(x: point.x, y: point.y, in: element)
 
             switch activeGesture {
             case .drawing:
@@ -344,12 +411,16 @@ struct WinUIVideoView: WinUIElementRepresentable {
             case .drawing:
                 interaction.annotations.endStroke()
             case .controlling:
-                guard let args else { return }
-                let norm = normalized(args.getPosition(element), in: element)
+                guard let args, let point = Self.sample(args, element) else { return }
+                let norm = normalized(x: point.x, y: point.y, in: element)
+                // The released button is no longer *pressed*, so the flags read
+                // `.left` by fallthrough. That is the same button the press
+                // reported for every single-button drag, which is the only kind
+                // a pointer capture delivers here.
                 interaction.forward(
                     .mouseUp(
                         x: norm.x, y: norm.y,
-                        button: Self.button(args, element),
+                        button: pressedButton,
                         modifiers: modifiers()))
             case .panning, nil:
                 break
@@ -360,13 +431,9 @@ struct WinUIVideoView: WinUIElementRepresentable {
             _ sender: Any?, _ args: PointerRoutedEventArgs?,
             _ interaction: WindowsViewerInteraction
         ) {
-            guard let element = sender as? WinUI.Image, let args else { return }
-            // Same optional/throwing shape as `button` — a wheel event whose
-            // delta cannot be read is dropped, because unlike a click there is
-            // no sensible default direction to guess.
-            guard let properties = try? args.getCurrentPoint(element).properties else { return }
-            let deltaLines = Double(properties.mouseWheelDelta) / 120.0
-            let point = args.getPosition(element)
+            guard let element = sender as? WinUI.Image, let args,
+                let point = Self.sample(args, element), point.wheelLines != 0
+            else { return }
 
             // Ctrl+wheel zooms, plain wheel scrolls the sharer's content when a
             // grant is held. The split matters: without it, zooming would be
@@ -374,16 +441,22 @@ struct WinUIVideoView: WinUIElementRepresentable {
             // not.
             if modifiers().contains(.control) || !interaction.forwardsInput {
                 let step =
-                    deltaLines > 0
+                    point.wheelLines > 0
                     ? ViewerZoomMath.menuZoomStep : 1 / ViewerZoomMath.menuZoomStep
                 interaction.zoom(
                     by: step, anchor: CGPoint(x: point.x, y: point.y),
                     fit: fitRect(of: element))
             } else {
-                let norm = normalized(point, in: element)
+                let norm = normalized(x: point.x, y: point.y, in: element)
+                // A tilt wheel reports on the SAME `mouseWheelDelta` field and
+                // is distinguished only by this flag. Without the split a
+                // horizontal scroll arrives at the sharer as a vertical one,
+                // which is a wrong action rather than a missing one.
                 interaction.forward(
                     .scroll(
-                        x: norm.x, y: norm.y, deltaX: 0, deltaY: deltaLines,
+                        x: norm.x, y: norm.y,
+                        deltaX: point.isHorizontalWheel ? point.wheelLines : 0,
+                        deltaY: point.isHorizontalWheel ? 0 : point.wheelLines,
                         modifiers: modifiers()))
             }
         }
@@ -410,19 +483,6 @@ struct WinUIVideoView: WinUIElementRepresentable {
                 down
                     ? .keyDown(key: usage, modifiers: modifiers())
                     : .keyUp(key: usage, modifiers: modifiers()))
-        }
-
-        /// Which button a pointer event carries. WinUI reports button state as
-        /// flags on the point's properties rather than as an event field.
-        private static func button(
-            _ args: PointerRoutedEventArgs, _ element: WinUI.Image
-        )
-            -> InputEvent.MouseButton
-        {
-            let properties = args.getCurrentPoint(element).properties
-            if properties.isRightButtonPressed { return .right }
-            if properties.isMiddleButtonPressed { return .middle }
-            return .left
         }
 
         /// The modifier snapshot that rides every event.
