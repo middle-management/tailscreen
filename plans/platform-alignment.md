@@ -219,6 +219,38 @@ Kind B. Sequenced by how many rows each unblocks.
   it unblocks three rows at once: share a single window, share an app, and
   **Wayland capture at all**. Today the sharer gates on `$DISPLAY` and sees only
   the XWayland root, so native Wayland windows never reach viewers.
+
+  *First increment landed: `Packages/PortalCaptureKit` — the D-Bus handshake
+  (CreateSession → SelectSources → Start → OpenPipeWireRemote), the PipeWire
+  stream, a Swift wrapper and `portal-probe`. **No row moves yet**: it is not
+  wired into `Apps/linux`, there is no `CaptureEncoding` conformance, and no
+  frame has been captured through it. Three things from it are worth carrying
+  forward.*
+
+  - **The consent dialog is not an obstacle to be engineered around, and it is
+    also why no CI leg here can ever gate capture.** The `linux-portal` leg is
+    named a *compile, link and D-Bus-protocol* gate for that reason. It is a
+    real gate — deliberately breaking the Request-path derivation makes it fail
+    — but it proves nothing about a real portal, PipeWire, or a pixel, and the
+    workflow comment and the package README both say so at length. This repo has
+    shipped gates that could not fail; a gate that overstates itself is the same
+    bug wearing a green check.
+  - **A declined request must not be an error.** `Failure.cancelled` is its own
+    case and has its own gate. Folding it into a generic failure would put an
+    error dialog in front of somebody who did exactly what they meant to.
+  - **Colour was closed by subtraction.** The package converts nothing: it hands
+    back BGRA and the portable `BGRAToI420` converts, exactly as
+    `WGCCaptureKit` → `TailscreenSharerWGC` does on Windows. There are already
+    two implementations of that arithmetic plus the viewer's shader inverting
+    it, all of which must agree or every frame is washed out with no error
+    anywhere; a third was the thing to avoid, not a thing to write.
+
+  *Next: verify the PipeWire half against a local daemon and a synthetic
+  producer — that half is unverified beyond linking and is now the largest
+  unknown — then the `CaptureEncoding` conformance, then backend selection.
+  Note that selection is **not** "Wayland → portal": the portal is the better
+  path on X11 sessions too, because it is the only one that can share a single
+  window.*
 - **3.4 · Change source mid-share, preview thumbnail** — smaller, and both
   become easier once 3.3 exists on Linux.
 
