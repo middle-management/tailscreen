@@ -487,7 +487,7 @@ types live entirely in `TailscreenProtocol`/`TailscreenAudio`
 `CaptureHelperWireTests`, `ScreenShareProtocolTests`,
 `ShareResponseProtocolTests`, `ShareLockTests`, `QualitySettingsTests`,
 `TailscreenInstanceTests`, `ViewerZoomMathTests`, `OpusAudioCodecTests`,
-`AccountProfileStoreTests`,
+`AccountProfileStoreTests`, `SharerNoticeTests`, `ShortcutCatalogTests`,
 `AnnotationGeometryTests` — the latter covering `AnnotationGeometry`, the
 **shared** derivation of a stroke's outline from its stored anchor+current
 points (rectangle corners, ellipse arc, arrowhead barbs, click ring). It lives
@@ -497,6 +497,33 @@ strokes, so the constants (`arrowHeadLength` = mac's `max(12, width*4)`,
 `.arrow` looks different depending on who drew it. The Linux/GTK viewer
 consumes it today; the macOS overlay still has its own inline copy of the same
 formulas, and adopting this one is a queued follow-up),
+plus `SharerNoticeTests` (`SharerNoticeDecision` — *when* to interrupt the
+sharer, and about whom. Forget-on-leave over whole-list snapshots: an identity
+absent from the current snapshot is pruned so a peer that genuinely asks again
+is announced again, while a snapshot re-emitted for an unrelated reason — a
+hostname resolving off the netmap, another row changing — announces nothing.
+`identity` stays an opaque string because the callers legitimately want
+different keys: IP for control requests (a redialing peer mints a fresh
+connection id and would notify on each), `ip:port` for the roster (a real
+rejoin *should* ping). Portable because macOS grew **three** ad-hoc mechanisms
+for one decision — `notifiedViewerIDs`, `controlRequestNotificationDecision`,
+and a bare snapshot diff in `handlePendingViewersChanged` — and Linux/Windows
+have none; also pins that `blocksSomeone` (which drives each platform's
+break-through-Focus level) implies actionable, and that `dismiss` is never an
+offered button, since closing a banner must not read as a decision about a
+peer),
+`ShortcutCatalogTests` (`ShortcutCatalog` — every keyboard shortcut as data,
+rendered natively per host: menu items + the ⌘? sheet on macOS,
+`GtkShortcutsWindow` on Linux, `KeyboardAccelerator` on Windows. Modifiers are
+named by ROLE — `primary` is ⌘ on macOS and Ctrl elsewhere — which is
+deliberately *not* `KeyModifiers`: that type is the remote-control wire model
+and names physical keys because it replays keystrokes on another machine, where
+the same physical key is what must survive; this one names intent, which is a
+different physical key per platform. `collisions(_:)` is checked per display
+style because `primary` and `control` are distinct on macOS and both collapse
+to Ctrl elsewhere, so a pair that reads fine in the menu bar can silently
+become one chord on GTK/WinUI — a third test constructs a clash so the detector
+can't pass by always returning empty),
 plus `ViewerApprovalPreferenceTests` (`ViewerApprovalPreference` — the
 "Require approval for new viewers" value the GTK and Windows apps push into
 `setRequireApproval`: default-on, the tri-state `object(forKey:)` migration
@@ -584,6 +611,8 @@ Two SwiftUI scenes share one `AppState`: a `Window` (`MainWindowView`, scene id 
 - **Avatars.** `AvatarStore` (in `Theme.swift`) caches profile pictures by URL in memory, fetching on first miss and publishing on arrival so monograms swap to real pictures live; `AvatarStore.circular` renders the AppKit crop `NSMenuItem.image` needs. `MonogramAvatar`'s color is a djb2 hash of the name — **not** `hashValue`, which is per-process seeded and would reshuffle colors every launch. Every miss/failure degrades to the monogram.
 - **Accessibility.** Status that reads as color — the viewer-health dots, the peer-detail quality dot — must also be spoken: those dots are `accessibilityHidden` and their meaning is folded into the adjacent label (the `.help()` tooltips are mouse-only and don't count). Animations are gated on `@Environment(\.accessibilityReduceMotion)`: the list glide, the row expand, and especially `PeerRowSkeleton`'s `repeatForever` pulse, which holds static instead. Hover-only affordances are banned — keyboard and VoiceOver can't reach them, which is why the peer row's actions are real always-visible buttons. Anything wrapping scaling text uses `minHeight`, never `height` (72 of the app's ~76 font call sites are semantic, so text really does grow with the system text size); fixed *widths* around text or SF Symbols — the peer-detail label gutter, the menu icon slots — use `@ScaledMetric` so the column grows with what it holds.
 - **Peer detail.** Clicking a row in the Screens list connects (when fully idle); the trailing chevron expands `PeerDetailView` — live share resolution/codec, View Screen / Ask to Share, MagicDNS + IPv4/IPv6 (copyable), ACL tags, remembered `Access` (StableNodeID-keyed, same identity the admission gate uses), and a `Route` line. Route/latency come from data already in hand: `TailscreenPeer.curAddr`/`.relay` ride the LocalAPI status seed (netmap ticks carry no path info, so `publishMerged` preserves them), and `AppState.peerLatencyMs` times the metadata TCP fetch — an estimate over the live path, not a wire ping. `PeerRoute` / `ConnectionQualityTier` (`PeerConnectionInfo.swift`) are the pure classifications behind it.
+- **Which surface gets what.** The split is by *kind*, not by convenience: anything that decides something about a **person** — approving a viewer, granting control, dropping a connected viewer — renders in **both** the hub window and the menubar popover, sharing one component (`PendingViewersList`, `ControlRequestsList`, `RemoteControlGranteeBanner`, `ViewersList` — all non-private in `MenuBarView.swift` for exactly that reason). Continuous *session* controls (mic, audio device, drawing) stay in the popover, which is the sharer tool. A decision surface that lands on only one of the two is a bug; `ViewersList` was menubar-only by omission, which made dropping a viewer the one sharer action with no path outside the popover.
+- **Capture outline.** `CaptureOutlineWindow` draws a border around exactly the region being captured, for the whole share — the recording indicator, and the reason the plan has no tray icon. Two rules: it tracks the *region* (reusing `SharerOverlayWindow`'s frame statics and miss threshold, so the two can't disagree about where the shared region is), and it must never be captured itself (`sharingType = .none`; without it a display share draws the border into the video and every viewer sees a frame around their own view). It is a separate window from `SharerOverlayWindow` on purpose: that panel is built lazily and, in display mode, deliberately sits *inside* the capture region so sharer strokes reach viewers — both wrong for an outline. Its mode is immutable, so `AppState.showCaptureOutline()` rebuilds it on the mid-share "Change Source…" path, exactly like the annotation overlay.
 
 ## Network protocol — port 7447 (TCP **and** UDP)
 

@@ -135,6 +135,14 @@ enum NoticeAction { case approve, deny, dismiss }
 func noticeToPost(...) -> SharerNotice?     // dedupe + staleness live here
 ```
 
+> **Landed** as `TailscreenProtocol/SharerNotice.swift`, **not** in
+> `TailscreenHubUI` as this plan first said: HubUI carries SwiftCrossUI, which
+> the macOS app does not build, and macOS is the first consumer. Building it
+> also turned up that macOS has *three* ad-hoc dedupe mechanisms for this one
+> decision, not one — which is a stronger argument for the shared layer than
+> "the other two platforms need it too."
+
+
 #### macOS: fix delivery before adding actions
 
 The existing posts — `ViewerApproval.swift:63` `postJoined`, `:78` `postPending`,
@@ -182,11 +190,18 @@ layer against a working implementation.
 screen being captured, and viewers see it — ours and every other app's. Two
 concrete leaks, both worth closing in the same pass:
 
-- *Visually*: Cloaked Apps already has the machinery. `AppCloak.effectiveExclusions`
-  (`AppCloak.swift:112`) is `.display`-only and feeds
-  `SCContentFilter(display:excludingApplications:)`, so `com.apple.notificationcenterui`
-  is the natural entry. Needs verifying that Notification Center actually appears
-  in `SCShareableContent.applications` — system UI windows are not guaranteed to.
+- *Visually*: **deferred, deliberately.** Cloaked Apps already has the machinery
+  — `AppCloak.effectiveExclusions` (`AppCloak.swift:112`) is `.display`-only and
+  feeds `SCContentFilter(display:excludingApplications:)`, so
+  `com.apple.notificationcenterui` is the natural entry. Two things must be
+  checked on a real desktop first, and neither can be checked from CI: whether
+  that process even appears in `SCShareableContent.applications` (system UI
+  windows are not guaranteed to), and — the reason this did not ship with the
+  audible half — whether excluding it also removes the **menu bar** from the
+  capture, since on modern macOS the same process owns the menu-bar extras area
+  and the Notification Center panel. A silent no-op and a silently missing menu
+  bar are very different failures, and only one of them is acceptable to find in
+  production.
 - *Audibly*: `content.sound = .default` on all four sites. With system-audio
   sharing on, the helper captures the system mix and `excludesCurrentProcessAudio`
   drops only *our own* audio — a notification ding comes from another process, so
@@ -251,7 +266,16 @@ and the only work is deciding whether to keep the system border or opt out
 (which needs a restricted capability) in favour of a branded one. Keeping it is
 almost certainly right.
 
-**macOS needs no new shim either.** `SharerOverlayWindow` is already a
+**macOS needs no new shim** — but it does need a new *window*. Landed as
+`CaptureOutlineWindow`: it reuses `SharerOverlayWindow`'s frame statics and miss
+threshold, but cannot reuse the panel itself, because that one is built lazily
+(so it does not exist for an ordinary share) and in display mode deliberately
+sits *inside* the capture region so sharer strokes reach viewers. Both are
+exactly wrong for an outline. Shared tracking, separate window — small, not
+free. The keep-it-out-of-the-video rule is `sharingType = .none`, which is the
+one assumption in the feature that needs a real-desktop check; the fallback is
+to pass the window's `CGWindowID` to the capture helper and exclude it in
+`SCContentFilter`. `SharerOverlayWindow` is already a
 `.statusBar`-level, `ignoresMouseEvents = true` panel whose `Mode` is
 display / window / application and which already re-derives its frame on display
 reconfiguration (`:259`) and tracks a shared window live with a miss-threshold
@@ -419,6 +443,36 @@ Steps 1–5 fix the thing that is actually broken today: an unattended sharer
 silently stranding a viewer at the approval gate — on Linux and Windows because
 nothing is posted, and on macOS because what is posted loses to Focus. Step 8 is
 independently shippable and touches only macOS.
+
+## Status
+
+| Step | State |
+|---|---|
+| 1 · macOS notification delivery | **done** — interruption level, the UN delegate, authorization read-back, sound leak |
+| 2 · portable `SharerNotice` | **done** — `TailscreenProtocol`, 17 tests on Linux CI |
+| 3 · macOS categories + actions | not started — the step that collapses macOS's three dedupe mechanisms onto (2) |
+| 4 · Windows notification shim | not started |
+| 5 · Linux notification backend | not started — needs a GDBus C shim in the `CGtkVideo` mould |
+| 6 · confirm the Windows WGC border | **needs a real desktop**, not code |
+| 7 · outline: macOS | **done** — `CaptureOutlineWindow` |
+| 7 · outline: Linux | not started — the one piece with no existing machinery |
+| 8 · macOS roster + hotkey docs | **done** — roster in the hub, ⌃⌥M in the menu, ⌃⌥. in the sheet, `isRegistered` |
+| 9 · portable `ShortcutCatalog` | **done** — 18 tests on Linux CI |
+| 10 · Windows/Linux hotkeys | not started |
+| 11 · mic capture, sharer drawing | not started (the two large tracks) |
+
+Two things landed but are **not yet consumed**, which is deliberate and worth
+not forgetting: nothing calls `SharerNotice` (macOS adopts it in step 3), and
+nothing reads `GlobalHotkey.isRegistered` (its consumer is the cheat sheet,
+which is still trapped inside `ensureViewer()` — see step 8's remainder below).
+
+**Still open from step 8:** lifting the shortcut cheat sheet off the viewer
+window. `ViewerShortcutsOverlayHost` is built in `AppState.ensureViewer()` and
+`ViewerCommands` validates on `shortcutsModel != nil`, so Help → Keyboard
+Shortcuts is greyed out and ⌘? does nothing unless you are currently *watching*
+someone. The sharer — the one with the global hotkeys — still cannot open it.
+That change is also where `ShortcutCatalog` and `isRegistered` find their first
+reader.
 
 ## Files to change / add
 
