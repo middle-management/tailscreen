@@ -68,14 +68,6 @@ func parseConfig() -> (config: ViewerConfig, host: String?, wantAudio: Bool, exp
     var wantAudio = true
     var explicitStateDir = false
     var statePath = FileManager.default.currentDirectoryPath + "/.tailscreen-state"
-    // The executable used to be `tailscreen-viewer-gtk` and kept its one-shot
-    // state beside the CWD under the old name; adopt it so the rename doesn't
-    // force a re-login.
-    let legacyStatePath = FileManager.default.currentDirectoryPath + "/.tailscreen-viewer-gtk-state"
-    if !FileManager.default.fileExists(atPath: statePath),
-        FileManager.default.fileExists(atPath: legacyStatePath) {
-        try? FileManager.default.moveItem(atPath: legacyStatePath, toPath: statePath)
-    }
     let env = ProcessInfo.processInfo.environment
     var controlURL = env["TAILSCREEN_TS_CONTROL_URL"]
     let authKey = env["TAILSCREEN_TS_AUTHKEY"]

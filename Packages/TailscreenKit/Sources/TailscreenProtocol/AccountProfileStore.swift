@@ -40,14 +40,6 @@ public struct AccountProfileLayout: Sendable {
     /// state dirs.
     public var root: String
 
-    /// A previous name for `root`, renamed onto it once. Set by the GTK app,
-    /// whose config dir was `tailscreen-viewer-gtk` before the executable was
-    /// renamed. Nil disables the rename.
-    ///
-    /// Applied only when `root` does not exist yet, so it can never clobber a
-    /// live registry.
-    public var legacyRoot: String?
-
     /// The state directory the FIRST (seeded) profile adopts, instead of a
     /// freshly invented `profiles/<uuid>`.
     ///
@@ -65,20 +57,17 @@ public struct AccountProfileLayout: Sendable {
 
     public init(
         root: String,
-        legacyRoot: String? = nil,
         seedStatePath: String? = nil,
         namePrefix: String = "Account"
     ) {
         self.root = root
-        self.legacyRoot = legacyRoot
         self.seedStatePath = seedStatePath
         self.namePrefix = namePrefix
     }
 
     /// `$XDG_CONFIG_HOME/tailscreen` (or `~/.config/tailscreen`, or
     /// `fallbackDirectory` as a last resort) — the standard Linux per-user
-    /// config location, with the pre-rename `tailscreen-viewer-gtk` directory
-    /// adopted once.
+    /// config location.
     ///
     /// No `seedStatePath`: this host has always kept its node state inside the
     /// registry root, so there is no outside directory to adopt.
@@ -94,9 +83,7 @@ public struct AccountProfileLayout: Sendable {
         } else {
             base = fallbackDirectory
         }
-        return AccountProfileLayout(
-            root: base + "/tailscreen",
-            legacyRoot: base + "/tailscreen-viewer-gtk")
+        return AccountProfileLayout(root: base + "/tailscreen")
     }
 
     /// `%LOCALAPPDATA%\Tailscreen` — per-machine, per-user data that must not
@@ -163,12 +150,6 @@ public final class AccountProfileStore {
         // wrapped condition, so the fix is to not need one.
         let fm = FileManager.default
 
-        // Adopt the pre-rename config directory BEFORE anything creates the
-        // new one — once `root` exists the rename is (correctly) skipped, so
-        // creating it first would strand the old registry forever.
-        if let legacy = layout.legacyRoot, !fm.fileExists(atPath: layout.root), fm.fileExists(atPath: legacy) {
-            try? fm.moveItem(atPath: legacy, toPath: layout.root)
-        }
         root = layout.root
         namePrefix = layout.namePrefix
         try? fm.createDirectory(atPath: layout.root, withIntermediateDirectories: true)

@@ -24,10 +24,8 @@ command `tailscreen`.
 from every artifact here.
 
 The executable is plain `tailscreen` — the app is a full sharer *and* viewer,
-same as the macOS and Windows apps, so the old `tailscreen-viewer-gtk` name
-undersold it. The rename kept a one-time migration: an existing
-`~/.config/tailscreen-viewer-gtk` directory (profiles + node state) is moved to
-`~/.config/tailscreen` on first launch.
+same as the macOS and Windows apps. Config (profiles + node state) lives in
+`$XDG_CONFIG_HOME/tailscreen`, falling back to `~/.config/tailscreen`.
 
 ## Honest status
 

@@ -16,9 +16,8 @@ typealias ViewerProfile = AccountProfile
 
 /// SwiftCrossUI-observable façade over the portable `AccountProfileStore`.
 ///
-/// The registry — the JSON, the XDG root, the one-time adoption of the
-/// pre-rename `tailscreen-viewer-gtk` directory — lives in TailscreenProtocol
-/// and is unit-tested on Linux CI. What is left here is the one genuinely
+/// The registry — the JSON and the XDG root — lives in TailscreenProtocol and
+/// is unit-tested on Linux CI. What is left here is the one genuinely
 /// per-UI-framework part: republishing on change, so the header's account menu
 /// re-renders on switch/add/rename. It cannot live in the package, because the
 /// `ObservableObject` this app observes is SwiftCrossUI's and the one that
