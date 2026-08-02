@@ -52,6 +52,11 @@ never appear on the Linux sharer's screen. **With one viewer — the common case
 — drawing silently does nothing.** Passing `false` is one line and makes the
 viewer honest immediately; rendering them is Phase 3.
 
+*Shipped as a flipped default rather than a call-site fix — a second host had
+the same bug, and withholding by default fixes both without touching either.
+1.4 has since made the claim true on a composited session, so the Linux app now
+derives the bit from whether it actually built an overlay.*
+
 **0.2 · Audit every conditional capability bit, on every host.**
 `ScreenShareCaps` is the app's self-description, and a wrong bit is worse than a
 missing feature: the peer's UI stops matching reality and the user blames
@@ -65,17 +70,18 @@ there, the Windows outline row is done and Linux is the only one left.
 
 ## Phase 1 · Close the mirror (weeks) — the best value on the list
 
-Linux and Windows are mirror images on interaction, which is an accident of
-build order, not a design: Linux grew the viewer half first, Windows the sharer
-half.
+Linux and Windows *were* mirror images on interaction — an accident of build
+order rather than a design: Linux grew the viewer half first, Windows the sharer
+half. Every row below is now closed on both, which is what made this the
+best-value phase on the list.
 
 | | Linux has | Windows has |
 |---|---|---|
 | Draw as viewer | ✅ | ✅ (1.1) |
 | Zoom + pan viewer | ✅ | ✅ (1.2) |
 | Request control as viewer | ✅ | ✅ (1.3) |
-| Render viewers' annotations as sharer | ❌ | ✅ |
-| Inject granted control as sharer | ❌ | ✅ |
+| Render viewers' annotations as sharer | ✅ (1.4) | ✅ |
+| Inject granted control as sharer | ✅ (1.5) | ✅ |
 
 Every one of these is kind A. The protocol, the grant gate, the coordinate
 mapping, the neutral HID key model, the annotation geometry and the rasterizer
@@ -110,13 +116,40 @@ call.
   - **Ctrl+wheel zooms; plain wheel scrolls the sharer** while a grant is held.
     Without the split, zooming is unreachable while controlling and scrolling is
     unreachable while not.
-- **1.4 · Linux sharer: render annotations.** Closes 0.1 properly. Needs a
-  click-through overlay window — which is also the surface Phase 3's sharer
-  drawing needs, so build it once with that in mind.
-- **1.5 · Linux sharer: inject control.** The XTEST path for X11; the
-  RemoteDesktop portal for Wayland later. `SendInputInjector`'s decisions
-  (revoke TOCTOU, synthesized button-up, modifier ordering) are the model to
-  copy — they're tested through an inject-nothing seam that Linux can reuse.
+- **1.4 · Linux sharer: render annotations.** ✅ **Done.** Closes 0.1 properly:
+  `Apps/linux/Sources/CGtkOverlay` is the click-through window — override-redirect
+  (GTK4 has neither placement nor keep-above, and an overlay needs both), empty
+  input region, cairo ARGB32 fed straight from `AnnotationRasterizer` with no
+  conversion. It is also the surface Phase 3's sharer drawing will draw into.
+  Two things landed with it that were not in the original scope and are worth
+  keeping in mind for 1.5 and Phase 3:
+  - **It refuses to exist on an uncomposited X11 session**, because without a
+    compositor the window has no alpha and the "overlay" is an opaque black
+    rectangle over the sharer's screen. `rendersAnnotations` is then withheld,
+    so the failure is a viewer with disabled tools rather than a covered desktop.
+  - **`tailscreen --overlay-self-test` is a real CI gate**, not a visual check:
+    it draws a red stroke, reads the screen back through the sharer's own X11
+    capture, and asserts the chroma. Every way this feature can fail — window
+    never maps, compositor ignores it, wrong origin, swapped channels —
+    otherwise produces a working share and invisible annotations, with no error
+    anywhere.
+- **1.5 · Linux sharer: inject control.** ✅ **Done.** `Packages/XTestInjectKit`
+  is the XTEST path for X11 (the RemoteDesktop portal for Wayland is Phase 3.3),
+  and `SendInputInjector`'s decisions were indeed the model — revoke TOCTOU,
+  synthesized button-up, modifiers pressed around each key and unwound in
+  reverse, Caps Lock never synthesized, unmappable usages dropped rather than
+  guessed. Three things differ enough to be worth remembering:
+  - **Keysyms, not keycodes.** An X11 keycode identifies a physical key on the
+    machine running the server and is meaningless off-host; a keysym is a
+    protocol constant. So `X11KeyCodeMapping` (HID → keysym) is portable and
+    tested on CI, and only the final `XKeysymToKeycode` hop needs a display.
+  - **Scrolling is buttons.** X11's core protocol has no wheel value — a scroll
+    is a press/release of button 4/5/6/7, once per notch — so a delta becomes a
+    repeat count, with a clamp so a peer's absurd delta can't become a million
+    synthetic clicks.
+  - **Nothing is injected without an explicit flush**, which is the single most
+    likely way for the whole path to look broken while every unit test passes.
+    `xtest-probe --live-check` covers it against a real Xvfb.
 
 **Do 1.4 before 1.1.** Fixing the sharer that lies is worth more than adding a
 viewer feature, and it unblocks the honest version of the capability bit.
@@ -124,6 +157,8 @@ viewer feature, and it unblocks the honest version of the capability bit.
 *Phase 1 is complete. The mirror is closed: every row above is ✅ on all three
 platforms, and the remaining gaps are Phase 2's access control and Phase 3's
 capability shims.*
+*With 1.4 and 1.5 done, the Linux sharer half is complete and the table above
+is no longer a mirror: what remains is the three Windows **viewer** rows.*
 
 ## Phase 2 · Access control, where the "decision" bar actually bites (weeks)
 
@@ -137,11 +172,27 @@ then has no way to change their mind.
   layout. The *decisions* (`admissionDecision`, `drainDecision`,
   `connectedDenyList`, `canAcceptPending`) are already portable and tested — only
   persistence is mac-bound.
-- **2.2 · Remembered allow / "Deny & Block"** on both hosts, keyed by
-  StableNodeID like macOS.
-- **2.3 · Kick a connected viewer.** `disconnectViewer` is already on the
-  portable server; both hosts need the roster row and the ✕. Note the macOS
-  lesson from #177: put it on *every* surface the host has, not just one.
+- **2.2 + 2.3 · Remembered allow / "Deny & Block", and kick a connected
+  viewer.** ✅ **Done**, and together because they are one surface: the sharing
+  card's roster, which before this was a list of IP strings. Three pieces, each
+  where it belongs:
+  - `ViewerRosterDecision` (portable) — what a row can offer, and the queue for
+    a decision made before the peer's StableNodeID resolves. macOS had grown
+    that queue inline in `AppState`; this is the same behaviour, tested.
+  - `SharerAccessCoordinator` (TailscreenSharer) — remember, forget, drain the
+    queue on each roster tick, push the map at the live server. Reaches the
+    server through a closure specifically so every case is testable with no
+    tsnet node, no network and no share.
+  - `HubViewerRow` + `HubViewerRowView` (TailscreenHubUI) — one component, both
+    hosts, per the #177 lesson about putting a decision on every surface.
+
+  Two things worth remembering. **A decision made before the identity resolves
+  is queued, not dropped** — the store is keyed by StableNodeID, that arrives
+  asynchronously from the sharer's own netmap lookup, and a sharer who wants
+  somebody gone wants it now; the row says it is waiting rather than appearing
+  to do nothing. And **the queue is pruned when a row leaves**, or a Deny &
+  Block on a peer that disconnects before resolving lands on the next
+  connection from that address — which behind one NAT is a different machine.
 - **2.4 · Ask a peer to share.** The `.requestToShare` wire pair is portable and
   pinned; both hosts need the affordance and the accept/decline UI.
 

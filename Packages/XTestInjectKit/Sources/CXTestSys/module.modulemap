@@ -1,0 +1,10 @@
+// pkg-config gives us XTest's -I and -lXtst. libX11 is named on the C target's
+// link line instead of here: SwiftPM does not propagate a module map's `link`
+// directive to a C target's link line, which is the same trap X11CaptureKit's
+// CXCB documents for xcb-shm.
+module CXTestSys [system] {
+    header "shim.h"
+    link "Xtst"
+    link "X11"
+    export *
+}

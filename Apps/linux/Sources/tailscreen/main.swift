@@ -11,7 +11,7 @@ import TailscreenViewerTsnet
 // tailscreen — native GTK desktop viewer.
 //
 //   tailscreen [<sharer-host>] [--port N] [--state-dir PATH] [--control-url URL]
-//   tailscreen --render-self-test
+//   tailscreen --render-self-test | --overlay-self-test
 //   Env: TAILSCREEN_TS_AUTHKEY, TAILSCREEN_TS_CONTROL_URL
 //
 // With a host argument the viewer dials it directly. WITHOUT one it enters
@@ -45,6 +45,9 @@ var gReturnToPicker: (@MainActor @Sendable () -> Void)?
 var gOpenLogin: (@MainActor @Sendable () -> Void)?
 let gArgs = Array(CommandLine.arguments.dropFirst())
 let gSelfTest = gArgs.contains("--render-self-test")
+// Headless SHARER gate: draw a known stroke on the annotation overlay and read
+// the screen back through X11 capture to prove it landed. See OverlaySelfTest.
+let gOverlaySelfTest = gArgs.contains("--overlay-self-test")
 // Headless chrome preview: render the hub with fake data and no networking, for
 // screenshots / visual review under Xvfb. Never used in a real run.
 let gUIPreview = gArgs.contains("--ui-preview")
@@ -107,6 +110,12 @@ if gSelfTest {
     // Headless render gate: a colour-bars frame the GtkVideoView renders and
     // the self-test verifies via glReadPixels. No transport.
     gStore.set(makeColorBarsFrame())
+} else if gOverlaySelfTest {
+    // Headless SHARER-overlay gate. Scheduled rather than run here: it needs
+    // the GTK main loop up to create a window and to service the repaint it
+    // posts, and swift-cross-ui ticks RunLoop.main, so a main-queue block set
+    // now runs once the app is live. It exits the process itself, pass or fail.
+    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { OverlaySelfTest.run() }
 } else if gUIPreview {
     // Headless chrome preview: seed the picker with fake sharers and render the
     // hub without any networking, so the UI can be screenshotted / reviewed.
@@ -529,7 +538,30 @@ struct ViewerApp: App {
             statusLine: sharer.statusLine,
             isSharing: sharer.phase == .sharing,
             canShare: sharer.canShare,
-            notes: sharer.viewerIPs.map { "• \($0) watching" },
+            // The roster: who is watching, and what can be done about them.
+            // `notes` is now free for statistics; a person is not a note.
+            viewers: sharer.viewers.map { viewer in
+                let stableID = viewer.stableID
+                let remembered = gSharer.remembered(stableID: stableID)
+                return HubViewerRow(
+                    id: viewer.id,
+                    label: viewer.label,
+                    detail: viewer.health,
+                    remembered: remembered.map { $0 == .allow ? .allowed : .blocked } ?? .none,
+                    rememberIsDeferred: gSharer.isDeferred(rowID: viewer.id),
+                    onKick: { gSharer.disconnect(viewer.id) },
+                    onAlwaysAllow: {
+                        gSharer.remember(
+                            rowID: viewer.id, stableID: stableID, label: viewer.label,
+                            policy: .allow)
+                    },
+                    onDenyAndBlock: {
+                        gSharer.remember(
+                            rowID: viewer.id, stableID: stableID, label: viewer.label,
+                            policy: .deny)
+                    },
+                    onForget: { gSharer.forget(rowID: viewer.id, stableID: stableID) })
+            },
             // Viewers parked at the approval gate. The shared card renders
             // these exactly like the Windows app's control requests, because
             // they are the same interaction and this window is the only place

@@ -19,7 +19,7 @@ Everything the protocol supports, minus what needs a Mac:
 |---|---|
 | **View** a shared screen | libavcodec decode → GL render, ALSA audio |
 | **Share** your screen | X11 capture (libxcb + MIT-SHM) → libavcodec encode |
-| Remote control | both directions — send as a viewer, receive as a sharer |
+| Remote control | both directions — send as a viewer, inject as a sharer (XTEST) |
 | Annotations | both directions |
 | Multiple accounts | tsnet state dirs under `$XDG_CONFIG_HOME/tailscreen` |
 
@@ -37,6 +37,7 @@ real answer and isn't written yet. Viewing is unaffected either way.
 ```
 tailscreen [<sharer-host>] [--port N] [--state-dir PATH] [--control-url URL]
 tailscreen --render-self-test
+tailscreen --overlay-self-test
 ```
 
 With a host argument the viewer dials it directly. **Without** one it enters
@@ -52,13 +53,23 @@ tailnet, and shows the screen list to choose from.
 reads the pixels back through GL, and exits. No network, no tsnet — it exists so
 a broken renderer fails a PR instead of a user's first launch.
 
+`--overlay-self-test` is its sharer-side twin, for the annotation overlay: it
+draws a red stroke on the overlay and reads the screen back through the sharer's
+*own* X11 capture, asserting the chroma at the stroke against a control point
+elsewhere. It needs a **compositing** X server (see below) — and that is not a
+test-harness quirk, it is the feature: on an uncomposited session the overlay
+deliberately refuses to exist, because an ARGB window with no compositor has no
+alpha and would paint a black rectangle over your screen. When that happens the
+app withholds `ScreenShareCaps.annotations`, so viewers see a disabled drawing
+toolbar rather than strokes that reach nobody.
+
 ## Building it
 
 ```bash
 sudo apt-get install -y \
   libgtk-4-dev gir1.2-gtk-4.0 libgirepository1.0-dev libepoxy-dev \
   libgl1-mesa-dri libavcodec-dev libavutil-dev libasound2-dev \
-  libopus-dev pkg-config golang-go make gcc libc6-dev
+  libxtst-dev libopus-dev pkg-config golang-go make gcc libc6-dev
 
 make tailscale                                    # builds libtailscale.a (needs Go)
 swift build --package-path Apps/linux --product tailscreen
@@ -77,11 +88,24 @@ xvfb-run -a --server-args="-screen 0 1280x720x24" \
   swift run --package-path Apps/linux tailscreen --render-self-test
 ```
 
+`--overlay-self-test` needs Xvfb *plus* a compositor, and the compositor has to
+be running before the app opens the display — `gdk_display_is_composited` is read
+once, when the overlay is created, so one that starts afterwards is one the app
+never sees. `xvfb-run` can't sequence that, hence the explicit server:
+
+```bash
+sudo apt-get install -y xvfb xcompmgr
+Xvfb :95 -screen 0 1280x720x24 & sleep 2
+DISPLAY=:95 xcompmgr & sleep 1
+DISPLAY=:95 swift run --package-path Apps/linux tailscreen --overlay-self-test
+```
+
 ## What it depends on
 
 ```
 Apps/linux                        this package
 ├── Packages/TailscreenLinuxBackends   FFmpeg decode, ALSA out, X11 capture+encode
+├── Packages/XTestInjectKit            XTEST input injection (remote control)
 ├── Packages/TailscreenKit             protocol, ViewerSession, the sharer server,
 │                                      and the shared tsnet transport
 ├── Packages/TailscreenHubUI           the hub's look, shared with Windows
@@ -113,7 +137,7 @@ gains.
 
 | job | what it proves |
 |---|---|
-| `linux-app` | builds this package, runs the Xvfb render self-test, and typechecks the **Windows** app on the same runner |
+| `linux-app` | builds this package, runs the Xvfb render self-test **and the annotation-overlay self-test** (second Xvfb, with `xcompmgr`), and typechecks the **Windows** app on the same runner |
 | `linux-app-arm64` | the same on `ubuntu-24.04-arm`, release config — a hard gate, not compile-only |
 | `linux-viewer` | the backends package's real decode + capture tests |
 
