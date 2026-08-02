@@ -2,12 +2,17 @@ import Foundation
 
 /// A capture device that hands over PCM by blocking until it has some.
 ///
-/// Both shipped backends are shaped this way — `ALSA.PCMRecorder.read(frames:)`
-/// and `WASAPI.Recorder.read()` — and so is every other capture API worth
-/// wrapping, because the alternative is a callback on a thread the platform
-/// owns and will not tell you about. Naming the shape means the thread that
-/// pumps it is written once, here, rather than once per platform with a
-/// slightly different idea of what "stop" means.
+/// The shape worth standardising on, because the alternative — a callback on a
+/// thread the platform owns and will not tell you about — cannot be pumped by
+/// shared code at all. Naming it means the capture thread is written once,
+/// here, rather than once per platform with a slightly different idea of what
+/// "stop" means.
+///
+/// The two shipped backends do not both arrive this way, which is the point of
+/// having a seam: `ALSA.PCMRecorder.read(frames:)` genuinely blocks, while
+/// `WASAPI.Recorder.read()` returns immediately and is frequently empty. The
+/// Windows adapter is what makes the second one honour this contract — see
+/// `readPCM`.
 ///
 /// Implementations are driven from exactly one thread and need no locking of
 /// their own; `ThreadedMicrophone` guarantees that.

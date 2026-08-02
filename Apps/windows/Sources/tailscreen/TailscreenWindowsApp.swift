@@ -10,6 +10,7 @@ import TailscreenHubUI
 // Targeted imports: pulling all of TailscreenProtocol collides with SwiftCrossUI's
 // own `Published` / `ObservableObject` shims, the same collision the GTK app
 // hits and solves the same way.
+import class TailscreenAudio.VoiceUplink
 import struct TailscreenProtocol.AccountProfileLayout
 import class TailscreenProtocol.AccountProfileStore
 import struct TailscreenProtocol.CaptureTimings
@@ -262,11 +263,24 @@ struct TailscreenWindowsApp: App {
                 store: state.frameStore,
                 generation: state.frameGeneration,
                 interaction: interaction)
-            if interaction.remoteControlAvailable {
-                RemoteControlBar(
-                    buttonLabel: interaction.controlButtonLabel,
-                    declinedReason: interaction.controlDeclinedReason,
-                    onToggle: { interaction.toggleControl() })
+            if state.micAvailable || interaction.remoteControlAvailable {
+                // Talking and taking control, each on its own capability: a
+                // sharer that cannot inject input must not also cost the viewer
+                // its microphone.
+                HStack(spacing: 8) {
+                    if state.micAvailable {
+                        MicrophoneButton(
+                            isOn: state.micOn, failureNote: state.micFailure,
+                            onToggle: { model.toggleMic() })
+                    }
+                    if interaction.remoteControlAvailable {
+                        RemoteControlBar(
+                            buttonLabel: interaction.controlButtonLabel,
+                            declinedReason: interaction.controlDeclinedReason,
+                            onToggle: { interaction.toggleControl() })
+                    }
+                }
+                .padding(12)
             }
         }
     }
@@ -422,6 +436,21 @@ final class AppUIState: ObservableObject {
     /// it is a debugging glance, not a preference, and the GTK viewer treats
     /// it the same way.
     @Published var showStats = false
+
+    /// Whether this machine opened a capture device for the live session — the
+    /// capability the mic control's existence rides on. A box with no
+    /// microphone shows no button rather than one that cannot unmute.
+    @Published private(set) var micAvailable = false
+    /// Whether the microphone is live. Starts off: joining a share must never
+    /// put somebody on the air, matching the macOS viewer.
+    @Published private(set) var micOn = false
+    /// Set when the device goes away mid-session, so the control says so
+    /// instead of quietly ceasing to work.
+    @Published private(set) var micFailure: String?
+    /// The live session's uplink, held for exactly as long as the session.
+    /// Cleared in the session tail — a stale one would leave the microphone
+    /// open, and Windows shows that in the tray for everyone to see.
+    private var voiceUplink: VoiceUplink?
     /// Header filter state, persisted through the portable `PeerListFilterStore`
     /// the macOS hub uses — not a new persistence layer. On Windows that is
     /// swift-corelibs-foundation's `UserDefaults`; if the write does not stick
@@ -958,6 +987,10 @@ final class AppUIState: ObservableObject {
             // COM apartment, which is why it opens the device lazily.
             let audio = ThreadedAudioSink(wrapping: WASAPIAudioSink())
             defer { audio.stop() }
+            // The capture device is opened on the pump's own thread (COM
+            // apartment affinity, same as the sink), so building this cannot
+            // fail here — "there is no microphone" arrives as `onStopped`.
+            let microphone = makeWASAPIMicrophone()
             do {
                 try await transport.run(
                     config: ViewerConfig(
@@ -972,6 +1005,10 @@ final class AppUIState: ObservableObject {
                     audioSink: audio,
                     shouldClose: { [weak self] in self?.stopRequested ?? true },
                     backChannelHandlers: interaction.backChannelHandlers(),
+                    microphone: microphone,
+                    onVoiceReady: { [weak self] uplink in
+                        self?.attachVoice(uplink)
+                    },
                     onBackChannelReady: { [weak self] channel in
                         Task { @MainActor in self?.interaction.beginSession(channel: channel) }
                     },
@@ -998,6 +1035,7 @@ final class AppUIState: ObservableObject {
             }
             watching = nil
             sessionTask = nil
+            detachVoice()
             // Before the status line, so a stale grant or armed tool can never
             // outlive the session that produced it.
             interaction.endSession()
@@ -1007,6 +1045,43 @@ final class AppUIState: ObservableObject {
 
     func disconnect() {
         stopRequested = true
+    }
+
+    // MARK: Microphone
+
+    private func attachVoice(_ uplink: VoiceUplink) {
+        // The transport hands it over muted; mirror rather than assume.
+        uplink.isMuted = true
+        voiceUplink = uplink
+        micAvailable = true
+        micOn = false
+        micFailure = nil
+        uplink.onStopped = { [weak self] error in
+            guard error != nil else { return }
+            Task { @MainActor in
+                // Both flags move together: a live indicator over a device that
+                // is recording nothing is the one wrong answer a mute control
+                // can give.
+                self?.micAvailable = false
+                self?.micOn = false
+                self?.micFailure = "Microphone unavailable"
+            }
+        }
+    }
+
+    private func detachVoice() {
+        voiceUplink?.stop()
+        voiceUplink = nil
+        micAvailable = false
+        micOn = false
+        micFailure = nil
+    }
+
+    func toggleMic() {
+        guard let voiceUplink else { return }
+        let nowOn = voiceUplink.isMuted
+        voiceUplink.isMuted = !nowOn
+        micOn = nowOn
     }
 
     // MARK: Accounts

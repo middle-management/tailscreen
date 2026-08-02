@@ -433,15 +433,41 @@ which mac Foundation re-exports) compiles on Linux via
 `$prop.values`-compatible AsyncStream because `TailscalePeerDiscovery`
 consumes `watcher.$peers.values`.
 
-And a third tier: target **`TailscreenAudio`** (`OpusVoiceEncoder` /
-`OpusVoiceDecoder` / `OpusPCM` — the Opus codec wrapper + Float32↔Int16 /
-960-sample framing over `OpusKit`/libopus, `@_exported`ing OpusKit so
-`Opus.Application` is visible). Foundation + OpusKit only — it also builds
-on Linux, so a future non-macOS client reuses the exact codec while
-supplying its own platform audio I/O (`VoiceChannel`/`SystemAudioTap` are
-the mac-side consumers). It's kept out of `TailscreenProtocol` so that tier
-stays dependency-free; the `linux-protocol` job installs `libopus-dev` +
-`pkg-config` for it (opus.pc is on Linux's default pkg-config path).
+And a third tier: target **`TailscreenAudio`** — the voice path **both
+endpoints share**. The codec (`OpusVoiceEncoder` / `OpusVoiceDecoder` /
+`OpusPCM` — Float32↔Int16 / 960-sample framing over `OpusKit`/libopus,
+`@_exported`ing OpusKit so `Opus.Application` is visible), the microphone
+seam (`MicrophoneCapturing` + `CapturePCMConverter`, `MicrophonePipeline`,
+and `BlockingPCMSource`/`ThreadedMicrophone` — the capture thread, written
+once, because both shipped backends block and both GUI hosts service their
+transport from the UI thread), and the RTP ends: **`VoiceUplink`** (mic →
+downmix/resample → framing → Opus → RTP PT 98 → send) and
+**`VoiceDownlink`** (the inverse, one Opus decoder per SSRC, bounded and
+LRU-evicted). One type per direction rather than one per endpoint: a
+sharer's voice and a viewer's voice are the same stream in opposite
+directions, differing only in the SSRC they carry — and writing it twice
+would be writing the mute latch twice. Three decisions worth knowing:
+**audio is withheld until an SSRC is assigned** (an unassigned viewer
+stream would go out as SSRC 0, the sharer's own reserved voice SSRC, which
+the sharer's anti-spoof gate then drops); **nothing is delivered after
+`ThreadedMicrophone.stop()` returns**, which is why the running flag is
+read *and* `onPCM` invoked under one lock — the obvious check-then-call
+version loses a race a few instructions wide, and the test for it is a
+timing assertion because a test that races for the window passes every
+time against the bug; and a **device glitch reaches
+`MicrophonePipeline.noteDiscontinuity()`**, which resets the resampler's
+carried neighbour and deliberately *not* the framer's carry, since those
+are samples somebody actually said. Depends on Foundation + OpusKit +
+`TailscreenProtocol` (the edge points AT the dependency-free tier, which
+is what keeps that tier dependency-free) — it also builds on Linux, so a
+non-macOS client reuses the exact codec while supplying its own platform
+audio I/O (`VoiceChannel`/`SystemAudioTap` are the mac-side consumers;
+`ALSAMicrophoneSource` and `WASAPIMicrophoneSource` are the two
+`BlockingPCMSource` adapters, each ~40 lines and both reporting
+`channelCount: 1` whatever the hardware is — see the double-downmix note
+on `MicrophoneCapturing.onPCM`). The `linux-protocol` job installs
+`libopus-dev` + `pkg-config` for it (opus.pc is on Linux's default
+pkg-config path).
 
 And a fourth tier: target **`TailscreenViewer`** (`ViewerSession` + the
 `VideoDecoding` / `VideoSink` / `AudioSink` protocols and the
@@ -541,6 +567,13 @@ types live entirely in `TailscreenProtocol`/`TailscreenAudio`
 `CaptureHelperWireTests`, `ScreenShareProtocolTests`,
 `ShareResponseProtocolTests`, `ShareLockTests`, `QualitySettingsTests`,
 `TailscreenInstanceTests`, `ViewerZoomMathTests`, `OpusAudioCodecTests`,
+`VoicePathTests` (the voice path end to end through fakes: the capture
+thread's delivery, error-vs-asked-for-stop and stop-waits-for-an-in-flight
+delivery legs; the uplink's withhold-without-an-SSRC, mute-on-the-wire and
+SSRC-change-restarts-the-stream legs; the downlink's per-SSRC decode, bound
+and stalest-first eviction — the last asserted per stream, because a bound
+that holds while the policy evicts whoever is talking is a green check over
+a broken call),
 `AccountProfileStoreTests`, `SharerNoticeTests`, `ShortcutCatalogTests`,
 `AnnotationGeometryTests` — the latter covering `AnnotationGeometry`, the
 **shared** derivation of a stroke's outline from its stored anchor+current

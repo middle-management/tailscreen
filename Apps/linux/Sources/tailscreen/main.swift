@@ -3,6 +3,10 @@ import Foundation
 import SwiftCrossUI
 import TailscreenHubUI
 import TailscreenProtocol
+
+// Targeted: the mic seam only. A blanket `import TailscreenAudio` would pull
+// OpusKit's re-exports into this file for two type names.
+import protocol TailscreenAudio.MicrophoneCapturing
 import TailscreenViewer
 import TailscreenViewerCore
 import TailscreenViewerGtk
@@ -31,6 +35,7 @@ let gStore = FrameStore()
 let gUIState = ViewerUIState()
 let gControls = ViewerControls(ui: gUIState)
 let gInput = InputForwarder(ui: gUIState)
+let gVoice = VoiceControls(ui: gUIState)
 let gPicker = PickerModel()
 let gProfiles = ProfileStore()
 let gAnnotations = AnnotationStore()
@@ -199,6 +204,19 @@ if gSelfTest {
             FileHandle.standardError.write(Data("warning: audio disabled (\(error))\n".utf8))
         }
     }
+    // Audio in: the same best-effort rule, and the same reason it is built
+    // here rather than per session — opening a capture device is the slow,
+    // failable part, and a box with no microphone should discover that once.
+    // Nil means no mic control is offered at all, which is the honest answer.
+    var microphone: MicrophoneCapturing?
+    if wantAudio {
+        do {
+            microphone = try makeALSAMicrophone()
+        } catch {
+            FileHandle.standardError.write(
+                Data("warning: microphone unavailable (\(error))\n".utf8))
+        }
+    }
     // Inbound back-channel handlers: control grant/revoke drive the toolbar's
     // state machine. Inbound annotation *rendering* (drawing relayed strokes on
     // an overlay canvas) is a follow-up — the plumbing already carries the ops.
@@ -226,6 +244,7 @@ if gSelfTest {
         sink.resetForNewSession()  // the sink outlives one session
         gAnnotations.resetForNewSession()
         gUIState.beginSession()
+        gUIState.setMicAvailable(false)
         // A reference box for the decline flag, set from the @Sendable
         // onDeclined callback (both it and the post-run read run on MainActor).
         final class DeclinedFlag: @unchecked Sendable { var value = false }
@@ -236,6 +255,11 @@ if gSelfTest {
                     config: config, decoder: decoder, videoSink: sink,
                     audioSink: audioSink, shouldClose: { false },
                     backChannelHandlers: backChannelHandlers,
+                    microphone: microphone,
+                    onVoiceReady: { uplink in
+                        gVoice.attach(uplink)
+                        gUIState.setMicAvailable(true)
+                    },
                     onBackChannelReady: { channel in
                         gControls.attach(channel)
                         gInput.attach(channel)
@@ -252,9 +276,11 @@ if gSelfTest {
                         gUIState.post(sessionPhase: .declined)
                     })
                 FileHandle.standardError.write(Data("session ended\n".utf8))
+                gVoice.detach()
                 gUIState.post(sessionPhase: declined.value ? .declined : .ended)
             } catch {
                 FileHandle.standardError.write(Data("session failed: \(error)\n".utf8))
+                gVoice.detach()
                 gUIState.post(sessionPhase: .failed("Connection failed"))
             }
             // Back to the picker after a beat so the declined/ended placard is
@@ -724,15 +750,28 @@ struct ViewerApp: App {
                         }
                         .padding(10)
                     }
-                    // Remote-control bar stays pinned at the bottom: it's a
-                    // session affordance, not a drawing tool.
-                    if ui.remoteControlAvailable {
+                    // Session affordances, pinned at the bottom: talking and
+                    // taking control. Each appears on its own capability — a
+                    // sharer that cannot inject input does not hide the
+                    // microphone, and a machine with no microphone does not
+                    // hide Request Control.
+                    if ui.micAvailable || ui.remoteControlAvailable {
                         VStack {
                             Spacer()
-                            RemoteControlBar(
-                                buttonLabel: controlButtonLabel,
-                                declinedReason: revokedReason,
-                                onToggle: { gControls.toggleControl() })
+                            HStack(spacing: 8) {
+                                if ui.micAvailable {
+                                    MicrophoneButton(
+                                        isOn: ui.micOn, failureNote: ui.micFailure,
+                                        onToggle: { gVoice.toggle() })
+                                }
+                                if ui.remoteControlAvailable {
+                                    RemoteControlBar(
+                                        buttonLabel: controlButtonLabel,
+                                        declinedReason: revokedReason,
+                                        onToggle: { gControls.toggleControl() })
+                                }
+                            }
+                            .padding(12)
                         }
                     }
                 }

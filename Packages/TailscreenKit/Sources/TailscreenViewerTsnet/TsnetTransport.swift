@@ -1,5 +1,6 @@
 import Foundation
 import TailscaleKit
+import TailscreenAudio
 import TailscreenProtocol
 import TailscreenTransport
 import TailscreenViewer
@@ -473,6 +474,13 @@ public final class TsnetTransport {
         audioSink: AudioSink?,
         shouldClose: @escaping () -> Bool,
         backChannelHandlers: ViewerBackChannel.Handlers = ViewerBackChannel.Handlers(),
+        microphone: MicrophoneCapturing? = nil,
+        // MainActor, unlike the other callbacks here: the uplink is a
+        // session-scoped object the host holds for the session's lifetime, and
+        // every host that holds one holds it in main-actor UI state. The
+        // transport is already MainActor-isolated, so this costs nothing and
+        // saves each host a hop that would let the session end first.
+        onVoiceReady: (@MainActor @Sendable (VoiceUplink) -> Void)? = nil,
         onBackChannelReady: (@Sendable (ViewerBackChannel) -> Void)? = nil,
         onAdmitted: (@Sendable (ScreenShareCaps) -> Void)? = nil,
         onAwaitingApproval: (@Sendable () -> Void)? = nil,
@@ -576,6 +584,33 @@ public final class TsnetTransport {
             senderTask.cancel()
         }
 
+        // The viewer's own voice, out through the same ordered queue the
+        // control bytes use — one socket, one send order.
+        //
+        // Built here rather than by the host because the two things it needs
+        // are both in this scope and nowhere else: the outbound queue, and the
+        // SSRC the sharer assigns on admission. Deliberately NOT started yet
+        // (see the admission block below) — there is nothing to send audio to
+        // until this viewer is let in, and opening the microphone before then
+        // would light somebody's mic indicator while they wait at an approval
+        // prompt they may be denied at.
+        var voiceUplink: VoiceUplink?
+        if let microphone {
+            do {
+                let uplink = try VoiceUplink(
+                    microphone: microphone, encoder: OpusVoiceEncoder(),
+                    send: { outboundContinuation.yield($0) })
+                // Muted until the host says otherwise, matching the macOS
+                // viewer: joining a share must never put you on the air.
+                uplink.isMuted = true
+                voiceUplink = uplink
+                onVoiceReady?(uplink)
+            } catch {
+                logger.log("⚠ Voice uplink unavailable (\(error)) — continuing without a mic")
+            }
+        }
+        defer { voiceUplink?.stop() }
+
         // Advertise our caps; the sharer replies with a HELLO_ACK.
         pipeline.start()
         logger.log("HELLO queued to \(dest) (caps=\(config.caps.rawValue)) — awaiting HELLO_ACK…")
@@ -601,6 +636,16 @@ public final class TsnetTransport {
                     "▶ Admitted by sharer (ssrc=\(ssrc), serverCaps=\(session.serverCaps.rawValue)) — awaiting video…"
                 )
                 loggedAdmitted = true
+                // Now there is an SSRC to speak under, and somebody to speak
+                // to. A failure to open the device is not fatal to the session:
+                // the host hears about it through `VoiceUplink.onStopped` and
+                // withholds the mic control.
+                if let voiceUplink {
+                    voiceUplink.setSSRC(ssrc)
+                    do { try voiceUplink.start() } catch {
+                        logger.log("⚠ Microphone did not start (\(error))")
+                    }
+                }
                 // Surface the sharer's caps so the host can gate its chrome
                 // (the Request-Control button rides `.remoteControl`, the
                 // annotation toolbar rides `.annotations`) — same gating the

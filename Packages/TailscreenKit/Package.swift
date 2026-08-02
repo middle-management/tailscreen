@@ -128,6 +128,10 @@ let package = Package(
             name: "TailscreenViewerTsnet",
             dependencies: [
                 "TailscreenProtocol",
+                // The viewer's own voice: `run` builds a `VoiceUplink` over a
+                // host-supplied microphone and sends it out through the same
+                // ordered queue as the control bytes.
+                "TailscreenAudio",
                 "TailscreenTransport",
                 "TailscreenViewer",
                 .product(name: "TailscaleKit", package: "TailscaleKit")
