@@ -99,6 +99,9 @@ public struct ShareCard: View {
     /// is the least urgent thing on the card, and a viewer waiting to be let
     /// in is the most.
     let settings: [HubToggle]
+    /// The quality knobs, when this host offers them. Nil renders no menu —
+    /// a viewer-only build has nothing to set.
+    let quality: HubQuality?
     /// An extra action the current state calls for, e.g. taking control back.
     let extraAction: HubAction?
     let onStart: @MainActor @Sendable () -> Void
@@ -117,6 +120,7 @@ public struct ShareCard: View {
         viewers: [HubViewerRow] = [],
         prompts: [HubPrompt] = [],
         settings: [HubToggle] = [],
+        quality: HubQuality? = nil,
         extraAction: HubAction? = nil,
         onStart: @escaping @MainActor @Sendable () -> Void,
         onStop: @escaping @MainActor @Sendable () -> Void,
@@ -133,6 +137,7 @@ public struct ShareCard: View {
         self.viewers = viewers
         self.prompts = prompts
         self.settings = settings
+        self.quality = quality
         self.extraAction = extraAction
         self.onStart = onStart
         self.onStop = onStop
@@ -203,6 +208,25 @@ public struct ShareCard: View {
                                 .font(.caption)
                                 .foregroundColor(HubStyle.secondaryText)
                         }
+                    }
+                }
+                if let quality {
+                    VStack(alignment: .leading, spacing: 2) {
+                        HubQualityMenu(model: quality)
+                        // The caption is where the honesty lives. These knobs
+                        // are read when a share STARTS — the capture backend
+                        // takes them at construction on both hosts — so a
+                        // change made mid-share does nothing until the next
+                        // one. Saying so beats a menu that appears to work and
+                        // silently doesn't. (macOS re-pushes through its
+                        // helper-restart path; neither of these hosts has one.)
+                        Text(
+                            quality.isSharing
+                                ? "Applies to your next share"
+                                : (quality.settings.preset.hubCaption ?? "Custom settings")
+                        )
+                        .font(.caption)
+                        .foregroundColor(HubStyle.secondaryText)
                     }
                 }
             }

@@ -247,9 +247,26 @@ two platforms** — the best ratio in the plan and a good place to put spare tim
   words next to the number rather than shown as a coloured dot. macOS puts the
   meaning in a tooltip, which its own accessibility rule says doesn't count —
   and swift-cross-ui has no tooltip to hide it in anyway.
-- **4.2 · Quality settings UI.** Both hosts consume `QualitySettings.default`
-  with no way to change it. The model, its clamps and its persistence are
-  portable and tested already; this is a card and two pickers.
+- **4.2 · Quality settings UI.** ✅ **Done.** The model, its clamps, its preset
+  mapping and its persistence were portable and tested already, so this really
+  was just the control — `HubQualityMenu` on the share card, one component for
+  both hosts.
+
+  It is a **menu of checked rows rather than a `Picker`**, which is where the
+  guessing stopped and the reading started: swift-cross-ui's `Picker` labels
+  its options by string-interpolating the value (`options.map { "\($0)" }`), so
+  a `Preset` would render as `low` / `balanced` / `high` — enum case names, in
+  a user-facing control — and its availability is backend-conditional. A menu
+  of `Toggle`s is what `HubFilterMenu` already proves both backends render.
+  The rows are radio-shaped: picking one selects it, un-picking the active one
+  does nothing, because "no preset" is not a state this model has.
+
+  The honest part is the caption. Both non-mac capture backends take their
+  settings **at construction**, so a change made mid-share does nothing until
+  the next one — the card says "Applies to your next share" rather than
+  offering a control that appears to work. macOS re-pushes through its
+  helper-restart path; neither of these hosts has one, and inventing one was
+  not this item.
 - **4.3 · Connection stats overlay.** `StatsHUD` already exists in
   `TailscreenHubUI` and the GTK viewer shows it; Windows does not.
 
