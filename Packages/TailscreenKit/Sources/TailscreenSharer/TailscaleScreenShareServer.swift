@@ -708,15 +708,32 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     ///   - inputInjector: the host's remote-control injector, or `nil` if this
     ///     host can't inject. Supplying one is what adds `.remoteControl` to
     ///     the advertised ``ScreenShareCaps``.
+    ///   - rendersAnnotations: whether this host puts viewers' strokes on the
+    ///     sharer's screen. Adds `.annotations` to the advertised
+    ///     ``ScreenShareCaps``, which a viewer reads as "your drawing will
+    ///     appear on my screen" and uses to enable its toolbar.
+    ///
     /// Both backends are required arguments with no defaults, deliberately: a
     /// host must *say* it has no capture or no injection rather than get that
     /// by omission, and it keeps `TailscaleScreenShareServer()` unambiguous
     /// for the platform convenience initializers that wire real backends in.
+    ///
+    /// `rendersAnnotations` defaults to **false** for the same reason, and it
+    /// used to default to `true` — which was a bug in exactly the shape that
+    /// rule exists to prevent. Two Linux hosts supplied no overlay, said
+    /// nothing, and advertised the capability anyway; every viewer enabled its
+    /// drawing toolbar and the strokes went nowhere the sharer could see. With
+    /// one viewer — the common case — drawing silently did nothing.
+    ///
+    /// Withholding is the safe default because the failure directions are not
+    /// symmetric. Claiming a capability you lack breaks the peer's UI silently
+    /// and the user blames themselves; omitting one you have costs a disabled
+    /// toolbar the host can turn on with one argument.
     public init(
         port: UInt16 = NetworkConfig.tailscreenPort,
         captureFactory: (@Sendable () -> any CaptureEncoding)?,
         inputInjector: (any InputInjecting)?,
-        rendersAnnotations: Bool = true
+        rendersAnnotations: Bool = false
     ) {
         self.port = port
         self.captureFactory = captureFactory
