@@ -1,5 +1,4 @@
 import Foundation
-import TailscreenProtocol
 
 /// The glue between a sharer's roster and what it remembers about people:
 /// remember a decision, forget one, apply the ones that were made before the
@@ -10,6 +9,12 @@ import TailscreenProtocol
 /// none of them testable, all of them silent when wrong. Putting it here makes
 /// it one implementation that Linux CI runs, and leaves each host with nothing
 /// to do but render rows and forward taps.
+///
+/// **It lives in this tier, not in `TailscreenSharer`**, and the closure below
+/// is why. Nothing here imports the server: it reads a store and hands back a
+/// policy map. Putting it beside the server would have dragged libtailscale
+/// into `linux-protocol` — a leg that deliberately builds no Go archive — for
+/// a type that never touches a node.
 ///
 /// **Not observable and not `Sendable`**, the same two decisions
 /// `AccountProfileStore` documents and for the same reasons: `ObservableObject`

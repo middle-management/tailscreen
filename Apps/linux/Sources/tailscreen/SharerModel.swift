@@ -11,6 +11,7 @@ import X11CaptureKit
 import struct TailscreenProtocol.AccountProfileLayout
 import enum TailscreenProtocol.PeerPolicy
 import class TailscreenProtocol.PeerAccessStore
+import class TailscreenProtocol.SharerAccessCoordinator
 import struct TailscreenProtocol.PickerSelection
 import struct TailscreenProtocol.QualitySettings
 import enum TailscreenProtocol.ViewerApprovalPreference

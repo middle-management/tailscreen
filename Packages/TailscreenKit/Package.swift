@@ -135,17 +135,6 @@ let package = Package(
             name: "TailscreenViewerTests",
             dependencies: ["TailscreenViewer", "TailscreenProtocol", "TailscreenAudio"],
             path: "Tests/TailscreenViewerTests"
-        ),
-        // The sharer tier's testable surface. Small on purpose: almost
-        // everything in `TailscaleScreenShareServer` is either a pure decision
-        // that already lives in TailscreenProtocol's suites, or needs a live
-        // tsnet node and is local-only. What lands here is the logic BETWEEN
-        // those two — `SharerAccessCoordinator`, which needs no node and whose
-        // every failure is silent.
-        .testTarget(
-            name: "TailscreenSharerTests",
-            dependencies: ["TailscreenSharer", "TailscreenProtocol"],
-            path: "Tests/TailscreenSharerTests"
         )
     ]
 )

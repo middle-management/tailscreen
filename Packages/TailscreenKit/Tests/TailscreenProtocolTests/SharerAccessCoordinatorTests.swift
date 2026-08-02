@@ -1,7 +1,6 @@
-import TailscreenProtocol
 import XCTest
 
-@testable import TailscreenSharer
+@testable import TailscreenProtocol
 
 /// The sharer's remember/forget layer.
 ///
