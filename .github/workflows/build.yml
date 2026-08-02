@@ -320,6 +320,51 @@ jobs:
               xvfb-run -a --server-args="-screen 0 1280x720x24" \
                 Packages/XTestInjectKit/.build/debug/xtest-probe --live-check
 
+          # COMPILE, LINK AND D-BUS-PROTOCOL gate for PortalCaptureKit — the
+          # xdg-desktop-portal ScreenCast + PipeWire capture path.
+          #
+          # Read the name carefully: THIS IS NOT A CAPTURE GATE, and it can
+          # never become one. The portal is defined by a consent dialog a
+          # compositor draws and a person clicks; there is no headless path to
+          # a real frame, which is exactly why X11 capture landed first (its
+          # leg above genuinely captures, under Xvfb). What this proves:
+          #
+          #   swift test          the Request-path derivation against
+          #                       hand-written strings, the portal's wire
+          #                       constants, and that a DECLINED request maps to
+          #                       its own case rather than to an error
+          #   --link-check        that libdbus and libpipewire actually LINK. A
+          #                       SwiftPM library target is compiled but never
+          #                       linked, so a missing -lpipewire-0.3 would stay
+          #                       invisible until something downstream linked it
+          #                       — how WASAPIKit's missing GUIDs passed their
+          #                       own step and failed eleven minutes later
+          #   --handshake-test    the whole client handshake against a FAKE
+          #                       portal on a private bus: the three calls plus
+          #                       OpenPipeWireRemote, the options dicts, the
+          #                       subscribe-before-call ordering (the fake
+          #                       answers with no pause, so a late subscription
+          #                       times out), the streams array, the restore
+          #                       token, and an fd surviving the round trip
+          #   --handshake-cancel  a declined request reads as declined
+          #
+          # What it proves about a real portal, PipeWire, or a pixel: NOTHING.
+          # See Packages/PortalCaptureKit/README.md, which says the same at
+          # more length.
+          #
+          # dbus-run-session is load-bearing, not decoration: without a session
+          # bus the two handshake checks SKIP with exit 0, i.e. the gate would
+          # pass by not running.
+          - name: linux-portal
+            apt: pkg-config libdbus-1-dev libpipewire-0.3-dev dbus
+            cmd: |
+              swift test --package-path Packages/PortalCaptureKit
+              swift build --package-path Packages/PortalCaptureKit --product portal-probe
+              PROBE=Packages/PortalCaptureKit/.build/debug/portal-probe
+              "$PROBE" --link-check
+              dbus-run-session -- "$PROBE" --handshake-test
+              dbus-run-session -- "$PROBE" --handshake-cancel
+
           # Transport-portability gate: libtailscale (Go c-archive) + the
           # patched TailscaleKit Swift wrapper must build and pass their unit
           # tests on Linux. This is the compile-time half of the porting plan's
