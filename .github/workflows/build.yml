@@ -26,6 +26,7 @@ concurrency:
 jobs:
   build:
     runs-on: macos-latest
+    timeout-minutes: 45
     # SwiftPM on Apple-silicon runners does NOT search Homebrew's
     # /opt/homebrew/lib/pkgconfig by default, so OpusKit's `pkgConfig: "opus"`
     # can't find opus.pc from `brew install opus` unless it's on
@@ -37,34 +38,19 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: recursive  # Initialize all submodules
           # Full history so the diff-coverage gate can diff against the
           # PR's base (origin/main).
           fetch-depth: 0
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
+      # Patches + Go + libtailscale.a. `make build` below re-enters
+      # `make tailscale`, which is a no-op once the archive is in place.
+      - name: Bootstrap libtailscale
+        uses: ./.github/actions/bootstrap
         with:
-          # Version derived from the submodule's go.mod, not pinned here.
-          #
-          # That file says `go 1.25.5`, so a literal '1.21' provisioned a
-          # toolchain Go then immediately replaced itself: the arm64 probe's log
-          # showed `go: downloading go1.25.5 (windows/arm64)` mid-build, ~22s of
-          # it. The pin was simultaneously a fiction and a download — every job
-          # here paid for a toolchain it did not end up using.
-          #
-          # go.mod is now the single source of truth, so a submodule bump moves
-          # CI with it instead of silently re-triggering the same download.
-          go-version-file: Packages/TailscaleKit/upstream/libtailscale/go.mod
-          # Explicit rather than relying on the action's default, and
-          # paired with cache-dependency-path — without a path the
-          # action looks for go.sum in the working directory, finds
-          # none at the repo root, and caches nothing while appearing
-          # configured. Three workflows here were in exactly that state.
-          cache: true
-          cache-dependency-path: Packages/TailscaleKit/upstream/libtailscale/go.sum
+          libtailscale: host
 
       - name: Install libopus
         # OpusKit's COpus systemLibrary resolves libopus via pkg-config; the
@@ -124,7 +110,7 @@ jobs:
 
       - name: Upload coverage artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-profdata
           path: |
@@ -172,163 +158,175 @@ jobs:
   # continue-on-error): a release-config compile break is always real.
   build-release:
     runs-on: macos-latest
+    timeout-minutes: 30
     # See the `build` job: SwiftPM on arm64 runners doesn't search brew's
     # pkgconfig dir, so put libopus (and libtailscale) on PKG_CONFIG_PATH.
     env:
       PKG_CONFIG_PATH: ${{ github.workspace }}/Packages/TailscaleKit:/opt/homebrew/lib/pkgconfig
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: recursive
-      - name: Setup Go
-        uses: actions/setup-go@v5
+      - name: Bootstrap libtailscale
+        uses: ./.github/actions/bootstrap
         with:
-          # Version derived from the submodule's go.mod, not pinned here.
-          #
-          # That file says `go 1.25.5`, so a literal '1.21' provisioned a
-          # toolchain Go then immediately replaced itself: the arm64 probe's log
-          # showed `go: downloading go1.25.5 (windows/arm64)` mid-build, ~22s of
-          # it. The pin was simultaneously a fiction and a download — every job
-          # here paid for a toolchain it did not end up using.
-          #
-          # go.mod is now the single source of truth, so a submodule bump moves
-          # CI with it instead of silently re-triggering the same download.
-          go-version-file: Packages/TailscaleKit/upstream/libtailscale/go.mod
-          # Explicit rather than relying on the action's default, and
-          # paired with cache-dependency-path — without a path the
-          # action looks for go.sum in the working directory, finds
-          # none at the repo root, and caches nothing while appearing
-          # configured. Three workflows here were in exactly that state.
-          cache: true
-          cache-dependency-path: Packages/TailscaleKit/upstream/libtailscale/go.sum
+          libtailscale: host
       - name: Install libopus
         run: brew install opus
-      - name: Build libtailscale
-        run: make tailscale
       - name: Build (release)
         working-directory: Apps/macOS
         run: swift build -c release
 
-  # Portability gate: the TailscreenKit package — wire protocol + pure
-  # decision logic, the tsnet-facing TailscreenTransport tier, the Opus
-  # codec, and the two host-agnostic data planes (TailscreenViewer and
-  # TailscreenSharer, the latter carrying the whole screen-share server) —
-  # a real dependency of the app, see Packages/TailscreenKit/README.md.
-  # It must build and pass its tests on Linux, where no Apple framework
-  # exists. This is what keeps the portable set portable: an
-  # AppKit/os/CoreGraphics/VideoToolbox import sneaking into a package
-  # file fails here, not on someone's future non-macOS port. Cheap (Linux
-  # minutes, no Go build — the transport tier compiles against the patched
-  # tailscale.h; only linking needs the .a, and nothing here links it) and
-  # required — a break is always a real portability regression.
-  linux-protocol:
+  # ---------------------------------------------------------------------
+  # The per-package portability gates. Six jobs became six MATRIX LEGS of one
+  # job, because they were six copies of the same four steps — container
+  # swift:6.3-noble, checkout, `apt-get install <set>`, `swift test
+  # --package-path <package>` — differing only in the set and the package.
+  #
+  # They are NOT collapsed into one leg, and that is the point. Each answers a
+  # different question, and the value of a red check here is that it names the
+  # LAYER that broke: "libopus does not build on Linux" and "the Windows input
+  # injector's decisions regressed" want different people looking. `fail-fast:
+  # false` keeps that true when several break at once.
+  #
+  # `name: ${{ matrix.name }}` rather than the default `linux-packages (…)`
+  # label, so the check names are byte-identical to the six jobs they replace
+  # — a branch-protection rule or a bookmark pointing at `linux-protocol` goes
+  # on pointing at it.
+  #
+  # Each leg is ~50s and they run concurrently, so this is not a speed change;
+  # it is a "a fix to the container image, the apt invocation or the checkout
+  # lands once" change.
+  # ---------------------------------------------------------------------
+  linux-packages:
+    name: ${{ matrix.name }}
     runs-on: ubuntu-latest
-    container: swift:6.1-noble
+    timeout-minutes: 20
+    container: swift:6.3-noble
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Portability gate: the TailscreenKit package — wire protocol + pure
+          # decision logic, the tsnet-facing TailscreenTransport tier, the Opus
+          # codec, and the two host-agnostic data planes (TailscreenViewer and
+          # TailscreenSharer, the latter carrying the whole screen-share
+          # server) — a real dependency of the app, see
+          # Packages/TailscreenKit/README.md. It must build and pass its tests
+          # on Linux, where no Apple framework exists. This is what keeps the
+          # portable set portable: an AppKit/os/CoreGraphics/VideoToolbox
+          # import sneaking into a package file fails here, not on someone's
+          # future non-macOS port. Cheap (Linux minutes, no Go build — the
+          # transport tier compiles against the patched tailscale.h; only
+          # linking needs the .a, and nothing here links it) and required — a
+          # break is always a real portability regression.
+          #
+          # The submodule is for TailscaleKit, whose sources are symlinks into
+          # it; `swift test` builds every tier including TailscreenSharer,
+          # which needs only the patched HEADER, so no Go build.
+          #
+          # libopus-dev + pkg-config are for the TailscreenAudio target's
+          # OpusKit dependency (opus.pc is on the Linux default search path, so
+          # no PKG_CONFIG_PATH entry is needed for it). `make` used to be in
+          # this set too, purely so the Makefile's patch loop could run; the
+          # bootstrap action inlines that loop, so it is gone.
+          - name: linux-protocol
+            apt: libopus-dev pkg-config
+            submodules: recursive
+            go: none
+            libtailscale: none
+            cmd: PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" swift test --package-path Packages/TailscreenKit
+
+          # Audio-codec-portability gate: OpusKit (a systemLibrary wrapper over
+          # libopus — see Packages/OpusKit/README.md) must build and pass its
+          # encode/decode round-trip tests on Linux. This is the portable
+          # foundation for the Opus-only audio decision
+          # (docs/porting-plan.md #6). Cheap: one apt install, no submodules,
+          # no Go.
+          - name: linux-opus
+            apt: libopus-dev pkg-config
+            cmd: swift test --package-path Packages/OpusKit
+
+          # Video-decode-portability gate: FFmpegKit (a systemLibrary wrapper
+          # over libavcodec — see Packages/FFmpegKit/README.md) must build and
+          # pass its decode tests on Linux. This is the portable video-decode
+          # foundation for the Linux/Windows viewer (docs/porting-plan.md —
+          # "Decode"). Cheap: one apt install, no submodules, no Go.
+          # (libavutil-dev comes with libavcodec-dev; opus.pc-style
+          # default-path resolution means no PKG_CONFIG_PATH entry is needed.)
+          - name: linux-ffmpeg
+            apt: libavcodec-dev libavutil-dev pkg-config
+            cmd: swift test --package-path Packages/FFmpegKit
+
+          # Audio-playback-portability gate: ALSAKit (a systemLibrary wrapper
+          # over libasound — see Packages/ALSAKit/README.md) must build and
+          # pass its PCM-playback tests on Linux. This is the Linux viewer's
+          # audio-output backend (the counterpart to the mac viewer's
+          # AVAudioEngine sink); the tests open ALSA's always-present "null"
+          # PCM so they run headless with no sound hardware. Cheap: one apt
+          # install, no submodules, no Go.
+          - name: linux-alsa
+            apt: libasound2-dev pkg-config
+            cmd: swift test --package-path Packages/ALSAKit
+
+          # Screen-capture-portability gate: X11CaptureKit (a C shim over
+          # libxcb + MIT-SHM, plus the BGRA→I420 conversion) must build and
+          # pass its tests on Linux. The colour-conversion half runs anywhere;
+          # the capture half runs under Xvfb, which is the whole reason X11
+          # capture landed before the ScreenCast portal — the portal can't be
+          # exercised headlessly at all. Cheap: two apt packages, no Go, no
+          # submodules.
+          - name: linux-x11-capture
+            apt: pkg-config libxcb1-dev libxcb-shm0-dev xvfb
+            cmd: xvfb-run -a --server-args="-screen 0 1280x720x24" swift test --package-path Packages/X11CaptureKit
+
+          # Transport-portability gate: libtailscale (Go c-archive) + the
+          # patched TailscaleKit Swift wrapper must build and pass their unit
+          # tests on Linux. This is the compile-time half of the porting plan's
+          # Phase 1; the live two-node tsnet exchange (TCP + UDP
+          # PacketListener + LocalAPI over local headscale) was verified
+          # manually on Linux and stays local-only for now — Linux runners
+          # likely CAN run it (unlike the macOS-sandbox-blocked handshake),
+          # which is a candidate follow-up.
+          #
+          # noble's golang-go is 1.22 — above the repo's 1.21 floor. Kept
+          # apt-simple because setup-go's tool cache doesn't apply inside this
+          # container. The swift:*-noble images are slim: make isn't present
+          # (the host libtailscale build goes through it, for the macOS
+          # deployment-target flags), and cgo wants gcc — the image only
+          # guarantees clang.
+          - name: linux-tailscalekit
+            apt: golang-go make gcc libc6-dev
+            submodules: recursive
+            go: preinstalled
+            libtailscale: host
+            cmd: PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" swift test --package-path Packages/TailscaleKit
+
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
-          # The TailscreenTransport target depends on TailscaleKit, whose
-          # sources are symlinks into the submodule.
-          submodules: recursive
-      - name: Install make + libopus
-        # The swift:*-noble images are slim — no make (or gcc). The patch
-        # loop lives in Packages/TailscaleKit/Makefile, so make is required.
-        # libopus-dev + pkg-config are for the TailscreenAudio target's
-        # OpusKit dependency (opus.pc is on the Linux default search path,
-        # so no PKG_CONFIG_PATH entry is needed for it).
-        run: apt-get update && apt-get install -y --no-install-recommends make libopus-dev pkg-config
-      - name: Apply TailscaleKit patches (header only, no Go build)
-        run: make -C Packages/TailscaleKit apply-patches
-      - name: Build + test TailscreenKit on Linux
-        # Builds every tier — including TailscreenSharer, the sharer data
-        # plane. That target needs only the patched TailscaleKit *header*
-        # (nothing here links libtailscale.a), so it rides this job with no
-        # extra setup and no Go build.
-        run: PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" swift test --package-path Packages/TailscreenKit
-
-  # Audio-codec-portability gate: OpusKit (a systemLibrary wrapper over
-  # libopus — see Packages/OpusKit/README.md) must build and pass its
-  # encode/decode round-trip tests on Linux. This is the portable foundation
-  # for the Opus-only audio decision (docs/porting-plan.md #6); wiring it
-  # into the app's audio path is a later mac-side step. Cheap: one apt
-  # install, no submodules, no Go.
-  linux-opus:
-    runs-on: ubuntu-latest
-    container: swift:6.1-noble
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install libopus
-        run: apt-get update && apt-get install -y --no-install-recommends libopus-dev pkg-config
-      - name: Build + test OpusKit on Linux
-        run: swift test --package-path Packages/OpusKit
-
-  # Video-decode-portability gate: FFmpegKit (a systemLibrary wrapper over
-  # libavcodec — see Packages/FFmpegKit/README.md) must build and pass its
-  # decode tests on Linux. This is the portable video-decode foundation for
-  # the Linux/Windows viewer (docs/porting-plan.md — "Decode"); wiring it into
-  # a portable viewer session is later work. Cheap: one apt install, no
-  # submodules, no Go. (libavutil-dev comes with libavcodec-dev; opus.pc-style
-  # default-path resolution means no PKG_CONFIG_PATH entry is needed.)
-  linux-ffmpeg:
-    runs-on: ubuntu-latest
-    container: swift:6.1-noble
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install FFmpeg dev libraries
-        run: apt-get update && apt-get install -y --no-install-recommends libavcodec-dev libavutil-dev pkg-config
-      - name: Build + test FFmpegKit on Linux
-        run: swift test --package-path Packages/FFmpegKit
-
-  # Audio-playback-portability gate: ALSAKit (a systemLibrary wrapper over
-  # libasound — see Packages/ALSAKit/README.md) must build and pass its
-  # PCM-playback tests on Linux. This is the Linux viewer's audio-output
-  # backend (the counterpart to the mac viewer's AVAudioEngine sink); the
-  # tests open ALSA's always-present "null" PCM so they run headless with no
-  # sound hardware. Cheap: one apt install, no submodules, no Go.
-  linux-alsa:
-    runs-on: ubuntu-latest
-    container: swift:6.1-noble
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install libasound
-        run: apt-get update && apt-get install -y --no-install-recommends libasound2-dev pkg-config
-      - name: Build + test ALSAKit on Linux
-        run: swift test --package-path Packages/ALSAKit
-
-  # Transport-portability gate: libtailscale (Go c-archive) + the patched
-  # TailscaleKit Swift wrapper must build and pass their unit tests on
-  # Linux. This is the compile-time half of the porting plan's Phase 1;
-  # the live two-node tsnet exchange (TCP + UDP PacketListener + LocalAPI
-  # over local headscale) was verified manually on Linux and stays
-  # local-only for now — Linux runners likely CAN run it (unlike the
-  # macOS-sandbox-blocked handshake), which is a candidate follow-up.
-  linux-tailscalekit:
-    runs-on: ubuntu-latest
-    container: swift:6.1-noble
-    steps:
-      - uses: actions/checkout@v4
+          # 'false' for the four legs that omit it — only the TailscaleKit-
+          # touching legs need the submodule, and cloning it costs the others
+          # nothing they use.
+          submodules: ${{ matrix.submodules || 'false' }}
+      - name: Install ${{ matrix.apt }}
+        # The swift:*-noble images are slim, so every leg brings its own
+        # system libraries. One apt invocation, one place to fix.
+        run: apt-get update && apt-get install -y --no-install-recommends ${{ matrix.apt }}
+      - name: Bootstrap TailscaleKit
+        # Only the submodule legs. Skipping it entirely on the others is what
+        # keeps an empty `libtailscale:` from ever reaching the action.
+        if: matrix.submodules == 'recursive'
+        uses: ./.github/actions/bootstrap
         with:
-          submodules: recursive
-      - name: Install build tools
-        # noble's golang-go is 1.22 — above the repo's 1.21 floor. Kept
-        # apt-simple because setup-go's tool cache doesn't apply inside
-        # this container. The swift:*-noble images are slim: make isn't
-        # present, and cgo wants gcc (the image only guarantees clang).
-        run: apt-get update && apt-get install -y --no-install-recommends golang-go make gcc libc6-dev
-      - name: Build libtailscale (patched) on Linux
-        env:
-          # The job runs as root in the container while the checkout is
-          # owned by the runner uid, so git inside the submodule reports
-          # "dubious ownership" and Go's VCS stamping dies with exit 128.
-          # The stamp is worthless for a c-archive — skip it.
-          GOFLAGS: -buildvcs=false
-        run: make -C Packages/TailscaleKit
-      - name: Test TailscaleKit on Linux
-        run: PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" swift test --package-path Packages/TailscaleKit
+          go: ${{ matrix.go }}
+          libtailscale: ${{ matrix.libtailscale }}
+      - name: ${{ matrix.name }}
+        run: ${{ matrix.cmd }}
 
   # Viewer-integration gate: the portable Linux viewer library package
-  # (Apps/linux) must build and pass its pipeline integration test on Linux.
+  # (Packages/TailscreenLinuxBackends) must build and pass its pipeline integration test on Linux.
   # This is where the concrete backends plug into the portable ViewerSession
   # core — FFmpegKit decode + ALSAKit audio behind the
   # VideoDecoding/VideoSink/AudioSink seams (docs/porting-plan.md, "Viewer
@@ -338,14 +336,15 @@ jobs:
   #   • compiles AND LINKS `TailscreenViewerTsnet`, which pulls in the tsnet
   #     transport, so this doubles as the Linux link-check for that code (a live
   #     run needs a real tailnet and stays local-only). The native GTK viewer
-  #     that consumes these targets is built by `linux-gtk-viewer`.
+  #     that consumes these targets is built by `linux-app`.
   # Heavier than the per-backend gates above: it needs the A/V dev libs plus
   # the libtailscale Go c-archive (same build as linux-tailscalekit).
   linux-viewer:
     runs-on: ubuntu-latest
-    container: swift:6.1-noble
+    timeout-minutes: 30
+    container: swift:6.3-noble
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
       - name: Install build tools + A/V dev libraries
@@ -361,9 +360,10 @@ jobs:
             libavcodec-dev libavutil-dev libasound2-dev libopus-dev \
             libxcb1-dev libxcb-shm0-dev xvfb
       - name: Build libtailscale (patched) on Linux
-        env:
-          GOFLAGS: -buildvcs=false
-        run: make -C Packages/TailscaleKit
+        uses: ./.github/actions/bootstrap
+        with:
+          go: preinstalled
+          libtailscale: host
       - name: Build + test the Linux viewer + sharer package
         # PKG_CONFIG_PATH resolves libtailscale.pc (→ -L for libtailscale.a);
         # the A/V libs are on the default pkg-config path. xvfb-run supplies
@@ -372,7 +372,7 @@ jobs:
         run: |
           PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" \
             xvfb-run -a --server-args="-screen 0 1280x720x24" \
-            swift test --package-path Apps/linux
+            swift test --package-path Packages/TailscreenLinuxBackends
 
       # The WINDOWS sharer's capture backend, typechecked HERE.
       #
@@ -410,40 +410,39 @@ jobs:
           PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" \
             swift build --package-path Packages/TailscreenSharerWGC
 
-  # Screen-capture-portability gate: X11CaptureKit (a C shim over libxcb +
-  # MIT-SHM, plus the BGRA→I420 conversion) must build and pass its tests on
-  # Linux. The colour-conversion half runs anywhere; the capture half runs
-  # under Xvfb, which is the whole reason X11 capture landed before the
-  # ScreenCast portal — the portal can't be exercised headlessly at all.
-  # Cheap: two apt packages, no Go, no submodules.
-  linux-x11-capture:
-    runs-on: ubuntu-latest
-    container: swift:6.1-noble
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install libxcb + Xvfb
-        run: |
-          apt-get update && apt-get install -y --no-install-recommends \
-            pkg-config libxcb1-dev libxcb-shm0-dev xvfb
-      - name: Build + test X11CaptureKit on Linux
-        run: xvfb-run -a --server-args="-screen 0 1280x720x24" swift test --package-path Packages/X11CaptureKit
-
-  linux-gtk-viewer:
-    # The native GTK desktop viewer (Apps/linux-gtk) — a separate package from
-    # the Apps/linux core so swift-cross-ui + GTK4 don't burden the linux-viewer job.
+  # Was `linux-app`, which had gone stale in both directions.
+  #
+  # `Apps/linux` is not a viewer: it has `SharerModel`, imports
+  # `TailscreenSharer` + `TailscreenSharerLinux`, and carries the approval
+  # gate, annotation forwarding and input forwarding. It views AND shares, and
+  # its executable has been plain `tailscreen` since the rename. `gtk` is an
+  # implementation detail of the backend, not what the job gates.
+  #
+  # And the job is not only the Linux app — its second build typechecks the
+  # WINDOWS app on Linux, which is the leg that catches the mistakes a Windows
+  # runner would otherwise surface forty minutes in (see that step's comment).
+  # That rides here rather than in its own job purely for cost: a separate job
+  # would re-install this one's ~480 apt packages to compile the same
+  # swift-cross-ui.
+  #
+  # `linux-app` pairs it with the `linux-app-arm64` sibling below.
+  linux-app:
+    # The native GTK desktop viewer (Apps/linux) — a separate package from
+    # the Packages/TailscreenLinuxBackends core so swift-cross-ui + GTK4 don't burden the linux-viewer job.
     # No libtailscale/Go: this L0a build reaches only TailscreenProtocol/Viewer/
     # Audio + swift-cross-ui, and the render path is gated headlessly.
     runs-on: ubuntu-latest
-    container: swift:6.1-noble
+    timeout-minutes: 30
+    container: swift:6.3-noble
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
       - name: Install GTK4 + GL + headless display + A/V + Go
         # swift-cross-ui's GtkBackend needs gtk4 (+ gobject-introspection for
         # its bindings); CGtkVideo links epoxy + gtk-4; the render self-test runs
         # under a virtual X server with Mesa software GL. The live path reuses
-        # Apps/linux's Core (FFmpeg/ALSA/Opus) + Tsnet (→ libtailscale, hence
+        # Packages/TailscreenLinuxBackends's Core (FFmpeg/ALSA/Opus) + Tsnet (→ libtailscale, hence
         # golang-go/make), though the render self-test itself needs no network.
         run: |
           apt-get update && apt-get install -y --no-install-recommends \
@@ -452,15 +451,82 @@ jobs:
             golang-go make gcc libc6-dev \
             libavcodec-dev libavutil-dev libasound2-dev
       - name: Build libtailscale (patched) on Linux
-        env:
-          GOFLAGS: -buildvcs=false
-        run: make -C Packages/TailscaleKit
-      - name: Build the GTK viewer
+        uses: ./.github/actions/bootstrap
+        with:
+          go: preinstalled
+          libtailscale: host
+
+      # ---------------------------------------------------------------------
+      # The two builds below are what sets this workflow's WALL CLOCK. Measured
+      # on a recent run: build.yml took 8m26s end to end, and this job took
+      # 8m26s of it — every other job finished in 2-3 minutes and ran
+      # concurrently, contributing nothing. The reason is that both builds
+      # compile swift-cross-ui from scratch, in two separate .build
+      # directories, on every single push, for a dependency whose revisions
+      # move only when a pin does.
+      #
+      # windows-build.yml already solved exactly this and its solution is
+      # copied here in shape, including the parts that are non-obvious:
+      #
+      #   • restore/save as SEPARATE steps, not `actions/cache`, because that
+      #     action's post step is `post-if: success()` — a run that compiles
+      #     the whole dependency graph and then fails on one line of our own
+      #     Swift throws away every object worth keeping, and the next run
+      #     pays for all of it again. That happened twice in one afternoon on
+      #     the Windows side.
+      #   • the save's condition is `!cancelled()` AND the restore having run,
+      #     because cache keys are IMMUTABLE. This workflow has
+      #     cancel-in-progress, so a run cancelled at 20 % is routine, and it
+      #     must never claim a key with a fifth of a build directory that no
+      #     later run could replace.
+      #   • runner.arch is IN THE KEY. linux-app-arm64 runs this same package
+      #     in the same container on a different architecture, and an x64
+      #     object tree restored into an arm64 build is the cross-arch staging
+      #     bug this repo has already shipped once.
+      #   • restore-keys prefix fallback, so a lockfile bump costs an
+      #     incremental rebuild rather than a cold one. Safe for a SwiftPM
+      #     .build specifically: llbuild tracks inputs per target, so a stale
+      #     tree plus a fresh resolve rebuilds exactly the targets whose pins
+      #     moved. (The libtailscale cache deliberately has no such fallback —
+      #     an opaque .a has no such referee.)
+      #
+      # Two directories, not one, and deliberately NOT a shared
+      # --scratch-path: Apps/windows and Apps/linux resolve different
+      # build plans from the same dependencies, so sharing would thrash.
+      # ---------------------------------------------------------------------
+      - name: Restore the GTK app's build directory
+        id: gtk-build-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: Apps/linux/.build
+          key: >-
+            linux-app-build-swift6.3-noble-${{ runner.os }}-${{ runner.arch
+            }}-debug-${{ hashFiles('Apps/linux/Package.resolved') }}
+          restore-keys: |
+            linux-app-build-swift6.3-noble-${{ runner.os }}-${{ runner.arch }}-debug-
+
+      # A SECOND cache for the Windows app's Linux typecheck, because it is a
+      # second full swift-cross-ui compile. Its key prefix is distinct from
+      # windows-build.yml's `windows-app-build-*` so a Linux object tree can
+      # never be restored into a Windows job — same package, incompatible
+      # everything.
+      - name: Restore the Windows app's Linux typecheck directory
+        id: winapp-typecheck-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: Apps/windows/.build
+          key: >-
+            linux-typecheck-windows-app-swift6.3-noble-${{ runner.os }}-${{
+            runner.arch }}-${{ hashFiles('Apps/windows/Package.resolved') }}
+          restore-keys: |
+            linux-typecheck-windows-app-swift6.3-noble-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Build the Linux app
         # PKG_CONFIG_PATH resolves libtailscale.pc for the tsnet transport.
         # Build the executable product specifically so SwiftPM prunes to the
         # Linux subgraph (DefaultBackend→GtkBackend) — a bare `swift build`
         # would also try to compile swift-cross-ui's Windows-only WinUI backend.
-        run: PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" swift build --package-path Apps/linux-gtk --product tailscreen
+        run: PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" swift build --package-path Apps/linux --product tailscreen
       - name: Typecheck the Windows app
         # The Windows app builds HERE, on Linux, and that is the point.
         #
@@ -494,7 +560,7 @@ jobs:
         run: |
           if timeout 90 xvfb-run -a -s "-screen 0 800x600x24" \
             env GDK_BACKEND=x11 LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe \
-            Apps/linux-gtk/.build/debug/tailscreen --render-self-test \
+            Apps/linux/.build/debug/tailscreen --render-self-test \
             > /tmp/gtk-selftest.log 2>&1; then
             status=0
           else
@@ -504,118 +570,77 @@ jobs:
           test "$status" -eq 0
           grep -q 'CGTKVIDEO_SELFTEST result=PASS' /tmp/gtk-selftest.log
 
+      # Both saves live at the end so they bank objects from a run that failed
+      # the typecheck or the self-test — the compile is the expensive part and
+      # it already happened. The product binaries are excluded: they are
+      # relinked on every build regardless, and a smaller archive survives the
+      # repo's shared 10 GB cache budget longer. (Exclusions apply at save;
+      # restore extracts whatever the archive holds, so the two path specs need
+      # not match.)
+      - name: Save the GTK app's build directory
+        if: >-
+          ${{ !cancelled() && steps.gtk-build-cache.outcome == 'success'
+          && steps.gtk-build-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            Apps/linux/.build
+            !Apps/linux/.build/**/debug/tailscreen
+          key: >-
+            linux-app-build-swift6.3-noble-${{ runner.os }}-${{ runner.arch
+            }}-debug-${{ hashFiles('Apps/linux/Package.resolved') }}
+
+      - name: Save the Windows app's Linux typecheck directory
+        if: >-
+          ${{ !cancelled() && steps.winapp-typecheck-cache.outcome == 'success'
+          && steps.winapp-typecheck-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            Apps/windows/.build
+            !Apps/windows/.build/**/debug/tailscreen
+          key: >-
+            linux-typecheck-windows-app-swift6.3-noble-${{ runner.os }}-${{
+            runner.arch }}-${{ hashFiles('Apps/windows/Package.resolved') }}
+
+  # The native Linux app on arm64 — GitHub's free arm64 runner for public
+  # repos (ubuntu-24.04-arm) in the SAME swift:6.3-noble container as every
+  # other Linux job. Three deliberate differences from the x64
+  # `linux-app` leg:
+  #   • builds -c release, not debug — one build does triple duty: the arm64
+  #     release-config compile check, the binary the self-test gates, and the
+  #     binary the artifact ships (the debug leg is already covered on x64;
+  #     building both configs here would roughly double the job for no extra
+  #     signal),
+  #   • runs the same headless GL YUV-readback self-test — the proof this is a
+  #     real leg (llvmpipe renders + BT.709 math verified on arm64), not
+  #     compile-only,
+  #   • stages + uploads `tailscreen-linux-arm64.tar.gz`. A plain tarball here
+  #     on purpose: the arm64 AppImage exists, but it lives in
+  #     release.yml (aarch64 linuxdeploy + appimagetool) — AppImage
+  #     assembly is a packaging concern, not a per-PR gate, exactly as the
+  #     x86_64 AppImage is release-only too.
+  #
+  # The steps live in app-linux.yml, shared with release.yml's arm64
+  # packaging job — which was this job plus a tarball rename, down to the
+  # duplicated README.txt wording inside the tarball.
+  #
+  # It stays on every push rather than being demoted to a nightly because the
+  # reason to demote it was cost, and app-linux.yml's build cache is the cost.
+  # Hard gate: no continue-on-error — an arm64 break is a real break.
   linux-app-arm64:
-    # The native Linux app on arm64 — GitHub's free arm64 runner for public
-    # repos (ubuntu-24.04-arm) with the SAME swift:6.1-noble container as
-    # every other Linux job: the library/swift image is multi-arch
-    # (amd64 + arm64, verified on Docker Hub), so the apt package set and
-    # job shape stay byte-identical to linux-gtk-viewer and there is no
-    # swift.org-tarball toolchain install to maintain. Three deliberate
-    # differences from the x64 job:
-    #   • builds -c release, not debug — one build does triple duty: the
-    #     arm64 release-config compile check, the binary the self-test
-    #     gates, and the binary the artifact ships (the debug leg is
-    #     already covered on x64 by linux-gtk-viewer; building both
-    #     configs here would roughly double the job for no extra signal),
-    #   • runs the same headless GL YUV-readback self-test — the proof
-    #     this is a real leg (llvmpipe renders + BT.709 math verified on
-    #     arm64), not compile-only,
-    #   • stages + uploads `tailscreen-linux-arm64.tar.gz`. A plain tarball
-    #     here on purpose: the arm64 AppImage exists, but it lives in
-    #     release-linux.yml's tarball-arm64 job (aarch64 linuxdeploy +
-    #     appimagetool) — AppImage assembly is a packaging concern, not a
-    #     per-PR gate, exactly as the x86_64 AppImage is release-only too.
-    # Caching is intentionally omitted, matching every sibling container
-    # job: setup-go's tool cache doesn't apply inside the container (see
-    # linux-tailscalekit) — apt's golang-go and a fresh module download
-    # are the established pattern. Apps/linux-gtk/Package.resolved IS
-    # committed (scoped .gitignore negation), so a SwiftPM cache keyed on
-    # it is an available follow-up if this job's resolve step ever gets
-    # slow. Hard gate: no continue-on-error — an arm64 break is a real
-    # break.
-    runs-on: ubuntu-24.04-arm
-    container: swift:6.1-noble
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - name: Install GTK4 + GL + headless display + A/V + Go
-        # Same set as linux-gtk-viewer — see that job's comment for why
-        # each package is needed. All are multi-arch in noble.
-        run: |
-          apt-get update && apt-get install -y --no-install-recommends \
-            libgtk-4-dev gir1.2-gtk-4.0 libgirepository1.0-dev libepoxy-dev \
-            libgl1-mesa-dri xvfb libopus-dev pkg-config \
-            golang-go make gcc libc6-dev \
-            libavcodec-dev libavutil-dev libasound2-dev
-      - name: Build libtailscale (patched) for linux/arm64
-        # Go targets the host arch — arm64 here — so the same make
-        # invocation as the x64 jobs emits an arm64 c-archive. GOFLAGS:
-        # see linux-tailscalekit (dubious-ownership VCS stamping).
-        env:
-          GOFLAGS: -buildvcs=false
-        run: make -C Packages/TailscaleKit
-      - name: Build the app (release)
-        # PKG_CONFIG_PATH resolves libtailscale.pc for the tsnet transport;
-        # building the executable product specifically prunes SwiftPM to the
-        # Linux subgraph (see linux-gtk-viewer).
-        run: PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" swift build -c release --package-path Apps/linux-gtk --product tailscreen
-      - name: Headless render self-test (Xvfb + software GL)
-        # Identical to linux-gtk-viewer's gate (same POSIX-sh caveats — see
-        # that job's comment), pointed at the release binary this job ships.
-        run: |
-          if timeout 90 xvfb-run -a -s "-screen 0 800x600x24" \
-            env GDK_BACKEND=x11 LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe \
-            Apps/linux-gtk/.build/release/tailscreen --render-self-test \
-            > /tmp/gtk-selftest.log 2>&1; then
-            status=0
-          else
-            status=$?
-          fi
-          cat /tmp/gtk-selftest.log
-          test "$status" -eq 0
-          grep -q 'CGTKVIDEO_SELFTEST result=PASS' /tmp/gtk-selftest.log
-      - name: Stage tarball
-        # The launch notes are generated HERE, not copied from the repo, on
-        # purpose: this workflow's `paths-ignore: '**.md'` means an artifact
-        # that shipped a repo .md would be a path-filter hole — edits to it
-        # would skip this job and "a missing run reads as success". Keeping
-        # the artifact's inputs to the binary + this workflow file keeps
-        # every input inside the trigger paths.
-        run: |
-          set -eu
-          STAGE=dist/tailscreen-linux-arm64
-          mkdir -p "$STAGE"
-          cp Apps/linux-gtk/.build/release/tailscreen "$STAGE/tailscreen"
-          cat > "$STAGE/README.txt" <<'EOF'
-          Tailscreen for Linux (arm64)
-          ============================
-
-          Run:  ./tailscreen            (picker mode)
-                ./tailscreen <host>     (dial a sharer directly)
-
-          Runtime dependencies (Ubuntu 24.04 arm64 package names):
-            libgtk-4-1 libepoxy0 libavcodec60 libavutil58 libasound2t64
-            libopus0 mesa/OpenGL drivers
-
-          Sign in happens in your browser on first run (tsnet interactive
-          login), or export TAILSCREEN_TS_AUTHKEY. See the repository's
-          Apps/linux-gtk/packaging/README.md for packaged install channels.
-          EOF
-          tar -C dist -czf tailscreen-linux-arm64.tar.gz tailscreen-linux-arm64
-          sha256sum tailscreen-linux-arm64.tar.gz
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: tailscreen-linux-arm64
-          path: tailscreen-linux-arm64.tar.gz
-          if-no-files-found: error
-          retention-days: 14
+    name: linux-app-arm64
+    uses: ./.github/workflows/app-linux.yml
+    with:
+      arch: arm64
+      package: tarball
+      artifact_name: tailscreen-linux-arm64
 
   lint:
     runs-on: macos-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install SwiftLint
         run: brew install swiftlint
       - name: Run SwiftLint (baseline-gated)
@@ -635,9 +660,10 @@ jobs:
     # config and the existing style, then we flip this to required.
     # TODO: drop `continue-on-error` once the check is observed to pass.
     runs-on: macos-latest
+    timeout-minutes: 10
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install swift-format
         run: brew install swift-format
       - name: Verify swift-format is available
@@ -660,39 +686,22 @@ jobs:
     # we deliberately tolerate failures here — making it required
     # without first fixing the false positives would block every PR.
     runs-on: macos-latest
+    timeout-minutes: 30
     continue-on-error: true
     # See the `build` job: put libopus (+ libtailscale) on PKG_CONFIG_PATH so
     # SwiftPM resolves them on arm64 runners. The Makefile appends this.
     env:
       PKG_CONFIG_PATH: ${{ github.workspace }}/Packages/TailscaleKit:/opt/homebrew/lib/pkgconfig
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
-      - uses: actions/setup-go@v5
+      - name: Bootstrap libtailscale
+        uses: ./.github/actions/bootstrap
         with:
-          # Version derived from the submodule's go.mod, not pinned here.
-          #
-          # That file says `go 1.25.5`, so a literal '1.21' provisioned a
-          # toolchain Go then immediately replaced itself: the arm64 probe's log
-          # showed `go: downloading go1.25.5 (windows/arm64)` mid-build, ~22s of
-          # it. The pin was simultaneously a fiction and a download — every job
-          # here paid for a toolchain it did not end up using.
-          #
-          # go.mod is now the single source of truth, so a submodule bump moves
-          # CI with it instead of silently re-triggering the same download.
-          go-version-file: Packages/TailscaleKit/upstream/libtailscale/go.mod
-          # Explicit rather than relying on the action's default, and
-          # paired with cache-dependency-path — without a path the
-          # action looks for go.sum in the working directory, finds
-          # none at the repo root, and caches nothing while appearing
-          # configured. Three workflows here were in exactly that state.
-          cache: true
-          cache-dependency-path: Packages/TailscaleKit/upstream/libtailscale/go.sum
+          libtailscale: host
       - name: Install libopus
         run: brew install opus
-      - name: Build libtailscale
-        run: make tailscale
       - name: Run tests under TSan
         run: make test-tsan
 

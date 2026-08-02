@@ -1,0 +1,315 @@
+name: Linux app
+
+# ONE definition of "build the GTK app in the swift:6.3-noble container, prove
+# it renders, and package it".
+#
+# build.yml's `linux-app-arm64` and release.yml's `linux-arm64` were
+# the same job twice: same runner (GitHub's free ubuntu-24.04-arm), same
+# multi-arch container, same apt set, same release build of product
+# `tailscreen`, the same Xvfb GL YUV-readback self-test, and the same
+# hand-written README.txt inside the tarball — duplicated down to its wording.
+#
+# What differs is the packaging tail and whether a cache may be used, and both
+# are inputs.
+#
+# NOT covered here: release.yml's x86_64 `linux-appimage` job, which runs on a
+# HOST runner with swift-actions/setup-swift and sudo apt rather than in this
+# container. Folding it in is a plausible follow-up — the arm64 leg proves the
+# AppImage assembles fine inside the container — but it is the job that builds
+# the artifact most users download, and moving its toolchain is not a change to
+# make without running it.
+
+on:
+  workflow_call:
+    inputs:
+      arch:
+        description: "'x64' or 'arm64'. Picks the runner and the AppImage tool flavour."
+        required: true
+        type: string
+      configuration:
+        required: false
+        type: string
+        default: release
+      ref:
+        required: false
+        type: string
+        default: ''
+      self_test:
+        description: >-
+          Run the headless GL YUV-readback render self-test against the built
+          binary. This is what makes a leg a real gate rather than a compile
+          check, so it defaults on.
+        required: false
+        type: boolean
+        default: true
+      package:
+        description: "'none', 'tarball', 'appimage', or 'tarball+appimage'."
+        required: false
+        type: string
+        default: none
+      version:
+        description: >-
+          Release version. Empty gives the per-push artifact name
+          (tailscreen-linux-<arch>.tar.gz); set gives the release naming.
+        required: false
+        type: string
+        default: ''
+      use_cache:
+        description: >-
+          Restore Apps/linux/.build and libtailscale.a. FALSE for release
+          builds — a shipped artifact is compiled cold on the runner that ships
+          it.
+        required: false
+        type: boolean
+        default: true
+      artifact_name:
+        required: false
+        type: string
+        default: ''
+    outputs:
+      tarball:
+        description: Tarball filename, when one was produced.
+        value: ${{ jobs.build.outputs.tarball }}
+      appimage:
+        description: AppImage filename, when one was produced.
+        value: ${{ jobs.build.outputs.appimage }}
+
+jobs:
+  build:
+    # GitHub's free arm64 runner for public repos, with the SAME swift:6.3-noble
+    # container as every other Linux job: the library/swift image is multi-arch
+    # (amd64 + arm64, verified on Docker Hub), so the apt package set and job
+    # shape stay identical across architectures and there is no
+    # swift.org-tarball toolchain install to maintain.
+    runs-on: ${{ inputs.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    timeout-minutes: 40
+    container: swift:6.3-noble
+
+    env:
+      APPIMAGE_ARCH: ${{ inputs.arch == 'arm64' && 'aarch64' || 'x86_64' }}
+      PACKAGE_ARCH: ${{ inputs.arch == 'arm64' && 'arm64' || 'x86_64' }}
+
+    outputs:
+      tarball: ${{ steps.pkg.outputs.tarball }}
+      appimage: ${{ steps.pkg.outputs.appimage }}
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+          submodules: recursive
+
+      - name: Install GTK4 + GL + headless display + A/V + Go
+        # swift-cross-ui's GtkBackend needs gtk4 (+ gobject-introspection for
+        # its bindings); CGtkVideo links epoxy + gtk-4; the render self-test runs
+        # under a virtual X server with Mesa software GL. The live path reuses
+        # Packages/TailscreenLinuxBackends's Core (FFmpeg/ALSA/Opus) + Tsnet (→ libtailscale, hence
+        # golang-go/make), though the render self-test itself needs no network.
+        # All multi-arch in noble.
+        run: |
+          apt-get update && apt-get install -y --no-install-recommends \
+            libgtk-4-dev gir1.2-gtk-4.0 libgirepository1.0-dev libepoxy-dev \
+            libgl1-mesa-dri xvfb libopus-dev pkg-config \
+            golang-go make gcc libc6-dev \
+            libavcodec-dev libavutil-dev libasound2-dev
+
+      - name: Install AppImage assembly tools
+        # librsvg so the AppImage script renders a real icon rather than its
+        # 1x1 placeholder; desktop-file-utils + file for linuxdeploy; curl to
+        # fetch the tools themselves. Both linuxdeploy and appimagetool publish
+        # aarch64 builds on their `continuous` releases — an earlier version of
+        # the arm64 job claimed otherwise and shipped only a tarball; the claim
+        # was checked and is false. The gtk plugin is an arch-neutral shell
+        # script.
+        if: contains(inputs.package, 'appimage')
+        run: |
+          apt-get install -y --no-install-recommends \
+            librsvg2-bin file desktop-file-utils curl ca-certificates
+          mkdir -p "$HOME/.local/bin"
+          base=https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous
+          curl -fsSL "$base/linuxdeploy-${APPIMAGE_ARCH}.AppImage" -o "$HOME/.local/bin/linuxdeploy"
+          curl -fsSL "https://github.com/linuxdeploy/linuxdeploy-plugin-gtk/raw/master/linuxdeploy-plugin-gtk.sh" \
+            -o "$HOME/.local/bin/linuxdeploy-plugin-gtk.sh"
+          curl -fsSL "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-${APPIMAGE_ARCH}.AppImage" \
+            -o "$HOME/.local/bin/appimagetool"
+          chmod +x "$HOME/.local/bin/linuxdeploy" "$HOME/.local/bin/linuxdeploy-plugin-gtk.sh" "$HOME/.local/bin/appimagetool"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Build libtailscale (patched)
+        # Go targets the host arch, so the same `host` target emits the right
+        # c-archive on either runner and runner.arch keeps the two in separate
+        # cache namespaces. apt's Go, like every sibling container job:
+        # setup-go's tool cache doesn't apply inside a container.
+        uses: ./.github/actions/bootstrap
+        with:
+          go: preinstalled
+          libtailscale: host
+          cache: ${{ inputs.use_cache }}
+
+      # Without this, this job compiles swift-cross-ui from scratch on every
+      # run — which is what made it one of the two jobs setting build.yml's
+      # whole wall clock. Shape copied from windows-build.yml's proven cache:
+      # split restore/save so a failed compile still banks its objects,
+      # `!cancelled()` plus a restore-ran guard because cache keys are
+      # immutable, and a restore-keys prefix so a pin bump costs an incremental
+      # rebuild rather than a cold one (safe here specifically because llbuild
+      # tracks inputs per target).
+      #
+      # runner.arch AND the configuration are in the key. Either alone would
+      # separate today's two callers; both are there because a shared key
+      # across architectures is a bug this repo has already shipped once.
+      - name: Restore the app's build directory
+        id: gtk-build-cache
+        if: inputs.use_cache
+        uses: actions/cache/restore@v6
+        with:
+          path: Apps/linux/.build
+          key: >-
+            linux-app-build-swift6.3-noble-${{ runner.os }}-${{ runner.arch
+            }}-${{ inputs.configuration }}-${{ hashFiles('Apps/linux/Package.resolved') }}
+          restore-keys: |
+            linux-app-build-swift6.3-noble-${{ runner.os }}-${{ runner.arch }}-${{ inputs.configuration }}-
+
+      - name: Build the app
+        # PKG_CONFIG_PATH resolves libtailscale.pc for the tsnet transport;
+        # building the executable PRODUCT specifically prunes SwiftPM to the
+        # Linux subgraph (DefaultBackend→GtkBackend) — a bare `swift build`
+        # would also try to compile swift-cross-ui's Windows-only WinUI backend.
+        run: |
+          PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" \
+            swift build -c ${{ inputs.configuration }} \
+            --package-path Apps/linux --product tailscreen
+
+      - name: Headless render self-test (Xvfb + software GL)
+        # Renders a 4-bar YUV frame through GtkVideoView, reads the pixels back,
+        # and exits 0 only if the BT.709 output is correct — a CI-gated proof
+        # the GL video path renders, on the exact binary this job ships. The
+        # live tsnet leg is local-only (L0b).
+        #
+        # Assert BOTH: the process exits 0 (bad pixels → exit 3, timeout → 124)
+        # AND the PASS marker was actually printed, so a "graceful" early exit
+        # (window closed / init failed) that never ran the check can't
+        # false-pass.
+        #
+        # POSIX-sh compatible: the container shell is `sh` (dash), which has no
+        # `set -o pipefail`, so we avoid the pipe entirely. Redirect to a file
+        # (preserves the process exit code — a pipe to `tee` would mask it) and
+        # capture the status via an `if` (so `set -e` doesn't abort first)
+        # before printing the log and running the two assertions.
+        if: inputs.self_test
+        run: |
+          if timeout 90 xvfb-run -a -s "-screen 0 800x600x24" \
+            env GDK_BACKEND=x11 LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe \
+            Apps/linux/.build/${{ inputs.configuration }}/tailscreen --render-self-test \
+            > /tmp/gtk-selftest.log 2>&1; then
+            status=0
+          else
+            status=$?
+          fi
+          cat /tmp/gtk-selftest.log
+          test "$status" -eq 0
+          grep -q 'CGTKVIDEO_SELFTEST result=PASS' /tmp/gtk-selftest.log
+
+      - name: Build the AppImage
+        # Same script as the x86_64 release job. The app + c-archive are
+        # already built above, so the script's own build steps are incremental
+        # no-ops; what runs here is the AppDir assembly + linuxdeploy. The
+        # container has no FUSE, hence APPIMAGE_EXTRACT_AND_RUN.
+        if: contains(inputs.package, 'appimage')
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: '1'
+          OUTPUT: Tailscreen-${{ inputs.version }}-${{ env.APPIMAGE_ARCH }}.AppImage
+        run: Apps/linux/packaging/appimage/build-appimage.sh
+
+      - name: Stage package + checksums
+        id: pkg
+        if: inputs.package != 'none'
+        # The launch notes are generated HERE, not copied from the repo, on
+        # purpose: build.yml's `paths-ignore: '**.md'` means an artifact that
+        # shipped a repo .md would be a path-filter hole — edits to it would
+        # skip the job and "a missing run reads as success". Keeping the
+        # artifact's inputs to the binary plus this workflow file keeps every
+        # input inside the trigger paths.
+        run: |
+          set -eu
+          if [ -n "${{ inputs.version }}" ]; then
+            FILE="Tailscreen-${{ inputs.version }}-linux-${PACKAGE_ARCH}.tar.gz"
+          else
+            FILE="tailscreen-linux-${PACKAGE_ARCH}.tar.gz"
+          fi
+          APPIMAGE="Tailscreen-${{ inputs.version }}-${APPIMAGE_ARCH}.AppImage"
+          STAGE="dist/tailscreen-linux-${PACKAGE_ARCH}"
+          mkdir -p "$STAGE"
+          cp "Apps/linux/.build/${{ inputs.configuration }}/tailscreen" "$STAGE/tailscreen"
+          cat > "$STAGE/README.txt" <<EOF
+          Tailscreen for Linux (${PACKAGE_ARCH})
+          ============================
+
+          Run:  ./tailscreen            (picker mode)
+                ./tailscreen <host>     (dial a sharer directly)
+
+          Runtime dependencies (Ubuntu 24.04 package names):
+            libgtk-4-1 libepoxy0 libavcodec60 libavutil58 libasound2t64
+            libopus0 mesa/OpenGL drivers
+
+          Sign in happens in your browser on first run (tsnet interactive
+          login), or export TAILSCREEN_TS_AUTHKEY. See the repository's
+          Apps/linux/packaging/README.md for packaged install channels.
+          EOF
+          tar -C dist -czf "$FILE" "tailscreen-linux-${PACKAGE_ARCH}"
+          echo "tarball=$FILE" >> "$GITHUB_OUTPUT"
+
+          if [ -f "$APPIMAGE" ]; then
+            sha256sum "$FILE" "$APPIMAGE" > "checksums-linux-${PACKAGE_ARCH}.txt"
+            echo "appimage=$APPIMAGE" >> "$GITHUB_OUTPUT"
+          else
+            sha256sum "$FILE" > "checksums-linux-${PACKAGE_ARCH}.txt"
+            echo "appimage=" >> "$GITHUB_OUTPUT"
+          fi
+          cat "checksums-linux-${PACKAGE_ARCH}.txt"
+
+      # Uploaded on EVERY trigger: for a per-push or PR build it is the
+      # deliverable, for a release build it is the hand-off to the caller's
+      # upload job — `gh` is not installed in swift:6.3-noble, so the release
+      # upload cannot happen here.
+      - name: Upload build artifact
+        if: inputs.package != 'none'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.artifact_name != '' && inputs.artifact_name || steps.pkg.outputs.tarball }}
+          path: |
+            ${{ steps.pkg.outputs.tarball }}
+            ${{ steps.pkg.outputs.appimage }}
+            checksums-linux-${{ env.PACKAGE_ARCH }}.txt
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Summary
+        if: inputs.package != 'none'
+        run: |
+          {
+            echo "## Linux package (${PACKAGE_ARCH})"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            while read -r sha file; do
+              echo "| \`$file\` | \`$sha\` |"
+            done < "checksums-linux-${PACKAGE_ARCH}.txt"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Last, so a failed self-test or a failed staging step still banks the
+      # compile. The product binary is excluded — relinked every build, and a
+      # smaller archive survives the repo's shared 10 GB cache budget longer.
+      - name: Save the app's build directory
+        if: >-
+          ${{ !cancelled() && inputs.use_cache
+          && steps.gtk-build-cache.outcome == 'success'
+          && steps.gtk-build-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            Apps/linux/.build
+            !Apps/linux/.build/**/${{ inputs.configuration }}/tailscreen
+          key: >-
+            linux-app-build-swift6.3-noble-${{ runner.os }}-${{ runner.arch
+            }}-${{ inputs.configuration }}-${{ hashFiles('Apps/linux/Package.resolved') }}

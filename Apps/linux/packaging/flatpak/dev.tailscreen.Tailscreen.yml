@@ -9,7 +9,7 @@
 # Build (from the repo root, once a Swift toolchain is available to the SDK):
 #   flatpak install flathub org.gnome.Platform//47 org.gnome.Sdk//47
 #   flatpak-builder --user --install --force-clean build-flatpak \
-#       Apps/linux-gtk/packaging/flatpak/dev.tailscreen.Tailscreen.yml
+#       Apps/linux/packaging/flatpak/dev.tailscreen.Tailscreen.yml
 #   flatpak run dev.tailscreen.Tailscreen
 #
 # Run: flatpak run dev.tailscreen.Tailscreen [<sharer-host>]
@@ -59,19 +59,19 @@ modules:
       # 2. Build the viewer executable product only, so SwiftPM prunes to the
       #    Linux subgraph (DefaultBackend -> GtkBackend) and never tries the
       #    Windows-only WinUI backend.
-      - swift build -c release --package-path Apps/linux-gtk --product tailscreen
+      - swift build -c release --package-path Apps/linux --product tailscreen
       # 3. Install the binary + desktop entry + AppStream metadata. The icon is
       #    a placeholder: a real PNG rendered from docs/assets/app-icon.svg is a
       #    follow-up (see README). If present it is installed; otherwise the
       #    install is skipped so the build does not fail on the missing asset.
-      - install -Dm755 Apps/linux-gtk/.build/release/tailscreen
+      - install -Dm755 Apps/linux/.build/release/tailscreen
         /app/bin/tailscreen
-      - install -Dm644 Apps/linux-gtk/packaging/flatpak/dev.tailscreen.Tailscreen.desktop
+      - install -Dm644 Apps/linux/packaging/flatpak/dev.tailscreen.Tailscreen.desktop
         /app/share/applications/dev.tailscreen.Tailscreen.desktop
-      - install -Dm644 Apps/linux-gtk/packaging/flatpak/dev.tailscreen.Tailscreen.metainfo.xml
+      - install -Dm644 Apps/linux/packaging/flatpak/dev.tailscreen.Tailscreen.metainfo.xml
         /app/share/metainfo/dev.tailscreen.Tailscreen.metainfo.xml
-      - if [ -f Apps/linux-gtk/packaging/icons/dev.tailscreen.Tailscreen.png ]; then
-        install -Dm644 Apps/linux-gtk/packaging/icons/dev.tailscreen.Tailscreen.png
+      - if [ -f Apps/linux/packaging/icons/dev.tailscreen.Tailscreen.png ]; then
+        install -Dm644 Apps/linux/packaging/icons/dev.tailscreen.Tailscreen.png
         /app/share/icons/hicolor/256x256/apps/dev.tailscreen.Tailscreen.png; fi
     sources:
       # The whole repo is the build context (submodules included). flatpak-builder

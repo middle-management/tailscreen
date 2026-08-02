@@ -1,0 +1,475 @@
+name: Bootstrap libtailscale
+description: >-
+  The prologue every Tailscreen build job repeats: materialize the TailscaleKit
+  symlinks (Windows), apply the patch series, set up Go, and produce
+  libtailscale.a for the target — restored from cache when the inputs have not
+  moved.
+
+# WHY THIS DOES NOT CHECK OUT THE REPO.
+#
+# A local action (`uses: ./.github/actions/bootstrap`) can only be resolved once
+# the repository is already on disk, so a composite action can never own the
+# checkout that makes it reachable. `git config core.symlinks` has the same
+# problem for the opposite reason — it must be set BEFORE the checkout writes
+# anything. Both therefore stay with the caller; the reusable workflows
+# (app-macos / app-windows / app-linux) are where they stop being repeated.
+#
+# Everything after the checkout is here, and it is the same everywhere by
+# construction: a fix to the patch loop, the Go pin, the cgo toolchain
+# selection or the Windows staging lands in one file.
+
+inputs:
+  symlinks:
+    description: >-
+      Run scripts/materialize-symlinks.sh. Windows checkouts deliver
+      TailscaleKit's Sources/ and include/ symlinks as text files containing
+      their target path, which SwiftPM rejects as an invalid custom path before
+      anything compiles. Belt and braces on top of core.symlinks, which only
+      helps if the account may create links at all.
+    required: false
+    default: 'false'
+  patches:
+    description: Apply Packages/TailscaleKit/Patches/*.patch to the submodule.
+    required: false
+    default: 'true'
+  go:
+    description: >-
+      'setup-go' installs Go via actions/setup-go from the submodule's go.mod;
+      'preinstalled' uses whatever is on PATH (the Linux containers take Go
+      from apt, where setup-go's tool cache does not apply); 'none' skips it.
+      Skipped entirely on a libtailscale cache hit — nothing downstream of this
+      action needs a Go toolchain, only the archive.
+    required: false
+    default: 'setup-go'
+  libtailscale:
+    description: >-
+      Which archive to produce. 'none' | 'host' (make c-archive for the runner's
+      own triple) | 'macos-universal' (arm64 + amd64, lipo-merged) |
+      'windows-amd64' | 'windows-arm64'. The two Windows targets also stage the
+      archive under both the Unix and MSVC names and export TAILSCALE_LIB.
+    required: false
+    default: 'none'
+  cache:
+    description: >-
+      Restore/save libtailscale.a. CI wants this; a release build wants it off,
+      so a shipped artifact is compiled from source on the runner that ships it.
+    required: false
+    default: 'true'
+  llvm-mingw-release:
+    description: >-
+      Pinned llvm-mingw release used for the windows-arm64 cgo toolchain. Dated,
+      not "latest", so a green run stays reproducible. Bump deliberately.
+    required: false
+    default: '20250910'
+
+outputs:
+  cache-hit:
+    description: 'true when libtailscale.a came from the cache rather than Go.'
+    value: ${{ steps.libtailscale-cache.outputs.cache-hit }}
+
+runs:
+  using: composite
+  steps:
+    # PATCHES BEFORE MATERIALIZE, and the order is load-bearing: the patches
+    # edit the submodule's Swift sources in place, and materialize COPIES that
+    # directory. Copy first and you get pristine upstream, whose `import
+    # Combine` is ungated and fails on Windows with `no such module 'Combine'`
+    # — a portability error for code that is already portable, just not yet
+    # patched.
+    #
+    # This is Packages/TailscaleKit/Makefile's apply-patches loop inlined,
+    # because `make` is not on the Windows image and is not in the slim
+    # swift:*-noble containers either. GNU `patch` is everywhere: Git for
+    # Windows ships it in usr/bin, already on PATH.
+    #
+    # -F0 forbids fuzz, so a hunk that no longer matches its context is a hard
+    # error rather than a silently mis-applied patch (that is how a stale hunk
+    # in patch 021 survived for months). The marker file is what the Makefile
+    # uses to know the loop already ran, so writing it here keeps a later
+    # `make -C Packages/TailscaleKit` from double-applying the whole series.
+    # Every build step below is gated on `inputs.libtailscale` matching one
+    # exact string, so an unrecognized value does not error — it matches
+    # nothing and quietly produces no archive. The staging step's looser
+    # `startsWith(…, 'windows-')` then fails on a missing file, hundreds of
+    # lines from the actual mistake, and a value wrong in some OTHER direction
+    # would not fail at all: the job would go green having built nothing.
+    #
+    # That is this repo's oldest CI failure mode wearing a new hat (see the
+    # `paths:` holes in windows-build.yml). `windows-x64` — Go calls it
+    # `amd64` — is exactly how it arrived. Reject unknown values here, where
+    # the list of known ones lives.
+    - name: Validate the requested target
+      shell: bash
+      # Through env rather than interpolated into the script body — the value
+      # is ours today, but a `${{ }}` inside `run:` is textual substitution and
+      # this is the one step every build job runs.
+      env:
+        TARGET: ${{ inputs.libtailscale }}
+      run: |
+        case "$TARGET" in
+          none|host|macos-universal|windows-amd64|windows-arm64) ;;
+          *)
+            echo "::error::bootstrap: unknown libtailscale target '$TARGET'." \
+                 "Expected one of: none, host, macos-universal, windows-amd64, windows-arm64." \
+                 "Note Go's arch vocabulary — 'amd64', not 'x64'."
+            exit 1
+            ;;
+        esac
+
+    - name: Apply the TailscaleKit patch series
+      if: inputs.patches == 'true'
+      shell: bash
+      working-directory: Packages/TailscaleKit
+      run: |
+        for p in Patches/*.patch; do
+          echo "applying $(basename "$p")"
+          patch -p1 -N -F0 -r - --no-backup-if-mismatch < "$p"
+        done
+        touch .patches-applied
+        grep -n 'canImport(Combine)' Sources/TailscaleKit/IncomingConnection.swift \
+          || { echo "patches did not take: Combine import still ungated" >&2; exit 1; }
+
+    # Belt and braces: core.symlinks only helps if the runner is also allowed
+    # to create them. This makes real copies of any that came through as text.
+    - name: Materialize symlinks
+      if: inputs.symlinks == 'true'
+      shell: bash
+      run: ./scripts/materialize-symlinks.sh --force
+
+    # The cache key's revision component. `git rev-parse` inside the submodule
+    # rather than a file hash: the pinned commit IS the input, and it moves
+    # exactly when the Go sources do.
+    #
+    # safe.directory first — the Linux container jobs run as root against a
+    # checkout owned by the runner uid, so git refuses with "dubious ownership".
+    # That is the same condition GOFLAGS=-buildvcs=false exists for below.
+    - name: Identify the pinned libtailscale revision
+      id: rev
+      if: inputs.libtailscale != 'none'
+      shell: bash
+      run: |
+        sub=Packages/TailscaleKit/upstream/libtailscale
+        git config --global --add safe.directory "$GITHUB_WORKSPACE" || true
+        git config --global --add safe.directory "$GITHUB_WORKSPACE/$sub" || true
+        sha=$(git -C "$sub" rev-parse HEAD)
+        echo "sha=$sha" >> "$GITHUB_OUTPUT"
+        echo "libtailscale pinned at $sha"
+
+    # The single biggest cross-job win in this repo's CI: the Go c-archive is
+    # ~45-100 s and was built once per job, upward of a dozen times per push,
+    # from inputs that change only when the submodule or the patch series does.
+    #
+    # Everything that can change the bytes is in the key: the runner OS and
+    # architecture, the requested target (host / universal / a Windows arch),
+    # the Go provisioning mode (apt's Go in the containers is not setup-go's),
+    # the pinned submodule revision, and the patch series — several of which
+    # ADD .go files, so a patch edit really is a source change.
+    #
+    # No restore-keys, deliberately. A prefix fallback would hand a job an
+    # archive built from DIFFERENT sources, and unlike a SwiftPM .build there is
+    # no per-target dependency tracking to notice — the link would simply
+    # succeed against the wrong code. A miss here costs one Go build.
+    - name: Restore libtailscale.a
+      id: libtailscale-cache
+      if: inputs.libtailscale != 'none' && inputs.cache == 'true'
+      uses: actions/cache/restore@v6
+      with:
+        path: |
+          Packages/TailscaleKit/upstream/libtailscale/libtailscale.a
+          Packages/TailscaleKit/upstream/libtailscale/libtailscale.h
+        key: libtailscale-${{ runner.os }}-${{ runner.arch }}-${{ inputs.libtailscale }}-${{ inputs.go }}-${{ steps.rev.outputs.sha }}-${{ hashFiles('Packages/TailscaleKit/Patches/*') }}
+
+    # tar preserves mtimes, so a restored archive is OLDER than the
+    # .patches-applied marker written moments ago — and
+    # Packages/TailscaleKit/Makefile's rule is `$(UPSTREAM_LIB): $(PATCH_MARKER)`.
+    # Without this touch, every `make tailscale` downstream would decide the
+    # archive is stale and rebuild exactly what the cache just saved.
+    - name: Refresh the restored archive's timestamps
+      if: steps.libtailscale-cache.outputs.cache-hit == 'true'
+      shell: bash
+      run: |
+        touch Packages/TailscaleKit/.patches-applied
+        touch Packages/TailscaleKit/upstream/libtailscale/libtailscale.a \
+              Packages/TailscaleKit/upstream/libtailscale/libtailscale.h
+        ls -la Packages/TailscaleKit/upstream/libtailscale/libtailscale.a
+
+    # THE fix for cgo's -mthreads failure on windows/arm64, and a return to
+    # parity rather than a novelty.
+    #
+    # Go's cgo assumes a MinGW-flavoured driver on Windows and passes MinGW
+    # flags unconditionally. The x64 runner satisfies that with its image's
+    # MinGW gcc, and lld-link has always joined that MinGW-ABI c-archive to
+    # MSVC-ABI Swift code — that arrangement is what ships today. The arm64
+    # runner has no aarch64 MinGW, so the job substituted Swift's
+    # MSVC-targeting clang, which is the wrong tool and only seemed to work on
+    # Swift 6.1.3 because that clang tolerated the flag.
+    #
+    # llvm-mingw's toolchains are multi-target, so either host archive can emit
+    # aarch64 objects; the aarch64 archive is tried first (native) with x86_64
+    # as a fallback, since Windows on ARM runs x64 binaries emulated. The step
+    # reports which archive it used and that compiler's -dumpmachine, because a
+    # silently wrong host/target pairing is the failure mode that cost this job
+    # two rounds.
+    - name: Install llvm-mingw (for cgo's aarch64 target)
+      if: inputs.libtailscale == 'windows-arm64' && steps.libtailscale-cache.outputs.cache-hit != 'true'
+      shell: pwsh
+      env:
+        LLVM_MINGW_RELEASE: ${{ inputs.llvm-mingw-release }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $rel = $env:LLVM_MINGW_RELEASE
+        $dest = Join-Path $env:RUNNER_TEMP 'llvm-mingw'
+        New-Item -ItemType Directory -Path $dest -Force | Out-Null
+
+        $ok = $false
+        foreach ($hostArch in @('aarch64', 'x86_64')) {
+          $name = "llvm-mingw-$rel-ucrt-$hostArch"
+          $url  = "https://github.com/mstorsjo/llvm-mingw/releases/download/$rel/$name.zip"
+          $zip  = Join-Path $env:RUNNER_TEMP "$name.zip"
+          Write-Host "trying $name"
+          try {
+            Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+          } catch {
+            Write-Host "  download failed: $($_.Exception.Message)"
+            continue
+          }
+          Expand-Archive -Path $zip -DestinationPath $dest -Force
+          $bin = Join-Path $dest "$name\bin"
+          if (-not (Test-Path $bin)) { Write-Host '  no bin/ in the archive'; continue }
+
+          # Does its aarch64 driver actually EXECUTE on this host? A mismatched
+          # archive fails here rather than 90 seconds deep inside runtime/cgo.
+          $cc = Join-Path $bin 'aarch64-w64-mingw32-gcc.exe'
+          if (-not (Test-Path $cc)) { Write-Host '  no aarch64-w64-mingw32-gcc.exe'; continue }
+          $machine = & $cc -dumpmachine 2>$null
+          if ($LASTEXITCODE -ne 0 -or -not $machine) {
+            Write-Host '  driver present but will not run on this host'
+            continue
+          }
+          Write-Host "  OK: $cc"
+          Write-Host "  -dumpmachine: $machine"
+          "$bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          $ok = $true
+          break
+        }
+        if (-not $ok) { throw 'could not install an aarch64-targeting MinGW toolchain' }
+
+    # Which C compilers exist here, and what does each target BY DEFAULT?
+    #
+    # This is a step whose output is the point. cgo's compiler choice is
+    # implicit (`gcc` on PATH unless CC says otherwise) and its failure mode is
+    # an assembler error deep in runtime/cgo that names an instruction rather
+    # than a compiler — `no such instruction: stp x29,x30` is an x86 assembler
+    # reading ARM64 assembly, not a bad file. The inventory is what makes the
+    # next failure, if there is one, readable in one pass instead of three.
+    #
+    # It runs AFTER llvm-mingw on purpose: it prefers any compiler whose
+    # -dumpmachine reports aarch64, so it picks that install up with no change.
+    - name: Inventory C compilers
+      if: inputs.libtailscale == 'windows-arm64' && steps.libtailscale-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        pick=""
+        for cc in clang aarch64-w64-mingw32-gcc gcc cc; do
+          path=$(command -v "$cc" 2>/dev/null) || continue
+          echo "--- $cc -> $path"
+          "$cc" --version 2>&1 | head -2 || true
+          machine=$("$cc" -dumpmachine 2>/dev/null || echo '?')
+          echo "    -dumpmachine: $machine"
+          case "$machine" in
+            aarch64*|arm64*)
+              if [ -z "$pick" ]; then pick="$cc"; native=1; fi ;;
+          esac
+        done
+
+        # No compiler defaults to ARM64: fall back to clang with an explicit
+        # target. clang's integrated assembler understands the GNU ARM64 syntax
+        # gcc_arm64.S is written in, which is the specific capability missing.
+        if [ -z "$pick" ] && command -v clang >/dev/null 2>&1; then
+          pick=clang
+          native=0
+        fi
+        if [ -z "$pick" ]; then
+          echo "no usable C compiler found — cgo cannot build for arm64" >&2
+          exit 1
+        fi
+
+        echo "CGO_CC=$pick" >> "$GITHUB_ENV"
+        if [ "${native:-0}" = "1" ]; then
+          echo "chose $pick (natively targets arm64, no --target needed)"
+          echo "CGO_TARGET_FLAGS=" >> "$GITHUB_ENV"
+        else
+          echo "chose $pick with an explicit aarch64 target"
+          echo "CGO_TARGET_FLAGS=--target=aarch64-unknown-windows-msvc" >> "$GITHUB_ENV"
+        fi
+
+    # Skipped on a cache hit: nothing downstream of this action wants a Go
+    # toolchain, only the archive it produces.
+    - name: Setup Go
+      if: inputs.go == 'setup-go' && (inputs.libtailscale == 'none' || steps.libtailscale-cache.outputs.cache-hit != 'true')
+      uses: actions/setup-go@v7
+      with:
+        # Version derived from the submodule's go.mod, not pinned here.
+        #
+        # That file says `go 1.25.5`, so a literal '1.21' provisioned a
+        # toolchain Go then immediately replaced itself: the arm64 probe's log
+        # showed `go: downloading go1.25.5 (windows/arm64)` mid-build, ~22s of
+        # it. The pin was simultaneously a fiction and a download — every job
+        # here paid for a toolchain it did not end up using.
+        #
+        # go.mod is now the single source of truth, so a submodule bump moves
+        # CI with it instead of silently re-triggering the same download.
+        go-version-file: Packages/TailscaleKit/upstream/libtailscale/go.mod
+        # Explicit rather than relying on the action's default, and paired with
+        # cache-dependency-path — without a path the action looks for go.sum in
+        # the working directory, finds none at the repo root, and caches nothing
+        # while appearing configured. Three workflows here were in that state.
+        cache: true
+        cache-dependency-path: Packages/TailscaleKit/upstream/libtailscale/go.sum
+
+    # Through `make`, not a bare `go build`, and that is load-bearing on macOS:
+    # upstream's Makefile adds -mmacos-version-min=15.0 to CGO_CFLAGS/LDFLAGS
+    # for darwin. A bare `go build` here would silently produce an archive with
+    # the wrong deployment target.
+    #
+    # GOFLAGS: the container jobs run as root while the checkout is owned by the
+    # runner uid, so git inside the submodule reports "dubious ownership" and
+    # Go's VCS stamping dies with exit 128. The stamp is worthless for a
+    # c-archive — skip it. Harmless everywhere else.
+    - name: Build libtailscale.a
+      if: inputs.libtailscale == 'host' && steps.libtailscale-cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        GOFLAGS: -buildvcs=false
+      run: make -C Packages/TailscaleKit
+
+    - name: Build universal libtailscale.a
+      if: inputs.libtailscale == 'macos-universal' && steps.libtailscale-cache.outputs.cache-hit != 'true'
+      shell: bash
+      working-directory: Packages/TailscaleKit/upstream/libtailscale
+      run: |
+        set -euxo pipefail
+
+        rm -f libtailscale.a libtailscale.h
+
+        GOARCH=arm64 \
+          CGO_CFLAGS="-arch arm64" \
+          CGO_LDFLAGS="-arch arm64" \
+          make c-archive
+        cp libtailscale.a /tmp/libtailscale-arm64.a
+        rm -f libtailscale.a
+
+        GOARCH=amd64 \
+          CGO_CFLAGS="-arch x86_64" \
+          CGO_LDFLAGS="-arch x86_64" \
+          make c-archive
+        cp libtailscale.a /tmp/libtailscale-amd64.a
+
+        lipo -create \
+          /tmp/libtailscale-arm64.a \
+          /tmp/libtailscale-amd64.a \
+          -output libtailscale.a
+
+        lipo -info libtailscale.a
+
+    # Not `make tailscale`: make isn't on the Windows image, and the Makefile
+    # target does Unix-only path handling around the same two commands. The
+    # patch series above supplies bridge_windows.go (patch 024), without which
+    # this does not compile at all — it is what replaces the socketpair +
+    # SCM_RIGHTS handoff that has no Windows equivalent.
+    - name: Build libtailscale.a for windows/amd64
+      if: inputs.libtailscale == 'windows-amd64' && steps.libtailscale-cache.outputs.cache-hit != 'true'
+      shell: bash
+      working-directory: Packages/TailscaleKit/upstream/libtailscale
+      env:
+        CGO_ENABLED: '1'
+      run: |
+        go build -buildmode=c-archive -o libtailscale.a .
+        ls -la libtailscale.a libtailscale.h
+
+    # GOARCH is explicit rather than inherited from the host, so this step says
+    # what it builds even if it ever runs somewhere else. CC is explicit for the
+    # reason the inventory step above documents: left implicit, cgo reaches for
+    # an x86_64 gcc and fails inside runtime/cgo.
+    - name: Build libtailscale.a for windows/arm64
+      if: inputs.libtailscale == 'windows-arm64' && steps.libtailscale-cache.outputs.cache-hit != 'true'
+      shell: bash
+      working-directory: Packages/TailscaleKit/upstream/libtailscale
+      env:
+        CGO_ENABLED: '1'
+        GOOS: windows
+        GOARCH: arm64
+      run: |
+        export CC="$CGO_CC"
+        export CGO_CFLAGS="$CGO_TARGET_FLAGS"
+        export CGO_LDFLAGS="$CGO_TARGET_FLAGS"
+        echo "CC=$CC  CGO_CFLAGS=$CGO_CFLAGS"
+        go env CC CGO_ENABLED GOOS GOARCH
+        go build -buildmode=c-archive -o libtailscale.a .
+        ls -la libtailscale.a libtailscale.h
+
+    # `if: !cancelled()` and the restore-ran guard are both about cache keys
+    # being IMMUTABLE. A run cancelled at 20 % (cancel-in-progress fires on
+    # every rapid push) would otherwise claim the key with nothing behind it,
+    # and no later run could replace it. One poisoned key is worse than one
+    # cold build. Saving after a FAILED job is still right — the archive either
+    # exists and is correct, or the step above failed and there is nothing to
+    # save.
+    - name: Save libtailscale.a
+      if: >-
+        !cancelled() && inputs.libtailscale != 'none' && inputs.cache == 'true'
+        && steps.libtailscale-cache.outcome == 'success'
+        && steps.libtailscale-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v6
+      with:
+        path: |
+          Packages/TailscaleKit/upstream/libtailscale/libtailscale.a
+          Packages/TailscaleKit/upstream/libtailscale/libtailscale.h
+        key: libtailscale-${{ runner.os }}-${{ runner.arch }}-${{ inputs.libtailscale }}-${{ inputs.go }}-${{ steps.rev.outputs.sha }}-${{ hashFiles('Packages/TailscaleKit/Patches/*') }}
+
+    # MSVC wants tailscale.lib — Modules/libtailscale/module.modulemap says
+    # `link "tailscale"`, so the Swift driver emits -ltailscale and on Windows
+    # that resolves to `tailscale.lib`, not the Unix `libtailscale.a` the
+    # Makefile produces and every other platform expects. Without this the build
+    # compiles cleanly and dies at the very last step with
+    #
+    #   lld-link: error: could not open 'tailscale.lib'
+    #
+    # Same bytes under both names rather than a rename, so nothing that looks
+    # for the Unix artifact (the Makefile, the Linux jobs, the symlink's own
+    # target path) stops finding it.
+    #
+    # rm FIRST: `lib/libtailscale.a` is a SYMLINK whose target is exactly the
+    # source archive, which materialize-symlinks.sh deliberately left alone
+    # earlier (its target did not exist yet). Copying onto it therefore resolves
+    # to copying the file over itself, and `cp` refuses.
+    - name: Stage libtailscale for the linker
+      if: startsWith(inputs.libtailscale, 'windows-')
+      shell: bash
+      run: |
+        lib=Packages/TailscaleKit/lib
+        src=Packages/TailscaleKit/upstream/libtailscale/libtailscale.a
+        mkdir -p "$lib"
+        rm -f "$lib/libtailscale.a" "$lib/tailscale.lib"
+        cp "$src" "$lib/libtailscale.a"
+        cp "$src" "$lib/tailscale.lib"
+        ls -la "$lib"
+        # The module map reads include/tailscale.h — the hand-written API
+        # header, not cgo's generated libtailscale.h. Materialization already
+        # made it a real file; assert that rather than assume it.
+        test -f Packages/TailscaleKit/include/tailscale.h
+
+        # A native path for the linker's /LIBPATH:, which does not understand
+        # the MSYS `/d/a/...` form bash reports.
+        #
+        # Computed in plain steps rather than as one clever substitution: the
+        # first version was `cd X && pwd -W 2>/dev/null || cd X && pwd`, and
+        # `A && B || C && D` parses as `((A && B) || C) && D` — so BOTH pwds ran
+        # and wrote two lines into GITHUB_ENV, the second of which is not
+        # KEY=VALUE. GitHub rejected the whole file command.
+        lib_dir="$PWD/$lib"
+        if native=$(cygpath -w "$lib_dir" 2>/dev/null) && [ -n "$native" ]; then
+          lib_dir="$native"
+        fi
+        echo "staged libtailscale at: $lib_dir"
+        echo "TAILSCALE_LIB=$lib_dir" >> "$GITHUB_ENV"

@@ -166,7 +166,7 @@ Two caveats, both to be measured rather than assumed:
   `WinUIBackend` / `CWinAppSDK` target.
 - **FFmpeg** libav* via vcpkg or prebuilt shared libs; **libopus** likewise.
 - **libtailscale** per the blocker above — a patch series, not a build flag.
-- A new SwiftPM package `Apps/windows`, sibling to `Apps/linux-gtk`, reusing
+- A new SwiftPM package `Apps/windows`, sibling to `Apps/linux`, reusing
   `TailscreenViewerCore` / `TailscreenViewerTsnet` and TailscreenKit's portable
   tiers. `FrameStore` already moved into `TailscreenViewer`; `ViewerUIState`,
   `ViewerControls` and `PickerModel` should follow into a backend-neutral target
@@ -207,7 +207,7 @@ into W1/W1b and the UI landed before the transport.
 - **W5 — audio.** ✅ WASAPI shared-mode rendering behind the portable
   `AudioSink` seam (`Packages/WASAPIKit`), the counterpart to ALSAKit on Linux,
   fronted by `ThreadedAudioSink` so the blocking device write stays off the
-  WinUI main thread. `ThreadedAudioSink` moved from `Apps/linux` into the
+  WinUI main thread. `ThreadedAudioSink` moved from `Packages/TailscreenLinuxBackends` into the
   portable tier — it was always thread + queue over `AudioSink` — and the
   48 kHz mono → device-format adaptation is `MonoPCMConverter`, also portable
   and tested. *No sound has been heard.*
@@ -243,7 +243,7 @@ Two things must happen first:
 1. *Gate it.* `windows-build.yml`'s `ffmpeg` job fetches a pinned LGPL shared
    FFmpeg 7.1 and runs FFmpegKit's suite on Windows. If libavcodec cannot link
    here, the decision above is void and W4 becomes Media Foundation.
-2. *Extract it.* The decoder currently sits in `Apps/linux`'s
+2. *Extract it.* The decoder currently sits in `Packages/TailscreenLinuxBackends`'s
    `TailscreenViewerCore` beside the ALSA sink, so consuming it drags in
    ALSAKit and X11CaptureKit as package dependencies — the same coupling that
    kept the transport unusable on Windows until W3 moved it. It needs its own
@@ -483,7 +483,9 @@ all — `scripts/` was covered only by the single literal
 looked fine and the fix sat unverified; it was found only by going to read a run
 that did not exist.
 
-The trigger now includes `packaging/windows/**` and `scripts/windows/**`, but the
+The trigger now includes the MSIX manifest/assets (since moved under
+`Apps/windows/packaging/`, so `Apps/windows/**` covers them) and
+`scripts/windows/**`, but the
 more useful correction is to the *rule*. It was written as "if a package is in
 the app's dependency graph, it belongs in both the trigger and the cache key",
 and that phrasing is precisely what let the hole recur: these are not packages

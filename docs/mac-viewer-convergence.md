@@ -144,7 +144,7 @@ mac `build`/`test` CI job, not the Linux loop.
 
 ## Migration order
 
-- **Phase A** — the seam refinements above, in the package; update `Apps/linux`
+- **Phase A** — the seam refinements above, in the package; update `Packages/TailscreenLinuxBackends`
   wiring + tests; Linux CI stays green. No mac change. Self-contained.
 - **Phase B** — write + unit-test the mac adapters (no client rewiring yet).
 - **Phase C** — add a `ViewerSession`-backed receive path in

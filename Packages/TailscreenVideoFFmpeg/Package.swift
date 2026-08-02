@@ -6,7 +6,7 @@ import PackageDescription
 // A package of its own rather than a target in either neighbour, for reasons
 // that are the whole point of it existing:
 //
-//   • Not in Apps/linux. It lived there, next to the ALSA sink, which meant a
+//   • Not in Packages/TailscreenLinuxBackends. It lived there, next to the ALSA sink, which meant a
 //     consumer wanting only the decoder inherited ALSAKit and X11CaptureKit as
 //     package dependencies. That is exactly what kept the tsnet transport
 //     unusable on Windows until W3 moved it, and the decoder had the same

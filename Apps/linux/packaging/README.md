@@ -1,6 +1,6 @@
 # Packaging the Tailscreen Linux app
 
-Installable-package recipes for the native Linux desktop app (`Apps/linux-gtk`,
+Installable-package recipes for the native Linux desktop app (`Apps/linux`,
 the swift-cross-ui / GTK4 app whose executable product is
 `tailscreen`). Three paths:
 
@@ -18,16 +18,14 @@ the swift-cross-ui / GTK4 app whose executable product is
 All target the same app: id `dev.tailscreen.Tailscreen`, name **Tailscreen**,
 command `tailscreen`.
 
-**Only the GTK app is packaged.** `Apps/linux` also builds
+**Only the GTK app is packaged.** `Packages/TailscreenLinuxBackends` also builds
 `tailscreen-sharer-linux`, `tailscreen-viewer-probe` and `TailscreenTestSharer`
 — development and test tools, not products — and they are deliberately absent
 from every artifact here.
 
 The executable is plain `tailscreen` — the app is a full sharer *and* viewer,
-same as the macOS and Windows apps, so the old `tailscreen-viewer-gtk` name
-undersold it. The rename kept a one-time migration: an existing
-`~/.config/tailscreen-viewer-gtk` directory (profiles + node state) is moved to
-`~/.config/tailscreen` on first launch.
+same as the macOS and Windows apps. Config (profiles + node state) lives in
+`$XDG_CONFIG_HOME/tailscreen`, falling back to `~/.config/tailscreen`.
 
 ## Honest status
 
@@ -44,7 +42,7 @@ structurally correct and self-documenting — a starting point, not a turnkey
 pipeline.
 
 Separately, the app itself builds and passes its headless GL render self-test in
-the `linux-gtk-viewer` CI job (see `.github/workflows/build.yml`), which is the
+the `linux-app` CI job (see `.github/workflows/build.yml`), which is the
 same `swift build` the packaging wrappers drive.
 
 Packaging deliberately **does not gate merges** — it can't run in the normal CI
@@ -57,7 +55,7 @@ tag rather than at one.
 
 ## Prerequisites (both paths)
 
-The viewer's own build dependencies (see the `linux-gtk-viewer` CI job):
+The viewer's own build dependencies (see the `linux-app` CI job):
 
 ```
 libgtk-4-dev gir1.2-gtk-4.0 libgirepository1.0-dev libepoxy-dev libglib2.0-dev \
@@ -93,7 +91,7 @@ Run (from the repo root, once Swift is available to the SDK):
 flatpak install flathub org.gnome.Platform//47 org.gnome.Sdk//47 \
   org.freedesktop.Sdk.Extension.golang//24.08
 flatpak-builder --user --install --force-clean build-flatpak \
-  Apps/linux-gtk/packaging/flatpak/dev.tailscreen.Tailscreen.yml
+  Apps/linux/packaging/flatpak/dev.tailscreen.Tailscreen.yml
 flatpak run dev.tailscreen.Tailscreen            # picker mode
 flatpak run dev.tailscreen.Tailscreen my-sharer  # dial a host directly
 ```
@@ -114,7 +112,7 @@ bundle shared libraries and emit the AppImage via
 **not** bundled — install them yourself (see the script header).
 
 ```bash
-Apps/linux-gtk/packaging/appimage/build-appimage.sh
+Apps/linux/packaging/appimage/build-appimage.sh
 # → Tailscreen-x86_64.AppImage in the repo root
 # Override the output path: OUTPUT=/tmp/tv.AppImage Apps/.../build-appimage.sh
 ```
@@ -134,14 +132,14 @@ documented follow-up:
   at build time if `rsvg-convert` (librsvg) is installed; otherwise it writes a
   1×1 placeholder so the build still completes.
 - The **Flatpak** manifest installs
-  `Apps/linux-gtk/packaging/icons/dev.tailscreen.Tailscreen.png` **if present** and
+  `Apps/linux/packaging/icons/dev.tailscreen.Tailscreen.png` **if present** and
   skips it otherwise.
 
 To finish this properly, add a real
-`Apps/linux-gtk/packaging/icons/dev.tailscreen.Tailscreen.png` (256×256, ideally plus
+`Apps/linux/packaging/icons/dev.tailscreen.Tailscreen.png` (256×256, ideally plus
 128/64 sizes) generated from `docs/assets/app-icon.svg`, e.g.:
 
 ```bash
 rsvg-convert -w 256 -h 256 docs/assets/app-icon.svg \
-  -o Apps/linux-gtk/packaging/icons/dev.tailscreen.Tailscreen.png
+  -o Apps/linux/packaging/icons/dev.tailscreen.Tailscreen.png
 ```

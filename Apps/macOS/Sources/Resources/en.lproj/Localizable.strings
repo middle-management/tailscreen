@@ -218,6 +218,8 @@
 "Speaker" = "Speaker";
 "About" = "About";
 "Version" = "Version";
+"Build" = "Build";
+"%@ · %@ · fps cap %lld · codec %@" = "%@ · %@ · fps cap %lld · codec %@";
 "Project on GitHub" = "Project on GitHub";
 
 /* MARK: - Window titles (AppState.swift) */

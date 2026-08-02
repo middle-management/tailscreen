@@ -49,6 +49,9 @@ The honest differences:
 - **Permissions:** Screen Recording and Accessibility prompts are macOS
   concepts. Linux and Windows have no equivalent gate.
 
+The full feature-by-feature comparison lives in
+[Platform support]({% link platform-support.md %}).
+
 ## Sharing your screen
 
 1. Click the 📺 in the menubar, or open the Tailscreen window.

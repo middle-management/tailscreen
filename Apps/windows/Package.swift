@@ -5,8 +5,8 @@ import PackageDescription
 // plain `tailscreen.exe`; the package keeps a platform-qualified name because
 // package names are build-graph identity, not what users run.
 //
-// A SEPARATE package from Apps/linux-gtk for the same reason that one is
-// separate from Apps/linux: it pulls a UI toolchain (the Windows App SDK, via
+// A SEPARATE package from Apps/linux for the same reason that one is
+// separate from Packages/TailscreenLinuxBackends: it pulls a UI toolchain (the Windows App SDK, via
 // swift-cross-ui's WinUIBackend) that no other job should pay for. The GTK app
 // additionally carries `CGtkVideo`, a GTK-linked C target that cannot build
 // here at all.

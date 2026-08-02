@@ -44,7 +44,7 @@ Root-window capture of one X display. Deliberately **not** covered:
 
 The conversion emits **limited-range BT.709** — luma 16–235, chroma 128±112 —
 because that is exactly what the viewer's YUV→RGB fragment shader
-(`Apps/linux-gtk/Sources/CGtkVideo/cgtkvideo.c`) assumes.
+(`Apps/linux/Sources/CGtkVideo/cgtkvideo.c`) assumes.
 
 This is worth stating loudly: getting the range or matrix wrong doesn't fail,
 it just makes every frame washed out or crushed, which is easy to ship and

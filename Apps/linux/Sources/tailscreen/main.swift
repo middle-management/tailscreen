@@ -19,7 +19,7 @@ import TailscreenViewerTsnet
 // tailnet, and shows a native list to choose from (L4).
 //
 // The window shows decoded video via the downstream GtkVideoView. The tsnet
-// transport (reused from Apps/linux) runs on the main actor as a Task that
+// transport (reused from Packages/TailscreenLinuxBackends) runs on the main actor as a Task that
 // swift-cross-ui's RunLoop tick services, feeding frames into the shared
 // FrameStore; `present` (main thread) requests a GLArea repaint. The live tsnet
 // leg is local-only. `--render-self-test` is the headless CI render gate (no
@@ -68,14 +68,6 @@ func parseConfig() -> (config: ViewerConfig, host: String?, wantAudio: Bool, exp
     var wantAudio = true
     var explicitStateDir = false
     var statePath = FileManager.default.currentDirectoryPath + "/.tailscreen-state"
-    // The executable used to be `tailscreen-viewer-gtk` and kept its one-shot
-    // state beside the CWD under the old name; adopt it so the rename doesn't
-    // force a re-login.
-    let legacyStatePath = FileManager.default.currentDirectoryPath + "/.tailscreen-viewer-gtk-state"
-    if !FileManager.default.fileExists(atPath: statePath),
-        FileManager.default.fileExists(atPath: legacyStatePath) {
-        try? FileManager.default.moveItem(atPath: legacyStatePath, toPath: statePath)
-    }
     let env = ProcessInfo.processInfo.environment
     var controlURL = env["TAILSCREEN_TS_CONTROL_URL"]
     let authKey = env["TAILSCREEN_TS_AUTHKEY"]
@@ -292,6 +284,11 @@ if gSelfTest {
                     // says is down buys nothing but a timeout.
                     gPicker.sharers = peers
                     let online = peers.filter { $0.isOnline }
+                    // Label the header with the tailnet these rows belong to
+                    // (falling back to the login) — set before `.picking`, so
+                    // the placard never flashes the old guidance text.
+                    gPicker.tailnetName = transport.tailnetName
+                    gPicker.accountIdentity = transport.accountIdentity
                     gPicker.phase = .picking
                     // Lazy per-sharer metadata sweep (the sharing chip + res).
                     await withTaskGroup(of: (String, TailscreenMetadata?).self) { group in
@@ -537,9 +534,22 @@ struct ViewerApp: App {
             // these exactly like the Windows app's control requests, because
             // they are the same interaction and this window is the only place
             // either can be answered.
-            prompts: sharer.pendingIPs.map {
-                HubPrompt(id: $0, message: "\($0) wants to watch")
+            prompts: sharer.pendingViewers.map {
+                // `id` is the server's `"ip:port"` key, which is what
+                // approve/deny take; the label is only what the row says.
+                HubPrompt(
+                    id: $0.id, message: "\($0.label) wants to watch",
+                    acceptLabel: "Accept", declineLabel: "Deny")
             },
+            settings: [
+                HubToggle(
+                    label: "Require approval for new viewers",
+                    caption: sharer.requireApproval
+                        ? nil
+                        : "Anyone on your tailnet who can reach this machine can watch.",
+                    isOn: sharer.requireApproval,
+                    set: { gSharer.setRequireApproval($0) })
+            ],
             onStart: { gSharer.startSharing() },
             onStop: { gSharer.stopSharing() },
             onAccept: { gSharer.approve($0) },

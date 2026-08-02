@@ -181,9 +181,11 @@ audio I/O and input injection.
 | :--- | :---: | :---: | :---: |
 | Architectures | universal (arm64 + x86_64) | x86_64, aarch64 | x64, arm64 |
 | Signed by a trusted authority | ✅ notarized | — | ❌ self-signed MSIX |
-| Package manager | Homebrew cask | Homebrew cask (AppImage) | ❌ winget pending |
+| Package manager | Homebrew cask | ❌ (casks are macOS-only; Flatpak unpublished) | ❌ winget pending |
 | Formats | `.app` zip | AppImage, tarball | zip, MSIX |
 
 Windows signing is blocked on registering with SignPath's free OSS tier; until
-then the MSIX installs only after its certificate is trusted, and the zip is the
-easier path.
+then the MSIX installs only after its certificate is trusted — each release
+ships the cert's public `.cer` beside it, and
+[Install]({% link install.md %}#installing-the-msix-trusting-the-certificate)
+documents the one-time trust — while the zip needs no trust step at all.

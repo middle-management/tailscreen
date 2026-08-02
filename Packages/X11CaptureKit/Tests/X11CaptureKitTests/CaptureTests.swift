@@ -18,7 +18,7 @@ final class CaptureTests: XCTestCase {
 
     // MARK: - Colour conversion (no X server needed)
 
-    /// The inverse of `Apps/linux-gtk/Sources/CGtkVideo/cgtkvideo.c`'s fragment
+    /// The inverse of `Apps/linux/Sources/CGtkVideo/cgtkvideo.c`'s fragment
     /// shader, transcribed. If this and the shader ever disagree, the picture
     /// is wrong on the wire in a way no other test would catch.
     private func shaderRGB(y: UInt8, u: UInt8, v: UInt8) -> (r: Double, g: Double, b: Double) {

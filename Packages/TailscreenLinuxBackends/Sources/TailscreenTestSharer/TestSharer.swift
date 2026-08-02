@@ -20,7 +20,7 @@ import TailscreenProtocol
 // FFmpeg decoder and GL renderer do genuine work. It is a development/test tool,
 // NOT a product sharer: it captures nothing, and every viewer is admitted.
 //
-// Pair with scripts/e2e-up-native.sh; see Apps/linux/README.md.
+// Pair with scripts/e2e-up-native.sh; see Packages/TailscreenLinuxBackends/README.md.
 
 func fail(_ message: String) -> Never {
     FileHandle.standardError.write(Data("error: \(message)\n".utf8))
@@ -96,6 +96,27 @@ actor ViewerRoster {
     var isEmpty: Bool { addrs.isEmpty }
 }
 
+/// A viewer PLI arrives on the UDP control loop; the encoder is driven by the
+/// video pump. This one flag is all that needs to cross between them.
+///
+/// It exists so the encoder has exactly ONE owner. Handing the encoder itself
+/// to both loops let `requestKeyframe()` write `frame.pointee.pict_type` while
+/// `encodeFrame` was inside `av_frame_make_writable` and writing that same
+/// frame's planes — two threads mutating one `AVFrame`. Swift 6.1 accepted it;
+/// 6.3's tightened `sending` check is what named it.
+actor KeyframeRequest {
+    private var pending = false
+
+    func request() { pending = true }
+
+    /// Consume the request, if any. Called by the pump immediately before
+    /// encoding, so the IDR lands on the very next frame.
+    func take() -> Bool {
+        defer { pending = false }
+        return pending
+    }
+}
+
 @main
 enum TestSharer {
     static func main() async {
@@ -145,17 +166,20 @@ enum TestSharer {
             width: Int32(config.width), height: Int32(config.height), fps: Int32(config.fps))
         if encoder == nil { fail("no H.264 encoder in this libavcodec build") }
 
+        let keyframe = KeyframeRequest()
+
         // TCP back-channel: metadata queries + annotations + control.
         Task { await serveTCP(tailscale: tailscale, address: bindAddr) }
-        // UDP control receive loop.
-        Task { await serveUDP(udp: udp, roster: roster, encoder: encoder) }
+        // UDP control receive loop. It gets the keyframe FLAG, not the encoder:
+        // the pump below is the encoder's only owner.
+        Task { await serveUDP(udp: udp, roster: roster, keyframe: keyframe) }
         // Video fan-out.
-        await pumpVideo(udp: udp, roster: roster, encoder: encoder!)
+        await pumpVideo(udp: udp, roster: roster, encoder: encoder!, keyframe: keyframe)
     }
 
     // MARK: UDP control
 
-    static func serveUDP(udp: PacketListener, roster: ViewerRoster, encoder: H264TestEncoder?) async {
+    static func serveUDP(udp: PacketListener, roster: ViewerRoster, keyframe: KeyframeRequest) async {
         while true {
             guard let (data, from) = try? await udp.recv(timeout: 1_000), !data.isEmpty else {
                 continue
@@ -180,7 +204,7 @@ enum TestSharer {
                 note("BYE from \(from)")
             case .pli:
                 note("PLI from \(from) → forcing keyframe")
-                encoder?.requestKeyframe()
+                await keyframe.request()
             case .keepalive:
                 break
             case .nack:
@@ -195,7 +219,10 @@ enum TestSharer {
 
     // MARK: Video fan-out
 
-    static func pumpVideo(udp: PacketListener, roster: ViewerRoster, encoder: H264TestEncoder) async {
+    static func pumpVideo(
+        udp: PacketListener, roster: ViewerRoster, encoder: H264TestEncoder,
+        keyframe: KeyframeRequest
+    ) async {
         let packetizer = H264Packetizer()
         var seq: UInt16 = 0
         var index = 0
@@ -214,6 +241,9 @@ enum TestSharer {
                 note("streaming to \(viewers.count) viewer(s)")
                 announced = true
             }
+            // Consume any PLI the UDP loop parked, so the IDR lands on this
+            // very frame rather than one later.
+            if await keyframe.take() { encoder.requestKeyframe() }
             for au in encoder.encodeFrame(index: index) {
                 let nals = H264TestEncoder.annexBToNALs(au)
                 guard !nals.isEmpty else { continue }

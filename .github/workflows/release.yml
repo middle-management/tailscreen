@@ -1,22 +1,76 @@
 name: Release
 
-# Builds a universal (arm64 + x86_64) Tailscreen.app, zips it, and
-# uploads it to the GitHub Release that triggered this run. Cask
-# packaging lives in the tap repo.
+# ONE release workflow for all three platforms.
 #
-# Signing + notarization run only when ALL of these secrets are set;
-# otherwise the app is built unsigned (suitable for forks / dev runs):
-#   APPLE_DEVELOPER_ID_CERT_P12      base64-encoded .p12 of the
-#                                    "Developer ID Application" cert
+# This was three files — release-macos.yml, release-linux.yml,
+# release-windows.yml — that had converged on the same trigger contract
+# (release published / on-demand PR label / workflow_dispatch against a tag)
+# and then each re-derived the version from the tag. Once W12 moved every build
+# into app-macos.yml / app-linux.yml / app-windows.yml, what was left in each
+# file was that contract plus a `uses:` line, i.e. three copies of the same
+# scaffolding around three different callees.
+#
+# Now: one trigger contract, ONE version derivation, and a job per deliverable.
+#
+# WHAT SHIPS
+#   macOS    universal signed+notarized Tailscreen.app zip     (app-macos.yml)
+#   Linux    AppImage + tarball, per arch                      (app-linux.yml)
+#   Windows  per-arch zip + self-signed MSIX                   (app-windows.yml)
+#
+# TRIGGERS
+#   • release published — the real thing; every platform builds.
+#   • pull_request labeled — an on-demand packaging build, because packaging
+#     cannot be a required gate (Windows alone is two runners for ~25 min each)
+#     but still wants to be runnable BEFORE a release rather than discovered
+#     broken at tag time. Each platform has its own label:
+#         build-linux-package     → the Linux jobs
+#         build-windows-package   → the Windows jobs
+#         build:notarized         → the macOS job
+#     The macOS one is different in kind: a signed, notarized .app is the ONLY
+#     way to exercise UNUserNotificationCenter, TCC prompts and Gatekeeper (a
+#     `swift build` binary has no CFBundleIdentifier), so that build is a
+#     deliverable in its own right rather than a packaging rehearsal. It used to
+#     live in its own workflow, pr-notarized-build.yml, which is what brought
+#     the label-removal and result-comment machinery with it — machinery Linux
+#     and Windows lacked for no reason, and now share.
+#   • workflow_dispatch — manual, against an existing tag.
+#
+# NO `concurrency:` BLOCK, deliberately. `pull_request: [labeled]` fires once
+# PER LABEL, so adding both package labels in one API call produces two runs of
+# THIS workflow — one where the Linux jobs run and the Windows ones skip, one
+# where the reverse happens. Both are wanted. A naive group keyed on the ref
+# would put them in the same bucket and let the second cancel the first
+# mid-build; that exact bug has already been fixed twice in this repo by adding
+# the label name to the group. Here the honest answer is simpler: these runs do
+# not conflict, so do not group them. Neither release-linux.yml nor
+# release-windows.yml had a concurrency block, so this preserves their
+# behaviour rather than introducing something.
+#
+# The one thing lost with pr-notarized-build.yml's own group: re-adding
+# `build:notarized` while a build is running no longer cancels the older one.
+# Both finish and the later comment wins. Cheap, and the alternative reopens
+# the cancel-the-wrong-run bug above.
+#
+# SIGNING. macOS signs + notarizes only when ALL of these are set; otherwise an
+# unsigned .app is uploaded with a warning (which is also what a fork PR gets):
+#   APPLE_DEVELOPER_ID_CERT_P12      base64 .p12 of the "Developer ID
+#                                    Application" cert
 #   APPLE_DEVELOPER_ID_CERT_PASSWORD password protecting the .p12
-#   APPLE_NOTARY_API_KEY_P8          base64-encoded App Store Connect
-#                                    API key (.p8)
+#   APPLE_NOTARY_API_KEY_P8          base64 App Store Connect API key (.p8)
 #   APPLE_NOTARY_API_KEY_ID          API key id (10 chars)
 #   APPLE_NOTARY_API_ISSUER_ID       API issuer UUID
+# Windows MSIXes are SELF-SIGNED (the repo's stable dev cert via the
+# TAILSCREEN_MSIX_PFX_* secrets), so they install only after the user trusts
+# that cert — winget and ordinary double-click installs reject them. SignPath's
+# free OSS tier replaces make-msix.ps1's self-sign step later; until then the
+# zip (plain unzip-and-run, no signature gate) is the artifact to point users
+# at. Homebrew cask formatting lives in the tap repo.
 
 on:
   release:
     types: [published]
+  pull_request:
+    types: [labeled]
   workflow_dispatch:
     inputs:
       tag:
@@ -27,338 +81,321 @@ permissions:
   contents: write   # required for `gh release upload`
 
 jobs:
-  release:
-    name: Build & upload release assets
-    runs-on: macos-15
-
-    env:
-      APP_NAME: Tailscreen
-      BUNDLE_ID: se.middlemanagement.tailscreen
-
+  # One derivation, five consumers. It was copy-pasted into release-linux.yml
+  # and release-windows.yml, and release-macos.yml inlined a third variant as a
+  # pair of `&& ||` expressions.
+  #
+  # Its own job because a job that calls a reusable workflow can carry no steps
+  # of its own, and this is real logic rather than an expression. Cheap: one
+  # ubuntu runner for a few seconds.
+  version:
+    name: Resolve version
+    # Skip every label except the two that mean "package this". `pull_request:
+    # [labeled]` fires for ALL of them, and a packaging build is far too slow to
+    # run on an unrelated label.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.label.name == 'build-linux-package' ||
+      github.event.label.name == 'build-windows-package' ||
+      github.event.label.name == 'build:notarized'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+      msix_version: ${{ steps.version.outputs.msix_version }}
     steps:
       - name: Resolve version
         id: version
+        shell: bash
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            tag="${{ github.event.inputs.tag }}"
-          else
-            tag="${{ github.event.release.tag_name }}"
-          fi
+          case "${{ github.event_name }}" in
+            workflow_dispatch) tag="${{ github.event.inputs.tag }}" ;;
+            release)           tag="${{ github.event.release.tag_name }}" ;;
+            # A PR build has no tag; name the artifact after the PR so it is
+            # obviously not a release build.
+            *)                 tag="pr-${{ github.event.pull_request.number }}" ;;
+          esac
           version="${tag#v}"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ steps.version.outputs.tag }}
-          submodules: recursive
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          # Version derived from the submodule's go.mod, not pinned here.
+          # The MSIX Identity Version must be four-part x.y.z.0 — Windows
+          # reserves the fourth field for the Store, and make-msix.ps1 hard-fails
+          # on anything else. Derive it from the tag: take the leading numeric
+          # components (a pre-release suffix like v1.2.3-rc1 is dropped — MSIX
+          # versions have no pre-release concept), pad a two-part tag with .0,
+          # and fall back to 0.0.1.0 for anything non-numeric (PR builds' pr-N,
+          # oddly-shaped tags) so a packaging build never dies on version syntax.
           #
-          # That file says `go 1.25.5`, so a literal '1.21' provisioned a
-          # toolchain Go then immediately replaced itself: the arm64 probe's log
-          # showed `go: downloading go1.25.5 (windows/arm64)` mid-build, ~22s of
-          # it. The pin was simultaneously a fiction and a download — every job
-          # here paid for a toolchain it did not end up using.
-          #
-          # go.mod is now the single source of truth, so a submodule bump moves
-          # CI with it instead of silently re-triggering the same download.
-          go-version-file: Packages/TailscaleKit/upstream/libtailscale/go.mod
-          # Explicit rather than relying on the action's default, and
-          # paired with cache-dependency-path — without a path the
-          # action looks for go.sum in the working directory, finds
-          # none at the repo root, and caches nothing while appearing
-          # configured. Three workflows here were in exactly that state.
-          cache: true
-          cache-dependency-path: Packages/TailscaleKit/upstream/libtailscale/go.sum
-
-      - name: Apply libtailscale patches
-        working-directory: Packages/TailscaleKit
-        run: make apply-patches
-
-      - name: Build universal libtailscale.a
-        working-directory: Packages/TailscaleKit/upstream/libtailscale
-        run: |
-          set -euxo pipefail
-
-          rm -f libtailscale.a libtailscale.h
-
-          GOARCH=arm64 \
-            CGO_CFLAGS="-arch arm64" \
-            CGO_LDFLAGS="-arch arm64" \
-            make c-archive
-          cp libtailscale.a /tmp/libtailscale-arm64.a
-          rm -f libtailscale.a
-
-          GOARCH=amd64 \
-            CGO_CFLAGS="-arch x86_64" \
-            CGO_LDFLAGS="-arch x86_64" \
-            make c-archive
-          cp libtailscale.a /tmp/libtailscale-amd64.a
-
-          lipo -create \
-            /tmp/libtailscale-arm64.a \
-            /tmp/libtailscale-amd64.a \
-            -output libtailscale.a
-
-          lipo -info libtailscale.a
-
-      - name: Build universal static libopus
-        # OpusKit links libopus. A Homebrew `libopus.dylib` is (a) host-arch
-        # only — it can't satisfy the x86_64 slice of the universal build —
-        # and (b) an absolute /opt/homebrew path that wouldn't exist on a
-        # user's Mac. So build a *static, universal* libopus from source and
-        # point pkg-config at it: the .a's right slice links into each arch
-        # and nothing dynamic ships in the .app. Cross-arch autotools uses
-        # `--host` so configure never executes a wrong-arch test binary.
-        run: |
-          set -euxo pipefail
-          OPUS_VERSION=1.5.2
-          curl -fsSL "https://downloads.xiph.org/releases/opus/opus-${OPUS_VERSION}.tar.gz" \
-            -o /tmp/opus.tar.gz
-          mkdir -p /tmp/opus-src
-          tar xzf /tmp/opus.tar.gz -C /tmp/opus-src --strip-components=1
-          cd /tmp/opus-src
-          build_arch() {
-            arch="$1"; host="$2"
-            make distclean >/dev/null 2>&1 || true
-            ./configure --host="$host" --disable-shared --enable-static \
-              --disable-doc --disable-extra-programs \
-              CFLAGS="-arch $arch -O2" LDFLAGS="-arch $arch"
-            make -j"$(sysctl -n hw.ncpu)"
-            cp .libs/libopus.a "/tmp/libopus-${arch}.a"
-          }
-          # aarch64, not arm: an `arm-*` host makes opus configure target
-          # 32-bit ARM and emit GNU-syntax .S assembly that Apple's clang
-          # assembler rejects; aarch64 uses NEON intrinsics instead.
-          build_arch arm64 aarch64-apple-darwin
-          build_arch x86_64 x86_64-apple-darwin
-          PREFIX=/tmp/opus-universal
-          mkdir -p "$PREFIX/lib/pkgconfig" "$PREFIX/include/opus"
-          lipo -create /tmp/libopus-arm64.a /tmp/libopus-x86_64.a \
-            -output "$PREFIX/lib/libopus.a"
-          lipo -info "$PREFIX/lib/libopus.a"
-          cp include/*.h "$PREFIX/include/opus/"
-          cat > "$PREFIX/lib/pkgconfig/opus.pc" <<PC
-          prefix=$PREFIX
-          libdir=\${prefix}/lib
-          includedir=\${prefix}/include
-          Name: opus
-          Description: Opus codec (universal static, release build)
-          Version: ${OPUS_VERSION}
-          Libs: -L\${libdir} -lopus
-          Cflags: -I\${includedir}/opus
-          PC
-
-      - name: Build universal Tailscreen binary
-        env:
-          # Prepend the universal-static opus dir so COpus's `pkgConfig:
-          # "opus"` resolves it (not a Homebrew dylib); TailscaleKit
-          # still supplies libtailscale.pc.
-          PKG_CONFIG_PATH: /tmp/opus-universal/lib/pkgconfig:${{ github.workspace }}/Packages/TailscaleKit
-        working-directory: Apps/macOS
-        run: |
-          set -euxo pipefail
-          swift build -c release --arch arm64 --arch x86_64
-          # With multiple --arch flags, SwiftPM emits the universal
-          # binary under .build/apple/Products/Release/.
-          lipo -info .build/apple/Products/Release/${APP_NAME}
-          # Guard: nothing dynamic from a non-system prefix should have crept
-          # into the link (a stray Homebrew opus dylib would break on users'
-          # Macs). Fail loudly if otool sees one.
-          if otool -L ".build/apple/Products/Release/${APP_NAME}" | grep -qi 'opus'; then
-            echo "error: Tailscreen dynamically links libopus — expected static" >&2
-            otool -L ".build/apple/Products/Release/${APP_NAME}" | grep -i opus >&2
-            exit 1
-          fi
-
-      - name: Assemble Tailscreen.app
-        run: |
-          set -euxo pipefail
-          APP="${APP_NAME}.app"
-          rm -rf "$APP"
-          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-          cp "Apps/macOS/.build/apple/Products/Release/${APP_NAME}" "$APP/Contents/MacOS/"
-          # SwiftPM resource bundle backing `Bundle.module` (menubar PDFs,
-          # WelcomeIcon, etc.). Without this the app fatals on launch with
-          # "unable to find bundle named Tailscreen_Tailscreen".
-          cp -R "Apps/macOS/.build/apple/Products/Release/${APP_NAME}_${APP_NAME}.bundle" \
-            "$APP/Contents/Resources/"
-          cp Apps/macOS/Resources/Tailscreen.icns "$APP/Contents/Resources/${APP_NAME}.icns"
-
-          cat > "$APP/Contents/Info.plist" <<EOF
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-              <key>CFBundleDevelopmentRegion</key>
-              <string>en</string>
-              <key>CFBundleExecutable</key>
-              <string>${APP_NAME}</string>
-              <key>CFBundleIconFile</key>
-              <string>${APP_NAME}</string>
-              <key>CFBundleIdentifier</key>
-              <string>${BUNDLE_ID}</string>
-              <key>CFBundleInfoDictionaryVersion</key>
-              <string>6.0</string>
-              <key>CFBundleName</key>
-              <string>${APP_NAME}</string>
-              <key>CFBundlePackageType</key>
-              <string>APPL</string>
-              <key>CFBundleShortVersionString</key>
-              <string>${{ steps.version.outputs.version }}</string>
-              <key>CFBundleVersion</key>
-              <string>${{ steps.version.outputs.version }}</string>
-              <key>LSMinimumSystemVersion</key>
-              <string>15.2</string>
-              <key>LSUIElement</key>
-              <true/>
-              <key>NSHighResolutionCapable</key>
-              <true/>
-              <key>NSMicrophoneUsageDescription</key>
-              <string>Tailscreen uses your microphone for two-way voice during screen sharing.</string>
-          </dict>
-          </plist>
-          EOF
-
-      - name: Check signing availability
-        id: signing
-        env:
-          CERT_P12: ${{ secrets.APPLE_DEVELOPER_ID_CERT_P12 }}
-          CERT_PW:  ${{ secrets.APPLE_DEVELOPER_ID_CERT_PASSWORD }}
-          NOTARY_KEY: ${{ secrets.APPLE_NOTARY_API_KEY_P8 }}
-          NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_API_KEY_ID }}
-          NOTARY_ISSUER: ${{ secrets.APPLE_NOTARY_API_ISSUER_ID }}
-        run: |
-          set -euo pipefail
-          if [ -n "$CERT_P12" ] && [ -n "$CERT_PW" ] \
-             && [ -n "$NOTARY_KEY" ] && [ -n "$NOTARY_KEY_ID" ] \
-             && [ -n "$NOTARY_ISSUER" ]; then
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-            echo "Signing + notarization enabled."
+          # Computed unconditionally even though only Windows reads it: one
+          # derivation with an unused output beats a second version job.
+          if [[ "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
+            msix_version="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}.0"
+          elif [[ "$version" =~ ^([0-9]+)\.([0-9]+) ]]; then
+            msix_version="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.0.0"
           else
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::Signing secrets not fully set — building unsigned app."
+            msix_version="0.0.1.0"
           fi
+          echo "msix_version=$msix_version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag version=$version msix_version=$msix_version"
 
-      - name: Import signing certificate
-        if: steps.signing.outputs.enabled == 'true'
+  # Remove the trigger label as soon as the run starts, so re-adding it kicks
+  # off a fresh build against the latest PR head.
+  #
+  # GitHub does not fire `labeled` for a label that is already present, so
+  # without this a rebuild means manually removing and re-adding. macOS has had
+  # this since pr-notarized-build.yml; Linux and Windows did not, which was an
+  # asymmetry with no reason behind it — one implementation now covers all
+  # three.
+  #
+  # Its own job because a job that calls a reusable workflow can carry no steps,
+  # and FIRST so a failed or cancelled run never leaves a stale label implying
+  # the build is still coming. `continue-on-error` because failing to tidy a
+  # label must not fail the build the label asked for.
+  # The condition must name the three trigger labels, exactly as `version` does.
+  # It was briefly the looser `github.event_name == 'pull_request'`, which is a
+  # different job: this workflow wakes on EVERY label, so that version deleted
+  # whichever label had just been added to any PR — `bug`, `wontfix`, a release
+  # milestone tag — silently, since the step is `continue-on-error` and succeeds.
+  # The workflow this replaced was correctly gated; the generalization is what
+  # broke it.
+  unlabel:
+    name: Remove trigger label
+    if: >-
+      github.event_name == 'pull_request' &&
+      (github.event.label.name == 'build-linux-package' ||
+       github.event.label.name == 'build-windows-package' ||
+       github.event.label.name == 'build:notarized')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Remove trigger label
+        continue-on-error: true
         env:
-          APPLE_DEVELOPER_ID_CERT_P12: ${{ secrets.APPLE_DEVELOPER_ID_CERT_P12 }}
-          APPLE_DEVELOPER_ID_CERT_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERT_PASSWORD }}
+          GH_TOKEN: ${{ github.token }}
+          LABEL: ${{ github.event.label.name }}
+        run: |
+          gh api -X DELETE \
+            "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/labels/$LABEL" \
+            || true
+
+  # ---------------------------------------------------------------------------
+  # macOS — universal (arm64 + x86_64), signed, notarized, stapled.
+  # ---------------------------------------------------------------------------
+  macos:
+    name: macOS
+    needs: [version, unlabel]
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.label.name == 'build:notarized'
+    uses: ./.github/workflows/app-macos.yml
+    with:
+      # Release/dispatch builds the tag exactly. A PR build takes the PR head —
+      # this is the one platform where a PR build is a first-class deliverable
+      # rather than a packaging rehearsal, because a signed, notarized .app is
+      # the ONLY way to exercise UNUserNotificationCenter, TCC prompts and
+      # Gatekeeper; a `swift build` binary has no CFBundleIdentifier at all.
+      ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || needs.version.outputs.tag }}
+      tag: ${{ github.event_name == 'pull_request' && '' || needs.version.outputs.tag }}
+      # macOS wants a numeric CFBundleShortVersionString; the SHA rides the
+      # artifact name, not the plist.
+      version: ${{ github.event_name == 'pull_request' && format('0.0.{0}', github.event.pull_request.number) || needs.version.outputs.version }}
+      label: ${{ github.event_name == 'pull_request' && format('pr{0}', github.event.pull_request.number) || '' }}
+      include_commit_in_name: ${{ github.event_name == 'pull_request' }}
+      # A PR build goes to a workflow artifact; a release goes to the release.
+      upload_artifact: ${{ github.event_name == 'pull_request' }}
+      upload_to_release: ${{ github.event_name != 'pull_request' }}
+      # POLICY, and the one place the two diverge deliberately: a shipped
+      # artifact is compiled from source on the runner that ships it, while a
+      # PR smoke-test build takes the cache because fast turnaround is the
+      # entire point of asking for one.
+      cache: ${{ github.event_name == 'pull_request' }}
+    secrets: inherit
+
+  # ---------------------------------------------------------------------------
+  # Linux — an AppImage per architecture, plus a tarball on arm64.
+  #
+  # Both arches go through app-linux.yml. An earlier revision of this file kept
+  # x86_64 as a separate hand-written job on a HOST runner (swift-actions/
+  # setup-swift + sudo apt) rather than the swift:6.3-noble container, on the
+  # reasoning that it builds the artifact most users download and could not be
+  # tested short of cutting a release.
+  #
+  # Both halves of that were wrong. app-linux.yml ALREADY accepts `arch: x64`
+  # (it selects ubuntu-latest, sets APPIMAGE_ARCH=x86_64, installs librsvg2-bin
+  # so the icon renders, and sets APPIMAGE_EXTRACT_AND_RUN=1 so it needs no
+  # FUSE) — the x64 path was fully wired and had simply never been called. And
+  # it IS testable: `build-linux-package` on a pull request runs exactly this
+  # job. The duplicate was a host-runner reimplementation of a container path
+  # that already existed and is exercised on arm64 every push.
+  #
+  # BOTH arches ask for `tarball+appimage`, x86_64 included, because
+  # app-linux.yml's "Stage package + checksums" step builds the tarball
+  # unconditionally for any non-`none` package and names the upload artifact
+  # after it. Passing `appimage` for x64 would produce a tarball anyway and
+  # only make the input lie about it.
+  #
+  # TWO RELEASE-ASSET CHANGES on x86_64, both from adopting the container
+  # path's naming:
+  #   • `checksums-linux.txt` is now `checksums-linux-x86_64.txt`. The
+  #     Homebrew tap lives in another repo and may reference the old name —
+  #     check it before the next release.
+  #   • a `Tailscreen-<version>-linux-x86_64.tar.gz` now ships alongside the
+  #     AppImage. Additive, and the same no-FUSE escape hatch arm64 already had.
+  # The AppImage filename is unchanged (`Tailscreen-<version>-x86_64.AppImage`).
+  # ---------------------------------------------------------------------------
+  linux:
+    name: Linux (${{ matrix.arch }})
+    needs: version
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.label.name == 'build-linux-package'
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, arm64]
+    uses: ./.github/workflows/app-linux.yml
+    with:
+      arch: ${{ matrix.arch }}
+      # Both arches produce both deliverables. Previously x86_64 built only an
+      # AppImage and arm64 built an AppImage AND a tarball, for no stated
+      # reason; the tarball is the no-FUSE-needed fallback and both arches want
+      # it.
+      package: tarball+appimage
+      # For a release/dispatch build, build the tag exactly. For a PR build,
+      # take the PR head.
+      ref: ${{ github.event_name == 'pull_request' && github.ref || needs.version.outputs.tag }}
+      version: ${{ needs.version.outputs.version }}
+      # A shipped artifact is compiled from source on the runner that ships it.
+      use_cache: false
+
+  # The non-container half of `linux`: swift:6.3-noble has no `gh`, so the
+  # release upload runs here on ubuntu-latest (gh preinstalled) from the
+  # artifacts the container jobs handed over. Bolting the GitHub CLI apt repo
+  # (keyring + sources.list + update) into the container would be more moving
+  # parts, and the artifact doubles as the PR-build deliverable.
+  #
+  # Matrixed alongside `linux` rather than arm64-only: now that x86_64 also
+  # builds in the container, it needs the same handoff. The per-arch filename
+  # fragments are matrix fields instead of repeated ternaries — PACKAGE_ARCH
+  # and APPIMAGE_ARCH differ on arm64 (`arm64` vs `aarch64`) and coincide on
+  # x64 (`x86_64`), which is exactly the sort of near-miss worth naming once.
+  #
+  # PR builds skip this by design — there is no release to upload to.
+  linux-upload:
+    name: Upload Linux ${{ matrix.arch }} to the release
+    needs: [version, linux]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            package_arch: x86_64
+            appimage_arch: x86_64
+          - arch: arm64
+            package_arch: arm64
+            appimage_arch: aarch64
+    steps:
+      - name: Download the package artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: Tailscreen-${{ needs.version.outputs.version }}-linux-${{ matrix.package_arch }}.tar.gz
+
+      - name: Upload to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ needs.version.outputs.tag }}" \
+            "Tailscreen-${{ needs.version.outputs.version }}-linux-${{ matrix.package_arch }}.tar.gz" \
+            "Tailscreen-${{ needs.version.outputs.version }}-${{ matrix.appimage_arch }}.AppImage" \
+            "checksums-linux-${{ matrix.package_arch }}.txt" --clobber
+
+  # ---------------------------------------------------------------------------
+  # Windows — a zip and a self-signed MSIX per architecture.
+  # ---------------------------------------------------------------------------
+  windows:
+    name: Windows (${{ matrix.arch }})
+    needs: version
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.label.name == 'build-windows-package'
+    strategy:
+      fail-fast: false
+      matrix:
+        # The same per-arch split as windows-build.yml: x64 on the hosted x64
+        # image, arm64 NATIVELY on windows-11-arm (no cross-build — that is what
+        # makes the llvm-mingw + host-toolchain arrangement work). The runner,
+        # the FFmpeg archive name and the vcpkg triplet all follow from `arch`
+        # inside app-windows.yml.
+        arch: [x64, arm64]
+    uses: ./.github/workflows/app-windows.yml
+    with:
+      arch: ${{ matrix.arch }}
+      # For a release/dispatch build, build the tag exactly. For a PR build,
+      # take the PR head.
+      ref: ${{ github.event_name == 'pull_request' && github.ref || needs.version.outputs.tag }}
+      version: ${{ needs.version.outputs.version }}
+      msix_version: ${{ needs.version.outputs.msix_version }}
+      tag: ${{ needs.version.outputs.tag }}
+      # Every one of these is a deliberate release policy, not an omission: a
+      # shipped build skips the per-push diagnostics (probes, app-load,
+      # tsnet-node) and never takes the cache.
+      use_cache: false
+      run_probes: false
+      run_load_check: false
+      run_tsnet_check: false
+      # The zip IS the deliverable; dist/ is what it is made of, so uploading
+      # both would double the storage for one artifact.
+      upload_dist: false
+      zip: true
+      msix: true
+      verify_msix: false
+      upload_to_release: ${{ github.event_name != 'pull_request' }}
+    secrets: inherit
+
+  # Tell the PR what came out. Only for `build:notarized`, whose whole purpose
+  # is handing a human a testable .app — the package labels produce artifacts a
+  # reader can find on the run, and a comment per label would be noise.
+  #
+  # `--repo` is REQUIRED: this job has no checkout (it cannot, being a sibling
+  # of reusable-workflow calls), so gh has no git remote to infer from and
+  # exits "fatal: not a git repository".
+  comment:
+    name: Comment result on PR
+    needs: macos
+    if: always() && github.event_name == 'pull_request' && github.event.label.name == 'build:notarized'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Comment result on PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APP_NAME: Tailscreen
+          SHORT: ${{ needs.macos.outputs.short_sha }}
+          SIGNED: ${{ needs.macos.outputs.signed }}
+          RESULT: ${{ needs.macos.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
-          KEYCHAIN_PASSWORD="$(uuidgen)"
-          CERT_PATH="$RUNNER_TEMP/cert.p12"
+          if [ "$RESULT" = "success" ]; then
+            if [ "$SIGNED" = "true" ]; then
+              state="✅ Signed + notarized \`${APP_NAME}.app\` built for \`${SHORT}\`."
+            else
+              state="⚠️ **Unsigned** \`${APP_NAME}.app\` built for \`${SHORT}\` (signing secrets unavailable — fork PR?)."
+            fi
+            body="${state}
 
-          echo "$APPLE_DEVELOPER_ID_CERT_P12" | base64 --decode > "$CERT_PATH"
-
-          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security import "$CERT_PATH" \
-            -k "$KEYCHAIN_PATH" \
-            -P "$APPLE_DEVELOPER_ID_CERT_PASSWORD" \
-            -T /usr/bin/codesign
-          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
-          security set-key-partition-list \
-            -S apple-tool:,apple:,codesign: \
-            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-
-          rm -f "$CERT_PATH"
-
-          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
-
-      - name: Codesign Tailscreen.app
-        if: steps.signing.outputs.enabled == 'true'
-        run: |
-          set -euxo pipefail
-
-          # Surface what's actually in the keychain so failures here are
-          # debuggable from the log alone.
-          echo "--- All identities in build keychain ---"
-          security find-identity "$KEYCHAIN_PATH" || true
-          echo "--- Valid codesigning identities (search list) ---"
-          # Search across the user keychain list (build keychain + login +
-          # System Roots) so the Apple Developer ID intermediate is visible
-          # for chain validation. Restricting to $KEYCHAIN_PATH alone makes
-          # `-v` reject the cert because the chain can't be built.
-          security find-identity -v -p codesigning || true
-          echo "--------------------------------------------------"
-
-          IDENTITY_HASH="$(security find-identity -v -p codesigning \
-            | awk '/Developer ID Application/ {print $2; exit}')"
-          if [ -z "$IDENTITY_HASH" ]; then
-            echo "::error::No valid 'Developer ID Application' codesigning identity. See identity dump above — common causes: .p12 missing private key, cert chain not trusted (Apple WWDR intermediate missing), or wrong cert type (Apple Development / Mac Developer instead of Developer ID Application)."
-            exit 1
+          Download the artifact from the [workflow run](${RUN_URL}) (GitHub login required). Re-add the \`build:notarized\` label to rebuild against the latest commit."
+          else
+            body="❌ Notarized build failed for \`${SHORT:-this commit}\`. See the [workflow run](${RUN_URL}) for details."
           fi
-
-          /usr/bin/codesign \
-            --force \
-            --options runtime \
-            --timestamp \
-            --deep \
-            --sign "$IDENTITY_HASH" \
-            "${APP_NAME}.app"
-
-          /usr/bin/codesign --verify --deep --strict --verbose=2 "${APP_NAME}.app"
-
-      - name: Notarize and staple
-        if: steps.signing.outputs.enabled == 'true'
-        env:
-          APPLE_NOTARY_API_KEY_P8: ${{ secrets.APPLE_NOTARY_API_KEY_P8 }}
-          APPLE_NOTARY_API_KEY_ID: ${{ secrets.APPLE_NOTARY_API_KEY_ID }}
-          APPLE_NOTARY_API_ISSUER_ID: ${{ secrets.APPLE_NOTARY_API_ISSUER_ID }}
-        run: |
-          set -euo pipefail
-          KEY_PATH="$RUNNER_TEMP/notary-key.p8"
-          echo "$APPLE_NOTARY_API_KEY_P8" | base64 --decode > "$KEY_PATH"
-
-          NOTARIZE_ZIP="$RUNNER_TEMP/${APP_NAME}-notarize.zip"
-          /usr/bin/ditto -c -k --keepParent "${APP_NAME}.app" "$NOTARIZE_ZIP"
-
-          xcrun notarytool submit "$NOTARIZE_ZIP" \
-            --key "$KEY_PATH" \
-            --key-id "$APPLE_NOTARY_API_KEY_ID" \
-            --issuer "$APPLE_NOTARY_API_ISSUER_ID" \
-            --wait
-
-          xcrun stapler staple "${APP_NAME}.app"
-          xcrun stapler validate "${APP_NAME}.app"
-
-          rm -f "$KEY_PATH" "$NOTARIZE_ZIP"
-
-      - name: Package release zip and checksums
-        id: package
-        run: |
-          set -euxo pipefail
-          ZIP_NAME="${APP_NAME}-${{ steps.version.outputs.tag }}-macOS.zip"
-          /usr/bin/ditto -c -k --keepParent "${APP_NAME}.app" "$ZIP_NAME"
-          shasum -a 256 "$ZIP_NAME" > checksums.txt
-          SHA256="$(awk '{print $1}' checksums.txt)"
-          echo "zip_name=$ZIP_NAME"  >> "$GITHUB_OUTPUT"
-          echo "sha256=$SHA256"      >> "$GITHUB_OUTPUT"
-
-      - name: Upload release assets
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ steps.version.outputs.tag }}
-          ZIP_NAME: ${{ steps.package.outputs.zip_name }}
-        run: |
-          set -euxo pipefail
-          gh release upload "$TAG" \
-            "$ZIP_NAME" \
-            "checksums.txt" \
-            --clobber
-
-      - name: Cleanup keychain
-        if: always() && steps.signing.outputs.enabled == 'true'
-        run: |
-          if [ -n "${KEYCHAIN_PATH:-}" ] && [ -f "$KEYCHAIN_PATH" ]; then
-            security delete-keychain "$KEYCHAIN_PATH" || true
-          fi
+          gh pr comment "${{ github.event.pull_request.number }}" \
+            --repo "${{ github.repository }}" --body "$body"

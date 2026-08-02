@@ -3,7 +3,7 @@ import PackageDescription
 
 // TailscreenSharerWGC — Windows.Graphics.Capture + libavcodec behind the
 // portable `CaptureEncoding` seam. The Windows counterpart of
-// `Apps/linux`'s `TailscreenSharerLinux`.
+// `Packages/TailscreenLinuxBackends`'s `TailscreenSharerLinux`.
 //
 // A package of its own, and for the reason that matters most here: **it does
 // not need WinUI, so it can be typechecked on Linux.** Put in

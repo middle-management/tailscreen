@@ -1,149 +1,99 @@
 // swift-tools-version: 6.0
 import PackageDescription
 
-// Shared library package for the portable (Linux/Windows) screen-share viewer.
-// It plugs concrete backends into the portable `ViewerSession` data-plane core
-// (Packages/TailscreenKit's TailscreenViewer target):
+// tailscreen (Linux) — the native desktop app: a full sharer AND viewer, the
+// Linux sibling of Apps/macOS and Apps/windows. The executable is plain
+// `tailscreen`; the package keeps a platform-qualified name because package
+// names are build-graph identity, not what users run.
 //
-//   • video decode  — FFmpegKit (libavcodec)      → VideoDecoding
-//   • audio output   — ALSAKit (libasound)         → AudioSink
-//   • transport      — TailscaleKit (tsnet UDP)    → receiveRTP / onControlToSend / tick
+// A SEPARATE package from Packages/TailscreenLinuxBackends on purpose: it pulls
+// in swift-cross-ui + GTK4, which the backends' `linux-viewer` CI job neither
+// needs nor should pay for. Video is a downstream `GtkVideoView` (a
+// swift-cross-ui `View` hosting a `GtkGLArea` with an OpenGL YUV→RGB
+// renderer); chrome is declarative swift-cross-ui, shared with the Windows app
+// via Packages/TailscreenHubUI. See docs/linux-viewer-gtk-plan.md.
 //
-// The concrete video RENDER surface is NOT here: the native GTK viewer
-// (Apps/linux-gtk) owns it (a `GtkGLArea` YUV renderer) and reuses these
-// targets. Split into small targets so (a) the decode→audio pipeline is
-// CI-testable without the tsnet/Go dependency, and (b) the transport is
-// isolated:
+// It reuses TailscreenLinuxBackends' `TailscreenViewerCore` (FFmpeg decoder +
+// ALSA sink) and `TailscreenSharerLinux` (X11 capture + libavcodec encode),
+// plus `TailscreenViewerTsnet` (the shared tsnet transport). Pulling Tsnet
+// brings TailscaleKit (→ libtailscale.a), so a live run needs the c-archive.
 //
-//   • `TailscreenViewerCore` (library): FFmpeg decoder + ALSA sink (+ the
-//     `ThreadedAudioSink` wrapper). Foundation + FFmpeg/ALSA/Opus only — no
-//     libtailscale — so `swift test` builds it with just apt ffmpeg/alsa/opus.
-//
-// The tsnet transport is NOT here: it lives in Packages/TailscreenKit as
-// `TailscreenViewerTsnet`, because the Windows app needs it and nothing in it
-// was ever Linux-specific.
-//
-// No `platforms:` clause on purpose — this is the Linux/Windows viewer.
+// swift-cross-ui is pinned to an exact revision for reproducibility — its `View`
+// protocol is young and can reshape across versions, and our only coupling to it
+// is the small `GtkVideoView`.
 let package = Package(
-    name: "tailscreen-viewer",
-    products: [
-        .library(name: "TailscreenViewerCore", targets: ["TailscreenViewerCore"]),
-        .library(name: "TailscreenSharerLinux", targets: ["TailscreenSharerLinux"]),
-    ],
+    name: "tailscreen-linux",
     dependencies: [
-        .package(path: "../../Packages/FFmpegKit"),
-        .package(path: "../../Packages/TailscreenVideoFFmpeg"),
-        .package(path: "../../Packages/ALSAKit"),
+        .package(
+            url: "https://github.com/stackotter/swift-cross-ui",
+            revision: "199a85614e3b2346aa10736b12f969af14a1f1ea"),
         .package(path: "../../Packages/TailscreenKit"),
+        .package(path: "../../Packages/TailscreenLinuxBackends"),
         .package(path: "../../Packages/TailscaleKit"),
-        .package(path: "../../Packages/X11CaptureKit"),
+        // The hub's look — header, screen rows, cards, placards — shared with
+        // the Windows app. It used to live in this executable as
+        // `ViewerChrome.swift`; it moved out when a second swift-cross-ui app
+        // needed the same design system and copying it would have guaranteed
+        // the two drifted apart.
+        .package(path: "../../Packages/TailscreenHubUI"),
     ],
     targets: [
-        // FFmpeg decoder + ALSA sink + ViewerPipeline. No tsnet, so it builds
-        // and tests without libtailscale.
+        // OpenGL YUV→RGB renderer for the GLArea. C so it can call GL (via
+        // epoxy) directly; the Swift side just hands it plane pointers. Links
+        // gtk-4 for the one forward-declared queue-render entry point.
         .target(
-            name: "TailscreenViewerCore",
+            name: "CGtkVideo",
+            linkerSettings: [
+                .linkedLibrary("epoxy"),
+                .linkedLibrary("gtk-4"),
+                .linkedLibrary("glib-2.0"),
+            ]
+        ),
+        // GtkVideoView + the video sink + frame store: the downstream video
+        // surface, reusable by the live app and the render self-test.
+        .target(
+            name: "TailscreenViewerGtk",
             dependencies: [
-                .product(name: "FFmpegKit", package: "FFmpegKit"),
-                // Re-exported by Adapters.swift, so consumers of this target
-                // keep getting FFmpegVideoDecoder without naming the package.
-                .product(name: "TailscreenVideoFFmpeg", package: "TailscreenVideoFFmpeg"),
-                .product(name: "ALSAKit", package: "ALSAKit"),
+                "CGtkVideo",
+                .product(name: "SwiftCrossUI", package: "swift-cross-ui"),
+                .product(name: "GtkBackend", package: "swift-cross-ui"),
+                .product(name: "Gtk", package: "swift-cross-ui"),
                 .product(name: "TailscreenViewer", package: "TailscreenKit"),
                 .product(name: "TailscreenProtocol", package: "TailscreenKit"),
-            ],
-            path: "Sources/TailscreenViewerCore"
-        ),
-        // Synthetic sharer for local end-to-end runs (see its main.swift): a
-        // second tsnet node speaking the sharer half of the wire protocol, so
-        // the Linux viewer can be exercised without a Mac. Development/test
-        // tool, not a product sharer — it captures nothing.
-        .executableTarget(
-            name: "TailscreenTestSharer",
-            dependencies: [
-                .product(name: "CFFmpeg", package: "FFmpegKit"),
-                .product(name: "TailscreenProtocol", package: "TailscreenKit"),
-                .product(name: "TailscaleKit", package: "TailscaleKit"),
-            ],
-            path: "Sources/TailscreenTestSharer",
-            linkerSettings: [
-                .unsafeFlags(["-L", "../../Packages/TailscaleKit/lib"])
+                // The pure GTK→InputEvent capture mapping (`ViewerInputMapping`)
+                // lives in Core so it's unit-tested by the linux-viewer job;
+                // GtkVideoView feeds it raw GDK integers. Already linked by the
+                // executable target, so no new system dependency.
+                .product(name: "TailscreenViewerCore", package: "TailscreenLinuxBackends"),
             ]
         ),
-        // The Linux SHARER backend: X11 capture + libavcodec encode behind the
-        // portable `CaptureEncoding` seam. No tsnet — the portable
-        // TailscaleScreenShareServer owns the transport; this only makes
-        // pixels.
-        .target(
-            name: "TailscreenSharerLinux",
-            dependencies: [
-                .product(name: "FFmpegKit", package: "FFmpegKit"),
-                .product(name: "X11CaptureKit", package: "X11CaptureKit"),
-                .product(name: "TailscreenSharer", package: "TailscreenKit"),
-                .product(name: "TailscreenProtocol", package: "TailscreenKit"),
-            ],
-            path: "Sources/TailscreenSharerLinux"
-        ),
-        // Headless Linux SHARER: the portable TailscaleScreenShareServer wired
-        // to the X11 capture backend. No UI — it exists to prove the extraction
-        // end to end and to be what a tray/desktop UI eventually drives.
         .executableTarget(
-            name: "tailscreen-sharer-linux",
+            name: "tailscreen",
             dependencies: [
-                "TailscreenSharerLinux",
                 .product(name: "TailscreenSharer", package: "TailscreenKit"),
-                .product(name: "TailscreenProtocol", package: "TailscreenKit"),
                 .product(name: "TailscaleKit", package: "TailscaleKit"),
-            ],
-            path: "Sources/tailscreen-sharer-linux",
-            linkerSettings: [
-                .unsafeFlags(["-L", "../../Packages/TailscaleKit/lib"])
-            ]
-        ),
-        // Headless VIEWER probe: the real receive path (TsnetTransport +
-        // ViewerSession + FFmpeg decode) with a counting sink instead of a
-        // window, so an end-to-end run can be scripted and asserted.
-        .executableTarget(
-            name: "tailscreen-viewer-probe",
-            dependencies: [
-                "TailscreenViewerCore",
-                .product(name: "TailscreenViewerTsnet", package: "TailscreenKit"),
-                .product(name: "FFmpegKit", package: "FFmpegKit"),
+                .product(name: "TailscreenSharerLinux", package: "TailscreenLinuxBackends"),
+                "TailscreenViewerGtk",
+                .product(name: "SwiftCrossUI", package: "swift-cross-ui"),
+                .product(name: "DefaultBackend", package: "swift-cross-ui"),
                 .product(name: "TailscreenViewer", package: "TailscreenKit"),
                 .product(name: "TailscreenProtocol", package: "TailscreenKit"),
+                // FFmpeg decoder + the shared tsnet transport, reused from the
+                // Packages/TailscreenLinuxBackends library package. A path
+                // dependency's identity is its DIRECTORY basename, not its
+                // `name:` — which is why `package:` below reads
+                // "TailscreenLinuxBackends" and not "tailscreen-linux".
+                .product(name: "TailscreenViewerCore", package: "TailscreenLinuxBackends"),
+                .product(name: "TailscreenViewerTsnet", package: "TailscreenKit"),
+                .product(name: "TailscreenHubUI", package: "TailscreenHubUI"),
             ],
-            path: "Sources/tailscreen-viewer-probe",
             linkerSettings: [
+                // Resolve libtailscale.a for the tsnet transport. Belt and
+                // braces: libtailscale.pc anchors its own -L to ${pcfiledir},
+                // so pkg-config supplies the real path and this flag only
+                // matters when the build runs from this directory.
                 .unsafeFlags(["-L", "../../Packages/TailscaleKit/lib"])
             ]
-        ),
-        // Real-decode pipeline test: encode H.264 → RTP → ViewerSession →
-        // FFmpeg decode → collecting sinks. No tsnet, runs on Linux CI.
-        .testTarget(
-            name: "TailscreenViewerCoreTests",
-            dependencies: [
-                "TailscreenViewerCore",
-                // The node-identity test reaches into the tsnet transport for
-                // its (pure) naming decision — the transport itself still
-                // can't run in CI, but that decision can.
-                .product(name: "TailscreenViewerTsnet", package: "TailscreenKit"),
-                .product(name: "FFmpegKit", package: "FFmpegKit"),
-                .product(name: "CFFmpeg", package: "FFmpegKit"),
-                .product(name: "TailscreenProtocol", package: "TailscreenKit"),
-            ],
-            path: "Tests/TailscreenViewerCoreTests"
-        ),
-        // Capture → encode → decode, through the real CaptureEncoding seam.
-        // Needs a display; self-skips without one, runs under Xvfb in CI.
-        .testTarget(
-            name: "TailscreenSharerLinuxTests",
-            dependencies: [
-                "TailscreenSharerLinux",
-                .product(name: "FFmpegKit", package: "FFmpegKit"),
-                .product(name: "TailscreenProtocol", package: "TailscreenKit"),
-                .product(name: "TailscreenSharer", package: "TailscreenKit"),
-            ],
-            path: "Tests/TailscreenSharerLinuxTests"
         ),
     ]
 )

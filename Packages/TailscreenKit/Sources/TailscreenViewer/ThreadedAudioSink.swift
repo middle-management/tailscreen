@@ -22,7 +22,7 @@ import Foundation
 /// near the live edge.
 ///
 /// Portable on purpose. This is thread + queue over the `AudioSink` protocol
-/// with nothing platform-specific in it; it lived in `Apps/linux` only because
+/// with nothing platform-specific in it; it lived in `Packages/TailscreenLinuxBackends` only because
 /// that is where the first backend was, and the Windows viewer needs exactly the
 /// same wrapper for exactly the same reason.
 public final class ThreadedAudioSink: AudioSink, @unchecked Sendable {

@@ -2,7 +2,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "Tailscreen",
+    name: "tailscreen-macos",
     defaultLocalization: "en",
     platforms: [
         // 15.2 (Dec 2024) is the floor: SCContentFilter's

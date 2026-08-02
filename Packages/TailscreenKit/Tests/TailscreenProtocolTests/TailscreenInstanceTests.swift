@@ -15,7 +15,7 @@ final class TailscreenInstanceTests: XCTestCase {
     }
 
     func testViewerHostnameIsExcluded() {
-        // The portable viewer (Apps/linux) registers under viewerHostnamePrefix;
+        // The portable viewer (Packages/TailscreenLinuxBackends) registers under viewerHostnamePrefix;
         // it must not appear as a connectable screen in peer discovery.
         XCTAssertFalse(TailscreenInstance.isTailscreenServerHostname("tailscreen-client-viewer-1a2b3c4d"))
         XCTAssertFalse(

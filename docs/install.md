@@ -54,7 +54,7 @@ yell at you the first time you open it.
 
 ## Linux
 
-The Linux app is the GTK build under `Apps/linux-gtk` — one window that both
+The Linux app is the GTK build under `Apps/linux` — one window that both
 views a peer's screen and shares this machine's. It ships in two flavors,
 attached to the same GitHub release as the Mac app:
 
@@ -72,11 +72,6 @@ attached to the same GitHub release as the Mac app:
   bundled `tailscreen` binary; it needs the distro's GTK4 and GL libraries
   installed.
 
-The executable is plain `tailscreen`. If you used an earlier release, your
-sign-in carries over — the app migrates the old
-`~/.config/tailscreen-viewer-gtk` state directory to `~/.config/tailscreen`
-automatically on first launch.
-
 Two things to know:
 
 - **AppImages need FUSE** to self-mount. Desktop distros generally have it;
@@ -88,7 +83,7 @@ Two things to know:
   backend, which isn't written. The app detects this and says so rather than
   offering a button that always fails.
 
-A Flatpak manifest exists under `Apps/linux-gtk/packaging/flatpak` but isn't
+A Flatpak manifest exists under `Apps/linux/packaging/flatpak` but isn't
 published yet; it needs a Swift SDK extension.
 
 ## Windows
@@ -143,11 +138,12 @@ open-source code signing — in progress), which is also what unlocks
 
 ## From source
 
-This section builds the **macOS** app. For Linux, see `Apps/linux-gtk` and
-`Apps/linux/README.md` in the repository; for Windows, the build is
-CI-defined — `.github/workflows/windows-build.yml` is the authoritative
-recipe (Swift 6.3 + llvm-mingw for the Go archive), and every CI run uploads
-a runnable app artifact.
+This section builds the **macOS** app. For Linux, see `Apps/linux` and
+`Packages/TailscreenLinuxBackends/README.md` in the repository; for
+Windows, the build is CI-defined — the shared
+`.github/workflows/app-windows.yml` is the authoritative recipe (Swift 6.3
++ llvm-mingw for the Go archive), and every CI run uploads a runnable app
+artifact.
 
 The project is Swift Package Manager only — no Xcode project, none
 planned. Builds go through the top-level
