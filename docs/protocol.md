@@ -1,6 +1,6 @@
 ---
 title: Network Protocol
-nav_order: 5
+nav_order: 6
 permalink: /protocol/
 ---
 

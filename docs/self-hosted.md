@@ -1,6 +1,6 @@
 ---
 title: Self-hosted control planes
-nav_order: 7
+nav_order: 8
 permalink: /self-hosted/
 ---
 
