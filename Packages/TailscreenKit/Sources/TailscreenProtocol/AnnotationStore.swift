@@ -1,5 +1,4 @@
 import Foundation
-import TailscreenProtocol
 
 /// What a pointer drag over the video does.
 public enum AnnotationMode: Sendable, Equatable {
@@ -16,12 +15,26 @@ public enum AnnotationMode: Sendable, Equatable {
     }
 }
 
-/// Holds the shared annotation canvas for the GTK viewer: committed strokes
-/// (local + relayed-from-sharer) plus the in-progress stroke being drawn. The
-/// GLArea render reads it (`renderData`) on the GTK main thread; capture writes
-/// it on the main thread; the back-channel's inbound handler applies remote ops
-/// from its own task — so strokes are lock-guarded. Finalized local ops are
-/// handed to `onLocalOp` for the host to relay over the back-channel.
+/// A **viewer's** annotation canvas: committed strokes (local + relayed from
+/// the sharer) plus the in-progress stroke being drawn.
+///
+/// The counterpart of ``ReceivedAnnotations``, which is the *sharer's* half —
+/// display-only, no local drawing, no undo stack. This one owns the drawing:
+/// live drag tracking, the tool latch, the relay of finalized ops. Two types
+/// because the two roles genuinely differ, and a sharer that only displays what
+/// viewers send needs none of the machinery below.
+///
+/// Portable, and it always was — Foundation plus this module, with nothing
+/// toolkit-specific in it. It lived in `TailscreenViewerGtk` until the WinUI
+/// viewer needed the identical canvas, and copying it would have guaranteed the
+/// two drifted. Each host reads it differently and that is the point: GTK takes
+/// `renderData` (flattened arrays for its GL shader), WinUI takes
+/// ``visibleAnnotations`` and hands them to ``AnnotationRasterizer``.
+///
+/// Threading: the render side reads on the host's UI thread, capture writes on
+/// it, and the back-channel's inbound handler applies remote ops from its own
+/// task — so strokes are lock-guarded. Finalized local ops are handed to
+/// `onLocalOp` for the host to relay over the back-channel.
 ///
 /// Coordinates are normalized `[0, 1]` in the video frame (origin top-left) —
 /// the same space `Annotation`/`InputEvent` use — so a viewer stroke lands in
@@ -33,6 +46,11 @@ public final class AnnotationStore: @unchecked Sendable {
     /// Tool the in-progress stroke was started with — latched at `beginStroke`
     /// so switching tools mid-drag can't reshape the stroke under way.
     private var liveTool: AnnotationTool = .pen
+    /// Identity of the in-progress stroke, minted per drag. Stable for the
+    /// drag's whole life so `visibleAnnotations` reports one stroke growing
+    /// rather than a new one per frame; per-store rather than a shared
+    /// sentinel, so two canvases can never collide.
+    private var liveID = UUID()
     private var requestRedraw: (() -> Void)?
 
     /// Current drawing mode (main-thread only: the toolbar sets it, capture
@@ -43,8 +61,7 @@ public final class AnnotationStore: @unchecked Sendable {
     /// `paletteColor(forIdentity: localIdentity())` rather than offering a
     /// picker — so each participant always draws in the same color, and the
     /// same machine keeps its color across reconnects and relaunches.
-    public var color: Annotation.RGBA = Annotation.RGBA.paletteColor(
-        forIdentity: AnnotationStore.localIdentity())
+    public var color = Annotation.RGBA.paletteColor(forIdentity: AnnotationStore.localIdentity())
 
     /// Stable per-machine drawing identity, mirroring the mac's
     /// `Host.current().localizedName + TailscreenInstance.hostnameSuffix`.
@@ -106,6 +123,7 @@ public final class AnnotationStore: @unchecked Sendable {
     public func beginStroke(at point: CGPoint) {
         lock.lock()
         live = [point]
+        liveID = UUID()
         liveTool = mode.tool ?? .pen
         lock.unlock()
         redraw()
@@ -171,6 +189,35 @@ public final class AnnotationStore: @unchecked Sendable {
     }
 
     // MARK: Rendering
+
+    /// Everything that should currently be visible, including the in-progress
+    /// stroke, as `Annotation` values.
+    ///
+    /// The renderer-agnostic view of this canvas, for a host that rasterizes
+    /// rather than feeding a shader — the WinUI viewer draws these straight
+    /// into the decoded frame with ``AnnotationRasterizer/draw(_:into:)``.
+    ///
+    /// The live stroke is materialized rather than omitted: a viewer that
+    /// cannot see its own stroke until the drag ends has no idea whether
+    /// drawing is working. Its id is stable for the whole drag (minted at
+    /// `beginStroke`), so a renderer that diffs by id sees one stroke growing
+    /// rather than a new one every frame — the same upsert-not-append rule
+    /// `ReceivedAnnotations` documents for the relayed side.
+    public var visibleAnnotations: [Annotation] {
+        lock.lock()
+        let committed = strokes
+        let livePoints = live
+        let liveShape = liveTool
+        let liveColor = color
+        let liveID = self.liveID
+        lock.unlock()
+        guard !livePoints.isEmpty else { return committed }
+        return committed + [
+            Annotation(
+                id: liveID, tool: liveShape, points: livePoints,
+                color: liveColor, width: Annotation.defaultWidth)
+        ]
+    }
 
     /// Flattened stroke geometry for `cgtkvideo_draw_annotations`: normalized
     /// x,y pairs, per-stroke vertex counts, per-stroke rgba (4 each), per-stroke

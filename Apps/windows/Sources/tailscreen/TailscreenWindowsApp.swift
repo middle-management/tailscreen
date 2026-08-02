@@ -193,19 +193,23 @@ struct TailscreenWindowsApp: App {
     }
 
     /// Watching: the video gets the window, with one way out.
+    ///
+    /// The two bars come from `TailscreenHubUI`, which the GTK viewer already
+    /// renders — the dividend the alignment plan predicted for extracting the
+    /// chrome. Each is shown only when the sharer advertised the matching
+    /// capability, so a sharer that cannot render annotations or inject input
+    /// produces a plainer window rather than dead controls.
     private func watching(host: String) -> some View {
         let model = state
+        let interaction = state.interaction
         return VStack(spacing: 0) {
             HStack(spacing: 8) {
                 Text("Watching \(host)")
                     .font(.caption)
                     .foregroundColor(HubStyle.secondaryText)
                 Spacer()
-                // In the toolbar rather than over the video: the overlay is
-                // where the numbers go, but the control that summons them has
-                // to be reachable when they are not on screen.
-                Button(state.showStats ? "Hide stats" : "Stats") {
-                    model.showStats.toggle()
+                if interaction.isZoomed {
+                    Button("Reset Zoom") { interaction.resetZoom() }
                 }
                 Button("Stop") { model.disconnect() }
             }
@@ -213,6 +217,34 @@ struct TailscreenWindowsApp: App {
             .frame(height: Double(HubStyle.toolbarHeight))
             .frame(maxWidth: .infinity)
             .background(HubStyle.barFill)
+            // The annotation toolbar owns the stats toggle, which is why this
+            // merge collapsed two of them into one. 4.3 landed a `Stats`
+            // button in the top bar while this branch was open; keeping both
+            // would have put two controls for one boolean on the same screen.
+            // The toolbar wins because it is where the other view-level
+            // controls already are — and the state stays `AppUIState.showStats`,
+            // since that is what the fps counter feeds.
+            if interaction.annotationsAvailable {
+                AnnotationToolbar(
+                    activeTool: interaction.activeTool,
+                    inkColor: interaction.annotations.color,
+                    statsShown: state.showStats,
+                    onSelectTool: { interaction.selectTool($0) },
+                    onUndo: { interaction.undoAnnotation() },
+                    onClear: { interaction.clearAnnotations() },
+                    onToggleStats: { model.showStats.toggle() })
+            } else {
+                // No annotation toolbar to hang it on — a sharer that withholds
+                // the capability must not also cost the viewer its stats.
+                HStack {
+                    Spacer()
+                    Button(state.showStats ? "Hide stats" : "Stats") {
+                        model.showStats.toggle()
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 4)
+            }
             // Drawn only once the first fps window has closed. Before that the
             // numbers are all zero, and "0×0 · 0 fps" over a stream that is
             // plainly running reads as a broken overlay rather than a warming
@@ -226,7 +258,16 @@ struct TailscreenWindowsApp: App {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
             }
-            WinUIVideoView(store: state.frameStore, generation: state.frameGeneration)
+            WinUIVideoView(
+                store: state.frameStore,
+                generation: state.frameGeneration,
+                interaction: interaction)
+            if interaction.remoteControlAvailable {
+                RemoteControlBar(
+                    buttonLabel: interaction.controlButtonLabel,
+                    declinedReason: interaction.controlDeclinedReason,
+                    onToggle: { interaction.toggleControl() })
+            }
         }
     }
 
@@ -395,6 +436,11 @@ final class AppUIState: ObservableObject {
     /// Bumped per decoded frame so SwiftCrossUI re-runs `updateWinUIElement`.
     /// The frame itself travels through `frameStore`, never through this.
     @Published var frameGeneration = 0
+
+    /// Drawing, remote control and zoom for the live session. Its own type
+    /// because none of it is WinUI — keeping it separate is what lets Linux CI
+    /// typecheck the whole interactive layer, which is where the mistakes are.
+    let interaction = WindowsViewerInteraction()
 
     /// Sharing state, mirrored from `SharingController` (which is off the main
     /// actor on purpose — see its type comment).
@@ -925,8 +971,18 @@ final class AppUIState: ObservableObject {
                     videoSink: sink,
                     audioSink: audio,
                     shouldClose: { [weak self] in self?.stopRequested ?? true },
-                    onAdmitted: { [weak self] _ in
-                        Task { @MainActor in self?.status = "Watching \(peer.hostname)" }
+                    backChannelHandlers: interaction.backChannelHandlers(),
+                    onBackChannelReady: { [weak self] channel in
+                        Task { @MainActor in self?.interaction.beginSession(channel: channel) }
+                    },
+                    onAdmitted: { [weak self] caps in
+                        Task { @MainActor in
+                            self?.status = "Watching \(peer.hostname)"
+                            // Drawing and Request Control appear only if the
+                            // sharer said it can serve them. Withheld bits mean
+                            // a quieter UI, never a broken one.
+                            self?.interaction.setCaps(caps)
+                        }
                     },
                     onAwaitingApproval: { [weak self] in
                         Task { @MainActor in
@@ -942,6 +998,9 @@ final class AppUIState: ObservableObject {
             }
             watching = nil
             sessionTask = nil
+            // Before the status line, so a stale grant or armed tool can never
+            // outlive the session that produced it.
+            interaction.endSession()
             status = transport.accountIdentity.map { "Signed in as \($0)" } ?? "Signed in"
         }
     }
