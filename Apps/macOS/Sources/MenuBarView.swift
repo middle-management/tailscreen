@@ -596,7 +596,13 @@ private struct AudioDevicePickers: View {
 /// Each row carries a trailing ✕ that disconnects that viewer one-time —
 /// nothing is remembered, so they can reconnect through the normal admission
 /// gate (the persistent variant stays "Deny & Block" on the pending row).
-private struct ViewersList: View {
+///
+/// Non-private, like `PendingViewersList` and `ControlRequestsList` beside it,
+/// so the hub window can render it too. Dropping a viewer is a *decision*
+/// about a person, and this app's position is that decision surfaces belong on
+/// both surfaces — it was menubar-only by omission, not by design, which made
+/// it the one sharer action with no path outside the popover.
+struct ViewersList: View {
     @EnvironmentObject var appState: AppState
     let viewers: [ViewerInfo]
 

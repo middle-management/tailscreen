@@ -316,7 +316,9 @@
 /* MARK: - Shortcuts overlay (ViewerShortcutsOverlay.swift) */
 "Tools" = "Tools";
 "Annotation" = "Annotation";
+"Remote Control" = "Remote Control";
 "Window" = "Window";
+"Revoke remote control (system-wide)" = "Revoke remote control (system-wide)";
 "Pinch" = "Pinch";
 "⌥ Scroll" = "⌥ Scroll";
 "Scroll" = "Scroll";
