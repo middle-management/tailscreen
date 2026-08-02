@@ -22,13 +22,23 @@ public enum WASAPI {
         }
     }
 
-    public enum Error: Swift.Error, CustomStringConvertible {
+    /// `Equatable` so the code→case mapping can be asserted directly; it is the
+    /// one part of this file that runs on every platform.
+    public enum Error: Swift.Error, Equatable, CustomStringConvertible {
         /// The endpoint's mix format is not 32-bit float, so our samples cannot
         /// be written to it without a conversion the shim refuses to guess at.
         case unsupportedFormat
         case invalidArgument
         /// The device stopped draining for longer than the write timeout.
         case timedOut
+        /// A capture read was handed a buffer too small for one packet. Not
+        /// reachable through `Recorder`, which sizes its own.
+        case bufferTooSmall
+        /// Windows refused the microphone: Settings → Privacy & security →
+        /// Microphone. Its own case rather than an opaque HRESULT because it is
+        /// the one failure here that the user can fix, and a message naming
+        /// 0x80070005 tells them nothing.
+        case accessDenied
         /// A COM failure, carrying its HRESULT so the log names the real cause.
         case hresult(Int32)
         /// This build cannot play audio at all — WASAPI is Windows-only.
@@ -42,6 +52,10 @@ public enum WASAPI {
                 return "invalid argument"
             case .timedOut:
                 return "the audio endpoint stopped accepting data"
+            case .bufferTooSmall:
+                return "the read buffer cannot hold one capture packet"
+            case .accessDenied:
+                return "Windows is blocking microphone access for this app"
             case .hresult(let code):
                 return "WASAPI failed (HRESULT 0x\(String(UInt32(bitPattern: code), radix: 16)))"
             case .unsupportedPlatform:
@@ -49,13 +63,25 @@ public enum WASAPI {
             }
         }
 
+        /// The HRESULT Windows returns when the microphone privacy setting is
+        /// off. Spelled as a bit pattern because `E_ACCESSDENIED` is an SDK
+        /// macro that does not exist off Windows, and this mapping has to be
+        /// testable where the tests run.
+        static let accessDeniedHResult = Int32(bitPattern: 0x8007_0005)
+
         /// Map the shim's return code. Zero is success and must be filtered by
         /// the caller before this is consulted.
+        ///
+        /// Negative values are the shim's own; everything else is a raw HRESULT,
+        /// which keeps its identity all the way to the log line instead of
+        /// collapsing into "audio failed".
         static func from(code: Int32) -> Error {
             switch code {
             case -1: return .unsupportedFormat
             case -2: return .invalidArgument
             case -3: return .timedOut
+            case -4: return .bufferTooSmall
+            case accessDeniedHResult: return .accessDenied
             default: return .hresult(code)
             }
         }
