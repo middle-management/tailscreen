@@ -96,7 +96,6 @@ final class WindowsViewerInteraction: ObservableObject {
     let annotations = AnnotationStore()
 
     /// Whether the stats HUD is shown.
-    @Published var showStats = false
 
     // MARK: Zoom
 
@@ -234,7 +233,6 @@ final class WindowsViewerInteraction: ObservableObject {
 
     func undoAnnotation() { annotations.undo() }
     func clearAnnotations() { annotations.clearAll() }
-    func toggleStats() { showStats.toggle() }
 
     /// Forward one input event, if the grant gate is open.
     ///

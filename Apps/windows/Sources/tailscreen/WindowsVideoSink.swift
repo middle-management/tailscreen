@@ -2,6 +2,7 @@ import Foundation
 
 import protocol TailscreenViewer.DecodedFrame
 import struct TailscreenViewer.DecodedVideoFrame
+import struct TailscreenViewer.FrameRateCounter
 import class TailscreenViewer.FrameStore
 import protocol TailscreenViewer.VideoSink
 
@@ -20,10 +21,31 @@ import protocol TailscreenViewer.VideoSink
 final class WindowsVideoSink: VideoSink, @unchecked Sendable {
     private let store: FrameStore
     private let onFrame: @Sendable () -> Void
+    /// Reports the stats HUD's numbers when a window closes.
+    ///
+    /// Called only from `present`, which the session drives serially — the
+    /// same contract `FrameRateCounter` documents, and the reason it is a
+    /// plain `var` rather than something locked.
+    private var frameRate = FrameRateCounter()
+    private let onStats: @Sendable (Int, Int, Int) -> Void
 
-    init(store: FrameStore, onFrame: @escaping @Sendable () -> Void) {
+    init(
+        store: FrameStore,
+        onFrame: @escaping @Sendable () -> Void,
+        onStats: @escaping @Sendable (Int, Int, Int) -> Void = { _, _, _ in }
+    ) {
         self.store = store
         self.onFrame = onFrame
+        self.onStats = onStats
+    }
+
+    /// Forget the fps window before a new session.
+    ///
+    /// The sink outlives one viewing session, so without this the first frame
+    /// of the next one closes a window opened during the previous — reporting
+    /// a fraction of an fps across the idle gap between them.
+    func resetForNewSession() {
+        frameRate.reset()
     }
 
     func present(_ frame: any DecodedFrame) {
@@ -32,5 +54,10 @@ final class WindowsVideoSink: VideoSink, @unchecked Sendable {
         guard let frame = frame as? DecodedVideoFrame else { return }
         store.set(frame)
         onFrame()
+        // Published only when a window closes, so the common path stays a
+        // store plus a repaint request.
+        if let fps = frameRate.record(nowNs: DispatchTime.now().uptimeNanoseconds) {
+            onStats(frame.width, frame.height, fps)
+        }
     }
 }

@@ -193,8 +193,37 @@ then has no way to change their mind.
   to do nothing. And **the queue is pruned when a row leaves**, or a Deny &
   Block on a peer that disconnects before resolving lands on the next
   connection from that address — which behind one NAT is a different machine.
-- **2.4 · Ask a peer to share.** The `.requestToShare` wire pair is portable and
-  pinned; both hosts need the affordance and the accept/decline UI.
+- **2.4 · Ask a peer to share.** ✅ **Done**, and it completes Phase 2. The wire
+  pair was indeed portable and pinned; what was missing turned out not to be UI.
+
+  **Neither host was listening.** `TailscaleScreenShareServer` builds a control
+  listener when the caller supplies none — but only for the share's lifetime,
+  and an ask to share arrives precisely when a machine is *not* sharing. So
+  port 7447 answered nothing while idle and every ask read to the asker as
+  "no answer", indistinguishable from a peer being away. Both apps now own a
+  listener for as long as their node is up and hand *that* one to the share,
+  which is also what stops a second listener contending for the port.
+
+  Three pieces moved into the portable tier on the way, and the first is the
+  one worth remembering:
+  - `ShareRequestInbox` — the coalescing and the cap. macOS had both, inside an
+    `import AppKit` file, which is why the other two hosts had neither. The
+    dedupe key is the requester's **source IP**, never the hostname in the
+    payload: a peer picks its own hostname, so keying on it lets one machine
+    stack sixteen rows and pin sixteen connections on the asker's side just by
+    varying a string. `ShareRequestInboxTests` asserts exactly that, and fails
+    loudly when the key is swapped back.
+  - `TailscreenRequestToShareClient` — the parked dial, lifted verbatim from
+    the macOS service. Nothing in it was ever platform-specific.
+  - `SharerDetail.onAskToShare` — one optional closure, so a host with nothing
+    to ask through renders no button rather than an inert one.
+
+  Two smaller decisions. Accepting **pre-approves the asker's IP** before the
+  share starts, or the person just invited arrives at this machine's own
+  approval gate and is asked to wait — the same peer, prompted twice, seconds
+  apart. And the ask is offered only to a machine that is *not* already
+  sharing: "ask them to do the thing they are doing" is a banner on somebody's
+  desk for nothing.
 
 ## Phase 3 · The capability gates (months)
 
@@ -222,8 +251,58 @@ Kind B. Sequenced by how many rows each unblocks.
 Linux and Windows share `TailscreenHubUI`, so each of these is **one change for
 two platforms** — the best ratio in the plan and a good place to put spare time.
 
-Peer detail (route, latency, ACL tags) · quality settings UI (both hosts consume
-`QualitySettings.default` with no way to change it) · connection stats overlay.
+- **4.1 · Peer detail: route, latency, ACL tags.** ✅ **Done**, and it cost
+  almost nothing, which is the thesis of this phase. All three inputs already
+  existed and were being thrown away: `TailscalePeerDiscovery` parses `curAddr`
+  and `relay` off the LocalAPI seed, `DiscoveredSharer` simply dropped them;
+  `tags` were already carried for the filter menu; and the latency is the
+  *existing* metadata sweep timed, since that sweep is already a TCP round trip
+  over the live path. One clock read, not a second dial — and no probe on a
+  round trip that never completed, which would read as a fast link to a machine
+  that is gone.
+
+  `PeerRoute` and `ConnectionQualityTier` moved from `Apps/macOS/Sources/` into
+  `TailscreenProtocol` **and the macOS copies were deleted, not duplicated** —
+  a new public type in that tier lands in macOS's namespace through
+  `ProtocolReexports`, so leaving both would be the `ProfileStore` ambiguity
+  again. (This is the second time that hazard bit in one sitting; see 2.4.)
+
+  One deliberate divergence from macOS: the quality tier is spelled out in
+  words next to the number rather than shown as a coloured dot. macOS puts the
+  meaning in a tooltip, which its own accessibility rule says doesn't count —
+  and swift-cross-ui has no tooltip to hide it in anyway.
+- **4.2 · Quality settings UI.** ✅ **Done.** The model, its clamps, its preset
+  mapping and its persistence were portable and tested already, so this really
+  was just the control — `HubQualityMenu` on the share card, one component for
+  both hosts.
+
+  It is a **menu of checked rows rather than a `Picker`**, which is where the
+  guessing stopped and the reading started: swift-cross-ui's `Picker` labels
+  its options by string-interpolating the value (`options.map { "\($0)" }`), so
+  a `Preset` would render as `low` / `balanced` / `high` — enum case names, in
+  a user-facing control — and its availability is backend-conditional. A menu
+  of `Toggle`s is what `HubFilterMenu` already proves both backends render.
+  The rows are radio-shaped: picking one selects it, un-picking the active one
+  does nothing, because "no preset" is not a state this model has.
+
+  The honest part is the caption. Both non-mac capture backends take their
+  settings **at construction**, so a change made mid-share does nothing until
+  the next one — the card says "Applies to your next share" rather than
+  offering a control that appears to work. macOS re-pushes through its
+  helper-restart path; neither of these hosts has one, and inventing one was
+  not this item.
+- **4.3 · Connection stats overlay.** ✅ **Done**, which completes Phase 4.
+  `StatsHUD` already existed and the GTK viewer already showed it; what was
+  missing on Windows was the *numbers*, not the component.
+
+  The fps accounting behind them was inline in the GTK sink, so it moved to
+  the portable tier as `FrameRateCounter` — same reasoning as `I420Converter`
+  and `MonoPCMConverter`: arithmetic every renderer backend needs, no backend
+  can test in place, one copy per host otherwise. Writing the tests
+  immediately found a defect the inline version had carried all along: the
+  window start used `0` as "not started", and zero is a legitimate timestamp.
+  The GTK sink survived it only because `DispatchTime.now()` never returns 0 —
+  a property of the caller, not of the arithmetic.
 
 ## Phase 5 · Sharer surfaces
 

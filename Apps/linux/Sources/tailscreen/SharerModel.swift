@@ -14,8 +14,13 @@ import class TailscreenProtocol.PeerAccessStore
 import class TailscreenProtocol.SharerAccessCoordinator
 import struct TailscreenProtocol.PickerSelection
 import struct TailscreenProtocol.QualitySettings
+import enum TailscreenProtocol.QualitySettingsStore
+import struct TailscreenProtocol.PendingShareRequest
+import enum TailscreenProtocol.ScreenShareMessage
+import struct TailscreenProtocol.ShareRequestInbox
 import enum TailscreenProtocol.ViewerApprovalPreference
 import enum TailscreenProtocol.ViewerRosterDecision
+import class TailscreenTransport.TailscreenControlListener
 
 /// Somebody currently watching, as the share card needs them.
 ///
@@ -105,6 +110,16 @@ final class SharerModel: ObservableObject {
     /// telling the live server, which is the one place it matters.
     @Published private(set) var requireApproval: Bool = ViewerApprovalPreference.load()
 
+    /// The encoder knobs the next share will start with.
+    ///
+    /// Persisted through the portable `QualitySettingsStore` — the same store
+    /// and the same key the macOS Settings pane writes, so the model's clamps
+    /// and its decode-with-fallback are shared rather than reimplemented.
+    /// Read at start rather than pushed live: both non-mac capture backends
+    /// take their settings at construction, so a mid-share change lands on the
+    /// NEXT share and the card's caption says exactly that.
+    @Published private(set) var quality: QualitySettings = QualitySettingsStore.load()
+
     /// Whether this host can share at all. X11 capture needs a display; on a
     /// Wayland-only or headless session there's nothing to capture, and the UI
     /// should say so rather than offer a button that always fails.
@@ -113,6 +128,35 @@ final class SharerModel: ObservableObject {
     let unavailableReason: String?
 
     private var server: TailscaleScreenShareServer?
+
+    /// Peers asking this machine to share, coalesced and bounded by the
+    /// portable `ShareRequestInbox`.
+    @Published private(set) var shareRequests: [PendingShareRequest] = []
+    private var inbox = ShareRequestInbox()
+
+    /// The app's OWN control listener, alive for as long as the node is —
+    /// not the one the share creates.
+    ///
+    /// This distinction is the whole feature. `TailscaleScreenShareServer`
+    /// builds a listener when none is supplied, but only for the share's
+    /// lifetime, and a request to share arrives precisely when this machine is
+    /// NOT sharing. With no long-lived listener the port answers nothing while
+    /// idle and every ask reads to the asker as "no answer" — indistinguishable
+    /// from a peer that is away.
+    private var controlListener: TailscreenControlListener?
+    /// The node the listener was started against, so a profile switch (which
+    /// brings a different node up) restarts it rather than leaving it bound to
+    /// a node that is going away.
+    private var listenerNode: TailscaleNode?
+
+    /// IPs accepted before there was a server to tell.
+    ///
+    /// Accepting an ask has to pre-approve the requester, or they arrive at
+    /// this machine's own approval gate a second later and get asked to wait —
+    /// having just been invited. But accept happens *before* the share starts,
+    /// so there is no server yet: the IP is held here and replayed the moment
+    /// one exists.
+    private var pendingPreApprovedIPs: Set<String> = []
 
     /// Remembered allow/deny, and the queue for decisions made before a peer's
     /// identity resolved. Portable and tested on Linux CI — this app only
@@ -280,14 +324,29 @@ final class SharerModel: ObservableObject {
                 self.teardownOverlay()
             }
         }
+        // Anyone whose ask was accepted before this server existed. Replayed
+        // BEFORE start, so the gate already knows them when their HELLO lands.
+        for ip in pendingPreApprovedIPs { server.preApproveViewer(ip: ip) }
+        pendingPreApprovedIPs.removeAll()
         self.server = server
+
+        // Whatever else was parked is stale now: those askers wanted a share
+        // and there is one, but it is not the one they asked for and their
+        // connections have no answer coming. Leaving the rows would offer
+        // buttons that start a second share.
+        clearShareRequests()
 
         Task { @MainActor in
             do {
                 try await server.start(
                     filterData: selectionData,
-                    quality: .default,
-                    existingNode: node
+                    quality: quality,
+                    existingNode: node,
+                    // The app's long-lived listener, so the share does not
+                    // create a second one competing for port 7447 — and so
+                    // `onRequestToShare` keeps pointing here rather than being
+                    // rebound to the share's own.
+                    controlListener: controlListener
                 )
                 phase = .sharing
             } catch {
@@ -399,6 +458,93 @@ final class SharerModel: ObservableObject {
         }
     }
 
+    // MARK: Incoming asks to share
+
+    /// Bring up (or re-point) the idle control listener.
+    ///
+    /// Idempotent per node and safe to call on every node change — which is
+    /// how it is called, because there is no single moment when "the node is
+    /// ready" that this model observes. A listener already bound to the same
+    /// node is left alone.
+    func ensureControlListener() {
+        guard let node = nodeProvider?() else { return }
+        if controlListener != nil, listenerNode === node { return }
+        let previous = controlListener
+        if let previous { Task { await previous.stop() } }
+
+        let listener = TailscreenControlListener()
+        listener.onRequestToShare = { [weak self] hostname, connectionID, sourceAddr in
+            // Fires on the listener's own thread; the inbox and its published
+            // projection are main-actor state.
+            Task { @MainActor [weak self] in
+                self?.noteShareRequest(
+                    from: hostname, sourceAddr: sourceAddr, connectionID: connectionID)
+            }
+        }
+        controlListener = listener
+        listenerNode = node
+        Task {
+            do {
+                try await listener.start(node: node)
+            } catch {
+                // Worth a line rather than silence: the share still works and
+                // this machine simply never hears an ask, which from the other
+                // end is indistinguishable from nobody being home.
+                FileHandle.standardError.write(
+                    Data("warning: could not listen for share requests: \(error)\n".utf8))
+            }
+        }
+    }
+
+    private func noteShareRequest(from hostname: String, sourceAddr: String?, connectionID: UUID) {
+        let nowNs = DispatchTime.now().uptimeNanoseconds
+        // Expire first, so a two-minute-old row that the asker has already
+        // given up on cannot occupy a slot against a live one.
+        _ = inbox.pruneExpired(nowNs: nowNs, ttlNs: Self.shareRequestTTLNs)
+        guard
+            inbox.record(
+                fromHostname: hostname, sourceAddr: sourceAddr,
+                connectionID: connectionID, nowNs: nowNs)
+        else { return }
+        shareRequests = inbox.requests
+    }
+
+    /// Matches the requester's own wait (`TailscreenRequestToShareClient`'s
+    /// 120 s default). A row that outlives it is a button that does nothing.
+    private static let shareRequestTTLNs: UInt64 = 120 * 1_000_000_000
+
+    /// Answer an ask: reply on its own connection, and on accept pre-approve
+    /// the asker and start sharing.
+    func answerShareRequest(id: UUID, accept: Bool) {
+        guard let request = inbox.remove(id: id) else { return }
+        shareRequests = inbox.requests
+
+        if let connectionID = request.connectionID, let listener = controlListener {
+            Task {
+                // Best effort: the asker may have given up and closed. Sending
+                // into a dead connection is not an error worth surfacing —
+                // their side already settled on `.noAnswer`.
+                await listener.send(.shareResponse(accepted: accept), to: connectionID)
+            }
+        }
+        guard accept else { return }
+
+        // Pre-approve BEFORE starting, because the HELLO can arrive as soon as
+        // the share is up — and a peer this machine just invited must not then
+        // be parked at its approval gate.
+        pendingPreApprovedIPs.insert(request.sourceKey)
+        server?.preApproveViewer(ip: request.sourceKey)
+        startSharing()
+    }
+
+    /// Forget every parked ask — the share started by another route, or the
+    /// node went away.
+    func clearShareRequests() {
+        guard !inbox.requests.isEmpty else { return }
+        inbox.removeAll()
+        shareRequests = []
+    }
+
     /// What is remembered about a row's peer, for the roster's label.
     func remembered(stableID: String?) -> PeerPolicy? { access.remembered(stableID: stableID) }
 
@@ -442,6 +588,18 @@ final class SharerModel: ObservableObject {
     /// the gate off is also how you admit a queue in one click. Turning it on
     /// mid-share affects the next HELLO — viewers already admitted stay
     /// admitted, exactly as on macOS.
+    /// Change the encoder knobs and remember them.
+    ///
+    /// Deliberately does NOT touch a running share: the capture backend was
+    /// built with the old values and there is no re-push path on this host, so
+    /// pretending otherwise would be a control that appears to work.
+    func setQuality(_ new: QualitySettings) {
+        let normalized = new.normalized()
+        guard normalized != quality else { return }
+        quality = normalized
+        QualitySettingsStore.save(normalized)
+    }
+
     func setRequireApproval(_ enabled: Bool) {
         guard enabled != requireApproval else { return }
         requireApproval = enabled
