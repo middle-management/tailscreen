@@ -118,9 +118,10 @@ persistent per-peer policy store and the UI to drive it.
 | Quality settings UI | ✅ | ❌ | ❌ |
 | Connection stats overlay | ✅ | ❌ | ❌ |
 | Localized strings | ✅ | ❌ | ❌ |
-| **Notified when a viewer is waiting for approval** | ⚠️ passive | ❌ | ❌ |
+| **Notified when a viewer is waiting for approval** | ⚠️ posted, easily suppressed | ❌ | ❌ |
 | Answer that prompt from the notification | ❌ | ❌ | ❌ |
-| **Menu-bar / tray sharing controls** | ✅ | ❌ | ❌ |
+| **Outline around what's being captured** | ❌ | ❌ | ✅ system border |
+| Sharing controls outside the main window | ✅ menubar | ❌ | ❌ |
 | Mute / unmute from outside the window | ✅ | ❌ | ❌ |
 | Toggle sharer drawing from outside the window | ✅ | ❌ | ❌ |
 | Global hotkeys (mute, revoke control) | ✅ | ❌ | ❌ |
@@ -136,23 +137,29 @@ coming forward. Linux and Windows put everything in one window — which during 
 share is behind the thing you're sharing, and raising it is itself visible to
 your viewers. Every mid-share action costs an interruption the audience can see.
 
-**Notifications are the worst of these gaps, not the tray.** Approval defaults
-*on*, so a sharer who isn't watching the window silently strands whoever tries to
-connect; there is nothing to poll for and no way to find out. macOS at least
-posts a passive notification — no notification has *actions* on any platform yet,
-so even there you are told and then you go to the app.
+**Notifications are the worst of these gaps.** Approval defaults *on*, so a
+sharer who isn't watching the window silently strands whoever tries to connect;
+there is nothing to poll for and no way to find out. Linux and Windows post
+nothing at all. macOS posts, but weakly: every notification is left at
+`interruptionLevel = .active`, so a Focus — including the one people run while
+presenting — swallows it, and none of them carry *actions*, so at best you are
+told and then you go to the app.
 
-The other two rows are gated on capabilities rather than on a surface: muting
-needs microphone capture and toggling drawing needs a sharer-side overlay that
-can take a click, and neither exists on Linux or Windows (see Audio and
-Interaction above). The tray can't expose what isn't there.
+**"Am I still sharing?" is a different question, and an outline answers it
+better than an icon.** A border drawn around the captured region says what a
+status glyph can't: not that a share is running somewhere, but that *this* is
+what viewers can see. Windows already has one and didn't have to build it — WGC
+draws its own capture border unless an app opts out, and ours doesn't.
 
-swift-cross-ui offers nothing for any of this — it has no status-item concept,
-only `setApplicationMenu` for the application menu bar — so each surface needs a
-shim: `org.freedesktop.Notifications` / `Shell_NotifyIcon` /
-StatusNotifierItem. The plan, including why notifications come first (they work
-on stock GNOME, which does not show StatusNotifierItems without a shell
-extension) and why the tray must never be the only path to an action, is in
+The remaining rows are gated on capabilities rather than on a surface: muting
+needs microphone capture, toggling drawing needs a sharer-side overlay that can
+take a click, and neither exists on Linux or Windows (see Audio and Interaction
+above). No surface can expose what isn't there.
+
+swift-cross-ui offers nothing for any of this, so each surface needs a platform
+shim. The plan — including why notifications come first, why a tray icon was
+considered and dropped, and why the outline is nearly free on two of the three
+platforms — is in
 [`plans/sharer-surfaces.md`](https://github.com/middle-management/tailscreen/blob/main/plans/sharer-surfaces.md).
 
 ## Transport and resilience
