@@ -1,6 +1,12 @@
 import Foundation
 import SwiftCrossUI
 
+import enum TailscreenProtocol.AnnotationRasterizer
+import enum TailscreenProtocol.InputEvent
+import struct TailscreenProtocol.KeyModifiers
+import enum TailscreenProtocol.ViewerPointerMapping
+import enum TailscreenProtocol.ViewerZoomMath
+import enum TailscreenProtocol.WindowsKeyCodeMapping
 import class TailscreenViewer.FrameStore
 import enum TailscreenViewer.I420Converter
 
@@ -11,12 +17,21 @@ import enum TailscreenViewer.I420Converter
 // expression" after a forty-minute build. Everything the app does apart from
 // blitting a frame is portable, and there is no reason for a one-line type
 // error in it to be discoverable only on Windows.
+//
+// The interactive layer added for the viewer's drawing / zoom / remote control
+// follows the same rule and pushes it harder: EVERY decision lives in
+// `WindowsViewerInteraction` (state machine, gate, ordering) or in the portable
+// tier (`ViewerPointerMapping` letterbox math, `ViewerZoomMath` geometry,
+// `AnnotationRasterizer` strokes, `WindowsKeyCodeMapping` VK→HID), all of which
+// Linux compiles and tests. What is left here is event plumbing: read a
+// pointer, hand over four numbers.
 #if os(Windows)
 
 import WinUI
 // `WinUIElementRepresentable` lives in the BACKEND module, not in SwiftCrossUI
 // and not in WinUI — it is the seam between the two, so neither re-exports it.
 import WinUIBackend
+import WindowsFoundation
 
 /// The video surface: a WinUI `Image` fed from a `WriteableBitmap`, polling the
 /// portable `FrameStore` for the latest decoded frame.
@@ -39,6 +54,9 @@ struct WinUIVideoView: WinUIElementRepresentable {
     /// swift-cross-ui call `updateWinUIElement`. The frame itself travels
     /// through `store`, not through this.
     let generation: Int
+    /// Drawing / zoom / remote-control state. Every decision it makes is
+    /// portable and typechecked on Linux; this file only feeds it events.
+    let interaction: WindowsViewerInteraction
 
     @MainActor
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -50,12 +68,13 @@ struct WinUIVideoView: WinUIElementRepresentable {
         // rather than by resizing the window, which the WinUI backend cannot do
         // anyway (`setSizeLimits` is unimplemented).
         image.stretch = .uniform
+        context.coordinator.attachInput(to: image, interaction: interaction)
         return image
     }
 
     @MainActor
     func updateWinUIElement(_ element: WinUI.Image, context: Context) {
-        context.coordinator.draw(from: store, into: element)
+        context.coordinator.draw(from: store, into: element, interaction: interaction)
     }
 
     /// Take whatever the parent offers, falling back to 16:9 when a dimension is
@@ -84,9 +103,30 @@ struct WinUIVideoView: WinUIElementRepresentable {
         private var bitmap: WriteableBitmap?
         private var bitmapWidth = 0
         private var bitmapHeight = 0
+        /// The element's last laid-out size, for the letterbox and zoom math.
+        /// Read from the element on each event rather than cached across them:
+        /// the pane resizes with the window.
+        private var lastVideoWidth = 0
+        private var lastVideoHeight = 0
+        /// Whether a pointer press is currently down on the surface, and what
+        /// it is doing. A drag is one gesture, and which gesture it is has to be
+        /// decided at press time — switching tools mid-drag must not reshape it.
+        private var activeGesture: Gesture?
+        private var lastPanPoint: CGPoint = .zero
 
-        func draw(from store: FrameStore, into element: WinUI.Image) {
+        private enum Gesture {
+            case drawing
+            case controlling
+            case panning
+        }
+
+        func draw(
+            from store: FrameStore, into element: WinUI.Image,
+            interaction: WindowsViewerInteraction
+        ) {
             guard let frame = store.current() else { return }
+            lastVideoWidth = frame.width
+            lastVideoHeight = frame.height
 
             if bitmap == nil || bitmapWidth != frame.width || bitmapHeight != frame.height {
                 let fresh = WriteableBitmap(Int32(frame.width), Int32(frame.height))
@@ -106,7 +146,300 @@ struct WinUIVideoView: WinUIElementRepresentable {
             else { return }
 
             guard I420Converter.convert(frame, into: bytes) else { return }
+
+            // Annotations are drawn STRAIGHT INTO THE DECODED FRAME rather than
+            // onto a second surface.
+            //
+            // The alternative — a XAML canvas or a D2D device over the Image —
+            // is a large amount of platform for something `AnnotationRasterizer`
+            // already does, and it would need its own zoom transform kept in
+            // sync with the video's. Compositing here makes the strokes part of
+            // the picture, so they zoom and letterbox with it for free, which is
+            // exactly the behaviour annotations anchored to video content should
+            // have. The cost is redrawing them per frame; the rasterizer is
+            // bounded by each stroke's bounding box, and a session with nobody
+            // drawing pays a single `isEmpty` check.
+            let annotations = interaction.annotations.visibleAnnotations
+            if !annotations.isEmpty {
+                AnnotationRasterizer.draw(
+                    annotations,
+                    into: AnnotationRasterizer.Surface(
+                        bgra: bytes,
+                        stride: frame.width * AnnotationRasterizer.bytesPerPixel,
+                        width: frame.width,
+                        height: frame.height))
+            }
             try? bitmap.invalidate()
+
+            applyZoom(to: element, interaction: interaction)
+        }
+
+        /// Project the portable zoom state onto the element's render transform.
+        ///
+        /// A `RenderTransform` rather than cropping the source: it is composited
+        /// by the same pass that already draws the Image, so zooming costs
+        /// nothing per frame, and it scales the annotations with the video
+        /// because they are in the bitmap.
+        private func applyZoom(to element: WinUI.Image, interaction: WindowsViewerInteraction) {
+            let state = interaction.zoomState
+            let transform = CompositeTransform()
+            transform.scaleX = Double(state.scale)
+            transform.scaleY = Double(state.scale)
+            transform.translateX = Double(state.offset.x)
+            transform.translateY = Double(state.offset.y)
+            element.renderTransform = transform
+            // Origin at the centre, matching `ViewerZoomMath`'s model: it
+            // magnifies about the fit rect's centre and expresses pan as an
+            // offset from it. With the default (0, 0) origin the same numbers
+            // would zoom toward the top-left corner.
+            element.renderTransformOrigin = Point(x: 0.5, y: 0.5)
+        }
+
+        // MARK: Input
+
+        /// Attach pointer + key handlers once, at element creation.
+        ///
+        /// The element is made focusable and takes focus on press, because a
+        /// `WinUI.Image` is not a focus target by default and `keyDown` never
+        /// fires on something that cannot be focused — remote-control typing
+        /// would silently do nothing while the pointer worked fine.
+        func attachInput(to element: WinUI.Image, interaction: WindowsViewerInteraction) {
+            element.isTabStop = true
+            element.isHitTestVisible = true
+
+            element.pointerPressed { [weak self] sender, args in
+                self?.handlePressed(sender, args, interaction)
+            }
+            element.pointerMoved { [weak self] sender, args in
+                self?.handleMoved(sender, args, interaction)
+            }
+            element.pointerReleased { [weak self] sender, args in
+                self?.handleReleased(sender, args, interaction)
+            }
+            // A capture loss ends the gesture exactly like a release. Without
+            // it, dragging out of the window and letting go leaves the stroke
+            // live forever and — worse, under a control grant — leaves a button
+            // held down on the sharer's desktop.
+            element.pointerCaptureLost { [weak self] sender, args in
+                self?.handleReleased(sender, args, interaction)
+            }
+            element.pointerWheelChanged { [weak self] sender, args in
+                self?.handleWheel(sender, args, interaction)
+            }
+            element.keyDown { [weak self] sender, args in
+                self?.handleKey(sender, args, interaction, down: true)
+            }
+            element.keyUp { [weak self] sender, args in
+                self?.handleKey(sender, args, interaction, down: false)
+            }
+            element.doubleTapped { [weak self] sender, args in
+                guard let self, let element = sender as? WinUI.Image else { return }
+                let point = args?.getPosition(element) ?? Point(x: 0, y: 0)
+                interaction.smartMagnify(
+                    anchor: CGPoint(x: point.x, y: point.y), fit: self.fitRect(of: element))
+            }
+        }
+
+        /// The aspect-fit rect the video occupies inside the element, in the
+        /// element's own coordinates.
+        ///
+        /// `ViewerZoomMath` works against this rather than the whole pane, and
+        /// so does the letterbox mapping — they have to agree, or a click lands
+        /// in one place and zooms about another.
+        private func fitRect(of element: WinUI.Image) -> CGRect {
+            let paneWidth = element.actualWidth
+            let paneHeight = element.actualHeight
+            guard paneWidth > 0, paneHeight > 0, lastVideoWidth > 0, lastVideoHeight > 0 else {
+                return CGRect(x: 0, y: 0, width: paneWidth, height: paneHeight)
+            }
+            let frameAspect = Double(lastVideoWidth) / Double(lastVideoHeight)
+            let paneAspect = paneWidth / paneHeight
+            var width = paneWidth
+            var height = paneHeight
+            if frameAspect > paneAspect {
+                height = paneWidth / frameAspect
+            } else {
+                width = paneHeight * frameAspect
+            }
+            return CGRect(
+                x: (paneWidth - width) / 2, y: (paneHeight - height) / 2,
+                width: width, height: height)
+        }
+
+        /// Pointer position as normalized `[0, 1]` over the video content.
+        private func normalized(_ point: Point, in element: WinUI.Image) -> (x: Double, y: Double) {
+            ViewerPointerMapping.normalize(
+                pointX: point.x, pointY: point.y,
+                paneWidth: element.actualWidth, paneHeight: element.actualHeight,
+                videoWidth: lastVideoWidth, videoHeight: lastVideoHeight)
+        }
+
+        private func handlePressed(
+            _ sender: Any?, _ args: PointerRoutedEventArgs?,
+            _ interaction: WindowsViewerInteraction
+        ) {
+            guard let element = sender as? WinUI.Image, let args else { return }
+            _ = try? element.focus(.pointer)
+            _ = try? element.capturePointer(args.pointer)
+            let point = args.getPosition(element)
+            let norm = normalized(point, in: element)
+
+            if interaction.activeTool != nil {
+                activeGesture = .drawing
+                interaction.annotations.beginStroke(at: CGPoint(x: norm.x, y: norm.y))
+            } else if interaction.forwardsInput {
+                activeGesture = .controlling
+                interaction.forward(
+                    .mouseDown(
+                        x: norm.x, y: norm.y,
+                        button: Self.button(args, element),
+                        modifiers: Self.modifiers()))
+            } else if interaction.isZoomed {
+                // Only while zoomed: at fit there is nothing to pan over, and
+                // treating a plain click as a pan gesture would swallow it.
+                activeGesture = .panning
+                lastPanPoint = CGPoint(x: point.x, y: point.y)
+            } else {
+                activeGesture = nil
+            }
+        }
+
+        private func handleMoved(
+            _ sender: Any?, _ args: PointerRoutedEventArgs?,
+            _ interaction: WindowsViewerInteraction
+        ) {
+            guard let element = sender as? WinUI.Image, let args else { return }
+            let point = args.getPosition(element)
+            let norm = normalized(point, in: element)
+
+            switch activeGesture {
+            case .drawing:
+                interaction.annotations.extendStroke(to: CGPoint(x: norm.x, y: norm.y))
+            case .panning:
+                let delta = CGSize(
+                    width: point.x - lastPanPoint.x, height: point.y - lastPanPoint.y)
+                lastPanPoint = CGPoint(x: point.x, y: point.y)
+                interaction.pan(by: delta, fit: fitRect(of: element))
+            case .controlling, nil:
+                // Moves are forwarded even with no button down — a remote
+                // pointer that only moves while dragging cannot hover, and
+                // hover is most of what a pointer does.
+                interaction.forward(.mouseMove(x: norm.x, y: norm.y))
+            }
+        }
+
+        private func handleReleased(
+            _ sender: Any?, _ args: PointerRoutedEventArgs?,
+            _ interaction: WindowsViewerInteraction
+        ) {
+            guard let element = sender as? WinUI.Image else { return }
+            defer { activeGesture = nil }
+            switch activeGesture {
+            case .drawing:
+                interaction.annotations.endStroke()
+            case .controlling:
+                guard let args else { return }
+                let norm = normalized(args.getPosition(element), in: element)
+                interaction.forward(
+                    .mouseUp(
+                        x: norm.x, y: norm.y,
+                        button: Self.button(args, element),
+                        modifiers: Self.modifiers()))
+            case .panning, nil:
+                break
+            }
+        }
+
+        private func handleWheel(
+            _ sender: Any?, _ args: PointerRoutedEventArgs?,
+            _ interaction: WindowsViewerInteraction
+        ) {
+            guard let element = sender as? WinUI.Image, let args else { return }
+            let properties = args.getCurrentPoint(element).properties
+            let deltaLines = Double(properties.mouseWheelDelta) / 120.0
+            let point = args.getPosition(element)
+
+            // Ctrl+wheel zooms, plain wheel scrolls the sharer's content when a
+            // grant is held. The split matters: without it, zooming would be
+            // unreachable while controlling, and scrolling unreachable while
+            // not.
+            if Self.modifiers().contains(.control) || !interaction.forwardsInput {
+                let step =
+                    deltaLines > 0
+                    ? ViewerZoomMath.menuZoomStep : 1 / ViewerZoomMath.menuZoomStep
+                interaction.zoom(
+                    by: step, anchor: CGPoint(x: point.x, y: point.y),
+                    fit: fitRect(of: element))
+            } else {
+                let norm = normalized(point, in: element)
+                interaction.forward(
+                    .scroll(
+                        x: norm.x, y: norm.y, deltaX: 0, deltaY: deltaLines,
+                        modifiers: Self.modifiers()))
+            }
+        }
+
+        private func handleKey(
+            _ sender: Any?, _ args: KeyRoutedEventArgs?,
+            _ interaction: WindowsViewerInteraction, down: Bool
+        ) {
+            guard let args else { return }
+            // VK → HID, through the same table the Windows *sharer* injects
+            // with, read in the other direction. Nothing native reaches the
+            // wire; an unmapped key is dropped rather than guessed at, exactly
+            // as every injector in this repo drops one.
+            guard let usage = WindowsKeyCodeMapping.hidUsage(forVirtualKey: UInt16(args.key.rawValue))
+            else { return }
+            // Modifier keys are NOT sent as standalone events — their held
+            // state rides every event's `modifiers` field, which is what keeps
+            // a mid-stream join stateless and stops a dropped connection
+            // stranding a modifier down on the sharer's machine.
+            guard !(0xE0...0xE7).contains(usage) else { return }
+            interaction.forward(
+                down
+                    ? .keyDown(key: usage, modifiers: Self.modifiers())
+                    : .keyUp(key: usage, modifiers: Self.modifiers()))
+        }
+
+        /// Which button a pointer event carries. WinUI reports button state as
+        /// flags on the point's properties rather than as an event field.
+        private static func button(
+            _ args: PointerRoutedEventArgs, _ element: WinUI.Image
+        )
+            -> InputEvent.MouseButton
+        {
+            let properties = args.getCurrentPoint(element).properties
+            if properties.isRightButtonPressed { return .right }
+            if properties.isMiddleButtonPressed { return .middle }
+            return .left
+        }
+
+        /// The modifier snapshot, read from the keyboard's live state.
+        ///
+        /// `CoreWindow.getKeyState` rather than an event field, because WinUI's
+        /// pointer args carry no modifier information at all — and the wire
+        /// wants a snapshot on every event regardless, so a modified click
+        /// works without tracking key events.
+        private static func modifiers() -> KeyModifiers {
+            var mods: KeyModifiers = []
+            func held(_ key: VirtualKey) -> Bool {
+                guard let window = CoreWindow.getForCurrentThread(),
+                    let state = try? window.getKeyState(key)
+                else { return false }
+                return state.contains(.down)
+            }
+            func locked(_ key: VirtualKey) -> Bool {
+                guard let window = CoreWindow.getForCurrentThread(),
+                    let state = try? window.getKeyState(key)
+                else { return false }
+                return state.contains(.locked)
+            }
+            if held(.shift) { mods.insert(.shift) }
+            if held(.control) { mods.insert(.control) }
+            if held(.menu) { mods.insert(.alt) }
+            if held(.leftWindows) || held(.rightWindows) { mods.insert(.meta) }
+            if locked(.capitalLock) { mods.insert(.capsLock) }
+            return mods
         }
     }
 }
@@ -124,6 +457,7 @@ struct WinUIVideoView: WinUIElementRepresentable {
 struct WinUIVideoView: View {
     let store: FrameStore
     let generation: Int
+    let interaction: WindowsViewerInteraction
 
     var body: some View {
         Text("Video is available on Windows only.")

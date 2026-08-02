@@ -71,9 +71,9 @@ half.
 
 | | Linux has | Windows has |
 |---|---|---|
-| Draw as viewer | ✅ | ❌ |
-| Zoom + pan viewer | ✅ | ❌ |
-| Request control as viewer | ✅ | ❌ |
+| Draw as viewer | ✅ | ✅ (1.1) |
+| Zoom + pan viewer | ✅ | ✅ (1.2) |
+| Request control as viewer | ✅ | ✅ (1.3) |
 | Render viewers' annotations as sharer | ❌ | ✅ |
 | Inject granted control as sharer | ❌ | ✅ |
 
@@ -82,14 +82,34 @@ mapping, the neutral HID key model, the annotation geometry and the rasterizer
 are all portable and already unit-tested on Linux CI. What's missing is the host
 call.
 
-- **1.1 · Windows viewer: annotations.** `AnnotationCanvasModel` +
-  `AnnotationGeometry` are portable; `WinOverlayKit` already rasterizes. The
-  viewer needs a drawing surface over its `WriteableBitmap` and the existing
-  back-channel send.
-- **1.2 · Windows viewer: zoom + pan.** `ViewerZoomMath` is portable and tested;
-  this is gesture plumbing.
-- **1.3 · Windows viewer: request control.** The viewer half of a flow whose
-  sharer half Windows already implements.
+- **1.1 – 1.3 · Windows viewer: annotations, zoom + pan, request control.**
+  ✅ **Done**, and together rather than separately because they are one surface:
+  all three are decided by what a pointer drag means, so splitting them would
+  have meant writing that precedence three times.
+
+  It came in far under the estimate, and the reason is the point of this plan:
+  **almost nothing new was written.** `TailscreenHubUI` already had
+  `AnnotationToolbar` and `RemoteControlBar` for the GTK viewer, `ViewerZoomMath`
+  already had the geometry, `WindowsKeyCodeMapping` already had VK↔HID (read in
+  the other direction from the sharer's use), and `AnnotationRasterizer` already
+  drew strokes. Two more pieces moved into the portable tier on the way — the
+  GTK viewer's `AnnotationStore`, which was Foundation-only all along, and its
+  letterbox arithmetic, now `ViewerPointerMapping` — so both viewers share one
+  canvas and one mapping instead of two that drift.
+
+  Three decisions worth carrying forward:
+  - **Annotations are composited into the decoded frame**, not onto a second
+    surface. `AnnotationRasterizer.draw` (the no-clear half of `render`) writes
+    straight into the BGRA the `WriteableBitmap` shows, so strokes zoom and
+    letterbox with the video for free. A XAML canvas or a D2D device would have
+    been a lot of platform plus a second transform to keep in sync.
+  - **Drawing wins over controlling.** With a tool armed a drag is a stroke, not
+    a click. A drag cannot be both, so the precedence has to live somewhere;
+    it is one property (`forwardsInput`) rather than scattered through the
+    handlers.
+  - **Ctrl+wheel zooms; plain wheel scrolls the sharer** while a grant is held.
+    Without the split, zooming is unreachable while controlling and scrolling is
+    unreachable while not.
 - **1.4 · Linux sharer: render annotations.** Closes 0.1 properly. Needs a
   click-through overlay window — which is also the surface Phase 3's sharer
   drawing needs, so build it once with that in mind.
@@ -100,6 +120,10 @@ call.
 
 **Do 1.4 before 1.1.** Fixing the sharer that lies is worth more than adding a
 viewer feature, and it unblocks the honest version of the capability bit.
+
+*Phase 1 is complete. The mirror is closed: every row above is ✅ on all three
+platforms, and the remaining gaps are Phase 2's access control and Phase 3's
+capability shims.*
 
 ## Phase 2 · Access control, where the "decision" bar actually bites (weeks)
 

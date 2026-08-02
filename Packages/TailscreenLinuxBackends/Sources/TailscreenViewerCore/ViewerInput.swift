@@ -23,25 +23,17 @@ public enum ViewerInputMapping {
     /// size and the GL device-pixel viewport share the same aspect, which is all
     /// that matters. The letterbox geometry matches `cgtkvideo_draw_yuv`'s
     /// aspect-fit exactly.
+    /// Forwards to the portable ``ViewerPointerMapping/normalize(pointX:pointY:paneWidth:paneHeight:videoWidth:videoHeight:)``,
+    /// which is where this moved when the WinUI viewer needed the identical
+    /// letterbox arithmetic. Kept as a name so no GTK caller changed, and
+    /// because "normalizePointer" is what the event-controller layer reads as.
     public static func normalizePointer(
         px: Double, py: Double, widgetW: Double, widgetH: Double,
         videoW: Int, videoH: Int
     ) -> (x: Double, y: Double) {
-        guard widgetW > 0, widgetH > 0, videoW > 0, videoH > 0 else { return (0, 0) }
-        let viewportAspect = widgetW / widgetH
-        let frameAspect = Double(videoW) / Double(videoH)
-        var contentW = widgetW
-        var contentH = widgetH
-        if frameAspect > viewportAspect {
-            contentH = widgetW / frameAspect  // fit to width; letterbox top/bottom
-        } else {
-            contentW = widgetH * frameAspect  // fit to height; letterbox left/right
-        }
-        let offsetX = (widgetW - contentW) / 2
-        let offsetY = (widgetH - contentH) / 2
-        let nx = (px - offsetX) / contentW
-        let ny = (py - offsetY) / contentH
-        return (min(max(nx, 0), 1), min(max(ny, 0), 1))
+        ViewerPointerMapping.normalize(
+            pointX: px, pointY: py, paneWidth: widgetW, paneHeight: widgetH,
+            videoWidth: videoW, videoHeight: videoH)
     }
 
     /// GDK mouse button number (1 left, 2 middle, 3 right) → neutral button, or
