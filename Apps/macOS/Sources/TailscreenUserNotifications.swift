@@ -16,9 +16,14 @@ import UserNotifications
 /// Stateless, so `@unchecked Sendable` costs nothing to guarantee — it exists
 /// only to satisfy the `static let shared` a delegate needs in order to be
 /// retained (`UNUserNotificationCenter.delegate` is weak).
-final class TailscreenNotificationDelegate: NSObject, UNUserNotificationCenterDelegate,
-    @unchecked Sendable
-{
+///
+/// The protocol conformance lives in the extension below rather than on this
+/// line, so the declaration fits on one line: swift-format wraps a longer one
+/// and puts the opening brace on its own line, which swiftlint's
+/// `opening_brace` rule rejects — the two tools cannot both be satisfied by a
+/// wrapped declaration, so the fix is to not need one. Same reasoning as
+/// `AccountProfileStore.init`'s `fm` local.
+final class TailscreenNotificationDelegate: NSObject, @unchecked Sendable {
     static let shared = TailscreenNotificationDelegate()
 
     /// Install once at launch. No-op on unbundled builds, where
@@ -28,7 +33,9 @@ final class TailscreenNotificationDelegate: NSObject, UNUserNotificationCenterDe
         guard Bundle.main.bundleIdentifier != nil else { return }
         UNUserNotificationCenter.current().delegate = shared
     }
+}
 
+extension TailscreenNotificationDelegate: UNUserNotificationCenterDelegate {
     /// Show banners even when Tailscreen is the active app. `.list` keeps it
     /// in Notification Center so a sharer who looks away mid-share can still
     /// find out somebody is waiting; `.sound` is honoured only for posts that
@@ -37,7 +44,8 @@ final class TailscreenNotificationDelegate: NSObject, UNUserNotificationCenterDe
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification,
-        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+        withCompletionHandler completionHandler:
+            @escaping (UNNotificationPresentationOptions) -> Void
     ) {
         completionHandler([.banner, .list, .sound])
     }

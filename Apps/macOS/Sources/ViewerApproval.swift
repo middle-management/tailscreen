@@ -40,6 +40,17 @@ enum ViewerApprovalDefaults {
     }
 }
 
+/// Per-file logger, following the convention the other mac sources use —
+/// `LogSink` comes from TailscaleKit but each file declares its own private
+/// conformer with its own prefix, so there is no shared `TSLogger` to import.
+private struct TSLogger: LogSink {
+    var logFileHandle: Int32?
+
+    func log(_ message: String) {
+        print("[Notifications] \(message)")
+    }
+}
+
 /// Thin wrapper around `UNUserNotificationCenter` for the
 /// viewer-connection feature. Two surfaces:
 ///
