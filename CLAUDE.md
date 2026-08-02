@@ -99,7 +99,18 @@ tailscreen/
 │   │   │                       #   sharer's screen capture + BGRA→I420
 │   │   │                       #   (limited-range BT.709); see its README
 │   ├── ALSAKit/                # systemLibrary wrapper over libasound (ALSA) —
-│   │   │                       #   the Linux viewer's audio-playback backend
+│   │   │                       #   the Linux viewer's audio PLAYBACK backend and
+│   │   │                       #   the sharer's microphone CAPTURE one. The two
+│   │   │                       #   halves differ in one load-bearing way: the
+│   │   │                       #   player DICTATES its format (output always has
+│   │   │                       #   48 kHz mono to play, and `default` is a plug
+│   │   │                       #   chain), while the recorder NEGOTIATES —
+│   │   │                       #   asking a stereo-only mic for one channel via
+│   │   │                       #   `snd_pcm_set_params` is -EINVAL at open, i.e.
+│   │   │                       #   "no microphone" when the truth is "a stereo
+│   │   │                       #   microphone". It reports the rate it actually
+│   │   │                       #   got and leaves resampling to the portable
+│   │   │                       #   `CapturePCMConverter`
 │   │   │                       #   (Linux-only; wired via Packages/TailscreenLinuxBackends); see README
 │   ├── WASAPIKit/              # C++ shim over WASAPI shared-mode rendering — the
 │   │   │                       #   WINDOWS viewer's audio-playback backend, i.e.

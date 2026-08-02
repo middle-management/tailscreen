@@ -259,13 +259,14 @@ jobs:
             apt: libavcodec-dev libavutil-dev pkg-config
             cmd: swift test --package-path Packages/FFmpegKit
 
-          # Audio-playback-portability gate: ALSAKit (a systemLibrary wrapper
-          # over libasound — see Packages/ALSAKit/README.md) must build and
-          # pass its PCM-playback tests on Linux. This is the Linux viewer's
-          # audio-output backend (the counterpart to the mac viewer's
-          # AVAudioEngine sink); the tests open ALSA's always-present "null"
-          # PCM so they run headless with no sound hardware. Cheap: one apt
-          # install, no submodules, no Go.
+          # Audio-portability gate, both directions: ALSAKit (a systemLibrary
+          # wrapper over libasound — see Packages/ALSAKit/README.md) must build
+          # and pass its PCM playback AND capture tests on Linux. This is the
+          # Linux viewer's audio-output backend and the Linux sharer's mic
+          # input (the counterparts to the mac AVAudioEngine sink and input
+          # node); the tests open ALSA's always-present "null" PCM, which works
+          # in both stream directions, so they run headless with no sound
+          # hardware. Cheap: one apt install, no submodules, no Go.
           - name: linux-alsa
             apt: libasound2-dev pkg-config
             cmd: swift test --package-path Packages/ALSAKit
