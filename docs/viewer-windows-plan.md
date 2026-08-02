@@ -1,6 +1,6 @@
 ---
 title: Windows app on swift-cross-ui / WinUI
-nav_order: 13
+nav_order: 14
 permalink: /viewer-windows-plan/
 ---
 

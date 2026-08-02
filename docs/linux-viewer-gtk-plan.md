@@ -1,6 +1,6 @@
 ---
 title: Live Linux viewer on swift-cross-ui / GTK
-nav_order: 12
+nav_order: 13
 permalink: /linux-viewer-gtk-plan/
 ---
 
