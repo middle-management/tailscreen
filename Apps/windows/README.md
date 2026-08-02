@@ -197,9 +197,9 @@ without it, `scripts/materialize-symlinks.sh` repairs a checkout in place.
 
 ## Why a separate package
 
-`Apps/linux-gtk` carries `CGtkVideo`, a GTK-linked C target that cannot build
+`Apps/linux` carries `CGtkVideo`, a GTK-linked C target that cannot build
 here, and pulls a GTK toolchain no Windows job should pay for. The split is the
-same one that already exists between `Apps/linux` and `Apps/linux-gtk`.
+same one that already exists between `Packages/TailscreenLinuxBackends` and `Apps/linux`.
 
 The app depends on swift-cross-ui's `DefaultBackend` rather than naming
 `WinUIBackend`, since swift-cross-ui already resolves the backend per platform.

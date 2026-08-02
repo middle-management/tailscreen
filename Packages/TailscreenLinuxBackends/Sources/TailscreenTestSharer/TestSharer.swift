@@ -20,7 +20,7 @@ import TailscreenProtocol
 // FFmpeg decoder and GL renderer do genuine work. It is a development/test tool,
 // NOT a product sharer: it captures nothing, and every viewer is admitted.
 //
-// Pair with scripts/e2e-up-native.sh; see Apps/linux/README.md.
+// Pair with scripts/e2e-up-native.sh; see Packages/TailscreenLinuxBackends/README.md.
 
 func fail(_ message: String) -> Never {
     FileHandle.standardError.write(Data("error: \(message)\n".utf8))

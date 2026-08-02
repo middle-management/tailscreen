@@ -1,7 +1,7 @@
 # TailscreenHubUI
 
 The hub's look, shared by every swift-cross-ui app in this repo — today the
-Linux/GTK viewer (`Apps/linux-gtk`) and the Windows app (`Apps/windows`).
+Linux/GTK viewer (`Apps/linux`) and the Windows app (`Apps/windows`).
 
 ## Why this exists
 

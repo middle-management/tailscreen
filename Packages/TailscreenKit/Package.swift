@@ -106,7 +106,7 @@ let package = Package(
         // browser-login URL), peer discovery, the UDP media socket and the TCP
         // back-channel, assembled onto ViewerPipeline.
         //
-        // It lived in Apps/linux until the Windows app needed it. Nothing about
+        // It lived in Packages/TailscreenLinuxBackends until the Windows app needed it. Nothing about
         // it was ever Linux-specific — it is Foundation + TailscaleKit + the
         // portable tiers, and the `import TailscreenViewerCore` that tied it to
         // FFmpeg and ALSA referenced no symbol from that module at all. Moving

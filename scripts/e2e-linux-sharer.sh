@@ -49,9 +49,9 @@ export PKG_CONFIG_PATH="$REPO_ROOT/Packages/TailscaleKit${PKG_CONFIG_PATH:+:$PKG
 # One product per invocation: `swift build` honours only the last `--product`,
 # so passing both silently leaves one binary stale — which is exactly the kind
 # of thing that makes a harness lie about what it tested.
-swift build --package-path "$REPO_ROOT/Apps/linux" --product tailscreen-sharer-linux
-swift build --package-path "$REPO_ROOT/Apps/linux" --product tailscreen-viewer-probe
-BIN="$REPO_ROOT/Apps/linux/.build/debug"
+swift build --package-path "$REPO_ROOT/Packages/TailscreenLinuxBackends" --product tailscreen-sharer-linux
+swift build --package-path "$REPO_ROOT/Packages/TailscreenLinuxBackends" --product tailscreen-viewer-probe
+BIN="$REPO_ROOT/Packages/TailscreenLinuxBackends/.build/debug"
 
 log "starting headscale..."
 # Deliberately NOT `eval "$(e2e-up-native.sh)"`: command substitution swallows

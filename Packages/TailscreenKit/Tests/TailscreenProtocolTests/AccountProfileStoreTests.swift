@@ -77,58 +77,6 @@ final class AccountProfileStoreTests: XCTestCase {
         XCTAssertEqual(store.active.statePath, root + "/tailscale")
     }
 
-    // MARK: Migration
-
-    /// The GTK migration: the config root was `tailscreen-viewer-gtk` before
-    /// the executable rename. It is renamed onto the new root once, so both
-    /// the registry and the node state under it survive.
-    func testLegacyConfigRootIsRenamedOntoTheNewRoot() throws {
-        let base = scratch.path
-        let legacyRoot = base + "/tailscreen-viewer-gtk"
-        let root = base + "/tailscreen"
-        try FileManager.default.createDirectory(
-            atPath: legacyRoot + "/profiles/old-id", withIntermediateDirectories: true)
-        let blob = """
-            {"profiles":[{"id":"old-id","name":"robert@github",\
-            "statePath":"\(legacyRoot)/profiles/old-id"}],"activeID":"old-id"}
-            """
-        try Data(blob.utf8).write(to: URL(fileURLWithPath: legacyRoot + "/profiles.json"))
-
-        let store = AccountProfileStore(
-            layout: AccountProfileLayout(root: root, legacyRoot: legacyRoot))
-
-        XCTAssertEqual(store.profiles.count, 1)
-        XCTAssertEqual(store.profiles[0].id, "old-id")
-        XCTAssertEqual(store.profiles[0].name, "robert@github")
-        XCTAssertFalse(
-            FileManager.default.fileExists(atPath: legacyRoot),
-            "the legacy root is renamed, not copied")
-        XCTAssertTrue(FileManager.default.fileExists(atPath: root + "/profiles.json"))
-    }
-
-    /// A live registry must never be clobbered by a stale directory left over
-    /// from before the rename.
-    func testLegacyConfigRootIsIgnoredWhenTheNewRootAlreadyExists() throws {
-        let base = scratch.path
-        let legacyRoot = base + "/tailscreen-viewer-gtk"
-        let root = base + "/tailscreen"
-        try FileManager.default.createDirectory(atPath: legacyRoot, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
-        let blob = """
-            {"profiles":[{"id":"current","name":"current","statePath":"\(root)/profiles/current"}],\
-            "activeID":"current"}
-            """
-        try Data(blob.utf8).write(to: URL(fileURLWithPath: root + "/profiles.json"))
-
-        let store = AccountProfileStore(
-            layout: AccountProfileLayout(root: root, legacyRoot: legacyRoot))
-
-        XCTAssertEqual(store.profiles.map(\.id), ["current"])
-        XCTAssertTrue(
-            FileManager.default.fileExists(atPath: legacyRoot),
-            "the stale directory is left alone rather than merged")
-    }
-
     // MARK: Adding, switching, renaming
 
     func testAddedProfilesGetUniqueDirectoriesAndBecomeActive() {
@@ -253,12 +201,10 @@ final class AccountProfileStoreTests: XCTestCase {
             "XDG_CONFIG_HOME": "/x/config", "HOME": "/home/robert",
         ])
         XCTAssertEqual(xdg.root, "/x/config/tailscreen")
-        XCTAssertEqual(xdg.legacyRoot, "/x/config/tailscreen-viewer-gtk")
         XCTAssertNil(xdg.seedStatePath, "this host never kept state outside the registry root")
 
         let home = AccountProfileLayout.xdg(environment: ["HOME": "/home/robert"])
         XCTAssertEqual(home.root, "/home/robert/.config/tailscreen")
-        XCTAssertEqual(home.legacyRoot, "/home/robert/.config/tailscreen-viewer-gtk")
 
         let empty = AccountProfileLayout.xdg(
             environment: ["XDG_CONFIG_HOME": ""], fallbackDirectory: "/cwd")
@@ -277,7 +223,6 @@ final class AccountProfileStoreTests: XCTestCase {
         let layout = AccountProfileLayout.windowsLocalAppData(
             environment: ["LOCALAPPDATA": "/local-app-data"])
         XCTAssertEqual(layout.root, "/local-app-data/Tailscreen")
-        XCTAssertNil(layout.legacyRoot, "this host has no earlier config-root name")
 
         // The migration contract, spelled out: the seed is byte-for-byte the
         // expression the pre-registry `AppUIState.stateDirectory()` used for
