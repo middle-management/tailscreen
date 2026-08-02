@@ -1,0 +1,24 @@
+---
+paths:
+  - "Apps/windows/**"
+  - "Packages/{WGCCaptureKit,SendInputKit,WinOverlayKit,WASAPIKit,TailscreenSharerWGC}/**"
+---
+
+# Windows app and backends
+
+## Layout
+
+- **`Apps/windows/`** — the runnable native WINDOWS app: swift-cross-ui on WinUI, reusing the portable tiers + the shared tsnet transport + `TailscreenHubUI` — sign-in, peer list, libavcodec video into a WinUI `WriteableBitmap`, WASAPI audio, and sharing via the WGC picker + `TailscreenSharerWGC` (with remote control and annotations, both gated on the capture item's screen rect resolving — see WinOverlayKit). `packaging/` holds the MSIX manifest + assets and the winget manifests.
+- **`Packages/WGCCaptureKit/`** — C++/raw-WinRT shim over Windows.Graphics.Capture: the WINDOWS sharer's screen capture. The picker + per-window model that matches macOS's `SCContentSharingPicker`, not DXGI Duplication's whole-output-only. Hands back BGRA; `BGRAToI420` does the conversion.
+- **`Packages/TailscreenSharerWGC/`** — the WINDOWS sharer's `CaptureEncoding` backend: WGC frames → `BGRAToI420` → libavcodec. Its own package specifically so it carries NO WinUI — which is what lets Linux CI typecheck it (`linux-viewer` job) instead of only a Windows runner. Counterpart of `Packages/TailscreenLinuxBackends`'s `TailscreenSharerLinux`.
+- **`Packages/SendInputKit/`** — C shim over Win32 SendInput + the Swift injector: the WINDOWS sharer's `InputInjecting` backend, i.e. what `RemoteControlInjector` is on macOS. C only because `INPUT` carries an anonymous union; every decision is in Swift and tested on Linux through an inject-nothing seam. Also owns the process's DPI awareness, because it owns the coordinate space that setting governs (see pitfalls).
+- **`Packages/WinOverlayKit/`** — the WINDOWS sharer's annotation overlay: a click-through layered window fed by the portable `AnnotationRasterizer`. Tiny on purpose — `UpdateLayeredWindow` takes a premultiplied BGRA bitmap, so the missing piece was a rasterizer, not a drawing API, and a rasterizer is testable arithmetic. The window OWNS A THREAD with a message pump: annotations arrive on a network thread, and a window whose thread never pumps is one Windows treats as hung.
+- **`Packages/WASAPIKit/`** — C++ shim over WASAPI shared-mode rendering: the WINDOWS viewer's audio-playback backend, i.e. what ALSAKit is on Linux. Nothing to install (WASAPI ships with Windows); see its README.
+
+## Pitfalls
+
+- **A share silently loses remote control AND annotations** — the process is not DPI aware. Both features are gated on `WindowsCaptureRegion.resolve` matching the WGC capture item's size against an enumerated monitor, and item sizes are **physical pixels** while a DPI-unaware process is told a 150 %-scaled 3840 × 2160 display is 2560 × 1440. Nothing errors; the match just never happens, and the viewer stops offering both features. In the WinUI app, DPI awareness is owned by **swift-winui's `WindowsAppRuntimeInitializer`** (`SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE)` — v1 is enough: monitor enumeration returns physical pixels). Do NOT set awareness earlier yourself: the app's `init()` used to call `WindowsShareSession.prepareProcess()`, which ran before the initializer, made its `CHECKED(SetProcessDpiAwareness…)` return E_ACCESSDENIED ("already set"), and killed every real-desktop launch with `Failed to initialize WindowsAppRuntimeInitializer: 0x80070005` + fatalError at SwiftApplication.swift:64. `prepareProcess()` is only for non-WinUI hosts where nothing else sets awareness.
+- **You changed the Windows app and want to know if it compiles** — build it on Linux: `swift build --package-path Apps/windows --product tailscreen` (with `PKG_CONFIG_PATH` set, as usual). `WinUIVideoView` is the app's only Windows-bound file and carries an `#if os(Windows)` with an off-Windows stub; the WinUI dependencies are `.when(platforms: [.windows])` so SwiftPM prunes them and swift-cross-ui resolves to GtkBackend. The `linux-app` job runs exactly this. The Windows job stays the authority on linking and running — but not on typechecking, which is where the mistakes are and which used to cost forty minutes to discover. Keep any new Windows-only file behind the same `#if`.
+- **A Win32 window created off the app's UI thread never appears** — it belongs to the thread that created it, and every state change (show, hide, the `SetWindowPos` inside `UpdateLayeredWindow`) is delivered to that thread's message queue. A Swift concurrency executor thread does not pump messages, so Windows treats the window as hung: cross-thread calls block for five seconds each, and the window is destroyed outright if the thread exits. `WinOverlayKit` owns a thread with a `GetMessage` loop for exactly this, and every entry point posts to it. Do the same for any new window.
+
+The Windows viewer/sharer plan lives in `docs/viewer-windows-plan.md`.
