@@ -267,8 +267,18 @@ two platforms** — the best ratio in the plan and a good place to put spare tim
   offering a control that appears to work. macOS re-pushes through its
   helper-restart path; neither of these hosts has one, and inventing one was
   not this item.
-- **4.3 · Connection stats overlay.** `StatsHUD` already exists in
-  `TailscreenHubUI` and the GTK viewer shows it; Windows does not.
+- **4.3 · Connection stats overlay.** ✅ **Done**, which completes Phase 4.
+  `StatsHUD` already existed and the GTK viewer already showed it; what was
+  missing on Windows was the *numbers*, not the component.
+
+  The fps accounting behind them was inline in the GTK sink, so it moved to
+  the portable tier as `FrameRateCounter` — same reasoning as `I420Converter`
+  and `MonoPCMConverter`: arithmetic every renderer backend needs, no backend
+  can test in place, one copy per host otherwise. Writing the tests
+  immediately found a defect the inline version had carried all along: the
+  window start used `0` as "not started", and zero is a legitimate timestamp.
+  The GTK sink survived it only because `DispatchTime.now()` never returns 0 —
+  a property of the caller, not of the arithmetic.
 
 ## Phase 5 · Sharer surfaces
 
