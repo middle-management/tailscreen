@@ -1,4 +1,4 @@
-# Sharer surfaces on Linux and Windows — notifications, presence, hotkeys
+# Sharer surfaces — notifications, presence, hotkeys, discoverability
 
 > Status: plan only. Nothing implemented.
 
@@ -17,6 +17,11 @@ can see.
 The insight that shapes this plan: **these surfaces are worth building for what
 happens during a share, not before it.** Starting a share happens while you are
 already in the app and needs no new surface. Everything after it does.
+
+macOS is the reference for all of this, but it is not finished either — the same
+question ("which sharer decision lives on which surface?") has two wrong answers
+already shipping there, and both are cheap to fix. They are in scope: see
+[macOS: the reference has gaps too](#macos-the-reference-has-gaps-too).
 
 ## Decision: no tray icon
 
@@ -40,18 +45,25 @@ the same question in the place the user is already looking, and it answers the
 sharper version of it — not "a share is running somewhere" but "**this** is what
 they can see."
 
-So: three surfaces, and the tray is not one of them.
+So: four surfaces, and the tray is not one of them.
 
 | Surface | What it carries | Why this shape |
 |---|---|---|
 | **Notifications** | someone is waiting on you: viewer at the approval gate, control requested | interrupt-driven; a sharer cannot poll for these |
 | **Capture outline** | what is being captured, and that it still is | ambient, always in view, needs no interaction |
 | **Global hotkey** | reflex actions: mute, panic-revoke control | fastest possible, no pointer travel |
+| **Discoverability** | that the hotkeys exist at all, and what they are | a shortcut nobody can find is a shortcut nobody has |
+
+The fourth is not a surface in the same sense — it is the one that makes the
+third real. A global hotkey is invisible by construction: nothing on screen
+implies it, so unless the app says so somewhere a user will look, it may as well
+not be registered. macOS already ships two hotkeys and documents one of them; see
+[4. Discoverability](#4-discoverability--making-the-hotkeys-findable).
 
 **Notifications matter most.** The one case where a sharer genuinely cannot
 afford to miss something is a viewer sitting blocked at the approval gate —
 "require approval" defaults **on**, so an unattended sharer silently strands
-whoever tries to connect. If only one of the three ever gets built, it is this.
+whoever tries to connect. If only one of the four ever gets built, it is this.
 
 This decision does not touch the macOS `MenuBarExtra`, which exists, works, and
 carries items (mic, drawing) that Linux and Windows cannot offer yet. Whether
@@ -265,6 +277,119 @@ Windows: `RegisterHotKey`, straightforward. Linux: X11 `XGrabKey` works; Wayland
 needs the GlobalShortcuts portal, so expect X11-only at first, exactly like
 capture.
 
+Whatever ships must also be *findable*, which is the next section — and must
+tell the user when it did not register. `RegisterHotKey` and `XGrabKey` both
+fail when another app already owns the combo, and every one of these APIs fails
+by returning an error nobody looks at.
+
+### 4. Discoverability — making the hotkeys findable
+
+A hotkey is invisible by construction. Nothing on screen implies ⌃⌥M, so if the
+app does not say so somewhere the user will look, registering it accomplishes
+nothing. macOS is the reference here too, and it is half-right today.
+
+**What macOS gets right.** `AppMenu.swift:247–262` builds a real Help menu with
+**Keyboard Shortcuts (⌘?)** and assigns `NSApp.helpMenu` — which matters beyond
+appearance, because macOS's Help-menu search indexes menu items, so this is what
+makes a command findable by typing its name. `ViewerShortcutsOverlay` backs it
+with a five-section cheat sheet, and File → Stop Remote Control carries
+`"."` + `[.control, .option]` (`AppMenu.swift:116–117`), so the panic key renders
+as ⌃⌥. in the menu.
+
+**Four things it gets wrong**, each verified against the tree:
+
+1. **The cheat sheet is viewer-only, so a sharer can never open it.**
+   `ViewerShortcutsOverlayHost` is built inside `ensureViewer()`
+   (`AppState.swift:1907`) as a subview of the viewer window, and validation is
+   `return shortcutsModel != nil` (`ViewerCommands.swift:199–202`). So Help →
+   Keyboard Shortcuts is **greyed out and ⌘? does nothing unless you are
+   currently watching someone**. Exactly backwards: the sharer is the one with
+   system-wide hotkeys and a panic key.
+2. **⌃⌥M is invisible in the menu.** The mic hotkey is registered at
+   `AppState.swift:722`, but File → Microphone is built with `keyEquivalent: ""`
+   (`AppMenu.swift:105`). Of two global hotkeys, one is documented natively and
+   one is not, for no reason — `stopControl` is the precedent that setting the
+   equivalent is fine (a menu equivalent only fires while the app is frontmost;
+   the global hotkey covers the rest, and both run the same action).
+3. **Registration failure is silent.** `GlobalHotkey.register` logs
+   `RegisterEventHotKey failed (OSStatus=…)` and returns
+   (`GlobalHotkey.swift:72–75`). If another app owns ⌃⌥M the user presses it
+   forever and nothing happens — and if we *did* print ⌃⌥M in the menu we would
+   be printing a lie. `hotKeyRef == nil` is a perfectly good signal to surface.
+4. **The catalog is hand-maintained and has already drifted.**
+   `ViewerShortcutsOverlay.sections` duplicates `AppMenu.swift` by hand, and
+   **⌃⌥. appears nowhere in it** — the one shortcut whose entire purpose is to be
+   remembered under pressure is the one not written down.
+
+**The rule this suggests: the menu item is the source of truth.** A command
+declared as a menu item with a key equivalent gets four things a hand-drawn list
+cannot — menu display, Help-menu search, VoiceOver announcement, and remapping in
+System Settings → Keyboard → Keyboard Shortcuts → App Shortcuts, which works by
+menu-item title. So the cheat sheet should be *derived from* the menu, or at
+minimum cross-checked against it by a test, the way `LocalizationCatalogTests`
+already scans `L("…")` call sites against the catalog. Two hand-maintained lists
+have drifted once; three will drift three ways.
+
+**Which makes the catalog portable-tier data**, beside `SharerNotice`: one list
+of (command, default combo, section), three renderings, and a test asserting
+every registered hotkey appears in it. The native rendering differs per host:
+
+- **macOS** — menu items plus the existing ⌘? cheat sheet, lifted off the viewer
+  window so it works while sharing.
+- **Linux/GTK4** — **`GtkShortcutsWindow`** is the native answer: a real widget
+  for exactly this, GNOME-standard, with sections/groups and accelerator
+  rendering for free. swift-cross-ui will not expose it, so it is a `CGtkVideo`-
+  style shim.
+- **Windows** — no OS shortcuts window exists. WinUI's `KeyboardAccelerator` is
+  the native documentation mechanism: attach it to a command and the combo
+  renders itself in menu flyouts and tooltips.
+
+**Configurability is the honest fix for (3)** and a real fork: a Settings →
+Shortcuts pane with a recorder, showing "in use by another app" when
+registration fails, is the only thing that gives a user a remedy for a collision.
+It is also a chunk of work and a product decision rather than a bug fix. The
+minimum that must ship with any hotkey is: it appears in the catalog, it appears
+natively, and the app admits when it failed to register.
+
+## macOS: the reference has gaps too
+
+Two sharer decisions live on the wrong surface on macOS. Both are small, both are
+in scope, and both are the same category of mistake this plan exists to avoid.
+
+**1. Dropping a viewer is menubar-only.** `appState.disconnectConnectedViewer`
+has exactly one call site — `MenuBarView.swift:632`, inside `ViewersList`, which
+is a `private struct` at `MenuBarView.swift:595` and therefore cannot render
+anywhere else. The hub's sharing block (`MainWindowView.swift:494–525`) carries
+the *other* decision surfaces and says so in a comment ("The sharer's decision
+surfaces, shared with the menubar popover — approvals shouldn't require leaving
+the window") — `PendingViewersList`, `ControlRequestsList` and
+`RemoteControlGranteeBanner`, all declared non-private in `MenuBarView.swift`
+(`:681`, `:745`) precisely so both scenes can use them. `ViewersList` and
+`SharingCard` are the two that stayed private.
+
+So the hub shows *how many* viewers (`viewersText`) and never *which*, leaving
+nothing to hang a per-viewer action on. The result: **the one sharer action with
+no non-menubar path at all.** Mic has a hotkey, revoke has ⌃⌥. and a File menu
+item; File → Disconnect is the *viewer's* leave-a-share command
+(`ViewerCommands.swift:75` posts `.tailscreenDisconnectRequested`), and Settings →
+Viewers manages persistent policy, not a live kick. Mid-share, wanting someone
+out *now* means opening the popover.
+
+**The move:** make `ViewersList` non-private like its three siblings and render
+it in the hub's sharing block under the same comment. Small, and right on its own
+merits — dropping a viewer is a decision, and this codebase's stated position is
+that decision surfaces belong on both. It also removes one of the blockers on the
+open macOS-menubar question below.
+
+**2. The shortcut cheat sheet is viewer-only** — see
+[4. Discoverability](#4-discoverability--making-the-hotkeys-findable) above.
+
+Together these sharpen the question this plan deliberately does not answer:
+whether macOS should also converge on notifications + outline and retire its
+`MenuBarExtra`. That is blocked on mic and drawing having somewhere else to live —
+but the viewer roster was a third blocker, and it is the cheapest of the three to
+remove.
+
 ## Implementation steps
 
 1. **macOS notification delivery**: interruption level, the delegate, the
@@ -278,25 +403,42 @@ capture.
 6. **Verify the Windows WGC border on a real desktop.** If present, Windows is
    done for surface 2.
 7. Outline: macOS via `SharerOverlayWindow`, then the Linux X11 shaped window.
-8. Hotkeys: mute + panic-revoke; X11-only on Linux to start.
-9. *Independent tracks:* microphone capture, then sharer-side local drawing.
-   Their toggles join the surfaces as they land.
+8. **macOS discoverability + roster**, independent of everything above and worth
+   doing early because it is small and fixes shipping behaviour: ⌃⌥M's key
+   equivalent, the cheat sheet lifted off the viewer window, ⌃⌥. added to the
+   catalog, `ViewersList` un-privated into the hub.
+9. Portable shortcut catalog + the test asserting every registered hotkey is in
+   it; re-point the macOS cheat sheet at it.
+10. Hotkeys: mute + panic-revoke; X11-only on Linux to start — each landing with
+    its catalog entry, its native rendering (`GtkShortcutsWindow` /
+    `KeyboardAccelerator`), and a visible failure when registration is refused.
+11. *Independent tracks:* microphone capture, then sharer-side local drawing.
+    Their toggles join the surfaces as they land.
 
 Steps 1–5 fix the thing that is actually broken today: an unattended sharer
 silently stranding a viewer at the approval gate — on Linux and Windows because
-nothing is posted, and on macOS because what is posted loses to Focus.
+nothing is posted, and on macOS because what is posted loses to Focus. Step 8 is
+independently shippable and touches only macOS.
 
 ## Files to change / add
 
 ```
 Packages/TailscreenHubUI/Sources/…/SharerNotice.swift   new (portable, tested)
+Packages/TailscreenHubUI/Sources/…/ShortcutCatalog.swift new (portable, tested)
 Packages/WinNotifyKit/                                  new (CWinNotify + Swift)
 Apps/linux/Sources/tailscreen/Notifications.swift       new (GDBus)
 Apps/linux/Sources/tailscreen/CaptureOutline.swift      new (X11 shaped window)
+Apps/linux/Sources/CGtkVideo/ (or a sibling shim)       GtkShortcutsWindow
 Apps/macOS/Sources/ViewerApproval.swift                 interruption level, sound, categories
 Apps/macOS/Sources/TailscreenUserNotifications.swift    same, plus authorization read-back
 Apps/macOS/Sources/AppState.swift                       UN delegate, action responses
 Apps/macOS/Sources/SharerOverlayWindow.swift            border stroke for the whole share
+Apps/macOS/Sources/AppMenu.swift                        ⌃⌥M key equivalent
+Apps/macOS/Sources/GlobalHotkey.swift                   expose registration failure
+Apps/macOS/Sources/ViewerShortcutsOverlay.swift         app-level, catalog-driven
+Apps/macOS/Sources/ViewerCommands.swift                 drop the viewer-window gate
+Apps/macOS/Sources/MenuBarView.swift                    ViewersList → non-private
+Apps/macOS/Sources/MainWindowView.swift                 render the viewer roster
 Apps/windows/Sources/tailscreen/TailscreenWindowsApp.swift wire
 Apps/linux/Sources/tailscreen/main.swift                wire
 docs/platform-support.md                                flip the rows
@@ -319,6 +461,12 @@ No `WinTrayKit`, and no tray entry on Linux — see the decision above.
 - **The outline** is a visual check on each platform plus one assertion that
   matters more than it looks: a viewer's decoded frame must not contain the
   border.
+- **The shortcut catalog is unusually testable** for a discoverability feature,
+  and should be: every registered hotkey appears in the catalog, no catalog entry
+  duplicates another's combo, and — mac-side, in the style of
+  `LocalizationCatalogTests` — every catalog entry with a menu counterpart agrees
+  with that menu item's key equivalent. That last one is what stops the ⌃⌥. drift
+  from recurring.
 
 ## Risks & pitfalls
 
@@ -336,8 +484,13 @@ No `WinTrayKit`, and no tray entry on Linux — see the decision above.
 - **Win32 windows belong to their creating thread.** Post to it, as
   `WinOverlayKit` does; calling across from a Swift executor thread appears to
   work and then blocks five seconds per call.
+- **A hotkey that silently failed to register is worse than none** — the user
+  believes it works. Every platform's registration call fails by returning
+  something nobody reads. Surface it.
 - **Don't fork the dedupe rules.** macOS has them, with tests. Two
   implementations will disagree, and only for people who use two platforms.
+- **Don't add a second hand-maintained shortcut list.** There are already two on
+  macOS and they have already disagreed.
 
 ## Estimated scope
 
@@ -351,7 +504,11 @@ No `WinTrayKit`, and no tray entry on Linux — see the decision above.
 | Outline: Windows | none if the WGC border is confirmed |
 | Outline: macOS | small — `SharerOverlayWindow` already tracks the region |
 | Outline: Linux | medium — the one piece with no existing machinery |
+| macOS discoverability + roster fixes (step 8) | small — four edits, all shipping bugs |
+| Portable shortcut catalog + tests | small |
+| `GtkShortcutsWindow` shim | small–medium |
 | Hotkeys (both platforms) | small–medium; Wayland is the caveat |
+| Configurable hotkeys (recorder + conflict UI) | medium — optional, the real fix for a collision |
 | **Microphone capture** | **large** — gates the mute toggle |
 | **Sharer-side drawing** | **large** — gates the draw toggle |
 
