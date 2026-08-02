@@ -18,34 +18,49 @@ public enum SharerNoticeKind: String, Codable, Sendable, CaseIterable {
     case viewerPending
     /// An admitted viewer is asking for remote control.
     case controlRequested
+    /// A peer is asking *this* machine to start sharing.
+    case requestToShare
     /// A viewer's video started flowing. Informational.
     case viewerJoined
+    /// A viewer's session ended — they disconnected, or were dropped.
+    /// Informational.
+    case viewerLeft
 }
 
 extension SharerNoticeKind {
     /// Buttons this notice offers.
     ///
-    /// Only the two *asks* are actionable — `viewerJoined` reports something
-    /// that already happened, and a notification that offers a choice with no
+    /// Only the *asks* are actionable. The two reports describe something that
+    /// already happened, and a notification offering a choice with no
     /// consequence trains people to ignore the ones that have one.
     public var actions: [NoticeAction] {
         switch self {
-        case .viewerPending, .controlRequested: [.approve, .deny]
-        case .viewerJoined: []
+        case .viewerPending, .controlRequested, .requestToShare: [.approve, .deny]
+        case .viewerJoined, .viewerLeft: []
         }
     }
 
-    /// Whether missing this notice leaves a peer blocked.
+    /// Whether missing this notice strands someone **inside a session that is
+    /// already running**.
     ///
-    /// Hosts should map this onto their platform's "break through Do Not
-    /// Disturb" level — `UNNotificationInterruptionLevel.timeSensitive` on
-    /// macOS, urgency `1`/`2` on freedesktop, `Urgent` on Windows. The
-    /// distinction is not decoration: a sharer running a presentation Focus is
-    /// precisely the sharer most likely to have someone waiting on them.
+    /// Hosts map this onto their platform's break-through-Do-Not-Disturb level
+    /// — `UNNotificationInterruptionLevel.timeSensitive` on macOS, urgency
+    /// `1`/`2` on freedesktop, `Urgent` on Windows.
+    ///
+    /// The bar is deliberately higher than "is actionable". `requestToShare` is
+    /// an ask and is *not* urgent: it arrives while this machine is idle,
+    /// nobody is mid-flow, and an invitation has a natural retry — the peer
+    /// asks again or messages you. The other two asks arrive while you are
+    /// already sharing, with a person watching a "waiting for approval" placard
+    /// or unable to click anything.
+    ///
+    /// Spending the exemption on the least urgent notice is also how you lose
+    /// it for the urgent ones: the user revokes Time Sensitive per *app*, not
+    /// per notification, so one over-eager kind disarms the whole set.
     public var blocksSomeone: Bool {
         switch self {
         case .viewerPending, .controlRequested: true
-        case .viewerJoined: false
+        case .requestToShare, .viewerJoined, .viewerLeft: false
         }
     }
 }

@@ -151,25 +151,48 @@ final class SharerNoticeTests: XCTestCase {
     func testOnlyTheAsksAreActionable() {
         XCTAssertEqual(SharerNoticeKind.viewerPending.actions, [.approve, .deny])
         XCTAssertEqual(SharerNoticeKind.controlRequested.actions, [.approve, .deny])
+        XCTAssertEqual(SharerNoticeKind.requestToShare.actions, [.approve, .deny])
         XCTAssertTrue(SharerNoticeKind.viewerJoined.actions.isEmpty)
+        XCTAssertTrue(SharerNoticeKind.viewerLeft.actions.isEmpty)
     }
 
-    /// Drives each platform's break-through-Focus level. A sharer running a
-    /// presentation Focus is exactly the sharer most likely to have someone
-    /// waiting on them, so the two asks must outrank it and the report must
-    /// not.
-    func testOnlyTheAsksBlockSomeone() {
+    /// Drives each platform's break-through-Focus level. Only the notices that
+    /// strand somebody in a *running* session qualify.
+    func testOnlyMidSessionAsksBlockSomeone() {
         XCTAssertTrue(SharerNoticeKind.viewerPending.blocksSomeone)
         XCTAssertTrue(SharerNoticeKind.controlRequested.blocksSomeone)
         XCTAssertFalse(SharerNoticeKind.viewerJoined.blocksSomeone)
+        XCTAssertFalse(SharerNoticeKind.viewerLeft.blocksSomeone)
     }
 
-    /// Actionability and urgency describe the same split; a kind that blocks a
-    /// peer without offering a way to unblock them is a bug in the table.
+    /// The case that makes urgency a *narrower* thing than actionability.
+    ///
+    /// A request-to-share is an ask with buttons, but it arrives while this
+    /// machine is idle: nobody is mid-flow, and an invitation has a natural
+    /// retry. Marking it urgent would also disarm the ones that are — Time
+    /// Sensitive is revoked per app, not per notification, so one over-eager
+    /// kind takes the whole set down with it.
+    func testRequestToShareIsActionableButNotUrgent() {
+        XCTAssertFalse(SharerNoticeKind.requestToShare.actions.isEmpty)
+        XCTAssertFalse(SharerNoticeKind.requestToShare.blocksSomeone)
+    }
+
+    /// Urgency implies actionability, not the reverse: a kind that strands
+    /// somebody without offering a way to unstrand them is a bug in the table.
     func testEveryBlockingKindIsActionable() {
         for kind in SharerNoticeKind.allCases where kind.blocksSomeone {
             XCTAssertFalse(kind.actions.isEmpty, "\(kind) blocks a peer but offers no way to act")
         }
+    }
+
+    /// Joined/left are a matched pair — one without the other reads as a bug
+    /// to a sharer who saw the first and waited for the second.
+    func testJoinAndLeaveAreSymmetric() {
+        XCTAssertEqual(
+            SharerNoticeKind.viewerJoined.actions, SharerNoticeKind.viewerLeft.actions)
+        XCTAssertEqual(
+            SharerNoticeKind.viewerJoined.blocksSomeone,
+            SharerNoticeKind.viewerLeft.blocksSomeone)
     }
 
     /// Dismiss must never be synthesizable from the button list — closing a
