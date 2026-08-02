@@ -4,6 +4,7 @@ import TailscaleKit
 import TailscreenSharer
 import TailscreenSharerLinux
 import TailscreenViewerTsnet
+import X11CaptureKit
 
 // Targeted imports: pulling in all of TailscreenProtocol collides with
 // SwiftCrossUI's own `Published` / `ObservableObject` shims on Linux.
@@ -74,6 +75,9 @@ final class SharerModel: ObservableObject {
     let unavailableReason: String?
 
     private var server: TailscaleScreenShareServer?
+    /// Viewers' strokes, drawn on this machine's own screen. Nil when the
+    /// session cannot host one — see `SharerAnnotationOverlay.isSupported`.
+    private var overlay: SharerAnnotationOverlay?
     /// Supplied by `main` — hands back the live tsnet node to share.
     var nodeProvider: (() -> TailscaleNode?)?
 
@@ -120,13 +124,44 @@ final class SharerModel: ObservableObject {
         }
 
         let display = self.display
+
+        // The annotation overlay has to exist BEFORE the server, because
+        // whether it exists is what the server advertises. Sized from the
+        // capture's own geometry, not the monitor's: annotations arrive
+        // normalized against the frame a viewer sees, and the capture rounds
+        // both dimensions down to even for I420, so a screen with an odd
+        // dimension would put every stroke a pixel out.
+        let overlay = Self.makeOverlay(display: display)
+        if overlay == nil {
+            // Worth a line: the share works perfectly and viewers simply find
+            // their drawing tools greyed out, with nothing on either end
+            // saying why. Matches this app's other diagnostics (stderr, not a
+            // logger — there is no TSLogger convention on this side).
+            FileHandle.standardError.write(
+                Data(
+                    """
+                    warning: no annotation overlay (needs a compositing X11 session) — \
+                    viewers' drawing tools will be disabled\n
+                    """.utf8))
+        }
+        self.overlay = overlay
+
         let server = TailscaleScreenShareServer(
             captureFactory: { X11CaptureEncoder(display: display) },
             // No injector on Linux yet (that's the RemoteDesktop portal), so
             // the server withholds `.remoteControl` and viewers correctly hide
             // their Request Control affordance.
-            inputInjector: nil
+            inputInjector: nil,
+            // Claimed only when there is a real surface to draw on. Without a
+            // compositor there is none (see `SharerAnnotationOverlay`), and a
+            // sharer that claims `.annotations` it cannot render leaves every
+            // viewer drawing strokes that reach nobody — silently, which is
+            // exactly the failure Phase 0 flipped this default to prevent.
+            rendersAnnotations: overlay != nil
         )
+        // Fires on the server's control-channel thread; the overlay marshals
+        // onto the GTK main thread itself.
+        server.onAnnotationReceived = { [overlay] op in overlay?.apply(op) }
         // The server's own default is OFF — right for the headless CLI sharer
         // that automation drives, wrong for anything with a person in front of
         // it — so the gate has to be asserted here on every start. Assert the
@@ -155,6 +190,7 @@ final class SharerModel: ObservableObject {
                 }
                 self.viewerIPs = []
                 self.pendingViewers = []
+                self.teardownOverlay()
             }
         }
         self.server = server
@@ -170,6 +206,7 @@ final class SharerModel: ObservableObject {
             } catch {
                 phase = .failed("\(error)")
                 self.server = nil
+                self.teardownOverlay()
             }
         }
     }
@@ -177,13 +214,41 @@ final class SharerModel: ObservableObject {
     func stopSharing() {
         guard let server else {
             phase = .idle
+            teardownOverlay()
             return
         }
         self.server = nil
         viewerIPs = []
         pendingViewers = []
         phase = .idle
+        teardownOverlay()
         Task { await server.stop() }
+    }
+
+    /// Hide and release the annotation overlay.
+    ///
+    /// Cleared explicitly rather than left to `deinit`: the server's
+    /// `onAnnotationReceived` closure also holds it, so dropping this
+    /// reference alone would leave viewers' strokes on screen until the
+    /// server's own teardown finished — which is asynchronous, and which the
+    /// sharer would experience as strokes outliving the share.
+    private func teardownOverlay() {
+        overlay?.clear()
+        overlay = nil
+    }
+
+    /// Build the overlay at the capture's exact pixel geometry, or nil if this
+    /// session cannot host one.
+    ///
+    /// The size comes from an `X11ScreenCapture` rather than from GDK's
+    /// monitor list because it must match what the encoder actually sends:
+    /// `captureWidth`/`captureHeight` round down to even for I420, and
+    /// annotations are normalized against the encoded frame.
+    private static func makeOverlay(display: String?) -> SharerAnnotationOverlay? {
+        guard SharerAnnotationOverlay.isSupported else { return nil }
+        guard let probe = try? X11ScreenCapture(display: display) else { return nil }
+        return SharerAnnotationOverlay(
+            width: probe.captureWidth, height: probe.captureHeight)
     }
 
     /// Admit a viewer parked at the approval gate. `addr` is the

@@ -444,10 +444,17 @@ jobs:
         # under a virtual X server with Mesa software GL. The live path reuses
         # Packages/TailscreenLinuxBackends's Core (FFmpeg/ALSA/Opus) + Tsnet (→ libtailscale, hence
         # golang-go/make), though the render self-test itself needs no network.
+        #
+        # `xcompmgr` is for the ANNOTATION-OVERLAY self-test and is not
+        # optional set dressing: the sharer's overlay refuses to exist on an
+        # uncomposited X11 session (no compositor means no per-pixel alpha,
+        # which would make it an opaque black rectangle over the screen), so
+        # without a compositing manager here that test would be checking the
+        # refusal rather than the drawing. Xvfb ships no compositor of its own.
         run: |
           apt-get update && apt-get install -y --no-install-recommends \
             libgtk-4-dev gir1.2-gtk-4.0 libgirepository1.0-dev libepoxy-dev \
-            libgl1-mesa-dri xvfb libopus-dev pkg-config \
+            libgl1-mesa-dri xvfb xcompmgr libopus-dev pkg-config \
             golang-go make gcc libc6-dev \
             libavcodec-dev libavutil-dev libasound2-dev
       - name: Build libtailscale (patched) on Linux
@@ -569,6 +576,44 @@ jobs:
           cat /tmp/gtk-selftest.log
           test "$status" -eq 0
           grep -q 'CGTKVIDEO_SELFTEST result=PASS' /tmp/gtk-selftest.log
+
+      - name: Headless annotation-overlay self-test (Xvfb + compositor)
+        # The SHARER-side counterpart of the render gate above, and the reason
+        # it is worth a whole extra Xvfb: every way the annotation overlay can
+        # fail is invisible. A window that never maps, one the compositor
+        # ignores, one placed at the wrong origin, one whose premultiplied BGRA
+        # cairo reads as the wrong channel order — all four give you a share
+        # that works perfectly and annotations nobody can see, with no error
+        # anywhere and nothing for a unit test to catch.
+        #
+        # So this draws a red stroke on the overlay and reads the screen back
+        # THROUGH THE SHARER'S OWN X11 CAPTURE, then asserts the chroma at the
+        # stroke against a control point elsewhere on the screen. Both halves
+        # of that assertion have been checked to fail: displacing the overlay
+        # by 300 px, and running with no compositor.
+        #
+        # `xcompmgr` is started by hand rather than by xvfb-run because it must
+        # own the display before the app opens it — `gdk_display_is_composited`
+        # is read once at overlay-creation time, and a compositor that arrives
+        # afterwards is a compositor the app never sees. Same POSIX-sh
+        # constraints as the step above (the container shell is dash: no
+        # pipefail, so redirect and check the status separately).
+        run: |
+          Xvfb :95 -screen 0 1280x720x24 >/dev/null 2>&1 &
+          sleep 3
+          DISPLAY=:95 xcompmgr >/dev/null 2>&1 &
+          sleep 2
+          if timeout 90 env DISPLAY=:95 GDK_BACKEND=x11 LIBGL_ALWAYS_SOFTWARE=1 \
+            GALLIUM_DRIVER=llvmpipe \
+            Apps/linux/.build/debug/tailscreen --overlay-self-test \
+            > /tmp/overlay-selftest.log 2>&1; then
+            status=0
+          else
+            status=$?
+          fi
+          cat /tmp/overlay-selftest.log
+          test "$status" -eq 0
+          grep -q 'CGTKOVERLAY_SELFTEST result=PASS' /tmp/overlay-selftest.log
 
       # Both saves live at the end so they bank objects from a run that failed
       # the typecheck or the self-test — the compile is the expensive part and
