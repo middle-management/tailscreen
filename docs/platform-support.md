@@ -118,27 +118,42 @@ persistent per-peer policy store and the UI to drive it.
 | Quality settings UI | ✅ | ❌ | ❌ |
 | Connection stats overlay | ✅ | ❌ | ❌ |
 | Localized strings | ✅ | ❌ | ❌ |
+| **Notified when a viewer is waiting for approval** | ⚠️ passive | ❌ | ❌ |
+| Answer that prompt from the notification | ❌ | ❌ | ❌ |
 | **Menu-bar / tray sharing controls** | ✅ | ❌ | ❌ |
-| Start a share without showing the window | ✅ | ❌ | ❌ |
-| Annotate without showing the window | ✅ | ❌ | ❌ |
+| Mute / unmute from outside the window | ✅ | ❌ | ❌ |
+| Toggle sharer drawing from outside the window | ✅ | ❌ | ❌ |
+| Global hotkeys (mute, revoke control) | ✅ | ❌ | ❌ |
 
 Linux and Windows share their chrome (`Packages/TailscreenHubUI`), so hub work
 lands on both at once — which is why that block is the most aligned of the five.
 Both consume `QualitySettings.default` with no UI to change it.
 
-The tray gap is the one users feel most often. On macOS the window is the *hub*
-(sign-in, accounts, peer list) and the menubar item is the *sharer tool*, so you
-start a share, draw on it and stop it without the window ever coming forward.
-Linux and Windows put everything in one window, which is exactly the wrong place
-when the window is sitting on top of the thing you are sharing.
+The last block is about *where the sharing controls live*. On macOS the window is
+the **hub** (sign-in, accounts, peer list) and the menubar item is the **sharer
+tool**, so you mute, draw, approve a viewer and stop without the window ever
+coming forward. Linux and Windows put everything in one window — which during a
+share is behind the thing you're sharing, and raising it is itself visible to
+your viewers. Every mid-share action costs an interruption the audience can see.
 
-swift-cross-ui offers nothing here — it has no status-item concept, only
-`setApplicationMenu` for the application menu bar — so both platforms need a
-shim: `Shell_NotifyIcon` on Windows, StatusNotifierItem on Linux. The plan,
-including why the *annotate* half is a larger separate job and why the tray must
-never become the only path to an action (stock GNOME does not show
-StatusNotifierItems without a shell extension), is in
-[`plans/tray-sharing-controls.md`](https://github.com/middle-management/tailscreen/blob/main/plans/tray-sharing-controls.md).
+**Notifications are the worst of these gaps, not the tray.** Approval defaults
+*on*, so a sharer who isn't watching the window silently strands whoever tries to
+connect; there is nothing to poll for and no way to find out. macOS at least
+posts a passive notification — no notification has *actions* on any platform yet,
+so even there you are told and then you go to the app.
+
+The other two rows are gated on capabilities rather than on a surface: muting
+needs microphone capture and toggling drawing needs a sharer-side overlay that
+can take a click, and neither exists on Linux or Windows (see Audio and
+Interaction above). The tray can't expose what isn't there.
+
+swift-cross-ui offers nothing for any of this — it has no status-item concept,
+only `setApplicationMenu` for the application menu bar — so each surface needs a
+shim: `org.freedesktop.Notifications` / `Shell_NotifyIcon` /
+StatusNotifierItem. The plan, including why notifications come first (they work
+on stock GNOME, which does not show StatusNotifierItems without a shell
+extension) and why the tray must never be the only path to an action, is in
+[`plans/sharer-surfaces.md`](https://github.com/middle-management/tailscreen/blob/main/plans/sharer-surfaces.md).
 
 ## Transport and resilience
 
