@@ -52,6 +52,11 @@ never appear on the Linux sharer's screen. **With one viewer — the common case
 — drawing silently does nothing.** Passing `false` is one line and makes the
 viewer honest immediately; rendering them is Phase 3.
 
+*Shipped as a flipped default rather than a call-site fix — a second host had
+the same bug, and withholding by default fixes both without touching either.
+1.4 has since made the claim true on a composited session, so the Linux app now
+derives the bit from whether it actually built an overlay.*
+
 **0.2 · Audit every conditional capability bit, on every host.**
 `ScreenShareCaps` is the app's self-description, and a wrong bit is worse than a
 missing feature: the peer's UI stops matching reality and the user blames
@@ -74,7 +79,7 @@ half.
 | Draw as viewer | ✅ | ❌ |
 | Zoom + pan viewer | ✅ | ❌ |
 | Request control as viewer | ✅ | ❌ |
-| Render viewers' annotations as sharer | ❌ | ✅ |
+| Render viewers' annotations as sharer | ✅ (1.4) | ✅ |
 | Inject granted control as sharer | ❌ | ✅ |
 
 Every one of these is kind A. The protocol, the grant gate, the coordinate
@@ -90,9 +95,23 @@ call.
   this is gesture plumbing.
 - **1.3 · Windows viewer: request control.** The viewer half of a flow whose
   sharer half Windows already implements.
-- **1.4 · Linux sharer: render annotations.** Closes 0.1 properly. Needs a
-  click-through overlay window — which is also the surface Phase 3's sharer
-  drawing needs, so build it once with that in mind.
+- **1.4 · Linux sharer: render annotations.** ✅ **Done.** Closes 0.1 properly:
+  `Apps/linux/Sources/CGtkOverlay` is the click-through window — override-redirect
+  (GTK4 has neither placement nor keep-above, and an overlay needs both), empty
+  input region, cairo ARGB32 fed straight from `AnnotationRasterizer` with no
+  conversion. It is also the surface Phase 3's sharer drawing will draw into.
+  Two things landed with it that were not in the original scope and are worth
+  keeping in mind for 1.5 and Phase 3:
+  - **It refuses to exist on an uncomposited X11 session**, because without a
+    compositor the window has no alpha and the "overlay" is an opaque black
+    rectangle over the sharer's screen. `rendersAnnotations` is then withheld,
+    so the failure is a viewer with disabled tools rather than a covered desktop.
+  - **`tailscreen --overlay-self-test` is a real CI gate**, not a visual check:
+    it draws a red stroke, reads the screen back through the sharer's own X11
+    capture, and asserts the chroma. Every way this feature can fail — window
+    never maps, compositor ignores it, wrong origin, swapped channels —
+    otherwise produces a working share and invisible annotations, with no error
+    anywhere.
 - **1.5 · Linux sharer: inject control.** The XTEST path for X11; the
   RemoteDesktop portal for Wayland later. `SendInputInjector`'s decisions
   (revoke TOCTOU, synthesized button-up, modifier ordering) are the model to

@@ -126,11 +126,17 @@ if ! grep -aq "nonUniform=true" "$RUN_DIR/probe.log"; then
     log "FAIL — frames decoded but every one was a flat colour (capture produced no content)"
     exit 1
 fi
-# Capability honesty, end to end. This sharer supplies no injector and no
-# annotation overlay, so it must advertise neither bit — a viewer that sees
-# them enables affordances whose input goes nowhere, and the symptom is not an
-# error but a toolbar that silently does nothing. Both bits defaulted to
-# claimed at some point; asserting on the wire is what stops that recurring.
+# Capability honesty, end to end. THIS sharer — `tailscreen-sharer-linux`, the
+# headless automation binary — supplies no injector and no annotation overlay,
+# so it must advertise neither bit. A viewer that sees them enables affordances
+# whose input goes nowhere, and the symptom is not an error but a toolbar that
+# silently does nothing. Both bits defaulted to claimed at some point;
+# asserting on the wire is what stops that recurring.
+#
+# Note this is now a claim about the headless binary specifically, not about
+# Linux: the GTK app DOES render annotations (`CGtkOverlay`) and advertises the
+# bit whenever it managed to build an overlay. A headless sharer has no window
+# to put one in, which is exactly why it must keep saying so.
 if grep -aq "serverCaps=.*remoteControl" "$RUN_DIR/probe.log"; then
     log "FAIL — sharer advertised .remoteControl with no injector supplied"
     exit 1

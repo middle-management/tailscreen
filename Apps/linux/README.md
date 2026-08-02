@@ -37,6 +37,7 @@ real answer and isn't written yet. Viewing is unaffected either way.
 ```
 tailscreen [<sharer-host>] [--port N] [--state-dir PATH] [--control-url URL]
 tailscreen --render-self-test
+tailscreen --overlay-self-test
 ```
 
 With a host argument the viewer dials it directly. **Without** one it enters
@@ -51,6 +52,16 @@ tailnet, and shows the screen list to choose from.
 `--render-self-test` is the headless CI gate: it renders a colour-bars frame,
 reads the pixels back through GL, and exits. No network, no tsnet — it exists so
 a broken renderer fails a PR instead of a user's first launch.
+
+`--overlay-self-test` is its sharer-side twin, for the annotation overlay: it
+draws a red stroke on the overlay and reads the screen back through the sharer's
+*own* X11 capture, asserting the chroma at the stroke against a control point
+elsewhere. It needs a **compositing** X server (see below) — and that is not a
+test-harness quirk, it is the feature: on an uncomposited session the overlay
+deliberately refuses to exist, because an ARGB window with no compositor has no
+alpha and would paint a black rectangle over your screen. When that happens the
+app withholds `ScreenShareCaps.annotations`, so viewers see a disabled drawing
+toolbar rather than strokes that reach nobody.
 
 ## Building it
 
@@ -75,6 +86,18 @@ Xvfb is additionally needed to run `--render-self-test` headlessly:
 ```bash
 xvfb-run -a --server-args="-screen 0 1280x720x24" \
   swift run --package-path Apps/linux tailscreen --render-self-test
+```
+
+`--overlay-self-test` needs Xvfb *plus* a compositor, and the compositor has to
+be running before the app opens the display — `gdk_display_is_composited` is read
+once, when the overlay is created, so one that starts afterwards is one the app
+never sees. `xvfb-run` can't sequence that, hence the explicit server:
+
+```bash
+sudo apt-get install -y xvfb xcompmgr
+Xvfb :95 -screen 0 1280x720x24 & sleep 2
+DISPLAY=:95 xcompmgr & sleep 1
+DISPLAY=:95 swift run --package-path Apps/linux tailscreen --overlay-self-test
 ```
 
 ## What it depends on
@@ -113,7 +136,7 @@ gains.
 
 | job | what it proves |
 |---|---|
-| `linux-app` | builds this package, runs the Xvfb render self-test, and typechecks the **Windows** app on the same runner |
+| `linux-app` | builds this package, runs the Xvfb render self-test **and the annotation-overlay self-test** (second Xvfb, with `xcompmgr`), and typechecks the **Windows** app on the same runner |
 | `linux-app-arm64` | the same on `ubuntu-24.04-arm`, release config — a hard gate, not compile-only |
 | `linux-viewer` | the backends package's real decode + capture tests |
 
