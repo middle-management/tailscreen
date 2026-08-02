@@ -1095,11 +1095,7 @@ class AppState: ObservableObject {
             // Otherwise, initialize it first
             if server == nil {
                 let hostname = Self.localHostname()
-                // Opt in explicitly: `rendersAnnotations` withholds by
-                // default so a host that never considered the question cannot
-                // claim it. macOS genuinely renders viewers' strokes —
-                // `SharerOverlayWindow` — so it says so.
-                let srv = TailscaleScreenShareServer(rendersAnnotations: true)
+                let srv = TailscaleScreenShareServer()
                 server = srv
 
                 // SCStream can die from two distinct causes:
