@@ -67,20 +67,22 @@ Windows is only microphone **capture** and hooking it to the existing encoder.
 
 | | macOS | Linux | Windows |
 | :--- | :---: | :---: | :---: |
-| Draw annotations as a viewer | ✅ | ✅ | ✅ |
+| Draw annotations as a viewer | ✅ | ✅ | ❌ |
 | Render viewers' annotations as a sharer | ✅ | ✅ | ✅ |
-| Request remote control as a viewer | ✅ | ✅ | ✅ |
+| Request remote control as a viewer | ✅ | ✅ | ❌ |
 | Grant + inject remote control as a sharer | ✅ | ✅ | ✅ |
 | Revoke hotkey / panic key | ✅ | ❌ | ❌ |
-| Zoom + pan the viewer | ✅ | ✅ | ✅ |
+| Zoom + pan the viewer | ✅ | ✅ | ❌ |
 
 **Linux and Windows *were* near mirror images here**, which was an accident of
 the order things were built rather than a design: Linux grew the viewer half
-first, Windows the sharer half. Every row above except the revoke hotkey is now
-closed on all three, and closing them was mostly wiring — the protocol, the
-grant gate, the coordinate mapping and the neutral key model were all portable
-and already tested, so what was missing each time was the host call rather than
-a capability.
+first, Windows the sharer half. The *sharer* half is now closed on all three
+(Linux's last two rows — annotation rendering, then XTEST injection — went in
+that order); what remains is the Windows **viewer** half (the plan's 1.1–1.3:
+drawing, zoom + pan, requesting control) and the revoke hotkey outside macOS.
+Closing them is mostly wiring — the protocol, the grant gate, the coordinate
+mapping and the neutral key model are all portable and already tested, so
+what's missing each time is the host call rather than a capability.
 
 Three specifics worth knowing:
 
@@ -156,8 +158,8 @@ Two things behind the ✅s are worth knowing:
 | Peer discovery + online status | ✅ | ✅ | ✅ |
 | Multiple accounts | ✅ | ✅ | ✅ |
 | Peer list filter (offline / sharing / tags) | ✅ | ✅ | ✅ |
-| Peer detail: route, latency, ACL tags | ✅ | ❌ | ❌ |
-| Quality settings UI | ✅ | ❌ | ❌ |
+| Peer detail: route, latency, ACL tags | ✅ | ✅ | ✅ |
+| Quality settings UI | ✅ | ✅ | ✅ |
 | Connection stats overlay | ✅ | ❌ | ❌ |
 | Localized strings | ✅ | ❌ | ❌ |
 | **Notified when a viewer is waiting for approval** | ✅ | ❌ | ❌ |
@@ -172,7 +174,10 @@ Two things behind the ✅s are worth knowing:
 
 Linux and Windows share their chrome (`Packages/TailscreenHubUI`), so hub work
 lands on both at once — which is why that block is the most aligned of the five.
-Both consume `QualitySettings.default` with no UI to change it.
+The peer-detail pane and the share card's quality menu are that principle in
+action: one component each (`HubQualityMenu`), serving both hosts, backed by
+the same portable `QualitySettings` model and `PeerRoute`/latency
+classifications the macOS hub uses.
 
 The last block is about *where the sharing controls live*. On macOS the window is
 the **hub** (sign-in, accounts, peer list) and the menubar item is the **sharer
