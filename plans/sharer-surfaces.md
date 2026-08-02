@@ -130,10 +130,33 @@ to dedupe is pure logic and belongs where Linux CI can test it. macOS already ha
 inventing a second set.
 
 ```
-enum SharerNotice { case viewerPending(label:), controlRequested(label:), viewerJoined(label:) }
+enum SharerNoticeKind { case viewerPending, controlRequested, requestToShare,
+                             viewerJoined, viewerLeft }
 enum NoticeAction { case approve, deny, dismiss }
-func noticeToPost(...) -> SharerNotice?     // dedupe + staleness live here
+func noticesToPost(...) -> [SharerNotice]   // dedupe + staleness live here
 ```
+
+**Urgency is narrower than actionability**, and conflating them is the easy
+mistake — the first cut of this had only three kinds, where the two axes
+happened to coincide. `requestToShare` has buttons but is *not* urgent: it
+arrives while the machine is idle, nobody is mid-flow, and an invitation has a
+natural retry. The two mid-share asks arrive with somebody watching a "waiting
+for approval" placard or unable to click anything, and only those get the
+break-through-Focus level.
+
+The argument that settles it is mechanical rather than aesthetic: every platform
+revokes its Focus exemption **per app**, not per notification. A kind that claims
+urgency without needing it raises the odds the user turns the exemption off,
+which disarms the kinds that do need it. Spend it only where somebody is stuck.
+
+`viewerJoined`/`viewerLeft` are a matched pair. A sharer told somebody arrived
+and never told they left has to go looking to find out whether anyone is still
+watching — the same ask-the-app problem notifications exist to remove. Both are
+informational, neither is actionable, and the departure has two gates so it
+stays news rather than noise: only viewers whose *arrival* was announced get a
+departure, and nothing posts during teardown (stopping a share expels every
+viewer at once, which would otherwise fire one banner per viewer at the exact
+moment the sharer already decided to stop).
 
 > **Landed** as `TailscreenProtocol/SharerNotice.swift`, **not** in
 > `TailscreenHubUI` as this plan first said: HubUI carries SwiftCrossUI, which
@@ -448,7 +471,7 @@ independently shippable and touches only macOS.
 
 | Step | State |
 |---|---|
-| 1 · macOS notification delivery | **done** — interruption level, the UN delegate, authorization read-back, sound leak |
+| 1 · macOS notification delivery | **done** — interruption level (mid-share asks only), the UN delegate, authorization read-back, sound leak, viewer-left |
 | 2 · portable `SharerNotice` | **done** — `TailscreenProtocol`, 17 tests on Linux CI |
 | 3 · macOS categories + actions | not started — the step that collapses macOS's three dedupe mechanisms onto (2) |
 | 4 · Windows notification shim | not started |
@@ -565,6 +588,40 @@ No `WinTrayKit`, and no tray entry on Linux — see the decision above.
 | Configurable hotkeys (recorder + conflict UI) | medium — optional, the real fix for a collision |
 | **Microphone capture** | **large** — gates the mute toggle |
 | **Sharer-side drawing** | **large** — gates the draw toggle |
+
+## Future: request to annotate
+
+Not scheduled — recorded because the shape is already sitting in the codebase
+and it would be a shame to rediscover it later.
+
+Annotation is currently **ungated**: any admitted viewer can draw, and every
+stroke is fanned out to the sharer and to every other viewer. That is right for
+the common case of one or two people. It stops being right as the audience
+grows — a dozen viewers with pens is a whiteboard nobody asked for, and the
+sharer's only remedy today is `.clearAll` after the fact.
+
+Remote control already solved exactly this problem, and the machinery
+generalizes almost unchanged:
+
+- a viewer-initiated request (`.controlRequest` → `.annotateRequest`)
+- a sharer-side grant gate keyed by `connectionID`, unspoofable across a NAT
+  rebind (`RemoteControlPolicy.shouldInject` → the annotation ingest path,
+  which already threads each connection's `remoteAddress` for the
+  admitted-viewer check)
+- the same notice kind and dedupe rules as `controlRequested`
+- the same auto-revoke triggers: disconnect, idle sweep, expel, Stop Sharing
+
+Two differences worth thinking about before building it. Control is
+**single-grantee** by design — two people fighting over one cursor is
+incoherent — but annotation is naturally *multi*-grantee, so the grant is a set
+rather than a slot. And unlike control, the sensible default is arguably
+"everyone may draw", flipping to request-based only above some viewer count or
+when the sharer turns it on; a feature that makes the two-person case worse to
+fix the twelve-person case is a bad trade.
+
+The capability bit already exists (`ScreenShareCaps.annotations`, bit 4) and is
+advertised per sharer, so a viewer's toolbar already knows how to disable itself
+— which is the hard part of introducing a gate without breaking old peers.
 
 ## What would revive the tray
 
