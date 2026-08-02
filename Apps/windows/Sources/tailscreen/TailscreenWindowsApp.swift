@@ -14,6 +14,7 @@ import struct TailscreenProtocol.AccountProfileLayout
 import class TailscreenProtocol.AccountProfileStore
 import struct TailscreenProtocol.CaptureTimings
 import struct TailscreenProtocol.ControlRequestInfo
+import enum TailscreenProtocol.PeerPolicy
 import struct TailscreenProtocol.PeerListFilter
 import enum TailscreenProtocol.PeerListFilterStore
 import enum TailscreenProtocol.PeerSharingState
@@ -479,6 +480,32 @@ final class AppUIState: ObservableObject {
             canShare: watching == nil,
             startLabel: "Share this screen",
             notes: shareNotes,
+            // The roster: who is watching, and what can be done about them.
+            // `notes` stays for statistics — a person is not a note.
+            viewers: sharing.viewers.map { viewer in
+                let stableID = viewer.stableID
+                let remembered = shareSession.remembered(stableID: stableID)
+                return HubViewerRow(
+                    id: viewer.id,
+                    label: viewer.displayName,
+                    detail: viewer.health,
+                    remembered: remembered.map { $0 == .allow ? .allowed : .blocked } ?? .none,
+                    rememberIsDeferred: shareSession.isDeferred(rowID: viewer.id),
+                    onKick: { [weak self] in self?.shareSession.disconnectViewer(viewer.id) },
+                    onAlwaysAllow: { [weak self] in
+                        self?.shareSession.remember(
+                            rowID: viewer.id, stableID: stableID,
+                            displayName: viewer.displayName, policy: .allow)
+                    },
+                    onDenyAndBlock: { [weak self] in
+                        self?.shareSession.remember(
+                            rowID: viewer.id, stableID: stableID,
+                            displayName: viewer.displayName, policy: .deny)
+                    },
+                    onForget: { [weak self] in
+                        self?.shareSession.forget(rowID: viewer.id, stableID: stableID)
+                    })
+            },
             // Control requests and viewer approvals are the same interaction —
             // a sentence and two buttons — so they go through the one prompt
             // shape the shared card renders. This window is the only surface

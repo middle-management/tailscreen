@@ -132,11 +132,27 @@ then has no way to change their mind.
   layout. The *decisions* (`admissionDecision`, `drainDecision`,
   `connectedDenyList`, `canAcceptPending`) are already portable and tested — only
   persistence is mac-bound.
-- **2.2 · Remembered allow / "Deny & Block"** on both hosts, keyed by
-  StableNodeID like macOS.
-- **2.3 · Kick a connected viewer.** `disconnectViewer` is already on the
-  portable server; both hosts need the roster row and the ✕. Note the macOS
-  lesson from #177: put it on *every* surface the host has, not just one.
+- **2.2 + 2.3 · Remembered allow / "Deny & Block", and kick a connected
+  viewer.** ✅ **Done**, and together because they are one surface: the sharing
+  card's roster, which before this was a list of IP strings. Three pieces, each
+  where it belongs:
+  - `ViewerRosterDecision` (portable) — what a row can offer, and the queue for
+    a decision made before the peer's StableNodeID resolves. macOS had grown
+    that queue inline in `AppState`; this is the same behaviour, tested.
+  - `SharerAccessCoordinator` (TailscreenSharer) — remember, forget, drain the
+    queue on each roster tick, push the map at the live server. Reaches the
+    server through a closure specifically so every case is testable with no
+    tsnet node, no network and no share.
+  - `HubViewerRow` + `HubViewerRowView` (TailscreenHubUI) — one component, both
+    hosts, per the #177 lesson about putting a decision on every surface.
+
+  Two things worth remembering. **A decision made before the identity resolves
+  is queued, not dropped** — the store is keyed by StableNodeID, that arrives
+  asynchronously from the sharer's own netmap lookup, and a sharer who wants
+  somebody gone wants it now; the row says it is waiting rather than appearing
+  to do nothing. And **the queue is pruned when a row leaves**, or a Deny &
+  Block on a peer that disconnects before resolving lands on the next
+  connection from that address — which behind one NAT is a different machine.
 - **2.4 · Ask a peer to share.** The `.requestToShare` wire pair is portable and
   pinned; both hosts need the affordance and the accept/decline UI.
 
