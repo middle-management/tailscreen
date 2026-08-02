@@ -774,6 +774,21 @@ User-facing strings are localized through SwiftPM resources. `Package.swift` set
 - **Don't present `SCContentSharingPicker` from the main process either.** Same family of APIs, same defensive isolation — spawn `--picker-helper` instead. The picker subprocess exits the moment the user picks, so its XPC handles never live alongside the long-running main process.
 - **Don't deserialize an `SCContentFilter` in the main process.** The decoded filter retains XPC handles to system services; the unarchive happens only inside the capture-helper.
 - **Don't add SCStream lifecycle to the main process.** All capture lives in the helper subprocess. The main-process screen-share server only spawns the helper and broadcasts what comes back.
+- **`lint` fails with a violation that names no file.** The `lint` job's
+  reporter is `github-actions-logging`, which puts the path in GitHub
+  *annotation metadata* — the log API strips it, so the failure reads as a bare
+  "Function should have 5 parameters or less" with nothing to grep for. Don't
+  guess at it by eye; SwiftLint's own parser disagrees with hand-written
+  scanners in exactly the cases that matter. Build the real thing
+  (`git clone --branch <version> https://github.com/realm/SwiftLint && swift
+  build -c release`) and run it as CI does:
+  `LD_LIBRARY_PATH=/opt/swift/usr/lib swiftlint lint --baseline
+  .swiftlint-baseline.json --strict --quiet` — the `LD_LIBRARY_PATH` is not
+  optional on Linux (without it, it dies in `Loading libsourcekitdInProc.so
+  failed`). Check `origin/main` in a worktree at the same time: a violation
+  that reproduces there is one an earlier merge shipped, not one you wrote.
+  That has happened — a PR merged on a green that predated its own conflict
+  resolution left `main` red for three merges before anyone chased it.
 - **Linux CI (`linux-protocol`) fails after touching a package file** — you added an Apple-only dependency to a file in `Packages/TailscreenKit/Sources/`. Keep package files Foundation-only (see the package README's whitelist) or move the mac-bound piece into the app target. Reproduce with `make test-protocol` (works on macOS too).
 - **App fails to compile against a package type** ("initializer is inaccessible", "cannot find X in scope") — the declaration is `internal` in TailscreenKit. Mark what the app needs `public` (structs the app constructs need explicit public inits — Swift never synthesizes memberwise inits as public). Test-only seams should stay internal; tests use `@testable import TailscreenProtocol`/`TailscreenTransport`.
 - **On Windows, the VIEWER's drawing or typing silently does nothing** — check the two gates in order. Both affordances are hidden unless the sharer advertised the matching `ScreenShareCaps` bit, so a sharer with no overlay or no injector correctly produces a plainer window (`WindowsViewerInteraction.setCaps`). Then: **drawing wins over controlling** — with an annotation tool armed a drag is a stroke, not a click, and `forwardsInput` is the one place that precedence lives. Typing specifically needs the `WinUI.Image` to be focusable AND focused: it is not a focus target by default and `keyDown` never fires on an element that cannot take focus, so remote typing does nothing while the pointer works fine. Two more things worth knowing: annotations are composited INTO the decoded frame by `AnnotationRasterizer.draw` (the no-clear half of `render`) rather than onto a second surface, so they zoom and letterbox with the video for free; and Ctrl+wheel zooms while a plain wheel scrolls the sharer, because without that split one of the two is unreachable.
