@@ -1033,6 +1033,12 @@ class AppState: ObservableObject {
             )
             return
         }
+        // Re-read notification authorization at every share start. The one-shot
+        // prompt is answered once, but the user can revoke it in System
+        // Settings at any time afterwards — and with approval defaulting on,
+        // a sharer whose approval banners will never appear is a sharer who
+        // strands viewers without ever learning why.
+        ViewerJoinNotifier.shared.refreshAuthorization()
         // Decode the picker selection so the sharer overlay (built lazily
         // when the first annotation arrives or "Draw on Screen" is toggled)
         // can scope its panel to the shared window/app instead of the
