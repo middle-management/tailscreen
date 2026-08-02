@@ -185,7 +185,7 @@ final class SharerOverlayWindow {
     /// Map a `CGDirectDisplayID` to the matching `NSScreen` via
     /// `NSScreenNumber` in the device description. Returns nil when the ID
     /// is nil or no attached screen reports it.
-    private static func screen(forDisplayID displayID: CGDirectDisplayID?) -> NSScreen? {
+    static func screen(forDisplayID displayID: CGDirectDisplayID?) -> NSScreen? {
         guard let displayID else { return nil }
         return NSScreen.screens.first { screen in
             let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID
@@ -196,7 +196,7 @@ final class SharerOverlayWindow {
     /// Best-guess frame for the overlay at construction time. Display and
     /// application modes are static (sized to the captured display); window
     /// mode refines on each tracking tick.
-    private static func initialFrame(for mode: Mode) -> NSRect {
+    static func initialFrame(for mode: Mode) -> NSRect {
         switch mode {
         case .display(let displayID), .application(let displayID):
             let screen = Self.screen(forDisplayID: displayID) ?? NSScreen.main
@@ -305,7 +305,7 @@ final class SharerOverlayWindow {
     /// the top of the z-order (often a tiny chrome element). Fetching all
     /// on-screen windows and filtering by `kCGWindowNumber` is the reliable
     /// path.
-    private static func cgWindowFrame(for windowID: CGWindowID) -> CGRect? {
+    static func cgWindowFrame(for windowID: CGWindowID) -> CGRect? {
         let options: CGWindowListOption = .optionOnScreenOnly
         guard
             let infos = CGWindowListCopyWindowInfo(options, kCGNullWindowID)
@@ -325,7 +325,7 @@ final class SharerOverlayWindow {
     /// frame. The "primary" display per AppKit's coordinate system is the
     /// one whose frame origin is (0, 0) — not necessarily `screens.first`,
     /// which is just whatever the order returned by IOKit happens to be.
-    private static func cgToCocoaFrame(_ cgRect: CGRect) -> NSRect? {
+    static func cgToCocoaFrame(_ cgRect: CGRect) -> NSRect? {
         let primary =
             NSScreen.screens.first(where: { $0.frame.origin == .zero })
             ?? NSScreen.screens.first
