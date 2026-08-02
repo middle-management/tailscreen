@@ -17,6 +17,15 @@ public struct PickerContent: View {
     /// Handed the tapped screen's `id`, which the host resolves back to
     /// whatever it discovered.
     let onSelect: @MainActor @Sendable (String) -> Void
+    /// Ask the tapped screen's machine to start sharing. Nil ⇒ no host support
+    /// (or nothing to ask through right now), and no button on any row.
+    var onAskToShare: (@MainActor @Sendable (String) -> Void)?
+    /// Screen ids with an outstanding ask. A set rather than a single id
+    /// because nothing stops a person asking two machines — and a flag that
+    /// assumed one would show the second ask's state on the first row.
+    var askingIDs: Set<String> = []
+    /// How the last ask to each screen ended, by screen id.
+    var askNotes: [String: String] = [:]
     var onOpenLogin: (@MainActor @Sendable () -> Void)?
     /// The sharing half of the hub, when this host can share. `nil` renders a
     /// viewer-only hub — a build with no capture backend, or a screenshot.
@@ -44,7 +53,10 @@ public struct PickerContent: View {
         autoExpandFirst: Bool = false,
         emptyMessage: String = "No Tailscreen screens found on your tailnet.",
         hiddenByFilter: Int = 0,
+        askingIDs: Set<String> = [],
+        askNotes: [String: String] = [:],
         onSelect: @escaping @MainActor @Sendable (String) -> Void,
+        onAskToShare: (@MainActor @Sendable (String) -> Void)? = nil,
         onOpenLogin: (@MainActor @Sendable () -> Void)? = nil,
         shareCard: ShareCard? = nil
     ) {
@@ -54,7 +66,10 @@ public struct PickerContent: View {
         self.loginURL = loginURL
         self.emptyMessage = emptyMessage
         self.hiddenByFilter = hiddenByFilter
+        self.askingIDs = askingIDs
+        self.askNotes = askNotes
         self.onSelect = onSelect
+        self.onAskToShare = onAskToShare
         self.onOpenLogin = onOpenLogin
         self.shareCard = shareCard
         // Preview/screenshot affordance: open the first row's detail pane so the
@@ -105,6 +120,27 @@ public struct PickerContent: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    /// The per-row ask action, or nil when asking this machine makes no sense.
+    ///
+    /// Withheld from a machine that is ALREADY sharing: the useful action
+    /// there is View Screen, and "ask them to do the thing they are doing" is
+    /// a banner on somebody's desk for nothing. Note this keys on
+    /// `sharingName`, which is nil both for "not sharing" and for "we asked
+    /// and got no reply" — offering the ask in the unknown case is the right
+    /// way round, because the cost of a redundant ask is one dismissed banner
+    /// while the cost of hiding it is a feature that silently isn't there.
+    ///
+    /// A method rather than an inline ternary because the expression form —
+    /// an optional closure produced by a conditional inside a `flatMap` — is
+    /// one swift-cross-ui's result builder cannot typecheck, and it fails as
+    /// "failed to produce diagnostic for expression" pointing at the whole
+    /// property rather than at anything real.
+    private func askAction(for screen: HubScreen) -> (@MainActor @Sendable () -> Void)? {
+        guard let onAskToShare, screen.sharingName == nil else { return nil }
+        let id = screen.id
+        return { onAskToShare(id) }
+    }
+
     @ViewBuilder private var listContent: some View {
         if screens.isEmpty && hiddenByFilter > 0 {
             // Machines were found and the filter hid all of them. Saying "none
@@ -140,7 +176,10 @@ public struct PickerContent: View {
                             ip: screen.tailscaleIP,
                             isOnline: screen.isOnline,
                             sharingCaption: screen.sharingCaption,
-                            onView: { onSelect(screen.id) })
+                            onView: { onSelect(screen.id) },
+                            onAskToShare: askAction(for: screen),
+                            isAsking: askingIDs.contains(screen.id),
+                            askNote: askNotes[screen.id])
                     }
                 }
                 if hiddenByFilter > 0 && searchText.isEmpty {

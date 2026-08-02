@@ -365,6 +365,28 @@ public final class TsnetTransport {
         return await TailscreenMetadataClient.fetchMetadata(fromIP: ip, via: node)
     }
 
+    /// Ask a peer to share its screen, and park until it answers.
+    ///
+    /// Sibling of `fetchMetadata` — same prepared node, same port, the other
+    /// half of the same TCP channel — but the call parks for up to
+    /// `responseTimeout`, because the answer comes back on the connection the
+    /// request went out on rather than by a dial-back. Callers should hold it
+    /// in a cancellable task and show that the ask is outstanding; a UI that
+    /// awaits this inline looks frozen for two minutes.
+    ///
+    /// No node reads as `.noAnswer` rather than throwing, which is the same
+    /// thing a peer running an older build produces: nothing was refused, and
+    /// nothing is going to happen.
+    public func requestToShare(ip: String, from hostname: String) async -> ShareRequestOutcome {
+        guard let node = preparedNode else { return .noAnswer }
+        do {
+            return try await TailscreenRequestToShareClient.requestToShare(
+                toIP: ip, from: hostname, via: node)
+        } catch {
+            return .noAnswer
+        }
+    }
+
     /// Bring the current node down and clear it so a later `prepare` can bring up
     /// a fresh one — e.g. under a different state directory when switching
     /// profiles. A no-op if no node is up. (`run`'s own `defer` clears the node

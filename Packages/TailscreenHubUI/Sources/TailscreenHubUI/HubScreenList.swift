@@ -152,16 +152,43 @@ public struct SharerDetail: View {
     let isOnline: Bool
     let sharingCaption: String?
     let onView: @MainActor @Sendable () -> Void
+    /// Ask this peer to start sharing. Nil ⇒ the button is absent, never
+    /// present-and-inert — the same convention the roster row's optional
+    /// actions follow, and for the same reason: a control that is visible but
+    /// does nothing teaches people to distrust every control near it.
+    ///
+    /// Hosts pass nil while the local node is down (there is nothing to ask
+    /// through) or while this machine is already busy sharing or watching.
+    let onAskToShare: (@MainActor @Sendable () -> Void)?
+    /// Set while an ask to this peer is outstanding. The request parks for up
+    /// to two minutes waiting for a person to walk back to their desk, so
+    /// without this the button looks like it did nothing and gets pressed
+    /// again — which on the far side is a second banner row, not a faster
+    /// answer.
+    let isAsking: Bool
+    /// How the last ask to this peer ended.
+    ///
+    /// Shown *beside* a live Ask button rather than instead of it: a decline
+    /// that silently reverted the row to its resting state is indistinguishable
+    /// from an ask that never left, and the honest answer — somebody said no —
+    /// is one a person deserves to see before deciding whether to ask again.
+    let askNote: String?
 
     public init(
         hostname: String, ip: String, isOnline: Bool, sharingCaption: String?,
-        onView: @escaping @MainActor @Sendable () -> Void
+        onView: @escaping @MainActor @Sendable () -> Void,
+        onAskToShare: (@MainActor @Sendable () -> Void)? = nil,
+        isAsking: Bool = false,
+        askNote: String? = nil
     ) {
         self.hostname = hostname
         self.ip = ip
         self.isOnline = isOnline
         self.sharingCaption = sharingCaption
         self.onView = onView
+        self.onAskToShare = onAskToShare
+        self.isAsking = isAsking
+        self.askNote = askNote
     }
 
     public var body: some View {
@@ -179,7 +206,26 @@ public struct SharerDetail: View {
                 }
             }
             if isOnline {
-                Button("View Screen", action: onView)
+                HStack(spacing: 8) {
+                    Button("View Screen", action: onView)
+                    if isAsking {
+                        // A word, not a spinner: swift-cross-ui has no
+                        // indeterminate progress control on both backends, and
+                        // the fact that matters is "they have been asked", not
+                        // that something is animating.
+                        Text("Asked — waiting for a reply")
+                            .font(.caption)
+                            .foregroundColor(HubStyle.secondaryText)
+                    } else if let onAskToShare {
+                        Button("Ask to Share", action: onAskToShare)
+                    }
+                }
+                if let askNote, !isAsking {
+                    Text(askNote)
+                        .font(.caption)
+                        .foregroundColor(HubStyle.secondaryText)
+                        .lineLimit(1)
+                }
             }
             VStack(alignment: .leading, spacing: 4) {
                 detailRow(label: "Host", value: hostname)
