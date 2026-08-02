@@ -483,10 +483,14 @@ private struct HubView: View {
 // MARK: - Share section (window-side status + start)
 
 /// The window's share module: a titled card with the primary action at
-/// idle, and a compact status row while a session is up. Detailed session
-/// controls (mic, audio devices, viewer approvals, remote-control requests)
-/// deliberately stay in the menubar popover — the sharer tool — so this
-/// section stays a status surface with just the primary action.
+/// idle, and a compact status row while a session is up.
+///
+/// The split is by *kind*, not by convenience. Anything that decides something
+/// about a **person** — approving a viewer, granting control, dropping someone
+/// mid-share — renders here as well as in the menubar popover, because a
+/// sharer should never have to find the other surface to answer for somebody.
+/// Continuous *session* controls (mic, audio device, drawing) stay in the
+/// popover, which is the sharer tool.
 private struct ShareStatusSection: View {
     @EnvironmentObject var appState: AppState
 
@@ -522,6 +526,14 @@ private struct ShareStatusSection: View {
                 }
                 if !appState.controlRequests.isEmpty {
                     ControlRequestsList(requests: appState.controlRequests)
+                }
+                // Who is watching, and the ✕ that drops one of them. The count
+                // above says *how many* and never *which*, which left no place
+                // to hang a per-viewer action — so dropping a viewer was the
+                // only sharer action reachable from nowhere but the popover.
+                if !appState.currentViewers.isEmpty {
+                    Divider()
+                    ViewersList(viewers: appState.currentViewers)
                 }
                 Text(L("Mic, system audio, and drawing controls live in the menu bar icon."))
                     .font(.caption)

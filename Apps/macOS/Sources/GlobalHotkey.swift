@@ -29,6 +29,16 @@ final class GlobalHotkey: @unchecked Sendable {
     /// Signature shared by all Tailscreen hotkeys ('TSNH').
     static let signature = OSType(0x54534E48)
 
+    /// Whether the system actually gave us this combo.
+    ///
+    /// `RegisterEventHotKey` refuses a chord another app already holds, and
+    /// the refusal is a return code — the object constructs fine either way
+    /// and the key silently does nothing. Callers that *advertise* a shortcut
+    /// (the menu key equivalent, the cheat sheet, a future Settings pane)
+    /// should consult this so the app can admit the shortcut is unavailable
+    /// instead of printing a chord that will never fire.
+    var isRegistered: Bool { hotKeyRef != nil }
+
     /// Pure dispatch predicate: should a handler registered for
     /// `registeredSignature`/`registeredID` run for a fired event carrying
     /// `eventSignature`/`eventID`? Extracted so the id-filtering is unit
@@ -70,7 +80,16 @@ final class GlobalHotkey: @unchecked Sendable {
             &ref
         )
         guard regStatus == noErr, let ref else {
-            TSLogger().log("GlobalHotkey: RegisterEventHotKey failed (OSStatus=\(regStatus))")
+            // `eventHotKeyExistsErr` (-9878) is the one that actually happens:
+            // another app already owns this combo system-wide, first
+            // registration wins, and ours is simply refused. The user then
+            // presses the key forever and nothing happens — which is why
+            // `isRegistered` is exposed rather than only logged. A shortcut
+            // the app advertises but did not get is worse than one it never
+            // claimed, because the user has no reason to doubt it.
+            TSLogger().log(
+                "GlobalHotkey: RegisterEventHotKey failed (OSStatus=\(regStatus))"
+                    + " — the combo is probably owned by another app")
             return
         }
         self.hotKeyRef = ref
