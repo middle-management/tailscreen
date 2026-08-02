@@ -391,6 +391,10 @@ private struct SharingCard: View {
                 Spacer(minLength: 0)
             }
 
+            if appState.notificationsDenied {
+                NotificationsOffNotice()
+            }
+
             ViewersList(viewers: appState.currentViewers)
 
             if !appState.pendingViewers.isEmpty {
@@ -664,6 +668,50 @@ private struct ViewersList: View {
         case .good: return L("Connection healthy")
         case .degraded: return L("Connection degraded — packet loss")
         case .throttled: return L("Limited to keyframes — poor connection")
+        }
+    }
+}
+
+/// Warns the sharer that macOS will not show the approval banners this app
+/// relies on — the user explicitly denied notification permission.
+///
+/// Rendered on **both** sharer surfaces, like the other decision-adjacent
+/// components: someone who never opens the popover is exactly the person this
+/// warning is for.
+///
+/// One-directional on purpose. It appears only when the app *knows* delivery is
+/// off; its absence is not a claim that notifications work, because a Focus
+/// filtering us, a revoked Time Sensitive allowance, or an alert style of None
+/// are all invisible to the app. Reassuring on incomplete information would be
+/// worse than saying nothing — a sharer who trusts a green light and misses a
+/// waiting viewer is the failure this whole surface exists to prevent.
+struct NotificationsOffNotice: View {
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: "bell.slash")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                // The text says it; the glyph would just repeat it.
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(L("Notifications are turned off for Tailscreen."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(L("Requests to view or control will only appear here."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button(L("Open Settings")) {
+                    let path = "x-apple.systempreferences:com.apple.Notifications-Settings.extension"
+                    if let url = URL(string: path) {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+                .buttonStyle(.link)
+                .font(.caption)
+            }
+            Spacer(minLength: 0)
         }
     }
 }

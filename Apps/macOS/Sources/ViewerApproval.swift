@@ -1,4 +1,5 @@
 import Foundation
+import TailscaleKit
 import UserNotifications
 
 /// Persisted flag for the "Require approval for new viewers" toggle.
@@ -39,6 +40,17 @@ enum ViewerApprovalDefaults {
     }
 }
 
+/// Per-file logger, following the convention the other mac sources use —
+/// `LogSink` comes from TailscaleKit but each file declares its own private
+/// conformer with its own prefix, so there is no shared `TSLogger` to import.
+private struct TSLogger: LogSink {
+    var logFileHandle: Int32?
+
+    func log(_ message: String) {
+        print("[Notifications] \(message)")
+    }
+}
+
 /// Thin wrapper around `UNUserNotificationCenter` for the
 /// viewer-connection feature. Two surfaces:
 ///
@@ -58,47 +70,121 @@ final class ViewerJoinNotifier {
     private var didRequestAuthorization = false
     private let isBundled = Bundle.main.bundleIdentifier != nil
 
-    private init() {}
+    /// What we know about whether macOS will display what we post.
+    ///
+    /// Deliberately four states rather than a `Bool`, because "we have not
+    /// asked yet" and "the user said no" must not be the same value — a UI
+    /// that warns on the first is crying wolf, and one that stays quiet on the
+    /// second is the exact confusion this exists to remove.
+    ///
+    /// Note what this can and cannot see. It knows about authorization; it
+    /// knows nothing about a Focus filtering us, Time Sensitive being revoked,
+    /// or the alert style being set to None. So `authorized` is **not** a
+    /// promise that a banner will appear — which is why the UI built on this
+    /// only ever renders the negative, and never claims notifications are
+    /// working.
+    enum Authorization: Sendable, Equatable {
+        /// Not asked yet, so nothing is known.
+        case unknown
+        /// The user allowed it. Necessary, not sufficient — see above.
+        case authorized
+        /// The user said no. Permanent until they change it in System Settings.
+        case denied
+        /// Unbundled dev build; `UNUserNotificationCenter` is unusable here at
+        /// all, and no prompt will ever be shown.
+        case unavailable
+    }
+
+    private(set) var authorization: Authorization
+
+    /// Fired whenever `authorization` changes, so `AppState` can mirror it into
+    /// a `@Published` the views observe. A callback rather than making this
+    /// type an `ObservableObject`: it is a plain notification wrapper, and
+    /// `AppState` is already the thing every view watches.
+    var onAuthorizationChanged: ((Authorization) -> Void)?
+
+    private init() {
+        authorization = Bundle.main.bundleIdentifier == nil ? .unavailable : .unknown
+    }
+
+    private func setAuthorization(_ value: Authorization) {
+        guard authorization != value else { return }
+        authorization = value
+        onAuthorizationChanged?(value)
+    }
 
     func postJoined(label: String) {
-        guard isBundled else { return }
-        ensureAuthorization()
-        let content = UNMutableNotificationContent()
-        content.title = L("Viewer Connected")
-        content.body = L("\(label) is now viewing your screen.")
-        content.sound = .default
-        let req = UNNotificationRequest(
-            identifier: "tailscreen.viewer.joined.\(UUID().uuidString)",
-            content: content,
-            trigger: nil
-        )
-        UNUserNotificationCenter.current().add(req, withCompletionHandler: nil)
+        post(
+            prefix: "tailscreen.viewer.joined",
+            title: L("Viewer Connected"),
+            body: L("\(label) is now viewing your screen."),
+            blocksSomeone: false)
+    }
+
+    /// Fired when a viewer's session ends — they disconnected, the idle sweep
+    /// dropped them, or the sharer kicked them.
+    ///
+    /// The counterpart to `postJoined`: a sharer told somebody arrived and
+    /// never told they left has to go looking to find out whether anyone is
+    /// still watching, which is the same "ask the app" problem notifications
+    /// exist to remove. Same non-urgent level — nobody is stranded by a
+    /// departure.
+    func postLeft(label: String) {
+        post(
+            prefix: "tailscreen.viewer.left",
+            title: L("Viewer Disconnected"),
+            body: L("\(label) stopped viewing your screen."),
+            blocksSomeone: false)
     }
 
     func postPending(label: String) {
-        guard isBundled else { return }
-        ensureAuthorization()
-        let content = UNMutableNotificationContent()
-        content.title = L("Viewer Wants to Connect")
-        content.body = L("\(label) is asking to view your screen. Open Tailscreen to Accept or Deny.")
-        content.sound = .default
-        let req = UNNotificationRequest(
-            identifier: "tailscreen.viewer.pending.\(UUID().uuidString)",
-            content: content,
-            trigger: nil
-        )
-        UNUserNotificationCenter.current().add(req, withCompletionHandler: nil)
+        post(
+            prefix: "tailscreen.viewer.pending",
+            title: L("Viewer Wants to Connect"),
+            body: L("\(label) is asking to view your screen. Open Tailscreen to Accept or Deny."),
+            blocksSomeone: true)
     }
 
     func postControlRequested(label: String) {
+        post(
+            prefix: "tailscreen.control.requested",
+            title: L("Viewer Wants Control"),
+            body: L("\(label) is asking to control your Mac. Open Tailscreen to Grant or Deny."),
+            blocksSomeone: true)
+    }
+
+    /// One post path for all three, so the delivery decisions below can't
+    /// drift between them the way `.interruptionLevel` did — three
+    /// near-identical copies is how one of them ends up different.
+    ///
+    /// **No sound.** Every notice here fires *during* a share, and with system
+    /// audio shared the helper captures the system mix.
+    /// `excludesCurrentProcessAudio` drops only Tailscreen's own audio, and a
+    /// notification sound is played by another process — so a `.default` sound
+    /// here is a sound every viewer hears. The banner is the notification; the
+    /// ding was leaking the fact that one arrived.
+    ///
+    /// `blocksSomeone` decides whether the notice outranks a Focus. It is the
+    /// same split `SharerNoticeKind.blocksSomeone` makes in the portable tier;
+    /// this reimplements it locally so the two changes stay independently
+    /// reviewable, and should be replaced by that type when the actionable
+    /// notifications land.
+    private func post(prefix: String, title: String, body: String, blocksSomeone: Bool) {
         guard isBundled else { return }
         ensureAuthorization()
         let content = UNMutableNotificationContent()
-        content.title = L("Viewer Wants Control")
-        content.body = L("\(label) is asking to control your Mac. Open Tailscreen to Grant or Deny.")
-        content.sound = .default
+        content.title = title
+        content.body = body
+        // A viewer parked at the approval gate cannot proceed until the sharer
+        // answers, and "require approval" defaults on — so the person most
+        // likely to be running a presentation Focus is exactly the person most
+        // likely to have somebody blocked on them. `.timeSensitive` breaks
+        // through Focus and Do Not Disturb and needs no entitlement (that is
+        // `.critical`); the user can still revoke it per-app. A viewer *join*
+        // is a report, not an ask, so it stays at the default level.
+        content.interruptionLevel = blocksSomeone ? .timeSensitive : .active
         let req = UNNotificationRequest(
-            identifier: "tailscreen.control.requested.\(UUID().uuidString)",
+            identifier: "\(prefix).\(UUID().uuidString)",
             content: content,
             trigger: nil
         )
@@ -115,7 +201,55 @@ final class ViewerJoinNotifier {
         // (dispatch_assert_queue_fail → SIGTRAP) the first time a viewer joins.
         // Typing the closure `@Sendable` makes it non-isolated so it runs on
         // UN's queue with no executor assertion.
-        let ignore: @Sendable (Bool, (any Error)?) -> Void = { _, _ in }
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound], completionHandler: ignore)
+        //
+        // The result is no longer discarded: a denial is permanent and
+        // otherwise completely silent — every later post is accepted by the
+        // API and displays nothing, so the sharer believes they are being
+        // told about waiting viewers and is not. `authorization` lets the UI
+        // say so; `TailscreenNotificationDelegate` is what makes an
+        // authorized post actually appear.
+        let record: @Sendable (Bool, (any Error)?) -> Void = { granted, _ in
+            Task { @MainActor in
+                ViewerJoinNotifier.shared.setAuthorization(granted ? .authorized : .denied)
+            }
+        }
+        UNUserNotificationCenter.current().requestAuthorization(
+            options: [.alert, .sound], completionHandler: record)
+    }
+
+    /// Re-read the system's current authorization, which the user can change
+    /// in System Settings at any time after the one-shot prompt. Call at share
+    /// start: a sharer whose approval prompts will never appear should be told
+    /// that by the app, not discover it by stranding somebody.
+    func refreshAuthorization() {
+        guard isBundled else { return }
+        // Explicitly `@Sendable` for the same reason `ensureAuthorization`'s
+        // handler is: this closure also runs on UN's own service queue, and
+        // leaving the compiler to infer MainActor isolation from the enclosing
+        // type makes Swift 6 trap on the executor check at runtime rather than
+        // complain at compile time. `authorizationStatus` is read here, on
+        // that queue, so only a `Bool` crosses to the MainActor —
+        // `UNNotificationSettings` never does.
+        let apply: @Sendable (UNNotificationSettings) -> Void = { settings in
+            // `.notDetermined` stays `unknown`: the user has not been asked,
+            // so there is nothing to warn them about yet. Only an explicit
+            // refusal warns.
+            let state: Authorization
+            switch settings.authorizationStatus {
+            case .authorized, .provisional, .ephemeral: state = .authorized
+            case .denied: state = .denied
+            case .notDetermined: state = .unknown
+            @unknown default: state = .unknown
+            }
+            if state == .denied {
+                // The whole point of reading this back. Approval defaults on,
+                // so without banners the sharer's only sign that somebody is
+                // waiting is a row in a popover they have no reason to open.
+                TSLogger().log(
+                    "Notifications denied — viewer approval prompts will only appear in the app")
+            }
+            Task { @MainActor in ViewerJoinNotifier.shared.setAuthorization(state) }
+        }
+        UNUserNotificationCenter.current().getNotificationSettings(completionHandler: apply)
     }
 }
