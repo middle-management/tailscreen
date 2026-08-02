@@ -80,7 +80,7 @@ half.
 | Zoom + pan viewer | ✅ | ❌ |
 | Request control as viewer | ✅ | ❌ |
 | Render viewers' annotations as sharer | ✅ (1.4) | ✅ |
-| Inject granted control as sharer | ❌ | ✅ |
+| Inject granted control as sharer | ✅ (1.5) | ✅ |
 
 Every one of these is kind A. The protocol, the grant gate, the coordinate
 mapping, the neutral HID key model, the annotation geometry and the rasterizer
@@ -112,13 +112,29 @@ call.
     never maps, compositor ignores it, wrong origin, swapped channels —
     otherwise produces a working share and invisible annotations, with no error
     anywhere.
-- **1.5 · Linux sharer: inject control.** The XTEST path for X11; the
-  RemoteDesktop portal for Wayland later. `SendInputInjector`'s decisions
-  (revoke TOCTOU, synthesized button-up, modifier ordering) are the model to
-  copy — they're tested through an inject-nothing seam that Linux can reuse.
+- **1.5 · Linux sharer: inject control.** ✅ **Done.** `Packages/XTestInjectKit`
+  is the XTEST path for X11 (the RemoteDesktop portal for Wayland is Phase 3.3),
+  and `SendInputInjector`'s decisions were indeed the model — revoke TOCTOU,
+  synthesized button-up, modifiers pressed around each key and unwound in
+  reverse, Caps Lock never synthesized, unmappable usages dropped rather than
+  guessed. Three things differ enough to be worth remembering:
+  - **Keysyms, not keycodes.** An X11 keycode identifies a physical key on the
+    machine running the server and is meaningless off-host; a keysym is a
+    protocol constant. So `X11KeyCodeMapping` (HID → keysym) is portable and
+    tested on CI, and only the final `XKeysymToKeycode` hop needs a display.
+  - **Scrolling is buttons.** X11's core protocol has no wheel value — a scroll
+    is a press/release of button 4/5/6/7, once per notch — so a delta becomes a
+    repeat count, with a clamp so a peer's absurd delta can't become a million
+    synthetic clicks.
+  - **Nothing is injected without an explicit flush**, which is the single most
+    likely way for the whole path to look broken while every unit test passes.
+    `xtest-probe --live-check` covers it against a real Xvfb.
 
 **Do 1.4 before 1.1.** Fixing the sharer that lies is worth more than adding a
 viewer feature, and it unblocks the honest version of the capability bit.
+
+*With 1.4 and 1.5 done, the Linux sharer half is complete and the table above
+is no longer a mirror: what remains is the three Windows **viewer** rows.*
 
 ## Phase 2 · Access control, where the "decision" bar actually bites (weeks)
 

@@ -78,6 +78,14 @@ final class SharerModel: ObservableObject {
     /// Viewers' strokes, drawn on this machine's own screen. Nil when the
     /// session cannot host one — see `SharerAnnotationOverlay.isSupported`.
     private var overlay: SharerAnnotationOverlay?
+    /// Granted viewers' input, replayed on this machine. Nil when this X
+    /// server has no XTEST extension.
+    ///
+    /// Held for the share's lifetime rather than handed to the server and
+    /// forgotten, because the server's own teardown is asynchronous and the
+    /// grant must be sealed the moment sharing stops — see `teardownOverlay`,
+    /// which does the same for the same reason.
+    private var injector: X11InputInjector?
     /// Supplied by `main` — hands back the live tsnet node to share.
     var nodeProvider: (() -> TailscaleNode?)?
 
@@ -146,12 +154,29 @@ final class SharerModel: ObservableObject {
         }
         self.overlay = overlay
 
+        // Likewise the injector, and for the same reason: supplying one is
+        // what makes the server advertise `.remoteControl`. Nil when this X
+        // server has no XTEST extension — optional in the protocol, absent on
+        // some remote and kiosk servers — in which case every injected click
+        // would silently vanish, so viewers must not be invited to try.
+        let injector = Self.makeInjector(display: display)
+        if injector == nil {
+            FileHandle.standardError.write(
+                Data(
+                    """
+                    warning: no input injection (this X server has no XTEST extension) — \
+                    viewers will not be offered Request Control\n
+                    """.utf8))
+        }
+        self.injector = injector
+
         let server = TailscaleScreenShareServer(
             captureFactory: { X11CaptureEncoder(display: display) },
-            // No injector on Linux yet (that's the RemoteDesktop portal), so
-            // the server withholds `.remoteControl` and viewers correctly hide
-            // their Request Control affordance.
-            inputInjector: nil,
+            // Present iff XTEST is: the server derives `.remoteControl` from
+            // whether this is non-nil, so a host that cannot inject withholds
+            // the bit and viewers hide Request Control rather than sending
+            // requests nothing can serve.
+            inputInjector: injector,
             // Claimed only when there is a real surface to draw on. Without a
             // compositor there is none (see `SharerAnnotationOverlay`), and a
             // sharer that claims `.annotations` it cannot render leaves every
@@ -225,16 +250,35 @@ final class SharerModel: ObservableObject {
         Task { await server.stop() }
     }
 
-    /// Hide and release the annotation overlay.
+    /// Hide the overlay and seal the injector.
     ///
-    /// Cleared explicitly rather than left to `deinit`: the server's
-    /// `onAnnotationReceived` closure also holds it, so dropping this
-    /// reference alone would leave viewers' strokes on screen until the
-    /// server's own teardown finished — which is asynchronous, and which the
-    /// sharer would experience as strokes outliving the share.
+    /// Both are torn down explicitly rather than left to `deinit`, and for the
+    /// same reason: the server holds them too, and its own teardown is
+    /// asynchronous. Dropping only this reference would leave viewers' strokes
+    /// on screen and — much worse — a live control grant, for however long the
+    /// server took to finish stopping. "Stop Sharing" has to mean the remote
+    /// hands are off *now*.
+    ///
+    /// `deactivate()` also releases any button held mid-drag, so stopping a
+    /// share while a viewer is dragging cannot leave a button stuck down. On
+    /// X11 that matters more than elsewhere: a held button grabs the pointer,
+    /// so a stuck one makes the whole desktop unusable.
     private func teardownOverlay() {
         overlay?.clear()
         overlay = nil
+        injector?.deactivate()
+        injector = nil
+    }
+
+    /// Build the injector, or nil when this X server cannot inject.
+    ///
+    /// `isTrusted()` is the real question and it is asked HERE, before the
+    /// server exists, because its answer decides whether `.remoteControl` goes
+    /// out on the wire at all. Asking later would mean advertising a
+    /// capability and then declining every request that arrived because of it.
+    private static func makeInjector(display: String?) -> X11InputInjector? {
+        let injector = X11InputInjector(display: display)
+        return injector.isTrusted() ? injector : nil
     }
 
     /// Build the overlay at the capture's exact pixel geometry, or nil if this

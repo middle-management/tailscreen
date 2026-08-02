@@ -281,6 +281,33 @@ jobs:
             apt: pkg-config libxcb1-dev libxcb-shm0-dev xvfb
             cmd: xvfb-run -a --server-args="-screen 0 1280x720x24" swift test --package-path Packages/X11CaptureKit
 
+          # Input-injection-portability gate for the Linux SHARER's remote
+          # control: XTEST. Three checks, each covering something the others
+          # can't, and all three fail silently in production if they regress —
+          # which is why a leg exists at all rather than trusting the unit
+          # tests.
+          #
+          #   swift test      the injector's decisions (revoke TOCTOU, the
+          #                   synthesized button-up, modifier ordering,
+          #                   scroll-as-buttons) through an inject-nothing seam
+          #   --audit-keysyms every row of X11KeyCodeMapping against Xlib's own
+          #                   tables. A typo'd hex constant that lands on an
+          #                   UNASSIGNED keysym maps fine, resolves to keycode
+          #                   0, and drops the keystroke — one key that does
+          #                   nothing, with no error anywhere. Needs no display.
+          #   --live-check    real XTEST injection against Xvfb, reading the
+          #                   pointer back. Covers the one thing no unit test
+          #                   can: the Xlib call itself and the FLUSH, without
+          #                   which nothing reaches the server at all.
+          - name: linux-xtest
+            apt: pkg-config libxtst-dev xvfb
+            cmd: |
+              swift test --package-path Packages/XTestInjectKit
+              swift build --package-path Packages/XTestInjectKit --product xtest-probe
+              Packages/XTestInjectKit/.build/debug/xtest-probe --audit-keysyms
+              xvfb-run -a --server-args="-screen 0 1280x720x24" \
+                Packages/XTestInjectKit/.build/debug/xtest-probe --live-check
+
           # Transport-portability gate: libtailscale (Go c-archive) + the
           # patched TailscaleKit Swift wrapper must build and pass their unit
           # tests on Linux. This is the compile-time half of the porting plan's
@@ -358,7 +385,7 @@ jobs:
           apt-get update && apt-get install -y --no-install-recommends \
             golang-go make gcc libc6-dev pkg-config \
             libavcodec-dev libavutil-dev libasound2-dev libopus-dev \
-            libxcb1-dev libxcb-shm0-dev xvfb
+            libxcb1-dev libxcb-shm0-dev libxtst-dev xvfb
       - name: Build libtailscale (patched) on Linux
         uses: ./.github/actions/bootstrap
         with:
@@ -454,7 +481,7 @@ jobs:
         run: |
           apt-get update && apt-get install -y --no-install-recommends \
             libgtk-4-dev gir1.2-gtk-4.0 libgirepository1.0-dev libepoxy-dev \
-            libgl1-mesa-dri xvfb xcompmgr libopus-dev pkg-config \
+            libgl1-mesa-dri xvfb xcompmgr libxtst-dev libopus-dev pkg-config \
             golang-go make gcc libc6-dev \
             libavcodec-dev libavutil-dev libasound2-dev
       - name: Build libtailscale (patched) on Linux
