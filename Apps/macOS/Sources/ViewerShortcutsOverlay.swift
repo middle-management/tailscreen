@@ -65,6 +65,15 @@ struct ViewerShortcutsOverlay: View {
             items: [
                 Shortcut(keys: "⌃⌥M", description: L("Toggle microphone (system-wide)"))
             ]),
+        // The panic key was registered and documented nowhere — not in this
+        // sheet and, until now, not with a key equivalent in the File menu
+        // either. It is the one shortcut whose entire purpose is to be
+        // recalled under pressure, while somebody else is driving your Mac.
+        Section(
+            title: L("Remote Control"),
+            items: [
+                Shortcut(keys: "⌃⌥.", description: L("Revoke remote control (system-wide)"))
+            ]),
         Section(
             title: L("Window"),
             items: [

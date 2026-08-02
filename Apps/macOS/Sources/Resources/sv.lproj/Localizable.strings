@@ -321,7 +321,9 @@
 /* MARK: - Shortcuts overlay (ViewerShortcutsOverlay.swift) */
 "Tools" = "Verktyg";
 "Annotation" = "Anteckning";
+"Remote Control" = "Fjärrstyrning";
 "Window" = "Fönster";
+"Revoke remote control (system-wide)" = "Återkalla fjärrstyrning (hela systemet)";
 "Pinch" = "Nyp";
 "⌥ Scroll" = "⌥ Skrolla";
 "Scroll" = "Skrolla";
