@@ -41,7 +41,14 @@ public enum TailscreenRequestToShareClient {
         via node: TailscaleNode,
         responseTimeout: TimeInterval = 120
     ) async throws -> ShareRequestOutcome {
-        guard let tailscaleHandle = await node.tailscale else { return .noAnswer }
+        // Throws rather than reading as `.noAnswer`: no interface handle is a
+        // fault on THIS machine, and reporting it as "they didn't reply" would
+        // send someone to go ask a colleague why they ignored a request that
+        // never left. Callers who genuinely cannot act on the difference —
+        // `TsnetTransport.requestToShare` — collapse it themselves.
+        guard let tailscaleHandle = await node.tailscale else {
+            throw TailscaleError.badInterfaceHandle
+        }
         let target = "\(host):\(port)"
         // Watchdogs because `tailscale_dial` and the connection init's actor
         // handshake can block indefinitely on an ACL-dropped SYN or a cold
@@ -75,7 +82,11 @@ public enum TailscreenRequestToShareClient {
         while DispatchTime.now().uptimeNanoseconds < deadlineNs {
             let recvStartNs = DispatchTime.now().uptimeNanoseconds
             do {
-                let chunk = try await conn.receive(maximumLength: 16 * 1024, timeout: 1_000)
+                // A 5 s poll, not 1 s: the wait here is two MINUTES — long
+                // enough for somebody to walk back to their desk — and a
+                // one-second interval just wakes 120 times to learn nothing.
+                // Still far above the 200 ms dead-socket threshold below.
+                let chunk = try await conn.receive(maximumLength: 16 * 1024, timeout: 5_000)
                 if chunk.isEmpty { return .noAnswer }  // EOF — peer closed unanswered
                 parser.append(chunk)
                 while let message = parser.next() {
