@@ -8,9 +8,30 @@ import X11CaptureKit
 
 // Targeted imports: pulling in all of TailscreenProtocol collides with
 // SwiftCrossUI's own `Published` / `ObservableObject` shims on Linux.
+import struct TailscreenProtocol.AccountProfileLayout
+import enum TailscreenProtocol.PeerPolicy
+import class TailscreenProtocol.PeerAccessStore
+import class TailscreenProtocol.SharerAccessCoordinator
 import struct TailscreenProtocol.PickerSelection
 import struct TailscreenProtocol.QualitySettings
 import enum TailscreenProtocol.ViewerApprovalPreference
+import enum TailscreenProtocol.ViewerRosterDecision
+
+/// Somebody currently watching, as the share card needs them.
+///
+/// `stableID` rides along because the roster's remember/forget actions are
+/// about the PERSON, not the connection: the store is keyed by Tailscale
+/// StableNodeID and nothing else is safe to key on. It is nil until the netmap
+/// lookup lands, which is what `SharerAccessCoordinator` queues around.
+///
+/// File scope, like `PendingViewer` and for the same reason: the server's
+/// callback is not on the main actor and it is the code that builds these.
+struct ConnectedViewer: Identifiable, Equatable, Sendable {
+    let id: String
+    let label: String
+    let stableID: String?
+    let health: String?
+}
 
 /// A viewer parked at the approval gate, as the share card needs it.
 ///
@@ -27,6 +48,9 @@ import enum TailscreenProtocol.ViewerApprovalPreference
 struct PendingViewer: Identifiable, Equatable, Sendable {
     let id: String
     let label: String
+    /// See `ConnectedViewer.stableID` — "Always Allow" / "Deny & Block" on a
+    /// pending row persists under this, not under the hostname a peer sends.
+    let stableID: String?
 }
 
 /// Drives the *sharing* half of the app: start/stop a share, and publish who's
@@ -53,8 +77,22 @@ final class SharerModel: ObservableObject {
     }
 
     @Published var phase: Phase = .idle
-    /// Tailscale IPs of admitted viewers, for the sharing card.
-    @Published var viewerIPs: [String] = []
+    /// Bumped whenever the remembered-policy layer changes.
+    ///
+    /// SwiftCrossUI's `ObservableObject` shim has no `objectWillChange`, and
+    /// the thing that changed lives in `SharerAccessCoordinator` rather than in
+    /// a `@Published` here — deliberately, since it is portable and this app
+    /// only renders it. A counter is the shim's idiom for "something you cannot
+    /// see moved"; the roster rows read the coordinator when they redraw.
+    @Published private(set) var accessGeneration = 0
+
+    /// Who is watching, for the sharing card's roster.
+    ///
+    /// Structured rather than a list of IP strings, which is what it was: this
+    /// is the surface a sharer uses to change their mind about somebody
+    /// already admitted, and before it existed this app could admit a viewer
+    /// and then do nothing about them.
+    @Published var viewers: [ConnectedViewer] = []
     /// Viewers parked awaiting approval, when the approval gate is on.
     @Published var pendingViewers: [PendingViewer] = []
     /// Whether new viewers have to be let in by hand.
@@ -75,6 +113,15 @@ final class SharerModel: ObservableObject {
     let unavailableReason: String?
 
     private var server: TailscaleScreenShareServer?
+
+    /// Remembered allow/deny, and the queue for decisions made before a peer's
+    /// identity resolved. Portable and tested on Linux CI — this app only
+    /// renders rows and forwards taps.
+    ///
+    /// Built once and outliving each share on purpose: what a sharer decided
+    /// about somebody is not a property of the session they decided it in.
+    private let access = SharerAccessCoordinator(
+        store: PeerAccessStore(directory: AccountProfileLayout.xdg().root))
     /// Viewers' strokes, drawn on this machine's own screen. Nil when the
     /// session cannot host one — see `SharerAnnotationOverlay.isSupported`.
     private var overlay: SharerAnnotationOverlay?
@@ -111,7 +158,7 @@ final class SharerModel: ObservableObject {
             if !pendingViewers.isEmpty {
                 return "\(pendingViewers.count) waiting for approval"
             }
-            return viewerIPs.isEmpty ? "Sharing — nobody watching yet" : "Sharing to \(viewerIPs.count)"
+            return viewers.isEmpty ? "Sharing — nobody watching yet" : "Sharing to \(viewers.count)"
         case .failed(let why): return "Share failed: \(why)"
         }
     }
@@ -193,17 +240,32 @@ final class SharerModel: ObservableObject {
         // user's setting rather than a literal `true`, or the toggle would be
         // a switch the share ignores.
         server.setRequireApproval(requireApproval)
-        server.onViewersChanged = { viewers in
-            let ips = viewers.map(\.tailscaleIP)
-            Task { @MainActor [weak self] in self?.viewerIPs = ips }
+        // Push what is already remembered BEFORE the first HELLO can arrive,
+        // so a blocked peer is rejected on its first attempt rather than
+        // admitted and then swept out a moment later.
+        server.setAccessPolicies(access.policies)
+        access.onPoliciesChanged = { [weak server] policies in
+            server?.setAccessPolicies(policies)
+        }
+        server.onViewersChanged = { infos in
+            // Mapped off the main actor (the callback is not on it), then
+            // handed over whole. `stableID` travels with each row because the
+            // remember/forget actions key on it.
+            let rows = infos.map {
+                ConnectedViewer(
+                    id: $0.id, label: $0.hostname ?? $0.tailscaleIP, stableID: $0.stableID,
+                    health: $0.health == .good ? nil : "\($0.health)")
+            }
+            Task { @MainActor [weak self] in self?.applyConnected(rows) }
         }
         server.onPendingViewersChanged = { pending in
             // Keyed by the server's `"ip:port"` id, NOT the bare IP — see
             // `PendingViewer`. Fires off the main actor; hop.
             let waiting = pending.map {
-                PendingViewer(id: $0.id, label: $0.hostname ?? $0.tailscaleIP)
+                PendingViewer(
+                    id: $0.id, label: $0.hostname ?? $0.tailscaleIP, stableID: $0.stableID)
             }
-            Task { @MainActor [weak self] in self?.pendingViewers = waiting }
+            Task { @MainActor [weak self] in self?.applyPending(waiting) }
         }
         server.onCaptureStopped = { error in
             Task { @MainActor [weak self] in
@@ -213,7 +275,7 @@ final class SharerModel: ObservableObject {
                 } else {
                     self.phase = .idle
                 }
-                self.viewerIPs = []
+                self.viewers = []
                 self.pendingViewers = []
                 self.teardownOverlay()
             }
@@ -243,9 +305,13 @@ final class SharerModel: ObservableObject {
             return
         }
         self.server = nil
-        viewerIPs = []
+        viewers = []
         pendingViewers = []
         phase = .idle
+        // Queued decisions do not outlive the share they were made during:
+        // the rows are gone, and an intent that survived would land on whoever
+        // connects to the NEXT share from the same address.
+        access.reset()
         teardownOverlay()
         Task { await server.stop() }
     }
@@ -294,6 +360,74 @@ final class SharerModel: ObservableObject {
         return SharerAnnotationOverlay(
             width: probe.captureWidth, height: probe.captureHeight)
     }
+
+    // MARK: Roster
+
+    /// Publish a connected-roster snapshot and let the access layer see it.
+    ///
+    /// The roster is re-emitted whenever anything about it changes — including
+    /// a StableNodeID finishing resolution, which is precisely the event a
+    /// queued "Deny & Block" is waiting for. So feeding it here, rather than
+    /// only on join and leave, is what makes the queue drain at all.
+    private func applyConnected(_ rows: [ConnectedViewer]) {
+        viewers = rows
+        noteRoster()
+    }
+
+    private func applyPending(_ rows: [PendingViewer]) {
+        pendingViewers = rows
+        noteRoster()
+    }
+
+    /// Both lists together: a peer moves between them (pending → connected on
+    /// Accept), and feeding one at a time would prune the other's queued
+    /// intents as "gone" the instant it moved.
+    private func noteRoster() {
+        let identities =
+            viewers.map {
+                ViewerRosterDecision.RosterIdentity(
+                    id: $0.id, stableID: $0.stableID, displayName: $0.label)
+            }
+            + pendingViewers.map {
+                ViewerRosterDecision.RosterIdentity(
+                    id: $0.id, stableID: $0.stableID, displayName: $0.label)
+            }
+        if access.noteRoster(identities) {
+            // A queued decision just landed; the roster's own rows now render
+            // differently (the standing decision replaces the two buttons).
+            accessGeneration &+= 1
+        }
+    }
+
+    /// What is remembered about a row's peer, for the roster's label.
+    func remembered(stableID: String?) -> PeerPolicy? { access.remembered(stableID: stableID) }
+
+    /// Whether a decision on this row is queued behind identity resolution.
+    func isDeferred(rowID: String) -> Bool { access.isDeferred(rowID: rowID) }
+
+    /// "Always Allow" / "Deny & Block" on a roster row.
+    ///
+    /// Persisting fires `onPoliciesChanged`, which pushes the map at the live
+    /// server — which is what makes a block on somebody already watching
+    /// actually expel them, rather than merely stop them coming back.
+    func remember(rowID: String, stableID: String?, label: String, policy: PeerPolicy) {
+        access.remember(
+            rowID: rowID, stableID: stableID, displayName: label, policy: policy)
+        accessGeneration &+= 1
+    }
+
+    /// Drop what is remembered about a row's peer.
+    func forget(rowID: String, stableID: String?) {
+        access.forget(rowID: rowID, stableID: stableID)
+        accessGeneration &+= 1
+    }
+
+    /// One-time disconnect of a connected viewer — the roster's Disconnect.
+    ///
+    /// Nothing is remembered: their next HELLO goes back through the normal
+    /// admission gate. That is the difference between this and Deny & Block,
+    /// and it is why both exist.
+    func disconnect(_ addr: String) { server?.disconnectViewer(addr: addr) }
 
     /// Admit a viewer parked at the approval gate. `addr` is the
     /// `PendingViewer.id` (`"ip:port"`), never a bare IP.

@@ -112,6 +112,78 @@ public struct HubToggle: Sendable {
 /// viewer asking for control. They are the same interaction — a sentence and
 /// two buttons — and the sharer should not have to learn two shapes of prompt
 /// depending on which one arrived.
+/// Somebody currently watching this screen, and what the sharer can do about
+/// them.
+///
+/// The row that closes the alignment plan's worst gap: before this, Linux and
+/// Windows could admit a viewer and then had **no way to change their mind** —
+/// the roster was a list of IP strings in `ShareCard.notes`.
+///
+/// Actions are three separate optionals rather than a list, because they are
+/// not interchangeable and the difference matters at a glance: `onKick` is a
+/// one-time disconnect that remembers nothing, `onAlwaysAllow` and
+/// `onDenyAndBlock` are decisions about the *person* that outlive the share.
+/// A host that cannot do one of them passes nil and the button is absent —
+/// never present-and-inert.
+///
+/// `rememberIsDeferred` is what the row says when a decision has been made
+/// but the peer's Tailscale identity has not resolved yet. The store is keyed
+/// by StableNodeID and nothing else is safe to key on, so there genuinely is
+/// a wait — and a button that appears to do nothing for a second is worse than
+/// one that says it is waiting. See `ViewerRosterDecision`.
+public struct HubViewerRow: Identifiable, Sendable {
+    /// Opaque to the chrome; handed back verbatim. The server's `"ip:port"`
+    /// viewer key on both hosts — never the bare IP, which matches nothing.
+    public let id: String
+    /// Hostname once the netmap lookup lands, the IP until then.
+    public let label: String
+    /// Connection health, as a short word. Nil hides the chip rather than
+    /// rendering an empty one.
+    public let detail: String?
+    /// What is remembered about this peer right now, so the row can show the
+    /// standing decision instead of offering to make it again.
+    public let remembered: HubViewerMemory
+    /// True when a remember-decision is queued behind identity resolution.
+    public let rememberIsDeferred: Bool
+    public let onKick: (@MainActor @Sendable () -> Void)?
+    public let onAlwaysAllow: (@MainActor @Sendable () -> Void)?
+    public let onDenyAndBlock: (@MainActor @Sendable () -> Void)?
+    public let onForget: (@MainActor @Sendable () -> Void)?
+
+    public init(
+        id: String,
+        label: String,
+        detail: String? = nil,
+        remembered: HubViewerMemory = .none,
+        rememberIsDeferred: Bool = false,
+        onKick: (@MainActor @Sendable () -> Void)? = nil,
+        onAlwaysAllow: (@MainActor @Sendable () -> Void)? = nil,
+        onDenyAndBlock: (@MainActor @Sendable () -> Void)? = nil,
+        onForget: (@MainActor @Sendable () -> Void)? = nil
+    ) {
+        self.id = id
+        self.label = label
+        self.detail = detail
+        self.remembered = remembered
+        self.rememberIsDeferred = rememberIsDeferred
+        self.onKick = onKick
+        self.onAlwaysAllow = onAlwaysAllow
+        self.onDenyAndBlock = onDenyAndBlock
+        self.onForget = onForget
+    }
+}
+
+/// What the sharer has decided about a peer, if anything.
+///
+/// Three states rather than a `Bool?` for the same reason `PeerSharingState`
+/// is an enum: "nothing decided" is a real answer with its own affordances
+/// (offer both), not the absence of one.
+public enum HubViewerMemory: Sendable, Equatable {
+    case none
+    case allowed
+    case blocked
+}
+
 public struct HubPrompt: Identifiable, Sendable {
     /// Opaque to the chrome; handed back verbatim to the accept/decline
     /// callbacks. An IP on one platform, a connection UUID on another.

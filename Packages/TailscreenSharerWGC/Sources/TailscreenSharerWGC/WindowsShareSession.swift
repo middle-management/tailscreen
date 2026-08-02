@@ -43,6 +43,14 @@ public final class WindowsShareSession: @unchecked Sendable {
         /// The picker's own name for the target — "Screen 1", a window title.
         public var target = ""
         public var viewerCount = 0
+        /// Who is watching, and enough about each to act on them.
+        ///
+        /// A roster rather than only a count, because this is the surface a
+        /// sharer uses to change their mind about somebody already admitted —
+        /// and without it this app could admit a viewer and then do nothing
+        /// about them, which the alignment plan calls the worst gap in the
+        /// matrix.
+        public var viewers: [ConnectedViewer] = []
         public var message = ""
         /// Viewers asking for remote control, awaiting an answer.
         ///
@@ -86,6 +94,30 @@ public final class WindowsShareSession: @unchecked Sendable {
         public init() {}
     }
 
+    /// Somebody currently watching.
+    ///
+    /// A local type for the same reason `PendingViewer` is one, plus a second:
+    /// `stableID` needs saying out loud. The remember/forget actions are about
+    /// the PERSON, and the persistent store is keyed by Tailscale StableNodeID
+    /// — never by `displayName`, which is a hostname the peer supplies and can
+    /// therefore choose. It is nil until the sharer's own netmap lookup lands.
+    public struct ConnectedViewer: Sendable, Identifiable, Hashable {
+        /// The server's `"ip:port"` viewer key — what `disconnectViewer` takes.
+        public let id: String
+        public let displayName: String
+        public let stableID: String?
+        /// Connection health, when it is worth showing. Nil for a healthy
+        /// viewer: a chip on every row makes the one that matters invisible.
+        public let health: String?
+
+        public init(id: String, displayName: String, stableID: String?, health: String?) {
+            self.id = id
+            self.displayName = displayName
+            self.stableID = stableID
+            self.health = health
+        }
+    }
+
     /// A viewer waiting on the sharer's Accept / Deny.
     ///
     /// A local type rather than the server's `PendingViewerInfo` so the app
@@ -99,10 +131,14 @@ public final class WindowsShareSession: @unchecked Sendable {
         /// Hostname when the netmap lookup has landed, the Tailscale IP until
         /// then. Cosmetic — never use it to identify the viewer.
         public let displayName: String
+        /// See `ConnectedViewer.stableID`: "Always Allow" / "Deny & Block" on a
+        /// pending row persists under this, not under `displayName`.
+        public let stableID: String?
 
-        public init(id: String, displayName: String) {
+        public init(id: String, displayName: String, stableID: String? = nil) {
             self.id = id
             self.displayName = displayName
+            self.stableID = stableID
         }
     }
 
@@ -254,15 +290,28 @@ public final class WindowsShareSession: @unchecked Sendable {
         let name = item.displayName
 
         newServer.onViewersChanged = { [weak self] viewers in
-            self?.update { $0.viewerCount = viewers.count }
+            let rows = viewers.map {
+                ConnectedViewer(
+                    id: $0.id, displayName: $0.hostname ?? $0.tailscaleIP,
+                    stableID: $0.stableID,
+                    health: $0.health == .good ? nil : "\($0.health)")
+            }
+            self?.update {
+                $0.viewerCount = rows.count
+                $0.viewers = rows
+            }
+            self?.noteRoster()
         }
         newServer.onPendingViewersChanged = { [weak self] pending in
             // Fires on a network thread; `update` publishes and the app hops.
             self?.update {
                 $0.pendingViewers = pending.map {
-                    PendingViewer(id: $0.id, displayName: $0.hostname ?? $0.tailscaleIP)
+                    PendingViewer(
+                        id: $0.id, displayName: $0.hostname ?? $0.tailscaleIP,
+                        stableID: $0.stableID)
                 }
             }
+            self?.noteRoster()
         }
         newServer.onControlRequestsChanged = { [weak self] requests in
             self?.update { $0.controlRequests = requests }
@@ -274,6 +323,7 @@ public final class WindowsShareSession: @unchecked Sendable {
             self?.update {
                 $0.isSharing = false
                 $0.viewerCount = 0
+                $0.viewers = []
                 $0.pendingViewers = []
                 $0.message = error.map { "Sharing stopped: \($0)" } ?? ""
                 $0.remoteControlAvailable = false
@@ -293,6 +343,9 @@ public final class WindowsShareSession: @unchecked Sendable {
             return requireApproval
         }
         newServer.setRequireApproval(gate)
+        // Before the first HELLO can arrive, so a blocked peer is rejected on
+        // its first attempt rather than admitted and swept out a moment later.
+        newServer.setAccessPolicies(access.policies)
         update {
             $0.requireApproval = gate
             $0.target = name
@@ -344,6 +397,80 @@ public final class WindowsShareSession: @unchecked Sendable {
 
     /// Turn the approval gate on or off, now and for the next share.
     ///
+    // MARK: Access control
+
+    /// Remembered allow/deny, plus the queue for decisions made before a peer's
+    /// identity resolved.
+    ///
+    /// Portable and tested on Linux CI (`SharerAccessCoordinatorTests`), which
+    /// is the whole reason this app has the feature at a fraction of the cost:
+    /// the session only forwards taps and re-publishes.
+    ///
+    /// Built lazily against `%LOCALAPPDATA%\Tailscreen`, the same root the
+    /// account registry uses — one place a user's Tailscreen state lives.
+    private lazy var access: SharerAccessCoordinator = {
+        let coordinator = SharerAccessCoordinator(
+            store: PeerAccessStore(directory: AccountProfileLayout.windowsLocalAppData().root))
+        coordinator.onPoliciesChanged = { [weak self] policies in
+            self?.lock.withLock { self?.server }?.setAccessPolicies(policies)
+            // Re-publish: a block on somebody already watching expels them, so
+            // the roster the sharer is looking at is about to be wrong.
+            self?.update { _ in }
+        }
+        return coordinator
+    }()
+
+    /// What is remembered about a peer, for a roster row's label.
+    public func remembered(stableID: String?) -> PeerPolicy? {
+        access.remembered(stableID: stableID)
+    }
+
+    /// Whether a decision on this row is queued behind identity resolution.
+    public func isDeferred(rowID: String) -> Bool { access.isDeferred(rowID: rowID) }
+
+    /// "Always Allow" / "Deny & Block" on a roster row.
+    public func remember(
+        rowID: String, stableID: String?, displayName: String, policy: PeerPolicy
+    ) {
+        access.remember(
+            rowID: rowID, stableID: stableID, displayName: displayName, policy: policy)
+        update { _ in }
+    }
+
+    /// Drop what is remembered about a row's peer, and cancel any queued
+    /// decision for it.
+    public func forget(rowID: String, stableID: String?) {
+        access.forget(rowID: rowID, stableID: stableID)
+        update { _ in }
+    }
+
+    /// One-time disconnect of a connected viewer.
+    ///
+    /// Nothing is remembered — their next HELLO goes back through the normal
+    /// admission gate. That difference is why this and Deny & Block both exist.
+    public func disconnectViewer(_ id: String) {
+        lock.withLock { server }?.disconnectViewer(addr: id)
+    }
+
+    /// Feed the access layer both rosters together.
+    ///
+    /// Both, not one at a time: a peer moves from pending to connected on
+    /// Accept, and a snapshot of only one list would prune the other's queued
+    /// intents as "gone" at exactly that moment.
+    private func noteRoster() {
+        let status = lock.withLock { self.status }
+        let identities =
+            status.viewers.map {
+                ViewerRosterDecision.RosterIdentity(
+                    id: $0.id, stableID: $0.stableID, displayName: $0.displayName)
+            }
+            + status.pendingViewers.map {
+                ViewerRosterDecision.RosterIdentity(
+                    id: $0.id, stableID: $0.stableID, displayName: $0.displayName)
+            }
+        if access.noteRoster(identities) { update { _ in } }
+    }
+
     /// Takes effect mid-share: `setRequireApproval(false)` also drains anyone
     /// already parked (minus remembered-deny peers), so turning it off is how
     /// a sharer admits a queue in one click. Persistence is the caller's —

@@ -538,7 +538,30 @@ struct ViewerApp: App {
             statusLine: sharer.statusLine,
             isSharing: sharer.phase == .sharing,
             canShare: sharer.canShare,
-            notes: sharer.viewerIPs.map { "• \($0) watching" },
+            // The roster: who is watching, and what can be done about them.
+            // `notes` is now free for statistics; a person is not a note.
+            viewers: sharer.viewers.map { viewer in
+                let stableID = viewer.stableID
+                let remembered = gSharer.remembered(stableID: stableID)
+                return HubViewerRow(
+                    id: viewer.id,
+                    label: viewer.label,
+                    detail: viewer.health,
+                    remembered: remembered.map { $0 == .allow ? .allowed : .blocked } ?? .none,
+                    rememberIsDeferred: gSharer.isDeferred(rowID: viewer.id),
+                    onKick: { gSharer.disconnect(viewer.id) },
+                    onAlwaysAllow: {
+                        gSharer.remember(
+                            rowID: viewer.id, stableID: stableID, label: viewer.label,
+                            policy: .allow)
+                    },
+                    onDenyAndBlock: {
+                        gSharer.remember(
+                            rowID: viewer.id, stableID: stableID, label: viewer.label,
+                            policy: .deny)
+                    },
+                    onForget: { gSharer.forget(rowID: viewer.id, stableID: stableID) })
+            },
             // Viewers parked at the approval gate. The shared card renders
             // these exactly like the Windows app's control requests, because
             // they are the same interaction and this window is the only place
