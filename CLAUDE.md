@@ -421,7 +421,10 @@ viewers — and `MonoPCMConverter`, the 48 kHz mono → device-(rate, channels)
 Float32 adaptation with a buffer-boundary-continuous linear resampler.
 `I420Converter` (limited-range BT.709 I420 → BGRA8, for CPU-blit renderers) sits
 alongside them for the same reason: pure arithmetic every backend needs and no
-backend can test, so it lives where Linux CI runs it). This is the portable,
+backend can test, so it lives where Linux CI runs it, and `FrameRateCounter` — the
+stats HUD's ~1 s fps window — joined them when the Windows viewer needed the
+same counting the GTK sink had inline; extracting it is what surfaced that its
+`0` window-start sentinel collides with a legitimate timestamp). This is the portable,
 host-agnostic viewer
 data-plane core: it turns inbound RTP datagrams + a host-supplied clock into
 decoded video frames, decoded audio, and outbound feedback control bytes

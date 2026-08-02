@@ -201,12 +201,31 @@ struct TailscreenWindowsApp: App {
                     .font(.caption)
                     .foregroundColor(HubStyle.secondaryText)
                 Spacer()
+                // In the toolbar rather than over the video: the overlay is
+                // where the numbers go, but the control that summons them has
+                // to be reachable when they are not on screen.
+                Button(state.showStats ? "Hide stats" : "Stats") {
+                    model.showStats.toggle()
+                }
                 Button("Stop") { model.disconnect() }
             }
             .padding(.horizontal, 16)
             .frame(height: Double(HubStyle.toolbarHeight))
             .frame(maxWidth: .infinity)
             .background(HubStyle.barFill)
+            // Drawn only once the first fps window has closed. Before that the
+            // numbers are all zero, and "0×0 · 0 fps" over a stream that is
+            // plainly running reads as a broken overlay rather than a warming
+            // one.
+            if state.showStats && state.fps > 0 {
+                HStack {
+                    StatsHUD(
+                        width: state.videoWidth, height: state.videoHeight, fps: state.fps)
+                    Spacer()
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+            }
             WinUIVideoView(store: state.frameStore, generation: state.frameGeneration)
         }
     }
@@ -348,6 +367,20 @@ final class AppUIState: ObservableObject {
     /// share start: `WGCCaptureEncoder` takes its settings at construction, so
     /// a mid-share change lands on the NEXT share and the card says so.
     @Published private(set) var quality: QualitySettings = QualitySettingsStore.load()
+
+    /// Live video stats for the HUD, counted at the sink.
+    ///
+    /// Zero until the first window closes — about a second in — which is why
+    /// the HUD is only drawn once there is something to draw. Showing
+    /// "0×0 · 0 fps" over a stream that is plainly running would read as a
+    /// broken overlay rather than a warming-up one.
+    @Published private(set) var videoWidth = 0
+    @Published private(set) var videoHeight = 0
+    @Published private(set) var fps = 0
+    /// Whether the stats HUD is shown. Session-scoped rather than persisted:
+    /// it is a debugging glance, not a preference, and the GTK viewer treats
+    /// it the same way.
+    @Published var showStats = false
     /// Header filter state, persisted through the portable `PeerListFilterStore`
     /// the macOS hub uses — not a new persistence layer. On Windows that is
     /// swift-corelibs-foundation's `UserDefaults`; if the write does not stick
@@ -857,9 +890,21 @@ final class AppUIState: ObservableObject {
 
         sessionTask = Task { [weak self] in
             guard let self else { return }
-            let sink = WindowsVideoSink(store: frameStore) { [weak self] in
-                Task { @MainActor in self?.frameGeneration &+= 1 }
-            }
+            let sink = WindowsVideoSink(
+                store: frameStore,
+                onFrame: { [weak self] in
+                    Task { @MainActor in self?.frameGeneration &+= 1 }
+                },
+                onStats: { [weak self] width, height, fps in
+                    // Fires roughly once a second off the session's thread; the
+                    // published values are main-actor state.
+                    Task { @MainActor in
+                        self?.videoWidth = width
+                        self?.videoHeight = height
+                        self?.fps = fps
+                    }
+                })
+            sink.resetForNewSession()
             // Off-thread on purpose. The transport is serviced by the WinUI main
             // thread, so a blocking WASAPI write inline in `handleAudio` — up to
             // a device buffer, ~50×/s — would stall the UI loop and freeze
