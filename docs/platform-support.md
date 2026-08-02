@@ -67,20 +67,20 @@ Windows is only microphone **capture** and hooking it to the existing encoder.
 
 | | macOS | Linux | Windows |
 | :--- | :---: | :---: | :---: |
-| Draw annotations as a viewer | ✅ | ✅ | ❌ |
+| Draw annotations as a viewer | ✅ | ✅ | ✅ |
 | Render viewers' annotations as a sharer | ✅ | ✅ | ✅ |
-| Request remote control as a viewer | ✅ | ✅ | ❌ |
-| Grant + inject remote control as a sharer | ✅ | ❌ | ✅ |
+| Request remote control as a viewer | ✅ | ✅ | ✅ |
+| Grant + inject remote control as a sharer | ✅ | ✅ | ✅ |
 | Revoke hotkey / panic key | ✅ | ❌ | ❌ |
-| Zoom + pan the viewer | ✅ | ✅ | ❌ |
+| Zoom + pan the viewer | ✅ | ✅ | ✅ |
 
-**Linux and Windows are near mirror images here**, which is an accident of the
-order things were built rather than a design: Linux grew the viewer half first,
-Windows the sharer half. Closing either direction is mostly wiring — the
-protocol, the grant gate, the coordinate mapping and the neutral key model are
-all portable and already tested. The annotation-rendering row is the first one
-closed from the Linux side, which leaves control injection as the remaining
-sharer-half gap there.
+**Linux and Windows *were* near mirror images here**, which was an accident of
+the order things were built rather than a design: Linux grew the viewer half
+first, Windows the sharer half. Every row above except the revoke hotkey is now
+closed on all three, and closing them was mostly wiring — the protocol, the
+grant gate, the coordinate mapping and the neutral key model were all portable
+and already tested, so what was missing each time was the host call rather than
+a capability.
 
 Two specifics worth knowing:
 
@@ -110,14 +110,34 @@ Two specifics worth knowing:
 | | macOS | Linux | Windows |
 | :--- | :---: | :---: | :---: |
 | Require approval for new viewers | ✅ | ✅ | ✅ |
-| Remembered allow / "Deny & Block" | ✅ | ❌ | ❌ |
-| Kick a connected viewer | ✅ | ❌ | ❌ |
-| Ask a peer to share their screen | ✅ | ❌ | ❌ |
+| Remembered allow / "Deny & Block" | ✅ | ✅ | ✅ |
+| Kick a connected viewer | ✅ | ✅ | ✅ |
+| Ask a peer to share their screen | ✅ | ✅ | ✅ |
 
-The approval gate itself is portable and every host asserts it (the server's own
-default is *off*, which is right for a headless automation sharer and wrong for
-anything with a person in front of it). What Linux and Windows lack is the
-persistent per-peer policy store and the UI to drive it.
+This section was the worst gap in the matrix and is now closed. It mattered more
+than the video rows: a sharer on Linux or Windows could let somebody in and then
+had no way to change their mind, and by the alignment plan's bar — *nobody should
+move between platforms and find a decision they cannot make* — that is a
+different kind of missing than software-vs-hardware encode.
+
+The approval gate itself was always portable and every host asserts it (the
+server's own default is *off*, which is right for a headless automation sharer
+and wrong for anything with a person in front of it). What the other two lacked
+was the persistent per-peer store and somewhere to drive it from.
+
+Two things behind the ✅s are worth knowing:
+
+- **A remember decision can land a moment after you make it.** The store is
+  keyed by Tailscale StableNodeID — never a hostname, which the peer supplies
+  and could therefore choose — and that ID arrives from the sharer's own netmap
+  lookup a beat after the connection does. A decision made before then is
+  queued rather than dropped, and the row says so instead of looking unpressed.
+- **Being askable requires listening while idle**, which is the part that was
+  actually missing for "Ask a peer to share". A request arrives exactly when a
+  machine is *not* sharing, so a listener that lives only as long as a share
+  answers nothing — and to the asker that is indistinguishable from the peer
+  being away. Accepting also waives the approval gate for that peer, or the
+  person you just invited arrives at your own gate and is asked to wait.
 
 ## The hub
 
