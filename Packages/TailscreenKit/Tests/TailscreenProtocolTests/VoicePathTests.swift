@@ -402,3 +402,76 @@ private final class Mutexish<T>: @unchecked Sendable {
     var value: T { lock.withLock { storage } }
     func mutate(_ body: (inout T) -> Void) { lock.withLock { body(&storage) } }
 }
+
+/// The sharer's pairing: speak under the reserved SSRC, hear the viewers.
+final class SharerVoiceTests: XCTestCase {
+    private final class ManualMic: MicrophoneCapturing, @unchecked Sendable {
+        var onPCM: (([Float], AudioInputFormat) -> Void)?
+        var onStopped: ((Error?) -> Void)?
+        private(set) var stopCount = 0
+        func start() throws {}
+        func stop() { stopCount += 1 }
+        func feedFrame(count: Int = 1) {
+            for _ in 0..<count {
+                onPCM?((0..<960).map { Float(sin(Double($0) * 0.05)) * 0.4 }, .wire)
+            }
+        }
+    }
+
+    /// The one thing a host must not be able to get wrong, and the reason the
+    /// SSRC is not a parameter: viewers key their Opus decoders on it.
+    func testSharerSpeaksUnderTheReservedSSRCAndStartsMuted() throws {
+        let mic = ManualMic()
+        var sent: [Data] = []
+        let voice = try SharerVoice(
+            microphone: mic, encoder: OpusVoiceEncoder(), send: { sent.append($0) })
+
+        mic.feedFrame(count: 3)
+        XCTAssertTrue(sent.isEmpty, "starting a share must not put somebody on the air")
+
+        voice.isMuted = false
+        mic.feedFrame()
+        let header = try XCTUnwrap(RTPHeader.decode(from: sent[0])?.0)
+        XCTAssertEqual(header.ssrc, RTPHeader.sharerVoiceSSRC)
+        XCTAssertEqual(header.payloadType, RTPHeader.voicePayloadType)
+    }
+
+    func testViewerVoiceIsDecodedPerSSRC() throws {
+        let voice = try SharerVoice(
+            microphone: ManualMic(), encoder: OpusVoiceEncoder(), send: { _ in })
+        var heard: [UInt32] = []
+        voice.onRemotePCM = { ssrc, pcm in
+            XCTAssertEqual(pcm.count, 960)
+            heard.append(ssrc)
+        }
+        let encoder = try OpusVoiceEncoder()
+        let au = try XCTUnwrap(
+            encoder.encode(pcm: (0..<960).map { Float(sin(Double($0) * 0.05)) * 0.4 }))
+        // Viewer SSRCs start at 2 — 0 is the sharer, 1 is system audio.
+        for ssrc in [UInt32(2), 3] {
+            let packetizer = AudioRTPPacketizer(
+                ssrc: ssrc, payloadType: RTPHeader.voicePayloadType)
+            voice.receive(packetizer.packetize(au: au))
+        }
+        XCTAssertEqual(heard, [2, 3])
+        XCTAssertEqual(voice.voiceCount, 2)
+    }
+
+    /// An open capture device after Stop Sharing keeps the OS microphone
+    /// indicator lit, which reads to everyone in the room as "still recording".
+    func testStopReleasesTheDeviceAndForgetsTheViewers() throws {
+        let mic = ManualMic()
+        let voice = try SharerVoice(
+            microphone: mic, encoder: OpusVoiceEncoder(), send: { _ in })
+        let encoder = try OpusVoiceEncoder()
+        let au = try XCTUnwrap(
+            encoder.encode(pcm: (0..<960).map { Float(sin(Double($0) * 0.05)) * 0.4 }))
+        let packetizer = AudioRTPPacketizer(ssrc: 2, payloadType: RTPHeader.voicePayloadType)
+        voice.receive(packetizer.packetize(au: au))
+        XCTAssertEqual(voice.voiceCount, 1)
+
+        voice.stop()
+        XCTAssertEqual(mic.stopCount, 1)
+        XCTAssertEqual(voice.voiceCount, 0)
+    }
+}

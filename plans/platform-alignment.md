@@ -237,14 +237,13 @@ Kind B. Sequenced by how many rows each unblocks.
   (the render half already exists in `WASAPIKit`).
 
   *Landed: the capture backends (`ALSA.PCMRecorder`, `WASAPI.Recorder`), the
-  portable seam and pipeline, and the **viewer** half wired end to end — a
-  viewer on either platform can unmute and be heard, with a mic control in the
-  over-video chrome that both hosts share. **Still open: the sharer half.** A
-  Linux or Windows sharer can be heard but cannot hear, because nothing is
-  wired to `TailscaleScreenShareServer.onAudioReceived` yet; `VoiceDownlink`
-  is the piece that closes it and already exists. `mute from outside the
-  window` and the `mute hotkey` are also still open — this is the in-window
-  control only.*
+  portable seam and pipeline, and **both halves wired end to end** — a viewer
+  can unmute and be heard, a sharer can speak to every viewer and hear them
+  back. Two mic controls, both from shared chrome: `MicrophoneButton` over the
+  video for the viewer, and the same button on the share card for the sharer.
+  **Still open: `mute from outside the window` and the `mute hotkey`** — this
+  is the in-window control only, so a person who has alt-tabbed away cannot
+  mute themselves, which is exactly when they most want to.*
 
   Four things from it are worth carrying forward.
 
@@ -252,7 +251,15 @@ Kind B. Sequenced by how many rows each unblocks.
     viewer's voice are the same stream in opposite directions, differing only
     in the SSRC. Writing them separately would have meant writing the mute
     latch twice, and a mute that works on one side and leaks on the other is
-    the worst possible split.
+    the worst possible split. `SharerVoice` then pairs the two, and the SSRC
+    is deliberately **not a parameter** on it: viewers key their Opus decoders
+    on the sharer's reserved SSRC, so there is no correct second answer and
+    therefore nothing for a host to get wrong.
+  - **The capture device is opened per share, not per process.** A long-lived
+    open keeps the OS microphone indicator lit while the app is idle, which
+    reads to a person as "this app is listening" — so a share start opens it
+    and every teardown path releases it, including the one where capture died
+    on its own.
   - **A viewer's audio is withheld until the sharer assigns an SSRC.** Not
     an optimisation: an unassigned stream goes out as SSRC 0, which is the
     *sharer's* reserved voice SSRC, and the sharer's own anti-spoof gate then

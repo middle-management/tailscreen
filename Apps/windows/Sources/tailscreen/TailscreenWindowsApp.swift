@@ -501,6 +501,15 @@ final class AppUIState: ObservableObject {
         shareSession.onStatus = { [weak self] status in
             Task { @MainActor in self?.sharing = status }
         }
+        // The sharer's own voice. Both ends are WASAPI and both live in this
+        // target, so they are handed over as closures — `WindowsShareSession`
+        // deliberately carries no Windows-only code, which is what lets Linux
+        // CI typecheck it. The factory is called at share start and the device
+        // released at share stop, so an idle app holds no microphone.
+        shareSession.microphoneFactory = { makeWASAPIMicrophone() }
+        shareSession.playRemoteVoice = { [weak self] pcm in
+            self?.sharerVoiceOut.play(pcm)
+        }
         // Push the persisted choice at the session. It already fails closed on
         // its own, but "closed" and "what the user asked for" are not the same
         // answer, and only one of them is this app's to give.
@@ -519,6 +528,15 @@ final class AppUIState: ObservableObject {
 
     private let transport = TsnetTransport()
     private let shareSession = WindowsShareSession()
+    /// Where viewers' voices come out while sharing.
+    ///
+    /// Its own sink, separate from the viewing session's: this app can share
+    /// while not watching, and sharing one would mean a viewing session's
+    /// teardown silently taking the share's audio with it. `ThreadedAudioSink`
+    /// for the usual reason — a blocking WASAPI write must not run on the
+    /// thread that publishes it — and it opens its device lazily, so an app
+    /// that never shares never touches the output endpoint.
+    private let sharerVoiceOut = ThreadedAudioSink(wrapping: WASAPIAudioSink())
 
     /// Peers asking this machine to share, coalesced and bounded by the
     /// portable `ShareRequestInbox` — the same type the GTK app uses, so the
@@ -721,6 +739,12 @@ final class AppUIState: ObservableObject {
                     self?.revokeControl()
                 }
             },
+            // Absent unless a capture device was actually opened for this
+            // share, so a machine with no microphone shows no control rather
+            // than one that cannot unmute.
+            microphone: sharing.micAvailable
+                ? HubMicrophone(isOn: sharing.micOn) { [weak self] in self?.toggleShareMic() }
+                : nil,
             onStart: { [weak self] in self?.startSharing() },
             onStop: { [weak self] in self?.stopSharing() },
             onAccept: { [weak self] id in self?.answerPrompt(id, accept: true) },
@@ -1075,6 +1099,13 @@ final class AppUIState: ObservableObject {
         micAvailable = false
         micOn = false
         micFailure = nil
+    }
+
+    /// Flip the SHARER's microphone. Distinct from `toggleMic`, which is the
+    /// viewer's: this app can share and watch at once, and one control flipping
+    /// both would mute somebody in a call they are not in.
+    func toggleShareMic() {
+        shareSession.toggleMic()
     }
 
     func toggleMic() {

@@ -443,7 +443,8 @@ once, because both shipped backends block and both GUI hosts service their
 transport from the UI thread), and the RTP ends: **`VoiceUplink`** (mic →
 downmix/resample → framing → Opus → RTP PT 98 → send) and
 **`VoiceDownlink`** (the inverse, one Opus decoder per SSRC, bounded and
-LRU-evicted). One type per direction rather than one per endpoint: a
+LRU-evicted), plus **`SharerVoice`** — the sharer's pairing of the two, whose
+SSRC is fixed rather than a parameter because viewers key their decoders on it. One type per direction rather than one per endpoint: a
 sharer's voice and a viewer's voice are the same stream in opposite
 directions, differing only in the SSRC they carry — and writing it twice
 would be writing the mute latch twice. Three decisions worth knowing:

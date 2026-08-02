@@ -1,6 +1,7 @@
 import Foundation
 import SendInputKit
 import TailscaleKit
+import TailscreenAudio
 import TailscreenProtocol
 import TailscreenSharer
 import TailscreenTransport
@@ -76,6 +77,14 @@ public final class WindowsShareSession: @unchecked Sendable {
         public var requireApproval = true
         /// Who currently holds control, if anyone.
         public var controlGrantedTo: String?
+        /// Whether a capture device was opened for this share — the capability
+        /// the mic control's existence rides on. False on a machine with no
+        /// microphone, or one whose device failed, and the control is then
+        /// absent rather than present-and-inert.
+        public var micAvailable = false
+        /// Whether the sharer's voice is reaching viewers. Starts off:
+        /// starting a share must not put somebody on the air.
+        public var micOn = false
         /// Whether viewers can ask to control this machine.
         ///
         /// Reported rather than left implicit because its absence is otherwise
@@ -146,6 +155,20 @@ public final class WindowsShareSession: @unchecked Sendable {
     /// Called off the main actor. The caller hops.
     public var onStatus: (@Sendable (Status) -> Void)?
 
+    /// Opens a capture device, or throws if there is none.
+    ///
+    /// Supplied by the app, because the WASAPI backend lives in the app target
+    /// and this package deliberately carries no Windows-only code — that is
+    /// what lets Linux CI typecheck it. A factory rather than an instance
+    /// because the device is opened when a share starts and released when it
+    /// stops: a long-lived open keeps the Windows microphone indicator lit
+    /// while idle, which reads to a user as "this app is listening".
+    ///
+    /// Nil means no microphone control is offered at all.
+    public var microphoneFactory: (@Sendable () throws -> MicrophoneCapturing)?
+    /// Plays a viewer's decoded voice on the local output device.
+    public var playRemoteVoice: (@Sendable ([Float]) -> Void)?
+
     public init() {}
 
     /// One-time process setup. **Call at startup, before any window exists.**
@@ -168,6 +191,8 @@ public final class WindowsShareSession: @unchecked Sendable {
     private let lock = NSLock()
     private var server: TailscaleScreenShareServer?
     private var overlay: AnnotationOverlay?
+    /// Live voice for the current share. Guarded by `lock`, like `server`.
+    private var voice: SharerVoice?
     private var status = Status()
     /// The gate to apply to the next share, and to the running one.
     ///
@@ -324,6 +349,10 @@ public final class WindowsShareSession: @unchecked Sendable {
             self?.update { $0.controlGrantedTo = grant?.hostname ?? grant?.viewerIP }
         }
         newServer.onCaptureStopped = { [weak self] error in
+            // Before the status push: a capture that died must not leave the
+            // microphone open, and the status it publishes says `micAvailable
+            // = false`, so the two would otherwise disagree.
+            self?.stopVoice()
             self?.update {
                 $0.isSharing = false
                 $0.viewerCount = 0
@@ -332,6 +361,8 @@ public final class WindowsShareSession: @unchecked Sendable {
                 $0.message = error.map { "Sharing stopped: \($0)" } ?? ""
                 $0.remoteControlAvailable = false
                 $0.annotationsAvailable = false
+                $0.micAvailable = false
+                $0.micOn = false
             }
         }
 
@@ -398,6 +429,7 @@ public final class WindowsShareSession: @unchecked Sendable {
             }
             throw error
         }
+        startVoice(on: newServer)
 
         update {
             $0.isSharing = true
@@ -561,6 +593,7 @@ public final class WindowsShareSession: @unchecked Sendable {
             return value
         }
         liveOverlay?.clear()
+        stopVoice()
         guard let running else { return }
         await running.stop()
         update {
@@ -570,8 +603,68 @@ public final class WindowsShareSession: @unchecked Sendable {
             $0.message = ""
             $0.remoteControlAvailable = false
             $0.annotationsAvailable = false
+            $0.micAvailable = false
+            $0.micOn = false
             $0.timings = nil
         }
+    }
+
+    // MARK: Voice
+
+    /// Open the microphone and start hearing viewers, for this share only.
+    ///
+    /// Best-effort, exactly like the overlay and the injector: a machine with
+    /// no capture device shares perfectly well and simply shows no mic
+    /// control. The failure goes into the status message rather than being
+    /// thrown, because a share that is otherwise working must not be torn down
+    /// over audio.
+    private func startVoice(on server: TailscaleScreenShareServer) {
+        guard let microphoneFactory else { return }
+        let voice: SharerVoice
+        do {
+            voice = try SharerVoice(
+                microphone: try microphoneFactory(), encoder: OpusVoiceEncoder(),
+                send: { [weak server] packet in server?.sendAudioRTP(packet) })
+            try voice.start()
+        } catch {
+            update { $0.message = "Sharing (no microphone: \(error))" }
+            return
+        }
+        voice.onRemotePCM = { [weak self] _, pcm in self?.playRemoteVoice?(pcm) }
+        voice.onStopped = { [weak self] error in
+            guard error != nil else { return }
+            // Both flags together: a live indicator over a device recording
+            // nothing is the one wrong answer a mute control can give.
+            self?.update {
+                $0.micAvailable = false
+                $0.micOn = false
+            }
+        }
+        // Inbound viewer audio, already vetted by the server's anti-spoof
+        // gate. Fires on the receive thread; the downlink does arithmetic only.
+        server.onAudioReceived = { [weak voice] packet in voice?.receive(packet) }
+        lock.withLock { self.voice = voice }
+        update {
+            $0.micAvailable = true
+            $0.micOn = false
+        }
+    }
+
+    private func stopVoice() {
+        let live = lock.withLock { () -> SharerVoice? in
+            let value = voice
+            voice = nil
+            return value
+        }
+        live?.stop()
+    }
+
+    /// Flip the sharer's microphone.
+    public func toggleMic() {
+        guard let voice = lock.withLock({ self.voice }) else { return }
+        let nowOn = voice.isMuted
+        voice.isMuted = !nowOn
+        update { $0.micOn = nowOn }
     }
 
     /// Where the picked target sits on screen, or why that is unknowable.

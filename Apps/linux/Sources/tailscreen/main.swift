@@ -69,6 +69,35 @@ func fail(_ message: String) -> Never {
 /// Parse the live-run arguments. The host is OPTIONAL — its absence selects
 /// picker mode. The returned `ViewerConfig` carries an empty hostname then
 /// (`prepare` ignores hostname; the chosen sharer's IP fills it in before `run`).
+/// The sharer's playback sink for viewers' voices, opened on first use.
+///
+/// Separate from the viewer's `audioSink` because the two are alive at
+/// different times — this app can share while not watching — and because
+/// sharing one would mean a viewing session's teardown silently taking the
+/// share's audio with it. Failure is best-effort and permanent for the
+/// process: a machine with no output device shares fine, it just cannot hear.
+/// A holder rather than a bare global: `main.swift` is top-level code, where a
+/// `var` cannot carry a global actor, and this is only ever touched from the
+/// main actor.
+@MainActor
+final class SharerVoiceSink {
+    static let shared = SharerVoiceSink()
+    private var sink: AudioSink?
+    private var tried = false
+
+    func resolve() -> AudioSink? {
+        if tried { return sink }
+        tried = true
+        do {
+            sink = try makeThreadedALSAAudioSink()
+        } catch {
+            FileHandle.standardError.write(
+                Data("warning: cannot play viewers' voices (\(error))\n".utf8))
+        }
+        return sink
+    }
+}
+
 func parseConfig() -> (config: ViewerConfig, host: String?, wantAudio: Bool, explicitStateDir: Bool) {
     var args = gArgs
     var host: String?
@@ -233,6 +262,17 @@ if gSelfTest {
     // ends, which would silently kill an in-progress share.
     transport.retainsNodeAcrossSessions = gPickerMode
     gSharer.nodeProvider = { transport.liveNode }
+    // The sharer's own voice: the same ALSA ends the viewer uses, handed over
+    // as closures so `SharerModel` names no audio library. The factory is
+    // called at share start and the device released at share stop — a
+    // long-lived open would keep the microphone indicator lit while idle.
+    if wantAudio {
+        gSharer.microphoneFactory = { try makeALSAMicrophone() }
+        // Built on first use and kept for the process: unlike capture, an
+        // output device that is open but silent costs nothing and shows
+        // nothing, and reopening it per share would add a stall to Stop/Start.
+        gSharer.playRemoteVoice = { pcm in SharerVoiceSink.shared.resolve()?.play(pcm) }
+    }
 
     // Run a viewing session against a chosen host/IP. Shared by the direct-host
     // path and the picker's selection callback (both on the main actor). Drives
@@ -663,6 +703,12 @@ struct ViewerApp: App {
                 settings: sharer.quality,
                 isSharing: sharer.phase == .sharing,
                 onChange: { gSharer.setQuality($0) }),
+            // Absent unless a capture device was actually opened for this
+            // share, so a machine with no microphone shows no control rather
+            // than one that cannot unmute.
+            microphone: sharer.micAvailable
+                ? HubMicrophone(isOn: sharer.micOn, toggle: { gSharer.toggleMic() })
+                : nil,
             onStart: { gSharer.startSharing() },
             onStop: { gSharer.stopSharing() },
             onAccept: { Self.answerPrompt($0, accept: true) },
