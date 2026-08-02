@@ -32,7 +32,7 @@ name: Windows build
 #
 # The rule was originally written as "if a package is in the app's dependency
 # graph, it belongs in both the trigger and the cache key" — and that phrasing is
-# what let the hole happen a SECOND time. `packaging/windows/` and
+# what let the hole happen a SECOND time. The MSIX manifest/assets and
 # `scripts/windows/` are not packages and are not in any dependency graph; they
 # are inputs to the MSIX packaging steps at the tail of the app jobs, and the
 # rule as stated did not reach them.
@@ -65,7 +65,10 @@ on:
       # negation below removed the doc and nothing matched the script — no
       # Windows runner started, and the fix sat unverified while the branch
       # looked fine. Found only by going to read a run that did not exist.
-      - 'packaging/windows/**'
+      #
+      # The manifest and assets used to need their own `packaging/windows/**`
+      # entry; they now live at Apps/windows/packaging and are covered by the
+      # `Apps/windows/**` line above. One fewer place for this list to go stale.
       - 'scripts/windows/**'
       - '.github/workflows/windows-build.yml'
       # The build steps moved OUT of this file and into these two. Without

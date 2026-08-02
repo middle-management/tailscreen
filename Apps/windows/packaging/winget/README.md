@@ -60,7 +60,7 @@ are not free-form:
 
 - **`PackageIdentifier`** (`Tailscreen.Tailscreen`) matches the MSIX
   `<Identity Name="Tailscreen.Tailscreen">` in
-  `packaging/windows/AppxManifest.xml`. Keeping them the same string is
+  `Apps/windows/packaging/AppxManifest.xml`. Keeping them the same string is
   deliberate; renaming either means renaming both (and a new winget package
   id is a new package).
 - **`PackageFamilyName`** (installer manifest, currently commented out) is

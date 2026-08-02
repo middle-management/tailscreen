@@ -483,7 +483,9 @@ all — `scripts/` was covered only by the single literal
 looked fine and the fix sat unverified; it was found only by going to read a run
 that did not exist.
 
-The trigger now includes `packaging/windows/**` and `scripts/windows/**`, but the
+The trigger now includes the MSIX manifest/assets (since moved under
+`Apps/windows/packaging/`, so `Apps/windows/**` covers them) and
+`scripts/windows/**`, but the
 more useful correction is to the *rule*. It was written as "if a package is in
 the app's dependency graph, it belongs in both the trigger and the cache key",
 and that phrasing is precisely what let the hole recur: these are not packages
