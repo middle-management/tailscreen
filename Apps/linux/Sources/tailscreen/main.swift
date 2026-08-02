@@ -3,6 +3,10 @@ import Foundation
 import SwiftCrossUI
 import TailscreenHubUI
 import TailscreenProtocol
+
+// Targeted: the mic seam only. A blanket `import TailscreenAudio` would pull
+// OpusKit's re-exports into this file for two type names.
+import protocol TailscreenAudio.MicrophoneCapturing
 import TailscreenViewer
 import TailscreenViewerCore
 import TailscreenViewerGtk
@@ -31,6 +35,7 @@ let gStore = FrameStore()
 let gUIState = ViewerUIState()
 let gControls = ViewerControls(ui: gUIState)
 let gInput = InputForwarder(ui: gUIState)
+let gVoice = VoiceControls(ui: gUIState)
 let gPicker = PickerModel()
 let gProfiles = ProfileStore()
 let gAnnotations = AnnotationStore()
@@ -64,6 +69,35 @@ func fail(_ message: String) -> Never {
 /// Parse the live-run arguments. The host is OPTIONAL — its absence selects
 /// picker mode. The returned `ViewerConfig` carries an empty hostname then
 /// (`prepare` ignores hostname; the chosen sharer's IP fills it in before `run`).
+/// The sharer's playback sink for viewers' voices, opened on first use.
+///
+/// Separate from the viewer's `audioSink` because the two are alive at
+/// different times — this app can share while not watching — and because
+/// sharing one would mean a viewing session's teardown silently taking the
+/// share's audio with it. Failure is best-effort and permanent for the
+/// process: a machine with no output device shares fine, it just cannot hear.
+/// A holder rather than a bare global: `main.swift` is top-level code, where a
+/// `var` cannot carry a global actor, and this is only ever touched from the
+/// main actor.
+@MainActor
+final class SharerVoiceSink {
+    static let shared = SharerVoiceSink()
+    private var sink: AudioSink?
+    private var tried = false
+
+    func resolve() -> AudioSink? {
+        if tried { return sink }
+        tried = true
+        do {
+            sink = try makeThreadedALSAAudioSink()
+        } catch {
+            FileHandle.standardError.write(
+                Data("warning: cannot play viewers' voices (\(error))\n".utf8))
+        }
+        return sink
+    }
+}
+
 func parseConfig() -> (config: ViewerConfig, host: String?, wantAudio: Bool, explicitStateDir: Bool) {
     var args = gArgs
     var host: String?
@@ -199,6 +233,19 @@ if gSelfTest {
             FileHandle.standardError.write(Data("warning: audio disabled (\(error))\n".utf8))
         }
     }
+    // Audio in: the same best-effort rule, and the same reason it is built
+    // here rather than per session — opening a capture device is the slow,
+    // failable part, and a box with no microphone should discover that once.
+    // Nil means no mic control is offered at all, which is the honest answer.
+    var microphone: MicrophoneCapturing?
+    if wantAudio {
+        do {
+            microphone = try makeALSAMicrophone()
+        } catch {
+            FileHandle.standardError.write(
+                Data("warning: microphone unavailable (\(error))\n".utf8))
+        }
+    }
     // Inbound back-channel handlers: control grant/revoke drive the toolbar's
     // state machine. Inbound annotation *rendering* (drawing relayed strokes on
     // an overlay canvas) is a follow-up — the plumbing already carries the ops.
@@ -215,6 +262,17 @@ if gSelfTest {
     // ends, which would silently kill an in-progress share.
     transport.retainsNodeAcrossSessions = gPickerMode
     gSharer.nodeProvider = { transport.liveNode }
+    // The sharer's own voice: the same ALSA ends the viewer uses, handed over
+    // as closures so `SharerModel` names no audio library. The factory is
+    // called at share start and the device released at share stop — a
+    // long-lived open would keep the microphone indicator lit while idle.
+    if wantAudio {
+        gSharer.microphoneFactory = { try makeALSAMicrophone() }
+        // Built on first use and kept for the process: unlike capture, an
+        // output device that is open but silent costs nothing and shows
+        // nothing, and reopening it per share would add a stall to Stop/Start.
+        gSharer.playRemoteVoice = { pcm in SharerVoiceSink.shared.resolve()?.play(pcm) }
+    }
 
     // Run a viewing session against a chosen host/IP. Shared by the direct-host
     // path and the picker's selection callback (both on the main actor). Drives
@@ -226,6 +284,7 @@ if gSelfTest {
         sink.resetForNewSession()  // the sink outlives one session
         gAnnotations.resetForNewSession()
         gUIState.beginSession()
+        gUIState.setMicAvailable(false)
         // A reference box for the decline flag, set from the @Sendable
         // onDeclined callback (both it and the post-run read run on MainActor).
         final class DeclinedFlag: @unchecked Sendable { var value = false }
@@ -236,6 +295,11 @@ if gSelfTest {
                     config: config, decoder: decoder, videoSink: sink,
                     audioSink: audioSink, shouldClose: { false },
                     backChannelHandlers: backChannelHandlers,
+                    microphone: microphone,
+                    onVoiceReady: { uplink in
+                        gVoice.attach(uplink)
+                        gUIState.setMicAvailable(true)
+                    },
                     onBackChannelReady: { channel in
                         gControls.attach(channel)
                         gInput.attach(channel)
@@ -252,9 +316,11 @@ if gSelfTest {
                         gUIState.post(sessionPhase: .declined)
                     })
                 FileHandle.standardError.write(Data("session ended\n".utf8))
+                gVoice.detach()
                 gUIState.post(sessionPhase: declined.value ? .declined : .ended)
             } catch {
                 FileHandle.standardError.write(Data("session failed: \(error)\n".utf8))
+                gVoice.detach()
                 gUIState.post(sessionPhase: .failed("Connection failed"))
             }
             // Back to the picker after a beat so the declined/ended placard is
@@ -637,6 +703,12 @@ struct ViewerApp: App {
                 settings: sharer.quality,
                 isSharing: sharer.phase == .sharing,
                 onChange: { gSharer.setQuality($0) }),
+            // Absent unless a capture device was actually opened for this
+            // share, so a machine with no microphone shows no control rather
+            // than one that cannot unmute.
+            microphone: sharer.micAvailable
+                ? HubMicrophone(isOn: sharer.micOn, toggle: { gSharer.toggleMic() })
+                : nil,
             onStart: { gSharer.startSharing() },
             onStop: { gSharer.stopSharing() },
             onAccept: { Self.answerPrompt($0, accept: true) },
@@ -724,15 +796,28 @@ struct ViewerApp: App {
                         }
                         .padding(10)
                     }
-                    // Remote-control bar stays pinned at the bottom: it's a
-                    // session affordance, not a drawing tool.
-                    if ui.remoteControlAvailable {
+                    // Session affordances, pinned at the bottom: talking and
+                    // taking control. Each appears on its own capability — a
+                    // sharer that cannot inject input does not hide the
+                    // microphone, and a machine with no microphone does not
+                    // hide Request Control.
+                    if ui.micAvailable || ui.remoteControlAvailable {
                         VStack {
                             Spacer()
-                            RemoteControlBar(
-                                buttonLabel: controlButtonLabel,
-                                declinedReason: revokedReason,
-                                onToggle: { gControls.toggleControl() })
+                            HStack(spacing: 8) {
+                                if ui.micAvailable {
+                                    MicrophoneButton(
+                                        isOn: ui.micOn, failureNote: ui.micFailure,
+                                        onToggle: { gVoice.toggle() })
+                                }
+                                if ui.remoteControlAvailable {
+                                    RemoteControlBar(
+                                        buttonLabel: controlButtonLabel,
+                                        declinedReason: revokedReason,
+                                        onToggle: { gControls.toggleControl() })
+                                }
+                            }
+                            .padding(12)
                         }
                     }
                 }

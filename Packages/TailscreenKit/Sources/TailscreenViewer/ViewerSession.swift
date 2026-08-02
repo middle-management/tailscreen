@@ -84,10 +84,14 @@ public final class ViewerSession {
 
     // MARK: Audio path
 
-    private let audioDepacketizer = AudioRTPDepacketizer()
-    /// One Opus decoder per audio SSRC (sharer voice 0, system audio 1, and any
-    /// relayed viewer voices). Created lazily; each SSRC's stream is independent.
-    private var audioDecoders: [UInt32: OpusVoiceDecoder] = [:]
+    /// Depacketize + per-SSRC Opus decode (sharer voice 0, system audio 1, and
+    /// any relayed viewer voices).
+    ///
+    /// Shared with the sharer hosts rather than kept here: a Linux or Windows
+    /// sharer needs the identical demux to hear its viewers, and the inline
+    /// version this replaced was the reason those hosts could be heard but
+    /// could not hear. Bounded decoder map, which the inline version was not.
+    private let voiceDownlink = VoiceDownlink()
 
     // MARK: Session state
 
@@ -166,6 +170,17 @@ public final class ViewerSession {
         decoder.onDecodeFailure = { [weak self] in
             onControlToSend(ScreenShareControlMessage.encode(.pli))
             self?.onPLISent?()
+        }
+
+        // Every voice, mixed by the sink. The SSRC the downlink tags each
+        // buffer with is dropped here on purpose: `AudioSink` is one device,
+        // and a viewer has nowhere to route "this one is system audio" that a
+        // person would notice. macOS, which does — a separate player node for
+        // system audio — takes `onAudioDatagram` and never reaches this path.
+        // Captured directly rather than via `self` so the downlink's callback
+        // does not retain the session.
+        if let audioSink {
+            voiceDownlink.onPCM = { _, pcm in audioSink.play(pcm) }
         }
     }
 
@@ -399,18 +414,8 @@ public final class ViewerSession {
             onAudioDatagram(data)
             return
         }
-        guard let audioSink else { return }
-        guard let parsed = audioDepacketizer.unpack(data) else { return }
-        let decoder: OpusVoiceDecoder
-        if let existing = audioDecoders[parsed.ssrc] {
-            decoder = existing
-        } else {
-            guard let fresh = try? OpusVoiceDecoder() else { return }
-            audioDecoders[parsed.ssrc] = fresh
-            decoder = fresh
-        }
-        guard let pcm = try? decoder.decode(au: parsed.au), !pcm.isEmpty else { return }
-        audioSink.play(pcm)
+        guard audioSink != nil else { return }
+        voiceDownlink.ingest(data)
     }
 
     // MARK: - Feedback emission

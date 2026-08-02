@@ -70,6 +70,28 @@ public enum AnnotationRasterizer {
             let base = surface.bgra + row * surface.stride
             base.update(repeating: 0, count: width * bytesPerPixel)
         }
+        draw(annotations, into: surface)
+    }
+
+    /// Draw `annotations` over whatever is already in `surface`, without
+    /// clearing it first.
+    ///
+    /// The half of ``render(_:into:)`` that composites, split out because the
+    /// two viewers want opposite things. A sharer overlay is its own
+    /// transparent window, so it wants the clear; a *viewer* has a decoded
+    /// frame and wants the strokes drawn straight onto it, which is what the
+    /// WinUI viewer does — it has no second surface to composite, and adding
+    /// one (a XAML canvas, a D2D device) would be a large amount of platform
+    /// for something the rasterizer already does.
+    ///
+    /// The blend is unchanged and correct against an opaque destination:
+    /// source-over with a destination alpha of 255 leaves alpha at 255 and the
+    /// colour channels correctly mixed — the premultiplication that
+    /// `UpdateLayeredWindow` needs is the same arithmetic.
+    public static func draw(_ annotations: [Annotation], into surface: Surface) {
+        let width = surface.width
+        let height = surface.height
+        guard width > 0, height > 0, surface.stride >= width * bytesPerPixel else { return }
         guard !annotations.isEmpty else { return }
 
         let shortEdge = Double(min(width, height))

@@ -138,6 +138,52 @@ public struct RemoteControlBar: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
         .hubCard(radius: 10)
-        .padding(12)
+    }
+}
+
+/// The microphone control over live video: talk, or don't.
+///
+/// **Absent, not disabled, when there is no microphone.** A host builds this
+/// only when it actually opened a capture device, the same capability-not-
+/// configuration rule the annotation toolbar and Request Control follow. A mute
+/// button that cannot unmute teaches somebody their microphone is broken when
+/// what is broken is the app.
+///
+/// The label says what the microphone IS, not what pressing does. Both readings
+/// are defensible in isolation and only one can be right on a control that also
+/// has to communicate state at a glance — and "Mute"/"Unmute" on a button that
+/// looks identical either way is how people end up talking to a muted room.
+public struct MicrophoneButton: View {
+    let isOn: Bool
+    /// Set once the capture device has failed — the mic is gone for this
+    /// session and saying so beats a control that silently stops working.
+    let failureNote: String?
+    let onToggle: @MainActor @Sendable () -> Void
+
+    public init(
+        isOn: Bool, failureNote: String? = nil,
+        onToggle: @escaping @MainActor @Sendable () -> Void
+    ) {
+        self.isOn = isOn
+        self.failureNote = failureNote
+        self.onToggle = onToggle
+    }
+
+    public var body: some View {
+        HStack(spacing: 8) {
+            // Bracketed when live, matching the annotation toolbar's active
+            // state: swift-cross-ui's Button takes a String label, so "which of
+            // these is on" has to be carried by the text itself.
+            Button(isOn ? "[🎙 On]" : " 🎙 Off ", action: onToggle)
+            if let failureNote {
+                Text(failureNote)
+                    .font(.caption)
+                    .foregroundColor(HubStyle.secondaryText)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .hubCard(radius: 10)
     }
 }

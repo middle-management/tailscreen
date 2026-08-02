@@ -47,42 +47,47 @@ The Linux sharer is display-only on purpose: window and app selections are
 *refused* rather than silently widened to the whole screen. Wayland cannot be
 shared from at all — the gate is `$DISPLAY`, and under XWayland capture sees
 only the XWayland root, so native Wayland windows never reach viewers. The
-ScreenCast portal is the answer and isn't written.
+ScreenCast portal is the answer; its capture package (`PortalCaptureKit`)
+now exists with the portal handshake proven in CI, but it isn't wired into
+the app yet — Wayland sharing stays off until it is.
 
 ## Audio
 
 | | macOS | Linux | Windows |
 | :--- | :---: | :---: | :---: |
 | Hear the sharer's voice / other viewers | ✅ | ✅ | ✅ |
-| Speak (microphone) | ✅ | ❌ | ❌ |
+| Speak (microphone) | ✅ | ✅ | ✅ |
 | Share computer audio | ✅ | ❌ | ❌ |
 | Playback backend | AVAudioEngine | ALSA | WASAPI |
+| Capture backend | VoiceProcessingIO | ALSA | WASAPI |
 
-Voice is the largest single gap. The Opus codec, framing, jitter buffer,
-concealment and SSRC relay all live in the portable tier (`TailscreenAudio`,
-`VoiceChannel`) and are unit-tested on Linux CI — what's missing on Linux and
-Windows is only microphone **capture** and hooking it to the existing encoder.
+Voice now runs both directions on every platform: one portable voice path
+(`ThreadedMicrophone` + `BlockingPCMSource` over the shared Opus
+encoder/decoder), with ALSA and WASAPI capture behind the same seam. What
+remains is **computer-audio capture** — the Share System Audio button is
+macOS-only, because only ScreenCaptureKit hands the capture pipeline the
+system's own output; viewers on every platform play it back.
 
 ## Interaction
 
 | | macOS | Linux | Windows |
 | :--- | :---: | :---: | :---: |
-| Draw annotations as a viewer | ✅ | ✅ | ❌ |
+| Draw annotations as a viewer | ✅ | ✅ | ✅ |
 | Render viewers' annotations as a sharer | ✅ | ✅ | ✅ |
-| Request remote control as a viewer | ✅ | ✅ | ❌ |
+| Request remote control as a viewer | ✅ | ✅ | ✅ |
 | Grant + inject remote control as a sharer | ✅ | ✅ | ✅ |
 | Revoke hotkey / panic key | ✅ | ❌ | ❌ |
-| Zoom + pan the viewer | ✅ | ✅ | ❌ |
+| Zoom + pan the viewer | ✅ | ✅ | ✅ |
 
 **Linux and Windows *were* near mirror images here**, which was an accident of
 the order things were built rather than a design: Linux grew the viewer half
-first, Windows the sharer half. The *sharer* half is now closed on all three
-(Linux's last two rows — annotation rendering, then XTEST injection — went in
-that order); what remains is the Windows **viewer** half (the plan's 1.1–1.3:
-drawing, zoom + pan, requesting control) and the revoke hotkey outside macOS.
-Closing them is mostly wiring — the protocol, the grant gate, the coordinate
-mapping and the neutral key model are all portable and already tested, so
-what's missing each time is the host call rather than a capability.
+first, Windows the sharer half. Every row except the revoke hotkey is now
+closed on all three — Linux's sharer half (annotation rendering, then XTEST
+injection) and then the Windows viewer half (drawing, zoom + pan, requesting
+control) went in that order. Closing them was mostly wiring: the protocol, the
+grant gate, the coordinate mapping and the neutral key model were all portable
+and already tested, so what was missing each time was the host call rather
+than a capability.
 
 Three specifics worth knowing:
 
@@ -160,7 +165,7 @@ Two things behind the ✅s are worth knowing:
 | Peer list filter (offline / sharing / tags) | ✅ | ✅ | ✅ |
 | Peer detail: route, latency, ACL tags | ✅ | ✅ | ✅ |
 | Quality settings UI | ✅ | ✅ | ✅ |
-| Connection stats overlay | ✅ | ❌ | ❌ |
+| Connection stats overlay | ✅ | ✅ | ✅ |
 | Localized strings | ✅ | ❌ | ❌ |
 | **Notified when a viewer is waiting for approval** | ✅ | ❌ | ❌ |
 | Answer that prompt from the notification | ❌ | ❌ | ❌ |

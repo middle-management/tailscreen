@@ -62,6 +62,18 @@ public final class ViewerUIState: ObservableObject, @unchecked Sendable {
     /// Whether the stats HUD is shown (toggled from the control bar).
     @Published public var showStats = false
 
+    /// Whether this machine opened a capture device for this session — the
+    /// capability that decides whether the mic control exists at all. False on
+    /// a box with no microphone, or one whose device failed to open, and the
+    /// button is then absent rather than present-and-inert.
+    @Published public var micAvailable = false
+    /// Whether the microphone is live. Starts off: joining a share must never
+    /// put somebody on the air, which is also what the macOS viewer does.
+    @Published public var micOn = false
+    /// Set once the device has gone away mid-session, so the control can say so
+    /// instead of silently ceasing to work.
+    @Published public var micFailure: String?
+
     /// Annotation toolbar state (shown only when the sharer advertised
     /// `ScreenShareCaps.annotations`): the armed drawing tool, or nil when
     /// drawing is off (so drags zoom/pan or drive remote control). The stroke
@@ -106,6 +118,9 @@ public final class ViewerUIState: ObservableObject, @unchecked Sendable {
             self.annotationsAvailable = false
             self.controlState = .idle
             self.sessionPhase = .connecting
+            self.micAvailable = false
+            self.micOn = false
+            self.micFailure = nil
             self.fps = 0
             self.videoWidth = 0
             self.videoHeight = 0
@@ -139,6 +154,30 @@ public final class ViewerUIState: ObservableObject, @unchecked Sendable {
         DispatchQueue.main.async {
             self.remoteControlAvailable = remoteControl
             self.annotationsAvailable = annotations
+        }
+    }
+
+    /// Publish the microphone's availability on the main thread. Called once
+    /// the transport has built a voice uplink for this session.
+    public func setMicAvailable(_ available: Bool) {
+        DispatchQueue.main.async {
+            self.micAvailable = available
+            if !available {
+                self.micOn = false
+            }
+        }
+    }
+
+    /// The capture device went away mid-session — unplugged, or taken.
+    ///
+    /// Both flags move together: leaving `micOn` true would show a live
+    /// microphone that is recording nothing, which is the one wrong answer a
+    /// mute indicator can give.
+    public func noteMicFailure(_ message: String) {
+        DispatchQueue.main.async {
+            self.micOn = false
+            self.micAvailable = false
+            self.micFailure = message
         }
     }
 

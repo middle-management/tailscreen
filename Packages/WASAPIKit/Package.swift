@@ -3,6 +3,9 @@ import PackageDescription
 
 // WASAPIKit — audio output for the Windows viewer's `AudioSink` backend.
 //
+// …and audio input for its microphone, via the same shim: the capture climb is
+// the identical four interfaces with IAudioCaptureClient at the end of it.
+//
 // Wrapped the way ALSAKit wraps libasound and X11CaptureKit wraps libxcb: a
 // shim (`CWASAPI`) that owns the COM boilerplate — IMMDeviceEnumerator →
 // IMMDevice → IAudioClient → IAudioRenderClient, shared mode, mix-format
@@ -63,6 +66,16 @@ let package = Package(
             name: "wasapi-probe",
             dependencies: ["WASAPIKit"],
             path: "Sources/wasapi-probe"
+        ),
+        // Runs on Linux/macOS, which is the only place it CAN run: there is no
+        // WASAPI to exercise on a CI machine and no null endpoint to stand in
+        // for one. So this covers the part that was deliberately written to be
+        // coverable — the mono downmix and the shim's error mapping — and the
+        // COM lifetime is left to the probe's link check.
+        .testTarget(
+            name: "WASAPIKitTests",
+            dependencies: ["WASAPIKit"],
+            path: "Tests/WASAPIKitTests"
         ),
     ],
     cxxLanguageStandard: .cxx17

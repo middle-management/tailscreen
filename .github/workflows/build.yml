@@ -259,16 +259,37 @@ jobs:
             apt: libavcodec-dev libavutil-dev pkg-config
             cmd: swift test --package-path Packages/FFmpegKit
 
-          # Audio-playback-portability gate: ALSAKit (a systemLibrary wrapper
-          # over libasound — see Packages/ALSAKit/README.md) must build and
-          # pass its PCM-playback tests on Linux. This is the Linux viewer's
-          # audio-output backend (the counterpart to the mac viewer's
-          # AVAudioEngine sink); the tests open ALSA's always-present "null"
-          # PCM so they run headless with no sound hardware. Cheap: one apt
-          # install, no submodules, no Go.
+          # Audio-portability gate, both directions: ALSAKit (a systemLibrary
+          # wrapper over libasound — see Packages/ALSAKit/README.md) must build
+          # and pass its PCM playback AND capture tests on Linux. This is the
+          # Linux viewer's audio-output backend and the Linux sharer's mic
+          # input (the counterparts to the mac AVAudioEngine sink and input
+          # node); the tests open ALSA's always-present "null" PCM, which works
+          # in both stream directions, so they run headless with no sound
+          # hardware. Cheap: one apt install, no submodules, no Go.
           - name: linux-alsa
             apt: libasound2-dev pkg-config
             cmd: swift test --package-path Packages/ALSAKit
+
+          # WASAPIKit's PORTABLE half — the Windows audio backend's sample
+          # arithmetic and error mapping. Not a portability gate like its
+          # neighbours: there is no WASAPI here to exercise and no null endpoint
+          # to stand in for one, so this leg deliberately does NOT claim to
+          # verify WASAPI. What it verifies is the code that was written to be
+          # verifiable — the capture path's mono downmix (averaging, rebased
+          # slices, partial frames, a nonsense channel count) and the shim's
+          # return-code→case mapping — plus the non-Windows syntax of the whole
+          # wrapper, since everything platform-specific in it sits behind
+          # `#if os(Windows)`.
+          #
+          # It runs at all because a downmix that is silently wrong is a
+          # microphone that sounds quiet or clipped, with nothing anywhere
+          # saying so, and the alternative place to catch it is a human at a
+          # Windows desk. No apt, no submodules, no Go: the package's only
+          # inputs on this platform are Foundation and an empty translation
+          # unit.
+          - name: linux-wasapi
+            cmd: swift test --package-path Packages/WASAPIKit
 
           # Screen-capture-portability gate: X11CaptureKit (a C shim over
           # libxcb + MIT-SHM, plus the BGRA→I420 conversion) must build and
@@ -320,6 +341,51 @@ jobs:
               xvfb-run -a --server-args="-screen 0 1280x720x24" \
                 Packages/XTestInjectKit/.build/debug/xtest-probe --live-check
 
+          # COMPILE, LINK AND D-BUS-PROTOCOL gate for PortalCaptureKit — the
+          # xdg-desktop-portal ScreenCast + PipeWire capture path.
+          #
+          # Read the name carefully: THIS IS NOT A CAPTURE GATE, and it can
+          # never become one. The portal is defined by a consent dialog a
+          # compositor draws and a person clicks; there is no headless path to
+          # a real frame, which is exactly why X11 capture landed first (its
+          # leg above genuinely captures, under Xvfb). What this proves:
+          #
+          #   swift test          the Request-path derivation against
+          #                       hand-written strings, the portal's wire
+          #                       constants, and that a DECLINED request maps to
+          #                       its own case rather than to an error
+          #   --link-check        that libdbus and libpipewire actually LINK. A
+          #                       SwiftPM library target is compiled but never
+          #                       linked, so a missing -lpipewire-0.3 would stay
+          #                       invisible until something downstream linked it
+          #                       — how WASAPIKit's missing GUIDs passed their
+          #                       own step and failed eleven minutes later
+          #   --handshake-test    the whole client handshake against a FAKE
+          #                       portal on a private bus: the three calls plus
+          #                       OpenPipeWireRemote, the options dicts, the
+          #                       subscribe-before-call ordering (the fake
+          #                       answers with no pause, so a late subscription
+          #                       times out), the streams array, the restore
+          #                       token, and an fd surviving the round trip
+          #   --handshake-cancel  a declined request reads as declined
+          #
+          # What it proves about a real portal, PipeWire, or a pixel: NOTHING.
+          # See Packages/PortalCaptureKit/README.md, which says the same at
+          # more length.
+          #
+          # dbus-run-session is load-bearing, not decoration: without a session
+          # bus the two handshake checks SKIP with exit 0, i.e. the gate would
+          # pass by not running.
+          - name: linux-portal
+            apt: pkg-config libdbus-1-dev libpipewire-0.3-dev dbus
+            cmd: |
+              swift test --package-path Packages/PortalCaptureKit
+              swift build --package-path Packages/PortalCaptureKit --product portal-probe
+              PROBE=Packages/PortalCaptureKit/.build/debug/portal-probe
+              "$PROBE" --link-check
+              dbus-run-session -- "$PROBE" --handshake-test
+              dbus-run-session -- "$PROBE" --handshake-cancel
+
           # Transport-portability gate: libtailscale (Go c-archive) + the
           # patched TailscaleKit Swift wrapper must build and pass their unit
           # tests on Linux. This is the compile-time half of the porting plan's
@@ -352,6 +418,12 @@ jobs:
       - name: Install ${{ matrix.apt }}
         # The swift:*-noble images are slim, so every leg brings its own
         # system libraries. One apt invocation, one place to fix.
+        #
+        # Skipped outright for a leg that omits `apt` rather than run with an
+        # empty package list: `linux-wasapi` wraps an API that ships with
+        # Windows and has nothing to install, and an install step listing
+        # nothing reads as a leg whose dependencies were forgotten.
+        if: matrix.apt != ''
         run: apt-get update && apt-get install -y --no-install-recommends ${{ matrix.apt }}
       - name: Bootstrap TailscaleKit
         # Only the submodule legs. Skipping it entirely on the others is what

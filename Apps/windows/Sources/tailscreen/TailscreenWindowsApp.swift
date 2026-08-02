@@ -10,6 +10,7 @@ import TailscreenHubUI
 // Targeted imports: pulling all of TailscreenProtocol collides with SwiftCrossUI's
 // own `Published` / `ObservableObject` shims, the same collision the GTK app
 // hits and solves the same way.
+import class TailscreenAudio.VoiceUplink
 import struct TailscreenProtocol.AccountProfileLayout
 import class TailscreenProtocol.AccountProfileStore
 import struct TailscreenProtocol.CaptureTimings
@@ -193,21 +194,94 @@ struct TailscreenWindowsApp: App {
     }
 
     /// Watching: the video gets the window, with one way out.
+    ///
+    /// The two bars come from `TailscreenHubUI`, which the GTK viewer already
+    /// renders — the dividend the alignment plan predicted for extracting the
+    /// chrome. Each is shown only when the sharer advertised the matching
+    /// capability, so a sharer that cannot render annotations or inject input
+    /// produces a plainer window rather than dead controls.
     private func watching(host: String) -> some View {
         let model = state
+        let interaction = state.interaction
         return VStack(spacing: 0) {
             HStack(spacing: 8) {
                 Text("Watching \(host)")
                     .font(.caption)
                     .foregroundColor(HubStyle.secondaryText)
                 Spacer()
+                if interaction.isZoomed {
+                    Button("Reset Zoom") { interaction.resetZoom() }
+                }
                 Button("Stop") { model.disconnect() }
             }
             .padding(.horizontal, 16)
             .frame(height: Double(HubStyle.toolbarHeight))
             .frame(maxWidth: .infinity)
             .background(HubStyle.barFill)
-            WinUIVideoView(store: state.frameStore, generation: state.frameGeneration)
+            // The annotation toolbar owns the stats toggle, which is why this
+            // merge collapsed two of them into one. 4.3 landed a `Stats`
+            // button in the top bar while this branch was open; keeping both
+            // would have put two controls for one boolean on the same screen.
+            // The toolbar wins because it is where the other view-level
+            // controls already are — and the state stays `AppUIState.showStats`,
+            // since that is what the fps counter feeds.
+            if interaction.annotationsAvailable {
+                AnnotationToolbar(
+                    activeTool: interaction.activeTool,
+                    inkColor: interaction.annotations.color,
+                    statsShown: state.showStats,
+                    onSelectTool: { interaction.selectTool($0) },
+                    onUndo: { interaction.undoAnnotation() },
+                    onClear: { interaction.clearAnnotations() },
+                    onToggleStats: { model.showStats.toggle() })
+            } else {
+                // No annotation toolbar to hang it on — a sharer that withholds
+                // the capability must not also cost the viewer its stats.
+                HStack {
+                    Spacer()
+                    Button(state.showStats ? "Hide stats" : "Stats") {
+                        model.showStats.toggle()
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 4)
+            }
+            // Drawn only once the first fps window has closed. Before that the
+            // numbers are all zero, and "0×0 · 0 fps" over a stream that is
+            // plainly running reads as a broken overlay rather than a warming
+            // one.
+            if state.showStats && state.fps > 0 {
+                HStack {
+                    StatsHUD(
+                        width: state.videoWidth, height: state.videoHeight, fps: state.fps)
+                    Spacer()
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+            }
+            WinUIVideoView(
+                store: state.frameStore,
+                generation: state.frameGeneration,
+                interaction: interaction)
+            if state.micAvailable || interaction.remoteControlAvailable {
+                // Talking and taking control, each on its own capability: a
+                // sharer that cannot inject input must not also cost the viewer
+                // its microphone.
+                HStack(spacing: 8) {
+                    if state.micAvailable {
+                        MicrophoneButton(
+                            isOn: state.micOn, failureNote: state.micFailure,
+                            onToggle: { model.toggleMic() })
+                    }
+                    if interaction.remoteControlAvailable {
+                        RemoteControlBar(
+                            buttonLabel: interaction.controlButtonLabel,
+                            declinedReason: interaction.controlDeclinedReason,
+                            onToggle: { interaction.toggleControl() })
+                    }
+                }
+                .padding(12)
+            }
         }
     }
 
@@ -348,6 +422,35 @@ final class AppUIState: ObservableObject {
     /// share start: `WGCCaptureEncoder` takes its settings at construction, so
     /// a mid-share change lands on the NEXT share and the card says so.
     @Published private(set) var quality: QualitySettings = QualitySettingsStore.load()
+
+    /// Live video stats for the HUD, counted at the sink.
+    ///
+    /// Zero until the first window closes — about a second in — which is why
+    /// the HUD is only drawn once there is something to draw. Showing
+    /// "0×0 · 0 fps" over a stream that is plainly running would read as a
+    /// broken overlay rather than a warming-up one.
+    @Published private(set) var videoWidth = 0
+    @Published private(set) var videoHeight = 0
+    @Published private(set) var fps = 0
+    /// Whether the stats HUD is shown. Session-scoped rather than persisted:
+    /// it is a debugging glance, not a preference, and the GTK viewer treats
+    /// it the same way.
+    @Published var showStats = false
+
+    /// Whether this machine opened a capture device for the live session — the
+    /// capability the mic control's existence rides on. A box with no
+    /// microphone shows no button rather than one that cannot unmute.
+    @Published private(set) var micAvailable = false
+    /// Whether the microphone is live. Starts off: joining a share must never
+    /// put somebody on the air, matching the macOS viewer.
+    @Published private(set) var micOn = false
+    /// Set when the device goes away mid-session, so the control says so
+    /// instead of quietly ceasing to work.
+    @Published private(set) var micFailure: String?
+    /// The live session's uplink, held for exactly as long as the session.
+    /// Cleared in the session tail — a stale one would leave the microphone
+    /// open, and Windows shows that in the tray for everyone to see.
+    private var voiceUplink: VoiceUplink?
     /// Header filter state, persisted through the portable `PeerListFilterStore`
     /// the macOS hub uses — not a new persistence layer. On Windows that is
     /// swift-corelibs-foundation's `UserDefaults`; if the write does not stick
@@ -362,6 +465,11 @@ final class AppUIState: ObservableObject {
     /// Bumped per decoded frame so SwiftCrossUI re-runs `updateWinUIElement`.
     /// The frame itself travels through `frameStore`, never through this.
     @Published var frameGeneration = 0
+
+    /// Drawing, remote control and zoom for the live session. Its own type
+    /// because none of it is WinUI — keeping it separate is what lets Linux CI
+    /// typecheck the whole interactive layer, which is where the mistakes are.
+    let interaction = WindowsViewerInteraction()
 
     /// Sharing state, mirrored from `SharingController` (which is off the main
     /// actor on purpose — see its type comment).
@@ -393,6 +501,15 @@ final class AppUIState: ObservableObject {
         shareSession.onStatus = { [weak self] status in
             Task { @MainActor in self?.sharing = status }
         }
+        // The sharer's own voice. Both ends are WASAPI and both live in this
+        // target, so they are handed over as closures — `WindowsShareSession`
+        // deliberately carries no Windows-only code, which is what lets Linux
+        // CI typecheck it. The factory is called at share start and the device
+        // released at share stop, so an idle app holds no microphone.
+        shareSession.microphoneFactory = { makeWASAPIMicrophone() }
+        shareSession.playRemoteVoice = { [weak self] pcm in
+            self?.sharerVoiceOut.play(pcm)
+        }
         // Push the persisted choice at the session. It already fails closed on
         // its own, but "closed" and "what the user asked for" are not the same
         // answer, and only one of them is this app's to give.
@@ -411,6 +528,15 @@ final class AppUIState: ObservableObject {
 
     private let transport = TsnetTransport()
     private let shareSession = WindowsShareSession()
+    /// Where viewers' voices come out while sharing.
+    ///
+    /// Its own sink, separate from the viewing session's: this app can share
+    /// while not watching, and sharing one would mean a viewing session's
+    /// teardown silently taking the share's audio with it. `ThreadedAudioSink`
+    /// for the usual reason — a blocking WASAPI write must not run on the
+    /// thread that publishes it — and it opens its device lazily, so an app
+    /// that never shares never touches the output endpoint.
+    private let sharerVoiceOut = ThreadedAudioSink(wrapping: WASAPIAudioSink())
 
     /// Peers asking this machine to share, coalesced and bounded by the
     /// portable `ShareRequestInbox` — the same type the GTK app uses, so the
@@ -613,6 +739,12 @@ final class AppUIState: ObservableObject {
                     self?.revokeControl()
                 }
             },
+            // Absent unless a capture device was actually opened for this
+            // share, so a machine with no microphone shows no control rather
+            // than one that cannot unmute.
+            microphone: sharing.micAvailable
+                ? HubMicrophone(isOn: sharing.micOn) { [weak self] in self?.toggleShareMic() }
+                : nil,
             onStart: { [weak self] in self?.startSharing() },
             onStop: { [weak self] in self?.stopSharing() },
             onAccept: { [weak self] id in self?.answerPrompt(id, accept: true) },
@@ -857,9 +989,21 @@ final class AppUIState: ObservableObject {
 
         sessionTask = Task { [weak self] in
             guard let self else { return }
-            let sink = WindowsVideoSink(store: frameStore) { [weak self] in
-                Task { @MainActor in self?.frameGeneration &+= 1 }
-            }
+            let sink = WindowsVideoSink(
+                store: frameStore,
+                onFrame: { [weak self] in
+                    Task { @MainActor in self?.frameGeneration &+= 1 }
+                },
+                onStats: { [weak self] width, height, fps in
+                    // Fires roughly once a second off the session's thread; the
+                    // published values are main-actor state.
+                    Task { @MainActor in
+                        self?.videoWidth = width
+                        self?.videoHeight = height
+                        self?.fps = fps
+                    }
+                })
+            sink.resetForNewSession()
             // Off-thread on purpose. The transport is serviced by the WinUI main
             // thread, so a blocking WASAPI write inline in `handleAudio` — up to
             // a device buffer, ~50×/s — would stall the UI loop and freeze
@@ -867,6 +1011,10 @@ final class AppUIState: ObservableObject {
             // COM apartment, which is why it opens the device lazily.
             let audio = ThreadedAudioSink(wrapping: WASAPIAudioSink())
             defer { audio.stop() }
+            // The capture device is opened on the pump's own thread (COM
+            // apartment affinity, same as the sink), so building this cannot
+            // fail here — "there is no microphone" arrives as `onStopped`.
+            let microphone = makeWASAPIMicrophone()
             do {
                 try await transport.run(
                     config: ViewerConfig(
@@ -880,8 +1028,22 @@ final class AppUIState: ObservableObject {
                     videoSink: sink,
                     audioSink: audio,
                     shouldClose: { [weak self] in self?.stopRequested ?? true },
-                    onAdmitted: { [weak self] _ in
-                        Task { @MainActor in self?.status = "Watching \(peer.hostname)" }
+                    backChannelHandlers: interaction.backChannelHandlers(),
+                    microphone: microphone,
+                    onVoiceReady: { [weak self] uplink in
+                        self?.attachVoice(uplink)
+                    },
+                    onBackChannelReady: { [weak self] channel in
+                        Task { @MainActor in self?.interaction.beginSession(channel: channel) }
+                    },
+                    onAdmitted: { [weak self] caps in
+                        Task { @MainActor in
+                            self?.status = "Watching \(peer.hostname)"
+                            // Drawing and Request Control appear only if the
+                            // sharer said it can serve them. Withheld bits mean
+                            // a quieter UI, never a broken one.
+                            self?.interaction.setCaps(caps)
+                        }
                     },
                     onAwaitingApproval: { [weak self] in
                         Task { @MainActor in
@@ -897,12 +1059,60 @@ final class AppUIState: ObservableObject {
             }
             watching = nil
             sessionTask = nil
+            detachVoice()
+            // Before the status line, so a stale grant or armed tool can never
+            // outlive the session that produced it.
+            interaction.endSession()
             status = transport.accountIdentity.map { "Signed in as \($0)" } ?? "Signed in"
         }
     }
 
     func disconnect() {
         stopRequested = true
+    }
+
+    // MARK: Microphone
+
+    private func attachVoice(_ uplink: VoiceUplink) {
+        // The transport hands it over muted; mirror rather than assume.
+        uplink.isMuted = true
+        voiceUplink = uplink
+        micAvailable = true
+        micOn = false
+        micFailure = nil
+        uplink.onStopped = { [weak self] error in
+            guard error != nil else { return }
+            Task { @MainActor in
+                // Both flags move together: a live indicator over a device that
+                // is recording nothing is the one wrong answer a mute control
+                // can give.
+                self?.micAvailable = false
+                self?.micOn = false
+                self?.micFailure = "Microphone unavailable"
+            }
+        }
+    }
+
+    private func detachVoice() {
+        voiceUplink?.stop()
+        voiceUplink = nil
+        micAvailable = false
+        micOn = false
+        micFailure = nil
+    }
+
+    /// Flip the SHARER's microphone. Distinct from `toggleMic`, which is the
+    /// viewer's: this app can share and watch at once, and one control flipping
+    /// both would mute somebody in a call they are not in.
+    func toggleShareMic() {
+        shareSession.toggleMic()
+    }
+
+    func toggleMic() {
+        guard let voiceUplink else { return }
+        let nowOn = voiceUplink.isMuted
+        voiceUplink.isMuted = !nowOn
+        micOn = nowOn
     }
 
     // MARK: Accounts

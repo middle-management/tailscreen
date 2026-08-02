@@ -39,14 +39,13 @@ The honest differences:
 - **Sharing works everywhere**, with one Linux caveat: capture goes through
   X11, so a Wayland session can view but not yet share — the app detects
   this and says so.
-- **Remote control** can be granted by a sharer on any platform (Linux
-  injects via X11's XTEST extension — when it's absent, the capability
-  isn't advertised and viewers never see a Request Control button).
-  Requesting control as a *viewer* works from macOS and Linux; the Windows
-  viewer doesn't offer it yet.
-- **Audio capture is macOS-only today.** The mic button and **Share System
-  Audio** exist on the macOS app; Linux and Windows endpoints play back the
-  audio they receive but don't capture any.
+- **Remote control** works in both roles on every platform — requesting as
+  a viewer, and granting as a sharer. (Linux injects via X11's XTEST
+  extension; when it's absent, the capability isn't advertised and viewers
+  never see a Request Control button.)
+- **Voice works everywhere; system-audio capture is macOS-only today.**
+  The mic button exists on all three apps. **Share System Audio** exists
+  only on the macOS sharer — viewers on every platform play it back.
 - **Permissions:** Screen Recording and Accessibility prompts are macOS
   concepts. Linux and Windows have no equivalent gate.
 
@@ -183,9 +182,8 @@ sharing and they're gone.
 
 ## Voice chat
 
-Both sides have a mic button on macOS (**⌃⌥M** works system-wide, even when
-Tailscreen isn't focused; other platforms are playback-only for now — see
-[Platform notes](#platform-notes)). Audio is Opus over the same tunnel as
+Both sides have a mic button (on macOS, **⌃⌥M** also works system-wide,
+even when Tailscreen isn't focused). Audio is Opus over the same tunnel as
 the video.
 With multiple viewers, everyone hears everyone — the sharer relays each
 viewer's voice to the other viewers. The receive path runs an adaptive

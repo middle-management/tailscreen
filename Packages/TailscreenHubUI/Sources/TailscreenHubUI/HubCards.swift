@@ -104,6 +104,13 @@ public struct ShareCard: View {
     let quality: HubQuality?
     /// An extra action the current state calls for, e.g. taking control back.
     let extraAction: HubAction?
+    /// The sharer's microphone, when a device was opened for this share.
+    ///
+    /// Nil renders nothing — the same capability rule the viewer's control
+    /// follows, and the reason this is not a `HubToggle` in `settings`: a
+    /// setting persists and is the least urgent thing on the card, whereas
+    /// talking is a live session control that belongs beside Stop Sharing.
+    let microphone: HubMicrophone?
     let onStart: @MainActor @Sendable () -> Void
     let onStop: @MainActor @Sendable () -> Void
     let onAccept: @MainActor @Sendable (String) -> Void
@@ -122,6 +129,7 @@ public struct ShareCard: View {
         settings: [HubToggle] = [],
         quality: HubQuality? = nil,
         extraAction: HubAction? = nil,
+        microphone: HubMicrophone? = nil,
         onStart: @escaping @MainActor @Sendable () -> Void,
         onStop: @escaping @MainActor @Sendable () -> Void,
         onAccept: @escaping @MainActor @Sendable (String) -> Void = { _ in },
@@ -139,6 +147,7 @@ public struct ShareCard: View {
         self.settings = settings
         self.quality = quality
         self.extraAction = extraAction
+        self.microphone = microphone
         self.onStart = onStart
         self.onStop = onStop
         self.onAccept = onAccept
@@ -163,6 +172,10 @@ public struct ShareCard: View {
                 }
                 if let extraAction {
                     Button(extraAction.label, action: extraAction.perform)
+                }
+                if let microphone {
+                    MicrophoneButton(
+                        isOn: microphone.isOn, onToggle: microphone.toggle)
                 }
                 ForEach(prompts, id: \.id) { prompt in
                     HStack(spacing: 8) {
@@ -235,5 +248,22 @@ public struct ShareCard: View {
             .background(RoundedRectangle(cornerRadius: 10).fill(HubStyle.cardFill))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+
+/// The sharer's live microphone, as the share card needs it.
+///
+/// A value, not a binding: swift-cross-ui rebuilds the card from the host's
+/// state on every change, so the button reads the value this render was built
+/// with and reports the press back through `toggle` — the same shape
+/// `HubToggle` uses, and for the same reason.
+public struct HubMicrophone: Sendable {
+    public let isOn: Bool
+    public let toggle: @MainActor @Sendable () -> Void
+
+    public init(isOn: Bool, toggle: @escaping @MainActor @Sendable () -> Void) {
+        self.isOn = isOn
+        self.toggle = toggle
     }
 }
