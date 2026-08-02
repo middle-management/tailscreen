@@ -301,7 +301,19 @@ jobs:
           #                   which nothing reaches the server at all.
           - name: linux-xtest
             apt: pkg-config libxtst-dev xvfb
+            # Submodules, like `linux-protocol` and for the same reason:
+            # XTestInjectKit depends on TailscreenKit, whose manifest names
+            # `../TailscaleKit` as a path dependency — and TailscaleKit's
+            # `Sources/` are SYMLINKS INTO THE SUBMODULE. Without it SwiftPM
+            # cannot even load the graph ("invalid custom path
+            # 'Sources/TailscaleKit'"), long before anything is compiled. No Go
+            # and no `libtailscale.a`: nothing in this leg links the archive,
+            # only resolves the manifest that mentions it.
+            submodules: recursive
+            go: none
+            libtailscale: none
             cmd: |
+              export PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit"
               swift test --package-path Packages/XTestInjectKit
               swift build --package-path Packages/XTestInjectKit --product xtest-probe
               Packages/XTestInjectKit/.build/debug/xtest-probe --audit-keysyms
