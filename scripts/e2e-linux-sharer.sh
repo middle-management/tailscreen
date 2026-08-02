@@ -126,4 +126,18 @@ if ! grep -aq "nonUniform=true" "$RUN_DIR/probe.log"; then
     log "FAIL — frames decoded but every one was a flat colour (capture produced no content)"
     exit 1
 fi
-log "PASS — real X11 capture reached the viewer as decodable, non-blank frames"
+# Capability honesty, end to end. This sharer supplies no injector and no
+# annotation overlay, so it must advertise neither bit — a viewer that sees
+# them enables affordances whose input goes nowhere, and the symptom is not an
+# error but a toolbar that silently does nothing. Both bits defaulted to
+# claimed at some point; asserting on the wire is what stops that recurring.
+if grep -aq "serverCaps=.*remoteControl" "$RUN_DIR/probe.log"; then
+    log "FAIL — sharer advertised .remoteControl with no injector supplied"
+    exit 1
+fi
+if grep -aq "serverCaps=.*annotations" "$RUN_DIR/probe.log"; then
+    log "FAIL — sharer advertised .annotations with no overlay to render them on"
+    exit 1
+fi
+log "PASS — real X11 capture reached the viewer as decodable, non-blank frames,"
+log "       and the sharer advertised only capabilities it actually has"
