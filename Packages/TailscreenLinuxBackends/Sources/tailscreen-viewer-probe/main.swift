@@ -142,7 +142,19 @@ do {
         audioSink: nil,
         shouldClose: { done.isSet },
         onAdmitted: { caps in
-            log("admitted by sharer (serverCaps=\(caps.rawValue))")
+            // Named, not just the raw value: this line is what
+            // `scripts/e2e-linux-sharer.sh` asserts on, and a bitmask in a log
+            // makes "which capability went missing" a puzzle rather than a
+            // grep. The names are the contract — keep them in step with
+            // `ScreenShareCaps`.
+            var names: [String] = []
+            if caps.contains(.nack) { names.append("nack") }
+            if caps.contains(.receiverReport) { names.append("receiverReport") }
+            if caps.contains(.fec) { names.append("fec") }
+            if caps.contains(.remoteControl) { names.append("remoteControl") }
+            if caps.contains(.annotations) { names.append("annotations") }
+            let listed = names.isEmpty ? "none" : names.joined(separator: ",")
+            log("admitted by sharer (serverCaps=\(caps.rawValue) [\(listed)])")
         },
         onAwaitingApproval: { log("awaiting sharer approval…") },
         onDeclined: { log("declined by sharer") }

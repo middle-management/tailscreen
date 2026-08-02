@@ -70,19 +70,18 @@ Windows is only microphone **capture** and hooking it to the existing encoder.
 | Draw annotations as a viewer | ✅ | ✅ | ❌ |
 | Render viewers' annotations as a sharer | ✅ | ✅ | ✅ |
 | Request remote control as a viewer | ✅ | ✅ | ❌ |
-| Grant + inject remote control as a sharer | ✅ | ❌ | ✅ |
+| Grant + inject remote control as a sharer | ✅ | ✅ | ✅ |
 | Revoke hotkey / panic key | ✅ | ❌ | ❌ |
 | Zoom + pan the viewer | ✅ | ✅ | ❌ |
 
-**Linux and Windows are near mirror images here**, which is an accident of the
-order things were built rather than a design: Linux grew the viewer half first,
-Windows the sharer half. Closing either direction is mostly wiring — the
-protocol, the grant gate, the coordinate mapping and the neutral key model are
-all portable and already tested. The annotation-rendering row is the first one
-closed from the Linux side, which leaves control injection as the remaining
-sharer-half gap there.
+The sharer half of this table is now closed on every platform — Linux's last
+two rows (annotation rendering, then XTEST injection) went in that order.
+What remains is the Windows **viewer** half — drawing, requesting control,
+zoom + pan — and the revoke hotkey outside macOS. Closing those is mostly
+wiring: the protocol, the grant gate, the coordinate mapping and the neutral
+key model are all portable and already tested.
 
-Two specifics worth knowing:
+Three specifics worth knowing:
 
 - **The Linux sharer's ✅ has a condition: the session must be composited.**
   The overlay is an ARGB window, and on uncomposited X11 there is no per-pixel
@@ -98,6 +97,13 @@ Two specifics worth knowing:
   *other* viewers while never appearing on the sharer's own screen — with one
   viewer, the common case, drawing silently did nothing. The default now
   withholds, and each host derives the bit from something it actually has.
+- **The Linux sharer injects through XTEST, which is an optional X11
+  extension.** Without it every call succeeds and injects nothing, so its
+  presence is probed at open and the capability is withheld when absent —
+  viewers aren't offered Request Control rather than being granted control
+  whose clicks vanish. The headless sharer additionally defaults control off
+  behind `--allow-control`: an unattended process shouldn't invite a peer to
+  take the pointer merely because it can.
 - **Windows gates control and annotations on resolving the capture item's screen
   rect.** A WGC `GraphicsCaptureItem` carries no HMONITOR, so its size is matched
   against the enumerated monitors; a *window* capture, or two identical monitors,
@@ -110,14 +116,18 @@ Two specifics worth knowing:
 | | macOS | Linux | Windows |
 | :--- | :---: | :---: | :---: |
 | Require approval for new viewers | ✅ | ✅ | ✅ |
-| Remembered allow / "Deny & Block" | ✅ | ❌ | ❌ |
-| Kick a connected viewer | ✅ | ❌ | ❌ |
+| Remembered allow / "Deny & Block" | ✅ | ✅ | ✅ |
+| Kick a connected viewer | ✅ | ✅ | ✅ |
 | Ask a peer to share their screen | ✅ | ❌ | ❌ |
 
 The approval gate itself is portable and every host asserts it (the server's own
 default is *off*, which is right for a headless automation sharer and wrong for
-anything with a person in front of it). What Linux and Windows lack is the
-persistent per-peer policy store and the UI to drive it.
+anything with a person in front of it). The roster actions — kick, Always
+Allow, Deny & Block, forget — now exist on all three: the decision logic and
+the StableNodeID-keyed intent queue live in the portable tier
+(`ViewerRosterDecision` + `SharerAccessCoordinator`), and the shared hub UI
+renders one viewer-row component everywhere. What Linux and Windows still
+lack is asking a peer to share.
 
 ## The hub
 

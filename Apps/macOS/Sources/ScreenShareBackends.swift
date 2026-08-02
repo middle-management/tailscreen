@@ -34,11 +34,17 @@ extension TailscaleScreenShareServer {
     /// Supplying the injector is what makes this build advertise
     /// `ScreenShareCaps.remoteControl`, so viewers offer Request Control — the
     /// portable server withholds that bit when a host passes no injector.
+    /// `rendersAnnotations` is the same idea for `ScreenShareCaps.annotations`,
+    /// and it withholds by default too: macOS says `true` because
+    /// `SharerOverlayWindow` genuinely puts viewers' strokes on screen. This
+    /// initializer is the one place the mac build states what it can do, so
+    /// every capability claim belongs here rather than at a call site.
     convenience init() {
         self.init(
             port: NetworkConfig.tailscreenPort,
             captureFactory: { HelperScreenCapture() },
-            inputInjector: RemoteControlInjector()
+            inputInjector: RemoteControlInjector(),
+            rendersAnnotations: true
         )
     }
 }

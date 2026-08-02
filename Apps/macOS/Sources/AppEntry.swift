@@ -61,6 +61,11 @@ enum TailscreenEntry {
                 NSApp.setActivationPolicy(.regular)
                 AppMenu.installIfNeeded()
                 AppMenu.reinstall()
+                // Must be set before anything posts, and Apple's guidance is
+                // "before the app finishes launching". Without it every
+                // notification posted while Tailscreen is frontmost is
+                // silently suppressed by the system.
+                TailscreenNotificationDelegate.install()
             }
         }
         nc.addObserver(

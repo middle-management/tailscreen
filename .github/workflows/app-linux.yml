@@ -109,7 +109,7 @@ jobs:
         run: |
           apt-get update && apt-get install -y --no-install-recommends \
             libgtk-4-dev gir1.2-gtk-4.0 libgirepository1.0-dev libepoxy-dev \
-            libgl1-mesa-dri xvfb libopus-dev pkg-config \
+            libgl1-mesa-dri xvfb xcompmgr libxtst-dev libopus-dev pkg-config \
             golang-go make gcc libc6-dev \
             libavcodec-dev libavutil-dev libasound2-dev
 
@@ -209,6 +209,39 @@ jobs:
           cat /tmp/gtk-selftest.log
           test "$status" -eq 0
           grep -q 'CGTKVIDEO_SELFTEST result=PASS' /tmp/gtk-selftest.log
+
+      - name: Headless annotation-overlay self-test (Xvfb + compositor)
+        # The sharer-side gate, run here as well as in `linux-app` because THIS
+        # arch is the reason. The overlay hands `AnnotationRasterizer`'s
+        # premultiplied BGRA straight to cairo as CAIRO_FORMAT_ARGB32 with no
+        # conversion, and that equivalence holds only on a LITTLE-ENDIAN host
+        # — cairo names its formats by 32-bit word. aarch64 is little-endian in
+        # every configuration anyone ships, so this should never fire; it costs
+        # one apt package and five seconds to know rather than assume, on the
+        # exact binary this job uploads.
+        #
+        # `xcompmgr` explicitly rather than via xvfb-run: it has to own the
+        # display before the app opens it, because the overlay reads
+        # `gdk_display_is_composited` once at creation and refuses (by design)
+        # when there is no compositor. Same dash-compatible status handling as
+        # the step above.
+        if: inputs.self_test
+        run: |
+          Xvfb :95 -screen 0 1280x720x24 >/dev/null 2>&1 &
+          sleep 3
+          DISPLAY=:95 xcompmgr >/dev/null 2>&1 &
+          sleep 2
+          if timeout 90 env DISPLAY=:95 GDK_BACKEND=x11 LIBGL_ALWAYS_SOFTWARE=1 \
+            GALLIUM_DRIVER=llvmpipe \
+            Apps/linux/.build/${{ inputs.configuration }}/tailscreen --overlay-self-test \
+            > /tmp/overlay-selftest.log 2>&1; then
+            status=0
+          else
+            status=$?
+          fi
+          cat /tmp/overlay-selftest.log
+          test "$status" -eq 0
+          grep -q 'CGTKOVERLAY_SELFTEST result=PASS' /tmp/overlay-selftest.log
 
       - name: Build the AppImage
         # Same script as the x86_64 release job. The app + c-archive are

@@ -37,6 +37,11 @@ let package = Package(
         .package(path: "../TailscreenKit"),
         .package(path: "../TailscaleKit"),
         .package(path: "../X11CaptureKit"),
+        // XTEST injection, for the sharer's InputInjecting backend. Its own
+        // package for the same reason SendInputKit is: the seam conformance
+        // lives here, the Xlib calls live there, and the decisions live in
+        // TailscreenProtocol where Linux CI already tests them.
+        .package(path: "../XTestInjectKit"),
     ],
     targets: [
         // FFmpeg decoder + ALSA sink + ViewerPipeline. No tsnet, so it builds
@@ -79,6 +84,7 @@ let package = Package(
             dependencies: [
                 .product(name: "FFmpegKit", package: "FFmpegKit"),
                 .product(name: "X11CaptureKit", package: "X11CaptureKit"),
+                .product(name: "XTestInjectKit", package: "XTestInjectKit"),
                 .product(name: "TailscreenSharer", package: "TailscreenKit"),
                 .product(name: "TailscreenProtocol", package: "TailscreenKit"),
             ],
