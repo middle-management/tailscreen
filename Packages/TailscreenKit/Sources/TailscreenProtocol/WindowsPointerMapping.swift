@@ -26,41 +26,22 @@ public enum WindowsPointerMapping {
     /// A rectangle in **screen pixels**, matching Win32's `RECT`-derived
     /// convention: origin top-left, y down. `x`/`y` may be negative on a
     /// multi-monitor desktop.
-    public struct ScreenRect: Sendable, Equatable {
-        public let x: Int
-        public let y: Int
-        public let width: Int
-        public let height: Int
-
-        public init(x: Int, y: Int, width: Int, height: Int) {
-            self.x = x
-            self.y = y
-            self.width = width
-            self.height = height
-        }
-    }
+    ///
+    /// A typealias since the Linux injector needed the identical type and
+    /// clamp — see ``ScreenRegion``. The name is kept because it is what every
+    /// Win32 caller here reads as, and because the two-stage conversion below
+    /// is genuinely Windows-only.
+    public typealias ScreenRect = ScreenRegion
 
     /// Where a normalized `[0, 1]` point inside the captured region lands in
-    /// screen pixels.
-    ///
-    /// Out-of-range and non-finite inputs are clamped rather than rejected:
-    /// these arrive over the wire from a peer, and a hostile or buggy viewer
-    /// must not be able to place the pointer outside the region its user can
-    /// see. NaN maps to the region's origin — the same defensive choice
-    /// `RemoteControlMapping.globalPoint` makes on macOS.
+    /// screen pixels. See ``ScreenRegion/point(normalizedX:normalizedY:)`` for
+    /// the clamping rules — it is a security boundary, not a convenience.
     public static func screenPoint(
         normalizedX: Double,
         normalizedY: Double,
         in region: ScreenRect
     ) -> (x: Int, y: Int) {
-        let clampedX = clampUnit(normalizedX)
-        let clampedY = clampUnit(normalizedY)
-        // `width - 1` for the same reason as the scale factor below: a region
-        // `width` pixels wide has its last addressable column at `width - 1`,
-        // and nx == 1.0 must reach it.
-        let x = region.x + Int((clampedX * Double(max(0, region.width - 1))).rounded())
-        let y = region.y + Int((clampedY * Double(max(0, region.height - 1))).rounded())
-        return (x, y)
+        region.point(normalizedX: normalizedX, normalizedY: normalizedY)
     }
 
     /// Screen pixels → the `0…65535` absolute coordinates `SendInput` takes
@@ -115,11 +96,6 @@ public enum WindowsPointerMapping {
 
     /// `WHEEL_DELTA` from the Win32 headers.
     public static let wheelDeltaPerLine = 120
-
-    private static func clampUnit(_ value: Double) -> Double {
-        guard value.isFinite else { return 0 }
-        return min(max(value, 0), 1)
-    }
 
     private static func axis(_ value: Int, origin: Int, extent: Int) -> Int32 {
         // A one-pixel-wide desktop is degenerate but reachable (and a

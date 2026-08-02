@@ -19,7 +19,7 @@ Everything the protocol supports, minus what needs a Mac:
 |---|---|
 | **View** a shared screen | libavcodec decode → GL render, ALSA audio |
 | **Share** your screen | X11 capture (libxcb + MIT-SHM) → libavcodec encode |
-| Remote control | both directions — send as a viewer, receive as a sharer |
+| Remote control | both directions — send as a viewer, inject as a sharer (XTEST) |
 | Annotations | both directions |
 | Multiple accounts | tsnet state dirs under `$XDG_CONFIG_HOME/tailscreen` |
 
@@ -69,7 +69,7 @@ toolbar rather than strokes that reach nobody.
 sudo apt-get install -y \
   libgtk-4-dev gir1.2-gtk-4.0 libgirepository1.0-dev libepoxy-dev \
   libgl1-mesa-dri libavcodec-dev libavutil-dev libasound2-dev \
-  libopus-dev pkg-config golang-go make gcc libc6-dev
+  libxtst-dev libopus-dev pkg-config golang-go make gcc libc6-dev
 
 make tailscale                                    # builds libtailscale.a (needs Go)
 swift build --package-path Apps/linux --product tailscreen
@@ -105,6 +105,7 @@ DISPLAY=:95 swift run --package-path Apps/linux tailscreen --overlay-self-test
 ```
 Apps/linux                        this package
 ├── Packages/TailscreenLinuxBackends   FFmpeg decode, ALSA out, X11 capture+encode
+├── Packages/XTestInjectKit            XTEST input injection (remote control)
 ├── Packages/TailscreenKit             protocol, ViewerSession, the sharer server,
 │                                      and the shared tsnet transport
 ├── Packages/TailscreenHubUI           the hub's look, shared with Windows

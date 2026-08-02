@@ -109,7 +109,7 @@ jobs:
         run: |
           apt-get update && apt-get install -y --no-install-recommends \
             libgtk-4-dev gir1.2-gtk-4.0 libgirepository1.0-dev libepoxy-dev \
-            libgl1-mesa-dri xvfb libopus-dev pkg-config \
+            libgl1-mesa-dri xvfb xcompmgr libxtst-dev libopus-dev pkg-config \
             golang-go make gcc libc6-dev \
             libavcodec-dev libavutil-dev libasound2-dev
 
@@ -227,7 +227,6 @@ jobs:
         # the step above.
         if: inputs.self_test
         run: |
-          apt-get install -y --no-install-recommends xcompmgr
           Xvfb :95 -screen 0 1280x720x24 >/dev/null 2>&1 &
           sleep 3
           DISPLAY=:95 xcompmgr >/dev/null 2>&1 &
