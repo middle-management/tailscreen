@@ -45,7 +45,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-$pkgSrc = Join-Path $repoRoot 'packaging/windows'
+$pkgSrc = Join-Path $repoRoot 'Apps/windows/packaging'
 
 if (-not (Test-Path $StageDir)) { throw "stage dir not found: $StageDir" }
 $exe = Join-Path $StageDir 'tailscreen.exe'
