@@ -186,6 +186,16 @@ class AppState: ObservableObject {
     /// SwiftUI views bind to this via `appState.requireViewerApproval`;
     /// the setter syncs the live server too so the toggle takes effect
     /// mid-share.
+    /// True only when we *know* macOS will not display our notifications —
+    /// the user explicitly denied them. Never true for "not asked yet", which
+    /// would be crying wolf.
+    ///
+    /// Deliberately one-directional: `false` does **not** mean notifications
+    /// will arrive. A Focus can filter us, Time Sensitive can be revoked, and
+    /// the alert style can be None, none of which is visible to the app. So the
+    /// UI built on this only ever renders a warning, and never reassures.
+    @Published private(set) var notificationsDenied = false
+
     @Published var requireViewerApproval: Bool = ViewerApprovalDefaults.load() {
         didSet {
             ViewerApprovalDefaults.save(requireViewerApproval)
@@ -1033,6 +1043,17 @@ class AppState: ObservableObject {
             )
             return
         }
+        // Re-read notification authorization at every share start. The one-shot
+        // prompt is answered once, but the user can revoke it in System
+        // Settings at any time afterwards — and with approval defaulting on,
+        // a sharer whose approval banners will never appear is a sharer who
+        // strands viewers without ever learning why. The answer arrives
+        // asynchronously and lands on `notificationsDenied`, which the sharing
+        // card watches.
+        ViewerJoinNotifier.shared.onAuthorizationChanged = { [weak self] state in
+            self?.notificationsDenied = (state == .denied)
+        }
+        ViewerJoinNotifier.shared.refreshAuthorization()
         // Decode the picker selection so the sharer overlay (built lazily
         // when the first annotation arrives or "Draw on Screen" is toggled)
         // can scope its panel to the shared window/app instead of the
@@ -2905,7 +2926,7 @@ class AppState: ObservableObject {
     }
 
     /// Diff the new viewer roster against the previous one to fire a
-    /// per-join user notification exactly once per `id`. Reuses
+    /// per-join and per-leave user notification exactly once per `id`. Reuses
     /// `notifiedViewerIDs` so a hostname-resolution update that
     /// re-emits the same `id` doesn't ping twice. Notifications are
     /// best-effort: dev builds without a bundle ID won't be authorized
@@ -2915,6 +2936,21 @@ class AppState: ObservableObject {
         let previousIDs = Set(currentViewers.map { $0.id })
         let newIDs = Set(viewers.map { $0.id })
         let joinedIDs = newIDs.subtracting(previousIDs)
+        // Departure labels must be read from the OUTGOING roster: a viewer who
+        // left is, by definition, absent from `viewers`.
+        //
+        // Two gates, both there to stop this being noise rather than news.
+        // Only viewers whose *arrival* was announced get a departure — a
+        // "left" with no matching "joined" is a non-sequitur. And nothing is
+        // posted while the share is being torn down: `await server?.stop()`
+        // expels every viewer, which would otherwise fire one banner per
+        // viewer at the exact moment the sharer has already decided to stop.
+        let departedLabels =
+            isStoppingShare
+            ? []
+            : currentViewers
+                .filter { !newIDs.contains($0.id) && notifiedViewerIDs.contains($0.id) }
+                .map { $0.hostname ?? $0.tailscaleIP }
         currentViewers = viewers
         refreshRememberedDisplayNames(stableIDHostnamePairs: viewers.map { ($0.stableID, $0.hostname) })
         applyQueuedPolicyIntents(
@@ -2922,6 +2958,9 @@ class AppState: ObservableObject {
         // Forget IDs that have left so a reconnect from the same
         // address fires a new notification.
         notifiedViewerIDs.formIntersection(newIDs)
+        for label in departedLabels {
+            ViewerJoinNotifier.shared.postLeft(label: label)
+        }
         for id in joinedIDs where !notifiedViewerIDs.contains(id) {
             notifiedViewerIDs.insert(id)
             guard let viewer = viewers.first(where: { $0.id == id }) else { continue }
