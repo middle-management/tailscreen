@@ -13,9 +13,11 @@ permalink: /platform-support/
 What works where. macOS is the reference implementation; Linux and Windows are
 newer and deliberately incomplete in places.
 
-This page doubles as the **alignment to-do**: every ⚠️ and ❌ below is either a
-gap worth closing or a decision worth writing down, and several of them were
-found by building this table rather than by anyone hitting them.
+This page doubles as the **alignment scoreboard**: every ⚠️ and ❌ below is
+either a gap worth closing or a decision worth writing down, and several of them
+were found by building this table rather than by anyone hitting them. The order
+to close them in — and which ones are deliberate divergences rather than debt —
+is `plans/platform-alignment.md`.
 
 ## Legend
 
@@ -66,7 +68,7 @@ Windows is only microphone **capture** and hooking it to the existing encoder.
 | | macOS | Linux | Windows |
 | :--- | :---: | :---: | :---: |
 | Draw annotations as a viewer | ✅ | ✅ | ❌ |
-| Render viewers' annotations as a sharer | ✅ | ⚠️ relays only | ✅ |
+| Render viewers' annotations as a sharer | ✅ | ❌ | ✅ |
 | Request remote control as a viewer | ✅ | ✅ | ❌ |
 | Grant + inject remote control as a sharer | ✅ | ❌ | ✅ |
 | Revoke hotkey / panic key | ✅ | ❌ | ❌ |
@@ -80,12 +82,15 @@ already tested.
 
 Two specifics worth knowing:
 
-- **The Linux sharer advertises annotation support it doesn't have.** It leaves
-  `rendersAnnotations` at its default `true` while supplying no overlay, so a
-  viewer shows its drawing tools, and strokes are relayed to *other* viewers but
-  never appear on the Linux sharer's own screen. With one viewer — the common
-  case — drawing silently does nothing. The capability bit exists precisely to
-  prevent this; passing `false` is a one-line fix, rendering them is the real one.
+- **The Linux sharer no longer claims annotation support it lacks.** It used
+  to: `rendersAnnotations` defaulted to `true`, so a sharer with no overlay
+  advertised the capability, every viewer enabled its drawing tools, and strokes
+  were relayed to *other* viewers while never appearing on the Linux sharer's
+  own screen — with one viewer, the common case, drawing silently did nothing.
+  The default now **withholds**, so the row above is an honest ❌ and viewers
+  correctly disable their toolbar. Actually rendering them is Phase 1.4 of
+  `plans/platform-alignment.md`. The behaviour did not improve; it stopped
+  lying, which is the prerequisite.
 - **Windows gates control and annotations on resolving the capture item's screen
   rect.** A WGC `GraphicsCaptureItem` carries no HMONITOR, so its size is matched
   against the enumerated monitors; a *window* capture, or two identical monitors,
@@ -118,9 +123,11 @@ persistent per-peer policy store and the UI to drive it.
 | Quality settings UI | ✅ | ❌ | ❌ |
 | Connection stats overlay | ✅ | ❌ | ❌ |
 | Localized strings | ✅ | ❌ | ❌ |
-| **Notified when a viewer is waiting for approval** | ⚠️ posted, easily suppressed | ❌ | ❌ |
+| **Notified when a viewer is waiting for approval** | ✅ | ❌ | ❌ |
 | Answer that prompt from the notification | ❌ | ❌ | ❌ |
-| **Outline around what's being captured** | ❌ | ❌ | ✅ system border |
+| Told when notifications are switched off | ✅ | ❌ | ❌ |
+| Notified when a viewer joins / leaves | ✅ | ❌ | ❌ |
+| **Outline around what's being captured** | ✅ | ❌ | ⚠️ WGC's own, unconfirmed |
 | Sharing controls outside the main window | ✅ menubar | ❌ | ❌ |
 | Mute / unmute from outside the window | ✅ | ❌ | ❌ |
 | Toggle sharer drawing from outside the window | ✅ | ❌ | ❌ |
