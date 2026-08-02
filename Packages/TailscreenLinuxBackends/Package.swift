@@ -56,6 +56,9 @@ let package = Package(
                 .product(name: "ALSAKit", package: "ALSAKit"),
                 .product(name: "TailscreenViewer", package: "TailscreenKit"),
                 .product(name: "TailscreenProtocol", package: "TailscreenKit"),
+                // The microphone seam ALSAMicrophone.swift conforms to, and the
+                // thread that pumps it.
+                .product(name: "TailscreenAudio", package: "TailscreenKit"),
             ],
             path: "Sources/TailscreenViewerCore"
         ),

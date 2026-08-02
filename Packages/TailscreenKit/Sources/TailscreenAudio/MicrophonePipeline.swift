@@ -111,4 +111,17 @@ public final class MicrophonePipeline: @unchecked Sendable {
         converter.reset()
         lock.withLock { framer.reset() }
     }
+
+    /// The device dropped audio just before the next buffer.
+    ///
+    /// Resets the **converter** and deliberately not the framer. The converter
+    /// holds the previous buffer's last sample as an interpolation neighbour,
+    /// and that sample now sits on the far side of a hole — using it smears one
+    /// artefact across a cut that was already going to be audible. The framer's
+    /// carry is different: those are real samples the person actually said, and
+    /// dropping them would turn a device glitch into a second, self-inflicted
+    /// gap.
+    public func noteDiscontinuity() {
+        converter.reset()
+    }
 }
