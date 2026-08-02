@@ -101,11 +101,18 @@ final class TailscreenUserNotifications {
             // a request-to-share arrives while this machine is *idle*, so
             // there is no capture running for the sound to leak into.
             content.sound = .default
-            // Someone is waiting on an answer, so this outranks a Focus. The
-            // requester's connection is held open until it is answered or
-            // times out — an unnoticed banner spends that window and resolves
-            // to "no answer" without the user ever knowing they were asked.
-            content.interruptionLevel = .timeSensitive
+            // Deliberately NOT `.timeSensitive`, unlike the two mid-share asks
+            // in `ViewerJoinNotifier`. This one arrives while the machine is
+            // *idle*: nobody is mid-flow, and an invitation has a natural retry
+            // — the peer asks again, or messages you. The others arrive while
+            // you are already sharing, with somebody watching a "waiting for
+            // approval" placard or unable to click anything.
+            //
+            // The mechanical argument matters more than the aesthetic one:
+            // Time Sensitive is revoked per *app*, not per notification. Every
+            // kind that claims the exemption without needing it raises the
+            // odds the user turns it off, which disarms the kinds that do.
+            content.interruptionLevel = .active
             content.userInfo = ["fromHostname": fromHostname]
             let request = UNNotificationRequest(
                 identifier: UUID().uuidString,

@@ -86,6 +86,22 @@ final class ViewerJoinNotifier {
             blocksSomeone: false)
     }
 
+    /// Fired when a viewer's session ends — they disconnected, the idle sweep
+    /// dropped them, or the sharer kicked them.
+    ///
+    /// The counterpart to `postJoined`: a sharer told somebody arrived and
+    /// never told they left has to go looking to find out whether anyone is
+    /// still watching, which is the same "ask the app" problem notifications
+    /// exist to remove. Same non-urgent level — nobody is stranded by a
+    /// departure.
+    func postLeft(label: String) {
+        post(
+            prefix: "tailscreen.viewer.left",
+            title: L("Viewer Disconnected"),
+            body: L("\(label) stopped viewing your screen."),
+            blocksSomeone: false)
+    }
+
     func postPending(label: String) {
         post(
             prefix: "tailscreen.viewer.pending",

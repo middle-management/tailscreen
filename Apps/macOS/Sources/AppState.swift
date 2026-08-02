@@ -2911,7 +2911,7 @@ class AppState: ObservableObject {
     }
 
     /// Diff the new viewer roster against the previous one to fire a
-    /// per-join user notification exactly once per `id`. Reuses
+    /// per-join and per-leave user notification exactly once per `id`. Reuses
     /// `notifiedViewerIDs` so a hostname-resolution update that
     /// re-emits the same `id` doesn't ping twice. Notifications are
     /// best-effort: dev builds without a bundle ID won't be authorized
@@ -2921,6 +2921,21 @@ class AppState: ObservableObject {
         let previousIDs = Set(currentViewers.map { $0.id })
         let newIDs = Set(viewers.map { $0.id })
         let joinedIDs = newIDs.subtracting(previousIDs)
+        // Departure labels must be read from the OUTGOING roster: a viewer who
+        // left is, by definition, absent from `viewers`.
+        //
+        // Two gates, both there to stop this being noise rather than news.
+        // Only viewers whose *arrival* was announced get a departure — a
+        // "left" with no matching "joined" is a non-sequitur. And nothing is
+        // posted while the share is being torn down: `await server?.stop()`
+        // expels every viewer, which would otherwise fire one banner per
+        // viewer at the exact moment the sharer has already decided to stop.
+        let departedLabels =
+            isStoppingShare
+            ? []
+            : currentViewers
+                .filter { !newIDs.contains($0.id) && notifiedViewerIDs.contains($0.id) }
+                .map { $0.hostname ?? $0.tailscaleIP }
         currentViewers = viewers
         refreshRememberedDisplayNames(stableIDHostnamePairs: viewers.map { ($0.stableID, $0.hostname) })
         applyQueuedPolicyIntents(
@@ -2928,6 +2943,9 @@ class AppState: ObservableObject {
         // Forget IDs that have left so a reconnect from the same
         // address fires a new notification.
         notifiedViewerIDs.formIntersection(newIDs)
+        for label in departedLabels {
+            ViewerJoinNotifier.shared.postLeft(label: label)
+        }
         for id in joinedIDs where !notifiedViewerIDs.contains(id) {
             notifiedViewerIDs.insert(id)
             guard let viewer = viewers.first(where: { $0.id == id }) else { continue }
