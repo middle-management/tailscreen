@@ -33,6 +33,11 @@ final class PickerModel: ObservableObject {
     /// `DiscoveredSharer.id`. Populated by a lazy metadata sweep after discovery;
     /// a missing entry means status-unknown (never rendered as "not sharing").
     @Published var shareInfo: [String: TailscreenMetadata] = [:]
+    /// Round-trip time of the last successful probe, by `DiscoveredSharer.id`.
+    ///
+    /// Free: it times the metadata sweep that already runs, rather than adding
+    /// a second dial. Absent means no probe has completed — never "fast".
+    @Published var latencyMs: [String: Int] = [:]
 
     /// The header filter menu's state — hide-offline ∧ only-sharing ∧
     /// any-of-selected-tags. `sharers` stays the RAW discovery result (the tag

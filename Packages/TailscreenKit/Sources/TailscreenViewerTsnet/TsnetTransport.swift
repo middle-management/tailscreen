@@ -103,16 +103,46 @@ public struct DiscoveredSharer: Sendable, Identifiable, Equatable {
     /// `--ui-preview` seeds `DiscoveredSharer`s by hand, and a required
     /// parameter would have made a display-only field a breaking change.
     public let tags: [String]
+    /// The path this peer's traffic is taking, as `PeerRoute.from` classifies
+    /// it. Straight off the same LocalAPI status seed `TailscalePeerDiscovery`
+    /// already parses — there is no probe behind this and no wire change.
+    ///
+    /// Note the seed, not the netmap: netmap ticks carry no path information,
+    /// so `TailscalePeerDiscovery.publishMerged` deliberately preserves these
+    /// fields rather than letting a tick blank them.
+    public let route: PeerRoute
 
     public init(
         id: String, hostname: String, tailscaleIP: String, isOnline: Bool,
-        tags: [String] = []
+        tags: [String] = [], route: PeerRoute = .unknown
     ) {
         self.id = id
         self.hostname = hostname
         self.tailscaleIP = tailscaleIP
         self.isOnline = isOnline
         self.tags = tags
+        self.route = route
+    }
+}
+
+/// What one lazy peer probe found: the peer's share status, and how long the
+/// round trip took.
+///
+/// The latency rides along because it is FREE — the metadata fetch is already
+/// a TCP round trip over the live Tailscale path, so timing it costs one
+/// clock read rather than a second dial. It is an estimate over that path
+/// including dial and service time, not a wire ping, which is why
+/// `ConnectionQualityTier`'s thresholds are as generous as they are.
+///
+/// Both fields are independently optional: a peer can answer (status known)
+/// while the timing is discarded, and a peer that never answers has neither.
+public struct PeerProbe: Sendable {
+    public let metadata: TailscreenMetadata?
+    public let latencyMs: Int?
+
+    public init(metadata: TailscreenMetadata?, latencyMs: Int?) {
+        self.metadata = metadata
+        self.latencyMs = latencyMs
     }
 }
 
@@ -350,7 +380,8 @@ public final class TsnetTransport {
         return discovery.availablePeers.map {
             DiscoveredSharer(
                 id: $0.id, hostname: $0.hostname,
-                tailscaleIP: $0.tailscaleIP, isOnline: $0.isOnline, tags: $0.tags)
+                tailscaleIP: $0.tailscaleIP, isOnline: $0.isOnline, tags: $0.tags,
+                route: PeerRoute.from(curAddr: $0.curAddr, relay: $0.relay))
         }
     }
 
@@ -363,6 +394,23 @@ public final class TsnetTransport {
     public func fetchMetadata(ip: String) async -> TailscreenMetadata? {
         guard let node = preparedNode else { return nil }
         return await TailscreenMetadataClient.fetchMetadata(fromIP: ip, via: node)
+    }
+
+    /// `fetchMetadata`, timed.
+    ///
+    /// The sweep that populates the sharing chip is already a TCP round trip
+    /// over the live path, so the latency behind the peer-detail pane's
+    /// quality dot is one clock read rather than a second probe. A peer that
+    /// does not answer reports neither status nor latency — never a latency
+    /// for a round trip that did not complete, which would read as a fast link
+    /// to a machine that is gone.
+    public func probePeer(ip: String) async -> PeerProbe {
+        guard let node = preparedNode else { return PeerProbe(metadata: nil, latencyMs: nil) }
+        let startNs = DispatchTime.now().uptimeNanoseconds
+        let metadata = await TailscreenMetadataClient.fetchMetadata(fromIP: ip, via: node)
+        guard metadata != nil else { return PeerProbe(metadata: nil, latencyMs: nil) }
+        let elapsedNs = DispatchTime.now().uptimeNanoseconds &- startNs
+        return PeerProbe(metadata: metadata, latencyMs: Int(elapsedNs / 1_000_000))
     }
 
     /// Ask a peer to share its screen, and park until it answers.

@@ -19,6 +19,13 @@ public struct HubScreen: Identifiable, Sendable {
     public let sharingName: String?
     /// "robert's Screen · 1920 × 1080 · HEVC", for the expanded detail pane.
     public let sharingCaption: String?
+    /// The path this peer's traffic takes, for the detail pane's Route line.
+    public let route: PeerRoute
+    /// Round-trip time of the last successful metadata probe, in ms. Nil
+    /// means no probe has completed — never "fast".
+    public let latencyMs: Int?
+    /// Tailscale ACL tags, straight off the netmap.
+    public let tags: [String]
 
     /// The row's second line.
     ///
@@ -36,7 +43,8 @@ public struct HubScreen: Identifiable, Sendable {
 
     public init(
         id: String, hostname: String, tailscaleIP: String, isOnline: Bool,
-        sharingName: String? = nil, sharingCaption: String? = nil
+        sharingName: String? = nil, sharingCaption: String? = nil,
+        route: PeerRoute = .unknown, latencyMs: Int? = nil, tags: [String] = []
     ) {
         self.id = id
         self.hostname = hostname
@@ -44,6 +52,9 @@ public struct HubScreen: Identifiable, Sendable {
         self.isOnline = isOnline
         self.sharingName = sharingName
         self.sharingCaption = sharingCaption
+        self.route = route
+        self.latencyMs = latencyMs
+        self.tags = tags
     }
 
     /// Build a row from a discovered machine plus whatever the metadata sweep
@@ -54,7 +65,8 @@ public struct HubScreen: Identifiable, Sendable {
     /// drift this package exists to prevent.
     public init(
         id: String, hostname: String, tailscaleIP: String, isOnline: Bool,
-        metadata: TailscreenMetadata?
+        metadata: TailscreenMetadata?,
+        route: PeerRoute = .unknown, latencyMs: Int? = nil, tags: [String] = []
     ) {
         var name: String?
         var caption: String?
@@ -70,7 +82,8 @@ public struct HubScreen: Identifiable, Sendable {
         }
         self.init(
             id: id, hostname: hostname, tailscaleIP: tailscaleIP, isOnline: isOnline,
-            sharingName: name, sharingCaption: caption)
+            sharingName: name, sharingCaption: caption,
+            route: route, latencyMs: latencyMs, tags: tags)
     }
 }
 
@@ -152,6 +165,13 @@ public struct SharerDetail: View {
     let isOnline: Bool
     let sharingCaption: String?
     let onView: @MainActor @Sendable () -> Void
+    /// The connection facts the macOS hub's peer-detail pane shows: which
+    /// path traffic takes, how far away it feels, and what the tailnet says
+    /// this machine is. Defaulted so a host that has not wired them yet — or
+    /// a preview — renders the pane exactly as before.
+    let route: PeerRoute
+    let latencyMs: Int?
+    let tags: [String]
     /// Ask this peer to start sharing. Nil ⇒ the button is absent, never
     /// present-and-inert — the same convention the roster row's optional
     /// actions follow, and for the same reason: a control that is visible but
@@ -177,6 +197,9 @@ public struct SharerDetail: View {
     public init(
         hostname: String, ip: String, isOnline: Bool, sharingCaption: String?,
         onView: @escaping @MainActor @Sendable () -> Void,
+        route: PeerRoute = .unknown,
+        latencyMs: Int? = nil,
+        tags: [String] = [],
         onAskToShare: (@MainActor @Sendable () -> Void)? = nil,
         isAsking: Bool = false,
         askNote: String? = nil
@@ -186,6 +209,9 @@ public struct SharerDetail: View {
         self.isOnline = isOnline
         self.sharingCaption = sharingCaption
         self.onView = onView
+        self.route = route
+        self.latencyMs = latencyMs
+        self.tags = tags
         self.onAskToShare = onAskToShare
         self.isAsking = isAsking
         self.askNote = askNote
@@ -230,12 +256,54 @@ public struct SharerDetail: View {
             VStack(alignment: .leading, spacing: 4) {
                 detailRow(label: "Host", value: hostname)
                 detailRow(label: "IP", value: ip)
+                if let routeLine {
+                    detailRow(label: "Route", value: routeLine)
+                }
+                if !tags.isEmpty {
+                    // Stripped of the `tag:` prefix, which every tag carries
+                    // and none of them distinguish.
+                    detailRow(
+                        label: "Tags",
+                        value: tags.map { $0.hasPrefix("tag:") ? String($0.dropFirst(4)) : $0 }
+                            .joined(separator: ", "))
+                }
             }
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 8).fill(HubStyle.detailFill))
         .padding(.leading, 20)
+    }
+
+    /// The Route line: path first, then how far away it feels.
+    ///
+    /// Nil while nothing is known — which is a real state, not a placeholder.
+    /// The status seed may not have run, or this peer may never have been
+    /// contacted, and "Direct" printed on a guess would be worse than a line
+    /// that is not there.
+    ///
+    /// Latency is joined into the SAME line rather than given its own, and the
+    /// tier is spelled out in words beside the number. On macOS this is a
+    /// coloured dot, which is exactly the thing that page's accessibility rule
+    /// forbids on its own: status that reads as colour has to also be readable
+    /// as text, and swift-cross-ui has no tooltip to hide it in.
+    private var routeLine: String? {
+        var parts: [String] = []
+        switch route {
+        case .direct: parts.append("Direct")
+        case .relay(let region): parts.append("Relayed via \(region.uppercased())")
+        case .unknown: break
+        }
+        if let latencyMs {
+            let tier: String
+            switch ConnectionQualityTier.forLatency(ms: latencyMs) {
+            case .good: tier = "good"
+            case .fair: tier = "fair"
+            case .poor: tier = "slow"
+            }
+            parts.append("\(latencyMs) ms (\(tier))")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     private func detailRow(label: String, value: String) -> some View {

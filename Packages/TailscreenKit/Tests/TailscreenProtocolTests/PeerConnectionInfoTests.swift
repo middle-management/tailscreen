@@ -1,6 +1,6 @@
 import XCTest
 
-@testable import Tailscreen
+@testable import TailscreenProtocol
 
 /// Pins the peer-detail pane's pure connection decisions: which Tailscale
 /// path a peer is on (`PeerRoute`) and which quality tier its measured
