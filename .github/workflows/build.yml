@@ -891,6 +891,59 @@ jobs:
           test "$status" -eq 0
           grep -q 'CGTKOVERLAY_INPUT_SELFTEST result=PASS' /tmp/overlay-input-selftest.log
 
+      - name: Capture-backend selection report
+        # The WIRING gate for `CaptureBackendSelection`. Its unit tests cover
+        # every branch of the decision; nothing covers whether this app feeds
+        # it the right environment, and a decision handed the wrong inputs is
+        # exactly as wrong as a wrong decision.
+        #
+        # The middle case is the one worth having. `$DISPLAY` is set on Wayland
+        # by XWayland, so a session-detection regression (reading DISPLAY as
+        # evidence of X11, which is what this app used to do) puts Wayland
+        # users back on X11 root capture — a share that succeeds, says
+        # "Sharing", and sends viewers an XWayland root that is usually blank.
+        # Asserting `backend=x11` never appears under a Wayland session is what
+        # catches that; a `canShare` check alone would not.
+        #
+        # No portal on this runner, so the portal branches report unavailable.
+        # That is honest rather than unfortunate: a leg cannot gate the portal
+        # path, because the portal is a dialog a person clicks.
+        run: |
+          Xvfb :95 -screen 0 640x480x24 >/dev/null 2>&1 &
+          sleep 2
+          BIN=Apps/linux/.build/debug/tailscreen
+          DISPLAY=:95 "$BIN" --capture-backend-report > /tmp/backend-x11.log 2>&1
+          cat /tmp/backend-x11.log
+          grep -q 'intent=entire-screen backend=x11(:95)' /tmp/backend-x11.log
+          grep -q 'canShare=true' /tmp/backend-x11.log
+
+          XDG_SESSION_TYPE=wayland DISPLAY=:95 "$BIN" --capture-backend-report \
+            > /tmp/backend-wayland.log 2>&1
+          cat /tmp/backend-wayland.log
+          grep -q 'session=wayland' /tmp/backend-wayland.log
+          if grep -q 'backend=x11' /tmp/backend-wayland.log; then
+            echo "FAIL: a Wayland session was routed to X11 capture (XWayland trap)" >&2
+            exit 1
+          fi
+
+          # WAYLAND_DISPLAY with NO session type — a real configuration, and
+          # the one where detection ORDER decides the answer. The case above
+          # returns on the first branch and so cannot catch a regression that
+          # consults DISPLAY too early; this one can, and was checked to fail
+          # against exactly that mutation.
+          env -u XDG_SESSION_TYPE WAYLAND_DISPLAY=wayland-0 DISPLAY=:95 \
+            "$BIN" --capture-backend-report > /tmp/backend-wayland-implicit.log 2>&1
+          cat /tmp/backend-wayland-implicit.log
+          grep -q 'session=wayland' /tmp/backend-wayland-implicit.log
+          if grep -q 'backend=x11' /tmp/backend-wayland-implicit.log; then
+            echo "FAIL: WAYLAND_DISPLAY session routed to X11 capture" >&2
+            exit 1
+          fi
+
+          env -u DISPLAY "$BIN" --capture-backend-report > /tmp/backend-none.log 2>&1
+          cat /tmp/backend-none.log
+          grep -q 'canShare=false' /tmp/backend-none.log
+
       # Both saves live at the end so they bank objects from a run that failed
       # the typecheck or the self-test — the compile is the expensive part and
       # it already happened. The product binaries are excluded: they are
