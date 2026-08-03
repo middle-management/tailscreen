@@ -484,7 +484,18 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// a brand-new backend each time: on macOS, process death is the only
     /// thing that reliably clears `replayd`'s per-bundle slot, so reusing one
     /// object across restarts would defeat the entire helper architecture.
-    private let captureFactory: (@Sendable () -> any CaptureEncoding)?
+    /// Builds a fresh capture backend for each (re)start.
+    ///
+    /// Mutable, behind a lock, because **not every backend can be retargeted
+    /// by `filterData` alone.** The macOS helper resolves the selection out of
+    /// that data in its own process, so swapping the bytes is enough. The
+    /// Windows and portal backends are constructed against an
+    /// already-picked target instead — a `WGC.CaptureItem`, a PipeWire node —
+    /// precisely so a crash-restart re-targets the same thing without asking
+    /// the user again. That is right for a restart and useless for a
+    /// deliberate source change, so `changeSource` lets a host hand over a new
+    /// factory along with the new data.
+    private let captureFactory = Mutex<(@Sendable () -> any CaptureEncoding)?>(nil)
 
     /// Codec the helper's encoder is producing. Set when the helper
     /// sends its first parameter-sets blob; consumed by `broadcast()`
@@ -736,7 +747,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         rendersAnnotations: Bool = false
     ) {
         self.port = port
-        self.captureFactory = captureFactory
+        self.captureFactory.withLock { $0 = captureFactory }
         self.remoteControlInjector = inputInjector
         self.rendersAnnotations = rendersAnnotations
         self.logger = TSLogger()
@@ -924,8 +935,10 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     }
 
     private func startHelperCapture(filterData: Data) throws {
-        guard let captureFactory else { throw ScreenShareServerError.noCaptureBackend }
-        let helper = captureFactory()
+        guard let factory = captureFactory.withLock({ $0 }) else {
+            throw ScreenShareServerError.noCaptureBackend
+        }
+        let helper = factory()
         // Fresh helper ⇒ fresh anchor state: its encoder starts back at the
         // formula/ceiling bitrate, so the first parameter-sets emit must
         // re-anchor even if the resolution/codec are unchanged from the
@@ -1154,9 +1167,21 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// didn't change with the source) and `parameterSets` / `helperCodec`
     /// are left in place — the fresh helper overwrites them, in order,
     /// before its first encoded AU broadcasts.
-    public func changeSource(filterData: Data) async throws -> Bool {
+    /// - Parameter captureFactory: a replacement backend builder, for hosts
+    ///   whose backend cannot be retargeted by `filterData` alone (see the
+    ///   `captureFactory` property). Nil keeps the existing one, which is what
+    ///   macOS wants: its helper reads the new selection out of the data.
+    public func changeSource(
+        filterData: Data,
+        captureFactory: (@Sendable () -> any CaptureEncoding)? = nil
+    ) async throws -> Bool {
         guard isRunning else { return false }
         lastFilterData.withLock { $0 = filterData }
+        // Swapped BEFORE the restart is scheduled, so the respawn below builds
+        // the new source rather than one more copy of the old one.
+        if let captureFactory {
+            self.captureFactory.withLock { $0 = captureFactory }
+        }
         // Keep the injector's coordinate mapping in step with the new source
         // so a live control grant keeps landing events on the right region.
         remoteControlInjector?.setSelection(decodedSelection())

@@ -761,6 +761,12 @@ struct ViewerApp: App {
                     label: "Share a window or app…",
                     perform: { gSharer.startWindowShare() })
                 : nil,
+            // Only for a portal-backed share: an X11 session captures exactly
+            // one thing, so there would be nothing to change.
+            changeSource: sharer.canChangeSource && sharer.phase == .sharing
+                ? HubAction(
+                    label: "Change source…", perform: { gSharer.changeSource() })
+                : nil,
             onStart: { gSharer.startSharing() },
             onStop: { gSharer.stopSharing() },
             onAccept: { Self.answerPrompt($0, accept: true) },
