@@ -48,8 +48,9 @@ The Linux sharer is display-only on purpose: window and app selections are
 shared from at all — the gate is `$DISPLAY`, and under XWayland capture sees
 only the XWayland root, so native Wayland windows never reach viewers. The
 ScreenCast portal is the answer; its capture package (`PortalCaptureKit`)
-now exists with the portal handshake proven in CI, but it isn't wired into
-the app yet — Wayland sharing stays off until it is.
+now exists with both halves proven in CI — the portal handshake against a
+fake bus, the PipeWire buffer path against a synthetic source — but it
+isn't wired into the app yet, so Wayland sharing stays off until it is.
 
 ## Audio
 
@@ -74,6 +75,7 @@ system's own output; viewers on every platform play it back.
 | :--- | :---: | :---: | :---: |
 | Draw annotations as a viewer | ✅ | ✅ | ✅ |
 | Render viewers' annotations as a sharer | ✅ | ✅ | ✅ |
+| Draw on your own screen as a sharer | ✅ | ✅ | ❌ |
 | Request remote control as a viewer | ✅ | ✅ | ✅ |
 | Grant + inject remote control as a sharer | ✅ | ✅ | ✅ |
 | Revoke hotkey / panic key | ✅ | ❌ | ❌ |

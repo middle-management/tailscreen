@@ -72,7 +72,62 @@ final class SharerAnnotationOverlay: @unchecked Sendable {
         ts_gtk_overlay_destroy(handle)
     }
 
-    /// Apply one op from a viewer and redraw if anything changed.
+    // MARK: Sharer drawing
+
+    /// The sharer's pointer, while drawing is armed. Phases are 0 = pressed,
+    /// 1 = dragged, 2 = released; the point is normalized over the capture
+    /// region. Fires on the GTK main thread.
+    var onPointer: ((Int, CGPoint) -> Void)?
+    /// The sharer pressed Escape and wants out of drawing mode. Fires on the
+    /// GTK main thread.
+    var onEscape: (() -> Void)?
+
+    /// Arm or disarm sharer drawing.
+    ///
+    /// - Returns: whether the overlay reached the requested state. **A false
+    ///   here must not be ignored:** arming makes this fullscreen
+    ///   override-redirect window swallow every click on the sharer's desktop,
+    ///   and the only way back out is the Escape key, which needs keyboard
+    ///   focus the window manager will never grant an override-redirect window.
+    ///   If focus could not be taken, the C layer leaves the overlay
+    ///   click-through and answers false rather than trapping the sharer
+    ///   behind a window they cannot dismiss.
+    ///
+    /// GTK main thread only.
+    func setInteractive(_ on: Bool) -> Bool {
+        guard let handle else { return false }
+        if on {
+            let context = Unmanaged.passUnretained(self).toOpaque()
+            ts_gtk_overlay_set_input_callbacks(
+                handle, context,
+                { ctx, phase, x, y in
+                    guard let ctx else { return }
+                    let overlay = Unmanaged<SharerAnnotationOverlay>
+                        .fromOpaque(ctx).takeUnretainedValue()
+                    overlay.onPointer?(Int(phase), CGPoint(x: x, y: y))
+                },
+                { ctx in
+                    guard let ctx else { return }
+                    let overlay = Unmanaged<SharerAnnotationOverlay>
+                        .fromOpaque(ctx).takeUnretainedValue()
+                    overlay.onEscape?()
+                })
+        }
+        let reached = ts_gtk_overlay_set_interactive(handle, on ? 1 : 0) == 1
+        if !on || !reached {
+            // Drop the callbacks with the arm, so a stray event on the way
+            // down cannot reach a host that believes drawing is off.
+            ts_gtk_overlay_set_input_callbacks(handle, nil, nil, nil)
+        }
+        return reached
+    }
+
+    /// Apply one op — from a viewer, or from the sharer's own drawing — and
+    /// redraw if anything changed.
+    ///
+    /// One store for both, and therefore one render pass: a sharer's stroke and
+    /// a viewer's are the same kind of thing, and keeping two would mean two
+    /// rasterizations and two chances for them to disagree about z-order.
     ///
     /// Cheap when nothing changed, which matters: a viewer dragging a pen
     /// re-sends the same stroke every few milliseconds.

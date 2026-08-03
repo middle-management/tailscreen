@@ -179,6 +179,10 @@ typedef void (*ts_pwcap_frame_cb)(void *user, const uint8_t *bgra, int stride,
 // The producer went away: the user hit the compositor's "stop sharing", or
 // the shared window closed. Distinct from ERROR because the sharer must tear
 // down quietly rather than trying to restart something that is gone.
+//
+// Detected from the REGISTRY (the node's global disappearing), not from the
+// stream state — a producer's death drops the consumer stream to PAUSED, which
+// is indistinguishable from a renegotiation. Emitted at most once.
 #define TS_PWCAP_STATE_ENDED 3
 
 typedef void (*ts_pwcap_state_cb)(void *user, int state, const char *detail);
@@ -201,6 +205,19 @@ int ts_pwcap_size(ts_pwcap_t *c, int *width, int *height);
 // Frames delivered to the callback so far. The liveness signal a
 // `CaptureEncoding` backend feeds to the server's hung-backend watchdog.
 uint64_t ts_pwcap_frame_count(ts_pwcap_t *c);
+
+// The graph id of OUR stream's node, once the daemon has assigned one; 0
+// before that. Two uses, one of them the reason it exists:
+//
+//   * correlating this stream with `pw-top` / `pw-dot` output when a user's
+//     capture is misbehaving, which is otherwise guesswork;
+//   * standing in for the session manager in tests. On a desktop, wireplumber
+//     honours PW_STREAM_FLAG_AUTOCONNECT and links us to the portal's node; a
+//     CI container has no session manager, so the harness has to create that
+//     link itself, and it needs both node ids to do it.
+//
+// Takes the stream's loop lock: never call it from a frame or state callback.
+uint32_t ts_pwcap_node_id(ts_pwcap_t *c);
 
 // libpipewire's compiled-in version string. The link check: a library target
 // is compiled but never linked, so without an executable calling into

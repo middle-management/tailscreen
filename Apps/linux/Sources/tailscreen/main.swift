@@ -15,7 +15,7 @@ import TailscreenViewerTsnet
 // tailscreen — native GTK desktop viewer.
 //
 //   tailscreen [<sharer-host>] [--port N] [--state-dir PATH] [--control-url URL]
-//   tailscreen --render-self-test | --overlay-self-test
+//   tailscreen --render-self-test | --overlay-self-test | --overlay-input-self-test
 //   Env: TAILSCREEN_TS_AUTHKEY, TAILSCREEN_TS_CONTROL_URL
 //
 // With a host argument the viewer dials it directly. WITHOUT one it enters
@@ -53,6 +53,7 @@ let gSelfTest = gArgs.contains("--render-self-test")
 // Headless SHARER gate: draw a known stroke on the annotation overlay and read
 // the screen back through X11 capture to prove it landed. See OverlaySelfTest.
 let gOverlaySelfTest = gArgs.contains("--overlay-self-test")
+let gOverlayInputSelfTest = gArgs.contains("--overlay-input-self-test")
 // Headless chrome preview: render the hub with fake data and no networking, for
 // screenshots / visual review under Xvfb. Never used in a real run.
 let gUIPreview = gArgs.contains("--ui-preview")
@@ -150,6 +151,11 @@ if gSelfTest {
     // posts, and swift-cross-ui ticks RunLoop.main, so a main-queue block set
     // now runs once the app is live. It exits the process itself, pass or fail.
     DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { OverlaySelfTest.run() }
+} else if gOverlayInputSelfTest {
+    // The other half of the same window: can it take the pointer back from the
+    // desktop when a tool is armed, and give it up again on Escape. Same
+    // scheduling reason as above.
+    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { OverlayInputSelfTest.run() }
 } else if gUIPreview {
     // Headless chrome preview: seed the picker with fake sharers and render the
     // hub without any networking, so the UI can be screenshotted / reviewed.
@@ -708,6 +714,18 @@ struct ViewerApp: App {
             // than one that cannot unmute.
             microphone: sharer.micAvailable
                 ? HubMicrophone(isOn: sharer.micOn, toggle: { gSharer.toggleMic() })
+                : nil,
+            // Only while sharing: the overlay these tools drive exists for the
+            // share's lifetime, and a tool armed against nothing would take the
+            // screen over for no reason.
+            drawing: sharer.phase == .sharing
+                ? HubDrawing(
+                    activeTool: sharer.activeTool,
+                    inkColor: gSharer.drawing.color,
+                    note: sharer.drawingNote,
+                    selectTool: { gSharer.selectTool($0) },
+                    undo: { gSharer.undoDrawing() },
+                    clear: { gSharer.clearDrawing() })
                 : nil,
             onStart: { gSharer.startSharing() },
             onStop: { gSharer.stopSharing() },

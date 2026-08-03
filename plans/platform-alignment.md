@@ -284,6 +284,24 @@ Kind B. Sequenced by how many rows each unblocks.
   completes 1.4. On Windows this cannot be `WinOverlayKit`'s window:
   `WS_EX_TRANSPARENT` is load-bearing while drawing is *off* or it swallows
   every desktop click, so local drawing needs a second, non-transparent surface.
+
+  *Linux landed.* `CGtkOverlay` gained an interactive mode: arming a tool swaps
+  the empty input region for a full one, and the sharer's strokes go through the
+  same portable `AnnotationStore` the viewers use, out via
+  `server.broadcastAnnotation` and back onto the same overlay. **Windows is
+  still open** — its second surface is genuinely a different piece of work, per
+  the note above.
+
+  The one thing worth carrying to Windows is the hazard, because it is the same
+  hazard there: **a fullscreen click-swallowing overlay is a trap.** Once armed,
+  the hub window holding the "stop drawing" button is underneath it. On X11 a
+  window manager never focuses an override-redirect window, so Escape only
+  reaches the overlay because it takes focus itself — and
+  `ts_gtk_overlay_set_interactive` therefore *verifies* the focus took and
+  **refuses to arm** if it did not, rather than shipping a mode nobody can
+  leave. Teardown disarms before dropping the window for the same reason.
+  `tailscreen --overlay-input-self-test` injects a real drag and a real Escape
+  through XTEST and has been checked to fail on all four ways this breaks.
 - **3.3 · Linux ScreenCast portal** — the highest-leverage *Linux* item, because
   it unblocks three rows at once: share a single window, share an app, and
   **Wayland capture at all**. Today the sharer gates on `$DISPLAY` and sees only
@@ -314,12 +332,28 @@ Kind B. Sequenced by how many rows each unblocks.
     it, all of which must agree or every frame is washed out with no error
     anywhere; a third was the thing to avoid, not a thing to write.
 
-  *Next: verify the PipeWire half against a local daemon and a synthetic
-  producer — that half is unverified beyond linking and is now the largest
-  unknown — then the `CaptureEncoding` conformance, then backend selection.
-  Note that selection is **not** "Wayland → portal": the portal is the better
-  path on X11 sessions too, because it is the only one that can share a single
-  window.*
+  *Second increment landed: the PipeWire half is verified.* A local `pipewire`
+  daemon plus a synthetic producer the package owns (`CPipeWireFakeSource`) now
+  puts real pixels through `portal_stream.c` in CI — geometry, a **padded**
+  `chunk->stride`, BGRA channel order, malformed-buffer rejection, and the
+  end-of-source signal. Three things worth carrying forward from it:
+
+  - **Running it found a bug that no amount of care would have.** "The source
+    stopped" is not a stream state: destroying the producer drops the consumer
+    to *paused*, which is what a renegotiation also looks like, so the shipped
+    `UNCONNECTED → ended` mapping would never have fired. A sharer would have
+    sat on a dead session showing viewers a frozen screen. It is a registry
+    event now, and the gate fails without it.
+  - **Every check was watched to fail** — six mutations, each with its output
+    recorded in the package README's table.
+  - **One trap still has no gate, and the README says so.** Producing a DMA-BUF
+    needs a GPU, so deleting the `SPA_PARAM_BUFFERS_dataType` constraint leaves
+    every check green. That was verified, not assumed, which is the difference
+    between an honest gap and an unnoticed one.
+
+  *Next: the `CaptureEncoding` conformance, then backend selection. Note that
+  selection is **not** "Wayland → portal": the portal is the better path on X11
+  sessions too, because it is the only one that can share a single window.*
 - **3.4 · Change source mid-share, preview thumbnail** — smaller, and both
   become easier once 3.3 exists on Linux.
 

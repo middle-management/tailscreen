@@ -341,14 +341,35 @@ jobs:
               xvfb-run -a --server-args="-screen 0 1280x720x24" \
                 Packages/XTestInjectKit/.build/debug/xtest-probe --live-check
 
-          # COMPILE, LINK AND D-BUS-PROTOCOL gate for PortalCaptureKit — the
-          # xdg-desktop-portal ScreenCast + PipeWire capture path.
+          # COMPILE, LINK, D-BUS-PROTOCOL AND PIPEWIRE gate for
+          # PortalCaptureKit — the xdg-desktop-portal ScreenCast + PipeWire
+          # capture path.
           #
-          # Read the name carefully: THIS IS NOT A CAPTURE GATE, and it can
-          # never become one. The portal is defined by a consent dialog a
+          # Read the name carefully: THIS IS NOT A PORTAL CAPTURE GATE, and it
+          # can never become one. The portal is defined by a consent dialog a
           # compositor draws and a person clicks; there is no headless path to
-          # a real frame, which is exactly why X11 capture landed first (its
-          # leg above genuinely captures, under Xvfb). What this proves:
+          # a frame from a real portal, which is why X11 capture landed first
+          # (its leg above captures an actual screen, under Xvfb).
+          #
+          # What DOES now run for real is the PipeWire half, against a local
+          # `pipewire` daemon and a synthetic producer this repo owns. That
+          # covers everything downstream of the (fd, node id) the portal hands
+          # over — which was, until this leg existed, code that had compiled and
+          # linked and never once executed. What it still does NOT cover, and
+          # what no amount of daemon can:
+          #
+          #   * a real portal or a real compositor. The fd comes from connecting
+          #     a socket to the daemon, not from OpenPipeWireRemote.
+          #   * the AUTOCONNECT handshake. On a desktop wireplumber links the
+          #     capture stream to the compositor's node; there is no session
+          #     manager in a container, so the harness creates the link itself.
+          #   * the DMA-BUF constraint. Producing a DMA-BUF needs a GPU, so
+          #     `SPA_PARAM_BUFFERS_dataType` being pinned to MemPtr/MemFd is
+          #     still argued rather than demonstrated — deleting that constraint
+          #     leaves every check here green, which was verified rather than
+          #     assumed.
+          #
+          # What this proves:
           #
           #   swift test          the Request-path derivation against
           #                       hand-written strings, the portal's wire
@@ -368,16 +389,42 @@ jobs:
           #                       times out), the streams array, the restore
           #                       token, and an fd surviving the round trip
           #   --handshake-cancel  a declined request reads as declined
+          #   --pipewire-capture-test
+          #                       REAL PIXELS through portal_stream.c: a format
+          #                       negotiated and read back, buffers dequeued on
+          #                       PipeWire's own thread, a PADDED chunk->stride
+          #                       honoured rather than assumed to be width*4,
+          #                       the BGRA channel order BGRAToI420 expects, and
+          #                       the source-went-away signal — which turned out
+          #                       NOT to be a stream state at all (a producer's
+          #                       death drops the consumer to paused, so the
+          #                       shipped version would never have fired)
+          #   --pipewire-format-guard
+          #                       an RGBx-only producer negotiates NOTHING. A
+          #                       consumer that accepted it would show every
+          #                       viewer swapped red and blue with no error
+          #                       anywhere. Runs a BGRx producer first, so
+          #                       "nothing arrived" cannot pass by being broken
+          #   --pipewire-malformed-guard
+          #                       a producer claiming a stride wider than its
+          #                       mapping, and one flagging its buffers
+          #                       corrupted, are both dropped — the first is a
+          #                       read past the end of somebody else's shared
+          #                       memory, the second a torn frame every viewer
+          #                       keeps until the next keyframe
           #
-          # What it proves about a real portal, PipeWire, or a pixel: NOTHING.
-          # See Packages/PortalCaptureKit/README.md, which says the same at
-          # more length.
+          # What it proves about a REAL portal: still nothing. See
+          # Packages/PortalCaptureKit/README.md, which says all of this at more
+          # length and keeps the proven/not-proven table.
           #
-          # dbus-run-session is load-bearing, not decoration: without a session
-          # bus the two handshake checks SKIP with exit 0, i.e. the gate would
-          # pass by not running.
+          # Two load-bearing bits of plumbing, not decoration. dbus-run-session:
+          # without a session bus the two handshake checks SKIP with exit 0,
+          # i.e. that half of the gate would pass by not running. And the
+          # daemon started below: the three PipeWire checks deliberately FAIL
+          # rather than skip when no daemon answers, so this leg has to actually
+          # provide one.
           - name: linux-portal
-            apt: pkg-config libdbus-1-dev libpipewire-0.3-dev dbus
+            apt: pkg-config libdbus-1-dev libpipewire-0.3-dev pipewire dbus
             cmd: |
               swift test --package-path Packages/PortalCaptureKit
               swift build --package-path Packages/PortalCaptureKit --product portal-probe
@@ -385,6 +432,20 @@ jobs:
               "$PROBE" --link-check
               dbus-run-session -- "$PROBE" --handshake-test
               dbus-run-session -- "$PROBE" --handshake-cancel
+              export XDG_RUNTIME_DIR=/tmp/pipewire-ci
+              mkdir -p "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR"
+              # Redirected, not because the log is noise (it is: the daemon
+              # complains about the session bus it does not have here) but
+              # because a background process holding this step's stdout keeps
+              # the step from ever finishing.
+              pipewire > /tmp/pipewire-ci.log 2>&1 &
+              for _ in $(seq 100); do
+                [ -S "$XDG_RUNTIME_DIR/pipewire-0" ] && break
+                sleep 0.1
+              done
+              "$PROBE" --pipewire-capture-test
+              "$PROBE" --pipewire-format-guard
+              "$PROBE" --pipewire-malformed-guard
 
           # Transport-portability gate: libtailscale (Go c-archive) + the
           # patched TailscaleKit Swift wrapper must build and pass their unit
@@ -725,6 +786,46 @@ jobs:
           cat /tmp/overlay-selftest.log
           test "$status" -eq 0
           grep -q 'CGTKOVERLAY_SELFTEST result=PASS' /tmp/overlay-selftest.log
+
+      - name: Headless overlay-INPUT self-test (Xvfb + compositor + XTEST)
+        # The other half of the same window. The step above asks whether the
+        # overlay's pixels reach the screen; this asks whether it can take the
+        # POINTER back from the desktop when the sharer arms a tool, and give it
+        # up again on Escape.
+        #
+        # Worth its own gate because the two ways it breaks are the two worst
+        # this feature has, and neither errors:
+        #   • the input region never flips → every click sails through to the
+        #     desktop, so drawing silently does nothing while the sharer's
+        #     clicks land on whatever is underneath;
+        #   • Escape never arrives → the sharer is behind a fullscreen,
+        #     override-redirect, click-swallowing window with no decoration and
+        #     no way out. That is a person locked out of their own machine.
+        #
+        # It drives REAL X11 events through XTEST rather than calling the GTK
+        # handlers, because calling the handlers would prove the Swift wiring
+        # and skip precisely those two failures. All four mutations have been
+        # checked to fail it: no input-region flip, drag offsets not rebased on
+        # the press point, Escape swallowed, and focus never taken (which must
+        # make the overlay REFUSE to arm rather than trap anyone).
+        #
+        # Its own Xvfb, for the same compositor-ordering reason as above.
+        run: |
+          Xvfb :96 -screen 0 1280x720x24 >/dev/null 2>&1 &
+          sleep 3
+          DISPLAY=:96 xcompmgr >/dev/null 2>&1 &
+          sleep 2
+          if timeout 90 env DISPLAY=:96 GDK_BACKEND=x11 LIBGL_ALWAYS_SOFTWARE=1 \
+            GALLIUM_DRIVER=llvmpipe \
+            Apps/linux/.build/debug/tailscreen --overlay-input-self-test \
+            > /tmp/overlay-input-selftest.log 2>&1; then
+            status=0
+          else
+            status=$?
+          fi
+          cat /tmp/overlay-input-selftest.log
+          test "$status" -eq 0
+          grep -q 'CGTKOVERLAY_INPUT_SELFTEST result=PASS' /tmp/overlay-input-selftest.log
 
       # Both saves live at the end so they bank objects from a run that failed
       # the typecheck or the self-test — the compile is the expensive part and
