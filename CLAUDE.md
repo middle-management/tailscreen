@@ -19,39 +19,16 @@ Runtime needs: Screen Recording permission, and either interactive Tailscale log
 
 ## Repository layout
 
-| Path | What it is |
-|------|------------|
-| `Apps/macOS/` | The macOS app — its own SwiftPM package. **Run bare `swift` commands from this directory.** `Sources/`, `Tests/TailscreenTests/`, `Resources/` (icns) |
-| `Apps/linux/` | The runnable native Linux app (sharer + viewer): swift-cross-ui/GTK4. Package `tailscreen-linux`, exe `tailscreen` |
-| `Apps/windows/` | The runnable native Windows app: swift-cross-ui on WinUI |
-| `Packages/TailscreenKit/` | Portable (Linux-buildable) protocol + viewer + sharer core — a real dependency of all three apps. See its README |
-| `Packages/TailscaleKit/` | Wraps libtailscale: upstream submodule + symlinked sources + `Patches/` + `libtailscale.pc` |
-| `Packages/TailscreenLinuxBackends/`, `X11CaptureKit/`, `PortalCaptureKit/`, `XTestInjectKit/`, `ALSAKit/` | Linux platform backends |
-| `Packages/TailscreenSharerWGC/`, `WGCCaptureKit/`, `SendInputKit/`, `WinOverlayKit/`, `WASAPIKit/` | Windows platform backends |
-| `Packages/TailscreenHubUI/` | The hub's shared look for both swift-cross-ui apps |
-| `Packages/OpusKit/`, `FFmpegKit/`, `TailscreenVideoFFmpeg/` | Codec wrappers (libopus, libavcodec) |
-| `e2e/`, `scripts/`, `test-local.sh` | Local headscale control plane, E2E + impairment scripts, multi-instance launcher |
-| `.github/workflows/`, `Makefile`, `docs/` | CI, top-level build entry, published docs site |
+Three runnable apps, each its own SwiftPM package: `Apps/macOS` (the primary), `Apps/linux` and `Apps/windows` (both swift-cross-ui — GTK4 and WinUI). Under `Packages/`, the ones whose role isn't obvious from the name: **TailscreenKit** is the portable Linux-buildable protocol + viewer + sharer core all three apps depend on; **TailscaleKit** wraps libtailscale (submodule + patches); **TailscreenHubUI** is the shared hub look for the two swift-cross-ui apps. The rest are platform backends — `X11CaptureKit`/`PortalCaptureKit`/`XTestInjectKit`/`ALSAKit`/`TailscreenLinuxBackends` on Linux, `WGCCaptureKit`/`SendInputKit`/`WinOverlayKit`/`WASAPIKit`/`TailscreenSharerWGC` on Windows — or codec wrappers (`OpusKit`, `FFmpegKit`, `TailscreenVideoFFmpeg`).
 
-Use `rg` to find specific files; the table above plus the per-area rules files are enough orientation.
+Use `rg` to find specific files; the per-area rules files below carry the rest.
 
 ## Build & run
 
-Always go through `make` — the root Makefile sets `PKG_CONFIG_PATH=$(CURDIR)/Packages/TailscaleKit` so SwiftPM's `systemLibrary` target finds `libtailscale.pc`, which in turn supplies the `-L` flag for `libtailscale.a`.
+Always go through `make` (`make build`, `test`, `run`, `release`, …) — the root Makefile sets `PKG_CONFIG_PATH=$(CURDIR)/Packages/TailscaleKit` so SwiftPM's `systemLibrary` target finds `libtailscale.pc`, which in turn supplies the `-L` flag for `libtailscale.a`. Two targets whose purpose isn't obvious from the Makefile:
 
-```bash
-make build         # builds libtailscale.a, then `swift build`
-make run           # build + run debug binary
-make release       # swift build -c release   → Apps/macOS/.build/release/Tailscreen
-make install       # release + copy to ~/bin/Tailscreen
-make clean         # swift package clean + rm .build + clean TailscaleKit
-make test          # swift test (after libtailscale)
-make test-protocol # build + smoke-test the portable TailscreenProtocol package
-                   #   (no libtailscale, no Apple frameworks — also runs on Linux)
-make e2e-up        # start local headscale (Docker)
-make e2e-down      # tear down headscale + volume
-make test-e2e      # one-shot: e2e-up → swift test --filter TailscaleConnectivityTests → e2e-down
-```
+- `make test-protocol` — builds + smoke-tests the portable TailscreenProtocol package with no libtailscale and no Apple frameworks. Also runs on Linux, and is how you reproduce a `linux-protocol` CI failure locally.
+- `make test-e2e` — one-shot `e2e-up` → `swift test --filter TailscaleConnectivityTests` → `e2e-down` against a local headscale in Docker.
 
 The app package lives in `Apps/macOS/` — bare `swift` commands for the app must run from that directory (from the repo root there is no manifest at all). And running `swift build` there before `make tailscale` will fail to link — you need `libtailscale.a` first.
 
@@ -77,13 +54,7 @@ Port **7447**, TCP **and** UDP. Video and audio are RTP over UDP (video PT 96 = 
 
 ## Linker / package conventions
 
-`Package.swift` links libtailscale via a **relative** path:
-
-```swift
-linkerSettings: [.unsafeFlags(["-L", "../../Packages/TailscaleKit/lib"])]
-```
-
-Never make this absolute — it breaks portability and CI. Both the `Tailscreen` target and the `TailscreenTests` target carry this flag.
+`Package.swift` links libtailscale through a `-L` flag pointing at `Packages/TailscaleKit/lib`. Keep that path **relative** — making it absolute breaks portability and CI. Both the `Tailscreen` target and the `TailscreenTests` target carry the flag.
 
 ## Common pitfalls
 
@@ -103,7 +74,7 @@ Topic detail is split into `.claude/rules/`, each scoped by `paths:` frontmatter
 | File | Covers | Loads for |
 |------|--------|-----------|
 | `.claude/rules/protocol.md` | The full 7447 wire protocol: video/audio RTP, NACK+FEC+RR loss recovery, viewer admission, annotations, remote control, metadata | TailscreenKit, both backends packages, app sources that touch the transport |
-| `.claude/rules/testing.md` | Unit/E2E/tsnet suites, the extract-the-decision catalog, test-only seams, env-var affordances, `test-local.sh`, `net-impair.sh` | any `Tests/`, `scripts/`, `e2e/` |
+| `.claude/rules/testing.md` | Running the unit/E2E/tsnet suites, env-var affordances, `test-local.sh`, `net-impair.sh` | any `Tests/`, `scripts/`, `e2e/` |
 | `.claude/rules/portable-packages.md` | TailscreenKit's six tiers, what must be `public`, which suites live where, the shared codec/HubUI packages | `Packages/TailscreenKit`, `TailscreenHubUI`, codec wrappers |
 | `.claude/rules/macos-app.md` | Data-flow diagram, UI surfaces, capture-helper + picker-helper IPC, ScreenCaptureKit rules | `Apps/macOS/**` |
 | `.claude/rules/localization.md` | `L(_:)`, `Bundle.module`, catalog rules | `Apps/macOS/Sources/**` |
@@ -112,12 +83,12 @@ Topic detail is split into `.claude/rules/`, each scoped by `paths:` frontmatter
 | `.claude/rules/tailscalekit.md` | Submodule, patch series, the Windows Go↔C bridge and runtime-start patches | `Packages/TailscaleKit/**` |
 | `.claude/rules/ci.md` | Shared build definitions, the linux-packages matrix, release/soak workflows | `.github/**` |
 
+One skill loads on demand rather than by path: **`test-catalog`** — the extracted pure-decision suites, the test-only seams, and which package a new suite belongs in. Invoke it when adding or moving a test.
+
 Longer-form design docs (published site) live in `docs/`: `architecture.md`, `protocol.md`, `security.md`, `porting-plan.md`, `linux-viewer-gtk-plan.md`, `viewer-windows-plan.md`, `mac-viewer-convergence.md`.
 
 ## Git workflow notes
 
-- `.gitmodules` pins `Packages/TailscaleKit/upstream/libtailscale` to `tailscale/libtailscale.git` (`ignore = dirty`).
-- After cloning: `git submodule update --init --recursive`.
-- `.gitignore` excludes `.build/`, `.swiftpm/`, `Package.resolved`, the built `Tailscreen` binary, and `.envrc`.
+- The libtailscale submodule is pinned with `ignore = dirty`, so a dirty upstream tree never shows up in `git status` — check it explicitly when a patch misbehaves.
 - AI sessions develop on a designated `claude/...` branch — **do not push to `main`**. The active branch is named in the per-session prompt.
 - License: MIT; upstream `libtailscale` is BSD-3-Clause.
