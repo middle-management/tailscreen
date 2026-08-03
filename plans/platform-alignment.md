@@ -456,11 +456,40 @@ Kind B. Sequenced by how many rows each unblocks.
     the conversion is halted mid-write and `publish` is called at that instant
     — and it does fail against that mutation.
 
-  *Next: backend selection, which is the last thing between this and a share
-  that uses it. Note that selection is **not** "Wayland → portal": the portal
-  is the better path on X11 sessions too, because it is the only one that can
-  share a single window. Still unbuilt: system audio (the portal has no
-  equivalent), preview thumbnails, and multi-stream shares.*
+  *Fourth increment landed: backend selection, and with it Wayland capture.*
+  `CaptureBackendSelection` (portable tier) answers "which backend" from the
+  session kind, `$DISPLAY` and a no-dialog portal probe; the Linux hub asks it
+  at share time and negotiates consent off the main thread when the answer is
+  the portal.
+
+  - **It fixed a silent bug rather than only adding a feature.** `$DISPLAY` is
+    set on Wayland by XWayland, so this app's only gate — a non-empty
+    `$DISPLAY` — passed there and X11 root capture sent viewers the XWayland
+    root, which on a modern desktop is usually blank. The UI said "Sharing".
+    Its own "Wayland is not supported" message was unreachable for exactly the
+    same reason. Session kind now comes from `XDG_SESSION_TYPE` falling back to
+    `WAYLAND_DISPLAY`, and never from `DISPLAY`.
+  - **A Wayland session with no portal refuses.** It does NOT fall back to the
+    X11 capture that would appear to work.
+  - **An X11 screen share keeps X11.** Selection is not "Wayland → portal", but
+    neither is it "portal always": the portal would add a consent dialog to
+    every share for a capability nobody asked for. It is reachable there for
+    window and app shares, which is what it is uniquely for.
+  - **Declining is not an error.** A person dismissing the consent dialog
+    returns the hub to idle saying nothing, rather than showing a failure
+    placard that argues with a deliberate choice.
+  - **The wiring is gated separately from the decision.**
+    `tailscreen --capture-backend-report` prints the choice for the current
+    environment; the `linux-app` leg asserts it in three configurations. The
+    `WAYLAND_DISPLAY`-with-no-session-type case is the load-bearing one — the
+    explicit case returns on the first branch and cannot catch a
+    detection-ORDER regression — and it was checked to fail against one.
+
+  *Next: the window/app picker affordance. The portal draws its own picker, so
+  what is missing here is not a window list but the choice between "share my
+  screen" and "pick a window or app" — the `.windowOrApp` intent exists and is
+  tested, with no button yet reaching it. Still unbuilt: system audio (the
+  portal has no equivalent), preview thumbnails, and multi-stream shares.*
 - **3.4 · Change source mid-share, preview thumbnail** — smaller, and both
   become easier once 3.3 exists on Linux.
 

@@ -16,6 +16,7 @@ import TailscreenViewerTsnet
 //
 //   tailscreen [<sharer-host>] [--port N] [--state-dir PATH] [--control-url URL]
 //   tailscreen --render-self-test | --overlay-self-test | --overlay-input-self-test
+//   tailscreen --capture-backend-report
 //   Env: TAILSCREEN_TS_AUTHKEY, TAILSCREEN_TS_CONTROL_URL
 //
 // With a host argument the viewer dials it directly. WITHOUT one it enters
@@ -57,6 +58,12 @@ let gSelfTest = gArgs.contains("--render-self-test")
 // the screen back through X11 capture to prove it landed. See OverlaySelfTest.
 let gOverlaySelfTest = gArgs.contains("--overlay-self-test")
 let gOverlayInputSelfTest = gArgs.contains("--overlay-input-self-test")
+// Which capture backend this machine would use, and why. Prints and exits;
+// raises no dialog. Covers the wiring between the environment and
+// `CaptureBackendSelection`, which its unit tests cannot reach.
+if gArgs.contains("--capture-backend-report") {
+    CaptureBackendReport.run()
+}
 // Headless chrome preview: render the hub with fake data and no networking, for
 // screenshots / visual review under Xvfb. Never used in a real run.
 let gUIPreview = gArgs.contains("--ui-preview")

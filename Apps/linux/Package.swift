@@ -34,6 +34,11 @@ let package = Package(
         // back. Already in the graph transitively via TailscreenLinuxBackends;
         // declared here because this package imports it directly.
         .package(path: "../../Packages/X11CaptureKit"),
+        // The ScreenCast portal's CaptureEncoding backend, and the portal
+        // session type the app negotiates consent through. Wayland capture —
+        // and, later, single-window capture — comes from here.
+        .package(path: "../../Packages/TailscreenSharerPortal"),
+        .package(path: "../../Packages/PortalCaptureKit"),
         // XTEST injection, for the overlay INPUT self-test: it drives real X11
         // events at the armed overlay rather than calling its handlers, which
         // is the only way to prove the input region actually flipped.
@@ -111,6 +116,11 @@ let package = Package(
                 // actually landed. Already in the graph via TailscreenSharerLinux;
                 // named explicitly because this target imports it directly.
                 .product(name: "X11CaptureKit", package: "X11CaptureKit"),
+                .product(name: "TailscreenSharerPortal", package: "TailscreenSharerPortal"),
+                // Named directly because the app owns the PortalSession: it
+                // negotiates consent and holds it for the life of the share,
+                // so the backend never has to raise a second dialog.
+                .product(name: "PortalCaptureKit", package: "PortalCaptureKit"),
                 .product(name: "XTestInjectKit", package: "XTestInjectKit"),
                 // ⌃⌥M held system-wide, so a sharer who has alt-tabbed into
                 // the thing they are showing can still mute themselves.

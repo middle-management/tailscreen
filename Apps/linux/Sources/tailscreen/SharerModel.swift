@@ -13,6 +13,10 @@ import enum TailscreenProtocol.PeerPolicy
 import class TailscreenProtocol.PeerAccessStore
 import class TailscreenProtocol.SharerAccessCoordinator
 import struct TailscreenProtocol.PickerSelection
+import enum TailscreenProtocol.CaptureBackendSelection
+import protocol TailscreenSharer.CaptureEncoding
+import class TailscreenSharerPortal.PortalCaptureEncoder
+
 import struct TailscreenProtocol.QualitySettings
 import enum TailscreenProtocol.QualitySettingsStore
 import struct TailscreenProtocol.PendingShareRequest
@@ -234,18 +238,45 @@ final class SharerModel: ObservableObject {
     @Published private(set) var drawingNote: String?
 
     init(display: String? = nil) {
-        let display = display ?? ProcessInfo.processInfo.environment["DISPLAY"]
-        if let display, !display.isEmpty {
-            canShare = true
-            unavailableReason = nil
-        } else {
-            canShare = false
-            unavailableReason = "No X display — screen sharing needs X11 (Wayland uses the portal, not yet supported)"
-        }
+        let processEnvironment = ProcessInfo.processInfo.environment
+        let display = display ?? processEnvironment["DISPLAY"]
+        // Probed once, at startup, and deliberately with the call that puts
+        // NOTHING on screen. Deciding which backend to use requires knowing
+        // whether a portal exists, and a check that raised a consent dialog
+        // would mean asking permission in order to decide whether to ask
+        // permission.
+        let portal = PortalSessionHost()
+        let environment = CaptureBackendSelection.Environment(
+            session: CaptureBackendSelection.sessionKind(fromEnvironment: processEnvironment),
+            x11Display: display,
+            portalAvailable: portal.probeAvailability())
+
         self.display = display
+        self.portal = portal
+        self.captureEnvironment = environment
+        self.canShare = CaptureBackendSelection.canShareAnything(environment: environment)
+        self.unavailableReason = CaptureBackendSelection.unavailableReason(environment: environment)
+
+        // Worth saying out loud, because it is the case that used to fail
+        // SILENTLY: `$DISPLAY` is set on Wayland by XWayland, so the old
+        // display-only gate passed and the share captured the XWayland root —
+        // whatever X11 apps happened to be running, often nothing at all —
+        // while the UI said "Sharing" and viewers saw a blank screen.
+        if environment.session == .wayland && !environment.portalAvailable {
+            FileHandle.standardError.write(
+                Data(
+                    """
+                    warning: Wayland session with no desktop portal — screen sharing is                     unavailable. (Capturing $DISPLAY here would capture only XWayland,                     which is why it is refused rather than attempted.)\n
+                    """.utf8))
+        }
     }
 
     private let display: String?
+    /// Owns the D-Bus session for the whole app; see `PortalSessionHost`.
+    private let portal: PortalSessionHost
+    /// What this machine can capture with. Fixed at startup — a session does
+    /// not become Wayland halfway through.
+    private let captureEnvironment: CaptureBackendSelection.Environment
 
     var statusLine: String {
         switch phase {
@@ -260,9 +291,61 @@ final class SharerModel: ObservableObject {
         }
     }
 
-    /// Begin sharing this host's display.
+    /// Begin sharing this host's screen.
+    ///
+    /// Which backend that means is `CaptureBackendSelection`'s answer, not this
+    /// method's: X11 root capture where it is genuinely an X11 session, the
+    /// ScreenCast portal on Wayland. The portal branch raises a consent dialog
+    /// and therefore has to go around the main thread, which is why the two
+    /// paths diverge here rather than at the capture factory.
     func startSharing() {
         guard canShare, phase == .idle || isFailed else { return }
+        switch CaptureBackendSelection.choose(
+            intent: .entireScreen, environment: captureEnvironment)
+        {
+        case .x11(let display):
+            beginShare(captureFactory: { X11CaptureEncoder(display: display) })
+        case .portal:
+            beginPortalShare()
+        case .unavailable(let reason):
+            phase = .failed(reason)
+        }
+    }
+
+    /// Ask for consent, then share what the portal granted.
+    ///
+    /// The negotiation is awaited rather than blocked on: the dialog is a
+    /// person, `negotiate` blocks its thread until they answer, and this is the
+    /// GTK main thread. Blocking here would freeze the whole app for as long as
+    /// the dialog was up.
+    private func beginPortalShare() {
+        phase = .starting
+        let portal = self.portal
+        Task { @MainActor in
+            // `.monitor` only for now: this entry point is "share my screen",
+            // and offering the window picker from it would mean the button
+            // sometimes shares a window without being asked to. Window and app
+            // shares need their own affordance — see the plan.
+            switch await portal.negotiate(sources: [.monitor]) {
+            case .granted(let nodeID):
+                beginShare(captureFactory: {
+                    PortalCaptureEncoder(
+                        nodeID: nodeID,
+                        openFileDescriptor: { try portal.openPipeWireFileDescriptor() })
+                })
+            case .cancelled:
+                // A person declining to share their screen is not a failure,
+                // and an error placard would be the app arguing with a
+                // deliberate choice. Straight back to idle, saying nothing.
+                phase = .idle
+            case .failed(let reason):
+                phase = .failed(reason)
+            }
+        }
+    }
+
+    /// Everything after "which backend": identical for both.
+    private func beginShare(captureFactory: @escaping @Sendable () -> CaptureEncoding) {
         guard let node = nodeProvider?() else {
             phase = .failed("Tailscale isn't up yet")
             return
@@ -315,7 +398,7 @@ final class SharerModel: ObservableObject {
         self.injector = injector
 
         let server = TailscaleScreenShareServer(
-            captureFactory: { X11CaptureEncoder(display: display) },
+            captureFactory: captureFactory,
             // Present iff XTEST is: the server derives `.remoteControl` from
             // whether this is non-nil, so a host that cannot inject withholds
             // the bit and viewers hide Request Control rather than sending
@@ -377,6 +460,10 @@ final class SharerModel: ObservableObject {
                 self.pendingViewers = []
                 self.teardownOverlay()
                 self.stopVoice()
+                // Same reason as `stopSharing`: capture ending for any reason
+                // — including the user pressing stop in the compositor's own
+                // indicator — must take the session down with it.
+                self.portal.close()
             }
         }
         // Anyone whose ask was accepted before this server existed. Replayed
@@ -415,6 +502,11 @@ final class SharerModel: ObservableObject {
     }
 
     func stopSharing() {
+        // Ending the portal session is what makes the compositor drop its own
+        // "your screen is being shared" indicator. Leaving it open would tell
+        // the person their screen is still going out after they stopped it —
+        // and on some desktops leaves the indicator until the process dies.
+        portal.close()
         guard let server else {
             phase = .idle
             teardownOverlay()
