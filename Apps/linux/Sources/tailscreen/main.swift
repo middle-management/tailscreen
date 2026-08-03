@@ -753,6 +753,14 @@ struct ViewerApp: App {
                     undo: { gSharer.undoDrawing() },
                     clear: { gSharer.clearDrawing() })
                 : nil,
+            // Absent, not disabled, when this session has no portal: sharing
+            // one window is a capability an X11-only desktop genuinely lacks,
+            // and a greyed button would invite the question "why".
+            secondaryStart: sharer.canShareWindow
+                ? HubAction(
+                    label: "Share a window or app…",
+                    perform: { gSharer.startWindowShare() })
+                : nil,
             onStart: { gSharer.startSharing() },
             onStop: { gSharer.stopSharing() },
             onAccept: { Self.answerPrompt($0, accept: true) },
