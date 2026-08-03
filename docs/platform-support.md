@@ -75,7 +75,7 @@ system's own output; viewers on every platform play it back.
 | :--- | :---: | :---: | :---: |
 | Draw annotations as a viewer | ✅ | ✅ | ✅ |
 | Render viewers' annotations as a sharer | ✅ | ✅ | ✅ |
-| Draw on your own screen as a sharer | ✅ | ✅ | ❌ |
+| Draw on your own screen as a sharer | ✅ | ✅ | ✅ |
 | Request remote control as a viewer | ✅ | ✅ | ✅ |
 | Grant + inject remote control as a sharer | ✅ | ✅ | ✅ |
 | Revoke hotkey / panic key | ✅ | ❌ | ❌ |
@@ -175,9 +175,9 @@ Two things behind the ✅s are worth knowing:
 | Notified when a viewer joins / leaves | ✅ | ❌ | ❌ |
 | **Outline around what's being captured** | ✅ | ❌ | ⚠️ WGC's own, unconfirmed |
 | Sharing controls outside the main window | ✅ menubar | ❌ | ❌ |
-| Mute / unmute from outside the window | ✅ | ❌ | ❌ |
+| Mute / unmute from outside the window | ✅ | ✅ hotkey | ✅ hotkey |
 | Toggle sharer drawing from outside the window | ✅ | ❌ | ❌ |
-| Global hotkeys (mute, revoke control) | ✅ | ❌ | ❌ |
+| Global hotkeys (mute, revoke control) | ✅ | ⚠️ mute only | ⚠️ mute only |
 
 Linux and Windows share their chrome (`Packages/TailscreenHubUI`), so hub work
 lands on both at once — which is why that block is the most aligned of the five.
