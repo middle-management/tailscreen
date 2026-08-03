@@ -105,13 +105,19 @@ jobs:
         # under a virtual X server with Mesa software GL. The live path reuses
         # Packages/TailscreenLinuxBackends's Core (FFmpeg/ALSA/Opus) + Tsnet (→ libtailscale, hence
         # golang-go/make), though the render self-test itself needs no network.
+        # libdbus + libpipewire are for the ScreenCast portal backend: the app
+        # links PortalCaptureKit so it can capture a Wayland session at all,
+        # and those are COMPILE-time headers as well as runtime libraries —
+        # without them the C shim fails at `pipewire/pipewire.h`, long before
+        # anything gets as far as linking.
         # All multi-arch in noble.
         run: |
           apt-get update && apt-get install -y --no-install-recommends \
             libgtk-4-dev gir1.2-gtk-4.0 libgirepository1.0-dev libepoxy-dev \
             libgl1-mesa-dri xvfb xcompmgr libxtst-dev libopus-dev pkg-config \
             golang-go make gcc libc6-dev \
-            libavcodec-dev libavutil-dev libasound2-dev
+            libavcodec-dev libavutil-dev libasound2-dev \
+            libdbus-1-dev libpipewire-0.3-dev
 
       - name: Install AppImage assembly tools
         # librsvg so the AppImage script renders a real icon rather than its

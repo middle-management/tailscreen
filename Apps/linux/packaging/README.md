@@ -60,10 +60,19 @@ The viewer's own build dependencies (see the `linux-app` CI job):
 ```
 libgtk-4-dev gir1.2-gtk-4.0 libgirepository1.0-dev libepoxy-dev libglib2.0-dev \
 libgl1-mesa-dri libopus-dev pkg-config golang-go make gcc libc6-dev \
-libavcodec-dev libavutil-dev libasound2-dev
+libavcodec-dev libavutil-dev libasound2-dev libdbus-1-dev libpipewire-0.3-dev
 ```
 
 plus a Swift 6 toolchain (swift.org).
+
+**libdbus and libpipewire are RUNTIME dependencies too**, not only build ones.
+The app links `PortalCaptureKit` so it can capture a Wayland session at all —
+X11 root capture cannot, and on Wayland `$DISPLAY` is XWayland's, which is why
+the app refuses that path rather than silently sharing a near-empty screen. The
+AppImage picks both up from the binary's `DT_NEEDED` via linuxdeploy, but the
+**tarball does not bundle them**: a machine running the tarball needs
+`libdbus-1-3` and `libpipewire-0.3-0` present, which every desktop that has a
+portal already does. Distro packaging should depend on them explicitly.
 
 ## Flatpak
 
