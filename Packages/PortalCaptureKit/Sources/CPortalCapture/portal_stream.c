@@ -36,6 +36,18 @@
 //    backend produces on" is satisfied without the host pumping anything. Every
 //    pw_* call from outside that thread must hold the loop lock, which is what
 //    the pw_thread_loop_lock pairs below are for.
+//
+// 4. "THE SOURCE STOPPED" IS A REGISTRY EVENT, NOT A STREAM STATE. This was
+//    written the obvious way first — treat PW_STREAM_STATE_UNCONNECTED as the
+//    source going away — and running it against a real daemon showed that is
+//    simply not what happens. When the producer node is destroyed, the consumer
+//    stream drops to PAUSED, exactly as it does during an ordinary
+//    renegotiation; UNCONNECTED is what a stream reaches when *we* disconnect
+//    it. A sharer relying on the stream state would therefore never be told the
+//    user pressed the compositor's "stop sharing", and would sit on a live
+//    session delivering nothing. Watching the registry for the removal of the
+//    node the portal handed us is precise, keeps the two cases apart, and is
+//    what `portal-probe --pipewire-capture-test` asserts.
 
 struct ts_pwcap {
     struct pw_thread_loop *loop;
@@ -43,6 +55,11 @@ struct ts_pwcap {
     struct pw_core *core;
     struct pw_stream *stream;
     struct spa_hook stream_listener;
+    // The registry is how we learn the SOURCE went away — see note 4 below.
+    struct pw_registry *registry;
+    struct spa_hook registry_listener;
+    uint32_t target_node_id;
+    _Atomic int ended_emitted;
 
     ts_pwcap_frame_cb on_frame;
     ts_pwcap_state_cb on_state;
@@ -62,6 +79,27 @@ static void emit_state(ts_pwcap_t *c, int state, const char *detail) {
     if (c->on_state) c->on_state(c->user, state, detail ? detail : "");
 }
 
+// Once, from whichever path notices first. Telling a host its share ended twice
+// makes it tear down twice.
+static void emit_ended_once(ts_pwcap_t *c, const char *detail) {
+    int expected = 0;
+    if (!atomic_compare_exchange_strong(&c->ended_emitted, &expected, 1)) return;
+    emit_state(c, TS_PWCAP_STATE_ENDED, detail);
+}
+
+// See note 4 at the top: the node the portal gave us disappearing is the signal
+// that the share is over, and the stream state is not.
+static void on_registry_global_removed(void *data, uint32_t id) {
+    ts_pwcap_t *c = data;
+    if (id != c->target_node_id) return;
+    emit_ended_once(c, "the capture source stopped");
+}
+
+static const struct pw_registry_events registry_events = {
+    PW_VERSION_REGISTRY_EVENTS,
+    .global_remove = on_registry_global_removed,
+};
+
 static void on_stream_state_changed(void *data, enum pw_stream_state old,
                                     enum pw_stream_state state, const char *error) {
     (void)old;
@@ -71,10 +109,11 @@ static void on_stream_state_changed(void *data, enum pw_stream_state old,
             emit_state(c, TS_PWCAP_STATE_ERROR, error);
             break;
         case PW_STREAM_STATE_UNCONNECTED:
-            // The producer went away. On a real desktop this is the user
-            // clicking the compositor's own "stop sharing" button, which is a
-            // normal end to a share and must not be reported as a crash.
-            emit_state(c, TS_PWCAP_STATE_ENDED, "the capture source stopped");
+            // Our own end of the stream is gone. This is NOT the "the user
+            // stopped sharing" signal — that is the registry event above — but
+            // it is still an ended share, and the once-latch keeps whichever
+            // arrives second quiet.
+            emit_ended_once(c, "the capture stream closed");
             break;
         case PW_STREAM_STATE_STREAMING:
             emit_state(c, TS_PWCAP_STATE_STREAMING, NULL);
@@ -172,6 +211,8 @@ ts_pwcap_t *ts_pwcap_open(int pipewire_fd, uint32_t node_id, ts_pwcap_frame_cb o
     c->on_frame = on_frame;
     c->on_state = on_state;
     c->user = user;
+    c->target_node_id = node_id;
+    atomic_store(&c->ended_emitted, 0);
     atomic_store(&c->width, 0);
     atomic_store(&c->height, 0);
     atomic_store(&c->frames, 0ull);
@@ -194,6 +235,10 @@ ts_pwcap_t *ts_pwcap_open(int pipewire_fd, uint32_t node_id, ts_pwcap_frame_cb o
     c->core = pw_context_connect_fd(c->context, pipewire_fd, NULL, 0);
     pipewire_fd = -1;
     if (!c->core) goto fail;
+
+    c->registry = pw_core_get_registry(c->core, PW_VERSION_REGISTRY, 0);
+    if (c->registry)
+        pw_registry_add_listener(c->registry, &c->registry_listener, &registry_events, c);
 
     c->stream = pw_stream_new(
         c->core, "tailscreen-screen-capture",
@@ -254,6 +299,7 @@ void ts_pwcap_close(ts_pwcap_t *c) {
         pw_thread_loop_stop(c->loop);
     }
     if (c->stream) pw_stream_destroy(c->stream);
+    if (c->registry) pw_proxy_destroy((struct pw_proxy *)c->registry);
     if (c->core) pw_core_disconnect(c->core);
     if (c->context) pw_context_destroy(c->context);
     if (c->loop) pw_thread_loop_destroy(c->loop);
@@ -268,6 +314,16 @@ int ts_pwcap_size(ts_pwcap_t *c, int *width, int *height) {
     if (width) *width = w;
     if (height) *height = h;
     return 1;
+}
+
+uint32_t ts_pwcap_node_id(ts_pwcap_t *c) {
+    if (!c || !c->loop || !c->stream) return 0;
+    // Locks the loop, so it must not be called FROM the loop — i.e. never from
+    // inside a frame or state callback.
+    pw_thread_loop_lock(c->loop);
+    uint32_t id = pw_stream_get_node_id(c->stream);
+    pw_thread_loop_unlock(c->loop);
+    return id == PW_ID_ANY ? 0 : id;
 }
 
 uint64_t ts_pwcap_frame_count(ts_pwcap_t *c) {

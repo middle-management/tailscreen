@@ -58,6 +58,17 @@ let package = Package(
             dependencies: ["CDBusSys"],
             path: "Sources/CPortalFakeBus"
         ),
+        // A synthetic PipeWire producer. Also NOT part of the library product,
+        // and for a second reason beyond CPortalFakeBus's: it is the only way
+        // anything here can be run without a compositor, so it is what turns
+        // the PipeWire half from "compiles and links" into "delivers the pixels
+        // we expect". See its header for the three things it still cannot
+        // cover.
+        .target(
+            name: "CPipeWireFakeSource",
+            dependencies: ["CPipeWireSys"],
+            path: "Sources/CPipeWireFakeSource"
+        ),
         .target(
             name: "PortalCaptureKit",
             dependencies: ["CPortalCapture"],
@@ -67,7 +78,7 @@ let package = Package(
         // drive a real portal, and drive a fake one. See its main.swift.
         .executableTarget(
             name: "portal-probe",
-            dependencies: ["PortalCaptureKit", "CPortalFakeBus"],
+            dependencies: ["PortalCaptureKit", "CPortalFakeBus", "CPipeWireFakeSource"],
             path: "Sources/portal-probe"
         ),
         .testTarget(

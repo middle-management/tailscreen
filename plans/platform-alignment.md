@@ -314,12 +314,28 @@ Kind B. Sequenced by how many rows each unblocks.
     it, all of which must agree or every frame is washed out with no error
     anywhere; a third was the thing to avoid, not a thing to write.
 
-  *Next: verify the PipeWire half against a local daemon and a synthetic
-  producer — that half is unverified beyond linking and is now the largest
-  unknown — then the `CaptureEncoding` conformance, then backend selection.
-  Note that selection is **not** "Wayland → portal": the portal is the better
-  path on X11 sessions too, because it is the only one that can share a single
-  window.*
+  *Second increment landed: the PipeWire half is verified.* A local `pipewire`
+  daemon plus a synthetic producer the package owns (`CPipeWireFakeSource`) now
+  puts real pixels through `portal_stream.c` in CI — geometry, a **padded**
+  `chunk->stride`, BGRA channel order, malformed-buffer rejection, and the
+  end-of-source signal. Three things worth carrying forward from it:
+
+  - **Running it found a bug that no amount of care would have.** "The source
+    stopped" is not a stream state: destroying the producer drops the consumer
+    to *paused*, which is what a renegotiation also looks like, so the shipped
+    `UNCONNECTED → ended` mapping would never have fired. A sharer would have
+    sat on a dead session showing viewers a frozen screen. It is a registry
+    event now, and the gate fails without it.
+  - **Every check was watched to fail** — six mutations, each with its output
+    recorded in the package README's table.
+  - **One trap still has no gate, and the README says so.** Producing a DMA-BUF
+    needs a GPU, so deleting the `SPA_PARAM_BUFFERS_dataType` constraint leaves
+    every check green. That was verified, not assumed, which is the difference
+    between an honest gap and an unnoticed one.
+
+  *Next: the `CaptureEncoding` conformance, then backend selection. Note that
+  selection is **not** "Wayland → portal": the portal is the better path on X11
+  sessions too, because it is the only one that can share a single window.*
 - **3.4 · Change source mid-share, preview thumbnail** — smaller, and both
   become easier once 3.3 exists on Linux.
 
