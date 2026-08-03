@@ -514,6 +514,18 @@ final class AppUIState: ObservableObject {
         // its own, but "closed" and "what the user asked for" are not the same
         // answer, and only one of them is this app's to give.
         shareSession.setRequireApproval(ViewerApprovalPreference.load())
+        // Mute from OUTSIDE the window. The in-window buttons only exist while
+        // the app is in front of you, and during a share it is behind whatever
+        // you are showing — which is exactly when muting matters most. The two
+        // microphones stay separate (`toggleMic` vs `toggleShareMic`);
+        // `MuteHotkeyRouting` picks which one the single chord flips, and the
+        // controller holds the chord only while there is one to flip.
+        muteHotkey = MuteHotkeyController(
+            sharerMicAvailable: { [weak self] in self?.sharing.micAvailable ?? false },
+            viewerMicAvailable: { [weak self] in self?.micAvailable ?? false },
+            toggleSharerMic: { [weak self] in self?.toggleShareMic() },
+            toggleViewerMic: { [weak self] in self?.toggleMic() })
+        muteHotkey?.start()
         syncAccounts()
         if hasPreviousLogin() {
             signIn()
@@ -528,6 +540,10 @@ final class AppUIState: ObservableObject {
 
     private let transport = TsnetTransport()
     private let shareSession = WindowsShareSession()
+    /// Holds ⌃⌥M system-wide while there is a microphone to mute. Built in
+    /// `init` and kept for the process — it decides for itself when to take
+    /// and release the chord.
+    private var muteHotkey: MuteHotkeyController?
     /// Where viewers' voices come out while sharing.
     ///
     /// Its own sink, separate from the viewing session's: this app can share

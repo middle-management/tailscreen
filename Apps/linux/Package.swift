@@ -38,6 +38,11 @@ let package = Package(
         // events at the armed overlay rather than calling its handlers, which
         // is the only way to prove the input region actually flipped.
         .package(path: "../../Packages/XTestInjectKit"),
+        // The system-wide mute hotkey (XGrabKey). Deliberately NOT part of
+        // XTestInjectKit: that package writes input for the sharer's remote
+        // control, this one reads one chord for the local user, and a
+        // viewer-only run wants the second without linking the first.
+        .package(path: "../../Packages/X11HotkeyKit"),
         // The hub's look — header, screen rows, cards, placards — shared with
         // the Windows app. It used to live in this executable as
         // `ViewerChrome.swift`; it moved out when a second swift-cross-ui app
@@ -107,6 +112,9 @@ let package = Package(
                 // named explicitly because this target imports it directly.
                 .product(name: "X11CaptureKit", package: "X11CaptureKit"),
                 .product(name: "XTestInjectKit", package: "XTestInjectKit"),
+                // ⌃⌥M held system-wide, so a sharer who has alt-tabbed into
+                // the thing they are showing can still mute themselves.
+                .product(name: "X11HotkeyKit", package: "X11HotkeyKit"),
                 .product(name: "SwiftCrossUI", package: "swift-cross-ui"),
                 .product(name: "DefaultBackend", package: "swift-cross-ui"),
                 .product(name: "TailscreenViewer", package: "TailscreenKit"),

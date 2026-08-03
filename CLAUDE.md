@@ -19,7 +19,7 @@ Runtime needs: Screen Recording permission, and either interactive Tailscale log
 
 ## Repository layout
 
-Three runnable apps, each its own SwiftPM package: `Apps/macOS` (the primary), `Apps/linux` and `Apps/windows` (both swift-cross-ui — GTK4 and WinUI). Under `Packages/`, the ones whose role isn't obvious from the name: **TailscreenKit** is the portable Linux-buildable protocol + viewer + sharer core all three apps depend on; **TailscaleKit** wraps libtailscale (submodule + patches); **TailscreenHubUI** is the shared hub look for the two swift-cross-ui apps. The rest are platform backends — `X11CaptureKit`/`PortalCaptureKit`/`XTestInjectKit`/`ALSAKit`/`TailscreenLinuxBackends` on Linux, `WGCCaptureKit`/`SendInputKit`/`WinOverlayKit`/`WASAPIKit`/`TailscreenSharerWGC` on Windows — or codec wrappers (`OpusKit`, `FFmpegKit`, `TailscreenVideoFFmpeg`).
+Three runnable apps, each its own SwiftPM package: `Apps/macOS` (the primary), `Apps/linux` and `Apps/windows` (both swift-cross-ui — GTK4 and WinUI). Under `Packages/`, the ones whose role isn't obvious from the name: **TailscreenKit** is the portable Linux-buildable protocol + viewer + sharer core all three apps depend on; **TailscaleKit** wraps libtailscale (submodule + patches); **TailscreenHubUI** is the shared hub look for the two swift-cross-ui apps. The rest are platform backends — `X11CaptureKit`/`PortalCaptureKit`/`XTestInjectKit`/`X11HotkeyKit`/`ALSAKit`/`TailscreenLinuxBackends` on Linux, `WGCCaptureKit`/`SendInputKit`/`WinOverlayKit`/`WinHotkeyKit`/`WASAPIKit`/`TailscreenSharerWGC` on Windows — or codec wrappers (`OpusKit`, `FFmpegKit`, `TailscreenVideoFFmpeg`).
 
 Use `rg` to find specific files; the per-area rules files below carry the rest.
 
