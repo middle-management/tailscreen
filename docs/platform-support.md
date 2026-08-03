@@ -34,8 +34,8 @@ is `plans/platform-alignment.md`.
 | :--- | :---: | :---: | :---: |
 | View a shared screen | ✅ | ✅ | ✅ |
 | Share your screen | ✅ | ✅ | ✅ |
-| Share a single window | ✅ | ❌ | ✅ |
-| Share a single app / several apps | ✅ | ❌ | ❌ |
+| Share a single window | ✅ | ✅ portal | ✅ |
+| Share a single app / several apps | ✅ | ⚠️ single, via portal | ❌ |
 | Change source mid-share | ✅ | ❌ | ❌ |
 | Preview thumbnail of what you're sharing | ✅ | ❌ | ❌ |
 | Capture backend | ScreenCaptureKit | X11 (`libxcb`) / ScreenCast portal | Windows.Graphics.Capture |
@@ -43,10 +43,14 @@ is `plans/platform-alignment.md`.
 | HEVC ⇄ H.264 negotiation | ✅ | ✅ | ✅ |
 | Wide gamut / 10-bit / HDR | ✅ | ❌ | ❌ |
 
-The Linux sharer is display-only on purpose: window and app selections are
-*refused* rather than silently widened to the whole screen (only the portal
-could scope a share to one window, and the app doesn't offer that yet).
-**Wayland sharing works now.** The sharer picks its backend from the
+The Linux share card offers two doors: the primary button shares a screen,
+and a second — **"Share a window or app"**, present only when a desktop
+portal exists — asks the portal for a window instead. The portal draws its
+own picker (the compositor is the thing that knows which windows exist and
+which ones this person may see), and the button is *absent* rather than
+greyed on portal-less setups, because sharing one window is a capability an
+X11-only desktop genuinely lacks; a window selection is never silently
+widened to the whole screen. **Wayland sharing works too.** The sharer picks its backend from the
 session kind — `XDG_SESSION_TYPE`, never `$DISPLAY`, because XWayland sets
 `$DISPLAY` and the old display-only gate made a Wayland desktop "share" an
 empty XWayland root while the UI said Sharing. An X11 session keeps direct

@@ -40,7 +40,8 @@ The honest differences:
   session captures the root window directly; a Wayland session shares
   through the ScreenCast portal, so the share starts with your
   compositor's consent dialog. A Wayland session without a portal refuses
-  to share and says why.
+  to share and says why. Sharing a single window or app on Linux also
+  goes through the portal — the button appears only when one exists.
 - **Remote control** works in both roles on every platform — requesting as
   a viewer, and granting as a sharer. (Linux injects via X11's XTEST
   extension; when it's absent, the capability isn't advertised and viewers
