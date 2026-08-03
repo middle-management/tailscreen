@@ -115,6 +115,15 @@ public struct ShareCard: View {
     /// The sharer's own drawing tools, when this host can put strokes on its
     /// own screen. Nil renders nothing.
     let drawing: HubDrawing?
+    /// A SECOND way to begin a share, when this host has one that the primary
+    /// button cannot express — today "share one window or app", which on Linux
+    /// needs the ScreenCast portal and so is not always available.
+    ///
+    /// Nil renders nothing, the capability-not-configuration rule the
+    /// microphone and drawing slots already follow. Windows passes nil: its
+    /// WGC picker already offers windows alongside displays, so a second
+    /// button there would be a second door into the same room.
+    let secondaryStart: HubAction?
     let onStart: @MainActor @Sendable () -> Void
     let onStop: @MainActor @Sendable () -> Void
     let onAccept: @MainActor @Sendable (String) -> Void
@@ -135,6 +144,7 @@ public struct ShareCard: View {
         extraAction: HubAction? = nil,
         microphone: HubMicrophone? = nil,
         drawing: HubDrawing? = nil,
+        secondaryStart: HubAction? = nil,
         onStart: @escaping @MainActor @Sendable () -> Void,
         onStop: @escaping @MainActor @Sendable () -> Void,
         onAccept: @escaping @MainActor @Sendable (String) -> Void = { _ in },
@@ -154,6 +164,7 @@ public struct ShareCard: View {
         self.extraAction = extraAction
         self.microphone = microphone
         self.drawing = drawing
+        self.secondaryStart = secondaryStart
         self.onStart = onStart
         self.onStop = onStop
         self.onAccept = onAccept
@@ -174,6 +185,12 @@ public struct ShareCard: View {
                         Button(stopLabel, action: onStop)
                     } else {
                         Button(startLabel, action: onStart)
+                        // Only while idle: mid-share this would start a second
+                        // one, and the card has a Stop button in that state
+                        // precisely because there is already something to stop.
+                        if let secondaryStart {
+                            Button(secondaryStart.label, action: secondaryStart.perform)
+                        }
                     }
                 }
                 if let extraAction {

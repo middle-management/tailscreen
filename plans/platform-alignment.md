@@ -485,11 +485,35 @@ Kind B. Sequenced by how many rows each unblocks.
     explicit case returns on the first branch and cannot catch a
     detection-ORDER regression — and it was checked to fail against one.
 
-  *Next: the window/app picker affordance. The portal draws its own picker, so
-  what is missing here is not a window list but the choice between "share my
-  screen" and "pick a window or app" — the `.windowOrApp` intent exists and is
-  tested, with no button yet reaching it. Still unbuilt: system audio (the
-  portal has no equivalent), preview thumbnails, and multi-stream shares.*
+  *Fifth increment landed, and it completes 3.3: the window/app affordance.*
+  `ShareCard.secondaryStart` is a capability-shaped optional — the same shape
+  the microphone and drawing slots use — that Linux fills with "Share a window
+  or app…" when a portal exists and Windows leaves nil, because the WGC picker
+  it already opens offers windows beside displays.
+
+  - **There is no window list in this app, deliberately.** The portal draws its
+    own picker. The compositor is the thing that knows which windows exist and
+    which ones this person may see; a list built here would duplicate that and
+    be less trustworthy doing it.
+  - **Absent, not disabled, with no portal.** Sharing one window is a
+    capability an X11-only desktop genuinely lacks, and a greyed button invites
+    the question "why" with no way to answer it.
+  - **The two entry points request different source types.** "Share my screen"
+    asks the portal for `.monitor`; the secondary asks for `.window`, because
+    portals render requested types as tabs and offering Screen back would be
+    the app second-guessing a choice already made on the card.
+
+  ⚠️ **Nothing in the portal path has been run by a person.** Five increments —
+  the PipeWire verification, the encoder, backend selection, and now the
+  affordance — and every one ends at a consent dialog CI cannot click. The unit
+  coverage is real and the decisions are all pinned, but the first genuine
+  Wayland share will be the first end-to-end run of
+  `negotiate` → `openPipeWireFileDescriptor` → `PortalStream` → encoder. That
+  is the single highest-value thing anyone with a Wayland machine can do next,
+  and it is worth more than the next increment of code.
+
+  *Still unbuilt: system audio (the portal has no equivalent), preview
+  thumbnails, and multi-stream shares.*
 - **3.4 · Change source mid-share, preview thumbnail** — smaller, and both
   become easier once 3.3 exists on Linux.
 
