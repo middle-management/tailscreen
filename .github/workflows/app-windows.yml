@@ -357,6 +357,20 @@ jobs:
         if: inputs.run_probes
         run: swift build --package-path Packages/SendInputKit --product sendinput-probe
 
+      # The system-wide mute chord: RegisterHotKey plus the pump thread that
+      # receives its WM_HOTKEY. Via its PROBE for the usual reason (a library
+      # target is never linked), and RUN rather than only built: with no
+      # argument it registers the chord, reports, and releases it in
+      # milliseconds — it moves nothing and takes `--hold` before it waits for
+      # a human. That run is the only automated proof anywhere that
+      # `RegisterHotKey` accepted what `WindowsHotkeyMapping` produced; the
+      # Linux legs can only check the numbers.
+      - name: WinHotkeyKit
+        if: inputs.run_probes
+        run: |
+          swift build --package-path Packages/WinHotkeyKit --product winhotkey-probe
+          swift run --package-path Packages/WinHotkeyKit winhotkey-probe
+
       # Two thirds of this job is compiling swift-cross-ui, swift-winui and the
       # WindowsAppSDK bindings — ~1,450 compile units against our one app file,
       # 14m20s of a 21m30s run. They change only when a pinned revision moves,

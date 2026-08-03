@@ -341,6 +341,48 @@ jobs:
               xvfb-run -a --server-args="-screen 0 1280x720x24" \
                 Packages/XTestInjectKit/.build/debug/xtest-probe --live-check
 
+          # The MUTE HOTKEY, both platforms' halves.
+          #
+          # One leg rather than two because the Windows half has almost nothing
+          # here to gate: its shim stubs out off Windows, so all Linux can
+          # check is the wrapper's decisions and its syntax (the real
+          # `RegisterHotKey` is run by `winhotkey-probe` on the Windows job).
+          # The X11 half is the opposite — it can be exercised for real:
+          #
+          #   swift test      the environment gate (Wayland refused even though
+          #                   XWayland would ACCEPT the grab and then
+          #                   under-deliver) and the raw-events -> activations
+          #                   latch that stops a held chord flipping the mute at
+          #                   the keyboard repeat rate
+          #   --live-check    a real XGrabKey on Xvfb, the chord synthesized
+          #                   through XTEST, and the activation counted. Then
+          #                   the same chord pressed WITH NUM LOCK ON — the
+          #                   lock-mask grab variants are the single most likely
+          #                   way for this feature to look broken while every
+          #                   unit test passes — and finally a second grab of an
+          #                   owned chord, which must be REFUSED. That last one
+          #                   gates the async-error handling: XGrabKey reports
+          #                   BadAccess later, so a shim without the error
+          #                   handler + XSync reports success for a hotkey that
+          #                   can never fire.
+          - name: linux-hotkey
+            apt: pkg-config libx11-dev libxtst-dev xvfb
+            # Submodules for the same reason as linux-xtest: both packages
+            # depend on TailscreenKit, whose manifest names ../TailscaleKit,
+            # whose Sources/ are symlinks into the submodule. No Go and no
+            # libtailscale.a — nothing here links the archive.
+            submodules: recursive
+            go: none
+            libtailscale: none
+            cmd: |
+              export PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit"
+              swift test --package-path Packages/X11HotkeyKit
+              swift test --package-path Packages/WinHotkeyKit
+              swift build --package-path Packages/WinHotkeyKit --product winhotkey-probe
+              swift build --package-path Packages/X11HotkeyKit --product x11-hotkey-probe
+              xvfb-run -a --server-args="-screen 0 1280x720x24" \
+                Packages/X11HotkeyKit/.build/debug/x11-hotkey-probe --live-check
+
           # COMPILE, LINK, D-BUS-PROTOCOL AND PIPEWIRE gate for
           # PortalCaptureKit — the xdg-desktop-portal ScreenCast + PipeWire
           # capture path.

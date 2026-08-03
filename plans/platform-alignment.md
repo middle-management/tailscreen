@@ -241,9 +241,53 @@ Kind B. Sequenced by how many rows each unblocks.
   can unmute and be heard, a sharer can speak to every viewer and hear them
   back. Two mic controls, both from shared chrome: `MicrophoneButton` over the
   video for the viewer, and the same button on the share card for the sharer.
-  **Still open: `mute from outside the window` and the `mute hotkey`** — this
-  is the in-window control only, so a person who has alt-tabbed away cannot
-  mute themselves, which is exactly when they most want to.*
+  Both remaining rows — `mute from outside the window` and the `mute hotkey` —
+  then landed as **one** thing, because on these two platforms they are one:
+  a system-wide chord (⌃⌥M, from `ShortcutCatalog`) held by
+  `Packages/X11HotkeyKit` (`XGrabKey`) and `Packages/WinHotkeyKit`
+  (`RegisterHotKey`). A tray icon would be the other way to mute from outside
+  the window; it is a much larger feature and is deliberately NOT part of this
+  — the hotkey closes the row on its own, and half a tray icon would close
+  neither.*
+
+  Four decisions from the hotkey work.
+
+  - **One chord, and the SHARER's microphone wins when both are live.**
+    These apps can share and watch at once and the two mute latches stay
+    separate on purpose, so a single chord has to choose. Flipping both was
+    rejected outright: a toggle over two independent latches has no meaning
+    when they disagree, and re-defining it as "mute everything" fixes the mute
+    direction while breaking the other — the second press unmutes you into a
+    call you were only listening to. The sharer wins because *being outside the
+    window is not symmetric*: while sharing you are necessarily in some other
+    app, so the mic button is behind what you are demonstrating, whereas while
+    watching the video window is the thing you are looking at. The viewer gets
+    the chord only when no share is running. `MuteHotkeyRouting` is the whole
+    decision, and the honest cost — starting a share silently retargets the
+    key — is announced rather than hidden.
+  - **A grab that was refused must not read as a grab.** Both platforms report
+    a chord another app already owns by returning a value nobody reads, and on
+    X11 it is worse: `XGrabKey` reports `BadAccess` *asynchronously*, so
+    without an error handler plus `XSync` the call succeeds and the user gets a
+    hotkey that never fires. `GlobalHotkeyUnavailability` is the shared
+    vocabulary, and a Wayland session is refused up front — `XGrabKey` succeeds
+    against XWayland and then under-delivers, working while an X11 app is
+    focused and not otherwise, which is worse than absent because it works
+    often enough to be trusted.
+  - **The X11 half is a real gate.** `x11-hotkey-probe --live-check` grabs the
+    chord on Xvfb, synthesizes it through XTEST, and counts the activation —
+    then repeats it **with Num Lock on**, because `XGrabKey` matches modifier
+    state exactly and a grab installed only under `Ctrl|Alt` silently stops
+    matching the moment a lock key joins it. Then it grabs the same chord from
+    a second connection and requires the refusal. All three were checked to
+    fail by mutation. The Windows half has no equivalent: `RegisterHotKey` does
+    not exist off Windows and nothing stands in for it, so what CI proves there
+    is the numbers and the link, and "the chord fires while another app is
+    focused" remains a person at a desk (`winhotkey-probe --hold`).
+  - **The chord is held only while there is a microphone to mute.** A global
+    registration is exclusive — it takes that key from every other app on the
+    machine — so an idle app holding ⌃⌥M is taking it for a handler with
+    nothing to do. Same rule macOS already follows for its panic-revoke key.
 
   Four things from it are worth carrying forward.
 

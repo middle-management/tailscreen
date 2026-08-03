@@ -44,6 +44,11 @@ let package = Package(
         .package(path: "../../Packages/WASAPIKit"),
         .package(path: "../../Packages/TailscreenSharerWGC"),
         .package(path: "../../Packages/WGCCaptureKit"),
+        // ⌃⌥M held system-wide (RegisterHotKey), so a sharer who has
+        // alt-tabbed into the thing they are showing can still mute
+        // themselves. Its shim stubs out off Windows, so the `linux-app` job
+        // typechecks the wiring here.
+        .package(path: "../../Packages/WinHotkeyKit"),
         // The hub's look, shared with the GTK viewer. Extracted from that app
         // rather than reinvented here: swift-cross-ui is a SwiftUI subset, so
         // this chrome is hand-built from primitives, and building it twice
@@ -103,6 +108,11 @@ let package = Package(
                 // picked `WGC.CaptureItem` between the picker and the share.
                 .product(name: "TailscreenSharerWGC", package: "TailscreenSharerWGC"),
                 .product(name: "WGCCaptureKit", package: "WGCCaptureKit"),
+                // The system-wide mute chord (RegisterHotKey + its pump
+                // thread). Stubbed off Windows, so this edge stays on the
+                // Linux typecheck path rather than behind a platform
+                // condition.
+                .product(name: "WinHotkeyKit", package: "WinHotkeyKit"),
                 .product(name: "TailscreenHubUI", package: "TailscreenHubUI"),
             ],
             // libtailscale.a is a link-time input, so the flag belongs on this

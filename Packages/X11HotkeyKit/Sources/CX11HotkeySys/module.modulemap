@@ -1,0 +1,9 @@
+// libX11 only — no XTEST here. This package READS keystrokes (XGrabKey); the
+// injection direction is XTestInjectKit's, and keeping the two apart is what
+// lets a viewer-only host take the hotkey without linking an injector it will
+// never call.
+module CX11HotkeySys [system] {
+    header "shim.h"
+    link "X11"
+    export *
+}
