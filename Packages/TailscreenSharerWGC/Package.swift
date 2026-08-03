@@ -50,6 +50,10 @@ let package = Package(
                 .product(name: "WGCCaptureKit", package: "WGCCaptureKit"),
                 .product(name: "FFmpegKit", package: "FFmpegKit"),
                 .product(name: "TailscreenProtocol", package: "TailscreenKit"),
+                // The sharer's voice: `SharerVoice` (uplink at the reserved
+                // sharer SSRC + downlink for the viewers). Portable, so it
+                // costs this package none of its Linux-typecheckability.
+                .product(name: "TailscreenAudio", package: "TailscreenKit"),
                 .product(name: "TailscreenSharer", package: "TailscreenKit"),
                 // `TailscreenControlListener`: the app owns one for the whole
                 // session so an incoming "please share" is answerable while

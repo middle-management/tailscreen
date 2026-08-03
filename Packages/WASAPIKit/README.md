@@ -1,7 +1,7 @@
 # WASAPIKit
 
-A thin Swift wrapper over **WASAPI** shared-mode rendering, for the **Windows
-viewer's audio playback**.
+A thin Swift wrapper over **WASAPI** shared-mode rendering and capture, for the
+**Windows viewer's audio playback** and its **microphone**.
 
 ## Why a local package
 
@@ -9,6 +9,12 @@ The Windows viewer reuses the whole portable stack — transport, `ViewerSession
 the Opus decoder — and needs exactly one platform-specific thing to make sound:
 somewhere for the decoded PCM to go. That is the `AudioSink` protocol in
 `TailscreenViewer`, which ALSAKit fills on Linux and this fills on Windows.
+
+Voice is the mirror image: the Opus **encoder** is already portable, so the one
+platform-specific thing is somewhere for the PCM to come *from*. That is
+`WASAPI.Recorder`, and it is the same four COM interfaces with
+`IAudioCaptureClient` at the end instead of `IAudioRenderClient` — which is why
+it shares this package and, inside it, the same translation unit.
 
 WASAPI rather than XAudio2 or the old `waveOut` MME API: it is the API every
 other one is layered on, it is what a Win32 desktop app is expected to use, and
@@ -61,6 +67,11 @@ import WASAPIKit
 let player = try WASAPI.Player()      // opens the default endpoint, starts it
 player.format                         // what the device negotiated
 try player.write(interleaved)         // blocks until the engine takes it all
+
+let recorder = try WASAPI.Recorder()  // default microphone endpoint
+recorder.format                       // the device's rate + channel count
+let chunk = try recorder.read()       // mono, device rate, possibly empty
+chunk.discontinuity                   // the endpoint dropped audio before this
 ```
 
 ## Two things that will bite
@@ -90,6 +101,55 @@ For the same reason the shim refuses a mix format that is not 32-bit float
 float samples into a 16-bit buffer emits full-scale noise, and that is not a
 failure anyone should have to diagnose by ear.
 
+## Capture: four more things that will bite
+
+**Reads do not block, and an empty read is normal.** `write` blocks until the
+engine has taken everything; `read` deliberately does not, because a microphone
+produces samples on its own schedule and the caller — which has to bin them into
+20 ms Opus frames anyway — already owns a clock. `Chunk.isEmpty` between device
+periods is the ordinary answer, not the end of the stream.
+
+**Capture packets are all-or-nothing.** `IAudioCaptureClient::ReleaseBuffer` must
+acknowledge exactly the frame count `GetBuffer` reported, so there is no such
+thing as consuming half a packet. The shim therefore only takes packets that fit
+in the caller's buffer, leaves the rest queued, and reports
+`TS_WASAPI_ERR_BUFFER_TOO_SMALL` if a packet cannot fit in an *empty* one —
+otherwise a short buffer would return zero frames forever while the endpoint
+overran behind it. `Recorder` sizes its own buffer from the engine buffer size
+the shim reports, so it cannot reach that error.
+
+**`AUDCLNT_BUFFERFLAGS_SILENT` does not mean the buffer is zeroed.** It means the
+contents are meaningless and *the client* must supply the silence. Copying it
+anyway is how a muted microphone becomes full-scale noise on every viewer's
+speakers — the exact failure mode the float32 check above exists to prevent, from
+a different direction.
+
+**Mono is produced by averaging every channel**, which is *not* what the macOS
+mic path does — `MicCapture` picks channel 0 explicitly, because a
+voice-processing tap hands it `[mic, ref_L, ref_R]` and mixing the loopback
+reference back in would fold the far end into the near end (and because
+`AVAudioConverter`'s default downmix *sums*, peaking around 6.0). WASAPI
+shared-mode capture has no such reference channels: it hands over the endpoint's
+own mix format, where a 2-channel capture device is a 2-channel microphone and
+dropping half of it would throw audio away. Averaging also cannot clip. The known
+cost is that an interface reporting six channels with one live input reads about
+15 dB quiet; compensating would mean inferring which channels are live from their
+content, and a gain that moves with the room is worse than one that is
+predictably wrong.
+
+Two related notes. `E_ACCESSDENIED` from `Recorder()` is the ordinary Windows
+microphone privacy setting, which is why it gets its own `WASAPI.Error` case
+instead of a hex code the user can do nothing with. And **loopback capture** —
+system audio, `AUDCLNT_STREAMFLAGS_LOOPBACK` on a *render* endpoint — is the same
+shim shape with one flag and a different `EDataFlow`; it is deliberately not here,
+because it is a different feature with a different consent story.
+
+Both directions ask for the `eConsole` role, not `eCommunications`. Windows
+offers the latter as a separate default specifically for calls, but asking for it
+on capture alone would let one machine record from a headset mic while playing to
+desktop speakers — a split the user never configured — and moving both onto it is
+a change to a shipped playback path that belongs in its own commit.
+
 ## `wasapi-probe`
 
 An executable that exists to be **linked**, not run. A SwiftPM library target is
@@ -101,13 +161,35 @@ error in it is ours.
 
 CI builds it and does not run it: its Windows runners have no audio endpoint, so
 a legitimate "no device" failure would be indistinguishable from a broken build.
-On a real desktop it is a useful one-liner — it prints the endpoint's negotiated
-mix format, which is the input `MonoPCMConverter` has to match.
+On a real desktop it is a useful one-liner — it prints both endpoints' negotiated
+mix formats, which is the input `MonoPCMConverter` has to match, and then records
+for three seconds and reports the **peak amplitude**. Peak rather than a frame
+count on purpose: a capture session that is running but recording nothing —
+wrong endpoint, muted device, or `AUDCLNT_BUFFERFLAGS_SILENT` copied instead of
+honoured — delivers a perfectly healthy stream of zeros that no frame count can
+tell apart from a working microphone.
+
+## What the tests cover, and what they cannot
+
+`swift test` runs on Linux and macOS, which is the only place it *can* run: there
+is no WASAPI on a CI machine and no null endpoint to stand in for one, so
+ALSAKit's trick of opening `"null"` and proving the real wrapper runs headlessly
+has no counterpart here.
+
+So the split is the one `MonoPCMConverter` and `I420Converter` were extracted
+for. The sample arithmetic and the shim's error mapping live outside
+`#if os(Windows)` and are covered — the averaging downmix, the rebased-slice
+indexing (`Recorder` hands the downmix a slice of a reused scratch buffer, whose
+indices do not start at 0), the dropped partial frame, the nonsense channel count
+that must not divide by zero, and the `E_ACCESSDENIED` recognition that turns a
+blocked microphone into a sentence instead of a hex code. The COM lifetime is
+left to the probe's link check.
 
 ## Not verified on hardware
 
 Everything under `#ifdef _WIN32` has been compiled and linked but never run
-against a real endpoint. The package builds on Linux and macOS too — the shim is
-`#ifdef _WIN32` and the Swift wrapper `#if os(Windows)`, so elsewhere it
-resolves to an empty module — which keeps the manifest and the wrapper's
-non-Windows syntax checked by every job rather than only the Windows one.
+against a real endpoint — the capture half has additionally never been run at
+all. The package builds on Linux and macOS too — the shim is `#ifdef _WIN32` and
+the Swift wrapper `#if os(Windows)`, so elsewhere it resolves to an empty module
+— which keeps the manifest, the wrapper's non-Windows syntax and the pure
+arithmetic checked by every job rather than only the Windows one.

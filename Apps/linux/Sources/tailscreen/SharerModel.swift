@@ -21,6 +21,9 @@ import struct TailscreenProtocol.ShareRequestInbox
 import enum TailscreenProtocol.ViewerApprovalPreference
 import enum TailscreenProtocol.ViewerRosterDecision
 import class TailscreenTransport.TailscreenControlListener
+import class TailscreenAudio.OpusVoiceEncoder
+import class TailscreenAudio.SharerVoice
+import protocol TailscreenAudio.MicrophoneCapturing
 
 /// Somebody currently watching, as the share card needs them.
 ///
@@ -180,6 +183,24 @@ final class SharerModel: ObservableObject {
     /// Supplied by `main` — hands back the live tsnet node to share.
     var nodeProvider: (() -> TailscaleNode?)?
 
+    /// Supplied by `main` — opens a capture device, or throws if there is none.
+    ///
+    /// A factory rather than an instance because a share is a session: the
+    /// device is opened when sharing starts and released when it stops. A
+    /// long-lived open would keep the OS microphone indicator lit while idle,
+    /// which is exactly the thing a person reads as "this app is listening".
+    /// Nil means this build has no capture backend at all.
+    var microphoneFactory: (() throws -> MicrophoneCapturing)?
+    /// Supplied by `main` — plays a viewer's decoded voice on the local device.
+    var playRemoteVoice: (([Float]) -> Void)?
+
+    /// Live voice for the current share. Nil while idle, and nil when the
+    /// device could not be opened — which is what `micAvailable` reports, so
+    /// the control is absent rather than present-and-inert.
+    private var voice: SharerVoice?
+    @Published private(set) var micAvailable = false
+    @Published private(set) var micOn = false
+
     init(display: String? = nil) {
         let display = display ?? ProcessInfo.processInfo.environment["DISPLAY"]
         if let display, !display.isEmpty {
@@ -322,6 +343,7 @@ final class SharerModel: ObservableObject {
                 self.viewers = []
                 self.pendingViewers = []
                 self.teardownOverlay()
+                self.stopVoice()
             }
         }
         // Anyone whose ask was accepted before this server existed. Replayed
@@ -349,10 +371,12 @@ final class SharerModel: ObservableObject {
                     controlListener: controlListener
                 )
                 phase = .sharing
+                startVoice(on: server)
             } catch {
                 phase = .failed("\(error)")
                 self.server = nil
                 self.teardownOverlay()
+                self.stopVoice()
             }
         }
     }
@@ -372,7 +396,67 @@ final class SharerModel: ObservableObject {
         // connects to the NEXT share from the same address.
         access.reset()
         teardownOverlay()
+        stopVoice()
         Task { await server.stop() }
+    }
+
+    // MARK: Voice
+
+    /// Open the microphone and start hearing viewers, for this share only.
+    ///
+    /// Best-effort: a machine with no capture device shares perfectly well and
+    /// simply shows no mic control. The failure is written to stderr for the
+    /// same reason the overlay's and the injector's are — the share works, so
+    /// nothing else would ever say why the button is missing.
+    private func startVoice(on server: TailscaleScreenShareServer) {
+        guard let microphoneFactory else { return }
+        do {
+            let microphone = try microphoneFactory()
+            let voice = try SharerVoice(
+                microphone: microphone, encoder: OpusVoiceEncoder(),
+                send: { [weak server] packet in server?.sendAudioRTP(packet) })
+            voice.onRemotePCM = { [weak self] _, pcm in
+                // The SSRC is dropped here: there is one local output device,
+                // and the mix is what a person hears. A sharer UI that wanted
+                // a speaking indicator would keep it.
+                Task { @MainActor in self?.playRemoteVoice?(pcm) }
+            }
+            voice.onStopped = { [weak self] error in
+                guard error != nil else { return }
+                Task { @MainActor in
+                    // Both flags together: a live indicator over a device
+                    // recording nothing is the one wrong answer here.
+                    self?.micAvailable = false
+                    self?.micOn = false
+                }
+            }
+            // Inbound viewer audio, already vetted by the server's anti-spoof
+            // gate. Fires on the receive thread; `VoiceDownlink` does
+            // arithmetic only and hands the result on.
+            server.onAudioReceived = { [weak voice] packet in voice?.receive(packet) }
+            try voice.start()
+            self.voice = voice
+            micAvailable = true
+            micOn = false
+        } catch {
+            FileHandle.standardError.write(
+                Data("warning: no microphone (\(error)) — viewers will not hear you\n".utf8))
+        }
+    }
+
+    private func stopVoice() {
+        voice?.stop()
+        voice = nil
+        micAvailable = false
+        micOn = false
+    }
+
+    /// Flip the sharer's microphone.
+    func toggleMic() {
+        guard let voice else { return }
+        let nowOn = voice.isMuted
+        voice.isMuted = !nowOn
+        micOn = nowOn
     }
 
     /// Hide the overlay and seal the injector.

@@ -70,15 +70,16 @@ there, the Windows outline row is done and Linux is the only one left.
 
 ## Phase 1 · Close the mirror (weeks) — the best value on the list
 
-Linux and Windows are mirror images on interaction, which is an accident of
-build order, not a design: Linux grew the viewer half first, Windows the sharer
-half.
+Linux and Windows *were* mirror images on interaction — an accident of build
+order rather than a design: Linux grew the viewer half first, Windows the sharer
+half. Every row below is now closed on both, which is what made this the
+best-value phase on the list.
 
 | | Linux has | Windows has |
 |---|---|---|
-| Draw as viewer | ✅ | ❌ |
-| Zoom + pan viewer | ✅ | ❌ |
-| Request control as viewer | ✅ | ❌ |
+| Draw as viewer | ✅ | ✅ (1.1) |
+| Zoom + pan viewer | ✅ | ✅ (1.2) |
+| Request control as viewer | ✅ | ✅ (1.3) |
 | Render viewers' annotations as sharer | ✅ (1.4) | ✅ |
 | Inject granted control as sharer | ✅ (1.5) | ✅ |
 
@@ -87,14 +88,34 @@ mapping, the neutral HID key model, the annotation geometry and the rasterizer
 are all portable and already unit-tested on Linux CI. What's missing is the host
 call.
 
-- **1.1 · Windows viewer: annotations.** `AnnotationCanvasModel` +
-  `AnnotationGeometry` are portable; `WinOverlayKit` already rasterizes. The
-  viewer needs a drawing surface over its `WriteableBitmap` and the existing
-  back-channel send.
-- **1.2 · Windows viewer: zoom + pan.** `ViewerZoomMath` is portable and tested;
-  this is gesture plumbing.
-- **1.3 · Windows viewer: request control.** The viewer half of a flow whose
-  sharer half Windows already implements.
+- **1.1 – 1.3 · Windows viewer: annotations, zoom + pan, request control.**
+  ✅ **Done**, and together rather than separately because they are one surface:
+  all three are decided by what a pointer drag means, so splitting them would
+  have meant writing that precedence three times.
+
+  It came in far under the estimate, and the reason is the point of this plan:
+  **almost nothing new was written.** `TailscreenHubUI` already had
+  `AnnotationToolbar` and `RemoteControlBar` for the GTK viewer, `ViewerZoomMath`
+  already had the geometry, `WindowsKeyCodeMapping` already had VK↔HID (read in
+  the other direction from the sharer's use), and `AnnotationRasterizer` already
+  drew strokes. Two more pieces moved into the portable tier on the way — the
+  GTK viewer's `AnnotationStore`, which was Foundation-only all along, and its
+  letterbox arithmetic, now `ViewerPointerMapping` — so both viewers share one
+  canvas and one mapping instead of two that drift.
+
+  Three decisions worth carrying forward:
+  - **Annotations are composited into the decoded frame**, not onto a second
+    surface. `AnnotationRasterizer.draw` (the no-clear half of `render`) writes
+    straight into the BGRA the `WriteableBitmap` shows, so strokes zoom and
+    letterbox with the video for free. A XAML canvas or a D2D device would have
+    been a lot of platform plus a second transform to keep in sync.
+  - **Drawing wins over controlling.** With a tool armed a drag is a stroke, not
+    a click. A drag cannot be both, so the precedence has to live somewhere;
+    it is one property (`forwardsInput`) rather than scattered through the
+    handlers.
+  - **Ctrl+wheel zooms; plain wheel scrolls the sharer** while a grant is held.
+    Without the split, zooming is unreachable while controlling and scrolling is
+    unreachable while not.
 - **1.4 · Linux sharer: render annotations.** ✅ **Done.** Closes 0.1 properly:
   `Apps/linux/Sources/CGtkOverlay` is the click-through window — override-redirect
   (GTK4 has neither placement nor keep-above, and an overlay needs both), empty
@@ -133,6 +154,9 @@ call.
 **Do 1.4 before 1.1.** Fixing the sharer that lies is worth more than adding a
 viewer feature, and it unblocks the honest version of the capability bit.
 
+*Phase 1 is complete. The mirror is closed: every row above is ✅ on all three
+platforms, and the remaining gaps are Phase 2's access control and Phase 3's
+capability shims.*
 *With 1.4 and 1.5 done, the Linux sharer half is complete and the table above
 is no longer a mirror: what remains is the three Windows **viewer** rows.*
 
@@ -211,6 +235,51 @@ Kind B. Sequenced by how many rows each unblocks.
   codec, framing, jitter buffer, concealment, SSRC relay. What's missing is
   capture and the hookup. ALSA/PulseAudio in on Linux, WASAPI capture on Windows
   (the render half already exists in `WASAPIKit`).
+
+  *Landed: the capture backends (`ALSA.PCMRecorder`, `WASAPI.Recorder`), the
+  portable seam and pipeline, and **both halves wired end to end** — a viewer
+  can unmute and be heard, a sharer can speak to every viewer and hear them
+  back. Two mic controls, both from shared chrome: `MicrophoneButton` over the
+  video for the viewer, and the same button on the share card for the sharer.
+  **Still open: `mute from outside the window` and the `mute hotkey`** — this
+  is the in-window control only, so a person who has alt-tabbed away cannot
+  mute themselves, which is exactly when they most want to.*
+
+  Four things from it are worth carrying forward.
+
+  - **One type per direction, not per endpoint.** A sharer's voice and a
+    viewer's voice are the same stream in opposite directions, differing only
+    in the SSRC. Writing them separately would have meant writing the mute
+    latch twice, and a mute that works on one side and leaks on the other is
+    the worst possible split. `SharerVoice` then pairs the two, and the SSRC
+    is deliberately **not a parameter** on it: viewers key their Opus decoders
+    on the sharer's reserved SSRC, so there is no correct second answer and
+    therefore nothing for a host to get wrong.
+  - **The capture device is opened per share, not per process.** A long-lived
+    open keeps the OS microphone indicator lit while the app is idle, which
+    reads to a person as "this app is listening" — so a share start opens it
+    and every teardown path releases it, including the one where capture died
+    on its own.
+  - **A viewer's audio is withheld until the sharer assigns an SSRC.** Not
+    an optimisation: an unassigned stream goes out as SSRC 0, which is the
+    *sharer's* reserved voice SSRC, and the sharer's own anti-spoof gate then
+    drops it. The failure mode without this is a viewer talking into a void
+    with nothing logged anywhere.
+  - **Both adapters report `channelCount: 1` whatever the hardware is**,
+    because both recorders fold to mono themselves. Forwarding the device's
+    real channel count — the obvious thing, and the number the recorders
+    publish for the sharer's own information — makes the portable converter
+    downmix a second time, reading N mono samples as N/2 stereo frames. That
+    halves the rate and drops every voice an octave, with nothing to catch it
+    but an ear.
+  - **A test that races for a narrow window is not a test.** The capture
+    thread's "nothing is delivered after `stop()` returns" guarantee was first
+    asserted by watching for a stray delivery; that version passed every time
+    against the deliberately-broken check-then-call implementation. Driving it
+    from the other end — stopping *during* a slow delivery must block —
+    fails against the bug every time. The same review caught a decoder-eviction
+    test that asserted only the bound and would have accepted a policy that
+    evicts whoever is currently talking.
 - **3.2 · Sharer-side drawing surface** — unblocks *toggle drawing* and
   completes 1.4. On Windows this cannot be `WinOverlayKit`'s window:
   `WS_EX_TRANSPARENT` is load-bearing while drawing is *off* or it swallows
