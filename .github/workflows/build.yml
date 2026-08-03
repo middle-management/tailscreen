@@ -466,8 +466,22 @@ jobs:
           # rather than skip when no daemon answers, so this leg has to actually
           # provide one.
           - name: linux-portal
-            apt: pkg-config libdbus-1-dev libpipewire-0.3-dev pipewire dbus
+            # The extra apt packages and the Go build are all for
+            # TailscreenSharerPortal, the CaptureEncoding conformance built on
+            # this package. It links TailscreenKit's `TailscreenSharer`, which
+            # depends on TailscaleKit directly — so although nothing in this
+            # leg CALLS tsnet, its test executable still has to resolve
+            # `tailscale_up` and friends, and a library-only build will not
+            # tell you that (only linking an executable does).
+            apt: >-
+              golang-go make gcc libc6-dev
+              pkg-config libdbus-1-dev libpipewire-0.3-dev pipewire dbus
+              libavcodec-dev libavutil-dev libswscale-dev libopus-dev
+            submodules: recursive
+            go: preinstalled
+            libtailscale: host
             cmd: |
+              export PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit"
               swift test --package-path Packages/PortalCaptureKit
               swift build --package-path Packages/PortalCaptureKit --product portal-probe
               PROBE=Packages/PortalCaptureKit/.build/debug/portal-probe
@@ -488,6 +502,14 @@ jobs:
               "$PROBE" --pipewire-capture-test
               "$PROBE" --pipewire-format-guard
               "$PROBE" --pipewire-malformed-guard
+              # The CaptureEncoding conformance. Its FrameHandoff suite is the
+              # only DETERMINISTIC test of the PipeWire-thread -> encode-thread
+              # buffer hand-off, and it needs no daemon and nobody at a
+              # keyboard — which is the whole reason that type was split out
+              # of PortalCaptureEncoder. Everything above it in that file
+              # (opening the stream, opening x264) still has no gate anywhere
+              # and cannot have one; see PortalCapturePlan.
+              swift test --package-path Packages/TailscreenSharerPortal
 
           # Transport-portability gate: libtailscale (Go c-archive) + the
           # patched TailscaleKit Swift wrapper must build and pass their unit
