@@ -27,6 +27,21 @@ typedef struct {
     // redraw already queued on the main loop becomes a no-op rather than
     // touching a freed handle.
     gboolean dead;
+    // Sharer-drawing mode: pointer events land here instead of passing
+    // through. See ts_gtk_overlay_set_interactive.
+    gboolean interactive;
+    void *cb_ctx;
+    void (*on_pointer)(void *ctx, int32_t phase, double x, double y);
+    void (*on_escape)(void *ctx);
+    // Event controllers, added once at create time and simply ignored while
+    // disarmed. Adding and removing them per arm would be more state to get
+    // wrong for no gain: with an empty input region they never fire anyway.
+    GtkGesture *drag;
+    GtkEventController *keys;
+    // Where the current drag started, in widget space. GtkGestureDrag's
+    // update/end carry offsets, not positions.
+    double drag_x;
+    double drag_y;
 } TSOverlay;
 
 // ---------------------------------------------------------------------------
@@ -133,9 +148,135 @@ static void make_click_through(GtkWidget *widget, gpointer user) {
     cairo_region_destroy(empty);
 }
 
+// The inverse: an input region covering the whole surface, so the overlay
+// receives the pointer events the sharer makes over it.
+static void make_interactive(GtkWidget *widget, int width, int height) {
+    GdkSurface *surface = gtk_native_get_surface(GTK_NATIVE(widget));
+    if (!surface) return;
+    cairo_rectangle_int_t all = {0, 0, width, height};
+    cairo_region_t *full = cairo_region_create_rectangle(&all);
+    gdk_surface_set_input_region(surface, full);
+    cairo_region_destroy(full);
+}
+
 static void on_realize(GtkWidget *widget, gpointer user) {
     make_click_through(widget, user);
     make_override_redirect(widget, user);
+}
+
+// ---------------------------------------------------------------------------
+// Sharer drawing
+// ---------------------------------------------------------------------------
+
+// Normalize a widget-space point to [0,1] over the overlay, which is exactly
+// the capture region — so the result is already in `Annotation`'s space.
+static void emit_pointer(TSOverlay *o, int32_t phase, double x, double y) {
+    if (!o->on_pointer || o->width <= 0 || o->height <= 0) return;
+    double nx = x / (double)o->width;
+    double ny = y / (double)o->height;
+    if (nx < 0) nx = 0; else if (nx > 1) nx = 1;
+    if (ny < 0) ny = 0; else if (ny > 1) ny = 1;
+    o->on_pointer(o->cb_ctx, phase, nx, ny);
+}
+
+static void on_drag_begin(GtkGestureDrag *g, double x, double y, gpointer user) {
+    (void)g;
+    TSOverlay *o = (TSOverlay *)user;
+    if (!o->interactive) return;
+    o->drag_x = x;
+    o->drag_y = y;
+    emit_pointer(o, 0, x, y);
+}
+
+// GtkGestureDrag reports OFFSETS from the start, not absolute positions.
+// Adding them back is the whole reason the start point is kept — a stroke
+// drawn from the offsets alone lands in the top-left corner every time.
+static void on_drag_update(GtkGestureDrag *g, double dx, double dy, gpointer user) {
+    (void)g;
+    TSOverlay *o = (TSOverlay *)user;
+    if (!o->interactive) return;
+    emit_pointer(o, 1, o->drag_x + dx, o->drag_y + dy);
+}
+
+static void on_drag_end(GtkGestureDrag *g, double dx, double dy, gpointer user) {
+    (void)g;
+    TSOverlay *o = (TSOverlay *)user;
+    if (!o->interactive) return;
+    emit_pointer(o, 2, o->drag_x + dx, o->drag_y + dy);
+}
+
+static gboolean on_key(GtkEventControllerKey *c, guint keyval, guint code,
+                       GdkModifierType state, gpointer user) {
+    (void)c; (void)code; (void)state;
+    TSOverlay *o = (TSOverlay *)user;
+    if (!o->interactive || keyval != GDK_KEY_Escape) return FALSE;
+    if (o->on_escape) o->on_escape(o->cb_ctx);
+    return TRUE;
+}
+
+void ts_gtk_overlay_set_input_callbacks(
+    void *handle, void *ctx,
+    void (*on_pointer)(void *ctx, int32_t phase, double x, double y),
+    void (*on_escape)(void *ctx)) {
+    TSOverlay *o = (TSOverlay *)handle;
+    if (!o) return;
+    o->cb_ctx = ctx;
+    o->on_pointer = on_pointer;
+    o->on_escape = on_escape;
+}
+
+int32_t ts_gtk_overlay_set_interactive(void *handle, int32_t on) {
+    TSOverlay *o = (TSOverlay *)handle;
+    if (!o || o->dead || !o->window) return 0;
+
+    if (!on) {
+        o->interactive = FALSE;
+        make_click_through(o->window, NULL);
+        GdkSurface *surface = gtk_native_get_surface(GTK_NATIVE(o->window));
+        if (surface && GDK_IS_X11_SURFACE(surface)) {
+            // Hand the keyboard back. Without this the desktop underneath
+            // stays unable to type after a drawing session — the same class of
+            // bug as a stuck pointer grab, and just as baffling.
+            Display *dpy = GDK_SURFACE_XDISPLAY(surface);
+            XSetInputFocus(dpy, PointerRoot, RevertToPointerRoot, CurrentTime);
+            XFlush(dpy);
+        }
+        return 1;
+    }
+
+    // Must be mapped before it can be focused or receive pointer events.
+    gtk_widget_set_visible(o->window, TRUE);
+    place(o);
+    make_interactive(o->window, o->width > 0 ? o->width : 1,
+                     o->height > 0 ? o->height : 1);
+
+    GdkSurface *surface = gtk_native_get_surface(GTK_NATIVE(o->window));
+    if (!surface || !GDK_IS_X11_SURFACE(surface)) {
+        make_click_through(o->window, NULL);
+        return 0;
+    }
+    // The window manager never focuses an override-redirect window, so this is
+    // the only way Escape reaches us. Checked rather than assumed: if the
+    // server refuses, we disarm and report failure, because the alternative is
+    // a fullscreen window the sharer cannot dismiss.
+    Display *dpy = GDK_SURFACE_XDISPLAY(surface);
+    Window xid = GDK_SURFACE_XID(surface);
+    XSetInputFocus(dpy, xid, RevertToPointerRoot, CurrentTime);
+    XSync(dpy, False);
+
+    Window focused = None;
+    int revert = 0;
+    XGetInputFocus(dpy, &focused, &revert);
+    if (focused != xid) {
+        o->interactive = FALSE;
+        make_click_through(o->window, NULL);
+        XFlush(dpy);
+        return 0;
+    }
+
+    o->interactive = TRUE;
+    gtk_widget_grab_focus(o->area);
+    return 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -185,6 +326,21 @@ void *ts_gtk_overlay_create(int32_t x, int32_t y, int32_t width, int32_t height)
     gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(o->area), height);
     gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(o->area), draw, o, NULL);
     gtk_window_set_child(GTK_WINDOW(o->window), o->area);
+
+    // Focusable so Escape can reach us once armed; a drawing area is not a
+    // focus target by default and a key controller on an unfocusable widget
+    // never fires.
+    gtk_widget_set_focusable(o->area, TRUE);
+
+    o->drag = gtk_gesture_drag_new();
+    g_signal_connect(o->drag, "drag-begin", G_CALLBACK(on_drag_begin), o);
+    g_signal_connect(o->drag, "drag-update", G_CALLBACK(on_drag_update), o);
+    g_signal_connect(o->drag, "drag-end", G_CALLBACK(on_drag_end), o);
+    gtk_widget_add_controller(o->area, GTK_EVENT_CONTROLLER(o->drag));
+
+    o->keys = gtk_event_controller_key_new();
+    g_signal_connect(o->keys, "key-pressed", G_CALLBACK(on_key), o);
+    gtk_widget_add_controller(o->area, o->keys);
 
     g_signal_connect(o->window, "realize", G_CALLBACK(on_realize), o);
     return o;

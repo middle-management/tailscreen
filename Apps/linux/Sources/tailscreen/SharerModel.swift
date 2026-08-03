@@ -21,6 +21,10 @@ import struct TailscreenProtocol.ShareRequestInbox
 import enum TailscreenProtocol.ViewerApprovalPreference
 import enum TailscreenProtocol.ViewerRosterDecision
 import class TailscreenTransport.TailscreenControlListener
+import class TailscreenProtocol.AnnotationStore
+import enum TailscreenProtocol.AnnotationMode
+import enum TailscreenProtocol.AnnotationTool
+import enum TailscreenProtocol.AnnotationOp
 import class TailscreenAudio.OpusVoiceEncoder
 import class TailscreenAudio.SharerVoice
 import protocol TailscreenAudio.MicrophoneCapturing
@@ -201,6 +205,23 @@ final class SharerModel: ObservableObject {
     @Published private(set) var micAvailable = false
     @Published private(set) var micOn = false
 
+    // MARK: Sharer drawing
+
+    /// The sharer's own drawing state — the same store the viewers run, so the
+    /// stroke geometry, the undo stack and the identity-derived colour are
+    /// shared code rather than a second implementation on the sharing side.
+    let drawing = AnnotationStore()
+    /// The armed tool, or nil when the sharer is not drawing. Mirrors
+    /// `drawing.mode`, which is not observable.
+    @Published private(set) var activeTool: AnnotationTool?
+    /// Why drawing could not be armed, when it could not.
+    ///
+    /// Shown rather than swallowed because the failure is invisible otherwise:
+    /// the tool would appear selected and the pointer would keep going to the
+    /// desktop, which reads as "drawing is broken" rather than "this session
+    /// would not let the overlay take the keyboard".
+    @Published private(set) var drawingNote: String?
+
     init(display: String? = nil) {
         let display = display ?? ProcessInfo.processInfo.environment["DISPLAY"]
         if let display, !display.isEmpty {
@@ -299,6 +320,7 @@ final class SharerModel: ObservableObject {
         // Fires on the server's control-channel thread; the overlay marshals
         // onto the GTK main thread itself.
         server.onAnnotationReceived = { [overlay] op in overlay?.apply(op) }
+        wireSharerDrawing(overlay: overlay, server: server)
         // The server's own default is OFF — right for the headless CLI sharer
         // that automation drives, wrong for anything with a person in front of
         // it — so the gate has to be asserted here on every start. Assert the
@@ -400,6 +422,88 @@ final class SharerModel: ObservableObject {
         Task { await server.stop() }
     }
 
+    // MARK: Drawing
+
+    /// Connect the sharer's own strokes to the overlay and to the viewers.
+    ///
+    /// Two directions, and they are deliberately separate: the overlay shows
+    /// the stroke so the sharer can see what they are drawing, and the server
+    /// broadcasts it so viewers see the same thing. Neither is derived from the
+    /// other — a sharer whose viewers have all left still gets to see their own
+    /// pen, and a stroke reaching viewers does not depend on the overlay
+    /// existing.
+    private func wireSharerDrawing(
+        overlay: SharerAnnotationOverlay?, server: TailscaleScreenShareServer
+    ) {
+        drawing.resetForNewSession()
+        drawing.onLocalOp = { [weak overlay, weak server] op in
+            overlay?.apply(op)
+            Task { await server?.broadcastAnnotation(op) }
+        }
+        overlay?.onPointer = { [weak self] phase, point in
+            // The C layer fires these on the GTK main thread, which is this
+            // actor's executor — so the hop is a formality the compiler wants
+            // rather than a real thread change.
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                switch phase {
+                case 0: self.drawing.beginStroke(at: point)
+                case 1: self.drawing.extendStroke(to: point)
+                default: self.drawing.endStroke()
+                }
+            }
+        }
+        overlay?.onEscape = { [weak self] in
+            MainActor.assumeIsolated { self?.selectTool(nil) }
+        }
+    }
+
+    /// Arm a drawing tool, or disarm with nil. Selecting the armed tool again
+    /// disarms it, matching the viewer's toolbar.
+    ///
+    /// **Arming makes the overlay swallow every click on this machine** — it is
+    /// a fullscreen, override-redirect window. That is the feature, and it is
+    /// why the overlay refuses to arm unless it can also take the keyboard:
+    /// Escape is then the way back out, and without it the sharer would be
+    /// stuck behind a window with no visible way to dismiss it. A refusal
+    /// leaves the tool unarmed and says so.
+    func selectTool(_ tool: AnnotationTool?) {
+        let wanted = (tool == activeTool) ? nil : tool
+        guard let overlay else {
+            drawingNote = wanted == nil ? nil : "Drawing needs a compositing desktop"
+            activeTool = nil
+            drawing.mode = .off
+            return
+        }
+        guard let wanted else {
+            _ = overlay.setInteractive(false)
+            activeTool = nil
+            drawing.mode = .off
+            drawingNote = nil
+            return
+        }
+        guard overlay.setInteractive(true) else {
+            activeTool = nil
+            drawing.mode = .off
+            drawingNote = "This desktop would not let the overlay take the keyboard"
+            return
+        }
+        activeTool = wanted
+        drawing.mode = .drawing(wanted)
+        drawingNote = nil
+    }
+
+    /// Undo the sharer's own last stroke. Viewers' strokes are theirs to undo.
+    func undoDrawing() {
+        drawing.undo()
+    }
+
+    /// Clear every stroke, from anyone. The sharer owns the screen.
+    func clearDrawing() {
+        drawing.clearAll()
+        overlay?.clear()
+    }
+
     // MARK: Voice
 
     /// Open the microphone and start hearing viewers, for this share only.
@@ -473,6 +577,13 @@ final class SharerModel: ObservableObject {
     /// X11 that matters more than elsewhere: a held button grabs the pointer,
     /// so a stuck one makes the whole desktop unusable.
     private func teardownOverlay() {
+        // Disarm FIRST. An interactive overlay that is merely dropped leaves a
+        // fullscreen click-swallowing window on screen for as long as it takes
+        // the reference to die — and the whole desktop is unusable meanwhile.
+        if activeTool != nil { _ = overlay?.setInteractive(false) }
+        activeTool = nil
+        drawing.mode = .off
+        drawingNote = nil
         overlay?.clear()
         overlay = nil
         injector?.deactivate()

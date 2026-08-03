@@ -57,6 +57,38 @@ void *ts_gtk_overlay_create(int32_t x, int32_t y, int32_t width, int32_t height)
 void ts_gtk_overlay_update(void *handle, const uint8_t *bgra, int32_t stride,
                            int32_t width, int32_t height);
 
+// Let the SHARER draw on the overlay, rather than only watching viewers draw.
+//
+// Arming swaps the empty input region for a full one, so pointer events land
+// on the overlay instead of passing through. That is the feature — and it is
+// also a trap, because this window is override-redirect and covers the whole
+// capture region: the moment it is armed, every control underneath it,
+// including Tailscreen's own "stop drawing" button, is unreachable by mouse.
+//
+// So **Escape is the way out, and arming fails if Escape cannot work.** An
+// override-redirect window is invisible to the window manager, which therefore
+// never gives it focus; focus has to be taken explicitly. This returns 0 if
+// that did not happen, and the caller must then stay disarmed and say so. A
+// drawing mode nobody can leave is worse than no drawing mode.
+//
+// Returns 1 when the requested state was reached (including any disarm, which
+// cannot fail). GTK main thread only.
+int32_t ts_gtk_overlay_set_interactive(void *handle, int32_t on);
+
+// Where the sharer's pointer went while armed.
+//
+// `phase` is 0 = pressed, 1 = dragged, 2 = released. `x`/`y` are normalized
+// `[0,1]` over the overlay — the same space `Annotation` uses, so no host has
+// to know the capture region's pixel size.
+//
+// `on_escape` fires when the sharer presses Escape, and means "disarm now".
+// The callbacks run on the GTK main thread. Set before arming; pass NULL
+// pointers to clear.
+void ts_gtk_overlay_set_input_callbacks(
+    void *handle, void *ctx,
+    void (*on_pointer)(void *ctx, int32_t phase, double x, double y),
+    void (*on_escape)(void *ctx));
+
 // Hide the window (nobody is drawing). Callable from any thread.
 //
 // Hidden rather than left fully transparent: a transparent window still costs
