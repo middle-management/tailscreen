@@ -36,9 +36,11 @@ other. This page uses the macOS app's menus and keyboard shortcuts in its
 examples; the hub window, share card, and viewer work the same everywhere.
 The honest differences:
 
-- **Sharing works everywhere**, with one Linux caveat: capture goes through
-  X11, so a Wayland session can view but not yet share — the app detects
-  this and says so.
+- **Sharing works everywhere — including Wayland.** On Linux, an X11
+  session captures the root window directly; a Wayland session shares
+  through the ScreenCast portal, so the share starts with your
+  compositor's consent dialog. A Wayland session without a portal refuses
+  to share and says why.
 - **Remote control** works in both roles on every platform — requesting as
   a viewer, and granting as a sharer. (Linux injects via X11's XTEST
   extension; when it's absent, the capability isn't advertised and viewers

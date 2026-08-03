@@ -38,22 +38,26 @@ is `plans/platform-alignment.md`.
 | Share a single app / several apps | ✅ | ❌ | ❌ |
 | Change source mid-share | ✅ | ❌ | ❌ |
 | Preview thumbnail of what you're sharing | ✅ | ❌ | ❌ |
-| Capture backend | ScreenCaptureKit | X11 (`libxcb`) | Windows.Graphics.Capture |
+| Capture backend | ScreenCaptureKit | X11 (`libxcb`) / ScreenCast portal | Windows.Graphics.Capture |
 | Hardware encode | ✅ VideoToolbox | ❌ software libavcodec | ❌ software libavcodec |
 | HEVC ⇄ H.264 negotiation | ✅ | ✅ | ✅ |
 | Wide gamut / 10-bit / HDR | ✅ | ❌ | ❌ |
 
 The Linux sharer is display-only on purpose: window and app selections are
-*refused* rather than silently widened to the whole screen. Wayland cannot be
-shared from at all — the gate is `$DISPLAY`, and under XWayland capture sees
-only the XWayland root, so native Wayland windows never reach viewers. The
-ScreenCast portal is the answer, and it's close: `PortalCaptureKit` has
-both halves proven in CI (the portal handshake against a fake bus, the
-PipeWire buffer path against a synthetic source), and
-`TailscreenSharerPortal` gives it a `CaptureEncoding` conformance —
-frames → BGRAToI420 → libavcodec, the same seam the X11 and WGC backends
-plug into. What's left is backend selection: the app doesn't pick it yet,
-so Wayland sharing stays off until that wiring lands.
+*refused* rather than silently widened to the whole screen (only the portal
+could scope a share to one window, and the app doesn't offer that yet).
+**Wayland sharing works now.** The sharer picks its backend from the
+session kind — `XDG_SESSION_TYPE`, never `$DISPLAY`, because XWayland sets
+`$DISPLAY` and the old display-only gate made a Wayland desktop "share" an
+empty XWayland root while the UI said Sharing. An X11 session keeps direct
+root capture; a Wayland session negotiates the ScreenCast portal
+(`PortalCaptureKit` + `TailscreenSharerPortal`, PipeWire frames into the
+same BGRAToI420 → libavcodec seam as X11 and WGC), which begins with the
+compositor's consent dialog; a Wayland session with no portal refuses
+rather than falling back to the capture that would appear to work. One
+honest limit: the annotation overlay and XTEST injection are X11
+machinery, so those extras are at their best on an X11 session — the
+Wayland-native equivalents are future work.
 
 ## Audio
 

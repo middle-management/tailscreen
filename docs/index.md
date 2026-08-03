@@ -106,8 +106,8 @@ image: /assets/social-card.png
 </div>
 
 <p class="ts-intro">On a Mac, ScreenCaptureKit grabs the pixels and VideoToolbox
-encodes them in hardware; on Linux and Windows, X11 capture and
-Windows.Graphics.Capture feed libavcodec. Either way,
+encodes them in hardware; on Linux and Windows, X11 or ScreenCast-portal
+capture and Windows.Graphics.Capture feed libavcodec. Either way,
 <a href="https://tailscale.com/">Tailscale</a>&rsquo;s WireGuard tunnel carries
 the result straight to the other machine &mdash; direct when the network
 allows, through Tailscale&rsquo;s DERP relays when it doesn&rsquo;t &mdash;
@@ -259,9 +259,9 @@ any other. Your screen never touches a third-party server.</p>
 
 <div class="ts-container-narrow">
 <ul class="ts-checks">
-  <li>macOS 15 (Sequoia) or later, Linux (x86_64 or arm64 &mdash; X11 to
-  share; Wayland sessions can view), or Windows 10/11 (x64 or arm64) &mdash;
-  in any combination on the two ends.</li>
+  <li>macOS 15 (Sequoia) or later, Linux (x86_64 or arm64, X11 or Wayland),
+  or Windows 10/11 (x64 or arm64) &mdash; in any combination on the two
+  ends.</li>
   <li>A Tailscale account &mdash; the free personal tier is fine.</li>
   <li>On a Mac: Screen Recording permission; macOS asks the first time you
   share. (Accessibility too, but only if you ever grant remote control.)</li>

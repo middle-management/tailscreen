@@ -78,10 +78,11 @@ Two things to know:
   minimal containers often don't. If it fails with a `libfuse.so.2` error,
   install your distro's `fuse`/`libfuse2` package or run it with
   `APPIMAGE_EXTRACT_AND_RUN=1`.
-- **Sharing needs X11.** Capture goes through XCB + MIT-SHM, so a Wayland
-  session can view but not yet share — that needs the ScreenCast portal
-  backend, which isn't written. The app detects this and says so rather than
-  offering a button that always fails.
+- **Wayland shares through the desktop portal.** An X11 session captures
+  directly; a Wayland session shares via the ScreenCast portal, so expect
+  your compositor's consent dialog when the share starts. A Wayland session
+  with no portal (headless or minimal setups) refuses to share and says
+  why, rather than capturing the empty XWayland root.
 
 A Flatpak manifest exists under `Apps/linux/packaging/flatpak` but isn't
 published yet; it needs a Swift SDK extension.

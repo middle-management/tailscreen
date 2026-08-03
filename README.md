@@ -24,7 +24,7 @@ You click your display, the other person clicks your machine in their device lis
 
 ## What you need
 
-- macOS 15.2 (Sequoia) or later, Linux (x86_64 or arm64 — X11 to share; Wayland sessions can view), or Windows 10/11 (x64 or arm64), in any combination on the two ends.
+- macOS 15.2 (Sequoia) or later, Linux (x86_64 or arm64, X11 or Wayland — Wayland shares via the desktop portal), or Windows 10/11 (x64 or arm64), in any combination on the two ends.
 - Swift 6 toolchain if you're building from source. Otherwise just grab a release.
 - A Tailscale account, or a self-hosted control plane like [headscale](https://github.com/juanfont/headscale). The free Tailscale personal tier is fine; see [Self-hosted control planes](https://tailscreen.dev/self-hosted/) if you'd rather not depend on Tailscale Inc.
 - On a Mac: Screen Recording permission. macOS will ask the first time.
