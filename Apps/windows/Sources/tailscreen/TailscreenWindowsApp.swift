@@ -12,6 +12,7 @@ import TailscreenHubUI
 // hits and solves the same way.
 import class TailscreenAudio.VoiceUplink
 import struct TailscreenProtocol.AccountProfileLayout
+import enum TailscreenProtocol.AnnotationTool
 import class TailscreenProtocol.AccountProfileStore
 import struct TailscreenProtocol.CaptureTimings
 import struct TailscreenProtocol.ControlRequestInfo
@@ -761,6 +762,21 @@ final class AppUIState: ObservableObject {
             microphone: sharing.micAvailable
                 ? HubMicrophone(isOn: sharing.micOn) { [weak self] in self?.toggleShareMic() }
                 : nil,
+            // The sharer's own pen, offered only while a share is actually
+            // running and only when this one resolved where its content is on
+            // screen. The shared card renders the escape route in its caption
+            // BEFORE anything is armed — which is the point, because once a
+            // tool is armed this window is behind a surface that covers the
+            // shared region and the caption is no longer readable.
+            drawing: sharing.isSharing && sharing.drawingAvailable
+                ? HubDrawing(
+                    activeTool: sharing.activeDrawingTool,
+                    inkColor: sharing.drawingInkColor,
+                    note: sharing.drawingNote,
+                    selectTool: { [weak self] tool in self?.selectDrawingTool(tool) },
+                    undo: { [weak self] in self?.shareSession.undoDrawing() },
+                    clear: { [weak self] in self?.shareSession.clearDrawing() })
+                : nil,
             onStart: { [weak self] in self?.startSharing() },
             onStop: { [weak self] in self?.stopSharing() },
             onAccept: { [weak self] id in self?.answerPrompt(id, accept: true) },
@@ -1122,6 +1138,18 @@ final class AppUIState: ObservableObject {
     /// both would mute somebody in a call they are not in.
     func toggleShareMic() {
         shareSession.toggleMic()
+    }
+
+    /// Arm one of the sharer's own drawing tools, or disarm by re-picking it.
+    ///
+    /// A pass-through, and it stays one: everything that could go wrong here —
+    /// the toggle, the refusal, the guarantee that a refused arm never leaves a
+    /// window up — lives in `SharerDrawingLatch` in the portable tier, where
+    /// Linux CI tests it. The status comes back through the session's normal
+    /// publish, so a refusal renders as an unarmed toolbar plus a sentence
+    /// rather than a tool that looks selected and does nothing.
+    func selectDrawingTool(_ tool: AnnotationTool) {
+        shareSession.selectDrawingTool(tool)
     }
 
     func toggleMic() {

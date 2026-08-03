@@ -36,6 +36,15 @@ public final class AnnotationOverlay: @unchecked Sendable {
     private let lock = NSLock()
     private var handle: OpaquePointer?
     private var store = ReceivedAnnotations()
+    /// What the SHARER is drawing right now, including the stroke still under
+    /// the pointer.
+    ///
+    /// Kept apart from `store` — which holds what viewers sent — rather than
+    /// pushed through it: the in-progress stroke is replaced wholesale on every
+    /// pointer move, and `ReceivedAnnotations` is built around ops that have
+    /// already happened. Merged at render time, so there is still exactly one
+    /// rasterization and one z-order.
+    private var localStrokes: [Annotation] = []
     private var pixels: [UInt8]
     private let region: Region
 
@@ -98,14 +107,33 @@ public final class AnnotationOverlay: @unchecked Sendable {
     /// poll at frame rate for something that happens once a gesture.
     public var nextTickNs: UInt64? { lock.withLock { store.nextExpiryNs } }
 
+    /// Replace what the sharer's own pen is showing.
+    ///
+    /// Pushed on every change to the sharer's `AnnotationStore` — including
+    /// mid-drag — because a sharer who cannot see their own stroke until they
+    /// let go has no way to tell whether drawing is working at all. That is the
+    /// same cost profile a viewer dragging a pen already imposes: an op every
+    /// few milliseconds, each one a redraw.
+    public func setLocalStrokes(_ strokes: [Annotation]) {
+        lock.withLock { localStrokes = strokes }
+        redraw()
+    }
+
     /// Clear everything and hide. Called when the share ends.
     public func clear() {
-        lock.withLock { _ = store.apply(.clearAll, nowNs: 0) }
+        lock.withLock {
+            _ = store.apply(.clearAll, nowNs: 0)
+            localStrokes = []
+        }
         redraw()
     }
 
     private func redraw() {
-        let (isEmpty, annotations) = lock.withLock { (store.isEmpty, store.annotations) }
+        let (isEmpty, annotations) = lock.withLock {
+            // The sharer's own strokes go LAST, so a sharer circling something
+            // a viewer drew ends up on top of it rather than under it.
+            (store.isEmpty && localStrokes.isEmpty, store.annotations + localStrokes)
+        }
         guard let handle else { return }
 
         // Hidden rather than transparent when there is nothing to draw: a

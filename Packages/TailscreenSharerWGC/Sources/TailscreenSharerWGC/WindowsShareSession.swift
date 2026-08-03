@@ -97,6 +97,25 @@ public final class WindowsShareSession: @unchecked Sendable {
         /// neither rather than getting strokes drawn somewhere plausible and
         /// wrong.
         public var annotationsAvailable = false
+        /// Whether the SHARER can draw on their own screen. The same resolved
+        /// geometry gates it a third time, for the same reason — plus one
+        /// requirement of its own, which is that arming has to be reversible;
+        /// see ``WindowsShareSession/selectDrawingTool(_:)``.
+        public var drawingAvailable = false
+        /// The sharer's armed tool, or nil. Read back from the latch rather
+        /// than from what the toolbar last sent, so a refused arm renders as an
+        /// unarmed toolbar instead of a selected tool that does nothing.
+        public var activeDrawingTool: AnnotationTool?
+        /// Why drawing is unavailable or was refused.
+        ///
+        /// Surfaced rather than swallowed, because a refusal is otherwise
+        /// completely invisible: the pointer simply keeps going to the desktop,
+        /// which reads as "drawing is broken" rather than "Windows would not
+        /// hand the surface the keyboard, so there would have been no way out".
+        public var drawingNote: String?
+        /// The colour this sharer's strokes appear in, for the toolbar swatch.
+        /// Identity-derived like every participant's, never chosen.
+        public var drawingInkColor = Annotation.defaultColor
         /// Live capture timings, so "it's slow" can be answered with which
         /// stage rather than a guess.
         public var timings: CaptureTimings?
@@ -206,6 +225,28 @@ public final class WindowsShareSession: @unchecked Sendable {
     /// IPs invited before there was a server to tell. Guarded by `lock`.
     private var pendingPreApprovedIPs: Set<String> = []
 
+    // MARK: Sharer drawing — state
+    //
+    // Its own lock, not `lock`. Arming blocks on another thread building a
+    // window, and the disarm path joins that thread; holding the status lock
+    // across either would stall every unrelated publish behind a window
+    // manager. The ordering rule is one-way — `drawingLock` may be held while
+    // taking `lock` (through `update`), never the reverse.
+    private let drawingLock = NSLock()
+    /// The sharer's own canvas: the same `AnnotationStore` every viewer runs,
+    /// so stroke geometry, the undo stack and the identity-derived colour are
+    /// shared code rather than a second implementation on the sharing side.
+    private let drawing = AnnotationStore()
+    /// Which tool is armed, and what a refusal to arm means. Portable and
+    /// tested on Linux CI — see `SharerDrawingLatch`.
+    private var drawingLatch = SharerDrawingLatch()
+    /// The live click-swallowing window. Nil whenever nothing is armed, which
+    /// is the invariant the whole feature rests on.
+    private var drawingSurface: SharerDrawingSurface?
+    /// Where the shared content is. The same rect the injector and the overlay
+    /// got, so all three agree about what a normalized coordinate means.
+    private var drawingRegion: ScreenRegion?
+
     /// Whether this machine can capture at all — checked before any UI is
     /// offered, so an unsupported Windows build is a sentence rather than a
     /// share that fails halfway.
@@ -274,7 +315,9 @@ public final class WindowsShareSession: @unchecked Sendable {
         // land in the wrong place.
         var injector: WindowsInputInjector?
         var annotationOverlay: AnnotationOverlay?
+        var resolvedRegion: ScreenRegion?
         if case .success(let resolved) = region {
+            resolvedRegion = resolved
             injector = WindowsInputInjector(regionProvider: { resolved })
             // Annotations need the same rect as remote control, and for the
             // same reason: a stroke's coordinates are normalized against what
@@ -289,6 +332,15 @@ public final class WindowsShareSession: @unchecked Sendable {
         lock.withLock { overlay = annotationOverlay }
         let injectorAvailable = injector != nil
         let overlayAvailable = annotationOverlay != nil
+        // The sharer's own pen rides the overlay that is already there, so it
+        // is available exactly when that is. Nothing is created yet: the
+        // click-swallowing surface comes into existence only when a tool is
+        // armed, and stops existing when it is not.
+        drawingLock.withLock {
+            drawingRegion = resolvedRegion
+            drawingSurface = nil
+            drawingLatch = SharerDrawingLatch()
+        }
 
         // The timings hook is on the concrete backend rather than the
         // `CaptureEncoding` seam, so it is attached inside the factory — which
@@ -316,6 +368,8 @@ public final class WindowsShareSession: @unchecked Sendable {
             // milliseconds.
             self?.lock.withLock { self?.overlay }?.apply(op)
         }
+        wireSharerDrawing(overlay: annotationOverlay, server: newServer)
+        let inkColor = drawing.color
         let name = item.displayName
 
         newServer.onViewersChanged = { [weak self] viewers in
@@ -353,6 +407,10 @@ public final class WindowsShareSession: @unchecked Sendable {
             // microphone open, and the status it publishes says `micAvailable
             // = false`, so the two would otherwise disagree.
             self?.stopVoice()
+            // And before it for the same reason, more urgently: a capture that
+            // died on its own must not leave a click-swallowing window over a
+            // desktop that is no longer sharing anything.
+            self?.teardownDrawing()
             self?.update {
                 $0.isSharing = false
                 $0.viewerCount = 0
@@ -361,6 +419,7 @@ public final class WindowsShareSession: @unchecked Sendable {
                 $0.message = error.map { "Sharing stopped: \($0)" } ?? ""
                 $0.remoteControlAvailable = false
                 $0.annotationsAvailable = false
+                $0.drawingAvailable = false
                 $0.micAvailable = false
                 $0.micOn = false
             }
@@ -393,6 +452,10 @@ public final class WindowsShareSession: @unchecked Sendable {
             $0.message = "Starting…"
             $0.remoteControlAvailable = injectorAvailable
             $0.annotationsAvailable = overlayAvailable
+            $0.drawingAvailable = overlayAvailable
+            $0.activeDrawingTool = nil
+            $0.drawingNote = nil
+            $0.drawingInkColor = inkColor
         }
 
         // A display target with no ID: on Windows the item IS the selection,
@@ -582,6 +645,11 @@ public final class WindowsShareSession: @unchecked Sendable {
     }
 
     public func stopSharing() async {
+        // FIRST, before anything that can await or fail. A drawing surface
+        // outliving its share is a desktop that swallows every click with no
+        // share left to explain it, and `await running.stop()` is exactly the
+        // kind of step that can take a while or throw on the way past.
+        teardownDrawing()
         let running = lock.withLock {
             let value = server
             server = nil
@@ -603,9 +671,185 @@ public final class WindowsShareSession: @unchecked Sendable {
             $0.message = ""
             $0.remoteControlAvailable = false
             $0.annotationsAvailable = false
+            $0.drawingAvailable = false
             $0.micAvailable = false
             $0.micOn = false
             $0.timings = nil
+        }
+    }
+
+    // MARK: Sharer drawing
+
+    /// Connect the sharer's own strokes to their screen and to the viewers.
+    ///
+    /// Two directions, deliberately independent. The overlay shows the stroke
+    /// so the sharer can see what they are drawing; the server broadcasts it so
+    /// viewers see the same thing. Neither is derived from the other — a sharer
+    /// whose viewers have all left still gets to see their own pen, and a
+    /// stroke reaching viewers does not depend on the overlay existing.
+    private func wireSharerDrawing(
+        overlay: AnnotationOverlay?, server: TailscaleScreenShareServer
+    ) {
+        drawing.resetForNewSession()
+        drawing.onLocalOp = { [weak server] op in
+            guard let server else { return }
+            Task { await server.broadcastAnnotation(op) }
+        }
+        // Every change, including mid-drag — see `setLocalStrokes`. Bound to
+        // the overlay instance rather than read back through `self.overlay`,
+        // because this fires on the drawing surface's pump thread and must not
+        // reach for the status lock from there.
+        drawing.setRedraw { [weak overlay, drawing] in
+            overlay?.setLocalStrokes(drawing.visibleAnnotations)
+        }
+    }
+
+    /// Arm a drawing tool, or disarm with nil. Re-selecting the armed tool
+    /// disarms it, matching the viewer's toolbar.
+    ///
+    /// **Arming puts a window over the shared region that swallows every click
+    /// on this machine.** That is the feature — a stroke has to start
+    /// somewhere — and it is also the hazard, because the hub window carrying
+    /// the button that would turn it off is now underneath it.
+    ///
+    /// Three things make that survivable, and none of them is optional:
+    ///
+    ///   * The surface **refuses to arm** unless it also got the keyboard, so
+    ///     Escape is always a way out. Windows will decline
+    ///     `SetForegroundWindow` to a process that is not already in the
+    ///     foreground and report nothing; the surface checks rather than
+    ///     assumes, and a refusal leaves the tool unarmed and says why.
+    ///   * It covers the **shared region, not the desktop**. A second monitor
+    ///     stays completely usable, hub window and all — which is a better
+    ///     answer than the X11 sharer can give, since that one captures the
+    ///     whole root window.
+    ///   * Losing the keyboard **ends drawing**, rather than being noticed.
+    ///     Unlike an X11 override-redirect window, this is an ordinary
+    ///     top-level that Alt-Tab and the Windows key can take focus from, and
+    ///     a surface that kept the mouse after losing the key would be the trap
+    ///     in its purest form.
+    public func selectDrawingTool(_ tool: AnnotationTool?) {
+        typealias Published = (AnnotationTool?, SharerDrawingRefusal?)
+        let (activeTool, refusal) = drawingLock.withLock { () -> Published in
+            // Latch the tool BEFORE the surface can exist. The surface starts
+            // delivering the instant it is up, and a press that beat this
+            // assignment would be committed with whatever tool was last set —
+            // the default pen, on the first arm of a share.
+            if let tool, tool != drawingLatch.activeTool { drawing.mode = .drawing(tool) }
+            drawingLatch.select(tool, surface: armDrawingSurfaceLocked)
+            drawing.mode = drawingLatch.activeTool.map { .drawing($0) } ?? .off
+            return (drawingLatch.activeTool, drawingLatch.refusal)
+        }
+        update {
+            $0.activeDrawingTool = activeTool
+            $0.drawingNote = refusal.map(Self.note(for:))
+        }
+    }
+
+    /// The latch's surface seam, on the Windows side. **`drawingLock` held.**
+    private func armDrawingSurfaceLocked(_ tool: AnnotationTool?) -> SharerDrawingArmResult {
+        switch SharerDrawingSurfacePlan.plan(
+            tool: tool, hasSurface: drawingSurface != nil, hasRegion: drawingRegion != nil)
+        {
+        case .release:
+            // Destroying is the disarm. There is no style bit to restore and
+            // therefore no way for a disarm to half-happen — which is the
+            // entire argument for this being a second window rather than a mode
+            // on the annotation overlay.
+            drawingSurface = nil
+            return .armed
+        case .keep:
+            // Only the tool changed, so leave the window — and with it the
+            // keyboard focus it had to fight for — exactly where it is.
+            return .armed
+        case .refuse(let why):
+            return .refused(why)
+        case .create:
+            break
+        }
+        guard let region = drawingRegion else { return .refused(.noSurface) }
+
+        switch SharerDrawingSurface.arm(
+            region: region,
+            onPointer: { [weak self] phase, x, y in
+                // On the surface's pump thread. Straight into the store, which
+                // is lock-guarded and whose redraw posts to the overlay's own
+                // thread — no session lock is taken from here, which is what
+                // keeps this off the path `drawingLock` is holding.
+                guard let self else { return }
+                let point = CGPoint(x: x, y: y)
+                switch phase {
+                case 0: self.drawing.beginStroke(at: point)
+                case 1: self.drawing.extendStroke(to: point)
+                default: self.drawing.endStroke()
+                }
+            },
+            onRelease: { [weak self] in
+                // Escape, or the surface losing the keyboard. **Hopped, not
+                // called through.** This fires on the pump thread, and
+                // disarming destroys the surface by joining that very thread —
+                // calling straight through would deadlock the sharer's desktop
+                // in the armed state, which is the one outcome worse than not
+                // shipping the feature.
+                guard let self else { return }
+                DispatchQueue.global().async { self.releaseDrawing() }
+            }
+        ) {
+        case .armed(let surface):
+            drawingSurface = surface
+            return .armed
+        case .refused(let why):
+            return .refused(why)
+        }
+    }
+
+    /// The sharer pressed Escape, or the surface lost the keyboard.
+    private func releaseDrawing() {
+        let refusal = drawingLock.withLock { () -> SharerDrawingRefusal? in
+            drawingLatch.release(surface: armDrawingSurfaceLocked)
+            drawing.mode = .off
+            return drawingLatch.refusal
+        }
+        update {
+            $0.activeDrawingTool = nil
+            $0.drawingNote = refusal.map(Self.note(for:))
+        }
+    }
+
+    /// Undo the sharer's own last stroke. Viewers' strokes are theirs to undo.
+    public func undoDrawing() {
+        drawing.undo()
+    }
+
+    /// Clear every stroke, from anyone. The sharer owns the screen.
+    public func clearDrawing() {
+        drawing.clearAll()
+        lock.withLock { overlay }?.clear()
+    }
+
+    /// Drop the drawing surface, whatever this session believes about it.
+    ///
+    /// Unconditional on purpose — see `SharerDrawingLatch.teardown`. Callable
+    /// from any teardown path, including the one where capture died on its own.
+    private func teardownDrawing() {
+        drawingLock.withLock {
+            drawingLatch.teardown(surface: armDrawingSurfaceLocked)
+            drawing.mode = .off
+        }
+        update {
+            $0.activeDrawingTool = nil
+            $0.drawingNote = nil
+        }
+    }
+
+    /// A refusal, in a sentence for the person who pressed the button.
+    private static func note(for refusal: SharerDrawingRefusal) -> String {
+        switch refusal {
+        case .noSurface:
+            return "Drawing needs a capture target this app can locate on screen."
+        case .noKeyboard:
+            return "Windows would not give the drawing surface the keyboard, "
+                + "so Esc could not have stopped it. Click this window, then try again."
         }
     }
 
