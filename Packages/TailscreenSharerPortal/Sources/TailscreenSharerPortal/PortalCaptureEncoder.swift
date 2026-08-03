@@ -18,14 +18,22 @@ import TailscreenSharer
 /// application. That is the reason this exists; it is not a second way to do
 /// the same job.
 ///
-/// **It is constructed with an already-negotiated session, not a selection.**
-/// Same shape as the Windows backend taking an already-picked
+/// **It is constructed against an already-negotiated session, not a
+/// selection.** Same shape as the Windows backend taking an already-picked
 /// `WGC.CaptureItem`, and for a sharper reason: negotiating raises a consent
 /// dialog. The host consents once, holds the `PortalSession`, and the capture
 /// factory closes over it — which is what makes the server's restart budget
 /// safe to use. A backend that renegotiated on restart would answer a dropped
 /// PipeWire connection by putting a dialog in front of somebody who is already
 /// mid-share.
+///
+/// It takes a **closure returning a fresh PipeWire descriptor**, not the
+/// `PortalSession` itself, and that is deliberate: a session owns a private
+/// D-Bus connection libdbus expects to be driven from ONE thread, while
+/// `start()` is called by the server from whichever thread it likes. Handing
+/// over a closure leaves the threading discipline where the session actually
+/// lives — in the host — instead of spreading it across a seam. It also keeps
+/// this type free of any D-Bus concept at all.
 ///
 /// `selectionData` still arrives and is still read: it carries the quality
 /// knobs. Its `kind` is *not* checked, because unlike the other two backends
@@ -84,7 +92,14 @@ public final class PortalCaptureEncoder: CaptureEncoding, @unchecked Sendable {
     public static let defaultH264Encoders = ["libx264", "libopenh264"]
     public static let defaultHEVCEncoders = ["libx265"]
 
-    private let session: PortalSession
+    /// Opens a fresh PipeWire descriptor on the host's already-consented
+    /// session. Called once per `start`, including after a restart — which is
+    /// why it is a closure and not a value: `PortalStream` takes ownership of
+    /// the descriptor, so a second start needs a second one.
+    ///
+    /// The host is responsible for calling this on whatever thread owns its
+    /// D-Bus connection.
+    private let openFileDescriptor: @Sendable () throws -> Int32
     private let nodeID: UInt32
 
     private let lock = NSLock()
@@ -118,12 +133,13 @@ public final class PortalCaptureEncoder: CaptureEncoding, @unchecked Sendable {
     private var currentBitrate: Int?
 
     /// - Parameters:
-    ///   - session: an already-negotiated portal session. **Consent has
-    ///     already been given**; this backend never raises a dialog.
     ///   - nodeID: which of the session's streams to capture.
-    public init(session: PortalSession, nodeID: UInt32) {
-        self.session = session
+    ///   - openFileDescriptor: opens a PipeWire descriptor on the host's
+    ///     already-negotiated session. **Consent has already been given**;
+    ///     this backend never raises a dialog.
+    public init(nodeID: UInt32, openFileDescriptor: @escaping @Sendable () throws -> Int32) {
         self.nodeID = nodeID
+        self.openFileDescriptor = openFileDescriptor
     }
 
     deinit {
@@ -168,7 +184,7 @@ public final class PortalCaptureEncoder: CaptureEncoding, @unchecked Sendable {
         // path here.
         let fileDescriptor: Int32
         do {
-            fileDescriptor = try session.openPipeWireFileDescriptor()
+            fileDescriptor = try openFileDescriptor()
         } catch {
             lock.withLock { running = false }
             throw StartError.captureUnavailable("\(error)")
