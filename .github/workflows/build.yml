@@ -726,6 +726,46 @@ jobs:
           test "$status" -eq 0
           grep -q 'CGTKOVERLAY_SELFTEST result=PASS' /tmp/overlay-selftest.log
 
+      - name: Headless overlay-INPUT self-test (Xvfb + compositor + XTEST)
+        # The other half of the same window. The step above asks whether the
+        # overlay's pixels reach the screen; this asks whether it can take the
+        # POINTER back from the desktop when the sharer arms a tool, and give it
+        # up again on Escape.
+        #
+        # Worth its own gate because the two ways it breaks are the two worst
+        # this feature has, and neither errors:
+        #   • the input region never flips → every click sails through to the
+        #     desktop, so drawing silently does nothing while the sharer's
+        #     clicks land on whatever is underneath;
+        #   • Escape never arrives → the sharer is behind a fullscreen,
+        #     override-redirect, click-swallowing window with no decoration and
+        #     no way out. That is a person locked out of their own machine.
+        #
+        # It drives REAL X11 events through XTEST rather than calling the GTK
+        # handlers, because calling the handlers would prove the Swift wiring
+        # and skip precisely those two failures. All four mutations have been
+        # checked to fail it: no input-region flip, drag offsets not rebased on
+        # the press point, Escape swallowed, and focus never taken (which must
+        # make the overlay REFUSE to arm rather than trap anyone).
+        #
+        # Its own Xvfb, for the same compositor-ordering reason as above.
+        run: |
+          Xvfb :96 -screen 0 1280x720x24 >/dev/null 2>&1 &
+          sleep 3
+          DISPLAY=:96 xcompmgr >/dev/null 2>&1 &
+          sleep 2
+          if timeout 90 env DISPLAY=:96 GDK_BACKEND=x11 LIBGL_ALWAYS_SOFTWARE=1 \
+            GALLIUM_DRIVER=llvmpipe \
+            Apps/linux/.build/debug/tailscreen --overlay-input-self-test \
+            > /tmp/overlay-input-selftest.log 2>&1; then
+            status=0
+          else
+            status=$?
+          fi
+          cat /tmp/overlay-input-selftest.log
+          test "$status" -eq 0
+          grep -q 'CGTKOVERLAY_INPUT_SELFTEST result=PASS' /tmp/overlay-input-selftest.log
+
       # Both saves live at the end so they bank objects from a run that failed
       # the typecheck or the self-test — the compile is the expensive part and
       # it already happened. The product binaries are excluded: they are

@@ -1,4 +1,5 @@
 import SwiftCrossUI
+import TailscreenProtocol
 
 /// Centered spinner + status line — the pre-list phases (bringing the node up,
 /// discovering, connecting) and the direct-connect placard.
@@ -111,6 +112,9 @@ public struct ShareCard: View {
     /// setting persists and is the least urgent thing on the card, whereas
     /// talking is a live session control that belongs beside Stop Sharing.
     let microphone: HubMicrophone?
+    /// The sharer's own drawing tools, when this host can put strokes on its
+    /// own screen. Nil renders nothing.
+    let drawing: HubDrawing?
     let onStart: @MainActor @Sendable () -> Void
     let onStop: @MainActor @Sendable () -> Void
     let onAccept: @MainActor @Sendable (String) -> Void
@@ -130,6 +134,7 @@ public struct ShareCard: View {
         quality: HubQuality? = nil,
         extraAction: HubAction? = nil,
         microphone: HubMicrophone? = nil,
+        drawing: HubDrawing? = nil,
         onStart: @escaping @MainActor @Sendable () -> Void,
         onStop: @escaping @MainActor @Sendable () -> Void,
         onAccept: @escaping @MainActor @Sendable (String) -> Void = { _ in },
@@ -148,6 +153,7 @@ public struct ShareCard: View {
         self.quality = quality
         self.extraAction = extraAction
         self.microphone = microphone
+        self.drawing = drawing
         self.onStart = onStart
         self.onStop = onStop
         self.onAccept = onAccept
@@ -176,6 +182,27 @@ public struct ShareCard: View {
                 if let microphone {
                     MicrophoneButton(
                         isOn: microphone.isOn, onToggle: microphone.toggle)
+                }
+                if let drawing {
+                    VStack(alignment: .leading, spacing: 2) {
+                        AnnotationToolbar(
+                            activeTool: drawing.activeTool,
+                            inkColor: drawing.inkColor,
+                            showsStats: false,
+                            onSelectTool: drawing.selectTool,
+                            onUndo: drawing.undo,
+                            onClear: drawing.clear)
+                        // The caption is load-bearing rather than decorative:
+                        // arming a tool hands the whole screen to a
+                        // click-through-no-longer overlay, so the way back has
+                        // to be on screen BEFORE it is needed — once armed,
+                        // this window is behind the overlay and unreadable.
+                        Text(drawing.note ?? (drawing.activeTool == nil
+                            ? "Drawing takes over the screen; Esc gives it back"
+                            : "Press Esc to stop drawing"))
+                            .font(.caption)
+                            .foregroundColor(HubStyle.secondaryText)
+                    }
                 }
                 ForEach(prompts, id: \.id) { prompt in
                     HStack(spacing: 8) {
@@ -265,5 +292,39 @@ public struct HubMicrophone: Sendable {
     public init(isOn: Bool, toggle: @escaping @MainActor @Sendable () -> Void) {
         self.isOn = isOn
         self.toggle = toggle
+    }
+}
+
+
+/// The sharer's own drawing tools, as the share card needs them.
+///
+/// Values plus callbacks, like `HubMicrophone` and `HubToggle`, because
+/// swift-cross-ui rebuilds the card from the host's state on every change.
+public struct HubDrawing: Sendable {
+    public let activeTool: AnnotationTool?
+    /// The colour this sharer's strokes appear in — identity-derived, like
+    /// every participant's.
+    public let inkColor: Annotation.RGBA
+    /// Why drawing is unavailable or refused, when it is. Nil renders the
+    /// ordinary hint instead.
+    public let note: String?
+    public let selectTool: @MainActor @Sendable (AnnotationTool) -> Void
+    public let undo: @MainActor @Sendable () -> Void
+    public let clear: @MainActor @Sendable () -> Void
+
+    public init(
+        activeTool: AnnotationTool?,
+        inkColor: Annotation.RGBA,
+        note: String? = nil,
+        selectTool: @escaping @MainActor @Sendable (AnnotationTool) -> Void,
+        undo: @escaping @MainActor @Sendable () -> Void,
+        clear: @escaping @MainActor @Sendable () -> Void
+    ) {
+        self.activeTool = activeTool
+        self.inkColor = inkColor
+        self.note = note
+        self.selectTool = selectTool
+        self.undo = undo
+        self.clear = clear
     }
 }

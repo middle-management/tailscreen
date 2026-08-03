@@ -32,6 +32,12 @@ public struct AnnotationToolbar: View {
     /// This viewer's assigned stroke color (identity-derived, not chosen).
     let inkColor: Annotation.RGBA
     let statsShown: Bool
+    /// Whether to offer the stats toggle at all.
+    ///
+    /// False on the SHARER, which reuses this toolbar to draw on its own
+    /// screen: there is no decoded video on that side and therefore no
+    /// resolution or fps to show, so the button would open an empty HUD.
+    let showsStats: Bool
     let onSelectTool: @MainActor @Sendable (AnnotationTool) -> Void
     let onUndo: @MainActor @Sendable () -> Void
     let onClear: @MainActor @Sendable () -> Void
@@ -40,15 +46,17 @@ public struct AnnotationToolbar: View {
     public init(
         activeTool: AnnotationTool?,
         inkColor: Annotation.RGBA,
-        statsShown: Bool,
+        statsShown: Bool = false,
+        showsStats: Bool = true,
         onSelectTool: @escaping @MainActor @Sendable (AnnotationTool) -> Void,
         onUndo: @escaping @MainActor @Sendable () -> Void,
         onClear: @escaping @MainActor @Sendable () -> Void,
-        onToggleStats: @escaping @MainActor @Sendable () -> Void
+        onToggleStats: @escaping @MainActor @Sendable () -> Void = {}
     ) {
         self.activeTool = activeTool
         self.inkColor = inkColor
         self.statsShown = statsShown
+        self.showsStats = showsStats
         self.onSelectTool = onSelectTool
         self.onUndo = onUndo
         self.onClear = onClear
@@ -73,7 +81,9 @@ public struct AnnotationToolbar: View {
             Divider()
             Button("↶", action: onUndo)
             Button("✕", action: onClear)
-            Button(statsShown ? "[▤]" : " ▤ ", action: onToggleStats)
+            if showsStats {
+                Button(statsShown ? "[▤]" : " ▤ ", action: onToggleStats)
+            }
             Spacer()
         }
         .padding(.horizontal, 12)

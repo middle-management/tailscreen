@@ -34,6 +34,10 @@ let package = Package(
         // back. Already in the graph transitively via TailscreenLinuxBackends;
         // declared here because this package imports it directly.
         .package(path: "../../Packages/X11CaptureKit"),
+        // XTEST injection, for the overlay INPUT self-test: it drives real X11
+        // events at the armed overlay rather than calling its handlers, which
+        // is the only way to prove the input region actually flipped.
+        .package(path: "../../Packages/XTestInjectKit"),
         // The hub's look — header, screen rows, cards, placards — shared with
         // the Windows app. It used to live in this executable as
         // `ViewerChrome.swift`; it moved out when a second swift-cross-ui app
@@ -102,6 +106,7 @@ let package = Package(
                 // actually landed. Already in the graph via TailscreenSharerLinux;
                 // named explicitly because this target imports it directly.
                 .product(name: "X11CaptureKit", package: "X11CaptureKit"),
+                .product(name: "XTestInjectKit", package: "XTestInjectKit"),
                 .product(name: "SwiftCrossUI", package: "swift-cross-ui"),
                 .product(name: "DefaultBackend", package: "swift-cross-ui"),
                 .product(name: "TailscreenViewer", package: "TailscreenKit"),
