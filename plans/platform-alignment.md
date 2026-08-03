@@ -422,9 +422,45 @@ Kind B. Sequenced by how many rows each unblocks.
     every check green. That was verified, not assumed, which is the difference
     between an honest gap and an unnoticed one.
 
-  *Next: the `CaptureEncoding` conformance, then backend selection. Note that
-  selection is **not** "Wayland → portal": the portal is the better path on X11
-  sessions too, because it is the only one that can share a single window.*
+  *Third increment landed: the `CaptureEncoding` conformance exists.*
+  `Packages/TailscreenSharerPortal` is the Wayland-capable sibling of
+  `X11CaptureEncoder` — PipeWire frames → the portable `BGRAToI420` →
+  libavcodec. Its own package, not a target inside TailscreenLinuxBackends, so
+  a viewer-only run and the `linux-viewer` gate do not acquire libdbus and
+  libpipewire. Four things worth carrying forward:
+
+  - **It is constructed with an already-negotiated session**, the same shape
+    the Windows backend takes an already-picked capture item — and for a
+    sharper reason. Negotiating raises a consent dialog, so a backend that
+    renegotiated on restart would answer a dropped PipeWire connection by
+    prompting somebody who is already mid-share. Holding the session is what
+    makes the server's existing restart budget safe to use here.
+  - **A resized window rebuilds the encoder rather than ending the share.**
+    The portal is the only backend that can share a single window, so a
+    mid-stream geometry change is ordinary rather than exceptional. The server
+    already supports it: parameter sets are documented as "once per encoder
+    configuration" and the anchor handler re-anchors only when its inputs
+    genuinely changed. The debounce is timed from the last REBUILD, not the
+    last mismatch — timing it from the mismatch would restart the clock on
+    every dropped frame and leave a continuously dragged window frozen after
+    the user let go.
+  - **The decisions were extracted because this backend can never be gated.**
+    `PortalCapturePlan` (portable tier) and `FrameHandoff` (the
+    PipeWire-thread → encode-thread double buffer) carry every branch that
+    could be *wrong* rather than merely unexercised, and both are tested on
+    Linux CI. Same reasoning as `SharerDrawingLatch`, and deliberately not the
+    same claim as a gate.
+  - **A test that could not fail was found and replaced.** The torn-frame
+    check was originally a stress loop; against a deliberately broken
+    `publish` it scored zero hits in 3000 iterations. It is now deterministic —
+    the conversion is halted mid-write and `publish` is called at that instant
+    — and it does fail against that mutation.
+
+  *Next: backend selection, which is the last thing between this and a share
+  that uses it. Note that selection is **not** "Wayland → portal": the portal
+  is the better path on X11 sessions too, because it is the only one that can
+  share a single window. Still unbuilt: system audio (the portal has no
+  equivalent), preview thumbnails, and multi-stream shares.*
 - **3.4 · Change source mid-share, preview thumbnail** — smaller, and both
   become easier once 3.3 exists on Linux.
 
