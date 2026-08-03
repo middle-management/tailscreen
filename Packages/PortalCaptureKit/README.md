@@ -11,17 +11,22 @@ Wrapped the way `X11CaptureKit` wraps libxcb:
 | `CPipeWireSys`     | `systemLibrary` over libpipewire + libspa                             |
 | `CPortalCapture`   | C shim — the portal handshake and the PipeWire stream                 |
 | `CPortalFakeBus`   | a fake portal service, for tests. **Not in the library product.**     |
+| `CPipeWireFakeSource` | a synthetic PipeWire producer, for tests. **Likewise not in it.**  |
 | `PortalCaptureKit` | Foundation-only Swift wrapper (`PortalSession`, `PortalStream`)       |
-| `portal-probe`     | the link check and the two drivable checks (below)                    |
+| `portal-probe`     | the link check and the drivable checks (below)                        |
 
 ## Status — read this before trusting anything below
 
-This is a **first increment**. It is not wired into `Apps/linux`, there is no
-`CaptureEncoding` conformance yet, and **not one pixel has been captured
-through it.** What has and has not actually been run is in
+This is still an early increment: it is not wired into `Apps/linux` and there is
+no `CaptureEncoding` conformance yet.
+
+**Pixels now go through the PipeWire half** — a local `pipewire` daemon plus
+`CPipeWireFakeSource`, with the geometry, the padded stride and the channel
+order all asserted. That closed what was the largest unverified surface here.
+**No pixel has come from a real portal or a real compositor**, and none can
+without a human at a desk. What has and has not actually been run is in
 [What is proven](#what-is-proven-and-what-is-not), and the boundary is sharper
-than usual because this package's central feature cannot be exercised without a
-human at a desk.
+than usual for that reason.
 
 ## Why the portal, when X11 capture already works
 
@@ -86,7 +91,8 @@ What this package does instead is make sure the buffer it hands over is the one
 
 ## Traps
 
-Four, and none of them fails loudly.
+Five, and none of them fails loudly. Traps 1, 2, 4 and 5 now have gates that
+have been watched to fail; trap 3 does not, and says so.
 
 **1 · Subscribe to the Response signal before making the call.** Every portal
 method returns immediately with an object path; the real answer arrives later as
@@ -107,6 +113,9 @@ against hand-written strings.
 **2 · Ask for BGRx/BGRA only.** PipeWire will happily negotiate RGBx, YUY2 or
 NV12 if you offer them, and the buffer then is not what `BGRAToI420` expects —
 the result is swapped channels or garbage, not an error.
+`portal-probe --pipewire-format-guard` points an RGBx-only producer at the real
+consumer and requires that nothing is negotiated; adding `SPA_VIDEO_FORMAT_RGBx`
+back to the offer makes it fail with 150 frames accepted.
 
 **3 · Constrain `SPA_PARAM_BUFFERS_dataType` to MemPtr/MemFd.** On a GPU
 compositor the producer would rather hand over a DMA-BUF, and then
@@ -116,9 +125,29 @@ stream that connects, runs, and delivers nothing but null pointers. Accepting
 the CPU-copy cost is a deliberate first-increment choice; zero-copy DMA-BUF
 import belongs with a GPU encoder, not here.
 
+**This is the one trap with no gate.** Producing a DMA-BUF needs a GPU, and a CI
+container has none, so deleting the `dataType` constraint leaves every check in
+this package green — which was checked, not assumed. Treat it as reasoning.
+
 **4 · `stride` is not `width * 4`.** PipeWire producers pad rows. Reading at
 `width * 4` skews the image progressively further with every row — a recognisable
-diagonal smear rather than a crash.
+diagonal smear rather than a crash. The synthetic producer therefore pads
+deliberately (64 bytes) and fills the padding with a poison byte, so
+`--pipewire-capture-test` fails on a consumer that reads at `width * 4`: it
+reports the wrong stride *and* a pixel at row 1 reading back as `5a 5a 5a`.
+
+**5 · "The source stopped" is a registry event, not a stream state.** This one
+was found by finally running the thing. The obvious implementation — treat
+`PW_STREAM_STATE_UNCONNECTED` as the producer going away — never fires:
+destroying the producer drops the consumer's stream to **paused**, which is also
+what a renegotiation looks like, and `UNCONNECTED` is what a stream reaches when
+*we* disconnect it. A sharer would have sat on a dead session showing viewers a
+frozen screen with nothing anywhere reporting an end. `ts_pwcap_open` now
+listens on the PipeWire registry for the removal of the node the portal handed
+us, and emits `TS_PWCAP_STATE_ENDED` at most once. Removing that listener makes
+`--pipewire-capture-test` fail with `no .ended arrived within 5s (states:
+[connecting, connecting, streaming, connecting])` — that trailing `connecting`
+is the paused state, i.e. the bug in one line of output.
 
 Two smaller ones. `pw_context_connect_fd` **takes** the descriptor and closes it
 when the core goes away, so closing it yourself as well is a double close on a
@@ -131,8 +160,9 @@ later method as an **object path**; that asymmetry is in the spec.
 
 This section exists because this repo has shipped gates that could not fail.
 
-Actually run, on a container with libdbus and libpipewire and **no desktop
-session of any kind**:
+Actually run, on a container with libdbus, libpipewire, a locally-started
+`pipewire` daemon and **no desktop session, compositor or session manager of any
+kind**:
 
 | Check | What it proves |
 |---|---|
@@ -141,28 +171,47 @@ session of any kind**:
 | `portal-probe --link-check` | **both libraries actually link**, and a call into each returns. A SwiftPM library target is compiled but never linked, so a missing `-lpipewire-0.3` would otherwise stay invisible until something downstream linked it |
 | `portal-probe --handshake-test` | the whole client handshake against `CPortalFakeBus` on a private bus: CreateSession → SelectSources → Start → OpenPipeWireRemote, the options dicts a server can read, the subscribe-before-call ordering, the `streams` array parsed, the restore token picked up, and a file descriptor surviving the round trip usable (`fstat`) |
 | `portal-probe --handshake-cancel` | a declined request surfaces as `.cancelled`, not as an error |
+| `portal-probe --pipewire-capture-test` | **real pixels through `portal_stream.c`**: a format negotiated and read back through `ts_pwcap_size`, buffers dequeued on PipeWire's own thread, a *padded* `chunk->stride` honoured, the BGRA channel order `BGRAToI420` expects, the padding left untouched, and the source-went-away signal arriving exactly once |
+| `portal-probe --pipewire-format-guard` | an RGBx-only producer negotiates **nothing** — with a BGRx producer run first in the same process, so "no frames" cannot pass by the harness being broken |
+| `portal-probe --pipewire-malformed-guard` | a producer claiming a stride wider than its mapping, and one flagging its buffers `SPA_CHUNK_FLAG_CORRUPTED`, are both dropped rather than read |
 
-The handshake checks were **verified falsifiable**: with the Request-path
-derivation deliberately broken, `--handshake-test` fails with a timeout naming
-the path, and restoring it makes it pass again.
+Every one of those was **verified falsifiable**, by breaking the implementation
+and watching the check fail:
 
-Not proven by anything here, and not provable without a desktop session:
+| Mutation | What failed |
+|---|---|
+| Request-path derivation broken | `--handshake-test` times out naming the path (and the spec's "adopt the returned handle" fallback does not rescue it) |
+| `stride = width * 4` instead of `chunk->stride` | `10/10 frames were wrong: stride was 1280, expected 1344 … pixel (0,1) was BGR 5a 5a 5a` |
+| `SPA_VIDEO_FORMAT_RGBx` added to the offer | `150 frames were accepted from an RGBx-only producer` |
+| registry listener removed | `no .ended arrived within 5s (states: [connecting, connecting, streaming, connecting])` |
+| `stride * height > maxsize` bound removed | `123 frames were delivered from a producer with stride wider than the buffer` |
+| `SPA_CHUNK_FLAG_CORRUPTED` check removed | `240 frames were delivered from a producer with SPA_CHUNK_FLAG_CORRUPTED` |
+| `SPA_PARAM_BUFFERS_dataType` constraint removed | **nothing.** See below |
+
+Not proven by anything here:
 
 - **Any real portal.** The fake answers instantly and correctly. It is not
   xdg-desktop-portal-gnome, -kde, -wlr or -gtk, each of which has its own
   quirks, and it has no consent dialog.
-- **The entire PipeWire half.** `portal_stream.c` compiles and links. No stream
-  has been opened, no format negotiated, no buffer dequeued, no frame delivered.
-  Every one of the four traps above is reasoned from the API contract, not
-  observed. **Assume this half has bugs.**
-- **A single pixel.** Nothing in this repo has yet turned a portal frame into
-  video.
-- Cursor compositing, multi-monitor selection, mid-stream resize, DMA-BUF
-  rejection actually happening, and the restore-token flow across restarts.
+- **A pixel from a compositor.** The frames above come from a producer this repo
+  wrote, over a descriptor obtained by connecting a socket to the daemon rather
+  than from `OpenPipeWireRemote`. Everything downstream of that `(fd, node id)`
+  is now exercised; the two ends of the join are not.
+- **The autoconnect handshake.** On a desktop, wireplumber links the capture
+  stream to the compositor's node in response to `PW_STREAM_FLAG_AUTOCONNECT`.
+  There is no session manager in a container, so the harness creates that link
+  itself with `link-factory`.
+- **The DMA-BUF constraint (trap 3).** Producing a DMA-BUF needs a GPU. Deleting
+  the `dataType` constraint leaves every check here green — checked, not
+  assumed. This is the one trap still standing on reasoning alone.
+- Cursor compositing, multi-monitor selection, mid-stream resize, and the
+  restore-token flow across restarts.
+- **Video.** Nothing in this repo yet turns a portal frame into an encoded
+  stream: there is no `CaptureEncoding` conformance.
 
-The CI leg (`linux-portal`) runs exactly the five rows in the table above and
-claims exactly that. It is a **compile, link and D-Bus-protocol** gate. It is
-not a capture gate and must never be described as one.
+The CI leg (`linux-portal`) runs exactly the eight rows in the table above and
+claims exactly that. It is a **compile, link, D-Bus-protocol and PipeWire**
+gate. It is not a *portal* capture gate and must never be described as one.
 
 ## Build & test
 
@@ -177,6 +226,16 @@ P=Packages/PortalCaptureKit/.build/debug/portal-probe
 $P --link-check
 dbus-run-session -- $P --handshake-test
 dbus-run-session -- $P --handshake-cancel
+
+# The PipeWire half, against a daemon you start yourself. No compositor, no
+# dialog, no person — but these FAIL rather than skip without a daemon.
+sudo apt-get install -y pipewire
+export XDG_RUNTIME_DIR=/tmp/pipewire-check
+mkdir -p "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR"
+pipewire > /tmp/pipewire.log 2>&1 &
+$P --pipewire-capture-test
+$P --pipewire-format-guard
+$P --pipewire-malformed-guard
 
 # On a real desktop session, with a person present:
 $P --capabilities     # asks the real portal what it offers; raises no dialog
@@ -200,11 +259,11 @@ paths it needs do come through; the define is a no-op on modern glibc.
 
 In order, because each is a prerequisite for judging the next:
 
-1. **Verify the PipeWire half against something real.** A local `pipewire`
-   daemon plus a synthetic producer node would gate format negotiation, the
-   buffer params, the process callback and the stride handling — the four traps
-   above — without a compositor or a consent dialog. That is the largest
-   unverified surface here and the cheapest remaining thing to make honest.
+1. ~~Verify the PipeWire half against something real.~~ **Done** — a local
+   daemon plus `CPipeWireFakeSource`, gating format negotiation, the buffer
+   params, the process callback, the stride handling and the end-of-source
+   signal. It found one real bug (trap 5) and left exactly one trap ungated
+   (trap 3, DMA-BUF, which needs a GPU).
 2. `PortalCaptureEncoder` in `TailscreenLinuxBackends`: the `CaptureEncoding`
    conformance, wiring these frames through `BGRAToI420` into the libavcodec
    encoder `X11CaptureEncoder` already uses.

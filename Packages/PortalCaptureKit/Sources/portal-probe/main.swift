@@ -14,6 +14,19 @@ import PortalCaptureKit
 //                                 bus this process can see. Proves the D-Bus
 //                                 half; proves nothing about a real portal.
 //                                 Run it under `dbus-run-session`.
+//   portal-probe --pipewire-capture-test
+//                                 real pixels through the PipeWire half,
+//                                 against a local daemon and a synthetic
+//                                 producer. No compositor, no dialog, no
+//                                 person. See PipeWireChecks.swift.
+//   portal-probe --pipewire-format-guard
+//                                 the same harness, proving an RGBx-only
+//                                 producer is refused rather than silently
+//                                 accepted with red and blue swapped.
+//   portal-probe --pipewire-malformed-guard
+//                                 the same harness, proving a producer that
+//                                 lies about its stride is dropped rather
+//                                 than read past the end of its mapping.
 //   portal-probe --capabilities   ask the REAL portal on this session bus what
 //                                 it offers. Raises no dialog.
 //   portal-probe --capture        the real thing: raise the consent dialog,
@@ -176,6 +189,12 @@ if arguments.contains("--handshake-cancel") {
     }
 }
 
+// MARK: - --pipewire-capture-test / --pipewire-format-guard
+
+if arguments.contains("--pipewire-capture-test") { runPipeWireCaptureTest() }
+if arguments.contains("--pipewire-format-guard") { runPipeWireFormatGuard() }
+if arguments.contains("--pipewire-malformed-guard") { runPipeWireMalformedGuard() }
+
 // MARK: - --capabilities
 
 if arguments.contains("--capabilities") {
@@ -246,6 +265,22 @@ emit(
                          half only — no consent dialog, no PipeWire, no pixels.
       --handshake-cancel the same, asserting a declined request reads as
                          declined rather than as an error.
+      --pipewire-capture-test
+                         real pixels through the PipeWire half: a local daemon
+                         plus a synthetic producer, asserting the negotiated
+                         geometry, the padded stride, the channel order and the
+                         source-went-away signal. Needs a running `pipewire`;
+                         needs no compositor and no person. FAILS rather than
+                         skips when there is no daemon.
+      --pipewire-format-guard
+                         the same harness against a producer offering ONLY
+                         RGBx, asserting nothing is negotiated — a stream that
+                         accepted it would show every viewer swapped channels
+                         with no error anywhere.
+      --pipewire-malformed-guard
+                         the same harness with a producer that lies about its
+                         stride, and one that flags its buffers corrupted:
+                         both must be dropped rather than read.
       --capabilities     ask the REAL portal what it offers. No dialog.
       --capture          the real thing. Raises a consent dialog and needs a
                          person to answer it.

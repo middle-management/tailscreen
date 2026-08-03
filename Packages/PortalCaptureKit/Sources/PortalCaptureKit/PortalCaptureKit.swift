@@ -288,6 +288,11 @@ public final class PortalStream: @unchecked Sendable {
         /// clicking the compositor's own "stop sharing". A normal end to a
         /// share, deliberately distinct from ``failed`` so a host tears down
         /// quietly instead of trying to restart something that is gone.
+        ///
+        /// Delivered at most once, and derived from the PipeWire registry
+        /// rather than from the stream's state: a producer's death drops the
+        /// consumer stream to *paused*, which is what a renegotiation also
+        /// looks like.
         case ended(String)
     }
 
@@ -372,6 +377,13 @@ public final class PortalStream: @unchecked Sendable {
     /// Frames delivered so far — the liveness signal a `CaptureEncoding`
     /// backend feeds to the server's hung-backend watchdog.
     public var frameCount: UInt64 { ts_pwcap_frame_count(handle) }
+
+    /// The graph id of this stream's own node, once the daemon has assigned
+    /// one. Useful for correlating a misbehaving capture with `pw-top`, and
+    /// necessary for a test harness that has to create the link a session
+    /// manager would create. Never read it from inside a callback: it takes
+    /// the stream's loop lock.
+    public var nodeID: UInt32 { ts_pwcap_node_id(handle) }
 }
 
 // MARK: - Helpers
