@@ -466,17 +466,20 @@ jobs:
           # rather than skip when no daemon answers, so this leg has to actually
           # provide one.
           - name: linux-portal
-            # libavcodec joins the list for TailscreenSharerPortal, the
-            # CaptureEncoding conformance built on this package; submodules for
-            # TailscreenKit, whose manifest names ../TailscaleKit, whose
-            # Sources/ are symlinks into it. No Go and no libtailscale.a —
-            # nothing in this leg links the archive.
+            # The extra apt packages and the Go build are all for
+            # TailscreenSharerPortal, the CaptureEncoding conformance built on
+            # this package. It links TailscreenKit's `TailscreenSharer`, which
+            # depends on TailscaleKit directly — so although nothing in this
+            # leg CALLS tsnet, its test executable still has to resolve
+            # `tailscale_up` and friends, and a library-only build will not
+            # tell you that (only linking an executable does).
             apt: >-
+              golang-go make gcc libc6-dev
               pkg-config libdbus-1-dev libpipewire-0.3-dev pipewire dbus
               libavcodec-dev libavutil-dev libswscale-dev libopus-dev
             submodules: recursive
-            go: none
-            libtailscale: none
+            go: preinstalled
+            libtailscale: host
             cmd: |
               export PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit"
               swift test --package-path Packages/PortalCaptureKit
