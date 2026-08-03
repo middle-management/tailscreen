@@ -41,6 +41,9 @@ let gProfiles = ProfileStore()
 let gAnnotations = AnnotationStore()
 let gAnnoForwarder = AnnotationForwarder()
 let gSharer = SharerModel()
+// The system-wide mute hotkey. Built only on the live audio path — see the
+// comment where it is assigned.
+var gMuteHotkey: MuteHotkeyController?
 // Account-menu actions, wired in picker mode (nil elsewhere → menu hidden).
 var gSwitchProfile: (@MainActor @Sendable (String) -> Void)?
 var gAddAccount: (@MainActor @Sendable () -> Void)?
@@ -278,6 +281,22 @@ if gSelfTest {
         // output device that is open but silent costs nothing and shows
         // nothing, and reopening it per share would add a stall to Stop/Start.
         gSharer.playRemoteVoice = { pcm in SharerVoiceSink.shared.resolve()?.play(pcm) }
+    }
+
+    // Mute from OUTSIDE the window. The in-window buttons only exist while the
+    // app is in front of you, and during a share it is behind whatever you are
+    // showing — which is exactly when muting matters most.
+    //
+    // The two microphones stay separate (`toggleMic` vs `toggleShareMic`);
+    // `MuteHotkeyRouting` picks which one the single chord flips, and the
+    // controller holds the grab only while there is one to flip.
+    if wantAudio {
+        gMuteHotkey = MuteHotkeyController(
+            sharerMicAvailable: { gSharer.micAvailable },
+            viewerMicAvailable: { gUIState.micAvailable },
+            toggleSharerMic: { gSharer.toggleMic() },
+            toggleViewerMic: { gVoice.toggle() })
+        gMuteHotkey?.start()
     }
 
     // Run a viewing session against a chosen host/IP. Shared by the direct-host

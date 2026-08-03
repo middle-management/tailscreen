@@ -241,9 +241,53 @@ Kind B. Sequenced by how many rows each unblocks.
   can unmute and be heard, a sharer can speak to every viewer and hear them
   back. Two mic controls, both from shared chrome: `MicrophoneButton` over the
   video for the viewer, and the same button on the share card for the sharer.
-  **Still open: `mute from outside the window` and the `mute hotkey`** — this
-  is the in-window control only, so a person who has alt-tabbed away cannot
-  mute themselves, which is exactly when they most want to.*
+  Both remaining rows — `mute from outside the window` and the `mute hotkey` —
+  then landed as **one** thing, because on these two platforms they are one:
+  a system-wide chord (⌃⌥M, from `ShortcutCatalog`) held by
+  `Packages/X11HotkeyKit` (`XGrabKey`) and `Packages/WinHotkeyKit`
+  (`RegisterHotKey`). A tray icon would be the other way to mute from outside
+  the window; it is a much larger feature and is deliberately NOT part of this
+  — the hotkey closes the row on its own, and half a tray icon would close
+  neither.*
+
+  Four decisions from the hotkey work.
+
+  - **One chord, and the SHARER's microphone wins when both are live.**
+    These apps can share and watch at once and the two mute latches stay
+    separate on purpose, so a single chord has to choose. Flipping both was
+    rejected outright: a toggle over two independent latches has no meaning
+    when they disagree, and re-defining it as "mute everything" fixes the mute
+    direction while breaking the other — the second press unmutes you into a
+    call you were only listening to. The sharer wins because *being outside the
+    window is not symmetric*: while sharing you are necessarily in some other
+    app, so the mic button is behind what you are demonstrating, whereas while
+    watching the video window is the thing you are looking at. The viewer gets
+    the chord only when no share is running. `MuteHotkeyRouting` is the whole
+    decision, and the honest cost — starting a share silently retargets the
+    key — is announced rather than hidden.
+  - **A grab that was refused must not read as a grab.** Both platforms report
+    a chord another app already owns by returning a value nobody reads, and on
+    X11 it is worse: `XGrabKey` reports `BadAccess` *asynchronously*, so
+    without an error handler plus `XSync` the call succeeds and the user gets a
+    hotkey that never fires. `GlobalHotkeyUnavailability` is the shared
+    vocabulary, and a Wayland session is refused up front — `XGrabKey` succeeds
+    against XWayland and then under-delivers, working while an X11 app is
+    focused and not otherwise, which is worse than absent because it works
+    often enough to be trusted.
+  - **The X11 half is a real gate.** `x11-hotkey-probe --live-check` grabs the
+    chord on Xvfb, synthesizes it through XTEST, and counts the activation —
+    then repeats it **with Num Lock on**, because `XGrabKey` matches modifier
+    state exactly and a grab installed only under `Ctrl|Alt` silently stops
+    matching the moment a lock key joins it. Then it grabs the same chord from
+    a second connection and requires the refusal. All three were checked to
+    fail by mutation. The Windows half has no equivalent: `RegisterHotKey` does
+    not exist off Windows and nothing stands in for it, so what CI proves there
+    is the numbers and the link, and "the chord fires while another app is
+    focused" remains a person at a desk (`winhotkey-probe --hold`).
+  - **The chord is held only while there is a microphone to mute.** A global
+    registration is exclusive — it takes that key from every other app on the
+    machine — so an idle app holding ⌃⌥M is taking it for a handler with
+    nothing to do. Same rule macOS already follows for its panic-revoke key.
 
   Four things from it are worth carrying forward.
 
@@ -285,23 +329,50 @@ Kind B. Sequenced by how many rows each unblocks.
   `WS_EX_TRANSPARENT` is load-bearing while drawing is *off* or it swallows
   every desktop click, so local drawing needs a second, non-transparent surface.
 
-  *Linux landed.* `CGtkOverlay` gained an interactive mode: arming a tool swaps
-  the empty input region for a full one, and the sharer's strokes go through the
-  same portable `AnnotationStore` the viewers use, out via
-  `server.broadcastAnnotation` and back onto the same overlay. **Windows is
-  still open** — its second surface is genuinely a different piece of work, per
-  the note above.
+  *Both landed.* On Linux `CGtkOverlay` gained an interactive mode: arming a
+  tool swaps the empty input region for a full one. On Windows it is a **second
+  window** (`ts_draw_surface`), created on arm and destroyed on disarm, because
+  the annotation overlay's `WS_EX_TRANSPARENT` cannot be borrowed and restoring
+  a style bit is a sequence that can go wrong where destroying a window is not.
+  Both hosts run the sharer's strokes through the same portable
+  `AnnotationStore` the viewers use, out via `server.broadcastAnnotation` and
+  back onto the same overlay.
 
-  The one thing worth carrying to Windows is the hazard, because it is the same
-  hazard there: **a fullscreen click-swallowing overlay is a trap.** Once armed,
-  the hub window holding the "stop drawing" button is underneath it. On X11 a
-  window manager never focuses an override-redirect window, so Escape only
-  reaches the overlay because it takes focus itself — and
-  `ts_gtk_overlay_set_interactive` therefore *verifies* the focus took and
-  **refuses to arm** if it did not, rather than shipping a mode nobody can
-  leave. Teardown disarms before dropping the window for the same reason.
-  `tailscreen --overlay-input-self-test` injects a real drag and a real Escape
-  through XTEST and has been checked to fail on all four ways this breaks.
+  The hazard is the same on both, and it is most of the work: **a fullscreen
+  click-swallowing overlay is a trap.** Once armed, the hub window holding the
+  "stop drawing" button is underneath it. On X11 a window manager never focuses
+  an override-redirect window, so Escape only reaches the overlay because it
+  takes focus itself — and `ts_gtk_overlay_set_interactive` therefore *verifies*
+  the focus took and **refuses to arm** if it did not, rather than shipping a
+  mode nobody can leave. `tailscreen --overlay-input-self-test` injects a real
+  drag and a real Escape through XTEST and has been checked to fail on all four
+  ways it breaks.
+
+  Windows differs in three ways worth carrying forward, none of them cosmetic:
+
+  - **The refusal is still the answer, for a different reason.** A normal
+    top-level window *can* be focused by the WM — but `SetForegroundWindow` is
+    advisory, silently declined for a process that is not already in the
+    foreground, and reports nothing. So the surface checks
+    (`GetForegroundWindow` ∧ `GetFocus`) and tears itself down rather than
+    arming half way.
+  - **Losing focus ends drawing.** The X11 overlay cannot lose focus to a
+    window manager that never gave it any; this one loses it to Alt-Tab, the
+    Windows key or a UAC prompt, leaving a window that still eats the mouse and
+    an Escape key going somewhere else. `WM_KILLFOCUS` is therefore wired to the
+    same release path as Escape.
+  - **It covers the shared region, not the desktop** — so a second monitor,
+    hub window and all, stays completely usable. That is a better answer than
+    the X11 sharer can give, since that one captures the whole root window.
+
+  What is *not* verified on Windows is everything needing a real desktop: no
+  window has been created, focused, refused or drawn on. The decisions were
+  extracted instead — `SharerDrawingLatch`, `SharerDrawingSurfacePlan` and
+  `ScreenRegion.normalizedPoint`, all in TailscreenProtocol, all covered on
+  Linux CI, all adopted by the Linux host too so the two cannot drift. That is
+  deliberately not the same claim as a gate; see the `linux-portal` note under
+  3.3 for why overstating one is worse than not having it.
+
 - **3.3 · Linux ScreenCast portal** — the highest-leverage *Linux* item, because
   it unblocks three rows at once: share a single window, share an app, and
   **Wayland capture at all**. Today the sharer gates on `$DISPLAY` and sees only

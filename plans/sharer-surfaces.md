@@ -481,7 +481,7 @@ independently shippable and touches only macOS.
 | 7 · outline: Linux | not started — the one piece with no existing machinery |
 | 8 · macOS roster + hotkey docs | **done** — roster in the hub, ⌃⌥M in the menu, ⌃⌥. in the sheet, `isRegistered` |
 | 9 · portable `ShortcutCatalog` | **done** — 18 tests on Linux CI |
-| 10 · Windows/Linux hotkeys | not started |
+| 10 · Windows/Linux hotkeys | **done for mute** — `Packages/X11HotkeyKit` (`XGrabKey`) + `Packages/WinHotkeyKit` (`RegisterHotKey`), driven by the portable `MuteHotkeyRouting` / `X11HotkeyMapping` / `WindowsHotkeyMapping`. `x11-hotkey-probe --live-check` is a real gate (Xvfb grab + XTEST press, repeated with Num Lock on, plus the refused-second-grab case); the Windows half is link-checked and mapping-tested only. Panic-revoke on those two platforms is still open — it needs the sharer-side grant UI first. |
 | 11 · mic capture, sharer drawing | not started (the two large tracks) |
 
 Two things landed but are **not yet consumed**, which is deliberate and worth

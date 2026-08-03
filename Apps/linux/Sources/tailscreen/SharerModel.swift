@@ -25,6 +25,9 @@ import class TailscreenProtocol.AnnotationStore
 import enum TailscreenProtocol.AnnotationMode
 import enum TailscreenProtocol.AnnotationTool
 import enum TailscreenProtocol.AnnotationOp
+import struct TailscreenProtocol.SharerDrawingLatch
+import enum TailscreenProtocol.SharerDrawingArmResult
+import enum TailscreenProtocol.SharerDrawingRefusal
 import class TailscreenAudio.OpusVoiceEncoder
 import class TailscreenAudio.SharerVoice
 import protocol TailscreenAudio.MicrophoneCapturing
@@ -211,6 +214,14 @@ final class SharerModel: ObservableObject {
     /// stroke geometry, the undo stack and the identity-derived colour are
     /// shared code rather than a second implementation on the sharing side.
     let drawing = AnnotationStore()
+    /// Which tool is armed and what a refusal to arm means.
+    ///
+    /// The decisions live in the portable tier — where Linux CI tests them with
+    /// no window, no compositor and no X server — because the Windows sharer
+    /// has the same hazard in a different shape and a second copy of this
+    /// ordering is where the two would drift. The consequence of drifting is
+    /// not a cosmetic difference; it is a desktop nobody can click.
+    private var latch = SharerDrawingLatch()
     /// The armed tool, or nil when the sharer is not drawing. Mirrors
     /// `drawing.mode`, which is not observable.
     @Published private(set) var activeTool: AnnotationTool?
@@ -454,7 +465,11 @@ final class SharerModel: ObservableObject {
             }
         }
         overlay?.onEscape = { [weak self] in
-            MainActor.assumeIsolated { self?.selectTool(nil) }
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.latch.release(surface: self.armOverlay)
+                self.publishLatch()
+            }
         }
     }
 
@@ -468,29 +483,33 @@ final class SharerModel: ObservableObject {
     /// stuck behind a window with no visible way to dismiss it. A refusal
     /// leaves the tool unarmed and says so.
     func selectTool(_ tool: AnnotationTool?) {
-        let wanted = (tool == activeTool) ? nil : tool
-        guard let overlay else {
-            drawingNote = wanted == nil ? nil : "Drawing needs a compositing desktop"
-            activeTool = nil
-            drawing.mode = .off
-            return
-        }
-        guard let wanted else {
+        latch.select(tool, surface: armOverlay)
+        publishLatch()
+    }
+
+    /// The latch's surface seam on X11. `setInteractive(true)` is the call that
+    /// can half-succeed — it flips the input region and then checks with
+    /// `XGetInputFocus` whether the keyboard came too — so a false here is
+    /// exactly the `.noKeyboard` case, and the latch's response to it is to
+    /// disarm anyway.
+    private func armOverlay(_ tool: AnnotationTool?) -> SharerDrawingArmResult {
+        guard let overlay else { return tool == nil ? .armed : .refused(.noSurface) }
+        guard tool != nil else {
             _ = overlay.setInteractive(false)
-            activeTool = nil
-            drawing.mode = .off
-            drawingNote = nil
-            return
+            return .armed
         }
-        guard overlay.setInteractive(true) else {
-            activeTool = nil
-            drawing.mode = .off
-            drawingNote = "This desktop would not let the overlay take the keyboard"
-            return
+        return overlay.setInteractive(true) ? .armed : .refused(.noKeyboard)
+    }
+
+    private func publishLatch() {
+        activeTool = latch.activeTool
+        drawing.mode = latch.activeTool.map { .drawing($0) } ?? .off
+        drawingNote = latch.refusal.map {
+            switch $0 {
+            case .noSurface: return "Drawing needs a compositing desktop"
+            case .noKeyboard: return "This desktop would not let the overlay take the keyboard"
+            }
         }
-        activeTool = wanted
-        drawing.mode = .drawing(wanted)
-        drawingNote = nil
     }
 
     /// Undo the sharer's own last stroke. Viewers' strokes are theirs to undo.
@@ -577,13 +596,13 @@ final class SharerModel: ObservableObject {
     /// X11 that matters more than elsewhere: a held button grabs the pointer,
     /// so a stuck one makes the whole desktop unusable.
     private func teardownOverlay() {
-        // Disarm FIRST. An interactive overlay that is merely dropped leaves a
-        // fullscreen click-swallowing window on screen for as long as it takes
-        // the reference to die — and the whole desktop is unusable meanwhile.
-        if activeTool != nil { _ = overlay?.setInteractive(false) }
-        activeTool = nil
-        drawing.mode = .off
-        drawingNote = nil
+        // Disarm FIRST, and unconditionally. An interactive overlay that is
+        // merely dropped leaves a fullscreen click-swallowing window on screen
+        // for as long as it takes the reference to die — and the whole desktop
+        // is unusable meanwhile. Unconditional because an arm that half-
+        // succeeded leaves this model believing nothing is armed.
+        latch.teardown(surface: armOverlay)
+        publishLatch()
         overlay?.clear()
         overlay = nil
         injector?.deactivate()

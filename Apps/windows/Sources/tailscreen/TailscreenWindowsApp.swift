@@ -12,6 +12,7 @@ import TailscreenHubUI
 // hits and solves the same way.
 import class TailscreenAudio.VoiceUplink
 import struct TailscreenProtocol.AccountProfileLayout
+import enum TailscreenProtocol.AnnotationTool
 import class TailscreenProtocol.AccountProfileStore
 import struct TailscreenProtocol.CaptureTimings
 import struct TailscreenProtocol.ControlRequestInfo
@@ -514,6 +515,18 @@ final class AppUIState: ObservableObject {
         // its own, but "closed" and "what the user asked for" are not the same
         // answer, and only one of them is this app's to give.
         shareSession.setRequireApproval(ViewerApprovalPreference.load())
+        // Mute from OUTSIDE the window. The in-window buttons only exist while
+        // the app is in front of you, and during a share it is behind whatever
+        // you are showing — which is exactly when muting matters most. The two
+        // microphones stay separate (`toggleMic` vs `toggleShareMic`);
+        // `MuteHotkeyRouting` picks which one the single chord flips, and the
+        // controller holds the chord only while there is one to flip.
+        muteHotkey = MuteHotkeyController(
+            sharerMicAvailable: { [weak self] in self?.sharing.micAvailable ?? false },
+            viewerMicAvailable: { [weak self] in self?.micAvailable ?? false },
+            toggleSharerMic: { [weak self] in self?.toggleShareMic() },
+            toggleViewerMic: { [weak self] in self?.toggleMic() })
+        muteHotkey?.start()
         syncAccounts()
         if hasPreviousLogin() {
             signIn()
@@ -528,6 +541,10 @@ final class AppUIState: ObservableObject {
 
     private let transport = TsnetTransport()
     private let shareSession = WindowsShareSession()
+    /// Holds ⌃⌥M system-wide while there is a microphone to mute. Built in
+    /// `init` and kept for the process — it decides for itself when to take
+    /// and release the chord.
+    private var muteHotkey: MuteHotkeyController?
     /// Where viewers' voices come out while sharing.
     ///
     /// Its own sink, separate from the viewing session's: this app can share
@@ -744,6 +761,21 @@ final class AppUIState: ObservableObject {
             // than one that cannot unmute.
             microphone: sharing.micAvailable
                 ? HubMicrophone(isOn: sharing.micOn) { [weak self] in self?.toggleShareMic() }
+                : nil,
+            // The sharer's own pen, offered only while a share is actually
+            // running and only when this one resolved where its content is on
+            // screen. The shared card renders the escape route in its caption
+            // BEFORE anything is armed — which is the point, because once a
+            // tool is armed this window is behind a surface that covers the
+            // shared region and the caption is no longer readable.
+            drawing: sharing.isSharing && sharing.drawingAvailable
+                ? HubDrawing(
+                    activeTool: sharing.activeDrawingTool,
+                    inkColor: sharing.drawingInkColor,
+                    note: sharing.drawingNote,
+                    selectTool: { [weak self] tool in self?.selectDrawingTool(tool) },
+                    undo: { [weak self] in self?.shareSession.undoDrawing() },
+                    clear: { [weak self] in self?.shareSession.clearDrawing() })
                 : nil,
             onStart: { [weak self] in self?.startSharing() },
             onStop: { [weak self] in self?.stopSharing() },
@@ -1106,6 +1138,18 @@ final class AppUIState: ObservableObject {
     /// both would mute somebody in a call they are not in.
     func toggleShareMic() {
         shareSession.toggleMic()
+    }
+
+    /// Arm one of the sharer's own drawing tools, or disarm by re-picking it.
+    ///
+    /// A pass-through, and it stays one: everything that could go wrong here —
+    /// the toggle, the refusal, the guarantee that a refused arm never leaves a
+    /// window up — lives in `SharerDrawingLatch` in the portable tier, where
+    /// Linux CI tests it. The status comes back through the session's normal
+    /// publish, so a refusal renders as an unarmed toolbar plus a sentence
+    /// rather than a tool that looks selected and does nothing.
+    func selectDrawingTool(_ tool: AnnotationTool) {
+        shareSession.selectDrawingTool(tool)
     }
 
     func toggleMic() {
