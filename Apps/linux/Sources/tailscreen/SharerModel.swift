@@ -16,6 +16,7 @@ import struct TailscreenProtocol.PickerSelection
 import enum TailscreenProtocol.CaptureBackendSelection
 import protocol TailscreenSharer.CaptureEncoding
 import class TailscreenSharerPortal.PortalCaptureEncoder
+import class PortalCaptureKit.PortalSession
 
 import struct TailscreenProtocol.QualitySettings
 import enum TailscreenProtocol.QualitySettingsStore
@@ -271,6 +272,23 @@ final class SharerModel: ObservableObject {
         }
     }
 
+    /// Whether this machine can share ONE WINDOW OR APP, as opposed to the
+    /// whole screen. Only the portal can, so this is false on a session with
+    /// no portal even when screen sharing works perfectly.
+    ///
+    /// Derived from the same `choose` the share path runs, never asked
+    /// separately: a button that offered a share the backend then refused
+    /// would be the two disagreeing, which is the failure `canShareAnything`
+    /// exists to prevent on the primary button.
+    var canShareWindow: Bool {
+        if case .unavailable = CaptureBackendSelection.choose(
+            intent: .windowOrApp, environment: captureEnvironment)
+        {
+            return false
+        }
+        return true
+    }
+
     private let display: String?
     /// Owns the D-Bus session for the whole app; see `PortalSessionHost`.
     private let portal: PortalSessionHost
@@ -306,9 +324,39 @@ final class SharerModel: ObservableObject {
         case .x11(let display):
             beginShare(captureFactory: { X11CaptureEncoder(display: display) })
         case .portal:
-            beginPortalShare()
+            // `.monitor`: this entry point is "share my screen". Offering the
+            // window picker here would mean the primary button sometimes
+            // shares a window without being asked to.
+            beginPortalShare(sources: [.monitor])
         case .unavailable(let reason):
             phase = .failed(reason)
+        }
+    }
+
+    /// Begin sharing ONE WINDOW OR APP.
+    ///
+    /// Always the portal — X11 root capture cannot scope to a window, and
+    /// `choose` refuses rather than widening the request to the whole screen.
+    /// The portal draws its own picker, so this app deliberately does not have
+    /// a window list: the compositor knows which windows exist and which the
+    /// person is allowed to see, and duplicating that would be both redundant
+    /// and less trustworthy.
+    func startWindowShare() {
+        guard canShareWindow, phase == .idle || isFailed else { return }
+        switch CaptureBackendSelection.choose(
+            intent: .windowOrApp, environment: captureEnvironment)
+        {
+        case .portal:
+            // `.window` alone, not `[.monitor, .window]`: the person asked for
+            // a window, and portals render the requested source types as tabs
+            // — offering Screen back would be the app second-guessing a choice
+            // already made on the card.
+            beginPortalShare(sources: [.window])
+        case .x11, .unavailable:
+            // Unreachable while `canShareWindow` gates the button, and handled
+            // rather than force-unwrapped because the gate and this switch are
+            // two reads of one decision that could drift.
+            phase = .failed("this session cannot share a single window")
         }
     }
 
@@ -318,15 +366,11 @@ final class SharerModel: ObservableObject {
     /// person, `negotiate` blocks its thread until they answer, and this is the
     /// GTK main thread. Blocking here would freeze the whole app for as long as
     /// the dialog was up.
-    private func beginPortalShare() {
+    private func beginPortalShare(sources: PortalSession.SourceTypes = [.monitor]) {
         phase = .starting
         let portal = self.portal
         Task { @MainActor in
-            // `.monitor` only for now: this entry point is "share my screen",
-            // and offering the window picker from it would mean the button
-            // sometimes shares a window without being asked to. Window and app
-            // shares need their own affordance — see the plan.
-            switch await portal.negotiate(sources: [.monitor]) {
+            switch await portal.negotiate(sources: sources) {
             case .granted(let nodeID):
                 beginShare(captureFactory: {
                     PortalCaptureEncoder(
