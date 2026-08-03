@@ -285,23 +285,50 @@ Kind B. Sequenced by how many rows each unblocks.
   `WS_EX_TRANSPARENT` is load-bearing while drawing is *off* or it swallows
   every desktop click, so local drawing needs a second, non-transparent surface.
 
-  *Linux landed.* `CGtkOverlay` gained an interactive mode: arming a tool swaps
-  the empty input region for a full one, and the sharer's strokes go through the
-  same portable `AnnotationStore` the viewers use, out via
-  `server.broadcastAnnotation` and back onto the same overlay. **Windows is
-  still open** — its second surface is genuinely a different piece of work, per
-  the note above.
+  *Both landed.* On Linux `CGtkOverlay` gained an interactive mode: arming a
+  tool swaps the empty input region for a full one. On Windows it is a **second
+  window** (`ts_draw_surface`), created on arm and destroyed on disarm, because
+  the annotation overlay's `WS_EX_TRANSPARENT` cannot be borrowed and restoring
+  a style bit is a sequence that can go wrong where destroying a window is not.
+  Both hosts run the sharer's strokes through the same portable
+  `AnnotationStore` the viewers use, out via `server.broadcastAnnotation` and
+  back onto the same overlay.
 
-  The one thing worth carrying to Windows is the hazard, because it is the same
-  hazard there: **a fullscreen click-swallowing overlay is a trap.** Once armed,
-  the hub window holding the "stop drawing" button is underneath it. On X11 a
-  window manager never focuses an override-redirect window, so Escape only
-  reaches the overlay because it takes focus itself — and
-  `ts_gtk_overlay_set_interactive` therefore *verifies* the focus took and
-  **refuses to arm** if it did not, rather than shipping a mode nobody can
-  leave. Teardown disarms before dropping the window for the same reason.
-  `tailscreen --overlay-input-self-test` injects a real drag and a real Escape
-  through XTEST and has been checked to fail on all four ways this breaks.
+  The hazard is the same on both, and it is most of the work: **a fullscreen
+  click-swallowing overlay is a trap.** Once armed, the hub window holding the
+  "stop drawing" button is underneath it. On X11 a window manager never focuses
+  an override-redirect window, so Escape only reaches the overlay because it
+  takes focus itself — and `ts_gtk_overlay_set_interactive` therefore *verifies*
+  the focus took and **refuses to arm** if it did not, rather than shipping a
+  mode nobody can leave. `tailscreen --overlay-input-self-test` injects a real
+  drag and a real Escape through XTEST and has been checked to fail on all four
+  ways it breaks.
+
+  Windows differs in three ways worth carrying forward, none of them cosmetic:
+
+  - **The refusal is still the answer, for a different reason.** A normal
+    top-level window *can* be focused by the WM — but `SetForegroundWindow` is
+    advisory, silently declined for a process that is not already in the
+    foreground, and reports nothing. So the surface checks
+    (`GetForegroundWindow` ∧ `GetFocus`) and tears itself down rather than
+    arming half way.
+  - **Losing focus ends drawing.** The X11 overlay cannot lose focus to a
+    window manager that never gave it any; this one loses it to Alt-Tab, the
+    Windows key or a UAC prompt, leaving a window that still eats the mouse and
+    an Escape key going somewhere else. `WM_KILLFOCUS` is therefore wired to the
+    same release path as Escape.
+  - **It covers the shared region, not the desktop** — so a second monitor,
+    hub window and all, stays completely usable. That is a better answer than
+    the X11 sharer can give, since that one captures the whole root window.
+
+  What is *not* verified on Windows is everything needing a real desktop: no
+  window has been created, focused, refused or drawn on. The decisions were
+  extracted instead — `SharerDrawingLatch`, `SharerDrawingSurfacePlan` and
+  `ScreenRegion.normalizedPoint`, all in TailscreenProtocol, all covered on
+  Linux CI, all adopted by the Linux host too so the two cannot drift. That is
+  deliberately not the same claim as a gate; see the `linux-portal` note under
+  3.3 for why overstating one is worse than not having it.
+
 - **3.3 · Linux ScreenCast portal** — the highest-leverage *Linux* item, because
   it unblocks three rows at once: share a single window, share an app, and
   **Wayland capture at all**. Today the sharer gates on `$DISPLAY` and sees only

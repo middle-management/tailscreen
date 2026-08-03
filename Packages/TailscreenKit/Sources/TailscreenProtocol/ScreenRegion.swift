@@ -50,6 +50,42 @@ public struct ScreenRegion: Sendable, Equatable {
         return (px, py)
     }
 
+    /// Where a pixel inside this region sits in normalized `[0, 1]` — the exact
+    /// inverse of ``point(normalizedX:normalizedY:)``.
+    ///
+    /// The direction a **sharer** needs. Remote control and relayed annotations
+    /// arrive normalized and come out here as pixels; a sharer drawing on its
+    /// own screen starts from pixels its platform hands it and has to get back
+    /// into the space every peer already speaks.
+    ///
+    /// Three things it must get right, and every one of them is silent when
+    /// wrong:
+    ///
+    ///   * The divisor is `width - 1`, matching the multiplier in `point`. Any
+    ///     other choice makes the two disagree, so a sharer's stroke on the
+    ///     right-hand edge lands a pixel inside it on every viewer — and, worse,
+    ///     a viewer's click and the sharer's own click on the same pixel no
+    ///     longer name the same place.
+    ///   * Coordinates arrive **negative**. A drag that leaves the surface keeps
+    ///     delivering points while the button is held (Win32 mouse capture, X11
+    ///     implicit grab). Win32 packs them into a *signed* 16-bit pair, so a
+    ///     coordinate read with `LOWORD` instead of a sign-extending cast turns
+    ///     `-3` into `65533`: the stroke teleports to the far edge instead of
+    ///     staying pinned to the near one. Clamping is what makes the pin.
+    ///   * A degenerate one-pixel region divides by zero, so it collapses to the
+    ///     origin rather than trapping.
+    public func normalizedPoint(screenX: Int, screenY: Int) -> (x: Double, y: Double) {
+        (
+            Self.normalizedAxis(screenX - x, extent: width),
+            Self.normalizedAxis(screenY - y, extent: height)
+        )
+    }
+
+    static func normalizedAxis(_ offset: Int, extent: Int) -> Double {
+        guard extent > 1 else { return 0 }
+        return min(max(Double(offset) / Double(extent - 1), 0), 1)
+    }
+
     static func clampUnit(_ value: Double) -> Double {
         guard value.isFinite else { return 0 }
         return min(max(value, 0), 1)
