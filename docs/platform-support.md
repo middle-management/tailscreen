@@ -47,10 +47,13 @@ The Linux sharer is display-only on purpose: window and app selections are
 *refused* rather than silently widened to the whole screen. Wayland cannot be
 shared from at all — the gate is `$DISPLAY`, and under XWayland capture sees
 only the XWayland root, so native Wayland windows never reach viewers. The
-ScreenCast portal is the answer; its capture package (`PortalCaptureKit`)
-now exists with both halves proven in CI — the portal handshake against a
-fake bus, the PipeWire buffer path against a synthetic source — but it
-isn't wired into the app yet, so Wayland sharing stays off until it is.
+ScreenCast portal is the answer, and it's close: `PortalCaptureKit` has
+both halves proven in CI (the portal handshake against a fake bus, the
+PipeWire buffer path against a synthetic source), and
+`TailscreenSharerPortal` gives it a `CaptureEncoding` conformance —
+frames → BGRAToI420 → libavcodec, the same seam the X11 and WGC backends
+plug into. What's left is backend selection: the app doesn't pick it yet,
+so Wayland sharing stays off until that wiring lands.
 
 ## Audio
 
