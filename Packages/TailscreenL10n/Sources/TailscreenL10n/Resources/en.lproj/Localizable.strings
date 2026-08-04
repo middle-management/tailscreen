@@ -1,14 +1,24 @@
 /* Tailscreen — base (English) localization.
  *
+ * ONE catalog for all three apps: macOS (Apps/macOS), the GTK app
+ * (Apps/linux), the WinUI app (Apps/windows), and the chrome the latter two
+ * share (Packages/TailscreenHubUI). A string that appears on more than one
+ * platform is ONE key here, translated once — which is the whole reason this
+ * file lives in a package rather than beside the mac app.
+ *
  * Keys are the English source text exactly as passed to `L(...)` (see
- * Sources/Localization.swift). Interpolations appear as printf-style
- * specifiers: %@ for a String/CustomStringConvertible value, %lld for an
- * Int. To add a language, copy this file to `<lang>.lproj/Localizable.strings`
- * (e.g. `sv.lproj`) under Sources/Resources/ and translate the values only —
- * keep the keys byte-for-byte identical. No code changes are needed.
+ * ../../Localization.swift). Interpolations appear as printf-style specifiers:
+ * %@ for a String/CustomStringConvertible value, %lld for an Int. To add a
+ * language, copy this file to `<lang>.lproj/Localizable.strings` (e.g.
+ * `sv.lproj`) beside this one and translate the values only — keep the keys
+ * byte-for-byte identical. No code changes are needed.
  *
  * Brand names ("Tailscreen", "Tailscale"), key-equivalent glyphs ("⌘Q"),
  * and log lines are intentionally not in this catalog.
+ *
+ * Section MARKs name the file a key first appeared in; a key used by several
+ * platforms is filed under the section that reads most naturally, not
+ * duplicated. `LocalizationCatalogTests` is what actually enforces coverage.
  */
 
 /* MARK: - Menu bar (AppMenu.swift) */
@@ -428,3 +438,152 @@
 "%lld hidden by filters" = "%lld hidden by filters";
 "Only screens being shared" = "Only screens being shared";
 "Sharing" = "Sharing";
+
+/* MARK: - Shared hub chrome (Packages/TailscreenHubUI) —————————————————————
+ *
+ * Everything below this line is rendered by the GTK and WinUI apps. Several
+ * keys above are shared with them too (they were written for macOS first and
+ * say the same thing on every platform); these are the ones the swift-cross-ui
+ * chrome added.
+ */
+
+/* Hub — sign-in card (HubCards.swift) */
+"Sign in to Tailscale" = "Sign in to Tailscale";
+"Open this URL in your browser to sign in:" = "Open this URL in your browser to sign in:";
+"Open in Browser" = "Open in Browser";
+
+/* Hub — share card (HubCards.swift) */
+"My screen" = "My screen";
+"Share my screen" = "Share my screen";
+"Stop sharing" = "Stop sharing";
+"Drawing takes over the screen; Esc gives it back" = "Drawing takes over the screen; Esc gives it back";
+"Press Esc to stop drawing" = "Press Esc to stop drawing";
+"Applies to your next share" = "Applies to your next share";
+"Custom settings" = "Custom settings";
+
+/* Hub — screens list (HubContent.swift) */
+"No Tailscreen screens found on your tailnet." = "No Tailscreen screens found on your tailnet.";
+"No screens match your filters." = "No screens match your filters.";
+"No screens match your search." = "No screens match your search.";
+
+/* Hub — header + filter menu (HubHeader.swift / HubFilter.swift) */
+"Refresh" = "Refresh";
+"Signed in" = "Signed in";
+/* The bullet marks the filter as active; it is not punctuation to translate. */
+"Filter ●" = "Filter ●";
+"Filter" = "Filter";
+"Filter by tag" = "Filter by tag";
+
+/* Hub — over-video chrome (HubOverlays.swift) */
+"%lld×%lld · %lld fps" = "%lld×%lld · %lld fps";
+"Control declined: %@" = "Control declined: %@";
+/* Microphone toggle. The 🎙 rides along in the key so the emoji stays beside
+ * the word it labels whichever side of it a language puts the word on. */
+"🎙 On" = "🎙 On";
+"🎙 Off" = "🎙 Off";
+
+/* Hub — session placards (HubPlacards.swift) */
+"Waiting for approval" = "Waiting for approval";
+"The sharer declined your request" = "The sharer declined your request";
+"The share has ended" = "The share has ended";
+"Connection failed" = "Connection failed";
+"The sharer needs to accept you as a viewer." = "The sharer needs to accept you as a viewer.";
+"Returning to the screen list…" = "Returning to the screen list…";
+
+/* Hub — quality menu (HubQuality.swift) */
+"Save bandwidth" = "Save bandwidth";
+"Best quality" = "Best quality";
+"15 fps, smaller picture — for slow or metered links" = "15 fps, smaller picture — for slow or metered links";
+"30 fps — the default" = "30 fps — the default";
+"60 fps, sharpest picture — needs a fast link" = "60 fps, sharpest picture — needs a fast link";
+"HEVC only" = "HEVC only";
+"Quality: %@" = "Quality: %@";
+
+/* Hub — screen rows + peer detail (HubScreenList.swift) */
+"Online" = "Online";
+"Asked — waiting for a reply" = "Asked — waiting for a reply";
+"Host" = "Host";
+"IP" = "IP";
+"Relayed via %@" = "Relayed via %@";
+/* Connection-quality words, shown inside "%lld ms (%@)" below. */
+"good" = "good";
+"fair" = "fair";
+"slow" = "slow";
+"%lld ms (%@)" = "%lld ms (%@)";
+
+/* Hub — viewer roster + approval prompts (HubViewerRoster.swift / HubStyle.swift) */
+"Allow" = "Allow";
+"Always allow" = "Always allow";
+"Block" = "Block";
+"Forget" = "Forget";
+"Will apply once this peer is identified" = "Will apply once this peer is identified";
+"Always allowed" = "Always allowed";
+
+/* MARK: - Linux app (Apps/linux) ————————————————————————————————————————— */
+
+/* Picker + session status (PickerModel.swift / main.swift) */
+"Starting Tailscale…" = "Starting Tailscale…";
+"Waiting for login…" = "Waiting for login…";
+"Tailscreen viewer" = "Tailscreen viewer";
+"Viewer" = "Viewer";
+"Accepted — they're choosing what to share" = "Accepted — they're choosing what to share";
+"Declined" = "Declined";
+"No reply" = "No reply";
+"Requesting Control…" = "Requesting Control…";
+"Release Control" = "Release Control";
+"%@ wants to watch" = "%@ wants to watch";
+"Anyone on your tailnet who can reach this machine can watch." = "Anyone on your tailnet who can reach this machine can watch.";
+"Share a window or app…" = "Share a window or app…";
+"Change source…" = "Change source…";
+
+/* Sharer status + failures (SharerModel.swift / VoiceControls.swift) */
+"Not sharing" = "Not sharing";
+"%lld waiting for approval" = "%lld waiting for approval";
+"Sharing — nobody watching yet" = "Sharing — nobody watching yet";
+"Sharing to %lld" = "Sharing to %lld";
+"Share failed: %@" = "Share failed: %@";
+"this session cannot share a single window" = "this session cannot share a single window";
+"could not change the shared source: %@" = "could not change the shared source: %@";
+"Tailscale isn't up yet" = "Tailscale isn't up yet";
+"could not describe the display to capture" = "could not describe the display to capture";
+"Drawing needs a compositing desktop" = "Drawing needs a compositing desktop";
+"This desktop would not let the overlay take the keyboard" = "This desktop would not let the overlay take the keyboard";
+"Microphone unavailable" = "Microphone unavailable";
+
+/* MARK: - Windows app (Apps/windows) ———————————————————————————————————— */
+
+/* Viewer chrome (TailscreenWindowsApp.swift / WindowsViewerInteraction.swift) */
+"Watching %@" = "Watching %@";
+"Reset Zoom" = "Reset Zoom";
+"Hide stats" = "Hide stats";
+"Requesting…" = "Requesting…";
+"Video is available on Windows only." = "Video is available on Windows only.";
+
+/* Sign-in + hub (TailscreenWindowsApp.swift) */
+"Sign in to your tailnet to share this screen or watch someone else's." = "Sign in to your tailnet to share this screen or watch someone else's.";
+"Try again" = "Try again";
+"Screens on your tailnet" = "Screens on your tailnet";
+"Waiting for browser sign-in…" = "Waiting for browser sign-in…";
+"Could not start Tailscale" = "Could not start Tailscale";
+"Discovery failed: %@" = "Discovery failed: %@";
+"Waiting for %@ to approve…" = "Waiting for %@ to approve…";
+"The sharer declined." = "The sharer declined.";
+"Session ended: %@" = "Session ended: %@";
+"Switching account…" = "Switching account…";
+"Could not open a browser — copy the URL above. (%@)" = "Could not open a browser — copy the URL above. (%@)";
+
+/* Sharing (TailscreenWindowsApp.swift) */
+"Sharing %@" = "Sharing %@";
+"Share this screen" = "Share this screen";
+"%@ wants to control this machine" = "%@ wants to control this machine";
+"Take back control from %@" = "Take back control from %@";
+"No one is watching yet" = "No one is watching yet";
+"%lld watching" = "%lld watching";
+"Viewers can ask to control this machine" = "Viewers can ask to control this machine";
+"Viewers' drawings appear on this screen" = "Viewers' drawings appear on this screen";
+"slowest stage: %@" = "slowest stage: %@";
+"Could not open the capture picker: %@" = "Could not open the capture picker: %@";
+"Could not change the shared source: %@" = "Could not change the shared source: %@";
+"Could not start sharing: %@" = "Could not start sharing: %@";
+"Not listening for share requests: %@" = "Not listening for share requests: %@";
+"Remote control isn't available for this share." = "Remote control isn't available for this share.";

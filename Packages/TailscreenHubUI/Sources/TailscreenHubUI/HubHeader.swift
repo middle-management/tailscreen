@@ -1,4 +1,5 @@
 import SwiftCrossUI
+import TailscreenL10n
 
 /// One signed-in account, for the header's account menu.
 ///
@@ -87,7 +88,7 @@ public struct ViewerHeader: View {
                 HubFilterMenu(model: filter)
             }
             if let onRefresh {
-                Button("Refresh", action: onRefresh)
+                Button(L("Refresh"), action: onRefresh)
             }
             if let secondaryAction {
                 Button(secondaryAction.label, action: secondaryAction.perform)
@@ -100,7 +101,7 @@ public struct ViewerHeader: View {
                         }
                     }
                     Divider()
-                    Button("Add Account…") { onAddAccount() }
+                    Button(L("Add Account…")) { onAddAccount() }
                 }
             }
         }

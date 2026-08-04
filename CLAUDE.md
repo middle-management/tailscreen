@@ -19,7 +19,11 @@ Runtime needs: Screen Recording permission, and either interactive Tailscale log
 
 ## Repository layout
 
-Three runnable apps, each its own SwiftPM package: `Apps/macOS` (the primary), `Apps/linux` and `Apps/windows` (both swift-cross-ui — GTK4 and WinUI). Under `Packages/`, the ones whose role isn't obvious from the name: **TailscreenKit** is the portable Linux-buildable protocol + viewer + sharer core all three apps depend on; **TailscaleKit** wraps libtailscale (submodule + patches); **TailscreenHubUI** is the shared hub look for the two swift-cross-ui apps. The rest are platform backends — `X11CaptureKit`/`PortalCaptureKit`/`TailscreenSharerPortal`/`XTestInjectKit`/`X11HotkeyKit`/`ALSAKit`/`TailscreenLinuxBackends` on Linux, `WGCCaptureKit`/`SendInputKit`/`WinOverlayKit`/`WinHotkeyKit`/`WASAPIKit`/`TailscreenSharerWGC` on Windows — or codec wrappers (`OpusKit`, `FFmpegKit`, `TailscreenVideoFFmpeg`).
+Three runnable apps, each its own SwiftPM package: `Apps/macOS` (the primary), `Apps/linux` and `Apps/windows` (both swift-cross-ui — GTK4 and WinUI). Under `Packages/`, the ones whose role isn't obvious from the name: **TailscreenKit** is the portable Linux-buildable protocol + viewer + sharer core all three apps depend on; **TailscaleKit** wraps libtailscale (submodule + patches); **TailscreenHubUI** is the shared hub look for the two swift-cross-ui apps; **TailscreenL10n** is the string catalog all three apps share. The rest are platform backends — `X11CaptureKit`/`PortalCaptureKit`/`TailscreenSharerPortal`/`XTestInjectKit`/`X11HotkeyKit`/`ALSAKit`/`TailscreenLinuxBackends` on Linux, `WGCCaptureKit`/`SendInputKit`/`WinOverlayKit`/`WinHotkeyKit`/`WASAPIKit`/`TailscreenSharerWGC` on Windows — or codec wrappers (`OpusKit`, `FFmpegKit`, `TailscreenVideoFFmpeg`).
+
+**TailscreenL10n** is the string catalog — one `.lproj` set plus a portable
+`L(_:)` — that all three apps and TailscreenHubUI read, so a string translated
+once is translated everywhere.
 
 Use `rg` to find specific files; the per-area rules files below carry the rest.
 
@@ -28,6 +32,7 @@ Use `rg` to find specific files; the per-area rules files below carry the rest.
 Always go through `make` (`make build`, `test`, `run`, `release`, …) — the root Makefile sets `PKG_CONFIG_PATH=$(CURDIR)/Packages/TailscaleKit` so SwiftPM's `systemLibrary` target finds `libtailscale.pc`, which in turn supplies the `-L` flag for `libtailscale.a`. Two targets whose purpose isn't obvious from the Makefile:
 
 - `make test-protocol` — builds + smoke-tests the portable TailscreenProtocol package with no libtailscale and no Apple frameworks. Also runs on Linux, and is how you reproduce a `linux-protocol` CI failure locally.
+- `make test-l10n` — builds + tests the shared string catalog. Its suites scan **all four** source trees for `L("…")` keys the catalog is missing, so it is the only check on the GTK and WinUI apps' user-facing strings; reproduces a `linux-l10n` CI failure.
 - `make test-e2e` — one-shot `e2e-up` → `swift test --filter TailscaleConnectivityTests` → `e2e-down` against a local headscale in Docker.
 
 The app package lives in `Apps/macOS/` — bare `swift` commands for the app must run from that directory (from the repo root there is no manifest at all). And running `swift build` there before `make tailscale` will fail to link — you need `libtailscale.a` first.
@@ -75,9 +80,9 @@ Topic detail is split into `.claude/rules/`, each scoped by `paths:` frontmatter
 |------|--------|-----------|
 | `.claude/rules/protocol.md` | The full 7447 wire protocol: video/audio RTP, NACK+FEC+RR loss recovery, viewer admission, annotations, remote control, metadata | TailscreenKit, both backends packages, app sources that touch the transport |
 | `.claude/rules/testing.md` | Running the unit/E2E/tsnet suites, env-var affordances, `test-local.sh`, `net-impair.sh` | any `Tests/`, `scripts/`, `e2e/` |
-| `.claude/rules/portable-packages.md` | TailscreenKit's six tiers, what must be `public`, which suites live where, the shared codec/HubUI packages | `Packages/TailscreenKit`, `TailscreenHubUI`, codec wrappers |
+| `.claude/rules/portable-packages.md` | TailscreenKit's six tiers, what must be `public`, which suites live where, the shared codec/HubUI/L10n packages | `Packages/TailscreenKit`, `TailscreenHubUI`, codec wrappers |
 | `.claude/rules/macos-app.md` | Data-flow diagram, UI surfaces, capture-helper + picker-helper IPC, ScreenCaptureKit rules | `Apps/macOS/**` |
-| `.claude/rules/localization.md` | `L(_:)`, `Bundle.module`, catalog rules | `Apps/macOS/Sources/**` |
+| `.claude/rules/localization.md` | `L(_:)`, the shared catalog, call-site conventions per UI toolkit, what not to localize | all three apps' sources, TailscreenHubUI, TailscreenL10n |
 | `.claude/rules/linux.md` | GTK app, X11/portal capture, ALSA, XTEST injection + their pitfalls | `Apps/linux`, Linux backend packages |
 | `.claude/rules/windows.md` | WinUI app, WGC capture, SendInput, layered-window overlay, DPI awareness | `Apps/windows`, Windows backend packages |
 | `.claude/rules/tailscalekit.md` | Submodule, patch series, the Windows Go↔C bridge and runtime-start patches | `Packages/TailscaleKit/**` |

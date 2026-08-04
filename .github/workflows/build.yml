@@ -238,6 +238,22 @@ jobs:
             libtailscale: none
             cmd: PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" swift test --package-path Packages/TailscreenKit
 
+          # Localization gate: the shared string catalog
+          # (Packages/TailscreenL10n). Its suites scan ALL FOUR source trees —
+          # the three apps plus TailscreenHubUI — and fail on any `L("…")` key
+          # the catalog does not carry, then exercise the `.strings` parser,
+          # the language-preference chain and the `%@`/`%lld` substitution that
+          # replaced `String(localized:bundle:)` when the catalog stopped being
+          # macOS-only.
+          #
+          # It has to run HERE rather than on the macOS runner, and that is the
+          # whole point: the GTK and WinUI apps' strings are checked by nothing
+          # else, and a Linux job is the one that sees their sources on every
+          # PR. Free — no apt, no submodules, no Go, no libtailscale: the
+          # package depends on Foundation and nothing at all.
+          - name: linux-l10n
+            cmd: swift test --package-path Packages/TailscreenL10n
+
           # Audio-codec-portability gate: OpusKit (a systemLibrary wrapper over
           # libopus — see Packages/OpusKit/README.md) must build and pass its
           # encode/decode round-trip tests on Linux. This is the portable
@@ -621,7 +637,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          # 'false' for the four legs that omit it — only the TailscaleKit-
+          # 'false' for every leg that omits it — only the TailscaleKit-
           # touching legs need the submodule, and cloning it costs the others
           # nothing they use.
           submodules: ${{ matrix.submodules || 'false' }}
@@ -631,8 +647,9 @@ jobs:
         #
         # Skipped outright for a leg that omits `apt` rather than run with an
         # empty package list: `linux-wasapi` wraps an API that ships with
-        # Windows and has nothing to install, and an install step listing
-        # nothing reads as a leg whose dependencies were forgotten.
+        # Windows and `linux-l10n` depends on Foundation alone, so neither has
+        # anything to install — and an install step listing nothing reads as a
+        # leg whose dependencies were forgotten.
         if: matrix.apt != ''
         run: apt-get update && apt-get install -y --no-install-recommends ${{ matrix.apt }}
       - name: Bootstrap TailscaleKit

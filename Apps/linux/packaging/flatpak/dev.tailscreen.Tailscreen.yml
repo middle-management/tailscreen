@@ -66,6 +66,11 @@ modules:
       #    install is skipped so the build does not fail on the missing asset.
       - install -Dm755 Apps/linux/.build/release/tailscreen
         /app/bin/tailscreen
+      # The string catalog, beside the binary: LocalizationCatalog searches the
+      # executable's own directory, so /app/bin is where it belongs. Without it
+      # the app is silently English-only.
+      - cp -R Apps/linux/.build/release/TailscreenL10n_TailscreenL10n.bundle
+        /app/bin/TailscreenL10n_TailscreenL10n.bundle
       - install -Dm644 Apps/linux/packaging/flatpak/dev.tailscreen.Tailscreen.desktop
         /app/share/applications/dev.tailscreen.Tailscreen.desktop
       - install -Dm644 Apps/linux/packaging/flatpak/dev.tailscreen.Tailscreen.metainfo.xml

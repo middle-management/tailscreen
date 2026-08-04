@@ -1,5 +1,6 @@
 import Foundation
 import SwiftCrossUI
+import TailscreenL10n
 
 // Targeted import: all of TailscreenProtocol would collide with SwiftCrossUI's
 // own `Published` / `ObservableObject` (both ship reactive shims on Linux, where
@@ -17,7 +18,7 @@ public final class ViewerUIState: ObservableObject, @unchecked Sendable {
 
     /// Short human-readable connection status shown on the placard before video
     /// flows ("Connecting…", "Waiting for the sharer to accept…", etc.).
-    @Published public var status = "Connecting…"
+    @Published public var status = L("Connecting…")
 
     /// True once the sharer's HELLO_ACK advertised `ScreenShareCaps.remoteControl`
     /// (bit3) — the viewer only offers Request Control then, matching the mac

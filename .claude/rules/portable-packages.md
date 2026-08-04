@@ -2,6 +2,7 @@
 paths:
   - "Packages/TailscreenKit/**"
   - "Packages/TailscreenHubUI/**"
+  - "Packages/TailscreenL10n/**"
   - "Packages/{OpusKit,FFmpegKit,TailscreenVideoFFmpeg}/**"
 ---
 
@@ -57,6 +58,7 @@ Suites that touch mac-only symbols stay in `Apps/macOS/Tests/TailscreenTests`: a
 ## Neighbouring shared packages
 
 - **`TailscreenHubUI`** — the hub's LOOK, shared by both swift-cross-ui apps (GTK viewer + Windows app): HubStyle tokens, the header, the screen rows and their detail panes, the login/share cards, the session placard, the over-video chrome, and the header's `PeerListFilter` menu (a Menu of Toggles — swift-cross-ui has no popover and no custom menu label, but both its backends render checked menu rows). Its `AnnotationToolbar` + `RemoteControlBar` are why the Windows viewer's drawing/control layer was mostly wiring rather than new UI. `ShareCard.secondaryStart` is the same capability-shaped optional the microphone and drawing slots use: Linux fills it with "Share a window or app…" when a portal exists, Windows passes nil because its WGC picker already offers windows beside displays — a second button there would be a second door into one room. Extracted from `Apps/linux` when the Windows app needed the same design system — SwiftCrossUI + TailscreenProtocol only, no transport type, so Linux CI typechecks it on the Windows app's behalf; see its README.
+- **`TailscreenL10n`** — the string catalog all three apps read: the `.lproj` files themselves plus `L(_:)` and the resolution behind it. It is a package rather than a TailscreenKit tier because TailscreenHubUI needs it, and making the chrome depend on a tier full of RTP machinery to say "Sign in to Tailscale" would be the wrong edge. Foundation only, no other dependency. The lookup is deliberately NOT `String(localized:bundle:)` (Apple Foundation) nor `Bundle.module` (its synthesized accessor `fatalError`s when the resource bundle is absent — fatal for a lookup every label goes through, where the right answer is to render English). Its `LocalizationCatalogTests` scans all four source trees and is the only gate on the GTK and WinUI apps' strings; see its README.
 - **`OpusKit`** — systemLibrary wrapper over libopus, the app's audio codec (replaced AudioToolbox AAC); see its README.
 - **`FFmpegKit`** — systemLibrary wrapper over libavcodec: the portable viewer's H.264/HEVC decoder AND the Linux sharer's encoder (not used by the mac app); see its README.
 - **`TailscreenVideoFFmpeg`** — libavcodec behind the portable `VideoDecoding` seam, shared by the Linux and Windows viewers. Its own package so consuming the decoder doesn't drag in ALSA/X11 (`Packages/TailscreenLinuxBackends`) or make `linux-protocol` need libavcodec.

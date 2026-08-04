@@ -1,4 +1,5 @@
 import SwiftCrossUI
+import TailscreenL10n
 import TailscreenProtocol
 
 /// The quality knobs, as the hub needs them: the current value, and one
@@ -40,22 +41,22 @@ public final class HubQuality {
 extension QualitySettings.Preset {
     var hubLabel: String {
         switch self {
-        case .low: return "Save bandwidth"
-        case .balanced: return "Balanced"
-        case .high: return "Best quality"
+        case .low: return L("Save bandwidth")
+        case .balanced: return L("Balanced")
+        case .high: return L("Best quality")
         // Never offered as a CHOICE — you cannot pick "custom", you arrive at
         // it by moving a knob — but it is a state the menu title must be able
         // to name, or a sharer who changed the frame rate sees a title
         // claiming a preset they are no longer on.
-        case .custom: return "Custom"
+        case .custom: return L("Custom")
         }
     }
 
     var hubCaption: String? {
         switch self {
-        case .low: return "15 fps, smaller picture — for slow or metered links"
-        case .balanced: return "30 fps — the default"
-        case .high: return "60 fps, sharpest picture — needs a fast link"
+        case .low: return L("15 fps, smaller picture — for slow or metered links")
+        case .balanced: return L("30 fps — the default")
+        case .high: return L("60 fps, sharpest picture — needs a fast link")
         case .custom: return nil
         }
     }
@@ -64,8 +65,8 @@ extension QualitySettings.Preset {
 extension QualitySettings.CodecPreference {
     var hubLabel: String {
         switch self {
-        case .auto: return "Automatic"
-        case .hevc: return "HEVC only"
+        case .auto: return L("Automatic")
+        case .hevc: return L("HEVC only")
         case .h264: return "H.264"
         }
     }
@@ -93,8 +94,8 @@ public struct HubQualityMenu: View {
     }
 
     public var body: some View {
-        Menu("Quality: \(model.settings.preset.hubLabel)") {
-            Text("Preset")
+        Menu(L("Quality: \(model.settings.preset.hubLabel)")) {
+            Text(L("Preset"))
             // `.custom` is excluded: it names "any other combination", so
             // offering it would be a row that cannot do anything.
             ForEach(QualitySettings.Preset.allCases.filter { $0 != .custom }, id: \.self) {
@@ -102,12 +103,12 @@ public struct HubQualityMenu: View {
                 Toggle(preset.hubLabel, isOn: presetBinding(preset))
             }
             Divider()
-            Text("Frame rate")
+            Text(L("Frame rate"))
             ForEach(QualitySettings.allowedFPSCaps, id: \.self) { fps in
-                Toggle("\(fps) fps", isOn: fpsBinding(fps))
+                Toggle(L("\(fps) fps"), isOn: fpsBinding(fps))
             }
             Divider()
-            Text("Codec")
+            Text(L("Codec"))
             ForEach(QualitySettings.CodecPreference.allCases, id: \.self) { codec in
                 Toggle(codec.hubLabel, isOn: codecBinding(codec))
             }

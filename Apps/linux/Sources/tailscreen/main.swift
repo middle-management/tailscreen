@@ -2,6 +2,7 @@ import DefaultBackend
 import Foundation
 import SwiftCrossUI
 import TailscreenHubUI
+import TailscreenL10n
 import TailscreenProtocol
 
 // Targeted: the mic seam only. A blanket `import TailscreenAudio` would pull
@@ -353,7 +354,7 @@ if gSelfTest {
             } catch {
                 FileHandle.standardError.write(Data("session failed: \(error)\n".utf8))
                 gVoice.detach()
-                gUIState.post(sessionPhase: .failed("Connection failed"))
+                gUIState.post(sessionPhase: .failed(L("Connection failed")))
             }
             // Back to the picker after a beat so the declined/ended placard is
             // readable (picker mode only; a direct-host run has no list to
@@ -389,13 +390,14 @@ if gSelfTest {
                     // Not a success message: they are still choosing what to
                     // show, and their share appears in this list on its own
                     // when it starts.
-                    gPicker.finishAsking(id, outcome: "Accepted — they're choosing what to share")
+                    gPicker.finishAsking(
+                        id, outcome: L("Accepted — they're choosing what to share"))
                 case .declined:
-                    gPicker.finishAsking(id, outcome: "Declined")
+                    gPicker.finishAsking(id, outcome: L("Declined"))
                 case .noAnswer:
                     // One wording for away, closed and too-old-to-understand,
                     // because the asker cannot act on the difference.
-                    gPicker.finishAsking(id, outcome: "No reply")
+                    gPicker.finishAsking(id, outcome: L("No reply"))
                 }
             }
         }
@@ -574,9 +576,9 @@ struct ViewerApp: App {
     // Toolbar button label reflects the remote-control state machine.
     private var controlButtonLabel: String {
         switch ui.controlState {
-        case .idle, .revoked: return "Request Control"
-        case .requested: return "Requesting Control…"
-        case .active: return "Release Control"
+        case .idle, .revoked: return L("Request Control")
+        case .requested: return L("Requesting Control…")
+        case .active: return L("Release Control")
         }
     }
 
@@ -629,7 +631,7 @@ struct ViewerApp: App {
     }
 
     var body: some Scene {
-        WindowGroup("Tailscreen viewer") {
+        WindowGroup(L("Tailscreen viewer")) {
             rootView
         }
         // Opens hub-narrow (the picker is a single column, like the mac hub);
@@ -708,8 +710,8 @@ struct ViewerApp: App {
                 // `id` is the server's `"ip:port"` key, which is what
                 // approve/deny take; the label is only what the row says.
                 HubPrompt(
-                    id: $0.id, message: "\($0.label) wants to watch",
-                    acceptLabel: "Accept", declineLabel: "Deny")
+                    id: $0.id, message: L("\($0.label) wants to watch"),
+                    acceptLabel: L("Accept"), declineLabel: L("Deny"))
             }
                 // Somebody asking this machine to start sharing. Third source
                 // into one prompt list, and last on purpose: a viewer at the
@@ -719,15 +721,15 @@ struct ViewerApp: App {
                 + sharer.shareRequests.map {
                     HubPrompt(
                         id: $0.id.uuidString,
-                        message: "\($0.fromHostname) wants you to share your screen",
-                        acceptLabel: "Share", declineLabel: "Decline")
+                        message: L("\($0.fromHostname) wants you to share your screen"),
+                        acceptLabel: L("Share"), declineLabel: L("Decline"))
                 },
             settings: [
                 HubToggle(
-                    label: "Require approval for new viewers",
+                    label: L("Require approval for new viewers"),
                     caption: sharer.requireApproval
                         ? nil
-                        : "Anyone on your tailnet who can reach this machine can watch.",
+                        : L("Anyone on your tailnet who can reach this machine can watch."),
                     isOn: sharer.requireApproval,
                     set: { gSharer.setRequireApproval($0) })
             ],
@@ -758,14 +760,14 @@ struct ViewerApp: App {
             // and a greyed button would invite the question "why".
             secondaryStart: sharer.canShareWindow
                 ? HubAction(
-                    label: "Share a window or app…",
+                    label: L("Share a window or app…"),
                     perform: { gSharer.startWindowShare() })
                 : nil,
             // Only for a portal-backed share: an X11 session captures exactly
             // one thing, so there would be nothing to change.
             changeSource: sharer.canChangeSource && sharer.phase == .sharing
                 ? HubAction(
-                    label: "Change source…", perform: { gSharer.changeSource() })
+                    label: L("Change source…"), perform: { gSharer.changeSource() })
                 : nil,
             // What is actually on the wire, once a second. Only while
             // sharing: the model clears it on every teardown path, and this
@@ -893,7 +895,7 @@ struct ViewerApp: App {
             // A session is up but no video yet: connecting / awaiting approval /
             // declined / ended placard.
             VStack(spacing: 0) {
-                ViewerHeader(subtitle: "Viewer")
+                ViewerHeader(subtitle: L("Viewer"))
                 Divider()
                 SessionPlacard(phase: Self.hubPhase(ui.sessionPhase), host: sessionHost)
             }

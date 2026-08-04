@@ -70,6 +70,15 @@ echo "==> Assembling AppDir at $APPDIR"
 rm -rf "$APPDIR"
 install -Dm755 "$BIN_PATH" "$APPDIR/usr/bin/$BIN_NAME"
 
+# The string catalog, beside the binary — `LocalizationCatalog` looks in the
+# executable's own directory, so usr/bin is where it has to land. Hard failure
+# rather than a warning: a missing catalog degrades silently to English, so
+# nothing downstream would ever notice.
+L10N_BUNDLE="TailscreenL10n_TailscreenL10n.bundle"
+[ -d "$BUILD_DIR/$L10N_BUNDLE" ] \
+  || { echo "error: $L10N_BUNDLE not produced by the build" >&2; exit 1; }
+cp -R "$BUILD_DIR/$L10N_BUNDLE" "$APPDIR/usr/bin/$L10N_BUNDLE"
+
 # Desktop entry (generated here so the AppImage Icon= matches the icon basename).
 install -d "$APPDIR/usr/share/applications"
 cat > "$APPDIR/usr/share/applications/$APP_ID.desktop" <<EOF

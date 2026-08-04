@@ -278,6 +278,16 @@ jobs:
           # "unable to find bundle named Tailscreen_Tailscreen".
           cp -R "${PRODUCTS_DIR}/${APP_NAME}_${APP_NAME}.bundle" \
             "$APP/Contents/Resources/"
+          # The string catalog's bundle, from Packages/TailscreenL10n. A
+          # separate copy because it is a separate package: SwiftPM emits one
+          # bundle per target with resources. Missing it is NOT fatal at
+          # runtime — the lookup degrades to the English keys — which is
+          # precisely why it is asserted here instead of being noticed by a
+          # Swedish user three releases later.
+          L10N_BUNDLE="TailscreenL10n_TailscreenL10n.bundle"
+          test -d "${PRODUCTS_DIR}/${L10N_BUNDLE}" \
+            || { echo "::error::${L10N_BUNDLE} not produced by the build"; exit 1; }
+          cp -R "${PRODUCTS_DIR}/${L10N_BUNDLE}" "$APP/Contents/Resources/"
           cp Apps/macOS/Resources/Tailscreen.icns "$APP/Contents/Resources/${APP_NAME}.icns"
 
           cat > "$APP/Contents/Info.plist" <<EOF

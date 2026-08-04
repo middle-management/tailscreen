@@ -58,6 +58,10 @@ on:
       - 'Packages/WinOverlayKit/**'
       - 'Packages/WinHotkeyKit/**'
       - 'Packages/TailscreenHubUI/**'
+      # The string catalog: a dependency of both the app target and
+      # TailscreenHubUI, and the thing the staged
+      # TailscreenL10n_TailscreenL10n.bundle is built from.
+      - 'Packages/TailscreenL10n/**'
       - 'Apps/windows/**'
       - 'scripts/materialize-symlinks.sh'
       # The MSIX packaging steps' inputs. Missing at first, and the hole

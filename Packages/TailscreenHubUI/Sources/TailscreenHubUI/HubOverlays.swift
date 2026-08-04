@@ -1,4 +1,5 @@
 import SwiftCrossUI
+import TailscreenL10n
 import TailscreenProtocol
 
 /// Annotation toolbar pinned to the TOP of a viewer window, mirroring the macOS
@@ -22,8 +23,8 @@ public struct AnnotationToolbar: View {
     /// Tool order — matches the macOS `ViewerToolbar.toolOrder` exactly.
     /// Glyphs: pencil, diagonal, arrow, rectangle, ellipse, target.
     public static let tools: [(tool: AnnotationTool, glyph: String, name: String)] = [
-        (.pen, "✎", "Pen"), (.line, "╱", "Line"), (.arrow, "↗", "Arrow"),
-        (.rectangle, "▭", "Rect"), (.oval, "◯", "Oval"), (.click, "◎", "Click"),
+        (.pen, "✎", L("Pen")), (.line, "╱", L("Line")), (.arrow, "↗", L("Arrow")),
+        (.rectangle, "▭", L("Rect")), (.oval, "◯", L("Oval")), (.click, "◎", L("Click")),
     ]
 
     /// The armed tool, or nil when drawing is off (pointer drags then zoom/pan
@@ -109,7 +110,7 @@ public struct StatsHUD: View {
     }
 
     public var body: some View {
-        Text("\(width)×\(height) · \(fps) fps")
+        Text(L("\(width)×\(height) · \(fps) fps"))
             .font(.caption)
             .foregroundColor(.white)
             .padding(.horizontal, 8)
@@ -139,7 +140,7 @@ public struct RemoteControlBar: View {
         HStack(spacing: 10) {
             Button(buttonLabel, action: onToggle)
             if let declinedReason {
-                Text("Control declined: \(declinedReason)")
+                Text(L("Control declined: \(declinedReason)"))
                     .font(.caption)
                     .foregroundColor(HubStyle.secondaryText)
                     .lineLimit(1)
@@ -184,7 +185,7 @@ public struct MicrophoneButton: View {
             // Bracketed when live, matching the annotation toolbar's active
             // state: swift-cross-ui's Button takes a String label, so "which of
             // these is on" has to be carried by the text itself.
-            Button(isOn ? "[🎙 On]" : " 🎙 Off ", action: onToggle)
+            Button(isOn ? "[\(L("🎙 On"))]" : " \(L("🎙 Off")) ", action: onToggle)
             if let failureNote {
                 Text(failureNote)
                     .font(.caption)

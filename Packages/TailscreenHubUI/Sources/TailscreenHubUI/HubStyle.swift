@@ -1,4 +1,5 @@
 import SwiftCrossUI
+import TailscreenL10n
 
 /// Shared design tokens.
 ///
@@ -193,8 +194,8 @@ public struct HubPrompt: Identifiable, Sendable {
     public let declineLabel: String
 
     public init(
-        id: String, message: String, acceptLabel: String = "Allow",
-        declineLabel: String = "Deny"
+        id: String, message: String, acceptLabel: String = L("Allow"),
+        declineLabel: String = L("Deny")
     ) {
         self.id = id
         self.message = message
@@ -214,5 +215,5 @@ public struct HubPrompt: Identifiable, Sendable {
 public func hubSignedInSubtitle(tailnet: String?, account: String?) -> String {
     if let tailnet, !tailnet.isEmpty { return tailnet }
     if let account, !account.isEmpty { return account }
-    return "Signed in"
+    return L("Signed in")
 }

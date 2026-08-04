@@ -6,6 +6,7 @@ import SwiftCrossUI
 // re-export TailscreenProtocol, so the `Published` / `ObservableObject`
 // collision the targeted imports below exist to dodge does not arrive with it.
 import TailscreenHubUI
+import TailscreenL10n
 
 // Targeted imports: pulling all of TailscreenProtocol collides with SwiftCrossUI's
 // own `Published` / `ObservableObject` shims, the same collision the GTK app
@@ -206,14 +207,14 @@ struct TailscreenWindowsApp: App {
         let interaction = state.interaction
         return VStack(spacing: 0) {
             HStack(spacing: 8) {
-                Text("Watching \(host)")
+                Text(L("Watching \(host)"))
                     .font(.caption)
                     .foregroundColor(HubStyle.secondaryText)
                 Spacer()
                 if interaction.isZoomed {
-                    Button("Reset Zoom") { interaction.resetZoom() }
+                    Button(L("Reset Zoom")) { interaction.resetZoom() }
                 }
-                Button("Stop") { model.disconnect() }
+                Button(L("Stop")) { model.disconnect() }
             }
             .padding(.horizontal, 16)
             .frame(height: Double(HubStyle.toolbarHeight))
@@ -240,7 +241,7 @@ struct TailscreenWindowsApp: App {
                 // the capability must not also cost the viewer its stats.
                 HStack {
                     Spacer()
-                    Button(state.showStats ? "Hide stats" : "Stats") {
+                    Button(state.showStats ? L("Hide stats") : L("Stats")) {
                         model.showStats.toggle()
                     }
                 }
@@ -290,9 +291,9 @@ struct TailscreenWindowsApp: App {
         let model = state
         let message =
             state.detail.isEmpty
-            ? "Sign in to your tailnet to share this screen or watch someone else's."
+            ? L("Sign in to your tailnet to share this screen or watch someone else's.")
             : state.detail
-        let label = state.phase == .failed ? "Try again" : "Sign in to Tailscale"
+        let label = state.phase == .failed ? L("Try again") : L("Sign in to Tailscale")
         return SignInPane(message: message, buttonLabel: label) { model.signIn() }
     }
 
@@ -306,7 +307,7 @@ struct TailscreenWindowsApp: App {
             isPicking: state.phase == .ready && !state.isSearching,
             screens: state.hubScreens,
             loginURL: state.loginURL,
-            emptyMessage: "No Tailscreen screens found on your tailnet.",
+            emptyMessage: L("No Tailscreen screens found on your tailnet."),
             hiddenByFilter: state.hiddenByFilter,
             askingIDs: state.asking,
             askNotes: state.askOutcome,
@@ -362,7 +363,7 @@ struct SignInPane: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            Text("Screens on your tailnet")
+            Text(L("Screens on your tailnet"))
                 .font(.headline)
                 .fontWeight(.semibold)
             Text(message)
@@ -395,7 +396,7 @@ final class AppUIState: ObservableObject {
     }
 
     @Published var phase: Phase = .idle
-    @Published var status = "Not signed in"
+    @Published var status = L("Not signed in")
     @Published var detail = ""
     @Published var loginURL: String?
     /// The RAW discovery result. Stays unfiltered on purpose: the filter menu
@@ -610,8 +611,12 @@ final class AppUIState: ObservableObject {
         // any other number on screen can be trusted: "the new counter isn't
         // there" and "this is yesterday's exe" are indistinguishable without
         // it.
-        return "\(BuildInfo.summary) · \(Self.architecture) · fps cap \(quality.fpsCap) "
-            + "· codec \(quality.codecPreference)"
+        // One literal, not two joined with `+`: the argument is a
+        // `LocalizationKey`, and concatenating two of those is neither defined
+        // nor meaningful — the catalog key is the whole sentence.
+        return L(
+            "\(BuildInfo.summary) · \(Self.architecture) · fps cap \(quality.fpsCap) · codec \(quality.codecPreference)"
+        )
     }
 
     /// A spinner rides the header while something is genuinely in flight —
@@ -671,11 +676,11 @@ final class AppUIState: ObservableObject {
         guard shareSession.isSupported else { return nil }
         return ShareCard(
             statusLine: sharing.isSharing
-                ? "Sharing \(sharing.target)"
-                : "Not sharing",
+                ? L("Sharing \(sharing.target)")
+                : L("Not sharing"),
             isSharing: sharing.isSharing,
             canShare: watching == nil,
-            startLabel: "Share this screen",
+            startLabel: L("Share this screen"),
             notes: shareNotes,
             // The roster: who is watching, and what can be done about them.
             // `notes` stays for statistics — a person is not a note.
@@ -715,13 +720,13 @@ final class AppUIState: ObservableObject {
             // first.
             prompts: sharing.pendingViewers.map {
                 HubPrompt(
-                    id: $0.id, message: "\($0.displayName) wants to watch",
-                    acceptLabel: "Accept", declineLabel: "Deny")
+                    id: $0.id, message: L("\($0.displayName) wants to watch"),
+                    acceptLabel: L("Accept"), declineLabel: L("Deny"))
             }
                 + sharing.controlRequests.map {
                     HubPrompt(
                         id: $0.id.uuidString,
-                        message: "\($0.displayName) wants to control this machine")
+                        message: L("\($0.displayName) wants to control this machine"))
                 }
                 // Somebody asking this machine to START sharing. Third source
                 // into the one prompt list, and last because the other two are
@@ -731,19 +736,19 @@ final class AppUIState: ObservableObject {
                 + shareRequests.map {
                     HubPrompt(
                         id: $0.id.uuidString,
-                        message: "\($0.fromHostname) wants you to share your screen",
-                        acceptLabel: "Share", declineLabel: "Decline")
+                        message: L("\($0.fromHostname) wants you to share your screen"),
+                        acceptLabel: L("Share"), declineLabel: L("Decline"))
                 },
             settings: [
                 HubToggle(
-                    label: "Require approval for new viewers",
+                    label: L("Require approval for new viewers"),
                     // Said only while it is off, and said as a consequence
                     // rather than a warning glyph: this is the one setting on
                     // the card whose wrong value is invisible in normal use —
                     // the share looks identical, it just lets strangers in.
                     caption: sharing.requireApproval
                         ? nil
-                        : "Anyone on your tailnet who can reach this machine can watch.",
+                        : L("Anyone on your tailnet who can reach this machine can watch."),
                     isOn: sharing.requireApproval,
                     set: { [weak self] in self?.setRequireApproval($0) })
             ],
@@ -752,7 +757,7 @@ final class AppUIState: ObservableObject {
                 isSharing: sharing.isSharing,
                 onChange: { [weak self] in self?.setQuality($0) }),
             extraAction: sharing.controlGrantedTo.map { holder in
-                HubAction(label: "Take back control from \(holder)") { [weak self] in
+                HubAction(label: L("Take back control from \(holder)")) { [weak self] in
                     self?.revokeControl()
                 }
             },
@@ -783,7 +788,7 @@ final class AppUIState: ObservableObject {
             // `WindowsShareSession.changeSource`).
             changeSource: sharing.isSharing
                 ? HubAction(
-                    label: "Change source…", perform: { [weak self] in self?.changeSource() })
+                    label: L("Change source…"), perform: { [weak self] in self?.changeSource() })
                 : nil,
             // What is actually on the wire, once a second. Only while
             // sharing: the session clears it on teardown, and this second gate
@@ -866,17 +871,17 @@ final class AppUIState: ObservableObject {
             // yet" and "two people are watching" are the two facts a sharer
             // wants, and a bare count leaves the first ambiguous.
             sharing.viewerCount == 0
-                ? "No one is watching yet"
-                : "\(sharing.viewerCount) watching"
+                ? L("No one is watching yet")
+                : L("\(sharing.viewerCount) watching")
         ]
         // Which of the two optional features this share actually got. Their
         // absence is otherwise invisible from both ends — the viewer simply
         // stops offering them and the sharer sees a share that looks normal.
         if sharing.remoteControlAvailable {
-            notes.append("Viewers can ask to control this machine")
+            notes.append(L("Viewers can ask to control this machine"))
         }
         if sharing.annotationsAvailable {
-            notes.append("Viewers' drawings appear on this screen")
+            notes.append(L("Viewers' drawings appear on this screen"))
         }
         // Carries the reason they are unavailable, when they are. "Request
         // Control is missing" with no explanation is a support ticket; "2
@@ -890,7 +895,7 @@ final class AppUIState: ObservableObject {
         if let timings = sharing.timings {
             notes.append(timings.summary)
             if let slowest = timings.slowestStage {
-                notes.append("slowest stage: \(slowest)")
+                notes.append(L("slowest stage: \(slowest)"))
             }
         }
         return notes
@@ -899,7 +904,7 @@ final class AppUIState: ObservableObject {
     func signIn() {
         guard phase == .idle || phase == .failed else { return }
         phase = .starting
-        status = "Starting Tailscale…"
+        status = L("Starting Tailscale…")
         detail = ""
         loginURL = nil
 
@@ -932,7 +937,7 @@ final class AppUIState: ObservableObject {
                         // Fired from the IPN-bus watcher, off the main actor.
                         Task { @MainActor in
                             self?.loginURL = url.absoluteString
-                            self?.status = "Waiting for browser sign-in…"
+                            self?.status = L("Waiting for browser sign-in…")
                         }
                     }
                 )
@@ -950,7 +955,7 @@ final class AppUIState: ObservableObject {
             } catch {
                 phase = .failed
                 loginURL = nil
-                status = "Could not start Tailscale"
+                status = L("Could not start Tailscale")
                 detail = "\(error)"
             }
         }
@@ -973,7 +978,7 @@ final class AppUIState: ObservableObject {
                 isSearching = false
                 await sweepShareStatus(found)
             } catch {
-                detail = "Discovery failed: \(error)"
+                detail = L("Discovery failed: \(error)")
                 isSearching = false
             }
         }
@@ -1033,7 +1038,7 @@ final class AppUIState: ObservableObject {
         guard phase == .ready, sessionTask == nil else { return }
         stopRequested = false
         watching = peer.hostname
-        status = "Connecting to \(peer.hostname)…"
+        status = L("Connecting to \(peer.hostname)…")
         detail = ""
 
         sessionTask = Task { [weak self] in
@@ -1087,7 +1092,7 @@ final class AppUIState: ObservableObject {
                     },
                     onAdmitted: { [weak self] caps in
                         Task { @MainActor in
-                            self?.status = "Watching \(peer.hostname)"
+                            self?.status = L("Watching \(peer.hostname)")
                             // Drawing and Request Control appear only if the
                             // sharer said it can serve them. Withheld bits mean
                             // a quieter UI, never a broken one.
@@ -1096,15 +1101,15 @@ final class AppUIState: ObservableObject {
                     },
                     onAwaitingApproval: { [weak self] in
                         Task { @MainActor in
-                            self?.status = "Waiting for \(peer.hostname) to approve…"
+                            self?.status = L("Waiting for \(peer.hostname) to approve…")
                         }
                     },
                     onDeclined: { [weak self] in
-                        Task { @MainActor in self?.detail = "The sharer declined." }
+                        Task { @MainActor in self?.detail = L("The sharer declined.") }
                     }
                 )
             } catch {
-                detail = "Session ended: \(error)"
+                detail = L("Session ended: \(error)")
             }
             watching = nil
             sessionTask = nil
@@ -1112,7 +1117,7 @@ final class AppUIState: ObservableObject {
             // Before the status line, so a stale grant or armed tool can never
             // outlive the session that produced it.
             interaction.endSession()
-            status = transport.accountIdentity.map { "Signed in as \($0)" } ?? "Signed in"
+            status = transport.accountIdentity.map { L("Signed in as \($0)") } ?? L("Signed in")
         }
     }
 
@@ -1137,7 +1142,7 @@ final class AppUIState: ObservableObject {
                 // can give.
                 self?.micAvailable = false
                 self?.micOn = false
-                self?.micFailure = "Microphone unavailable"
+                self?.micFailure = L("Microphone unavailable")
             }
         }
     }
@@ -1198,7 +1203,7 @@ final class AppUIState: ObservableObject {
     /// The accounts, plus Sign out once there is a session to sign out of.
     var accountMenuEntries: [HubAccount] {
         guard phase == .ready else { return accounts }
-        return accounts + [HubAccount(id: Self.signOutEntryID, name: "Sign out")]
+        return accounts + [HubAccount(id: Self.signOutEntryID, name: L("Sign out"))]
     }
 
     func selectAccountMenuEntry(_ id: String) {
@@ -1247,7 +1252,7 @@ final class AppUIState: ObservableObject {
     /// untouched — so switching back resumes without a browser round trip.
     private func restartUnderActiveAccount() {
         phase = .idle
-        status = "Switching account…"
+        status = L("Switching account…")
         detail = ""
         peers = []
         loginURL = nil
@@ -1288,7 +1293,7 @@ final class AppUIState: ObservableObject {
         do {
             item = try shareSession.pickTarget()
         } catch {
-            detail = "Could not open the capture picker: \(error)"
+            detail = L("Could not open the capture picker: \(error)")
             return
         }
         guard let item else { return }
@@ -1298,7 +1303,7 @@ final class AppUIState: ObservableObject {
             do {
                 try await shareSession.changeSource(to: item)
             } catch {
-                self.detail = "Could not change the shared source: \(error)"
+                self.detail = L("Could not change the shared source: \(error)")
             }
         }
     }
@@ -1311,7 +1316,7 @@ final class AppUIState: ObservableObject {
         do {
             item = try shareSession.pickTarget()
         } catch {
-            detail = "Could not open the capture picker: \(error)"
+            detail = L("Could not open the capture picker: \(error)")
             return
         }
         // Dismissing the picker is a decision, not a failure. Say nothing.
@@ -1340,7 +1345,7 @@ final class AppUIState: ObservableObject {
                     controlListener: controlListener
                 )
             } catch {
-                self.detail = "Could not start sharing: \(error)"
+                self.detail = L("Could not start sharing: \(error)")
             }
         }
     }
@@ -1380,7 +1385,7 @@ final class AppUIState: ObservableObject {
                 // machine simply never hears an ask, which from the other end
                 // looks exactly like nobody being home.
                 await MainActor.run { [weak self] in
-                    self?.detail = "Not listening for share requests: \(error)"
+                    self?.detail = L("Not listening for share requests: \(error)")
                 }
             }
         }
@@ -1442,20 +1447,20 @@ final class AppUIState: ObservableObject {
             case .accepted:
                 // Not a success message — they are still choosing what to
                 // show. Their share turns up in this list on its own.
-                askOutcome[id] = "Accepted — they're choosing what to share"
+                askOutcome[id] = L("Accepted — they're choosing what to share")
             case .declined:
-                askOutcome[id] = "Declined"
+                askOutcome[id] = L("Declined")
             case .noAnswer:
                 // One wording for away, closed, and too old to understand the
                 // request: the asker cannot act on the difference.
-                askOutcome[id] = "No reply"
+                askOutcome[id] = L("No reply")
             }
         }
     }
 
     func grantControl(to requestID: UUID) {
         if !shareSession.grantControl(to: requestID) {
-            detail = "Remote control isn't available for this share."
+            detail = L("Remote control isn't available for this share.")
         }
     }
 
@@ -1471,7 +1476,7 @@ final class AppUIState: ObservableObject {
         guard phase == .ready else { return }
         stopRequested = true
         phase = .idle
-        status = "Not signed in"
+        status = L("Not signed in")
         detail = ""
         peers = []
         watching = nil
@@ -1495,7 +1500,7 @@ final class AppUIState: ObservableObject {
         do {
             try process.run()
         } catch {
-            detail = "Could not open a browser — copy the URL above. (\(error))"
+            detail = L("Could not open a browser — copy the URL above. (\(error))")
         }
     }
 

@@ -280,12 +280,27 @@ jobs:
           STAGE="dist/tailscreen-linux-${PACKAGE_ARCH}"
           mkdir -p "$STAGE"
           cp "Apps/linux/.build/${{ inputs.configuration }}/tailscreen" "$STAGE/tailscreen"
+          # The string catalog rides BESIDE the binary, which is where
+          # LocalizationCatalog looks (`Bundle.main.bundleURL`, i.e. the
+          # executable's own directory). Shipping it is what makes the GTK app
+          # speak anything but English; not shipping it is invisible in
+          # testing, because the lookup degrades to the English keys rather
+          # than failing — hence the hard check.
+          L10N_BUNDLE="TailscreenL10n_TailscreenL10n.bundle"
+          L10N_SRC="Apps/linux/.build/${{ inputs.configuration }}/${L10N_BUNDLE}"
+          test -d "$L10N_SRC" \
+            || { echo "::error::${L10N_BUNDLE} not produced by the build"; exit 1; }
+          cp -R "$L10N_SRC" "$STAGE/${L10N_BUNDLE}"
           cat > "$STAGE/README.txt" <<EOF
           Tailscreen for Linux (${PACKAGE_ARCH})
           ============================
 
           Run:  ./tailscreen            (picker mode)
                 ./tailscreen <host>     (dial a sharer directly)
+
+          Keep TailscreenL10n_TailscreenL10n.bundle beside the binary — it
+          carries the translations, and the app falls back to English without
+          it. Force a language with TAILSCREEN_LANG=sv.
 
           Runtime dependencies (Ubuntu 24.04 package names):
             libgtk-4-1 libepoxy0 libavcodec60 libavutil58 libasound2t64

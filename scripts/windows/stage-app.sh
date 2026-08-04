@@ -46,6 +46,22 @@ if [ -z "$probe" ]; then
 fi
 cp "$probe" dist/tsnet-probe.exe
 
+# The string catalog, beside the exe — `LocalizationCatalog` searches the
+# executable's own directory, so dist/ is where it has to land (and MSIX
+# packaging takes dist/ wholesale, so nothing else needs to know about it).
+#
+# Hard failure, deliberately, and for the same reason the probe check above is:
+# a missing catalog does not break the app, it silently makes it English-only,
+# so there is no downstream symptom for anyone to notice.
+l10n_bundle="TailscreenL10n_TailscreenL10n.bundle"
+l10n_src=$(find Apps/windows/.build -path '*/release/*' -name "$l10n_bundle" -type d | head -1)
+if [ -z "$l10n_src" ]; then
+  echo "no $l10n_bundle produced" >&2
+  exit 1
+fi
+rm -rf "dist/$l10n_bundle"
+cp -R "$l10n_src" "dist/$l10n_bundle"
+
 # The toolchain ships the runtime and the COMPILER in one bin
 # directory, so copying every DLL beside swiftCore.dll produced a
 # 1.1 GB artifact: liblldb (160 MB), sourcekitdInProc (150 MB),

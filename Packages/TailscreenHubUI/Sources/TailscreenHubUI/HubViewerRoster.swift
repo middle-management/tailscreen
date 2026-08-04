@@ -1,4 +1,5 @@
 import SwiftCrossUI
+import TailscreenL10n
 
 /// One person watching this screen, with the sharer's controls for them.
 ///
@@ -38,14 +39,14 @@ public struct HubViewerRowView: View {
                 switch viewer.remembered {
                 case .none:
                     if let allow = viewer.onAlwaysAllow {
-                        Button("Always allow", action: allow)
+                        Button(L("Always allow"), action: allow)
                     }
                     if let block = viewer.onDenyAndBlock {
-                        Button("Block", action: block)
+                        Button(L("Block"), action: block)
                     }
                 case .allowed, .blocked:
                     if let forget = viewer.onForget {
-                        Button("Forget", action: forget)
+                        Button(L("Forget"), action: forget)
                     }
                 }
                 if let kick = viewer.onKick {
@@ -54,7 +55,7 @@ public struct HubViewerRowView: View {
                     // row of words reads as decoration rather than a control —
                     // and this is the control whose accidental press is felt on
                     // another machine.
-                    Button("Disconnect", action: kick)
+                    Button(L("Disconnect"), action: kick)
                 }
             }
             if let status = statusLine {
@@ -74,12 +75,12 @@ public struct HubViewerRowView: View {
     /// make it absent exactly when a sharer reaches for it.
     private var statusLine: String? {
         if viewer.rememberIsDeferred {
-            return "Will apply once this peer is identified"
+            return L("Will apply once this peer is identified")
         }
         switch viewer.remembered {
         case .none: return nil
-        case .allowed: return "Always allowed"
-        case .blocked: return "Blocked"
+        case .allowed: return L("Always allowed")
+        case .blocked: return L("Blocked")
         }
     }
 }

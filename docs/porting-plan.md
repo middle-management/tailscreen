@@ -139,9 +139,15 @@ address now, additively, while all peers are macOS.
    SwiftUI-bound state (`AppState`) stays mac-side.
    (`ViewerAccessPolicyStore` and the `ShareLock` advisory mutex compile
    via the shims and are in the portable set.)
-9. **Localization.** `L(_:)` rides `String(localized:bundle:)`, which is
-   Apple-Foundation. Non-mac UIs need their own catalog mechanism; don't
-   pull `Localization.swift` into the portable set.
+9. **Localization — done.** `L(_:)` used to ride
+   `String(localized:bundle:)`, which is Apple Foundation, and this item
+   read "non-mac UIs need their own catalog mechanism". They didn't: the
+   `.lproj` catalog format was never the mac-specific part, only the
+   *lookup* was. `Packages/TailscreenL10n` keeps Apple's format and file
+   layout and replaces the resolution with plain Swift over Foundation —
+   a `.strings` parser, an explicit language-preference chain, `%@`/`%lld`
+   substitution — so all three apps read one catalog. Linux CI checks every
+   `L("…")` key in all four source trees against it.
 10. **The helper-process architecture is a macOS workaround, not a
     design requirement.** `replayd`/TCC coupling is the only reason
     capture lives in a subprocess. On Linux the portal session can live

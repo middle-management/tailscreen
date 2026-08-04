@@ -1,4 +1,5 @@
 import Foundation
+import TailscreenL10n
 import TailscreenViewerGtk
 
 import class TailscreenAudio.VoiceUplink
@@ -33,7 +34,7 @@ final class VoiceControls {
         uplink.onStopped = { [weak self] error in
             guard let error else { return }
             Task { @MainActor in
-                self?.uiState.noteMicFailure("Microphone unavailable")
+                self?.uiState.noteMicFailure(L("Microphone unavailable"))
                 _ = error
             }
         }

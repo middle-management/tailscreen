@@ -1,5 +1,6 @@
 import Foundation
 import SwiftCrossUI
+import TailscreenL10n
 
 import enum TailscreenProtocol.AnnotationRasterizer
 import enum TailscreenProtocol.InputEvent
@@ -556,7 +557,7 @@ struct WinUIVideoView: View {
     let interaction: WindowsViewerInteraction
 
     var body: some View {
-        Text("Video is available on Windows only.")
+        Text(L("Video is available on Windows only."))
     }
 }
 
