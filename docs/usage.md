@@ -16,7 +16,7 @@ You need a Tailscale account — the free personal tier is fine, and it
 doesn't expire. Sign up at [tailscale.com](https://tailscale.com/),
 install the Tailscale app on every machine you want to share between, and
 let it add them to your tailnet. Then install Tailscreen on those machines
-(see [Install]({% link install.md %})).
+(see [Install]({{ site.baseurl }}{% link install.md %})).
 
 You do **not** need to register Tailscreen as a Tailscale device. It spins
 up its own ephemeral tsnet node when you start sharing or connecting, and
@@ -26,7 +26,7 @@ stays clean.
 If you'd rather not use Tailscale's hosted control plane — you run
 [headscale](https://github.com/juanfont/headscale), say, or you want a
 fully airgapped tailnet — see
-[Self-hosted control planes]({% link self-hosted.md %}).
+[Self-hosted control planes]({{ site.baseurl }}{% link self-hosted.md %}).
 
 ## Platform notes
 
@@ -53,7 +53,7 @@ The honest differences:
   concepts. Linux and Windows have no equivalent gate.
 
 The full feature-by-feature comparison lives in
-[Platform support]({% link platform-support.md %}).
+[Platform support]({{ site.baseurl }}{% link platform-support.md %}).
 
 ## Sharing your screen
 
@@ -61,7 +61,7 @@ The full feature-by-feature comparison lives in
 2. Pick **Choose what to share…**. The native picker opens — choose a
    display, a single window, or one or more apps.
 3. On a Mac, approve Screen Recording if macOS asks. (See
-   [Install → Permissions]({% link install.md %}#permissions) — the
+   [Install → Permissions]({{ site.baseurl }}{% link install.md %}#permissions) — the
    permission only takes effect after a relaunch.)
 4. The first time you ever share, Tailscale will open a browser tab to log
    you in. After that it's a one-click affair.
@@ -177,7 +177,7 @@ strip always shows which account a new share will start on.
 The viewer's toolbar has drawing tools. Doodle on the sharer's screen and
 your strokes appear in a transparent overlay window on their machine. The
 back-channel rides over TCP rather than the lossy UDP video stream — see
-[Network Protocol]({% link protocol.md %}) — so individual stroke segments
+[Network Protocol]({{ site.baseurl }}{% link protocol.md %}) — so individual stroke segments
 won't drop even if you lose a video frame or two.
 
 Annotations aren't persisted on either end — quit the viewer or stop
@@ -295,7 +295,7 @@ rate below them when the network demands it.
 The **Stats** button in the viewer toolbar toggles a live overlay:
 Latency, FPS, Dropped, Decode errs, PLIs sent, FEC recovered, Bitrate,
 Codec, and Connection. It's the first place to look when video quality
-drops — see [Troubleshooting]({% link troubleshooting.md %}) for how to
+drops — see [Troubleshooting]({{ site.baseurl }}{% link troubleshooting.md %}) for how to
 read it.
 
 When the connection degrades badly enough that automatic recovery is
@@ -351,7 +351,7 @@ of an empty peer list when testing locally.
 
 The launcher also sets `TAILSCREEN_OPEN_DOOR=1` so the second instance
 isn't left parked on the viewer-approval prompt — see
-[Troubleshooting]({% link troubleshooting.md %}) if you're scripting your
+[Troubleshooting]({{ site.baseurl }}{% link troubleshooting.md %}) if you're scripting your
 own automation.
 
 Logs from all children are merged into `/tmp/tailscreen-merged.log`

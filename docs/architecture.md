@@ -170,7 +170,7 @@ as a per-viewer health dot: healthy, degraded, or limited-to-keyframes.
 
 Three cooperating mechanisms, all capability-negotiated so any mix of old
 and new peers degrades to plain PLI (the wire details are on the
-[protocol page]({% link protocol.md %})):
+[protocol page]({{ site.baseurl }}{% link protocol.md %})):
 
 - **NACK retransmission.** The viewer's `NACKScheduler` watches the
   sequence space, tolerates reordering, and requests exactly the missing
@@ -211,7 +211,7 @@ and puts a failing decoder on a cooldown rather than hammering it.
 The codec is Opus — libopus wrapped by the local `OpusKit` — which
 replaced the original AudioToolbox AAC-LC path. Royalty-free and
 software-only, so the exact same codec ports to Linux and Windows
-(see the [porting plan]({% link porting-plan.md %})).
+(see the [porting plan]({{ site.baseurl }}{% link porting-plan.md %})).
 
 System audio is captured *in the capture helper* (`SCStream` grabs it
 with the video via `capturesAudio`, excluding Tailscreen's own output so
@@ -245,7 +245,7 @@ translation, so a hostile viewer can't smuggle arbitrary flag bits — and
 posts `CGEvent`s from a serial queue. Revocation is TOCTOU-safe: a sealed injector drops anything that
 raced the revoke and synthesizes a button-up for any button held
 mid-drag, so revoke never leaves a stuck mouse button. Keyboard scope is
-whole-Mac by design (see [Security]({% link security.md %}) for why, and
+whole-Mac by design (see [Security]({{ site.baseurl }}{% link security.md %}) for why, and
 for the grant-time disclosure).
 
 ## Tailscale integration

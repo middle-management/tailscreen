@@ -257,5 +257,5 @@ audio I/O and input injection.
 Windows signing is blocked on registering with SignPath's free OSS tier; until
 then the MSIX installs only after its certificate is trusted — each release
 ships the cert's public `.cer` beside it, and
-[Install]({% link install.md %}#installing-the-msix-trusting-the-certificate)
+[Install]({{ site.baseurl }}{% link install.md %}#installing-the-msix-trusting-the-certificate)
 documents the one-time trust — while the zip needs no trust step at all.

@@ -50,7 +50,7 @@ tailscreen/
 The Makefile drives the macOS app; the Linux and Windows apps are their own
 SwiftPM packages built with `swift build --package-path Apps/linux` /
 `Apps/windows` (system dependencies and the authoritative CI recipes are
-listed in [Install → From source]({% link install.md %}#from-source)).
+listed in [Install → From source]({{ site.baseurl }}{% link install.md %}#from-source)).
 
 ## Build commands
 
@@ -156,7 +156,7 @@ state directory and hostname (`wisp-1`, `wisp-2`, ...). If you launch the
 binary directly without setting this, all instances share one state
 directory, all of them present the same machine key, and the tailnet
 considers them the same device — see
-[Troubleshooting → Two local instances see no peers]({% link troubleshooting.md %}#two-local-instances-see-no-peers).
+[Troubleshooting → Two local instances see no peers]({{ site.baseurl }}{% link troubleshooting.md %}#two-local-instances-see-no-peers).
 
 Memory-debug envs (set them before invoking `./test-local.sh`):
 
