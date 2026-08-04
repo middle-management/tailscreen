@@ -1,9 +1,3 @@
----
-title: macOS viewer convergence on ViewerSession
-nav_order: 12
-permalink: /mac-viewer-convergence/
----
-
 # Converging the macOS viewer onto `ViewerSession`
 
 A working plan (not a commitment) for making the macOS app's screen-share

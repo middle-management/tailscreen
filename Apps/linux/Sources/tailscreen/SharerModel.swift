@@ -15,6 +15,10 @@ import class TailscreenProtocol.SharerAccessCoordinator
 import struct TailscreenProtocol.PickerSelection
 import enum TailscreenProtocol.CaptureBackendSelection
 import enum TailscreenProtocol.ThumbnailScaler
+import struct TailscreenProtocol.ControlRequestInfo
+import enum TailscreenProtocol.SharerNoticeDecision
+import enum TailscreenProtocol.SharerNoticeKind
+import struct TailscreenProtocol.NoticeCandidate
 import protocol TailscreenSharer.CaptureEncoding
 import class TailscreenSharerPortal.PortalCaptureEncoder
 import class PortalCaptureKit.PortalSession
@@ -116,6 +120,58 @@ final class SharerModel: ObservableObject {
     @Published var viewers: [ConnectedViewer] = []
     /// Viewers parked awaiting approval, when the approval gate is on.
     @Published var pendingViewers: [PendingViewer] = []
+
+    /// Viewers asking to drive this machine.
+    ///
+    /// This app supplies an `X11InputInjector` whenever XTEST is present, which
+    /// is what makes the server advertise `ScreenShareCaps.remoteControl` — so
+    /// viewers are *offered* Request Control. Until this existed the request
+    /// then reached a host that never read it: the viewer's toolbar said
+    /// "requested", the sharer saw nothing, and there was no way to say yes.
+    /// Advertising a capability and providing no way to exercise it is worse
+    /// than not advertising it.
+    @Published private(set) var controlRequests: [ControlRequestInfo] = []
+
+    /// Who is driving this machine right now, by display name, or nil.
+    ///
+    /// Drives the "Take back control" action, which is the only way to end a
+    /// grant from this side.
+    @Published private(set) var controlGrantedTo: String?
+
+    /// Posts the sharer's notifications and routes their buttons back.
+    ///
+    /// Built once for the life of the app rather than per share: connecting to
+    /// the bus is the expensive part, and an ask to SHARE arrives precisely
+    /// when no share is running.
+    private let notifications = SharerNotifications()
+
+    /// Whether this machine has nowhere to post notifications.
+    ///
+    /// Said on the card, but only while sharing: a sharer who is not looking
+    /// at the app is exactly who a notification would have reached, so the one
+    /// moment worth telling them it will not is the moment they are about to
+    /// stop looking. Off a share it is noise about a feature nobody is using.
+    var notificationsUnavailable: Bool { !notifications.isAvailable }
+
+    /// Why a grant could not be given, when one could not. Nil renders nothing.
+    ///
+    /// `grantControl` returning false is otherwise completely silent: the
+    /// prompt row disappears (the request was consumed) and nothing happens,
+    /// which reads as the button not working. On this host it means the
+    /// injector stopped being trusted — XTEST went away under a live share —
+    /// so it is rare, and rare-and-silent is exactly the combination that
+    /// costs an afternoon.
+    @Published private(set) var controlNote: String?
+
+    /// The generation of the last grant snapshot applied.
+    ///
+    /// The server stamps every `onControlGrantChanged` with a monotonic
+    /// counter precisely because a host like this one hops the callback to its
+    /// UI thread, and a hop can reorder. Applying a stale `nil` last would
+    /// clear a grant that is still live — the sharer would be told nobody is
+    /// controlling their machine while somebody is. `SharerNoticeDecision.isStale`
+    /// owns the comparison; this is the field it compares against.
+    private var lastGrantGeneration: UInt64 = 0
     /// Whether new viewers have to be let in by hand.
     ///
     /// Persisted, and read back at launch through the shared
@@ -271,6 +327,31 @@ final class SharerModel: ObservableObject {
                     warning: Wayland session with no desktop portal — screen sharing is                     unavailable. (Capturing $DISPLAY here would capture only XWayland,                     which is why it is refused rather than attempted.)\n
                     """.utf8))
         }
+
+        // A notification button answers exactly what the card's button does,
+        // through the same methods — so there is one implementation of each
+        // decision and the two surfaces cannot drift.
+        notifications.onAnswer = { [weak self] kind, identity, accept in
+            guard let self else { return }
+            switch kind {
+            case .viewerPending:
+                // The identity IS the `"ip:port"` these take.
+                accept ? self.approve(identity) : self.deny(identity)
+            case .controlRequested:
+                guard let requestID = UUID(uuidString: identity) else { return }
+                if accept {
+                    self.grantControl(to: requestID)
+                } else {
+                    self.declineControl(requestID)
+                }
+            case .requestToShare:
+                guard let requestID = UUID(uuidString: identity) else { return }
+                self.answerShareRequest(id: requestID, accept: accept)
+            case .viewerJoined, .viewerLeft:
+                // Reports carry no buttons, so nothing can arrive here.
+                break
+            }
+        }
     }
 
     /// Whether this machine can share ONE WINDOW OR APP, as opposed to the
@@ -296,6 +377,21 @@ final class SharerModel: ObservableObject {
     /// while the current share is X11 root capture, and that share has nothing
     /// to change — an X11 session captures exactly one thing.
     @Published private(set) var canChangeSource = false
+
+    /// Whether the overlay's rectangle is genuinely what is being captured.
+    ///
+    /// **The outline must not lie.** `makeOverlay` sizes the window from the X
+    /// display, because that is the only geometry this side reliably has — the
+    /// portal hands back a stream size but no position on screen, so a share of
+    /// one window gets an overlay the size of the whole desktop. For
+    /// annotations that is a pre-existing coordinate problem; for the outline
+    /// it is worse in kind, because a border around the entire screen while one
+    /// window is being shared states the opposite of the truth.
+    ///
+    /// So the indicator is shown only where the two are known to agree: an X11
+    /// display share. A portal share gets no outline rather than a wrong one —
+    /// the same call the capability bits make everywhere else here.
+    private var captureMatchesOverlay = false
 
     /// The most recent preview of what viewers are receiving, or nil when
     /// nothing is being captured.
@@ -340,6 +436,7 @@ final class SharerModel: ObservableObject {
         case .x11(let display):
             // One display, one root window: nothing to re-point at.
             canChangeSource = false
+            captureMatchesOverlay = true
             let sink = previewSink()
             beginShare(captureFactory: {
                 let encoder = X11CaptureEncoder(display: display)
@@ -396,6 +493,10 @@ final class SharerModel: ObservableObject {
             switch await portal.negotiate(sources: sources) {
             case .granted(let nodeID):
                 canChangeSource = true
+                // See `captureMatchesOverlay`: the portal gives a stream size
+                // but no position, so the overlay's rectangle is the desktop's
+                // and the capture's may be a single window inside it.
+                captureMatchesOverlay = false
                 let sink = previewSink()
                 beginShare(captureFactory: {
                     let encoder = PortalCaptureEncoder(
@@ -586,6 +687,22 @@ final class SharerModel: ObservableObject {
             }
             Task { @MainActor [weak self] in self?.applyPending(waiting) }
         }
+        server.onControlRequestsChanged = { requests in
+            // Fires off the main actor; hop. No mapping needed — the card
+            // renders `ControlRequestInfo.displayName` directly, the same
+            // shape the Windows app passes through.
+            Task { @MainActor [weak self] in self?.applyControlRequests(requests) }
+        }
+        server.onControlGrantChanged = { generation, grant in
+            Task { @MainActor [weak self] in
+                guard let self,
+                    !SharerNoticeDecision.isStale(
+                        generation: generation, lastApplied: self.lastGrantGeneration)
+                else { return }
+                self.lastGrantGeneration = generation
+                self.controlGrantedTo = grant?.displayName
+            }
+        }
         server.onCaptureStopped = { error in
             Task { @MainActor [weak self] in
                 guard let self else { return }
@@ -594,8 +711,14 @@ final class SharerModel: ObservableObject {
                 } else {
                     self.phase = .idle
                 }
+                // BEFORE the rosters empty: stopping a share expels every
+                // viewer at once, and reconciling against the resulting empty
+                // list would fire one "stopped watching" banner per viewer at
+                // the moment the sharer already decided to stop.
+                self.notifications.stop()
                 self.viewers = []
                 self.pendingViewers = []
+                self.clearControlState()
                 self.teardownOverlay()
                 self.stopVoice()
                 // Same reason as `stopSharing`: capture ending for any reason
@@ -634,6 +757,10 @@ final class SharerModel: ObservableObject {
                     controlListener: controlListener
                 )
                 phase = .sharing
+                // Only once the share is genuinely up: an indicator that
+                // appeared while the capture was still opening would say
+                // "they can see this" before anyone could.
+                overlay?.setShowsOutline(captureMatchesOverlay)
                 startVoice(on: server)
             } catch {
                 phase = .failed("\(error)")
@@ -659,8 +786,11 @@ final class SharerModel: ObservableObject {
             return
         }
         self.server = nil
+        // Before the rosters empty — see `onCaptureStopped`.
+        notifications.stop()
         viewers = []
         pendingViewers = []
+        clearControlState()
         phase = .idle
         // Queued decisions do not outlive the share they were made during:
         // the rows are gone, and an intent that survived would land on whoever
@@ -841,6 +971,8 @@ final class SharerModel: ObservableObject {
         // succeeded leaves this model believing nothing is armed.
         latch.teardown(surface: armOverlay)
         publishLatch()
+        overlay?.setShowsOutline(false)
+        captureMatchesOverlay = false
         overlay?.clear()
         overlay = nil
         injector?.deactivate()
@@ -882,11 +1014,30 @@ final class SharerModel: ObservableObject {
     /// only on join and leave, is what makes the queue drain at all.
     private func applyConnected(_ rows: [ConnectedViewer]) {
         viewers = rows
+        // Keyed by `ip:port`, deliberately: a genuine rejoin IS news, and the
+        // mac viewer-roster path keys the same way for the same reason.
+        notifications.applyViewers(
+            rows.map { NoticeCandidate(identity: $0.id, label: $0.label) })
         noteRoster()
+    }
+
+    private func applyControlRequests(_ rows: [ControlRequestInfo]) {
+        controlRequests = rows
+        // The identity is the connection UUID `grantControl` takes.
+        notifications.applyAsk(
+            kind: .controlRequested,
+            candidates: rows.map {
+                NoticeCandidate(identity: $0.id.uuidString, label: $0.displayName)
+            })
     }
 
     private func applyPending(_ rows: [PendingViewer]) {
         pendingViewers = rows
+        // The identity IS the id `approve`/`deny` take, so a button press
+        // routes back with nothing to re-derive.
+        notifications.applyAsk(
+            kind: .viewerPending,
+            candidates: rows.map { NoticeCandidate(identity: $0.id, label: $0.label) })
         noteRoster()
     }
 
@@ -958,7 +1109,21 @@ final class SharerModel: ObservableObject {
                 fromHostname: hostname, sourceAddr: sourceAddr,
                 connectionID: connectionID, nowNs: nowNs)
         else { return }
+        publishShareRequests()
+    }
+
+    /// Push the inbox to the card AND to the notifications, together.
+    ///
+    /// One function because the two must not drift: an ask that expires from
+    /// the inbox but keeps its banner is an invitation whose Share button
+    /// answers a connection that has already gone.
+    private func publishShareRequests() {
         shareRequests = inbox.requests
+        notifications.applyAsk(
+            kind: .requestToShare,
+            candidates: inbox.requests.map {
+                NoticeCandidate(identity: $0.id.uuidString, label: $0.fromHostname)
+            })
     }
 
     /// Matches the requester's own wait (`TailscreenRequestToShareClient`'s
@@ -969,7 +1134,7 @@ final class SharerModel: ObservableObject {
     /// the asker and start sharing.
     func answerShareRequest(id: UUID, accept: Bool) {
         guard let request = inbox.remove(id: id) else { return }
-        shareRequests = inbox.requests
+        publishShareRequests()
 
         if let connectionID = request.connectionID, let listener = controlListener {
             Task {
@@ -994,7 +1159,7 @@ final class SharerModel: ObservableObject {
     func clearShareRequests() {
         guard !inbox.requests.isEmpty else { return }
         inbox.removeAll()
-        shareRequests = []
+        publishShareRequests()
     }
 
     /// What is remembered about a row's peer, for the roster's label.
@@ -1032,6 +1197,50 @@ final class SharerModel: ObservableObject {
     func approve(_ addr: String) { server?.approveViewer(addr: addr) }
     /// Reject a viewer parked at the approval gate.
     func deny(_ addr: String) { server?.denyViewer(addr: addr) }
+
+    // MARK: Remote control
+
+    /// Hand the pointer and keyboard to a viewer who asked for them.
+    ///
+    /// The server holds ONE grantee at a time and gates injection on that
+    /// exact connection id, so this is the whole of the decision — there is no
+    /// second switch to also set. It returns false when the request is already
+    /// gone (the viewer gave up, or disconnected), which is not an error worth
+    /// an alert: the row disappears on the next snapshot either way.
+    ///
+    /// **Keyboard reaches the whole machine, not the shared window.** X11
+    /// delivers a synthetic key to whatever has focus, and scoping it is not
+    /// something XTEST can do — the same warning the macOS grant carries.
+    @discardableResult
+    func grantControl(to requestID: UUID) -> Bool {
+        let granted = server?.grantControl(toConnectionID: requestID) ?? false
+        controlNote = granted ? nil : "Remote control isn't available for this share."
+        return granted
+    }
+
+    /// Refuse a request without granting anything. The viewer is told.
+    func declineControl(_ requestID: UUID) {
+        server?.declineControlRequest(connectionID: requestID)
+    }
+
+    /// End a live grant. The viewer is told why, so a pointer that stops
+    /// moving reads as a decision rather than a fault.
+    func revokeControl() {
+        server?.revokeControl(reason: "the sharer took control back")
+    }
+
+    /// Drop every control row on teardown.
+    ///
+    /// The generation counter resets too: a fresh server starts its own
+    /// sequence at zero, so carrying the old high-water mark forward would
+    /// make `isStale` discard the new share's first snapshots — a grant that
+    /// silently never appears in the UI.
+    private func clearControlState() {
+        controlRequests = []
+        controlGrantedTo = nil
+        controlNote = nil
+        lastGrantGeneration = 0
+    }
 
     /// Flip the approval gate, persist it, and push it at a live share.
     ///

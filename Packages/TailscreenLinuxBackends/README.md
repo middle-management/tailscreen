@@ -135,7 +135,7 @@ the portable `TailscaleScreenShareServer`, unchanged.
 
 Unlike macOS there is **no helper subprocess**: `replayd`'s slot-release
 behaviour is the only reason capture is isolated there, and Linux has no
-equivalent coupling (`docs/porting-plan.md` #10), so capture runs in-process
+equivalent coupling (`plans/porting-plan.md` #10), so capture runs in-process
 and `stop()` genuinely stops it.
 
 Current limits, deliberately explicit: display shares only (window/app
@@ -195,4 +195,4 @@ cd Apps/linux && swift run tailscreen 100.64.0.1 \
   X11 came first (CI can run it; the portal never can).
 - **Windows** — the backends are cross-platform (FFmpeg/tsnet everywhere; audio
   would swap ALSA for WASAPI, render for a D3D swapchain — see
-  `docs/viewer-windows-plan.md`), but only Linux is wired/tested so far.
+  `plans/viewer-windows-plan.md`), but only Linux is wired/tested so far.

@@ -242,7 +242,7 @@ jobs:
           # libopus — see Packages/OpusKit/README.md) must build and pass its
           # encode/decode round-trip tests on Linux. This is the portable
           # foundation for the Opus-only audio decision
-          # (docs/porting-plan.md #6). Cheap: one apt install, no submodules,
+          # (plans/porting-plan.md #6). Cheap: one apt install, no submodules,
           # no Go.
           - name: linux-opus
             apt: libopus-dev pkg-config
@@ -251,7 +251,7 @@ jobs:
           # Video-decode-portability gate: FFmpegKit (a systemLibrary wrapper
           # over libavcodec — see Packages/FFmpegKit/README.md) must build and
           # pass its decode tests on Linux. This is the portable video-decode
-          # foundation for the Linux/Windows viewer (docs/porting-plan.md —
+          # foundation for the Linux/Windows viewer (plans/porting-plan.md —
           # "Decode"). Cheap: one apt install, no submodules, no Go.
           # (libavutil-dev comes with libavcodec-dev; opus.pc-style
           # default-path resolution means no PKG_CONFIG_PATH entry is needed.)
@@ -663,7 +663,7 @@ jobs:
   # (Packages/TailscreenLinuxBackends) must build and pass its pipeline integration test on Linux.
   # This is where the concrete backends plug into the portable ViewerSession
   # core — FFmpegKit decode + ALSAKit audio behind the
-  # VideoDecoding/VideoSink/AudioSink seams (docs/porting-plan.md, "Viewer
+  # VideoDecoding/VideoSink/AudioSink seams (plans/porting-plan.md, "Viewer
   # wiring"). The `swift test` run:
   #   • runs `PipelineIntegrationTests` (real H.264 encode → RTP → ViewerSession
   #     → FFmpeg decode → collecting sinks — no tsnet, no window, no device), and
@@ -954,6 +954,47 @@ jobs:
           cat /tmp/overlay-selftest.log
           test "$status" -eq 0
           grep -q 'CGTKOVERLAY_SELFTEST result=PASS' /tmp/overlay-selftest.log
+
+      - name: Headless capture-OUTLINE self-test (Xvfb + compositor)
+        # The recording indicator: a border around exactly the captured region,
+        # composited onto the sharer's own desktop for the life of a share.
+        #
+        # `CaptureOutlineTests` covers the arithmetic on a buffer, and covers it
+        # better than a screenshot could — every edge, the thickness clamp, the
+        # premultiplication. What no unit test reaches is whether those pixels
+        # are composited onto a real X11 desktop at all.
+        #
+        # And one thing this step checks that the unit tests cannot make
+        # convincing: THE MIDDLE OF THE SCREEN IS UNTOUCHED. That buffer sits
+        # over the sharer's whole desktop, so an outline that filled it would
+        # paint a solid rectangle over the thing being shared, on the sharer's
+        # own machine, with no error anywhere. It is read back through the
+        # sharer's own capture path, so the assertion is on real pixels.
+        #
+        # Both halves were checked to fail: skipping the compositing step (no
+        # border at the edge), and a border wide enough to reach the middle
+        # (interior no longer neutral). The self-test asks for a 24 px border
+        # rather than the shipping 4 px because chroma is half resolution in
+        # both axes — sampling four pixels would be a test of the sampler.
+        #
+        # Same xcompmgr-before-the-app constraint as the step above, and the
+        # same dash-shell constraint (no pipefail).
+        run: |
+          Xvfb :96 -screen 0 1280x720x24 >/dev/null 2>&1 &
+          sleep 3
+          DISPLAY=:96 xcompmgr >/dev/null 2>&1 &
+          sleep 2
+          if timeout 90 env DISPLAY=:96 GDK_BACKEND=x11 LIBGL_ALWAYS_SOFTWARE=1 \
+            GALLIUM_DRIVER=llvmpipe \
+            Apps/linux/.build/debug/tailscreen --outline-self-test \
+            > /tmp/outline-selftest.log 2>&1; then
+            status=0
+          else
+            status=$?
+          fi
+          cat /tmp/outline-selftest.log
+          test "$status" -eq 0
+          grep -q 'CGTKOUTLINE_SELFTEST result=PASS' /tmp/outline-selftest.log
 
       - name: Headless overlay-INPUT self-test (Xvfb + compositor + XTEST)
         # The other half of the same window. The step above asks whether the

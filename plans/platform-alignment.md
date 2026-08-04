@@ -151,6 +151,30 @@ call.
     likely way for the whole path to look broken while every unit test passes.
     `xtest-probe --live-check` covers it against a real Xvfb.
 
+  **Amended: 1.5 shipped the injector and not the decision.** The backend, the
+  gate and the capability bit were all correct, and the GTK app supplies the
+  injector — so `ScreenShareCaps.remoteControl` was advertised and Linux
+  viewers were offered Request Control. Nothing in `Apps/linux` ever subscribed
+  to `onControlRequestsChanged`. The request arrived, the sharer was never
+  told, and there was no way to say yes: the viewer's toolbar sat on
+  "requested" forever.
+
+  That is a sharper failure than a missing feature, and it is the one this
+  plan's bar names outright — a *decision* that exists on two platforms and not
+  the third, on a host that advertises it can make it. It was invisible because
+  every piece in isolation was right; only the subscription was missing. Fixed
+  by mirroring the Windows wiring: the request joins the same `HubPrompt` list
+  as viewer approvals, "Take back control from …" appears while a grant is
+  live, and the grant snapshot is filtered through
+  `SharerNoticeDecision.isStale` — which this host needs and Windows does not,
+  because this one hops the callback to the main actor and a hop can reorder.
+
+  **Worth generalising:** a capability bit derived from a real backend proves
+  the backend exists, not that the host can act on it. The plan's own closing
+  note asks for a test that derives each bit from a backend; this says the test
+  has to reach one step further, to whether anything consumes what the bit
+  invites.
+
 **Do 1.4 before 1.1.** Fixing the sharer that lies is worth more than adding a
 viewer feature, and it unblocks the honest version of the capability bit.
 

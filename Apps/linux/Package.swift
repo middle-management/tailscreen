@@ -11,7 +11,7 @@ import PackageDescription
 // needs nor should pay for. Video is a downstream `GtkVideoView` (a
 // swift-cross-ui `View` hosting a `GtkGLArea` with an OpenGL YUV→RGB
 // renderer); chrome is declarative swift-cross-ui, shared with the Windows app
-// via Packages/TailscreenHubUI. See docs/linux-viewer-gtk-plan.md.
+// via Packages/TailscreenHubUI. See plans/linux-viewer-gtk-plan.md.
 //
 // It reuses TailscreenLinuxBackends' `TailscreenViewerCore` (FFmpeg decoder +
 // ALSA sink) and `TailscreenSharerLinux` (X11 capture + libavcodec encode),
@@ -48,6 +48,10 @@ let package = Package(
         // control, this one reads one chord for the local user, and a
         // viewer-only run wants the second without linking the first.
         .package(path: "../../Packages/X11HotkeyKit"),
+        // Desktop notifications. The one sharer surface that reaches
+        // somebody whose attention is on the thing they are sharing — this
+        // window is behind it, and raising it is visible to the viewers.
+        .package(path: "../../Packages/GNotifyKit"),
         // The hub's look — header, screen rows, cards, placards — shared with
         // the Windows app. It used to live in this executable as
         // `ViewerChrome.swift`; it moved out when a second swift-cross-ui app
@@ -125,6 +129,7 @@ let package = Package(
                 // ⌃⌥M held system-wide, so a sharer who has alt-tabbed into
                 // the thing they are showing can still mute themselves.
                 .product(name: "X11HotkeyKit", package: "X11HotkeyKit"),
+                .product(name: "GNotifyKit", package: "GNotifyKit"),
                 .product(name: "SwiftCrossUI", package: "swift-cross-ui"),
                 .product(name: "DefaultBackend", package: "swift-cross-ui"),
                 .product(name: "TailscreenViewer", package: "TailscreenKit"),
