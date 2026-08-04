@@ -262,6 +262,27 @@ than posting buttons nobody can press.
 
 ### 2. Capture outline — the recording indicator
 
+> **Landed on Linux**, and cheaper than this section assumed. It is not a new
+> window: the sharer's annotation overlay is already exactly the capture
+> rectangle, already click-through, already composited, and already has an
+> upload path, so the outline is a layer painted under the strokes. A second
+> override-redirect window would have been a second thing to get wrong in the
+> same four ways.
+>
+> Two things the section did not anticipate, both of which would have shipped a
+> lying indicator:
+>
+> - **It is gated to X11 display shares.** The overlay is sized from the X
+>   display because that is the only geometry available here — the portal
+>   returns a stream size but no position — so a portal share of one window
+>   would get a border around the whole desktop while one window is on the
+>   wire. That is the exact opposite of what the outline claims. A portal share
+>   gets no indicator rather than a wrong one.
+> - **The thickness has to be clamped.** A border at or above half the smaller
+>   dimension fills the buffer, painting a solid rectangle over the shared
+>   window for the entire share, with no error anywhere.
+
+
 A thin, bright, click-through border drawn around exactly the region being
 captured, for the duration of the share. It replaces the tray's only defensible
 job and does it better: it is where the user is already looking, and it states
@@ -478,7 +499,7 @@ independently shippable and touches only macOS.
 | 5 · Linux notification backend | not started — needs a GDBus C shim in the `CGtkVideo` mould |
 | 6 · confirm the Windows WGC border | **needs a real desktop**, not code |
 | 7 · outline: macOS | **done** — `CaptureOutlineWindow` |
-| 7 · outline: Linux | not started — the one piece with no existing machinery |
+| 7 · outline: Linux | **done** — `CaptureOutline` (portable, mutation-tested) painted under the strokes on the existing `CGtkOverlay`, gated by `--outline-self-test`. The plan's "no existing machinery" was wrong: the annotation overlay is already the capture rectangle, already click-through, already composited. Shown only for X11 display shares — see below |
 | 8 · macOS roster + hotkey docs | **done** — roster in the hub, ⌃⌥M in the menu, ⌃⌥. in the sheet, `isRegistered` |
 | 9 · portable `ShortcutCatalog` | **done** — 18 tests on Linux CI |
 | 10 · Windows/Linux hotkeys | **done for mute** — `Packages/X11HotkeyKit` (`XGrabKey`) + `Packages/WinHotkeyKit` (`RegisterHotKey`), driven by the portable `MuteHotkeyRouting` / `X11HotkeyMapping` / `WindowsHotkeyMapping`. `x11-hotkey-probe --live-check` is a real gate (Xvfb grab + XTEST press, repeated with Num Lock on, plus the refused-second-grab case); the Windows half is link-checked and mapping-tested only. Panic-revoke on those two platforms is still open — it needs the sharer-side grant UI first. |
