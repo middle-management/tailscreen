@@ -96,6 +96,13 @@ on:
         required: false
         type: boolean
         default: false
+      screenshots:
+        description: >-
+          Launch the assembled .app on the runner, capture the screen to a PNG,
+          and upload it as an artifact.
+        required: false
+        type: boolean
+        default: false
     outputs:
       version:
         description: The resolved version string.
@@ -314,6 +321,37 @@ jobs:
           </dict>
           </plist>
           EOF
+
+      # No --ui-preview mode on macOS (yet), so this captures the real app in
+      # whatever state a fresh launch reaches — normally the signed-out hub
+      # window. Launched via `open` so LaunchServices gives it a proper GUI
+      # session. `screencapture` needs the Screen Recording TCC grant; whether
+      # the hosted runner's session has it is exactly what the first run of
+      # this step finds out — a wallpaper-only PNG in the artifact is that
+      # answer, not a step failure, which is why the capture result isn't
+      # pixel-asserted. The pgrep guard is: a crashed app must not turn into a
+      # convincing screenshot of an empty desktop.
+      - name: Screenshot the app
+        if: inputs.screenshots
+        run: |
+          set -euo pipefail
+          mkdir -p screenshots
+          open "${APP_NAME}.app"
+          sleep 15
+          pgrep -x "$APP_NAME" >/dev/null \
+            || { echo "app exited before the screenshot" >&2; exit 1; }
+          screencapture -x screenshots/macos-hub.png
+          pkill -x "$APP_NAME" || true
+          ls -la screenshots/
+
+      - name: Upload screenshots
+        if: inputs.screenshots
+        uses: actions/upload-artifact@v7
+        with:
+          name: tailscreen-screenshots-macos
+          path: screenshots/
+          retention-days: 14
+          if-no-files-found: error
 
       - name: Check signing availability
         id: signing

@@ -27,7 +27,7 @@ Two rules when touching any of this:
 
 ## Workflows
 
-Three workflows under `.github/workflows/` (plus a docs-deploy workflow):
+Four workflows under `.github/workflows/` (plus a docs-deploy workflow):
 
 ### Build
 
@@ -53,6 +53,10 @@ Runs `make build` + `make test` on every PR and push to `main`. Skips doc-only c
 ### Soak
 
 Nightly (`cron: 17 3 * * *`) + `workflow_dispatch`: runs `SoakTests` with `TAILSCREEN_SOAK=1` (the `ParserFuzzHarness` at ~50× PR budget plus the seeded `LossyChannel` impairment matrix). Deterministic — a red nightly names its reproducing seed/configuration.
+
+### Screenshots
+
+`workflow_dispatch` (plus a `pull_request` trigger scoped to its own file, so a change to it proves itself on its own PR): one job per platform through the shared `app-*.yml` workflows, each behind a `screenshots` input, uploading PNG artifacts. The Linux leg renders the app's deterministic `--ui-preview` / `--ui-preview-video` chrome under Xvfb (fake sharers, one stroke per annotation tool — no network) and captures with ImageMagick; the Windows and macOS legs launch the real staged app on the runner's desktop and grab the screen (`CopyFromScreen` / `screencapture`), so they show whatever a fresh signed-out launch reaches. Every capture step guards on the app process still being alive first — a crashed app must fail the step, not produce a convincing screenshot of an empty desktop. Known soft spot: macOS `screencapture` needs the Screen Recording TCC grant, and a wallpaper-only PNG in the artifact is the runner saying no — the fix would be a `--ui-preview` mode in the mac app or a pre-granted TCC profile, not pixel assertions. One arch per platform (x64), since the chrome is arch-independent and those legs have the warm caches.
 
 ### Release
 
