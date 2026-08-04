@@ -340,8 +340,10 @@ public final class X11CaptureEncoder: CaptureEncoding, @unchecked Sendable {
         scratch.withUnsafeMutableBufferPointer { buffer in
             guard let base = buffer.baseAddress,
                 I420Converter.convert(
-                    yPlane: planes.y, uPlane: planes.u, vPlane: planes.v,
-                    width: width, height: height, into: base)
+                    I420Converter.Source(
+                        yPlane: planes.y, uPlane: planes.u, vPlane: planes.v,
+                        width: width, height: height),
+                    into: base)
             else { return }
             thumbnail = ThumbnailScaler.thumbnail(
                 bgra: UnsafePointer(base),

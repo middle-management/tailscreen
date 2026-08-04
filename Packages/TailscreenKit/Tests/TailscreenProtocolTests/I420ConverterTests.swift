@@ -35,8 +35,10 @@ final class I420ConverterTests: XCTestCase {
         var out = [UInt8](repeating: 0, count: frame.width * frame.height * 4)
         let ok = out.withUnsafeMutableBufferPointer {
             I420Converter.convert(
-                yPlane: frame.yPlane, uPlane: frame.uPlane, vPlane: frame.vPlane,
-                width: frame.width, height: frame.height, into: $0.baseAddress!)
+                I420Converter.Source(
+                    yPlane: frame.yPlane, uPlane: frame.uPlane, vPlane: frame.vPlane,
+                    width: frame.width, height: frame.height),
+                into: $0.baseAddress!)
         }
         XCTAssertTrue(ok)
         return out
@@ -111,10 +113,12 @@ final class I420ConverterTests: XCTestCase {
         var out = [UInt8](repeating: 7, count: 16 * 16 * 4)
         let ok = out.withUnsafeMutableBufferPointer {
             I420Converter.convert(
-                yPlane: [UInt8](repeating: 128, count: 4),
-                uPlane: [UInt8](repeating: 128, count: 4),
-                vPlane: [UInt8](repeating: 128, count: 4),
-                width: 16, height: 16, into: $0.baseAddress!)
+                I420Converter.Source(
+                    yPlane: [UInt8](repeating: 128, count: 4),
+                    uPlane: [UInt8](repeating: 128, count: 4),
+                    vPlane: [UInt8](repeating: 128, count: 4),
+                    width: 16, height: 16),
+                into: $0.baseAddress!)
         }
         XCTAssertFalse(ok)
         XCTAssertTrue(out.allSatisfy { $0 == 7 }, "destination left untouched")

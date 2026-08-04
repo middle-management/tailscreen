@@ -20,7 +20,9 @@ extension I420Converter {
         into destination: UnsafeMutablePointer<UInt8>
     ) -> Bool {
         convert(
-            yPlane: frame.yPlane, uPlane: frame.uPlane, vPlane: frame.vPlane,
-            width: frame.width, height: frame.height, into: destination)
+            Source(
+                yPlane: frame.yPlane, uPlane: frame.uPlane, vPlane: frame.vPlane,
+                width: frame.width, height: frame.height),
+            into: destination)
     }
 }

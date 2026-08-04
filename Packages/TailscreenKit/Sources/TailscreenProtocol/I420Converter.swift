@@ -37,6 +37,28 @@ public enum I420Converter {
     /// nothing ever reaches the top of the range. A test pins that exact value.
     private static let rounding = 1 << 15
 
+    /// The three source planes and the geometry they describe.
+    ///
+    /// A value rather than five arguments, mirroring `BGRAToI420.Source` — the
+    /// two converters are inverses and reading like inverses is worth
+    /// something. It also keeps the entry point under the parameter-count lint,
+    /// which is what surfaced the asymmetry.
+    public struct Source {
+        public let yPlane: [UInt8]
+        public let uPlane: [UInt8]
+        public let vPlane: [UInt8]
+        public let width: Int
+        public let height: Int
+
+        public init(yPlane: [UInt8], uPlane: [UInt8], vPlane: [UInt8], width: Int, height: Int) {
+            self.yPlane = yPlane
+            self.uPlane = uPlane
+            self.vPlane = vPlane
+            self.width = width
+            self.height = height
+        }
+    }
+
     /// Convert I420 planes into `destination`, which must have room for
     /// `width × height × 4` bytes.
     ///
@@ -54,22 +76,23 @@ public enum I420Converter {
     /// decoded frame. `TailscreenViewer` adds the frame-shaped overload.
     @discardableResult
     public static func convert(
-        yPlane: [UInt8], uPlane: [UInt8], vPlane: [UInt8],
-        width: Int, height: Int,
+        _ source: Source,
         into destination: UnsafeMutablePointer<UInt8>
     ) -> Bool {
+        let width = source.width
+        let height = source.height
         guard width > 0, height > 0 else { return false }
 
         let chromaWidth = (width + 1) / 2
         let chromaHeight = (height + 1) / 2
-        guard yPlane.count >= width * height,
-            uPlane.count >= chromaWidth * chromaHeight,
-            vPlane.count >= chromaWidth * chromaHeight
+        guard source.yPlane.count >= width * height,
+            source.uPlane.count >= chromaWidth * chromaHeight,
+            source.vPlane.count >= chromaWidth * chromaHeight
         else { return false }
 
-        yPlane.withUnsafeBufferPointer { y in
-            uPlane.withUnsafeBufferPointer { u in
-                vPlane.withUnsafeBufferPointer { v in
+        source.yPlane.withUnsafeBufferPointer { y in
+            source.uPlane.withUnsafeBufferPointer { u in
+                source.vPlane.withUnsafeBufferPointer { v in
                     for row in 0..<height {
                         let yRow = row * width
                         let chromaRow = (row / 2) * chromaWidth
