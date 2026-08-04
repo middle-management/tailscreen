@@ -11,7 +11,7 @@ import PackageDescription
 // additionally carries `CGtkVideo`, a GTK-linked C target that cannot build
 // here at all.
 //
-// Built up in stages (docs/viewer-windows-plan.md, W2–W4) because nothing Swift
+// Built up in stages (plans/viewer-windows-plan.md, W2–W4) because nothing Swift
 // in this repo had ever been compiled for Windows: this stage is UI-only, so a
 // failure lands in a small surface rather than somewhere in the union of
 // swift-cross-ui, tsnet, FFmpeg and D3D. Transport and video follow once the

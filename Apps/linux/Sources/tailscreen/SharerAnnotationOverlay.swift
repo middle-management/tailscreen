@@ -28,6 +28,22 @@ final class SharerAnnotationOverlay: @unchecked Sendable {
     private let lock = NSLock()
     private var handle: UnsafeMutableRawPointer?
     private var store = ReceivedAnnotations()
+    /// Whether to paint the capture outline under the strokes.
+    ///
+    /// The recording indicator: a border around exactly the region being
+    /// captured, for the life of the share. It replaces the tray icon's only
+    /// defensible job and answers a sharper question — not "a share is running
+    /// somewhere" but "**this** is what they can see" — in the place the person
+    /// is already looking. After a mid-share source change it is the only thing
+    /// on screen that says the capture moved.
+    ///
+    /// It rides this overlay rather than a second window because the overlay is
+    /// already exactly the capture rectangle, already click-through, already
+    /// composited, and already has an upload path. A second override-redirect
+    /// window would be a second thing to get wrong in the same four ways.
+    private var showsOutline = false
+    /// Self-test override; nil uses `CaptureOutline.defaultThickness`.
+    private var outlineThickness: Int?
     private var pixels: [UInt8]
     private let width: Int
     private let height: Int
@@ -163,11 +179,38 @@ final class SharerAnnotationOverlay: @unchecked Sendable {
         redraw()
     }
 
+    /// Self-test seam: the outline plus an overridable thickness.
+    ///
+    /// The thickness is overridable for one reason — chroma is half resolution
+    /// in both axes, so the shipping 4 px border is two chroma columns and a
+    /// screenshot assertion on it would be measuring the sampler rather than
+    /// the outline. Thickness itself is pinned by `CaptureOutlineTests`.
+    func setShowsOutlineForTesting(_ on: Bool, thickness: Int?) {
+        lock.withLock { outlineThickness = thickness }
+        setShowsOutline(on)
+    }
+
+    /// Turn the capture outline on or off. On for the life of a share.
+    func setShowsOutline(_ on: Bool) {
+        let changed = lock.withLock { () -> Bool in
+            guard showsOutline != on else { return false }
+            showsOutline = on
+            return true
+        }
+        guard changed else { return }
+        redraw()
+    }
+
     private func redraw() {
         guard let handle else { return }
-        let annotations = lock.withLock { store.annotations }
+        let (annotations, outline, thickness) = lock.withLock {
+            (store.annotations, showsOutline, outlineThickness)
+        }
 
-        guard !annotations.isEmpty else {
+        // Hidden only when there is nothing at all to show. The outline counts:
+        // an indicator that disappears whenever nobody happens to be drawing
+        // would be an indicator that is absent almost all the time.
+        guard !annotations.isEmpty || outline else {
             ts_gtk_overlay_hide(handle)
             return
         }
@@ -177,13 +220,20 @@ final class SharerAnnotationOverlay: @unchecked Sendable {
         lock.withLock {
             pixels.withUnsafeMutableBufferPointer { buffer in
                 guard let base = buffer.baseAddress else { return }
-                AnnotationRasterizer.render(
-                    annotations,
-                    into: AnnotationRasterizer.Surface(
-                        bgra: base,
-                        stride: width * AnnotationRasterizer.bytesPerPixel,
-                        width: width,
-                        height: height))
+                let surface = AnnotationRasterizer.Surface(
+                    bgra: base,
+                    stride: width * AnnotationRasterizer.bytesPerPixel,
+                    width: width,
+                    height: height)
+                // Clear once, here, so the two layers composite in order:
+                // outline first, strokes over it. `render` would clear again
+                // and take the outline with it, which is why this is `draw`.
+                AnnotationRasterizer.render([], into: surface)
+                if outline {
+                    CaptureOutline.draw(
+                        into: surface, thickness: thickness ?? CaptureOutline.defaultThickness)
+                }
+                AnnotationRasterizer.draw(annotations, into: surface)
                 ts_gtk_overlay_update(
                     handle, base,
                     Int32(width * AnnotationRasterizer.bytesPerPixel),

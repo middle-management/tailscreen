@@ -143,7 +143,9 @@ You also get a notification ("Viewer Wants to Connect") if the menubar
 isn't open — with **Accept** and **Deny** on the banner itself, so you can
 answer without leaving what you're sharing. It breaks through Do Not Disturb
 and Focus, since someone is stuck behind it. Clicking the banner instead of a
-button just opens Tailscreen; swiping it away decides nothing. Remembered decisions live in **Settings → Viewers** under
+button just opens Tailscreen; swiping it away decides nothing.
+
+Remembered decisions live in **Settings → Viewers** under
 "Remembered viewers", where you can remove entries any time. They're keyed
 to the peer's stable Tailscale node identity, not its IP or hostname, so a
 renamed machine stays remembered.
@@ -157,8 +159,8 @@ stay blocked even then — the deny list outranks the toggle.
 The flow also works in reverse. Expand a peer's row in the Screens list
 and click **Ask to Share** to ask that peer to share *their* screen.
 Clicking it puts a banner in their Tailscreen — "*name* wants you to
-share", with **Share** and **Decline** buttons — and a macOS notification
-carrying the same two buttons, so they can answer without opening the app. If
+share", with **Share** and **Decline** buttons — and a notification carrying
+the same two buttons, so they can answer without opening the app. If
 they hit Share, the picker opens on their machine, and you're automatically
 pre-approved for the share that follows — no second approval round-trip.
 

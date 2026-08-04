@@ -62,15 +62,19 @@ private struct TSLogger: LogSink {
 /// (`NoticeAction.rawValue`), and whether anything may make a sound
 /// (`SharerNoticeDecision.playsSound`). The *words* do not: macOS routes every
 /// user-facing string through `L(_:)` against `Bundle.module`, so the titles,
-/// bodies and button labels below are local and localized, and the shared
-/// English source text (`SharerNoticeText`, which the freedesktop backend
-/// renders from) is deliberately not consulted.
+/// bodies and button labels below are local and localized, and
+/// `SharerNoticeText` — English source text for the freedesktop backend to
+/// render — is deliberately not consulted for any of them.
 ///
 /// That split is exactly where a button stops routing if it is drawn wrong.
 /// The *label* on a button is localized and changes per language; the *key* it
 /// reports back is `NoticeAction.rawValue` and must not. So the two are
 /// separate arguments to `UNNotificationAction(identifier:title:)`, and
 /// `TailscreenNotificationDelegate` reads back the identifier, never the title.
+/// The keys here are the same constants `SharerNoticeText.approveKey` /
+/// `denyKey` name for the freedesktop side — that type now derives them from
+/// `NoticeAction` for exactly this reason, so the two backends cannot drift
+/// into posting keys the other's router would not recognise.
 ///
 /// Authorization is requested on first use. Unbundled dev builds (no
 /// `CFBundleIdentifier`) can't use `UNUserNotificationCenter` at all —

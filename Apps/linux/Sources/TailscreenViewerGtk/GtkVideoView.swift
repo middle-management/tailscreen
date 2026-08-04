@@ -13,7 +13,7 @@ import TailscreenViewerCore
 /// backend to the concrete `GtkBackend`, constructs a real `Gtk.GLArea`, and
 /// draws the latest `FrameStore` frame with an OpenGL YUV→RGB shader
 /// (`CGtkVideo`). Proven end-to-end (correct pixels via `glReadPixels`) — see
-/// docs/linux-viewer-gtk-plan.md.
+/// plans/linux-viewer-gtk-plan.md.
 ///
 /// When `onInputEvent` is supplied it also captures opt-in remote-control input:
 /// pointer motion, three mouse buttons, and keyboard, translated to neutral

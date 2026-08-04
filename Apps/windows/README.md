@@ -21,7 +21,7 @@ annotations and opt-in remote control.
 Everything above those seams — admission, RTP fan-out, NACK/FEC, congestion
 control, the grant gate — is the portable core in `Packages/TailscreenKit`,
 identical to what macOS and Linux run. The stage-by-stage history lives in
-`docs/viewer-windows-plan.md`.
+`plans/viewer-windows-plan.md`.
 
 **What has and hasn't been seen working.** CI proves the app builds, stages,
 loads every DLL, brings a tsnet node up, and installs and launches from an

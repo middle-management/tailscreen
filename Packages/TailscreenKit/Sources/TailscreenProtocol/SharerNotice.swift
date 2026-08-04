@@ -221,6 +221,26 @@ public enum SharerNoticeDecision {
         !isCapturing
     }
 
+    /// Which already-notified identities are no longer in `candidates`, and
+    /// whose notifications should therefore be taken back off the screen.
+    ///
+    /// The exact set `noticesToPost` discards when it intersects, named and
+    /// returned so hosts do not each re-derive it — and so it is tested, which
+    /// matters because getting it wrong is invisible. A banner reading
+    /// "someone is waiting to be let in", with an Accept button, is actively
+    /// WRONG once they have been let in from the app window: pressing it does
+    /// nothing, and on a host that keys by IP rather than `ip:port` it could
+    /// land on whoever connects next.
+    ///
+    /// Call it BEFORE `noticesToPost` in the same pass, or with the same
+    /// `alreadyNotified` — afterwards the set has already been pruned and this
+    /// returns nothing.
+    public static func noticesToWithdraw(
+        candidates: [NoticeCandidate], alreadyNotified: Set<String>
+    ) -> Set<String> {
+        alreadyNotified.subtracting(candidates.map(\.identity))
+    }
+
     /// Whether a snapshot carrying `generation` should be dropped because a
     /// newer one was already applied.
     ///

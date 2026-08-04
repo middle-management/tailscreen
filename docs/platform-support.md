@@ -182,11 +182,11 @@ Two things behind the ✅s are worth knowing:
 | Quality settings UI | ✅ | ✅ | ✅ |
 | Connection stats overlay | ✅ | ✅ | ✅ |
 | Localized strings | ✅ | ❌ | ❌ |
-| **Notified when a viewer is waiting for approval** | ✅ | ❌ | ❌ |
-| Answer that prompt from the notification | ✅ | ❌ | ❌ |
+| **Notified when a viewer is waiting for approval** | ✅ | ✅ | ❌ |
+| Answer that prompt from the notification | ✅ | ✅ if the daemon does | ❌ |
 | Told when notifications are switched off | ✅ | ❌ | ❌ |
-| Notified when a viewer joins / leaves | ✅ | ❌ | ❌ |
-| **Outline around what's being captured** | ✅ | ❌ | ⚠️ WGC's own, unconfirmed |
+| Notified when a viewer joins / leaves | ✅ | ✅ | ❌ |
+| **Outline around what's being captured** | ✅ | ✅ X11 | ⚠️ WGC's own, unconfirmed |
 | Sharing controls outside the main window | ✅ menubar | ❌ | ❌ |
 | Mute / unmute from outside the window | ✅ | ✅ hotkey | ✅ hotkey |
 | Toggle sharer drawing from outside the window | ✅ | ❌ | ❌ |
@@ -206,21 +206,25 @@ coming forward. Linux and Windows put everything in one window — which during 
 share is behind the thing you're sharing, and raising it is itself visible to
 your viewers. Every mid-share action costs an interruption the audience can see.
 
-**Notifications are the worst of these gaps.** Approval defaults *on*, so a
-sharer who isn't watching the window silently strands whoever tries to connect;
-there is nothing to poll for and no way to find out. Linux and Windows post
-nothing at all. macOS now posts properly: the two asks that strand somebody
-mid-share are Time Sensitive, so a Focus — including the one people run while
-presenting — doesn't swallow them, and every ask carries Accept / Deny buttons
-you answer without leaving what you're doing. Nothing dings while a share is
-running, because a notification sound is played by another process and goes out
-with your shared system audio.
+**Notifications were the worst of these gaps, and Windows is what's left of
+it.** Approval defaults *on*, so a sharer who isn't watching the window silently
+strands whoever tries to connect; there is nothing to poll for and no way to
+find out. macOS and Linux now both post, from one shared decision layer, so they
+agree on *what* is worth interrupting for and *when*: the two asks that strand
+somebody mid-share break through Do Not Disturb, the reports don't, and each ask
+carries Accept / Deny you answer without leaving what you're doing. Nothing
+dings while a share is running, because a notification sound is played by
+another process and goes out with your shared system audio. Linux additionally
+degrades to a plain notice — worded to say where to answer — when the
+freedesktop daemon doesn't advertise the `actions` capability. Windows posts
+nothing yet.
 
 **"Am I still sharing?" is a different question, and an outline answers it
 better than an icon.** A border drawn around the captured region says what a
 status glyph can't: not that a share is running somewhere, but that *this* is
-what viewers can see. Windows already has one and didn't have to build it — WGC
-draws its own capture border unless an app opts out, and ours doesn't.
+what viewers can see. macOS and Linux both draw one; Windows didn't have to
+build it — WGC draws its own capture border unless an app opts out, and ours
+doesn't (still unconfirmed on a real desktop).
 
 The capabilities behind the remaining rows now exist everywhere — microphone
 capture and the click-taking sharer overlay both landed — so what's left

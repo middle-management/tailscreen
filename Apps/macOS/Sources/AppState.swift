@@ -2594,13 +2594,14 @@ class AppState: ObservableObject {
     /// Called on arrival and on answer, because both edit the list — the
     /// notice for a request answered in the app has to come down with it.
     private func refreshShareRequestNotices() {
+        let candidates = metadataService.pendingRequests.map {
+            NoticeCandidate(identity: $0.sourceKey, label: $0.fromHostname)
+        }
+        let answered = SharerNoticeDecision.noticesToWithdraw(
+            candidates: candidates, alreadyNotified: notifiedShareRequestKeys)
         let decision = SharerNoticeDecision.noticesToPost(
-            kind: .requestToShare,
-            candidates: metadataService.pendingRequests.map {
-                NoticeCandidate(identity: $0.sourceKey, label: $0.fromHostname)
-            },
+            kind: .requestToShare, candidates: candidates,
             alreadyNotified: notifiedShareRequestKeys)
-        let answered = notifiedShareRequestKeys.subtracting(decision.notified)
         notifiedShareRequestKeys = decision.notified
         SharerNoticeCenter.shared.withdraw(kind: .requestToShare, identities: Array(answered))
         post(decision.post)
@@ -3120,11 +3121,12 @@ class AppState: ObservableObject {
         refreshRememberedDisplayNames(stableIDHostnamePairs: pending.map { ($0.stableID, $0.hostname) })
         applyQueuedPolicyIntents(
             rows: pending.map { (id: $0.id, stableID: $0.stableID, displayName: $0.hostname ?? $0.tailscaleIP) })
+        let candidates = Self.noticeCandidates(pending)
+        let answered = SharerNoticeDecision.noticesToWithdraw(
+            candidates: candidates, alreadyNotified: notifiedPendingViewerIDs)
         let decision = SharerNoticeDecision.noticesToPost(
-            kind: .viewerPending,
-            candidates: Self.noticeCandidates(pending),
+            kind: .viewerPending, candidates: candidates,
             alreadyNotified: notifiedPendingViewerIDs)
-        let answered = notifiedPendingViewerIDs.subtracting(decision.notified)
         notifiedPendingViewerIDs = decision.notified
         // Whoever left the gate — accepted here, denied here, or gave up —
         // takes their banner with them. An Accept/Deny left in Notification
@@ -3148,11 +3150,12 @@ class AppState: ObservableObject {
     /// live request; only the notification is deduped.
     private func handleControlRequestsChanged(_ requests: [ControlRequestInfo]) {
         controlRequests = requests
+        let candidates = Self.noticeCandidates(requests)
+        let answered = SharerNoticeDecision.noticesToWithdraw(
+            candidates: candidates, alreadyNotified: notifiedControlRequestIPs)
         let decision = SharerNoticeDecision.noticesToPost(
-            kind: .controlRequested,
-            candidates: Self.noticeCandidates(requests),
+            kind: .controlRequested, candidates: candidates,
             alreadyNotified: notifiedControlRequestIPs)
-        let answered = notifiedControlRequestIPs.subtracting(decision.notified)
         notifiedControlRequestIPs = decision.notified
         SharerNoticeCenter.shared.withdraw(kind: .controlRequested, identities: Array(answered))
         post(decision.post)

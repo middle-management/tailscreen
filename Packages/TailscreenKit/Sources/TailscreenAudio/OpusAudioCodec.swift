@@ -9,7 +9,7 @@ import Foundation
 /// This replaced the former AudioToolbox AAC-LC path. Opus is royalty-free,
 /// software-only (no hardware/OS codec), and portable to Linux and Windows —
 /// where AudioToolbox doesn't exist — which is why the Opus-only decision
-/// (see `docs/porting-plan.md`) exists. The public interface is deliberately
+/// (see `plans/porting-plan.md`) exists. The public interface is deliberately
 /// the `[Float]` PCM one the old `AACEncoder` / `AACDecoder` had, so the
 /// `VoiceChannel` / `SystemAudioTap` call sites are unchanged; the
 /// Float32↔Int16 conversion libopus needs is confined here.
