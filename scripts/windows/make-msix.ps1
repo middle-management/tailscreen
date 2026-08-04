@@ -8,7 +8,7 @@
   and logo assets, and packs it with MakeAppx. Signs with a self-signed
   certificate by default, which is enough to INSTALL (given the cert is trusted)
   and is not enough to DISTRIBUTE. Real distribution needs a cert whose private
-  key is on FIPS 140-2 hardware; see docs/viewer-windows-plan.md W8. The
+  key is on FIPS 140-2 hardware; see plans/viewer-windows-plan.md W8. The
   signing certificate's public half is exported beside OutFile (.cer) so a
   release can host it for the trust-once install flow (docs/install.md).
 

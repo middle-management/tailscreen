@@ -29,7 +29,7 @@ import X11CaptureKit
 ///
 /// **No helper subprocess.** macOS isolates capture in a child because
 /// process death is the only way to release `replayd`'s slot. Linux has no
-/// such coupling (docs/porting-plan.md #10), so capture runs in-process and
+/// such coupling (plans/porting-plan.md #10), so capture runs in-process and
 /// `stop()` genuinely stops it.
 public final class X11CaptureEncoder: CaptureEncoding, @unchecked Sendable {
     // MARK: CaptureEncoding callbacks

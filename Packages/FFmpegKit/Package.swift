@@ -6,7 +6,7 @@ import PackageDescription
 //
 // This is the Linux/Windows viewer's video-decode backend: where the macOS
 // app decodes H.264/HEVC with VideoToolbox, a portable client decodes the
-// same RTP payloads with libavcodec (see docs/porting-plan.md — "Decode" and
+// same RTP payloads with libavcodec (see plans/porting-plan.md — "Decode" and
 // problem #3, AVCC vs Annex-B). It wraps the plain C library the same way
 // OpusKit wraps libopus and TailscaleKit wraps libtailscale — a
 // `systemLibrary` target (`CFFmpeg`) + a Foundation-only Swift wrapper

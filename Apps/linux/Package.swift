@@ -11,7 +11,7 @@ import PackageDescription
 // needs nor should pay for. Video is a downstream `GtkVideoView` (a
 // swift-cross-ui `View` hosting a `GtkGLArea` with an OpenGL YUV→RGB
 // renderer); chrome is declarative swift-cross-ui, shared with the Windows app
-// via Packages/TailscreenHubUI. See docs/linux-viewer-gtk-plan.md.
+// via Packages/TailscreenHubUI. See plans/linux-viewer-gtk-plan.md.
 //
 // It reuses TailscreenLinuxBackends' `TailscreenViewerCore` (FFmpeg decoder +
 // ALSA sink) and `TailscreenSharerLinux` (X11 capture + libavcodec encode),

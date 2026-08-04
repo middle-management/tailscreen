@@ -36,4 +36,4 @@ The other half of making that archive usable. A Go c-archive does not start its 
 
 ## Linux
 
-**TailscaleKit builds and passes its tests on Linux** (Go c-archive + Swift wrapper; CI job `linux-tailscalekit`). The live two-node tsnet exchange (TCP + UDP `PacketListener` + LocalAPI over local headscale via `scripts/e2e-up-native.sh`, which is OS-aware) has been verified manually on a Linux host — see `docs/porting-plan.md` Phase 1.
+**TailscaleKit builds and passes its tests on Linux** (Go c-archive + Swift wrapper; CI job `linux-tailscalekit`). The live two-node tsnet exchange (TCP + UDP `PacketListener` + LocalAPI over local headscale via `scripts/e2e-up-native.sh`, which is OS-aware) has been verified manually on a Linux host — see `plans/porting-plan.md` Phase 1.
