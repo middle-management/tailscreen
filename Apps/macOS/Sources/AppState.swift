@@ -2170,7 +2170,7 @@ class AppState: ObservableObject {
                 dnsName: "living-room-tv.example.ts.net",
                 tailscaleIP: "100.64.0.44", isOnline: false,
                 tags: ["tag:media"],
-                tailscaleIPs: ["100.64.0.44"]),
+                tailscaleIPs: ["100.64.0.44"])
         ]
         peerShareInfo = [
             "1": TailscreenMetadata(

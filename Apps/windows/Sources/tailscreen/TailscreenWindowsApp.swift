@@ -576,7 +576,7 @@ final class AppUIState: ObservableObject {
                 isOnline: true, tags: ["tag:studio"], route: .relay(region: "sto")),
             DiscoveredSharer(
                 id: "3", hostname: "living-room-tv", tailscaleIP: "100.64.0.44",
-                isOnline: false, tags: ["tag:media"]),
+                isOnline: false, tags: ["tag:media"])
         ]
         shareInfo = [
             "1": TailscreenMetadata(
