@@ -210,6 +210,18 @@ public final class WindowsShareSession: @unchecked Sendable {
     private let lock = NSLock()
     private var server: TailscaleScreenShareServer?
     private var overlay: AnnotationOverlay?
+    /// Where the CURRENT target is on screen, or nil when its geometry could
+    /// not be resolved.
+    ///
+    /// Mutable, and read through a closure rather than captured by value,
+    /// because a source change moves it. Closing over the value — which this
+    /// did until change-source existed — leaves a granted viewer's clicks
+    /// landing on the rectangle of a window they are no longer looking at.
+    /// Guarded by `lock`.
+    private var liveRegion: ScreenRegion?
+    /// The item the live share is capturing. Held so a source change can be
+    /// told apart from a restart, and so teardown releases it.
+    private var liveItem: WGC.CaptureItem?
     /// Live voice for the current share. Guarded by `lock`, like `server`.
     private var voice: SharerVoice?
     private var status = Status()
@@ -318,7 +330,14 @@ public final class WindowsShareSession: @unchecked Sendable {
         var resolvedRegion: ScreenRegion?
         if case .success(let resolved) = region {
             resolvedRegion = resolved
-            injector = WindowsInputInjector(regionProvider: { resolved })
+            // Re-reads on every activation and every source change (see
+            // `WindowsInputInjector.setSelection`), so a changed target maps
+            // correctly — and a target whose geometry is unknown yields nil,
+            // which makes the injector DROP events rather than place them on
+            // the previous window.
+            injector = WindowsInputInjector(regionProvider: { [weak self] in
+                self?.lock.withLock { self?.liveRegion }
+            })
             // Annotations need the same rect as remote control, and for the
             // same reason: a stroke's coordinates are normalized against what
             // the viewer can SEE. So they gate together — a target whose
@@ -329,7 +348,11 @@ public final class WindowsShareSession: @unchecked Sendable {
                     x: resolved.x, y: resolved.y,
                     width: resolved.width, height: resolved.height))
         }
-        lock.withLock { overlay = annotationOverlay }
+        lock.withLock {
+            overlay = annotationOverlay
+            liveRegion = resolvedRegion
+            liveItem = item
+        }
         let injectorAvailable = injector != nil
         let overlayAvailable = annotationOverlay != nil
         // The sharer's own pen rides the overlay that is already there, so it
@@ -642,6 +665,97 @@ public final class WindowsShareSession: @unchecked Sendable {
     public func revokeControl() {
         let server = lock.withLock { self.server }
         server?.revokeControl(reason: "the sharer took control back")
+    }
+
+    /// Re-point a live share at a different target, keeping the viewers.
+    ///
+    /// **The hazard this has to answer** is that remote control and
+    /// annotations are gated on the target's screen geometry, and a change can
+    /// take that away — display→window is the ordinary case, and a window has
+    /// no resolvable rect. Two things follow, and both are handled here rather
+    /// than left to the seam:
+    ///
+    ///   * `liveRegion` becomes nil, which the injector's provider reads, so
+    ///     it DROPS events instead of placing them on the previous window's
+    ///     rectangle. That is the safe half, and it is not sufficient on its
+    ///     own: a viewer holding a grant would go on clicking into silence.
+    ///   * So a live grant is REVOKED with a reason the viewer can read. The
+    ///     `ScreenShareCaps` bit stays advertised — it is a static "this
+    ///     platform can inject", and the protocol has no way to withdraw it
+    ///     from viewers already admitted — but that is exactly the distinction
+    ///     the runtime gate already draws: the "Allow control requests" toggle
+    ///     declines live requests the same way while the bit stays set.
+    ///
+    /// The annotation overlay is rebuilt rather than moved: it owns a window
+    /// on its own pump thread, sized at creation, and dropping it is how its
+    /// thread is joined.
+    ///
+    /// - Returns: whether the change took effect. False when nothing is
+    ///   sharing.
+    @discardableResult
+    public func changeSource(to item: WGC.CaptureItem) async throws -> Bool {
+        guard let running = lock.withLock({ server }) else { return false }
+
+        let region = Self.resolveControlRegion(for: item)
+        var resolved: ScreenRegion?
+        if case .success(let rect) = region { resolved = rect }
+
+        // Rebuilt before the swap, so the strokes that arrive with the very
+        // first frame of the new source already have somewhere to land.
+        var newOverlay: AnnotationOverlay?
+        if let resolved {
+            newOverlay = AnnotationOverlay(
+                region: AnnotationOverlay.Region(
+                    x: resolved.x, y: resolved.y,
+                    width: resolved.width, height: resolved.height))
+        }
+
+        let previousOverlay = lock.withLock { () -> AnnotationOverlay? in
+            let old = overlay
+            overlay = newOverlay
+            liveRegion = resolved
+            liveItem = item
+            return old
+        }
+        previousOverlay?.clear()
+        drawingLock.withLock { drawingRegion = resolved }
+
+        if resolved == nil {
+            // Told, not silently ignored. The injector would already drop
+            // these events; without the revoke the person driving would keep
+            // clicking and wonder why the pointer stopped moving.
+            running.revokeControl(
+                reason: "the sharer switched to a window, which cannot be controlled remotely")
+            // The sharer's own pen goes with it, for the same reason the
+            // capability does: there is no rectangle to normalize against.
+            teardownDrawing()
+        }
+
+        let onTimings: @Sendable (CaptureTimings) -> Void = { [weak self] timings in
+            self?.update { $0.timings = timings }
+        }
+        // The factory travels with the data: this backend is built against a
+        // capture ITEM, so swapping the selection bytes alone would restart
+        // the old target.
+        return try await running.changeSource(
+            filterData: Self.windowsSelectionData(),
+            captureFactory: {
+                let encoder = WGCCaptureEncoder(item: item)
+                encoder.onTimings = onTimings
+                return encoder
+            })
+    }
+
+    /// The `PickerSelection` every Windows share sends.
+    ///
+    /// Always the same bytes: on Windows the ITEM is the selection and the
+    /// backend is constructed with it, so this carries only the kind — which
+    /// still matters, because the encoder rejects `.application`, something a
+    /// single capture item cannot express anyway.
+    static func windowsSelectionData() -> Data {
+        let selection = PickerSelection(
+            kind: .display, displayID: nil, windowID: nil, bundleIDs: [])
+        return (try? JSONEncoder().encode(selection)) ?? Data()
     }
 
     public func stopSharing() async {

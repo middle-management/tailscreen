@@ -124,6 +124,14 @@ public struct ShareCard: View {
     /// WGC picker already offers windows alongside displays, so a second
     /// button there would be a second door into the same room.
     let secondaryStart: HubAction?
+    /// Re-point a LIVE share at something else without dropping the viewers
+    /// already watching — the mirror of `secondaryStart`, offered beside Stop
+    /// while sharing rather than beside Start while idle.
+    ///
+    /// Nil renders nothing, and that is a real state rather than a lazy
+    /// default: an X11 session has exactly one thing it can capture (the root
+    /// window), so there is nothing on that host for this button to change.
+    let changeSource: HubAction?
     let onStart: @MainActor @Sendable () -> Void
     let onStop: @MainActor @Sendable () -> Void
     let onAccept: @MainActor @Sendable (String) -> Void
@@ -145,6 +153,7 @@ public struct ShareCard: View {
         microphone: HubMicrophone? = nil,
         drawing: HubDrawing? = nil,
         secondaryStart: HubAction? = nil,
+        changeSource: HubAction? = nil,
         onStart: @escaping @MainActor @Sendable () -> Void,
         onStop: @escaping @MainActor @Sendable () -> Void,
         onAccept: @escaping @MainActor @Sendable (String) -> Void = { _ in },
@@ -165,6 +174,7 @@ public struct ShareCard: View {
         self.microphone = microphone
         self.drawing = drawing
         self.secondaryStart = secondaryStart
+        self.changeSource = changeSource
         self.onStart = onStart
         self.onStop = onStop
         self.onAccept = onAccept
@@ -183,6 +193,9 @@ public struct ShareCard: View {
                 if canShare {
                     if isSharing {
                         Button(stopLabel, action: onStop)
+                        if let changeSource {
+                            Button(changeSource.label, action: changeSource.perform)
+                        }
                     } else {
                         Button(startLabel, action: onStart)
                         // Only while idle: mid-share this would start a second

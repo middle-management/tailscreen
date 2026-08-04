@@ -289,6 +289,13 @@ final class SharerModel: ObservableObject {
         return true
     }
 
+    /// Whether the LIVE share is portal-backed, and therefore re-pointable.
+    ///
+    /// Not the same question as `canShareWindow`: a machine can have a portal
+    /// while the current share is X11 root capture, and that share has nothing
+    /// to change — an X11 session captures exactly one thing.
+    @Published private(set) var canChangeSource = false
+
     private let display: String?
     /// Owns the D-Bus session for the whole app; see `PortalSessionHost`.
     private let portal: PortalSessionHost
@@ -322,6 +329,8 @@ final class SharerModel: ObservableObject {
             intent: .entireScreen, environment: captureEnvironment)
         {
         case .x11(let display):
+            // One display, one root window: nothing to re-point at.
+            canChangeSource = false
             beginShare(captureFactory: { X11CaptureEncoder(display: display) })
         case .portal:
             // `.monitor`: this entry point is "share my screen". Offering the
@@ -372,6 +381,7 @@ final class SharerModel: ObservableObject {
         Task { @MainActor in
             switch await portal.negotiate(sources: sources) {
             case .granted(let nodeID):
+                canChangeSource = true
                 beginShare(captureFactory: {
                     PortalCaptureEncoder(
                         nodeID: nodeID,
@@ -382,6 +392,56 @@ final class SharerModel: ObservableObject {
                 // and an error placard would be the app arguing with a
                 // deliberate choice. Straight back to idle, saying nothing.
                 phase = .idle
+            case .failed(let reason):
+                phase = .failed(reason)
+            }
+        }
+    }
+
+    /// Re-point a live share at something else, without dropping the viewers
+    /// already watching.
+    ///
+    /// Portal-only, and it necessarily raises a second consent dialog: the
+    /// portal grants a session for what the person picked, so picking
+    /// something else is a new grant. That is the portal's design and not
+    /// something to route around — the alternative would be a share that could
+    /// silently widen its own scope after consent was given.
+    ///
+    /// Offers BOTH monitors and windows regardless of what the share started
+    /// as: this is the moment the person is explicitly re-choosing, so
+    /// narrowing them to the kind they picked last time would be the app
+    /// deciding for them.
+    ///
+    /// Declining leaves the existing share running and untouched — the
+    /// dialog was about a *change*, so refusing it means "keep what I have",
+    /// not "stop sharing".
+    func changeSource() {
+        guard canChangeSource, phase == .sharing, let server else { return }
+        let portal = self.portal
+        Task { @MainActor in
+            switch await portal.negotiate(sources: [.monitor, .window]) {
+            case .granted(let nodeID):
+                let selection = PickerSelection(
+                    kind: .display, displayID: 0, windowID: nil, bundleIDs: [])
+                guard let selectionData = try? JSONEncoder().encode(selection) else { return }
+                do {
+                    // The new factory travels WITH the data: this backend is
+                    // built against a PipeWire node id, so swapping the
+                    // selection bytes alone would restart the old source.
+                    _ = try await server.changeSource(
+                        filterData: selectionData,
+                        captureFactory: {
+                            PortalCaptureEncoder(
+                                nodeID: nodeID,
+                                openFileDescriptor: { try portal.openPipeWireFileDescriptor() })
+                        })
+                } catch {
+                    phase = .failed("could not change the shared source: \(error)")
+                }
+            case .cancelled:
+                // Keep sharing what we were already sharing. Saying nothing is
+                // the whole point: they declined a change, not the share.
+                break
             case .failed(let reason):
                 phase = .failed(reason)
             }
@@ -508,6 +568,7 @@ final class SharerModel: ObservableObject {
                 // — including the user pressing stop in the compositor's own
                 // indicator — must take the session down with it.
                 self.portal.close()
+                self.canChangeSource = false
             }
         }
         // Anyone whose ask was accepted before this server existed. Replayed
@@ -551,6 +612,7 @@ final class SharerModel: ObservableObject {
         // the person their screen is still going out after they stopped it —
         // and on some desktops leaves the indicator until the process dies.
         portal.close()
+        canChangeSource = false
         guard let server else {
             phase = .idle
             teardownOverlay()

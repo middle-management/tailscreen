@@ -514,8 +514,54 @@ Kind B. Sequenced by how many rows each unblocks.
 
   *Still unbuilt: system audio (the portal has no equivalent), preview
   thumbnails, and multi-stream shares.*
-- **3.4 · Change source mid-share, preview thumbnail** — smaller, and both
-  become easier once 3.3 exists on Linux.
+- **3.4 · Change source mid-share, preview thumbnail** — the Linux half of
+  change-source has landed; the Windows half and the thumbnail have not.
+
+  **Change source, Linux.** `TailscaleScreenShareServer.changeSource` now takes
+  an optional replacement capture factory, because **not every backend can be
+  retargeted by `filterData` alone.** The macOS helper resolves the selection
+  out of that data in its own process, so swapping the bytes is enough there.
+  The Windows and portal backends are built against an already-picked target —
+  a `WGC.CaptureItem`, a PipeWire node — precisely so a crash-restart
+  re-targets the same thing without asking the user again. Right for a restart,
+  useless for a deliberate change. The Linux hub offers "Change source…" only
+  for a portal-backed share (an X11 session captures exactly one thing), the
+  new dialog offers monitors AND windows because this is the moment the person
+  is explicitly re-choosing, and declining keeps the existing share running
+  untouched — they refused a change, not the share.
+
+  **Change source, Windows.** This carried a hazard the Linux path does not,
+  and answering it — rather than shipping the wiring — is most of what the
+  Windows half is. `WindowsInputInjector` was constructed with
+  `regionProvider: { resolved }`, closing over a FIXED rect, while
+  `ScreenShareCaps.remoteControl` / `.annotations` are decided once when the
+  server is built and advertised per viewer at HELLO time. So a naive change
+  would have left a granted viewer's clicks landing on the OLD target's
+  rectangle, and display→window — the ordinary case — drops the resolvable
+  region entirely.
+
+  Two things answer it, and the second is the one that matters:
+
+  - The provider now re-reads a `liveRegion` the session updates, so events map
+    to the new target, and a target with no geometry yields nil — which makes
+    the injector DROP events rather than place them on the previous window.
+    That is the safe half and it is **not sufficient**: a viewer holding a
+    grant would go on clicking into silence.
+  - So a live grant is **revoked with a reason the viewer reads**. The caps bit
+    stays advertised, because it is a static "this platform can inject" and the
+    protocol cannot withdraw it from viewers already admitted — but that is
+    exactly the distinction the runtime gate already draws, since the "Allow
+    control requests" toggle declines live requests the same way while the bit
+    stays set. The sharer's own pen goes too, for the same reason: no rectangle
+    to normalize against.
+
+  The annotation overlay is rebuilt rather than moved — it owns a window on its
+  own pump thread, sized at creation, and dropping it is how that thread is
+  joined.
+
+  *Still open in 3.4: the preview thumbnail. The `onPreviewImage` seam exists
+  and neither non-mac backend fires it, which needs an MJPEG encode off the
+  captured planes and an image view the hub does not currently have.*
 
 ## Phase 4 · Hub parity, which is cheap by construction (weeks)
 
