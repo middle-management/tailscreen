@@ -854,9 +854,9 @@ jobs:
           }
           Write-Host "no loader failure; $hex is this app's own business"
 
-      # Unlike Linux there is no --ui-preview mode (yet), so this captures the
-      # real app in whatever state a fresh launch reaches on the runner —
-      # normally the signed-out hub. GitHub's hosted Windows runners have an
+      # `--ui-preview` renders the hub seeded with the same deterministic
+      # fake tailnet the GTK and macOS apps show — signed in, fake peers, no
+      # tsnet node, no network. GitHub's hosted Windows runners have an
       # interactive desktop session, so CopyFromScreen sees real pixels; the
       # exe runs FROM dist/ so it loads exactly the DLL set a user would get.
       # The HasExited guard matters for the usual reason: a dead app would
@@ -868,7 +868,7 @@ jobs:
         run: |
           Add-Type -AssemblyName System.Windows.Forms
           Add-Type -AssemblyName System.Drawing
-          $p = Start-Process -FilePath .\tailscreen.exe -PassThru
+          $p = Start-Process -FilePath .\tailscreen.exe -ArgumentList '--ui-preview' -PassThru
           Start-Sleep -Seconds 25
           if ($p.HasExited) {
             Write-Error "app exited ($($p.ExitCode)) before the screenshot"

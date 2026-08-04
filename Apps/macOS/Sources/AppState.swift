@@ -610,8 +610,16 @@ class AppState: ObservableObject {
         // BrowseToURL the IPN bus emits is suppressed (see
         // `interactiveLoginRequested`) so no browser tab pops unsolicited —
         // the user still sees the "Sign in with Tailscale" CTA.
-        Task { @MainActor [weak self] in
-            await self?.attemptSessionRestore()
+        //
+        // Not in UI-preview mode: the restore brings a real node up and its
+        // auth check would overwrite the seeded signed-in state, flipping
+        // the hub back to the Welcome pane mid-screenshot.
+        if Self.isUIPreview {
+            seedUIPreview()
+        } else {
+            Task { @MainActor [weak self] in
+                await self?.attemptSessionRestore()
+            }
         }
 
         // Scripted local E2E harness affordances. Both env vars are read
@@ -2128,7 +2136,57 @@ class AppState: ObservableObject {
         didLogFirstViewerFrame = false
     }
 
+    /// True when launched with `--ui-preview`: the hub renders a seeded,
+    /// deterministic peer list — no tsnet node, no networking — so CI can
+    /// screenshot the chrome. Same flag, same fake tailnet as the GTK and
+    /// Windows apps' preview modes, so the platforms' screenshots read as
+    /// one product.
+    static let isUIPreview = CommandLine.arguments.contains("--ui-preview")
+
+    /// The seeded preview state: tagged and untagged, online and offline,
+    /// one peer sharing and one relayed — so a single screenshot exercises
+    /// the sharing chip, the route line, the latency figure, and every axis
+    /// of the filter menu. Verbatim data, deliberately not localized.
+    private func seedUIPreview() {
+        tailscaleAuth.userProfile = TailscaleUserProfile(
+            displayName: "Robert", loginName: "robert@example.com",
+            profilePicURL: nil, tailnetName: "example.com")
+        tailscaleAuth.isAuthenticated = true
+        availablePeers = [
+            TailscreenPeer(
+                id: "1", hostname: "robert-macbook",
+                dnsName: "robert-macbook.example.ts.net",
+                tailscaleIP: "100.64.0.12", isOnline: true,
+                curAddr: "192.168.1.24:41641",
+                tailscaleIPs: ["100.64.0.12", "fd7a:115c:a1e0::c"]),
+            TailscreenPeer(
+                id: "2", hostname: "studio-imac",
+                dnsName: "studio-imac.example.ts.net",
+                tailscaleIP: "100.64.0.31", isOnline: true,
+                tags: ["tag:studio"], relay: "sto",
+                tailscaleIPs: ["100.64.0.31"]),
+            TailscreenPeer(
+                id: "3", hostname: "living-room-tv",
+                dnsName: "living-room-tv.example.ts.net",
+                tailscaleIP: "100.64.0.44", isOnline: false,
+                tags: ["tag:media"],
+                tailscaleIPs: ["100.64.0.44"]),
+        ]
+        peerShareInfo = [
+            "1": TailscreenMetadata(
+                shareName: "robert's Screen", hostname: "robert-macbook",
+                screenResolution: .init(width: 1920, height: 1080),
+                isSharing: true, timestamp: Date(), videoCodec: .hevc)
+        ]
+        peerLatencyMs = ["1": 12, "2": 38]
+        hasCompletedInitialDiscovery = true
+    }
+
     func discoverPeers() async {
+        // UI-preview mode renders the seeded list: there is no node, and the
+        // unauthenticated-discovery alert would land on the screenshot.
+        if Self.isUIPreview { return }
+
         // Coalesce concurrent calls: the popover re-ids its tree on open
         // (`MenuBarView.viewID`), which fires the devices section's
         // onAppear twice in quick succession — one pass is enough.

@@ -546,9 +546,45 @@ final class AppUIState: ObservableObject {
             toggleViewerMic: { [weak self] in self?.toggleMic() })
         muteHotkey?.start()
         syncAccounts()
-        if hasPreviousLogin() {
+        if Self.isUIPreview {
+            seedUIPreview()
+        } else if hasPreviousLogin() {
             signIn()
         }
+    }
+
+    /// True when launched with `--ui-preview`: the hub renders a seeded,
+    /// deterministic peer list — no tsnet node, no networking — so CI can
+    /// screenshot the chrome. Same flag, same fake tailnet as the GTK app's
+    /// preview mode, so the platforms' screenshots read as one product.
+    static let isUIPreview = CommandLine.arguments.contains("--ui-preview")
+
+    /// The seeded preview state: tagged and untagged, online and offline,
+    /// one peer sharing and one relayed — so a single screenshot exercises
+    /// the sharing chip, the route line, the latency figure, and every axis
+    /// of the filter menu. Verbatim data, deliberately not localized.
+    private func seedUIPreview() {
+        phase = .ready
+        status = hubSignedInSubtitle(tailnet: "example.com", account: "robert@example.com")
+        activeAccountName = "robert@example.com"
+        peers = [
+            DiscoveredSharer(
+                id: "1", hostname: "robert-macbook", tailscaleIP: "100.64.0.12",
+                isOnline: true, route: .direct),
+            DiscoveredSharer(
+                id: "2", hostname: "studio-imac", tailscaleIP: "100.64.0.31",
+                isOnline: true, tags: ["tag:studio"], route: .relay(region: "sto")),
+            DiscoveredSharer(
+                id: "3", hostname: "living-room-tv", tailscaleIP: "100.64.0.44",
+                isOnline: false, tags: ["tag:media"]),
+        ]
+        shareInfo = [
+            "1": TailscreenMetadata(
+                shareName: "robert's Screen", hostname: "robert-macbook",
+                screenResolution: .init(width: 1920, height: 1080),
+                isSharing: true, timestamp: Date(), videoCodec: .hevc)
+        ]
+        latencyMs = ["1": 12, "2": 38]
     }
 
     private func hasPreviousLogin() -> Bool {
@@ -1042,6 +1078,9 @@ final class AppUIState: ObservableObject {
     }
 
     func refreshPeers() {
+        // The preview's phase is .ready but its transport never started —
+        // a refresh would replace the seeded list with a discovery error.
+        guard !Self.isUIPreview else { return }
         guard phase == .ready, !isSearching else { return }
         isSearching = true
         detail = ""
