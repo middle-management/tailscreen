@@ -34,7 +34,9 @@ import WGCCaptureKit
 /// - System-audio capture, so `setAudioEnabled` is a no-op and
 ///   `onAudioAccessUnit` never fires. Viewer voice is unaffected — that path
 ///   does not come through here.
-/// - Preview thumbnails (`onPreviewImage` never fires).
+/// - `onPreviewImage`, which carries *encoded* image bytes because the mac
+///   helper is a separate process with ImageIO on the far side. Raw pixels
+///   go up through `onPreviewThumbnail` instead.
 /// - Cloaked Apps. Windows has no equivalent knob: `WDA_EXCLUDEFROMCAPTURE`
 ///   is set by a window's own owner, so a capturer cannot exclude someone
 ///   else's window under either capture API. `excludedBundleIDs` is ignored,
@@ -57,6 +59,17 @@ public final class WGCCaptureEncoder: CaptureEncoding, @unchecked Sendable {
     /// overlay structurally cannot: from the far end a slow sharer and a quiet
     /// screen look identical.
     public var onTimings: ((CaptureTimings) -> Void)?
+
+    /// The sharer's own "this is what they can see" thumbnail, at most once a
+    /// second (`ThumbnailScaler.intervalNs`).
+    ///
+    /// Not part of `CaptureEncoding` either, and for the same reason as
+    /// `onTimings`: attached in the host's capture factory, so a restart's
+    /// fresh backend keeps publishing without the seam growing a member every
+    /// host but one leaves nil.
+    ///
+    /// Fires on the capture thread.
+    public var onPreviewThumbnail: ((ThumbnailScaler.Thumbnail) -> Void)?
 
     public enum StartError: Error, CustomStringConvertible {
         case unsupportedSelection(String)
@@ -262,6 +275,7 @@ public final class WGCCaptureEncoder: CaptureEncoding, @unchecked Sendable {
         /// a keyframe request has nothing to encode — see below.
         var havePlanes = false
         var consecutiveFailures = 0
+        var lastPreviewNs: UInt64?
 
         while true {
             let (stillRunning, fps) = lock.withLock { (running, targetFPS) }
@@ -274,6 +288,14 @@ public final class WGCCaptureEncoder: CaptureEncoding, @unchecked Sendable {
             var converted = false
             var convertNs: UInt64 = 0
             var encodeNs: UInt64 = 0
+            // Decided before the frame is acquired so the sink is called
+            // OUTSIDE `withFrame`, which holds the D3D surface mapped: whatever
+            // the host does with a thumbnail (marshal to a UI thread, redraw a
+            // card) must not run while a capture surface is locked.
+            let previewSink =
+                ThumbnailScaler.shouldCapture(lastCaptureNs: lastPreviewNs, nowNs: frameStart)
+                ? onPreviewThumbnail : nil
+            var thumbnail: ThumbnailScaler.Thumbnail?
             do {
                 // Nil means the acquire timed out, which for WGC is the
                 // ORDINARY state of a still target: it produces a frame only
@@ -282,8 +304,7 @@ public final class WGCCaptureEncoder: CaptureEncoding, @unchecked Sendable {
                 let ok = try session.withFrame(timeoutMilliseconds: max(1, 1000 / max(1, fps))) {
                     frame -> Bool in
                     let convertStart = DispatchTime.now().uptimeNanoseconds
-                    defer { convertNs = DispatchTime.now().uptimeNanoseconds &- convertStart }
-                    return yPlane.withUnsafeMutableBufferPointer { y in
+                    let ok = yPlane.withUnsafeMutableBufferPointer { y in
                         uPlane.withUnsafeMutableBufferPointer { u in
                             vPlane.withUnsafeMutableBufferPointer { v in
                                 guard let yBase = y.baseAddress, let uBase = u.baseAddress,
@@ -297,6 +318,19 @@ public final class WGCCaptureEncoder: CaptureEncoding, @unchecked Sendable {
                             }
                         }
                     }
+                    // Stopped before the preview: the timing answers "is the
+                    // colour conversion the slow stage", and folding a
+                    // once-a-second thumbnail into it would put a spike in that
+                    // number every second that no per-frame stage caused.
+                    convertNs = DispatchTime.now().uptimeNanoseconds &- convertStart
+                    // Scaled from the BGRA rather than back out of the planes:
+                    // it is right here, mapped, and valid only for this call.
+                    if previewSink != nil {
+                        thumbnail = ThumbnailScaler.thumbnail(
+                            bgra: frame.bgra, stride: frame.stride,
+                            width: width, height: height)
+                    }
+                    return ok
                 }
                 converted = ok ?? false
                 consecutiveFailures = 0
@@ -315,6 +349,15 @@ public final class WGCCaptureEncoder: CaptureEncoding, @unchecked Sendable {
             }
 
             if converted { havePlanes = true }
+
+            // Outside `withFrame`, so the host's redraw never runs with a
+            // capture surface mapped. Only when a frame actually arrived: a
+            // still target produces none, and moving the mark forward on a
+            // timed-out acquire would silently skip the next real preview.
+            if let previewSink, let thumbnail {
+                lastPreviewNs = frameStart
+                previewSink(thumbnail)
+            }
 
             // Proof of life for the server's hung-backend watchdog, fired
             // every iteration because this backend has no separate heartbeat

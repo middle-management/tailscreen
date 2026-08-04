@@ -303,7 +303,10 @@ locally — the same split that made the viewer's `linux-viewer` job possible.
 Deliberate limits, all of them stated rather than silently degraded: display
 shares only (a window/app selection is **refused**, since widening it to the
 whole screen would leak what the user didn't pick), X11 only, no system-audio
-capture (#5 remains the unsolved one), no preview thumbnails, and **software
+capture (#5 remains the unsolved one), no `onPreviewImage` — the preview
+thumbnail is published as raw pixels through `onPreviewThumbnail`, since that
+seam's encoded-bytes shape exists for the mac helper's IPC boundary — and
+**software
 encoders only** — `h264_vaapi`/`h264_nvenc` are present in most libavcodec
 builds and will happily be *found* by name, then fail to open without a
 matching device, because they consume hardware frames this path never uploads.

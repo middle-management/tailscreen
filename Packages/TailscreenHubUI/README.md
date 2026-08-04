@@ -35,11 +35,17 @@ exists twice agrees on the day it is written and never again — so it lives her
 | `SessionPlacard` / `HubSessionPhase` | Connecting / awaiting approval / declined / ended. |
 | `AnnotationToolbar`, `StatsHUD`, `RemoteControlBar` | The over-video chrome. |
 | `HubAction`, `HubPrompt`, `HubToggle` | The small value types the cards take actions and settings through. |
+| `HubPreview` | Raw RGBA pixels of what viewers are receiving, for the share card's thumbnail. |
 
 ## Rules
 
-- **No platform code.** SwiftCrossUI and `TailscreenProtocol` only. Not GTK, not
-  WinUI, not a transport, not a decoder. This is also what lets Linux CI
+- **No platform code.** SwiftCrossUI, `TailscreenProtocol`, and `ImageFormats`
+  only — the last purely because `ImageFormats.Image<RGBA>` is the argument type
+  of SwiftCrossUI's in-memory `Image` initializer, so `HubPreview` cannot hand
+  over raw pixels without naming it. It is pinned exactly as swift-cross-ui pins
+  it: two copies of a type that appears in a public initializer's signature are
+  not interchangeable, and the failure reads as a nonsense type error. Not GTK,
+  not WinUI, not a transport, not a decoder. This is also what lets Linux CI
   typecheck the whole thing on the Windows app's behalf.
 - **No transport types.** `DiscoveredSharer` lives in `TailscreenViewerTsnet`,
   which pulls TailscaleKit and therefore a Go archive; a package that only draws
