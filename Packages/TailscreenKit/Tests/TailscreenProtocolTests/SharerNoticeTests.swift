@@ -233,4 +233,40 @@ final class SharerNoticeTests: XCTestCase {
         }
         XCTAssertEqual(lastApplied, 3)
     }
+
+    // MARK: - id round trip
+
+    /// The inverse a host with only one opaque string to work with depends on.
+    /// Windows hands a button press back as the activation argument and
+    /// nothing else, so `id` is both halves and this is how they come apart.
+    func testIDRoundTripsForEveryKind() {
+        for kind in SharerNoticeKind.allCases {
+            let notice = SharerNotice(kind: kind, identity: "100.64.0.1:51820", label: "wisp")
+            let decoded = SharerNotice.decodeID(notice.id)
+            XCTAssertEqual(decoded?.kind, kind)
+            XCTAssertEqual(decoded?.identity, "100.64.0.1:51820")
+        }
+    }
+
+    /// The split is on the FIRST colon, and this is the case that proves it:
+    /// an identity that itself contains colons must come back whole. Splitting
+    /// on the last one reroutes the answer, and the two things it reroutes
+    /// between are "let this person watch" and "let this person control my
+    /// machine".
+    func testIdentityKeepsItsOwnColons() {
+        for identity in ["100.64.0.1:51820", "fd7a:115c:a1e0::1:9", "a:b:c:d"] {
+            let notice = SharerNotice(kind: .viewerPending, identity: identity, label: "x")
+            XCTAssertEqual(SharerNotice.decodeID(notice.id)?.identity, identity)
+        }
+    }
+
+    /// Activation arguments arrive from whatever posted them, so a string that
+    /// is not one of ours must not decode into an answer about a peer.
+    func testForeignIDsDecodeToNil() {
+        XCTAssertNil(SharerNotice.decodeID(""))
+        XCTAssertNil(SharerNotice.decodeID("viewerPending"))
+        XCTAssertNil(SharerNotice.decodeID("viewerPending:"))
+        XCTAssertNil(SharerNotice.decodeID(":100.64.0.1"))
+        XCTAssertNil(SharerNotice.decodeID("somethingElse:100.64.0.1"))
+    }
 }

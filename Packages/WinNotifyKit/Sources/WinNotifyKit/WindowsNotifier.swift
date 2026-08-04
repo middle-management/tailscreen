@@ -220,4 +220,33 @@ public final class WindowsNotifier: @unchecked Sendable {
     ) -> (action: String, identity: String)? {
         WindowsToastPayload.decodeArguments(raw)
     }
+
+    /// The same thing, starting from the `AppActivationArguments.data` object
+    /// swift-winui hands the host.
+    ///
+    /// That object is an `AppNotificationActivatedEventArgs`, from the one
+    /// namespace swift-winui does not project — so it arrives as an untyped
+    /// `IInspectable` and the string saying *which button, about whom* is
+    /// behind a `QueryInterface` only the shim can spell. This is the entire
+    /// reason the callback half is not pure Swift.
+    ///
+    /// - Parameter pointer: the raw `IInspectable*`, from
+    ///   `IUnknown.pUnk.borrow`. Borrowed, never released.
+    /// - Returns: nil for any other activation kind, which is the ordinary
+    ///   case — the host asks this of every activation it is woken by.
+    public static func decodeAction(
+        fromActivationData pointer: UnsafeMutableRawPointer
+    ) -> (action: String, identity: String)? {
+        // 1 KiB is many times what the payload can produce: an activation
+        // string is `action=` plus a percent-encoded notice id, and the id is
+        // a kind and a peer address. Bounded here rather than grown, because
+        // the alternative is a two-call length protocol across the C boundary
+        // for a string that is never long.
+        var buffer = [CChar](repeating: 0, count: 1024)
+        let ok = buffer.withUnsafeMutableBufferPointer { out in
+            ts_winnotify_activation_argument(pointer, out.baseAddress, Int32(out.count))
+        }
+        guard ok != 0 else { return nil }
+        return decodeAction(fromActivationArguments: String(cString: buffer))
+    }
 }

@@ -41,12 +41,17 @@ ship is the C ABI header —
 `Sources/CWinRT/include/Microsoft.Windows.AppNotifications.h`, 1157 lines with
 the vtables — and the shim is transcribed from that rather than from memory.
 
-Only the **posting** half needs it. A button press comes back through
-`Microsoft.Windows.AppLifecycle`'s `ExtendedActivationKind.AppNotification`,
-which *is* projected, so the host reads the activation string in Swift and hands
-it to `WindowsToastPayload.decodeArguments`. There is no COM handler object
-here, no event token, and no `ITypedEventHandler` — which is most of why this
-shim is 400 lines rather than 900.
+Only the **posting** half needs it — almost. A press comes back through
+`AppInstance.Activated` and `ExtendedActivationKind.appNotification`, both
+projected, so there is no COM handler object here, no event token and no
+`ITypedEventHandler` — which is most of why this shim is 500 lines rather than
+900. The last step is the exception: the event's `data` is an
+`AppNotificationActivatedEventArgs`, from the same unprojected namespace, so it
+arrives as an untyped `IInspectable` and the string saying *which button, about
+whom* sits behind a `QueryInterface` Swift cannot spell.
+`ts_winnotify_activation_argument` is that one call, and
+`WindowsNotifier.decodeAction(fromActivationData:)` is its Swift face. The host
+hands it `IUnknown.pUnk.borrow`, which swift-winui exposes publicly.
 
 The IIDs are the one thing the header could not supply: it *declares* them
 (`EXTERN_C const IID IID___x_ABI_…`) and leaves them to be resolved from the
@@ -119,12 +124,17 @@ keeps its in-window prompts and says nothing.
 | Windows 10 downgrades `urgent` instead of posting nothing | Same + `WindowsNotifierTests` | Linux CI |
 | only mid-share asks get urgency and high priority | `WindowsNotifierTests` | Linux CI |
 | an unregistered notifier degrades quietly | Same | Linux CI |
+| a toast body click is not read as a denial | `SharerNoticeTextTests` (`action(forKey:)`) | Linux CI |
+| a press routes back to the right kind AND peer | `SharerNoticeTests` (`decodeID`) | Linux CI |
+| the app **compiles** with the wiring in | `swift build --package-path Apps/windows` | Linux CI (`linux-app`) |
 | the package **links** against runtimeobject/user32 | `winnotify-probe` | Windows CI |
 | `Register()` is reached and answers | `winnotify-probe` (run, not just built) | Windows CI |
 | a real toast is **posted, seen, or pressed** | **nothing** | — |
 | what any of it LOOKS like | **nothing** | — |
 
 **The last two rows are the honest ones, and they are worse than Linux's.**
+They also cover the *activation* path end to end: which button was pressed is
+tested, but that a press arrives at all is not, and cannot be.
 `linux-notify` runs a real dunst on a private session bus and presses a real
 button with `dunstctl action`, because a notification daemon is an ordinary
 D-Bus service. Windows has no equivalent: the notification platform is part of

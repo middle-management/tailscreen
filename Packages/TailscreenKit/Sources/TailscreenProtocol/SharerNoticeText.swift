@@ -66,6 +66,28 @@ public enum SharerNoticeText {
     /// their tailnet is asking.
     public static let answerInAppHint = "Open Tailscreen to answer."
 
+    /// What a returned action key means.
+    ///
+    /// The two answer keys map to answers; **everything else maps to
+    /// `.dismiss`**, and that is the load-bearing half. Platforms deliver more
+    /// than button presses through the same channel: clicking a Windows toast's
+    /// BODY activates the app carrying `WindowsToastPayload.openActionKey`, and
+    /// a freedesktop daemon can invoke a `"default"` action nobody asked for.
+    /// Reading either as a deny would decide about a peer because somebody
+    /// looked at the notification — which is exactly what `NoticeAction`'s
+    /// third case exists to keep separate.
+    ///
+    /// Total rather than optional, because "I do not recognize this" and
+    /// "somebody dismissed it" call for the same behaviour: bring the app
+    /// forward, leave the person waiting in the window.
+    public static func action(forKey key: String) -> NoticeAction {
+        switch key {
+        case approveKey: .approve
+        case denyKey: .deny
+        default: .dismiss
+        }
+    }
+
     /// Render `notice` for a daemon with the stated capabilities.
     ///
     /// - Parameters:

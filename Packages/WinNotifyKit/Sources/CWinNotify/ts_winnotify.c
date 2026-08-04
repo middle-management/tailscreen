@@ -50,6 +50,7 @@ typedef struct TSNotificationFactory TSNotificationFactory;
 typedef struct TSNotificationManager TSNotificationManager;
 typedef struct TSNotificationManager2 TSNotificationManager2;
 typedef struct TSNotificationManagerStatics TSNotificationManagerStatics;
+typedef struct TSActivatedEventArgs TSActivatedEventArgs;
 
 #define TS_IINSPECTABLE_METHODS(T)                                              \
     HRESULT(STDMETHODCALLTYPE *QueryInterface)(T *, REFIID, void **);           \
@@ -133,6 +134,15 @@ struct TSNotificationManager2 {
     const TSNotificationManager2Vtbl *lpVtbl;
 };
 
+typedef struct TSActivatedEventArgsVtbl {
+    TS_IINSPECTABLE_METHODS(TSActivatedEventArgs);
+    HRESULT(STDMETHODCALLTYPE *get_Argument)(TSActivatedEventArgs *, HSTRING *);
+    HRESULT(STDMETHODCALLTYPE *get_UserInput)(TSActivatedEventArgs *, void **);
+} TSActivatedEventArgsVtbl;
+struct TSActivatedEventArgs {
+    const TSActivatedEventArgsVtbl *lpVtbl;
+};
+
 typedef struct TSNotificationManagerStaticsVtbl {
     TS_IINSPECTABLE_METHODS(TSNotificationManagerStatics);
     HRESULT(STDMETHODCALLTYPE *get_Default)(TSNotificationManagerStatics *,
@@ -153,6 +163,9 @@ static const GUID TS_IID_AppNotificationManager2 = {
 /* 6cfc0d8d-84a3-5592-b4c6-e3e7e7c680e4 */
 static const GUID TS_IID_AppNotificationManagerStatics = {
     0x6cfc0d8d, 0x84a3, 0x5592, {0xb4, 0xc6, 0xe3, 0xe7, 0xe7, 0xc6, 0x80, 0xe4}};
+/* 7a8afaf9-31cb-51d5-82be-db6bd5878b77 */
+static const GUID TS_IID_AppNotificationActivatedEventArgs = {
+    0x7a8afaf9, 0x31cb, 0x51d5, {0x82, 0xbe, 0xdb, 0x6b, 0xd5, 0x87, 0x8b, 0x77}};
 /* 9ffee485-184a-5c65-87a9-c1d94469dbe7 */
 static const GUID TS_IID_AppNotificationFactory = {
     0x9ffee485, 0x184a, 0x5c65, {0x87, 0xa9, 0xc1, 0xd9, 0x44, 0x69, 0xdb, 0xe7}};
@@ -472,6 +485,45 @@ const char *ts_winnotify_last_error(ts_winnotify *n) {
 
 const char *ts_winnotify_open_error(void) { return g_open_error[0] ? g_open_error : NULL; }
 
+int32_t ts_winnotify_activation_argument(void *event_args, char *out, int32_t capacity) {
+    TSActivatedEventArgs *args = NULL;
+    IUnknown *unknown = (IUnknown *)event_args;
+    HSTRING argument = NULL;
+    const wchar_t *wide;
+    UINT32 wide_len = 0;
+    int written;
+    HRESULT hr;
+
+    if (!event_args || !out || capacity <= 0) return 0;
+    out[0] = '\0';
+
+    hr = unknown->lpVtbl->QueryInterface(unknown, &TS_IID_AppNotificationActivatedEventArgs,
+                                         (void **)&args);
+    if (FAILED(hr) || !args) {
+        /* Not a toast activation. Every other ExtendedActivationKind lands
+         * here, which is why this is a 0 rather than an error: the host asks
+         * this question of activations it did not post. */
+        return 0;
+    }
+
+    hr = args->lpVtbl->get_Argument(args, &argument);
+    if (FAILED(hr)) {
+        args->lpVtbl->Release(args);
+        return 0;
+    }
+    /* An empty argument comes back as a NULL HSTRING, not as a zero-length
+     * one — the usual WinRT trap, and here it would be a valid-looking empty
+     * answer rather than the "nothing was said" it really is. */
+    wide = WindowsGetStringRawBuffer(argument, &wide_len);
+    written = wide ? WideCharToMultiByte(CP_UTF8, 0, wide, (int)wide_len, out, capacity - 1, NULL,
+                                         NULL)
+                   : 0;
+    if (written > 0) out[written] = '\0';
+    WindowsDeleteString(argument);
+    args->lpVtbl->Release(args);
+    return written > 0 ? 1 : 0;
+}
+
 int32_t ts_winnotify_is_supported(void) { return 1; }
 
 #else
@@ -525,6 +577,13 @@ const char *ts_winnotify_last_error(ts_winnotify *n) {
 }
 
 const char *ts_winnotify_open_error(void) { return "not Windows"; }
+
+int32_t ts_winnotify_activation_argument(void *event_args, char *out, int32_t capacity) {
+    (void)event_args;
+    (void)out;
+    (void)capacity;
+    return 0;
+}
 
 int32_t ts_winnotify_is_supported(void) { return 0; }
 

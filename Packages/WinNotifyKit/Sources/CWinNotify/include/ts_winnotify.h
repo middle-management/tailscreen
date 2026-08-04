@@ -132,6 +132,25 @@ const char *ts_winnotify_open_error(void);
 /// Whether this build has a notification platform at all — 0 off Windows.
 int32_t ts_winnotify_is_supported(void);
 
+/// Read the activation `Argument` off an `AppNotificationActivatedEventArgs`.
+///
+/// **The one place the callback half needs C.** swift-winui projects
+/// `AppInstance.Activated` and `ExtendedActivationKind.AppNotification`, so a
+/// Swift host learns that a toast was pressed — but the event's `Data` is an
+/// `AppNotificationActivatedEventArgs`, which is in the namespace swift-winui
+/// does NOT project, so it arrives as an untyped `IInspectable` and the string
+/// that says *which button, about whom* is behind one `QueryInterface` the
+/// Swift side cannot spell.
+///
+/// `event_args` is that object's raw `IInspectable*` (`IUnknown.pUnk.borrow`,
+/// which swift-winui exposes publicly). Borrowed, never released: the caller
+/// still owns it.
+///
+/// Writes a NUL-terminated UTF-8 string into `out` and returns 1; returns 0
+/// when this is not an `AppNotificationActivatedEventArgs`, which is the
+/// ordinary case for every other activation kind the app is woken by.
+int32_t ts_winnotify_activation_argument(void *event_args, char *out, int32_t capacity);
+
 #ifdef __cplusplus
 }
 #endif
