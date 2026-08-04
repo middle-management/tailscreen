@@ -17,6 +17,8 @@ import enum TailscreenProtocol.CaptureBackendSelection
 import enum TailscreenProtocol.ThumbnailScaler
 import struct TailscreenProtocol.ControlRequestInfo
 import enum TailscreenProtocol.SharerNoticeDecision
+import enum TailscreenProtocol.SharerNoticeKind
+import struct TailscreenProtocol.NoticeCandidate
 import protocol TailscreenSharer.CaptureEncoding
 import class TailscreenSharerPortal.PortalCaptureEncoder
 import class PortalCaptureKit.PortalSession
@@ -135,6 +137,21 @@ final class SharerModel: ObservableObject {
     /// Drives the "Take back control" action, which is the only way to end a
     /// grant from this side.
     @Published private(set) var controlGrantedTo: String?
+
+    /// Posts the sharer's notifications and routes their buttons back.
+    ///
+    /// Built once for the life of the app rather than per share: connecting to
+    /// the bus is the expensive part, and an ask to SHARE arrives precisely
+    /// when no share is running.
+    private let notifications = SharerNotifications()
+
+    /// Whether this machine has nowhere to post notifications.
+    ///
+    /// Said on the card, but only while sharing: a sharer who is not looking
+    /// at the app is exactly who a notification would have reached, so the one
+    /// moment worth telling them it will not is the moment they are about to
+    /// stop looking. Off a share it is noise about a feature nobody is using.
+    var notificationsUnavailable: Bool { !notifications.isAvailable }
 
     /// Why a grant could not be given, when one could not. Nil renders nothing.
     ///
@@ -309,6 +326,31 @@ final class SharerModel: ObservableObject {
                     """
                     warning: Wayland session with no desktop portal — screen sharing is                     unavailable. (Capturing $DISPLAY here would capture only XWayland,                     which is why it is refused rather than attempted.)\n
                     """.utf8))
+        }
+
+        // A notification button answers exactly what the card's button does,
+        // through the same methods — so there is one implementation of each
+        // decision and the two surfaces cannot drift.
+        notifications.onAnswer = { [weak self] kind, identity, accept in
+            guard let self else { return }
+            switch kind {
+            case .viewerPending:
+                // The identity IS the `"ip:port"` these take.
+                accept ? self.approve(identity) : self.deny(identity)
+            case .controlRequested:
+                guard let requestID = UUID(uuidString: identity) else { return }
+                if accept {
+                    self.grantControl(to: requestID)
+                } else {
+                    self.declineControl(requestID)
+                }
+            case .requestToShare:
+                guard let requestID = UUID(uuidString: identity) else { return }
+                self.answerShareRequest(id: requestID, accept: accept)
+            case .viewerJoined, .viewerLeft:
+                // Reports carry no buttons, so nothing can arrive here.
+                break
+            }
         }
     }
 
@@ -629,7 +671,7 @@ final class SharerModel: ObservableObject {
             // Fires off the main actor; hop. No mapping needed — the card
             // renders `ControlRequestInfo.displayName` directly, the same
             // shape the Windows app passes through.
-            Task { @MainActor [weak self] in self?.controlRequests = requests }
+            Task { @MainActor [weak self] in self?.applyControlRequests(requests) }
         }
         server.onControlGrantChanged = { generation, grant in
             Task { @MainActor [weak self] in
@@ -649,6 +691,11 @@ final class SharerModel: ObservableObject {
                 } else {
                     self.phase = .idle
                 }
+                // BEFORE the rosters empty: stopping a share expels every
+                // viewer at once, and reconciling against the resulting empty
+                // list would fire one "stopped watching" banner per viewer at
+                // the moment the sharer already decided to stop.
+                self.notifications.stop()
                 self.viewers = []
                 self.pendingViewers = []
                 self.clearControlState()
@@ -715,6 +762,8 @@ final class SharerModel: ObservableObject {
             return
         }
         self.server = nil
+        // Before the rosters empty — see `onCaptureStopped`.
+        notifications.stop()
         viewers = []
         pendingViewers = []
         clearControlState()
@@ -939,11 +988,30 @@ final class SharerModel: ObservableObject {
     /// only on join and leave, is what makes the queue drain at all.
     private func applyConnected(_ rows: [ConnectedViewer]) {
         viewers = rows
+        // Keyed by `ip:port`, deliberately: a genuine rejoin IS news, and the
+        // mac viewer-roster path keys the same way for the same reason.
+        notifications.applyViewers(
+            rows.map { NoticeCandidate(identity: $0.id, label: $0.label) })
         noteRoster()
+    }
+
+    private func applyControlRequests(_ rows: [ControlRequestInfo]) {
+        controlRequests = rows
+        // The identity is the connection UUID `grantControl` takes.
+        notifications.applyAsk(
+            kind: .controlRequested,
+            candidates: rows.map {
+                NoticeCandidate(identity: $0.id.uuidString, label: $0.displayName)
+            })
     }
 
     private func applyPending(_ rows: [PendingViewer]) {
         pendingViewers = rows
+        // The identity IS the id `approve`/`deny` take, so a button press
+        // routes back with nothing to re-derive.
+        notifications.applyAsk(
+            kind: .viewerPending,
+            candidates: rows.map { NoticeCandidate(identity: $0.id, label: $0.label) })
         noteRoster()
     }
 
@@ -1015,7 +1083,21 @@ final class SharerModel: ObservableObject {
                 fromHostname: hostname, sourceAddr: sourceAddr,
                 connectionID: connectionID, nowNs: nowNs)
         else { return }
+        publishShareRequests()
+    }
+
+    /// Push the inbox to the card AND to the notifications, together.
+    ///
+    /// One function because the two must not drift: an ask that expires from
+    /// the inbox but keeps its banner is an invitation whose Share button
+    /// answers a connection that has already gone.
+    private func publishShareRequests() {
         shareRequests = inbox.requests
+        notifications.applyAsk(
+            kind: .requestToShare,
+            candidates: inbox.requests.map {
+                NoticeCandidate(identity: $0.id.uuidString, label: $0.fromHostname)
+            })
     }
 
     /// Matches the requester's own wait (`TailscreenRequestToShareClient`'s
@@ -1026,7 +1108,7 @@ final class SharerModel: ObservableObject {
     /// the asker and start sharing.
     func answerShareRequest(id: UUID, accept: Bool) {
         guard let request = inbox.remove(id: id) else { return }
-        shareRequests = inbox.requests
+        publishShareRequests()
 
         if let connectionID = request.connectionID, let listener = controlListener {
             Task {
@@ -1051,7 +1133,7 @@ final class SharerModel: ObservableObject {
     func clearShareRequests() {
         guard !inbox.requests.isEmpty else { return }
         inbox.removeAll()
-        shareRequests = []
+        publishShareRequests()
     }
 
     /// What is remembered about a row's peer, for the roster's label.
