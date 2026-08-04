@@ -1,6 +1,6 @@
 ---
 title: Self-hosted control planes
-nav_order: 7
+nav_order: 8
 permalink: /self-hosted/
 ---
 
@@ -67,7 +67,7 @@ care you'd treat a stored password.
 
 ## Walked example: headscale
 
-Getting a control plane reachable from your Mac is your infrastructure
+Getting a control plane reachable from your machine is your infrastructure
 team's job, not Tailscreen's — but here's a minimum viable recipe to
 verify the Tailscreen side end-to-end.
 

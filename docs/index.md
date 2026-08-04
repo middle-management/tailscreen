@@ -9,13 +9,14 @@ image: /assets/social-card.png
 <div class="ts-hero">
   <p class="ts-badges">
     <span class="ts-badge">Open source</span>
-    <span class="ts-badge">macOS 15+</span>
+    <span class="ts-badge">macOS &middot; Linux &middot; Windows</span>
     <span class="ts-badge">MIT</span>
   </p>
-  <h1>Screen sharing that feels&nbsp;like <span class="ts-accent">sitting at the same Mac</span>.</h1>
-  <p class="ts-hero-tagline">Tailscreen streams one Mac&rsquo;s screen to another over your own
-  Tailscale network &mdash; encrypted, peer-to-peer, at 60&nbsp;fps. No meeting
-  link, no server in the middle, no port to forward.</p>
+  <h1>Screen sharing that feels&nbsp;like <span class="ts-accent">sitting at the same desk</span>.</h1>
+  <p class="ts-hero-tagline">Tailscreen streams one computer&rsquo;s screen to another over your own
+  Tailscale network &mdash; encrypted, peer-to-peer, at 60&nbsp;fps, between
+  macOS, Linux, and Windows. No meeting link, no server in the middle, no
+  port to forward.</p>
   <p class="ts-hero-actions">
     <a href="{% link install.md %}" class="btn btn-primary fs-5">Install</a>
     <a href="https://github.com/middle-management/tailscreen" class="btn fs-5">View on GitHub</a>
@@ -81,8 +82,8 @@ image: /assets/social-card.png
       <span class="ts-mock-stats"><span class="ts-mock-live"></span>60 fps &middot; HEVC &middot; 4.1 Mbit/s</span>
     </div>
   </div>
-  <p class="ts-mock-caption">The whole UI is a compact window and a menubar sharing tool. The viewer
-  is just a window &mdash; with someone else&rsquo;s screen in it.</p>
+  <p class="ts-mock-caption">The whole UI is a compact window (plus a menubar sharing tool on the
+  Mac). The viewer is just a window &mdash; with someone else&rsquo;s screen in it.</p>
 </div>
 
 <div class="ts-stats">
@@ -92,7 +93,7 @@ image: /assets/social-card.png
   </div>
   <div class="ts-stat">
     <span class="ts-stat-n">Zero</span>
-    <span class="ts-stat-c">servers between your Macs</span>
+    <span class="ts-stat-c">servers between your machines</span>
   </div>
   <div class="ts-stat">
     <span class="ts-stat-n">P2P</span>
@@ -104,11 +105,14 @@ image: /assets/social-card.png
   </div>
 </div>
 
-<p class="ts-intro">ScreenCaptureKit grabs the pixels, VideoToolbox encodes
-them in hardware, and <a href="https://tailscale.com/">Tailscale</a>&rsquo;s
-WireGuard tunnel carries them straight to the other Mac &mdash; direct when
-the network allows, through Tailscale&rsquo;s DERP relays when it
-doesn&rsquo;t. Your screen never touches a third-party server.</p>
+<p class="ts-intro">On a Mac, ScreenCaptureKit grabs the pixels and VideoToolbox
+encodes them in hardware; on Linux and Windows, X11 or ScreenCast-portal
+capture and Windows.Graphics.Capture feed libavcodec. Either way,
+<a href="https://tailscale.com/">Tailscale</a>&rsquo;s WireGuard tunnel carries
+the result straight to the other machine &mdash; direct when the network
+allows, through Tailscale&rsquo;s DERP relays when it doesn&rsquo;t &mdash;
+and every platform speaks the same wire protocol, so any of them can watch
+any other. Your screen never touches a third-party server.</p>
 </div>
 
 ## Sharp where it counts
@@ -174,7 +178,7 @@ doesn&rsquo;t. Your screen never touches a third-party server.</p>
         <path d="M16.5 16.5L21 21"/>
       </svg>
     </div>
-    <h3>Finds your Macs for you</h3>
+    <h3>Finds your machines for you</h3>
     <p>Tailscreen probes your tailnet and lists who&rsquo;s sharing.
     You&rsquo;ll never type an IP address.</p>
   </div>
@@ -187,7 +191,7 @@ doesn&rsquo;t. Your screen never touches a third-party server.</p>
       </svg>
     </div>
     <h3>Voice &amp; system audio</h3>
-    <p>Talk over the same tunnel, and share what your Mac is playing
+    <p>Talk over the same tunnel, and share what your computer is playing
     &mdash; all Opus-encoded. Viewers hear both; everyone gets a mute
     button.</p>
   </div>
@@ -236,12 +240,12 @@ doesn&rsquo;t. Your screen never touches a third-party server.</p>
   <div class="ts-step">
     <span class="ts-step-n">1</span>
     <h3>You choose what to share</h3>
-    <p>Pick a display, a window, or an app from the native macOS picker.</p>
+    <p>Pick a display, a window, or an app from your platform&rsquo;s native picker.</p>
   </div>
   <div class="ts-step">
     <span class="ts-step-n">2</span>
     <h3>They open Tailscreen</h3>
-    <p>Your Mac shows up by name in their Screens list. They click it.</p>
+    <p>Your machine shows up by name in their Screens list. They click it.</p>
   </div>
   <div class="ts-step">
     <span class="ts-step-n">3</span>
@@ -255,17 +259,19 @@ doesn&rsquo;t. Your screen never touches a third-party server.</p>
 
 <div class="ts-container-narrow">
 <ul class="ts-checks">
-  <li>macOS 15 (Sequoia) or later, on both ends. Earlier macOS versions, iOS, and Linux aren&rsquo;t supported.</li>
+  <li>macOS 15 (Sequoia) or later, Linux (x86_64 or arm64, X11 or Wayland),
+  or Windows 10/11 (x64 or arm64) &mdash; in any combination on the two
+  ends.</li>
   <li>A Tailscale account &mdash; the free personal tier is fine.</li>
-  <li>Screen Recording permission; macOS asks the first time you share.
-  (Accessibility too, but only if you ever grant remote control.)</li>
+  <li>On a Mac: Screen Recording permission; macOS asks the first time you
+  share. (Accessibility too, but only if you ever grant remote control.)</li>
   <li>A Swift 6 toolchain &mdash; only if you&rsquo;re building from source.</li>
 </ul>
 </div>
 
 <div class="ts-container">
 <div class="ts-cta">
-  <h2>Your screen, on their Mac, in seconds.</h2>
+  <h2>Your screen, on theirs, in seconds.</h2>
   <p>Install it, sign in to Tailscale, choose what to share.</p>
   <p class="ts-cta-actions">
     <a href="{% link install.md %}" class="btn btn-primary fs-5">Install Tailscreen</a>

@@ -1,6 +1,6 @@
 ---
 title: Architecture
-nav_order: 4
+nav_order: 5
 permalink: /architecture/
 ---
 
@@ -346,13 +346,14 @@ modifying:
 
 ## What's not here
 
-- **No iOS, no iPadOS.** macOS 15+ only. ScreenCaptureKit on iOS is a
-  different beast, and we're not going there.
+- **No iOS, no iPadOS.** Desktop only — macOS 15+, Linux, and Windows.
+  ScreenCaptureKit on iOS is a different beast, and we're not going there.
 - **No central relay.** Tailscale's DERP is the only fallback when direct
   P2P fails. Even DERP traffic is end-to-end encrypted; the relay only
   sees ciphertext.
 - **No recording.** Frames go from capture → encoder → wire → decoder →
-  screen and are never written to disk. The Tailscale state directory at
-  `~/Library/Application Support/Tailscreen/tailscale` holds ephemeral
-  node state, and the viewer allow/deny list plus your settings live in
-  `UserDefaults`. That's it.
+  screen and are never written to disk. The Tailscale state directory
+  (`~/Library/Application Support/Tailscreen/tailscale` on macOS,
+  `~/.config/tailscreen` on Linux) holds ephemeral node state, and the
+  viewer allow/deny list plus your settings live in `UserDefaults` (or the
+  platform equivalent). That's it.

@@ -1,16 +1,16 @@
 ---
 title: Privacy & Security
-nav_order: 6
+nav_order: 7
 permalink: /security/
 ---
 
 # Privacy & security
 
 The short version: we don't run a server, we don't see your traffic, your
-pixels go directly between two Macs over Tailscale's WireGuard tunnel,
+pixels go directly between two machines over Tailscale's WireGuard tunnel,
 nothing is recorded, nobody sees your screen without your approval, and
-nobody controls your Mac without an explicit per-session grant. The longer
-version is below.
+nobody controls your machine without an explicit per-session grant. The
+longer version is below.
 
 ## What's encrypted
 
@@ -119,7 +119,7 @@ capture filter is rebuilt to include it, and cloaking is a
 tidy-screen/anti-oops measure for display shares — if you explicitly pick
 a cloaked app to share, your deliberate choice wins.
 
-## Who can control your Mac
+## Who can control your machine
 
 Remote control is off until granted, per session, per viewer:
 
@@ -136,22 +136,25 @@ Remote control is off until granted, per session, per viewer:
   instantly at any moment: the Stop button, File → Stop Remote Control,
   or the **⌃⌥.** panic hotkey, which is registered system-wide while a
   grant is live — so it works even when the controlling viewer has some
-  other app focused on your Mac.
+  other app focused on your machine.
 - **Rate-limited.** Injected events pass a per-grant rate ceiling, so a
   compromised or misbehaving viewer can't flood synthetic input.
 - **Pointer is scoped, keyboard is not — and we say so.** Mouse events
   are confined to the shared content's on-screen rectangle (for an app
   share, the union of that app's windows — not the whole display). But
-  keystrokes land wherever macOS focus happens to be, because scoping
-  keyboard input to one app can't be done reliably, and a scoping
+  keystrokes land wherever the sharer's OS focus happens to be, because
+  scoping keyboard input to one app can't be done reliably, and a scoping
   mechanism that sometimes leaks is worse than a disclosed absence of
   one. The grant button carries the warning: *"Granting gives full
   keyboard and mouse control of your entire Mac — not just the shared
   window."* Treat a grant accordingly, and prefer granting during
   display shares you're watching.
-- **macOS has a say too.** Injection requires the Accessibility
+- **On macOS, the OS has a say too.** Injection requires the Accessibility
   permission, granted by you in System Settings. Without it, a grant is
-  refused rather than silently installed.
+  refused rather than silently installed. (On Linux, injection needs X11's
+  XTEST extension — when it's absent the capability isn't advertised, so
+  viewers aren't even offered the request rather than being granted
+  control whose clicks vanish.)
 
 ## Resource-exhaustion bounds
 
@@ -203,9 +206,9 @@ No pretending Tailscreen defends against threats it can't. Outside the
 threat model:
 
 - **Local user compromise.** Anyone with an active session on the sharing
-  Mac can already see the screen. We can't help you there.
+  machine can already see the screen. We can't help you there.
 - **Malicious code in the Tailscreen process.** No sandboxing beyond what
-  macOS itself enforces on a signed app. If you're worried about supply-
+  the OS itself enforces on a signed app. If you're worried about supply-
   chain attacks, build from source.
 - **Compromised Tailscale credentials.** If an attacker can join your
   tailnet, they're inside your perimeter. The approval gate and block

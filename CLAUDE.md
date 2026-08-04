@@ -4,7 +4,7 @@ Guidance for Claude (and other AI assistants) working in this repo. Keep it accu
 
 ## Project
 
-**Tailscreen** is a macOS 15+ app for low-latency, encrypted peer-to-peer screen sharing over Tailscale, with native Linux (GTK4) and Windows (WinUI) apps sharing the portable core. The macOS UI is a regular docked main window (sign-in, accounts, the peer list — the hub) plus a menubar item that acts as the sharer tool (share status, start/stop, mic/system-audio/drawing controls). Viewer approvals and remote-control requests render on **both** surfaces, sharing the same components, so a sharer never has to hop between them to answer a prompt. It uses tsnet ephemeral nodes (no manual device registration), captures via ScreenCaptureKit, encodes H.264/HEVC with VideoToolbox, and renders with Metal. SwiftPM only — no Xcode project.
+**Tailscreen** is a low-latency, encrypted peer-to-peer screen-sharing app over Tailscale, with native apps for **macOS 15+** (`Apps/macOS`), **Linux** (`Apps/linux`, GTK4) and **Windows** (`Apps/windows`, WinUI) that all speak one wire protocol — any of them can view or share to any other (the Linux sharer captures X11 directly or a Wayland session via the ScreenCast portal, and injects remote control via XTEST; system-audio capture is macOS-only today). The macOS app is the reference implementation and most of this file describes it: the UI is a regular docked main window (sign-in, accounts, the peer list — the hub) plus a menubar item that acts as the sharer tool (share status, start/stop, mic/system-audio/drawing controls). Viewer approvals and remote-control requests render on **both** surfaces, sharing the same components, so a sharer never has to hop between them to answer a prompt. It uses tsnet ephemeral nodes (no manual device registration), captures via ScreenCaptureKit, encodes H.264/HEVC with VideoToolbox, and renders with Metal. SwiftPM only — no Xcode project.
 
 ## Tech stack
 
@@ -85,7 +85,9 @@ Topic detail is split into `.claude/rules/`, each scoped by `paths:` frontmatter
 
 One skill loads on demand rather than by path: **`test-catalog`** — the extracted pure-decision suites, the test-only seams, and which package a new suite belongs in. Invoke it when adding or moving a test.
 
-Longer-form design docs (published site) live in `docs/`: `architecture.md`, `protocol.md`, `security.md`, `porting-plan.md`, `linux-viewer-gtk-plan.md`, `viewer-windows-plan.md`, `mac-viewer-convergence.md`.
+Longer-form design docs (published site) live in `docs/`: `architecture.md`, `protocol.md`, `security.md`, `platform-support.md` (the per-platform feature matrix — update it in the same commit as any change that opens or closes a platform gap), `porting-plan.md`, `linux-viewer-gtk-plan.md`, `viewer-windows-plan.md`, `mac-viewer-convergence.md`.
+
+**The docs site ships with the change that makes it true.** A PR that changes anything user-facing — a feature, an install step, an artifact name, a permission prompt, a platform gap opening or closing — updates the matching page under `docs/` (`index.md`, `install.md`, `usage.md`, `platform-support.md`, `troubleshooting.md`, …) in the same PR; there is no separate docs catch-up step. This is safe to do eagerly: `docs/` on `main` publishes only to the **/next** preview channel (tailscreen.dev/next, banner + noindex), while the root site builds from the **latest release tag** (see `pages.yml`), so docs merged with a feature never promise anything unreleased — and the root flips to them automatically when the release publishes.
 
 ## Git workflow notes
 

@@ -1,6 +1,6 @@
 ---
 title: Troubleshooting
-nav_order: 8
+nav_order: 9
 permalink: /troubleshooting/
 ---
 
@@ -12,6 +12,9 @@ permalink: /troubleshooting/
 
 If something's broken, it's almost certainly one of the things on this
 page — ordered from boring permission stuff to interesting failure modes.
+The walkthroughs name macOS surfaces (System Settings, Console.app), but
+the connection-side failure modes and fixes are the same on Linux and
+Windows.
 
 ## "Permission Denied" when capturing screen
 
@@ -29,7 +32,7 @@ Tailscreen wasn't relaunched.
 
 Walk this checklist in order:
 
-1. Open the Tailscale menubar app on both Macs and confirm they're both
+1. Open the Tailscale app on both machines and confirm they're both
    showing each other in the device list. If they're not both green, this
    is a Tailscale problem first, a Tailscreen problem second.
 2. Confirm the hostname or IP. Expanding the sharer's row in the
@@ -106,7 +109,7 @@ on direct connections — that's the right place to fix it.
 
 If `tailscale status` confirms `direct` and it's still bad:
 
-- Run `iperf3` between the two Macs and check the actual end-to-end
+- Run `iperf3` between the two machines and check the actual end-to-end
   bandwidth. Wi-Fi delivers a small fraction of its negotiated link rate
   in the real world.
 - If the result is bad: switch one or both ends to wired Ethernet. That's
@@ -201,10 +204,11 @@ If none of the above is your problem, file an issue at
 [github.com/middle-management/tailscreen/issues](https://github.com/middle-management/tailscreen/issues).
 Include:
 
-- macOS version (`sw_vers`).
-- Mac model.
+- OS and version on both ends (`sw_vers` on macOS, your distro, or the
+  Windows build), and the machine models.
 - Tailscale version on both peers, and whether the connection is `direct`
   or via DERP (`tailscale status`).
-- Relevant Console.app log lines (filter for `Tailscreen`).
+- Relevant log lines — Console.app filtered for `Tailscreen` on macOS,
+  stderr on Linux and Windows.
 
 "It doesn't work" is hard to fix. The above is much easier.
