@@ -1,11 +1,26 @@
 name: Deploy Pages
 
+# One docs tree, two channels:
+#
+#   tailscreen.dev/      — docs as of the LATEST RELEASE TAG: what the builds
+#                          people can download actually do.
+#   tailscreen.dev/next/ — docs from main, with an "unreleased" banner and
+#                          noindex: what the next release will do.
+#
+# So docs merge to main freely without the live site promising anything
+# unreleased, and the root advances by itself the moment a release publishes —
+# there is no second copy of any page and nothing to sync. A tag whose tree
+# has no Jekyll site falls back to building the root from main (the pre-split
+# behavior), which also keeps a bad tag from taking the site down.
+
 on:
   push:
     branches: [main]
     paths:
       - 'docs/**'
       - '.github/workflows/pages.yml'
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -25,18 +40,67 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          # Full history so the release tags are present to resolve.
+          fetch-depth: 0
+
+      - name: Resolve the latest release tag
+        id: tag
+        run: |
+          tag=$(git tag -l 'v*' --sort=-v:refname | head -1)
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if [ -n "$tag" ] && git cat-file -e "$tag:docs/_config.yml" 2>/dev/null; then
+            echo "has_site=true" >> "$GITHUB_OUTPUT"
+            echo "root channel: $tag"
+          else
+            echo "has_site=false" >> "$GITHUB_OUTPUT"
+            echo "root channel: main (tag '$tag' has no Jekyll site)"
+          fi
+
+      - name: Extract the tag's docs
+        if: steps.tag.outputs.has_site == 'true'
+        run: |
+          mkdir -p /tmp/current
+          git archive "${{ steps.tag.outputs.tag }}" docs | tar -x -C /tmp/current
+
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
+          working-directory: docs
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
 
-      - name: Build with Jekyll
-        uses: actions/jekyll-build-pages@v1
-        with:
-          source: ./docs
-          destination: ./_site
+      # Both builds run against main's Gemfile (BUNDLE_GEMFILE), so a tag
+      # never dictates the toolchain — only the content.
+      - name: Build current (root) from the release tag
+        env:
+          BUNDLE_GEMFILE: ${{ github.workspace }}/docs/Gemfile
+          PAGES_REPO_NWO: ${{ github.repository }}
+          JEKYLL_ENV: production
+        run: |
+          if [ "${{ steps.tag.outputs.has_site }}" = "true" ]; then
+            src=/tmp/current/docs
+          else
+            src=docs
+          fi
+          bundle exec jekyll build -s "$src" -d "$GITHUB_WORKSPACE/_site"
+
+      - name: Build next (/next) from main
+        env:
+          BUNDLE_GEMFILE: ${{ github.workspace }}/docs/Gemfile
+          PAGES_REPO_NWO: ${{ github.repository }}
+          JEKYLL_ENV: production
+        run: |
+          bundle exec jekyll build -s docs -d "$GITHUB_WORKSPACE/_site/next" \
+            --config docs/_config.yml,docs/_config_next.yml
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./_site
 
   deploy:
     needs: build

@@ -1,3 +1,26 @@
+{% if site.docs_channel == "next" %}
+<meta name="robots" content="noindex">
+<style>
+  .ts-next-banner {
+    position: fixed; bottom: 0; left: 0; right: 0; z-index: 1000;
+    padding: 0.55rem 1rem; text-align: center;
+    font-size: 0.8125rem; line-height: 1.4;
+    background: #7c3aed; color: #fff;
+  }
+  .ts-next-banner a { color: inherit; text-decoration: underline; }
+  body { padding-bottom: 3rem; }
+</style>
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    var b = document.createElement('div');
+    b.className = 'ts-next-banner';
+    b.innerHTML = 'You are previewing docs for the <strong>next release</strong> — ' +
+      'some of this is not in the released builds yet. ' +
+      '<a href="https://tailscreen.dev/">Switch to the current release docs</a>.';
+    document.body.appendChild(b);
+  });
+</script>
+{% endif %}
 <link rel="icon" type="image/svg+xml" href="{{ '/assets/favicon.svg' | relative_url }}">
 <link rel="mask-icon" href="{{ '/assets/favicon.svg' | relative_url }}" color="#000000">
 <meta name="theme-color" content="#0f1117" media="(prefers-color-scheme: dark)">

@@ -1,0 +1,5 @@
+# Overlay for the /next channel build — see .github/workflows/pages.yml.
+# The root channel builds from the latest release tag with the plain
+# _config.yml; this file layers on top for the from-main preview build.
+baseurl: "/next"
+docs_channel: next
