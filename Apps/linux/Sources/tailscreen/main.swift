@@ -676,6 +676,9 @@ struct ViewerApp: App {
             statusLine: sharer.statusLine,
             isSharing: sharer.phase == .sharing,
             canShare: sharer.canShare,
+            // Only ever the one line, and only after a grant was refused —
+            // see `SharerModel.controlNote`.
+            notes: sharer.controlNote.map { [$0] } ?? [],
             // The roster: who is watching, and what can be done about them.
             // `notes` is now free for statistics; a person is not a note.
             viewers: sharer.viewers.map { viewer in
@@ -711,6 +714,14 @@ struct ViewerApp: App {
                     id: $0.id, message: "\($0.label) wants to watch",
                     acceptLabel: "Accept", declineLabel: "Deny")
             }
+                // Somebody already watching, asking to drive. Second, because
+                // a viewer at the gate has nothing on screen at all while this
+                // person can at least see what is happening.
+                + sharer.controlRequests.map {
+                    HubPrompt(
+                        id: $0.id.uuidString,
+                        message: "\($0.displayName) wants to control this machine")
+                }
                 // Somebody asking this machine to start sharing. Third source
                 // into one prompt list, and last on purpose: a viewer at the
                 // gate is stuck on a Connecting placard with nothing on
@@ -735,6 +746,14 @@ struct ViewerApp: App {
                 settings: sharer.quality,
                 isSharing: sharer.phase == .sharing,
                 onChange: { gSharer.setQuality($0) }),
+            // The only way to end a grant from this side. Named after the
+            // person holding it, because "revoke control" does not say who
+            // currently has it and that is the fact the sharer needs.
+            extraAction: sharer.controlGrantedTo.map { holder in
+                HubAction(label: "Take back control from \(holder)") {
+                    gSharer.revokeControl()
+                }
+            },
             // Absent unless a capture device was actually opened for this
             // share, so a machine with no microphone shows no control rather
             // than one that cannot unmute.
@@ -799,9 +818,19 @@ struct ViewerApp: App {
             }
             return
         }
-        guard let requestID = UUID(uuidString: id),
-            gSharer.shareRequests.contains(where: { $0.id == requestID })
-        else { return }
+        guard let requestID = UUID(uuidString: id) else { return }
+        // Two UUID-shaped sources now share this id space, which is exactly
+        // why the shape is never consulted: an ask to share and a request to
+        // drive this machine are very different things to say yes to.
+        if gSharer.controlRequests.contains(where: { $0.id == requestID }) {
+            if accept {
+                gSharer.grantControl(to: requestID)
+            } else {
+                gSharer.declineControl(requestID)
+            }
+            return
+        }
+        guard gSharer.shareRequests.contains(where: { $0.id == requestID }) else { return }
         gSharer.answerShareRequest(id: requestID, accept: accept)
     }
 
