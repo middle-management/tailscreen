@@ -19,6 +19,19 @@ were found by building this table rather than by anyone hitting them. The order
 to close them in — and which ones are deliberate divergences rather than debt —
 is `plans/platform-alignment.md`.
 
+**Rows track `main`, not open pull requests, and not what a plan says is next.**
+A row is ✅ when the thing works for somebody who installed the app, which means
+the code is merged *and* something consumes it. That distinction is not
+pedantic: "Grant + inject remote control as a sharer" read ✅ for Linux while the
+sharer had no way to answer a request at all — the injector existed, the
+capability bit was advertised, and nothing in the app subscribed to the requests
+it invited. The row was true about the backend and false about the product.
+
+The failure runs one way. Nobody has ever marked a working feature ❌; the
+pressure is always to flip a row early, on the strength of a merged package or a
+PR about to land. So when a row is ⚠️, say what the partial case *is* — that is
+the part a reader can act on.
+
 ## Legend
 
 | | |
@@ -37,7 +50,7 @@ is `plans/platform-alignment.md`.
 | Share a single window | ✅ | ✅ portal | ✅ |
 | Share a single app / several apps | ✅ | ⚠️ single, via portal | ❌ |
 | Change source mid-share | ✅ | ✅ | ✅ |
-| Preview thumbnail of what you're sharing | ✅ | ❌ | ❌ |
+| Preview thumbnail of what you're sharing | ✅ | ✅ | ✅ |
 | Capture backend | ScreenCaptureKit | X11 (`libxcb`) / ScreenCast portal | Windows.Graphics.Capture |
 | Hardware encode | ✅ VideoToolbox | ❌ software libavcodec | ❌ software libavcodec |
 | HEVC ⇄ H.264 negotiation | ✅ | ✅ | ✅ |
@@ -182,10 +195,10 @@ Two things behind the ✅s are worth knowing:
 | Quality settings UI | ✅ | ✅ | ✅ |
 | Connection stats overlay | ✅ | ✅ | ✅ |
 | Localized strings | ✅ | ✅ | ✅ |
-| **Notified when a viewer is waiting for approval** | ✅ | ✅ | ⚠️ MSIX only |
-| Answer that prompt from the notification | ✅ | ✅ | ⚠️ MSIX only, unverified |
+| **Notified when a viewer is waiting for approval** | ✅ | ✅ | ⚠️ MSIX; the zip degrades |
+| Answer that prompt from the notification | ✅ | ✅ | ⚠️ MSIX; the zip degrades |
 | Told when notifications are switched off | ✅ | ✅ | ✅ |
-| Notified when a viewer joins / leaves | ✅ | ✅ | ⚠️ MSIX only |
+| Notified when a viewer joins / leaves | ✅ | ✅ | ⚠️ MSIX; the zip degrades |
 | **Outline around what's being captured** | ✅ | ⚠️ X11 display shares | ⚠️ WGC's own, unconfirmed |
 | Sharing controls outside the main window | ✅ menubar | ❌ | ❌ |
 | Mute / unmute from outside the window | ✅ | ✅ hotkey | ✅ hotkey |
@@ -246,6 +259,16 @@ X11 display shares and deliberately none for a portal share, where it can't know
 the captured region and a wrong border is worse than none. Windows didn't have
 to build one — WGC draws its own capture border unless an app opts out, and ours
 doesn't (still unconfirmed on a real desktop).
+
+Linux draws its own, painted under the annotations on the overlay that is
+already the capture rectangle. It is ⚠️ rather than ✅ for a reason worth
+stating, because it is the same class of thing this page exists to catch: the
+overlay is sized from the **X display**, since the portal hands back a stream
+size but no position on screen. A portal share of one window would therefore get
+a border around the whole desktop — which states the exact opposite of what an
+outline claims. So it is shown only for X11 display shares, where the rectangle
+is known to be the right one, and a portal share gets no indicator rather than a
+misleading one.
 
 The capabilities behind the remaining rows now exist everywhere — microphone
 capture and the click-taking sharer overlay both landed — so what's left
