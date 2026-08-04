@@ -15,6 +15,8 @@ import class TailscreenProtocol.SharerAccessCoordinator
 import struct TailscreenProtocol.PickerSelection
 import enum TailscreenProtocol.CaptureBackendSelection
 import enum TailscreenProtocol.ThumbnailScaler
+import struct TailscreenProtocol.ControlRequestInfo
+import enum TailscreenProtocol.SharerNoticeDecision
 import protocol TailscreenSharer.CaptureEncoding
 import class TailscreenSharerPortal.PortalCaptureEncoder
 import class PortalCaptureKit.PortalSession
@@ -116,6 +118,43 @@ final class SharerModel: ObservableObject {
     @Published var viewers: [ConnectedViewer] = []
     /// Viewers parked awaiting approval, when the approval gate is on.
     @Published var pendingViewers: [PendingViewer] = []
+
+    /// Viewers asking to drive this machine.
+    ///
+    /// This app supplies an `X11InputInjector` whenever XTEST is present, which
+    /// is what makes the server advertise `ScreenShareCaps.remoteControl` — so
+    /// viewers are *offered* Request Control. Until this existed the request
+    /// then reached a host that never read it: the viewer's toolbar said
+    /// "requested", the sharer saw nothing, and there was no way to say yes.
+    /// Advertising a capability and providing no way to exercise it is worse
+    /// than not advertising it.
+    @Published private(set) var controlRequests: [ControlRequestInfo] = []
+
+    /// Who is driving this machine right now, by display name, or nil.
+    ///
+    /// Drives the "Take back control" action, which is the only way to end a
+    /// grant from this side.
+    @Published private(set) var controlGrantedTo: String?
+
+    /// Why a grant could not be given, when one could not. Nil renders nothing.
+    ///
+    /// `grantControl` returning false is otherwise completely silent: the
+    /// prompt row disappears (the request was consumed) and nothing happens,
+    /// which reads as the button not working. On this host it means the
+    /// injector stopped being trusted — XTEST went away under a live share —
+    /// so it is rare, and rare-and-silent is exactly the combination that
+    /// costs an afternoon.
+    @Published private(set) var controlNote: String?
+
+    /// The generation of the last grant snapshot applied.
+    ///
+    /// The server stamps every `onControlGrantChanged` with a monotonic
+    /// counter precisely because a host like this one hops the callback to its
+    /// UI thread, and a hop can reorder. Applying a stale `nil` last would
+    /// clear a grant that is still live — the sharer would be told nobody is
+    /// controlling their machine while somebody is. `SharerNoticeDecision.isStale`
+    /// owns the comparison; this is the field it compares against.
+    private var lastGrantGeneration: UInt64 = 0
     /// Whether new viewers have to be let in by hand.
     ///
     /// Persisted, and read back at launch through the shared
@@ -586,6 +625,22 @@ final class SharerModel: ObservableObject {
             }
             Task { @MainActor [weak self] in self?.applyPending(waiting) }
         }
+        server.onControlRequestsChanged = { requests in
+            // Fires off the main actor; hop. No mapping needed — the card
+            // renders `ControlRequestInfo.displayName` directly, the same
+            // shape the Windows app passes through.
+            Task { @MainActor [weak self] in self?.controlRequests = requests }
+        }
+        server.onControlGrantChanged = { generation, grant in
+            Task { @MainActor [weak self] in
+                guard let self,
+                    !SharerNoticeDecision.isStale(
+                        generation: generation, lastApplied: self.lastGrantGeneration)
+                else { return }
+                self.lastGrantGeneration = generation
+                self.controlGrantedTo = grant?.displayName
+            }
+        }
         server.onCaptureStopped = { error in
             Task { @MainActor [weak self] in
                 guard let self else { return }
@@ -596,6 +651,7 @@ final class SharerModel: ObservableObject {
                 }
                 self.viewers = []
                 self.pendingViewers = []
+                self.clearControlState()
                 self.teardownOverlay()
                 self.stopVoice()
                 // Same reason as `stopSharing`: capture ending for any reason
@@ -661,6 +717,7 @@ final class SharerModel: ObservableObject {
         self.server = nil
         viewers = []
         pendingViewers = []
+        clearControlState()
         phase = .idle
         // Queued decisions do not outlive the share they were made during:
         // the rows are gone, and an intent that survived would land on whoever
@@ -1032,6 +1089,50 @@ final class SharerModel: ObservableObject {
     func approve(_ addr: String) { server?.approveViewer(addr: addr) }
     /// Reject a viewer parked at the approval gate.
     func deny(_ addr: String) { server?.denyViewer(addr: addr) }
+
+    // MARK: Remote control
+
+    /// Hand the pointer and keyboard to a viewer who asked for them.
+    ///
+    /// The server holds ONE grantee at a time and gates injection on that
+    /// exact connection id, so this is the whole of the decision — there is no
+    /// second switch to also set. It returns false when the request is already
+    /// gone (the viewer gave up, or disconnected), which is not an error worth
+    /// an alert: the row disappears on the next snapshot either way.
+    ///
+    /// **Keyboard reaches the whole machine, not the shared window.** X11
+    /// delivers a synthetic key to whatever has focus, and scoping it is not
+    /// something XTEST can do — the same warning the macOS grant carries.
+    @discardableResult
+    func grantControl(to requestID: UUID) -> Bool {
+        let granted = server?.grantControl(toConnectionID: requestID) ?? false
+        controlNote = granted ? nil : "Remote control isn't available for this share."
+        return granted
+    }
+
+    /// Refuse a request without granting anything. The viewer is told.
+    func declineControl(_ requestID: UUID) {
+        server?.declineControlRequest(connectionID: requestID)
+    }
+
+    /// End a live grant. The viewer is told why, so a pointer that stops
+    /// moving reads as a decision rather than a fault.
+    func revokeControl() {
+        server?.revokeControl(reason: "the sharer took control back")
+    }
+
+    /// Drop every control row on teardown.
+    ///
+    /// The generation counter resets too: a fresh server starts its own
+    /// sequence at zero, so carrying the old high-water mark forward would
+    /// make `isStale` discard the new share's first snapshots — a grant that
+    /// silently never appears in the UI.
+    private func clearControlState() {
+        controlRequests = []
+        controlGrantedTo = nil
+        controlNote = nil
+        lastGrantGeneration = 0
+    }
 
     /// Flip the approval gate, persist it, and push it at a live share.
     ///
