@@ -7,8 +7,10 @@ import struct TailscreenProtocol.KeyModifiers
 import enum TailscreenProtocol.ViewerPointerMapping
 import enum TailscreenProtocol.ViewerZoomMath
 import enum TailscreenProtocol.WindowsKeyCodeMapping
+// Moved down to the portable tier when the SHARER's preview thumbnail needed
+// the same maths: this blit is one of its two callers now, not its owner.
+import enum TailscreenProtocol.I420Converter
 import class TailscreenViewer.FrameStore
-import enum TailscreenViewer.I420Converter
 
 // This is the app's ONLY genuinely Windows-bound file, and the `#else` at the
 // bottom is what lets Linux CI typecheck everything else in the app —

@@ -1,3 +1,4 @@
+import ImageFormats
 import SwiftCrossUI
 import TailscreenProtocol
 
@@ -132,6 +133,15 @@ public struct ShareCard: View {
     /// default: an X11 session has exactly one thing it can capture (the root
     /// window), so there is nothing on that host for this button to change.
     let changeSource: HubAction?
+    /// A thumbnail of what viewers are actually receiving. Nil renders nothing.
+    ///
+    /// It answers a question the status line cannot: "Sharing to 2" is equally
+    /// true when the right window is on the wire and when the wrong one is, and
+    /// on this platform the difference has been invisible to the one person who
+    /// most needs to see it. It sits directly under the status line — above
+    /// even the Stop button — because if it shows the wrong thing, stopping is
+    /// what the next click is for.
+    let preview: HubPreview?
     let onStart: @MainActor @Sendable () -> Void
     let onStop: @MainActor @Sendable () -> Void
     let onAccept: @MainActor @Sendable (String) -> Void
@@ -154,6 +164,7 @@ public struct ShareCard: View {
         drawing: HubDrawing? = nil,
         secondaryStart: HubAction? = nil,
         changeSource: HubAction? = nil,
+        preview: HubPreview? = nil,
         onStart: @escaping @MainActor @Sendable () -> Void,
         onStop: @escaping @MainActor @Sendable () -> Void,
         onAccept: @escaping @MainActor @Sendable (String) -> Void = { _ in },
@@ -175,6 +186,7 @@ public struct ShareCard: View {
         self.drawing = drawing
         self.secondaryStart = secondaryStart
         self.changeSource = changeSource
+        self.preview = preview
         self.onStart = onStart
         self.onStop = onStop
         self.onAccept = onAccept
@@ -190,6 +202,9 @@ public struct ShareCard: View {
                 Text(statusLine)
                     .font(.callout)
                     .foregroundColor(isSharing ? HubStyle.chipText : HubStyle.secondaryText)
+                if let preview, let image = preview.image {
+                    Image(image)
+                }
                 if canShare {
                     if isSharing {
                         Button(stopLabel, action: onStop)
@@ -308,6 +323,38 @@ public struct ShareCard: View {
     }
 }
 
+
+/// A thumbnail of the frame viewers are currently receiving.
+///
+/// Raw packed RGBA rather than an encoded image, because the two hosts that
+/// render it have no image encoder between them and their capture backends —
+/// on macOS the preview crosses a process boundary and is JPEG for that reason,
+/// and there is no boundary here to pay for. `ThumbnailScaler` produces exactly
+/// this, already scaled and already channel-swapped.
+public struct HubPreview: Sendable, Equatable {
+    public let width: Int
+    public let height: Int
+    /// `width * height * 4` bytes, R,G,B,A per pixel.
+    public let rgba: [UInt8]
+
+    public init(width: Int, height: Int, rgba: [UInt8]) {
+        self.width = width
+        self.height = height
+        self.rgba = rgba
+    }
+
+    /// The pixels as swift-cross-ui wants them, or nil if they do not describe
+    /// an image.
+    ///
+    /// The length check is not defensive habit: `Image` hands these bytes to a
+    /// backend that reads `width * height * 4` of them, so a buffer that is
+    /// short reads past the end of an array. Refusing to render is the only
+    /// answer to that which is not a crash in somebody's toolkit.
+    var image: ImageFormats.Image<RGBA>? {
+        guard width > 0, height > 0, rgba.count == width * height * 4 else { return nil }
+        return ImageFormats.Image<RGBA>(width: width, height: height, bytes: rgba)
+    }
+}
 
 /// The sharer's live microphone, as the share card needs it.
 ///

@@ -20,8 +20,10 @@ import X11CaptureKit
 /// - No system-audio capture, so `setAudioEnabled` is a no-op and
 ///   `onAudioAccessUnit` never fires. Viewer voice still works — that path
 ///   doesn't come through here.
-/// - No preview thumbnails (`onPreviewImage` never fires); a host UI wanting
-///   them can encode from the same planes.
+/// - `onPreviewImage` never fires — that seam carries *encoded* image data,
+///   which is the mac helper's shape (it has ImageIO on the far side of an
+///   IPC boundary). This host has neither, so it publishes raw pixels through
+///   `onPreviewThumbnail` instead.
 /// - Wayland is not covered. The portal backend is the answer there, behind
 ///   this same protocol.
 ///
@@ -40,6 +42,21 @@ public final class X11CaptureEncoder: CaptureEncoding, @unchecked Sendable {
     public var onUnexpectedExit: ((String) -> Void)?
     public var onUserStopped: (() -> Void)?
     public var onActivity: (() -> Void)?
+
+    // MARK: Preview
+
+    /// The sharer's own "this is what they can see" thumbnail, at most once a
+    /// second (`ThumbnailScaler.intervalNs`).
+    ///
+    /// Not part of `CaptureEncoding`: the seam's `onPreviewImage` hands over
+    /// *encoded* bytes because the mac helper is a separate process and has
+    /// ImageIO to encode with. This backend is in-process and has neither, so
+    /// it hands raw pixels to the host, which owns the toolkit that can draw
+    /// them. Attached in the host's capture factory, like `onTimings` on
+    /// Windows — which also means a restart's fresh backend keeps publishing.
+    ///
+    /// Fires on the capture thread.
+    public var onPreviewThumbnail: ((ThumbnailScaler.Thumbnail) -> Void)?
 
     public enum StartError: Error, CustomStringConvertible {
         case unsupportedSelection(String)
@@ -239,6 +256,12 @@ public final class X11CaptureEncoder: CaptureEncoding, @unchecked Sendable {
         enc.requestKeyframe()
 
         var consecutiveFailures = 0
+        // Preview scratch, allocated once rather than per thumbnail: this is a
+        // full-frame BGRA buffer (33 MB at 4 K), and churning one of those
+        // through the allocator once a second for the life of a share is a
+        // cost with nothing to show for it.
+        var previewScratch: [UInt8] = []
+        var lastPreviewNs: UInt64?
         while true {
             lock.lock()
             let stillRunning = running
@@ -262,6 +285,15 @@ public final class X11CaptureEncoder: CaptureEncoding, @unchecked Sendable {
                     }
                     onAccessUnit?(au.data, au.isKeyframe)
                 }
+                // Preview last: the encode is what viewers are waiting on, and
+                // this is a courtesy to the person already looking at their own
+                // screen.
+                if let sink = onPreviewThumbnail,
+                    ThumbnailScaler.shouldCapture(lastCaptureNs: lastPreviewNs, nowNs: frameStart)
+                {
+                    lastPreviewNs = frameStart
+                    publishPreview(planes: planes, scratch: &previewScratch, to: sink)
+                }
             } catch {
                 consecutiveFailures += 1
                 // A transient grab failure (the screen resized under us) is
@@ -282,6 +314,44 @@ public final class X11CaptureEncoder: CaptureEncoding, @unchecked Sendable {
                 Thread.sleep(forTimeInterval: Double(interval - elapsed) / 1_000_000_000)
             }
         }
+    }
+
+    /// Turn the frame just captured into a preview thumbnail.
+    ///
+    /// **Yes, this converts back.** `X11ScreenCapture.grab` does BGRA→I420
+    /// inside its C shim and hands out planes only, so the BGRA it read is gone
+    /// by the time we get here and the only way back to pixels is I420→BGRA.
+    /// That round trip costs chroma resolution — which at 240 px across is
+    /// below anything a thumbnail could show — and the alternative is widening
+    /// the capture shim's contract to keep a copy of a full-size frame nobody
+    /// else wants, on every frame, so that one frame a second can be scaled.
+    private func publishPreview(
+        planes: X11ScreenCapture.Planes,
+        scratch: inout [UInt8],
+        to sink: (ThumbnailScaler.Thumbnail) -> Void
+    ) {
+        let width = planes.width
+        let height = planes.height
+        let needed = width * height * ThumbnailScaler.bytesPerPixel
+        guard needed > 0 else { return }
+        if scratch.count != needed { scratch = [UInt8](repeating: 0, count: needed) }
+
+        var thumbnail: ThumbnailScaler.Thumbnail?
+        scratch.withUnsafeMutableBufferPointer { buffer in
+            guard let base = buffer.baseAddress,
+                I420Converter.convert(
+                    I420Converter.Source(
+                        yPlane: planes.y, uPlane: planes.u, vPlane: planes.v,
+                        width: width, height: height),
+                    into: base)
+            else { return }
+            thumbnail = ThumbnailScaler.thumbnail(
+                bgra: UnsafePointer(base),
+                stride: width * ThumbnailScaler.bytesPerPixel,
+                width: width, height: height)
+        }
+        guard let thumbnail else { return }
+        sink(thumbnail)
     }
 
     /// Pull SPS/PPS (or VPS/SPS/PPS) out of a keyframe access unit and hand

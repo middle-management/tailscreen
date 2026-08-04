@@ -14,6 +14,7 @@ import class TailscreenProtocol.PeerAccessStore
 import class TailscreenProtocol.SharerAccessCoordinator
 import struct TailscreenProtocol.PickerSelection
 import enum TailscreenProtocol.CaptureBackendSelection
+import enum TailscreenProtocol.ThumbnailScaler
 import protocol TailscreenSharer.CaptureEncoding
 import class TailscreenSharerPortal.PortalCaptureEncoder
 import class PortalCaptureKit.PortalSession
@@ -296,6 +297,14 @@ final class SharerModel: ObservableObject {
     /// to change — an X11 session captures exactly one thing.
     @Published private(set) var canChangeSource = false
 
+    /// The most recent preview of what viewers are receiving, or nil when
+    /// nothing is being captured.
+    ///
+    /// `ThumbnailScaler.Thumbnail` rather than the card's `HubPreview`: this
+    /// model is deliberately free of the UI package, and the mapping is one
+    /// line at the render site.
+    @Published private(set) var preview: ThumbnailScaler.Thumbnail?
+
     private let display: String?
     /// Owns the D-Bus session for the whole app; see `PortalSessionHost`.
     private let portal: PortalSessionHost
@@ -331,7 +340,12 @@ final class SharerModel: ObservableObject {
         case .x11(let display):
             // One display, one root window: nothing to re-point at.
             canChangeSource = false
-            beginShare(captureFactory: { X11CaptureEncoder(display: display) })
+            let sink = previewSink()
+            beginShare(captureFactory: {
+                let encoder = X11CaptureEncoder(display: display)
+                encoder.onPreviewThumbnail = sink
+                return encoder
+            })
         case .portal:
             // `.monitor`: this entry point is "share my screen". Offering the
             // window picker here would mean the primary button sometimes
@@ -382,10 +396,13 @@ final class SharerModel: ObservableObject {
             switch await portal.negotiate(sources: sources) {
             case .granted(let nodeID):
                 canChangeSource = true
+                let sink = previewSink()
                 beginShare(captureFactory: {
-                    PortalCaptureEncoder(
+                    let encoder = PortalCaptureEncoder(
                         nodeID: nodeID,
                         openFileDescriptor: { try portal.openPipeWireFileDescriptor() })
+                    encoder.onPreviewThumbnail = sink
+                    return encoder
                 })
             case .cancelled:
                 // A person declining to share their screen is not a failure,
@@ -430,10 +447,12 @@ final class SharerModel: ObservableObject {
                     // selection bytes alone would restart the old source.
                     _ = try await server.changeSource(
                         filterData: selectionData,
-                        captureFactory: {
-                            PortalCaptureEncoder(
+                        captureFactory: { [sink = previewSink()] in
+                            let encoder = PortalCaptureEncoder(
                                 nodeID: nodeID,
                                 openFileDescriptor: { try portal.openPipeWireFileDescriptor() })
+                            encoder.onPreviewThumbnail = sink
+                            return encoder
                         })
                 } catch {
                     phase = .failed("could not change the shared source: \(error)")
@@ -445,6 +464,21 @@ final class SharerModel: ObservableObject {
             case .failed(let reason):
                 phase = .failed(reason)
             }
+        }
+    }
+
+    /// The callback every capture backend publishes its preview through.
+    ///
+    /// Attached inside each capture factory rather than passed through
+    /// `beginShare`, because the property lives on the concrete backend and the
+    /// factory is the only place its type is known — and because a factory that
+    /// carries the sink keeps publishing across the server's restart budget,
+    /// which is the whole reason `onTimings` on Windows is shaped this way too.
+    ///
+    /// Fires on a capture thread (PipeWire's, for the portal), so it hops.
+    private func previewSink() -> @Sendable (ThumbnailScaler.Thumbnail) -> Void {
+        { [weak self] thumbnail in
+            Task { @MainActor in self?.preview = thumbnail }
         }
     }
 
@@ -569,6 +603,10 @@ final class SharerModel: ObservableObject {
                 // indicator — must take the session down with it.
                 self.portal.close()
                 self.canChangeSource = false
+                // A preview that outlives its capture is the worst version of
+                // this feature: a still picture of a screen that is no longer
+                // going anywhere, indistinguishable from a live one.
+                self.preview = nil
             }
         }
         // Anyone whose ask was accepted before this server existed. Replayed
@@ -602,6 +640,7 @@ final class SharerModel: ObservableObject {
                 self.server = nil
                 self.teardownOverlay()
                 self.stopVoice()
+                self.preview = nil
             }
         }
     }
@@ -613,6 +652,7 @@ final class SharerModel: ObservableObject {
         // and on some desktops leaves the indicator until the process dies.
         portal.close()
         canChangeSource = false
+        preview = nil
         guard let server else {
             phase = .idle
             teardownOverlay()
