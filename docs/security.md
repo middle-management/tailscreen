@@ -15,7 +15,7 @@ longer version is below.
 ## What's encrypted
 
 Everything. Every channel documented in
-[Network Protocol]({% link protocol.md %}) — video, audio, annotations,
+[Network Protocol]({{ site.baseurl }}{% link protocol.md %}) — video, audio, annotations,
 remote-control input, metadata, discovery probes — goes through
 Tailscale's WireGuard tunnel. There is no plaintext fallback and there is
 no separate Tailscreen-level TLS layer. WireGuard is the security
@@ -51,7 +51,7 @@ re-implement WireGuard.
 If you'd rather not trust Tailscale's *hosted* control plane specifically,
 you can point Tailscreen at a self-hosted
 [headscale](https://github.com/juanfont/headscale) instance — see
-[Self-hosted control planes]({% link self-hosted.md %}). The WireGuard
+[Self-hosted control planes]({{ site.baseurl }}{% link self-hosted.md %}). The WireGuard
 trust story is unchanged either way.
 
 ## Nothing is stored
