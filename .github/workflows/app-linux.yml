@@ -286,11 +286,20 @@ jobs:
           # speak anything but English; not shipping it is invisible in
           # testing, because the lookup degrades to the English keys rather
           # than failing — hence the hard check.
-          L10N_BUNDLE="TailscreenL10n_TailscreenL10n.bundle"
-          L10N_SRC="Apps/linux/.build/${{ inputs.configuration }}/${L10N_BUNDLE}"
-          test -d "$L10N_SRC" \
-            || { echo "::error::${L10N_BUNDLE} not produced by the build"; exit 1; }
-          cp -R "$L10N_SRC" "$STAGE/${L10N_BUNDLE}"
+          #
+          # Matched by SUFFIX, not by full name: SwiftPM calls it
+          # `<something>_TailscreenL10n.bundle` and derives the first half from
+          # the package in a way that is not stable across toolchains — a
+          # hard-coded `TailscreenL10n_TailscreenL10n.bundle` is what failed
+          # the first run of this step.
+          PRODUCTS="Apps/linux/.build/${{ inputs.configuration }}"
+          L10N_SRC=$(find -L "$PRODUCTS" -maxdepth 1 -type d -name '*_TailscreenL10n.bundle' | head -1)
+          if [ -z "$L10N_SRC" ]; then
+            echo "::error::no *_TailscreenL10n.bundle in $PRODUCTS"
+            ls -la "$PRODUCTS" || true
+            exit 1
+          fi
+          cp -R "$L10N_SRC" "$STAGE/$(basename "$L10N_SRC")"
           cat > "$STAGE/README.txt" <<EOF
           Tailscreen for Linux (${PACKAGE_ARCH})
           ============================
@@ -298,7 +307,7 @@ jobs:
           Run:  ./tailscreen            (picker mode)
                 ./tailscreen <host>     (dial a sharer directly)
 
-          Keep TailscreenL10n_TailscreenL10n.bundle beside the binary — it
+          Keep the *_TailscreenL10n.bundle folder beside the binary — it
           carries the translations, and the app falls back to English without
           it. Force a language with TAILSCREEN_LANG=sv.
 

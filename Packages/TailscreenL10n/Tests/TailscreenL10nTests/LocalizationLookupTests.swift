@@ -121,8 +121,35 @@ final class LocalizationLookupTests: XCTestCase {
     /// The bundle path may name the generated `…_TailscreenL10n.bundle`
     /// directory itself or the directory holding it — the staging scripts
     /// produce the second shape and a `swift build` tree the first.
+    ///
+    /// The bundle here is deliberately NOT named
+    /// `TailscreenL10n_TailscreenL10n.bundle`. SwiftPM derives the first half
+    /// from the package and it is not stable across toolchains: assuming that
+    /// exact name is what broke the first Linux packaging run, so the lookup
+    /// matches on the suffix it owns.
     func testFindsTheCatalogInsideAGeneratedResourceBundle() throws {
         let parent = directory.appendingPathComponent("staged")
+        let bundle = parent.appendingPathComponent(
+            "whatever-swiftpm-decided\(LocalizationCatalog.bundleNameSuffix)")
+        try FileManager.default.createDirectory(
+            at: bundle.appendingPathComponent("sv.lproj"), withIntermediateDirectories: true)
+        try #""Refresh" = "Uppdatera";"#.write(
+            to: bundle.appendingPathComponent("sv.lproj/Localizable.strings"),
+            atomically: true, encoding: .utf8)
+
+        use(language: "sv", bundle: parent)
+        XCTAssertEqual(L("Refresh"), "Uppdatera")
+    }
+
+    /// A sibling resource bundle — the mac app ships two — must not be
+    /// mistaken for the catalog. Suffix first, and then whether it actually
+    /// holds `.lproj`s.
+    func testIgnoresAnUnrelatedSiblingBundle() throws {
+        let parent = directory.appendingPathComponent("staged")
+        let decoy = parent.appendingPathComponent("Tailscreen_Tailscreen.bundle")
+        try FileManager.default.createDirectory(at: decoy, withIntermediateDirectories: true)
+        try Data().write(to: decoy.appendingPathComponent("MenubarIcon.pdf"))
+
         let bundle = parent.appendingPathComponent(LocalizationCatalog.bundleDirectoryName)
         try FileManager.default.createDirectory(
             at: bundle.appendingPathComponent("sv.lproj"), withIntermediateDirectories: true)

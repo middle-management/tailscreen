@@ -186,8 +186,8 @@ Tailscreen ships English and Swedish today; anything else falls back to
 English, one string at a time, by design.
 
 If a language you expect *is* shipped and you still get English, the string
-catalog probably isn't beside the binary. It travels as
-`TailscreenL10n_TailscreenL10n.bundle` — inside `Tailscreen.app/Contents/
+catalog probably isn't beside the binary. It travels as a
+`…_TailscreenL10n.bundle` directory — inside `Tailscreen.app/Contents/
 Resources/` on macOS, next to `tailscreen` / `tailscreen.exe` on Linux and
 Windows. Copying just the executable out of a tarball or zip leaves it behind,
 and the app then renders in English rather than complaining.

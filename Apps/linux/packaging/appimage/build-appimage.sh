@@ -74,10 +74,15 @@ install -Dm755 "$BIN_PATH" "$APPDIR/usr/bin/$BIN_NAME"
 # executable's own directory, so usr/bin is where it has to land. Hard failure
 # rather than a warning: a missing catalog degrades silently to English, so
 # nothing downstream would ever notice.
-L10N_BUNDLE="TailscreenL10n_TailscreenL10n.bundle"
-[ -d "$BUILD_DIR/$L10N_BUNDLE" ] \
-  || { echo "error: $L10N_BUNDLE not produced by the build" >&2; exit 1; }
-cp -R "$BUILD_DIR/$L10N_BUNDLE" "$APPDIR/usr/bin/$L10N_BUNDLE"
+# Matched by suffix — SwiftPM's `<something>_TailscreenL10n.bundle` prefix is
+# derived from the package and is not stable across toolchains.
+L10N_SRC=$(find -L "$BUILD_DIR" -maxdepth 1 -type d -name '*_TailscreenL10n.bundle' | head -1)
+if [ -z "$L10N_SRC" ]; then
+  echo "error: no *_TailscreenL10n.bundle in $BUILD_DIR" >&2
+  ls -la "$BUILD_DIR" >&2 || true
+  exit 1
+fi
+cp -R "$L10N_SRC" "$APPDIR/usr/bin/$(basename "$L10N_SRC")"
 
 # Desktop entry (generated here so the AppImage Icon= matches the icon basename).
 install -d "$APPDIR/usr/share/applications"

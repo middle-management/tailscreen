@@ -75,7 +75,9 @@ Three consequences worth knowing:
   the bundle would abort on launch instead of rendering in English. Not finding
   the catalog is an ordinary outcome here — the table stays empty and every key
   resolves to itself. The packaging scripts assert the bundle's presence
-  precisely *because* its absence is silent at runtime.
+  precisely *because* its absence is silent at runtime. The bundle is matched
+  by the `_TailscreenL10n.bundle` SUFFIX, never by full name: SwiftPM derives
+  the other half from the package and it is not stable across toolchains.
 - **Substitution is hand-written, not `String(format:)`.** A translation has to
   be able to reorder values (`%1$@`, `%2$lld`) — for several languages that's the
   only grammatical option — and positional support off Darwin is thin. And

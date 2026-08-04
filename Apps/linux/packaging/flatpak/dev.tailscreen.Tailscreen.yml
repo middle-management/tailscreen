@@ -68,9 +68,10 @@ modules:
         /app/bin/tailscreen
       # The string catalog, beside the binary: LocalizationCatalog searches the
       # executable's own directory, so /app/bin is where it belongs. Without it
-      # the app is silently English-only.
-      - cp -R Apps/linux/.build/release/TailscreenL10n_TailscreenL10n.bundle
-        /app/bin/TailscreenL10n_TailscreenL10n.bundle
+      # the app is silently English-only. Globbed rather than named in full —
+      # SwiftPM derives the prefix of `<something>_TailscreenL10n.bundle` from
+      # the package and it is not stable across toolchains.
+      - cp -R Apps/linux/.build/release/*_TailscreenL10n.bundle /app/bin/
       - install -Dm644 Apps/linux/packaging/flatpak/dev.tailscreen.Tailscreen.desktop
         /app/share/applications/dev.tailscreen.Tailscreen.desktop
       - install -Dm644 Apps/linux/packaging/flatpak/dev.tailscreen.Tailscreen.metainfo.xml

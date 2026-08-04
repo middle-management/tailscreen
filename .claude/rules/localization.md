@@ -48,9 +48,11 @@ package README for the mechanism and for why it isn't `String(localized:)`.
 ## Pitfalls
 
 - **A new string renders in English on Linux/Windows but works on macOS** —
-  the resource bundle didn't ship. The catalog is found beside the executable
-  (`TailscreenL10n_TailscreenL10n.bundle`); a missing bundle degrades silently
-  to the English keys rather than failing, which is why every packaging path
+  the resource bundle didn't ship. The catalog is found beside the executable,
+  in a `…_TailscreenL10n.bundle` directory (matched by SUFFIX — SwiftPM derives
+  the prefix from the package and it is not stable across toolchains); a
+  missing bundle degrades silently to the English keys rather than failing,
+  which is why every packaging path
   (`app-macos.yml`, `app-linux.yml`, `scripts/windows/stage-app.sh`, the
   AppImage script, the Flatpak manifest) hard-fails when it can't find it. Add
   the copy to any new packaging path you write.

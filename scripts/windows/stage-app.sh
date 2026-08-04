@@ -53,12 +53,17 @@ cp "$probe" dist/tsnet-probe.exe
 # Hard failure, deliberately, and for the same reason the probe check above is:
 # a missing catalog does not break the app, it silently makes it English-only,
 # so there is no downstream symptom for anyone to notice.
-l10n_bundle="TailscreenL10n_TailscreenL10n.bundle"
-l10n_src=$(find Apps/windows/.build -path '*/release/*' -name "$l10n_bundle" -type d | head -1)
+# Matched by SUFFIX: SwiftPM names it `<something>_TailscreenL10n.bundle` and
+# derives the first half from the package, which is not stable across
+# toolchains — a hard-coded full name is what failed the first Linux run of the
+# equivalent step.
+l10n_src=$(find Apps/windows/.build -path '*/release/*' -name '*_TailscreenL10n.bundle' -type d | head -1)
 if [ -z "$l10n_src" ]; then
-  echo "no $l10n_bundle produced" >&2
+  echo "no *_TailscreenL10n.bundle produced" >&2
+  find Apps/windows/.build -path '*/release/*' -maxdepth 3 -name '*.bundle' -type d >&2 || true
   exit 1
 fi
+l10n_bundle=$(basename "$l10n_src")
 rm -rf "dist/$l10n_bundle"
 cp -R "$l10n_src" "dist/$l10n_bundle"
 

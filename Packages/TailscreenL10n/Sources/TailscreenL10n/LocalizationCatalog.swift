@@ -16,11 +16,17 @@ import Synchronization
 final class LocalizationCatalog: @unchecked Sendable {
     static let shared = LocalizationCatalog()
 
-    /// Name SwiftPM gives the generated resource bundle: `<package>_<target>`.
-    /// Both halves are `TailscreenL10n`, and both are pinned by
-    /// `Package.swift` — renaming either without renaming this is caught by
-    /// `LocalizationBundleTests`.
-    static let bundleDirectoryName = "TailscreenL10n_TailscreenL10n.bundle"
+    /// The half of SwiftPM's generated bundle name we actually own.
+    ///
+    /// It names bundles `<something>_<target>.bundle`, and the `<something>`
+    /// is derived from the package in a way that has not been stable across
+    /// toolchains — assuming `TailscreenL10n_TailscreenL10n.bundle` is what
+    /// broke the first Linux packaging run. Matching the suffix, and then
+    /// falling back to *any* `.bundle` that actually holds `.lproj`s, means
+    /// being right about the catalog rather than about the name.
+    static let bundleNameSuffix = "_TailscreenL10n.bundle"
+    /// The conventional full name, for docs and tests.
+    static let bundleDirectoryName = "TailscreenL10n\(bundleNameSuffix)"
     static let catalogFileName = "Localizable.strings"
     /// The development language — the language the keys themselves are in, and
     /// so the one language that needs no table.
@@ -122,11 +128,25 @@ final class LocalizationCatalog: @unchecked Sendable {
     /// look.
     static func resourceRoot() -> URL? {
         for candidate in searchDirectories() {
-            let nested = candidate.appendingPathComponent(bundleDirectoryName)
-            if containsLocalizations(nested) { return nested }
+            // The directory itself, for a layout that drops the `.lproj`s
+            // straight beside the binary.
             if containsLocalizations(candidate) { return candidate }
+            if let bundle = resourceBundle(in: candidate) { return bundle }
         }
         return nil
+    }
+
+    /// The generated resource bundle inside `directory`, found by suffix
+    /// rather than by full name — and confirmed by looking inside it, so a
+    /// sibling bundle (the mac app ships two) can't be mistaken for this one.
+    private static func resourceBundle(in directory: URL) -> URL? {
+        let bundles =
+            ((try? FileManager.default.contentsOfDirectory(
+                at: directory, includingPropertiesForKeys: nil)) ?? [])
+            .filter { $0.pathExtension == "bundle" }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        let ours = bundles.filter { $0.lastPathComponent.hasSuffix(bundleNameSuffix) }
+        return (ours + bundles).first(where: containsLocalizations)
     }
 
     private static func searchDirectories() -> [URL] {
