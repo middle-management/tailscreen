@@ -157,8 +157,10 @@ class AppState: ObservableObject {
     /// notification — the source IP is the same non-spoofable anchor the
     /// admission gate trusts. IPs are pruned when their request leaves the
     /// pending snapshot (deny/grant/release/disconnect), so a genuine
-    /// re-request notifies again; see `controlRequestNotificationDecision`.
-    /// Cleared on `stopSharing`.
+    /// re-request notifies again; the prune itself lives in
+    /// `SharerNoticeDecision.noticesToPost`, and the key choice is documented
+    /// on `noticeCandidates(_: [ControlRequestInfo])`. Cleared on
+    /// `stopSharing`.
     private var notifiedControlRequestIPs: Set<String> = []
 
     /// Highest grant-change generation applied so far (see the server's
@@ -266,7 +268,28 @@ class AppState: ObservableObject {
     /// who briefly drops and rejoins (different ephemeral port) gets a
     /// fresh ping, but hostname-resolution updates to the same viewer
     /// don't double-fire. Cleared on `stopSharing`.
+    ///
+    /// One of four notified-sets, all now carried through the same
+    /// `SharerNoticeDecision.noticesToPost` rather than through four
+    /// hand-written diffs. Only the *key* differs per set, and each choice is
+    /// documented where the projection is made (`noticeCandidates`).
     private var notifiedViewerIDs: Set<String> = []
+
+    /// Pending-viewer IDs already announced, same `"ip:port"` key and same
+    /// forget-on-leave rule as `notifiedViewerIDs`. Previously this path
+    /// diffed the incoming snapshot against the published `pendingViewers`
+    /// array instead of keeping a set — which happened to behave the same and
+    /// was the third hand-rolled copy of one decision. Cleared on
+    /// `stopSharing`.
+    private var notifiedPendingViewerIDs: Set<String> = []
+
+    /// Request-to-share source keys already announced. Keyed by the same
+    /// spoof-resistant `PendingRequest.sourceKey` the banner list coalesces
+    /// on, so a peer retrying while its first ask is still on screen replaces
+    /// one row and mints no second banner. Not cleared on `stopSharing`:
+    /// these arrive while the machine is *idle* and have nothing to do with a
+    /// share's lifetime — they prune themselves when the request is answered.
+    private var notifiedShareRequestKeys: Set<String> = []
 
     /// Source `ip:port` per inbound request-to-share connection UUID, so
     /// accepting a request can one-time pre-approve the requester's IP.
@@ -1067,10 +1090,10 @@ class AppState: ObservableObject {
         // strands viewers without ever learning why. The answer arrives
         // asynchronously and lands on `notificationsDenied`, which the sharing
         // card watches.
-        ViewerJoinNotifier.shared.onAuthorizationChanged = { [weak self] state in
+        SharerNoticeCenter.shared.onAuthorizationChanged = { [weak self] state in
             self?.notificationsDenied = (state == .denied)
         }
-        ViewerJoinNotifier.shared.refreshAuthorization()
+        SharerNoticeCenter.shared.refreshAuthorization()
         // Decode the picker selection so the sharer overlay (built lazily
         // when the first annotation arrives or "Draw on Screen" is toggled)
         // can scope its panel to the shared window/app instead of the
@@ -1392,8 +1415,19 @@ class AppState: ObservableObject {
         controlGrantee = nil
         revokeControlHotkey = nil
         lastControlGrantGeneration = 0
+        // Take the actionable banners down with the share. Both asks are
+        // answerable only by a running server, so once it is gone their
+        // buttons can do nothing — and an Accept still sitting in Notification
+        // Center after the sharer pressed Stop is the surface contradicting the
+        // app. Withdrawn before the sets are cleared, since the sets are the
+        // record of what was posted.
+        SharerNoticeCenter.shared.withdraw(
+            kind: .viewerPending, identities: Array(notifiedPendingViewerIDs))
+        SharerNoticeCenter.shared.withdraw(
+            kind: .controlRequested, identities: Array(notifiedControlRequestIPs))
         notifiedControlRequestIPs.removeAll()
         notifiedViewerIDs.removeAll()
+        notifiedPendingViewerIDs.removeAll()
         pendingPreApprovedIPs.removeAll()
         queuedPolicyIntents.removeAll()
         tailscaleIPs = []
@@ -2601,7 +2635,34 @@ class AppState: ObservableObject {
         if let sourceAddr {
             requestSourceAddrs[connectionID] = sourceAddr
         }
-        TailscreenUserNotifications.shared.postRequestToShareNotification(fromHostname: hostname)
+        refreshShareRequestNotices()
+    }
+
+    /// Post and withdraw request-to-share notices to match the live banner
+    /// rows — the fourth call site onto the one shared decision.
+    ///
+    /// Identity is `PendingRequest.sourceKey`, which is exactly the key
+    /// `handleRequestToShare` already coalesces the banner list on: the
+    /// requester's source IP, never the wire-claimed hostname an attacker can
+    /// vary at will. Keying the notices the same way means a peer retrying
+    /// while its first ask is still on screen replaces one row and mints no
+    /// second banner, and the forget-on-leave prune re-announces a genuinely
+    /// fresh ask after the last one was answered.
+    ///
+    /// Called on arrival and on answer, because both edit the list — the
+    /// notice for a request answered in the app has to come down with it.
+    private func refreshShareRequestNotices() {
+        let candidates = metadataService.pendingRequests.map {
+            NoticeCandidate(identity: $0.sourceKey, label: $0.fromHostname)
+        }
+        let answered = SharerNoticeDecision.noticesToWithdraw(
+            candidates: candidates, alreadyNotified: notifiedShareRequestKeys)
+        let decision = SharerNoticeDecision.noticesToPost(
+            kind: .requestToShare, candidates: candidates,
+            alreadyNotified: notifiedShareRequestKeys)
+        notifiedShareRequestKeys = decision.notified
+        SharerNoticeCenter.shared.withdraw(kind: .requestToShare, identities: Array(answered))
+        post(decision.post)
     }
 
     /// Answer an incoming request-to-share banner. Sends the accept /
@@ -2633,6 +2694,10 @@ class AppState: ObservableObject {
         if let connectionID = request.connectionID {
             requestSourceAddrs.removeValue(forKey: connectionID)
         }
+        // The row is gone; its banner must go with it. Also re-arms the notice
+        // for this source key, so a peer that asks again after being declined
+        // is announced again.
+        refreshShareRequestNotices()
     }
 
     /// Spin up an IPN-bus watcher whose only job is to open the
@@ -3018,48 +3083,91 @@ class AppState: ObservableObject {
         alert.runModal()
     }
 
-    /// Diff the new viewer roster against the previous one to fire a
-    /// per-join and per-leave user notification exactly once per `id`. Reuses
-    /// `notifiedViewerIDs` so a hostname-resolution update that
-    /// re-emits the same `id` doesn't ping twice. Notifications are
-    /// best-effort: dev builds without a bundle ID won't be authorized
-    /// by macOS to display banners, but the in-popover pending list
-    /// still works.
+    // MARK: - Sharer notices
+
+    /// Whether a capture is running — the sound gate for every notice we post.
+    /// See `SharerNoticeDecision.playsSound`: a ding during a share is played
+    /// by the notification daemon, which the "exclude our own audio" flag does
+    /// not cover, so every viewer hears it.
+    private var isCapturing: Bool { sharingState != .idle }
+
+    /// Deliver a batch of notices. The single place `SharerNoticeCenter` is
+    /// touched from the notice paths, so the sound gate can't be forgotten at
+    /// one of them.
+    private func post(_ notices: [SharerNotice]) {
+        for notice in notices {
+            SharerNoticeCenter.shared.post(notice, isCapturing: isCapturing)
+        }
+    }
+
+    /// Project the connected-viewer roster onto notice candidates.
+    ///
+    /// Keyed by the server's `"ip:port"` id, so a viewer who drops and rejoins
+    /// on a fresh ephemeral port is announced again — an arrival is news each
+    /// time it happens. That is the **opposite** choice from the control-request
+    /// projection below, and the reason `SharerNoticeDecision` takes an opaque
+    /// string instead of picking a key for its callers.
+    nonisolated static func noticeCandidates(_ viewers: [ViewerInfo]) -> [NoticeCandidate] {
+        viewers.map { NoticeCandidate(identity: $0.id, label: $0.hostname ?? $0.tailscaleIP) }
+    }
+
+    /// Project the approval gate onto notice candidates — same `"ip:port"` key
+    /// and same reasoning as the roster.
+    nonisolated static func noticeCandidates(_ pending: [PendingViewerInfo]) -> [NoticeCandidate] {
+        pending.map { NoticeCandidate(identity: $0.id, label: $0.hostname ?? $0.tailscaleIP) }
+    }
+
+    /// Project live control requests onto notice candidates.
+    ///
+    /// Keyed by viewer **IP**, not by the TCP `connectionID` the grant itself
+    /// uses. Every reconnect mints a fresh connection UUID, so a connection-keyed
+    /// notice is a spam vector: drop, redial, and the sharer gets another banner
+    /// for a request they are already looking at. The IP is the same
+    /// non-spoofable anchor the admission gate trusts, and it collapses parallel
+    /// connections from one machine into one ask.
+    nonisolated static func noticeCandidates(_ requests: [ControlRequestInfo]) -> [NoticeCandidate] {
+        requests.map { NoticeCandidate(identity: $0.viewerIP, label: $0.displayName) }
+    }
+
+    /// Diff the new viewer roster to fire a per-join and per-leave
+    /// notification exactly once per `id`. Notifications are best-effort: dev
+    /// builds without a bundle ID won't be authorized by macOS to display
+    /// banners, but the in-app roster still works.
     private func handleViewersChanged(_ viewers: [ViewerInfo]) {
-        let previousIDs = Set(currentViewers.map { $0.id })
         let newIDs = Set(viewers.map { $0.id })
-        let joinedIDs = newIDs.subtracting(previousIDs)
-        // Departure labels must be read from the OUTGOING roster: a viewer who
-        // left is, by definition, absent from `viewers`.
-        //
-        // Two gates, both there to stop this being noise rather than news.
-        // Only viewers whose *arrival* was announced get a departure — a
-        // "left" with no matching "joined" is a non-sequitur. And nothing is
-        // posted while the share is being torn down: `await server?.stop()`
-        // expels every viewer, which would otherwise fire one banner per
-        // viewer at the exact moment the sharer has already decided to stop.
-        let departedLabels =
+        // Departures are the one thing `noticesToPost` cannot derive, because
+        // it only ever posts about rows it can see and a viewer who left is by
+        // definition absent from `viewers`. So they are read from the OUTGOING
+        // roster, behind the two gates that keep them news rather than noise:
+        // only viewers whose *arrival* was announced get a departure — a "left"
+        // with no matching "joined" is a non-sequitur — and nothing is posted
+        // while the share is being torn down, since `await server?.stop()`
+        // expels every viewer at once and would otherwise fire one banner per
+        // viewer at the exact moment the sharer already decided to stop.
+        let departed: [SharerNotice] =
             isStoppingShare
             ? []
             : currentViewers
                 .filter { !newIDs.contains($0.id) && notifiedViewerIDs.contains($0.id) }
-                .map { $0.hostname ?? $0.tailscaleIP }
+                .map {
+                    SharerNotice(
+                        kind: .viewerLeft, identity: $0.id,
+                        label: $0.hostname ?? $0.tailscaleIP)
+                }
         currentViewers = viewers
         refreshRememberedDisplayNames(stableIDHostnamePairs: viewers.map { ($0.stableID, $0.hostname) })
         applyQueuedPolicyIntents(
             rows: viewers.map { (id: $0.id, stableID: $0.stableID, displayName: $0.hostname ?? $0.tailscaleIP) })
-        // Forget IDs that have left so a reconnect from the same
-        // address fires a new notification.
-        notifiedViewerIDs.formIntersection(newIDs)
-        for label in departedLabels {
-            ViewerJoinNotifier.shared.postLeft(label: label)
-        }
-        for id in joinedIDs where !notifiedViewerIDs.contains(id) {
-            notifiedViewerIDs.insert(id)
-            guard let viewer = viewers.first(where: { $0.id == id }) else { continue }
-            let label = viewer.hostname ?? viewer.tailscaleIP
-            ViewerJoinNotifier.shared.postJoined(label: label)
-        }
+        // The shared decision does both halves: it prunes IDs that have left
+        // (so a reconnect from the same address is announced again) and posts
+        // only the arrivals not already announced.
+        let decision = SharerNoticeDecision.noticesToPost(
+            kind: .viewerJoined,
+            candidates: Self.noticeCandidates(viewers),
+            alreadyNotified: notifiedViewerIDs)
+        notifiedViewerIDs = decision.notified
+        post(departed)
+        post(decision.post)
     }
 
     /// Sync the published pending list and fire a "wants to view"
@@ -3067,63 +3175,48 @@ class AppState: ObservableObject {
     /// of whether the menu popover is open — that's the whole point of
     /// the approval gate.
     private func handlePendingViewersChanged(_ pending: [PendingViewerInfo]) {
-        let previousIDs = Set(pendingViewers.map { $0.id })
-        let newIDs = Set(pending.map { $0.id })
-        let arrivedIDs = newIDs.subtracting(previousIDs)
         pendingViewers = pending
         refreshRememberedDisplayNames(stableIDHostnamePairs: pending.map { ($0.stableID, $0.hostname) })
         applyQueuedPolicyIntents(
             rows: pending.map { (id: $0.id, stableID: $0.stableID, displayName: $0.hostname ?? $0.tailscaleIP) })
-        for id in arrivedIDs {
-            guard let viewer = pending.first(where: { $0.id == id }) else { continue }
-            let label = viewer.hostname ?? viewer.tailscaleIP
-            ViewerJoinNotifier.shared.postPending(label: label)
-        }
+        let candidates = Self.noticeCandidates(pending)
+        let answered = SharerNoticeDecision.noticesToWithdraw(
+            candidates: candidates, alreadyNotified: notifiedPendingViewerIDs)
+        let decision = SharerNoticeDecision.noticesToPost(
+            kind: .viewerPending, candidates: candidates,
+            alreadyNotified: notifiedPendingViewerIDs)
+        notifiedPendingViewerIDs = decision.notified
+        // Whoever left the gate — accepted here, denied here, or gave up —
+        // takes their banner with them. An Accept/Deny left in Notification
+        // Center for somebody already watching can only be pressed to no
+        // effect, which reads as a broken button rather than a stale one.
+        SharerNoticeCenter.shared.withdraw(kind: .viewerPending, identities: Array(answered))
+        post(decision.post)
     }
 
     // MARK: - Remote control (sharer side)
 
-    /// Pure notification-dedupe decision: which of `requests` should fire an
-    /// OS notification, given the IPs already notified. One notification per
-    /// viewer **IP** per *pending episode* — connectionID-keyed dedupe was
-    /// spammable, because every reconnect mints a fresh UUID; keying by IP
-    /// collapses parallel connections and refreshes of a still-pending
-    /// request into a single notification. An IP whose request has left the
-    /// pending snapshot (denied, granted, released, or disconnected) is
-    /// pruned, so a *genuine* re-request notifies again — the same
-    /// forget-on-leave semantics as `notifiedViewerIDs` in
-    /// `handleViewersChanged`. The residual reconnect-loop exposure (drop
-    /// connection, re-request, repeat) is accepted; the hard stop for that
-    /// is the "Allow control requests" toggle. The pending row in the
-    /// popover still shows every live request; only the notification is
-    /// deduped. Extracted for `RemoteControlPolicyTests`.
-    nonisolated static func controlRequestNotificationDecision(
-        requests: [ControlRequestInfo],
-        previouslyNotifiedIPs: Set<String>
-    ) -> (notify: [ControlRequestInfo], notifiedIPs: Set<String>) {
-        // Forget IPs with no live request so their next ask re-notifies.
-        var notifiedIPs = previouslyNotifiedIPs.intersection(requests.map(\.viewerIP))
-        var notify: [ControlRequestInfo] = []
-        for request in requests where !notifiedIPs.contains(request.viewerIP) {
-            notifiedIPs.insert(request.viewerIP)
-            notify.append(request)
-        }
-        return (notify, notifiedIPs)
-    }
-
     /// Sync the published control-request list and fire a "wants control"
     /// notification for newly-arrived requests, whether or not the popover is
     /// open — control is high-stakes, so the prompt shouldn't be missable.
-    /// Notifications are deduped per viewer IP per share (see
-    /// `controlRequestNotificationDecision`).
+    ///
+    /// One notification per viewer **IP** per *pending episode*, and the whole
+    /// rule now comes from `SharerNoticeDecision` — this path used to carry its
+    /// own copy of it. The residual reconnect-loop exposure (drop connection,
+    /// re-request, repeat) is accepted; the hard stop for that is the "Allow
+    /// control requests" toggle. The pending row in the app still shows every
+    /// live request; only the notification is deduped.
     private func handleControlRequestsChanged(_ requests: [ControlRequestInfo]) {
         controlRequests = requests
-        let decision = Self.controlRequestNotificationDecision(
-            requests: requests, previouslyNotifiedIPs: notifiedControlRequestIPs)
-        notifiedControlRequestIPs = decision.notifiedIPs
-        for request in decision.notify {
-            ViewerJoinNotifier.shared.postControlRequested(label: request.displayName)
-        }
+        let candidates = Self.noticeCandidates(requests)
+        let answered = SharerNoticeDecision.noticesToWithdraw(
+            candidates: candidates, alreadyNotified: notifiedControlRequestIPs)
+        let decision = SharerNoticeDecision.noticesToPost(
+            kind: .controlRequested, candidates: candidates,
+            alreadyNotified: notifiedControlRequestIPs)
+        notifiedControlRequestIPs = decision.notified
+        SharerNoticeCenter.shared.withdraw(kind: .controlRequested, identities: Array(answered))
+        post(decision.post)
     }
 
     /// Grant remote control to the requesting viewer on `connectionID`. The
@@ -3224,6 +3317,91 @@ class AppState: ObservableObject {
         viewerControlInput?.setCapturing(capturing)
         // While controlling, pointer/keys drive input, not drawing.
         viewerOverlay?.model.isInputEnabled = !capturing
+    }
+
+    // MARK: - Answering a notification
+
+    /// Act on a notification button press, decoded by
+    /// `TailscreenNotificationDelegate.route`.
+    ///
+    /// **Every case resolves the identity against the live list first.** A
+    /// banner outlives the thing it is about — it sits in Notification Center
+    /// until dismissed, which can be an hour after the viewer gave up — so "the
+    /// row is gone" is the ordinary case here, not an error, and it has to be a
+    /// no-op. The alternative is an Accept aimed at whoever holds that address
+    /// now, which behind one NAT is a different machine; this is the same
+    /// reasoning that makes `SharerAccessCoordinator` prune its queued intents.
+    ///
+    /// The press is deliberately routed into the *same* methods the in-app
+    /// buttons call rather than to the server directly, so a decision made from
+    /// a banner and one made in the window cannot diverge — including the
+    /// pre-approval and policy-persistence side effects hanging off them.
+    func handleNoticeAction(kind: SharerNoticeKind, identity: String, action: NoticeAction) {
+        switch kind {
+        case .viewerPending:
+            guard pendingViewers.contains(where: { $0.id == identity }) else {
+                logger.log("Notification \(action.rawValue) for \(identity): no longer at the gate")
+                return
+            }
+            if action == .approve {
+                approvePendingViewer(identity)
+            } else {
+                denyPendingViewer(identity)
+            }
+        case .controlRequested:
+            handleControlNoticeAction(viewerIP: identity, action: action)
+        case .requestToShare:
+            let live = metadataService.pendingRequests.first { $0.sourceKey == identity }
+            guard let request = live else {
+                logger.log("Notification \(action.rawValue) for \(identity): request already gone")
+                return
+            }
+            respondToShareRequest(request, accepted: action == .approve)
+        case .viewerJoined, .viewerLeft:
+            // Reports, not asks — `SharerNoticeKind.actions` gives them no
+            // buttons, so there is nothing that could have been pressed.
+            break
+        }
+    }
+
+    /// The control-request half, which is the one that doesn't map 1:1.
+    ///
+    /// The notice is keyed by viewer IP (see `noticeCandidates`) but a grant is
+    /// keyed by the TCP connection, so the press has to find the live request
+    /// or requests behind that address. Denying applies to all of them — the
+    /// banner named a machine, not a socket, and leaving a sibling request
+    /// pending after the sharer said no is not what they answered. Granting
+    /// does not: control of the Mac goes to exactly one connection, and picking
+    /// one of two arbitrarily is a coin flip over who gets the pointer. That
+    /// case opens the list instead, where the rows are distinguishable.
+    private func handleControlNoticeAction(viewerIP: String, action: NoticeAction) {
+        let matches = controlRequests.filter { $0.viewerIP == viewerIP }
+        guard !matches.isEmpty else {
+            logger.log("Notification \(action.rawValue) for \(viewerIP): request already gone")
+            return
+        }
+        guard action == .approve else {
+            for request in matches { denyRemoteControl(request.id) }
+            return
+        }
+        guard matches.count == 1, let request = matches.first else {
+            logger.log("Grant from notification is ambiguous (\(matches.count) live requests from \(viewerIP))")
+            presentNoticeSurface(kind: .controlRequested)
+            return
+        }
+        grantRemoteControl(request.id)
+    }
+
+    /// The banner body was clicked rather than one of its buttons.
+    ///
+    /// That is not an answer, so nothing is decided on the sharer's behalf —
+    /// it opens the surface carrying the decision and lets them look at it.
+    /// The hub window is always the right destination: every prompt that
+    /// decides something about a person renders there as well as in the
+    /// popover, and unlike the popover it can be opened programmatically.
+    func presentNoticeSurface(kind: SharerNoticeKind) {
+        logger.log("Notification body clicked (\(kind.rawValue)) — opening the hub")
+        presentMainWindow()
     }
 
     /// Admit a pending viewer — hands off to the live server which

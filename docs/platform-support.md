@@ -183,10 +183,10 @@ Two things behind the ✅s are worth knowing:
 | Connection stats overlay | ✅ | ✅ | ✅ |
 | Localized strings | ✅ | ✅ | ✅ |
 | **Notified when a viewer is waiting for approval** | ✅ | ✅ | ⚠️ MSIX only |
-| Answer that prompt from the notification | ❌ | ✅ | ⚠️ MSIX only, unverified |
+| Answer that prompt from the notification | ✅ | ✅ | ⚠️ MSIX only, unverified |
 | Told when notifications are switched off | ✅ | ✅ | ✅ |
 | Notified when a viewer joins / leaves | ✅ | ✅ | ⚠️ MSIX only |
-| **Outline around what's being captured** | ✅ | ❌ | ⚠️ WGC's own, unconfirmed |
+| **Outline around what's being captured** | ✅ | ⚠️ X11 display shares | ⚠️ WGC's own, unconfirmed |
 | Sharing controls outside the main window | ✅ menubar | ❌ | ❌ |
 | Mute / unmute from outside the window | ✅ | ✅ hotkey | ✅ hotkey |
 | Toggle sharer drawing from outside the window | ✅ | ❌ | ❌ |
@@ -213,14 +213,23 @@ your viewers. Every mid-share action costs an interruption the audience can see.
 **Notifications used to be the worst of these gaps, and are now the most
 uneven.** Approval defaults *on*, so a sharer who isn't watching the window
 silently strands whoever tries to connect; there is nothing to poll for and no
-way to find out. All three platforms now post — the *decisions* behind them
-(what to say, when, when to take it back) are one shared, tested layer — but
-what reaches you differs:
+way to find out. All three platforms now post, and the *decisions* behind them
+— what to say, when, when to take it back — are one shared, tested layer, so
+they can't drift apart. Every ask carries Accept / Deny you answer without
+leaving what you're doing, the two that strand somebody mid-share break through
+Do Not Disturb and the reports don't, and nothing dings while a share is
+running, because a notification sound is played by another process and would go
+out with your shared system audio. What differs is what each platform can
+actually deliver:
 
-- **Linux** posts over `org.freedesktop.Notifications`, with Accept/Deny
-  buttons that answer through exactly the same methods the window's buttons do.
-  A daemon that can't render buttons is asked first, and the wording changes to
-  say where to answer instead.
+- **macOS** breaks through Focus for the two mid-share asks, reads back whether
+  you've turned notifications off, and takes a banner down again once you
+  answer in the app — an Accept that could only be a no-op reads as a broken
+  button rather than a stale one. Needs the bundled app: `make run` output has
+  no bundle id, and posts nothing at all.
+- **Linux** posts over `org.freedesktop.Notifications`. A daemon that can't
+  render buttons is asked first, and the wording changes to say where to answer
+  instead.
 - **Windows** posts the same set through the Windows App SDK — but only when
   the app can register with the notification platform, which today means the
   **MSIX**. The zip ships a self-contained runtime that deliberately omits the
@@ -228,15 +237,15 @@ what reaches you differs:
   the share card* rather than going quiet. The buttons and the press that comes
   back are wired, and are the one part of this no CI anywhere can verify:
   nothing in the project posts a Windows toast that a machine then observes.
-- **macOS** breaks through Focus for the two mid-share asks and reads back
-  whether you've turned notifications off — but its notifications still carry
-  no *actions*, so you are told and then you go to the app.
 
 **"Am I still sharing?" is a different question, and an outline answers it
 better than an icon.** A border drawn around the captured region says what a
 status glyph can't: not that a share is running somewhere, but that *this* is
-what viewers can see. Windows already has one and didn't have to build it — WGC
-draws its own capture border unless an app opts out, and ours doesn't.
+what viewers can see. macOS draws one for every share kind; Linux draws one for
+X11 display shares and deliberately none for a portal share, where it can't know
+the captured region and a wrong border is worse than none. Windows didn't have
+to build one — WGC draws its own capture border unless an app opts out, and ours
+doesn't (still unconfirmed on a real desktop).
 
 The capabilities behind the remaining rows now exist everywhere — microphone
 capture and the click-taking sharer overlay both landed — so what's left

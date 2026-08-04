@@ -56,8 +56,17 @@ public enum SharerNoticeText {
     /// Action keys. Constants rather than literals because they cross a
     /// process boundary — the daemon hands the key back verbatim, and a typo
     /// on one side is a button that does nothing.
-    public static let approveKey = "approve"
-    public static let denyKey = "deny"
+    ///
+    /// Derived from `NoticeAction` rather than spelled out, because the way
+    /// back is `NoticeAction(rawValue:)` — a host puts one of these on a
+    /// button and gets a `NoticeAction` out the other side. Two independent
+    /// literals for one string would work on the day they were written and
+    /// then quietly stop routing the moment either moved, with no error
+    /// anywhere. The macOS backend takes the same keys straight off
+    /// `NoticeAction.rawValue`; this is the same constant under the name the
+    /// freedesktop renderer needs it by.
+    public static let approveKey = NoticeAction.approve.rawValue
+    public static let denyKey = NoticeAction.deny.rawValue
 
     /// What to say when the buttons cannot be shown.
     ///

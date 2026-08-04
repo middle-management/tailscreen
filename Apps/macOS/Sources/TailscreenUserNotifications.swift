@@ -1,18 +1,22 @@
 import Foundation
 import UserNotifications
 
-/// The app's `UNUserNotificationCenterDelegate`.
+/// The app's `UNUserNotificationCenterDelegate`, and the place a notification
+/// button press comes back to.
 ///
-/// Without one, a notification posted while Tailscreen is frontmost displays
-/// **nothing at all** — the system's default for a foreground app is to
-/// suppress it, and `add(_:)` reports success either way. There was no delegate
-/// anywhere in the target, so every post made while the user had the app in
-/// front was silently dropped: exactly the moment someone has just clicked the
-/// menubar item and a viewer arrives.
+/// Without a delegate, a notification posted while Tailscreen is frontmost
+/// displays **nothing at all** — the system's default for a foreground app is
+/// to suppress it, and `add(_:)` reports success either way. There was no
+/// delegate anywhere in the target, so every post made while the user had the
+/// app in front was silently dropped: exactly the moment someone has just
+/// clicked the menubar item and a viewer arrives.
 ///
-/// This is also where a notification *action* reports back
-/// (`didReceive response:`) once the approve/deny buttons land, so the object
-/// is needed regardless of the foreground case.
+/// The same object receives `didReceive response:`, which is the only way an
+/// actionable notification reports which button was pressed. That half is
+/// deliberately thin — it turns two opaque strings back into a
+/// `(SharerNoticeKind, identity, NoticeAction)` triple and hands it to
+/// `AppState`, which owns every one of those decisions already.
+///
 /// Stateless, so `@unchecked Sendable` costs nothing to guarantee — it exists
 /// only to satisfy the `static let shared` a delegate needs in order to be
 /// retained (`UNUserNotificationCenter.delegate` is weak).
@@ -28,10 +32,19 @@ final class TailscreenNotificationDelegate: NSObject, @unchecked Sendable {
 
     /// Install once at launch. No-op on unbundled builds, where
     /// `UNUserNotificationCenter.current()` raises rather than degrading.
+    ///
+    /// Registering the categories here rather than at first post is not
+    /// tidiness: a notification whose `categoryIdentifier` names a category
+    /// the system has not seen is delivered **without its buttons**, with no
+    /// error anywhere. Since categories are process-global state and posts can
+    /// arrive within a second of launch, the only safe time to register them
+    /// is before anything can post.
     @MainActor
     static func install() {
         guard Bundle.main.bundleIdentifier != nil else { return }
-        UNUserNotificationCenter.current().delegate = shared
+        let center = UNUserNotificationCenter.current()
+        center.delegate = shared
+        center.setNotificationCategories(SharerNoticeCenter.categories())
     }
 }
 
@@ -39,8 +52,8 @@ extension TailscreenNotificationDelegate: UNUserNotificationCenterDelegate {
     /// Show banners even when Tailscreen is the active app. `.list` keeps it
     /// in Notification Center so a sharer who looks away mid-share can still
     /// find out somebody is waiting; `.sound` is honoured only for posts that
-    /// asked for one, and the sharer-facing posts deliberately do not (see
-    /// `ViewerJoinNotifier.post`).
+    /// asked for one, and a post made during a share deliberately does not
+    /// (see `SharerNoticeDecision.playsSound`).
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification,
@@ -49,102 +62,61 @@ extension TailscreenNotificationDelegate: UNUserNotificationCenterDelegate {
     ) {
         completionHandler([.banner, .list, .sound])
     }
-}
 
-/// Posts macOS notifications for events that happen while the menubar
-/// popover is closed — primarily incoming request-to-share prompts, which
-/// otherwise sit invisible in `pendingRequests` until the user happens to
-/// open the popover.
-///
-/// Authorization is requested lazily on the first notification, so first
-/// launch stays prompt-free; a denied request just makes future posts no-op
-/// (the in-popover banner still surfaces the request).
-@MainActor
-final class TailscreenUserNotifications {
-    static let shared = TailscreenUserNotifications()
-
-    private enum AuthState {
-        case unknown, requesting, authorized, denied, unavailable
+    /// A button was pressed, or the banner itself was clicked or dismissed.
+    ///
+    /// Everything needed to route this is read out of `response` **before** the
+    /// hop to the MainActor: `UNNotificationResponse` is a non-`Sendable` class
+    /// and this callback arrives on UN's own queue, so only the two `String`s
+    /// cross. `completionHandler` is called synchronously rather than from
+    /// inside the `Task` for the same reason — it is not a `@Sendable` closure,
+    /// and the system only needs to know we accepted the response, not that we
+    /// finished acting on it.
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        let noticeID = response.notification.request.identifier
+        let actionIdentifier = response.actionIdentifier
+        Task { @MainActor in
+            TailscreenNotificationDelegate.route(
+                noticeID: noticeID, actionIdentifier: actionIdentifier)
+        }
+        completionHandler()
     }
 
-    private var authState: AuthState
-    private var pendingPostsAfterAuth: [() -> Void] = []
-
-    private init() {
-        // `UNUserNotificationCenter.current()` traps with "Bundle
-        // identifier nil" when called from an unbundled binary —
-        // happens with `make run` / `swift build` output, since those
-        // produce a plain Mach-O without an Info.plist. Detect that
-        // shape and mark notifications permanently unavailable so the
-        // in-popover banner remains the only surface; the bundled
-        // `Tailscreen.app` (release / install path) has a bundle id
-        // and works normally.
-        if Bundle.main.bundleIdentifier == nil {
-            self.authState = .unavailable
-        } else {
-            self.authState = .unknown
-        }
-    }
-
-    /// Post a "$hostname wants you to share" banner. If notification
-    /// authorization hasn't been requested yet, the request fires on this
-    /// call and the post is enqueued until the user responds. No-op on
-    /// unbundled binaries (see `init`).
-    func postRequestToShareNotification(fromHostname: String) {
-        let post = { [weak self] in
-            guard let self else { return }
-            guard self.authState == .authorized else { return }
-            let content = UNMutableNotificationContent()
-            content.title = L("Tailscreen request")
-            content.body = L("\(fromHostname) wants you to share your screen")
-            // Kept, unlike the sharer-facing posts in `ViewerJoinNotifier`:
-            // a request-to-share arrives while this machine is *idle*, so
-            // there is no capture running for the sound to leak into.
-            content.sound = .default
-            // Deliberately NOT `.timeSensitive`, unlike the two mid-share asks
-            // in `ViewerJoinNotifier`. This one arrives while the machine is
-            // *idle*: nobody is mid-flow, and an invitation has a natural retry
-            // — the peer asks again, or messages you. The others arrive while
-            // you are already sharing, with somebody watching a "waiting for
-            // approval" placard or unable to click anything.
-            //
-            // The mechanical argument matters more than the aesthetic one:
-            // Time Sensitive is revoked per *app*, not per notification. Every
-            // kind that claims the exemption without needing it raises the
-            // odds the user turns it off, which disarms the kinds that do.
-            content.interruptionLevel = .active
-            content.userInfo = ["fromHostname": fromHostname]
-            let request = UNNotificationRequest(
-                identifier: UUID().uuidString,
-                content: content,
-                trigger: nil
-            )
-            UNUserNotificationCenter.current().add(request) { _ in }
-        }
-
-        switch authState {
-        case .authorized:
-            post()
-        case .denied, .unavailable:
+    /// Turn the daemon's two strings back into a decision and deliver it.
+    ///
+    /// Three outcomes, and the split between the first two is the whole point
+    /// of keeping the action *key* distinct from the button *label*:
+    ///
+    ///   * one of our own keys → the sharer answered, so `AppState` acts on it;
+    ///   * the system's "user clicked the banner body" identifier → not an
+    ///     answer, so it opens the surface where the decision lives and lets
+    ///     them look at it first. This is the macOS spelling of what Windows
+    ///     carries as `WindowsToastPayload.openActionKey`, and it has to be
+    ///     checked *before* the key lookup — `action(forKey:)` would fold it
+    ///     into `.dismiss`, which is the right default for a key nobody
+    ///     recognises and the wrong one for a click we can explain;
+    ///   * anything else, including the system's dismiss identifier and any
+    ///     activation string this build did not mint → nothing at all. Swiping
+    ///     a banner away must never be recorded as a decision about a person.
+    ///
+    /// The lookup is `SharerNoticeText.action(forKey:)` — the same one the
+    /// freedesktop and Windows backends route through — and never a comparison
+    /// against a button's title, which is localized and would match in English
+    /// only.
+    @MainActor
+    static func route(noticeID: String, actionIdentifier: String) {
+        guard let decoded = SharerNotice.decodeID(noticeID) else { return }
+        guard let appState = ViewerCommands.shared.appState else { return }
+        if actionIdentifier == UNNotificationDefaultActionIdentifier {
+            appState.presentNoticeSurface(kind: decoded.kind)
             return
-        case .requesting:
-            pendingPostsAfterAuth.append(post)
-        case .unknown:
-            pendingPostsAfterAuth.append(post)
-            requestAuthorization()
         }
-    }
-
-    private func requestAuthorization() {
-        authState = .requesting
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { [weak self] granted, _ in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.authState = granted ? .authorized : .denied
-                let queued = self.pendingPostsAfterAuth
-                self.pendingPostsAfterAuth.removeAll()
-                for post in queued { post() }
-            }
-        }
+        let action = SharerNoticeText.action(forKey: actionIdentifier)
+        guard action != .dismiss else { return }
+        appState.handleNoticeAction(kind: decoded.kind, identity: decoded.identity, action: action)
     }
 }

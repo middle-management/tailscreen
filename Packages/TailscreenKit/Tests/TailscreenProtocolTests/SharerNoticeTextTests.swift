@@ -61,6 +61,21 @@ final class SharerNoticeTextTests: XCTestCase {
         }
     }
 
+    /// The two names for one string must stay one string.
+    ///
+    /// A host puts `approveKey` on a button and the daemon hands it back; the
+    /// way back is `NoticeAction(rawValue:)`. macOS reads its keys straight off
+    /// `NoticeAction.rawValue` and never touches this type — it localizes its
+    /// own labels — so if these two ever named different strings, freedesktop
+    /// buttons would post keys the router does not recognise and every press
+    /// would be dropped with no error anywhere.
+    func testTheActionKeysAreTheNoticeActionRawValues() {
+        XCTAssertEqual(SharerNoticeText.approveKey, NoticeAction.approve.rawValue)
+        XCTAssertEqual(SharerNoticeText.denyKey, NoticeAction.deny.rawValue)
+        XCTAssertEqual(NoticeAction(rawValue: SharerNoticeText.approveKey), .approve)
+        XCTAssertEqual(NoticeAction(rawValue: SharerNoticeText.denyKey), .deny)
+    }
+
     // MARK: No `actions` capability
 
     /// The buttons go, and the notice must say where to answer — otherwise it

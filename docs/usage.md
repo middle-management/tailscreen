@@ -140,7 +140,12 @@ reconnect and go through the normal approval flow again. To keep someone
 out for good, use **Deny & Block** instead.
 
 You also get a notification ("Viewer Wants to Connect") if the menubar
-isn't open. Remembered decisions live in **Settings → Viewers** under
+isn't open — with **Accept** and **Deny** on the banner itself, so you can
+answer without leaving what you're sharing. It breaks through Do Not Disturb
+and Focus, since someone is stuck behind it. Clicking the banner instead of a
+button just opens Tailscreen; swiping it away decides nothing.
+
+Remembered decisions live in **Settings → Viewers** under
 "Remembered viewers", where you can remove entries any time. They're keyed
 to the peer's stable Tailscale node identity, not its IP or hostname, so a
 renamed machine stays remembered.
@@ -154,9 +159,10 @@ stay blocked even then — the deny list outranks the toggle.
 The flow also works in reverse. Expand a peer's row in the Screens list
 and click **Ask to Share** to ask that peer to share *their* screen.
 Clicking it puts a banner in their Tailscreen — "*name* wants you to
-share", with **Share** and **Decline** buttons. If they hit Share, the
-picker opens on their machine, and you're automatically pre-approved for the
-share that follows — no second approval round-trip.
+share", with **Share** and **Decline** buttons — and a notification carrying
+the same two buttons, so they can answer without opening the app. If
+they hit Share, the picker opens on their machine, and you're automatically
+pre-approved for the share that follows — no second approval round-trip.
 
 You'll get one of three outcomes: **Request Accepted** ("…is choosing what
 to share" — click their row once their share is up), **Request Declined**,
@@ -243,8 +249,9 @@ window are injected on their machine. Click **Stop controlling** when
 you're done.
 
 **As the sharer:** a request shows up as "*name* wants control" with
-**Grant** and **Deny** buttons (plus a notification if the menubar is
-closed). Before you grant, read the caption:
+**Grant** and **Deny** buttons (plus a notification, carrying the same two
+buttons, if the menubar is closed — granting from the banner needs the Mac
+unlocked). Before you grant, read the caption:
 
 Granting gives full keyboard and mouse control of your entire computer —
 not just the shared window.

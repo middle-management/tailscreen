@@ -107,70 +107,59 @@ final class RemoteControlPolicyTests: XCTestCase {
         XCTAssertTrue(limiter.allow(nowNs: 1_000_000_001))
     }
 
-    // MARK: - Control-request notification dedupe (per viewer IP per share)
+    // MARK: - Control-request notification projection
 
     private func request(_ ip: String, id: UUID = UUID()) -> ControlRequestInfo {
         ControlRequestInfo(id: id, viewerIP: ip, hostname: nil, arrivedAt: Date())
     }
 
-    func testNotificationDedupeFiresOncePerPendingEpisode() {
+    /// The dedupe *rule* — once per pending episode, forgotten on leave — now
+    /// lives in `SharerNoticeDecision.noticesToPost` and is pinned by
+    /// `SharerNoticeTests` in the portable package, where Linux CI runs it.
+    /// What stays macOS's own decision, and is pinned here, is the **key** the
+    /// rule is applied to.
+    ///
+    /// Keying by viewer IP rather than by the TCP `connectionID` the grant
+    /// itself uses is the whole anti-spam property: every reconnect mints a
+    /// fresh connection UUID, so a connection-keyed notice re-fires on each
+    /// drop-and-redial for a request the sharer is already looking at.
+    func testControlNoticesAreKeyedByViewerIPNotConnection() {
         let first = request("100.64.0.7")
-        let initial = AppState.controlRequestNotificationDecision(
-            requests: [first], previouslyNotifiedIPs: [])
-        XCTAssertEqual(initial.notify.map(\.id), [first.id])
-        XCTAssertEqual(initial.notifiedIPs, ["100.64.0.7"])
+        let redial = request("100.64.0.7")
+        XCTAssertNotEqual(first.id, redial.id, "a redial mints a fresh connection id")
 
-        // A refresh/reconnect while the IP still has a live pending request
-        // (fresh connection UUID, same IP) must not re-notify. The
-        // connectionID-keyed dedupe this replaces notified on every one.
-        let respam = request("100.64.0.7")
-        let second = AppState.controlRequestNotificationDecision(
-            requests: [respam], previouslyNotifiedIPs: initial.notifiedIPs)
-        XCTAssertTrue(second.notify.isEmpty, "a still-pending IP must not re-notify")
-        XCTAssertEqual(second.notifiedIPs, ["100.64.0.7"])
+        let candidates = AppState.noticeCandidates([first, redial])
+        XCTAssertEqual(candidates.map(\.identity), ["100.64.0.7", "100.64.0.7"])
+
+        // Composed with the shared rule, the two collapse to one banner.
+        let decision = SharerNoticeDecision.noticesToPost(
+            kind: .controlRequested, candidates: candidates, alreadyNotified: [])
+        XCTAssertEqual(decision.post.count, 1)
+        XCTAssertEqual(decision.notified, ["100.64.0.7"])
     }
 
-    func testNotificationDedupeReNotifiesAfterRequestLeavesPending() {
-        // Deny / grant / release / disconnect all remove the request from
-        // the pending snapshot; the notified-IP set must forget the IP then,
-        // so a genuine re-request fires a fresh notification (same
-        // forget-on-leave semantics as the viewer-join notifications).
-        let first = request("100.64.0.7")
-        let initial = AppState.controlRequestNotificationDecision(
-            requests: [first], previouslyNotifiedIPs: [])
-        XCTAssertEqual(initial.notify.count, 1)
+    /// A request with no resolved hostname must still name something the
+    /// sharer can act on — an empty label in a banner asks them to grant
+    /// control of their Mac to nobody in particular.
+    func testControlNoticeLabelFallsBackToTheIP() {
+        XCTAssertEqual(AppState.noticeCandidates([request("100.64.0.7")]).first?.label, "100.64.0.7")
 
-        // The request is denied → snapshot no longer contains the IP.
-        let afterDeny = AppState.controlRequestNotificationDecision(
-            requests: [], previouslyNotifiedIPs: initial.notifiedIPs)
-        XCTAssertTrue(afterDeny.notify.isEmpty)
-        XCTAssertTrue(afterDeny.notifiedIPs.isEmpty, "an IP with no live request must be forgotten")
-
-        // A genuine re-request from the same viewer notifies again.
-        let again = request("100.64.0.7")
-        let third = AppState.controlRequestNotificationDecision(
-            requests: [again], previouslyNotifiedIPs: afterDeny.notifiedIPs)
-        XCTAssertEqual(third.notify.map(\.id), [again.id], "a re-request after deny must notify")
+        let named = ControlRequestInfo(
+            id: UUID(), viewerIP: "100.64.0.7", hostname: "wisp", arrivedAt: Date())
+        XCTAssertEqual(AppState.noticeCandidates([named]).first?.label, "wisp")
     }
 
-    func testNotificationDedupeStillNotifiesNewIPs() {
-        let known = request("100.64.0.7")
-        let newcomer = request("100.64.0.9")
-        let decision = AppState.controlRequestNotificationDecision(
-            requests: [known, newcomer], previouslyNotifiedIPs: ["100.64.0.7"])
-        XCTAssertEqual(decision.notify.map(\.viewerIP), ["100.64.0.9"])
-        XCTAssertEqual(decision.notifiedIPs, ["100.64.0.7", "100.64.0.9"])
-    }
-
-    func testNotificationDedupeNotifiesOneIPOncePerBatch() {
-        // Two live requests from the same IP in one snapshot (parallel
-        // connections): a single notification.
-        let a = request("100.64.0.7")
-        let b = request("100.64.0.7")
-        let decision = AppState.controlRequestNotificationDecision(
-            requests: [a, b], previouslyNotifiedIPs: [])
-        XCTAssertEqual(decision.notify.count, 1)
-        XCTAssertEqual(decision.notifiedIPs, ["100.64.0.7"])
+    /// The roster and the gate key by `"ip:port"`, deliberately the opposite
+    /// choice from the control path: a viewer who drops and rejoins on a fresh
+    /// ephemeral port *should* be announced again, because an arrival is news
+    /// each time. Both keys are correct, which is why the shared decision takes
+    /// an opaque string rather than picking one.
+    func testViewerNoticesAreKeyedByIPAndPort() {
+        let pending = PendingViewerInfo(
+            id: "100.64.0.7:49152", tailscaleIP: "100.64.0.7", hostname: nil, stableID: nil,
+            arrivedAt: Date())
+        XCTAssertEqual(AppState.noticeCandidates([pending]).map(\.identity), ["100.64.0.7:49152"])
+        XCTAssertEqual(AppState.noticeCandidates([pending]).map(\.label), ["100.64.0.7"])
     }
 
     // MARK: - Grant-change generation ordering

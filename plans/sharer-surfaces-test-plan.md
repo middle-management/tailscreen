@@ -12,10 +12,12 @@ cases need a second machine.
 
 ## Before you start — two traps
 
-**1. `make run` posts no notifications at all.** `ViewerJoinNotifier` and
-`TailscreenUserNotifications` both hard-guard on `Bundle.main.bundleIdentifier
-!= nil`, because `UNUserNotificationCenter.current()` *raises* on an unbundled
-binary rather than degrading. A `swift build` product has no Info.plist.
+**1. `make run` posts no notifications at all.** `SharerNoticeCenter` hard-guards
+on `Bundle.main.bundleIdentifier != nil`, because
+`UNUserNotificationCenter.current()` *raises* on an unbundled binary rather than
+degrading. A `swift build` product has no Info.plist. The same guard is why
+`TailscreenNotificationDelegate.install()` — which registers the categories the
+buttons hang off — is a no-op there too.
 
 > Use a bundled build: add the **`build:notarized`** label to a PR and take the
 > artifact, or `make release` and wrap it. If you see zero notifications and no
@@ -87,6 +89,43 @@ Share a display **with system audio on**, and have a viewer listening.
       already decided to stop is the noise this is gated against.
 - [ ] Deny a pending viewer → no "left" banner (their arrival was never
       announced, so their departure isn't either).
+
+### A8 · Answering from the banner
+The buttons, and the four things that can each break them silently.
+
+- [ ] A pending viewer's banner shows **Accept** and **Deny**. Press Accept →
+      they are admitted, exactly as if you had clicked Accept in the app.
+      *(No buttons at all means the categories didn't register — check that
+      `install()` ran before the first post.)*
+- [ ] A control request's banner shows **Grant** and **Deny**; a request-to-share
+      shows **Share** and **Decline**. Press Share → the picker opens.
+- [ ] Grant from the banner with the **Mac locked**: it should ask you to unlock
+      first. Deny from the lock screen should go straight through.
+- [ ] Press a button and watch what happens in the app: the row disappears and
+      the decision matches. A press that does *nothing* is the action-key/label
+      split having gone wrong.
+- [ ] **In Swedish.** System Settings → Language & Region → add Svenska, relaunch,
+      repeat the first bullet. The buttons read *Acceptera* / *Neka* and **still
+      work**. This is the whole reason the key and the label are separate: a
+      localized label in the key slot passes every English test and drops every
+      press here.
+- [ ] Click the banner **body** rather than a button → the hub window opens and
+      nothing is decided.
+- [ ] Swipe the banner away → nothing is decided, and the row is still pending.
+
+### A9 · Stale banners
+The banner outlives what it is about, and this is the half that can act on the
+wrong peer if it is wrong.
+
+- [ ] Let a pending viewer's banner land, then **answer in the app**. The banner
+      disappears from Notification Center on its own.
+- [ ] Press **Stop Sharing** with a pending viewer's banner up → the banner goes
+      with the share.
+- [ ] Get a banner, let the viewer give up (quit their Tailscreen), then press
+      **Accept** on the stale banner → nothing happens, and the log says "no
+      longer at the gate". It must **not** admit whoever is at that address now.
+- [ ] The same peer asks twice in a row → one banner, replaced in place, not two
+      stacked.
 
 ---
 

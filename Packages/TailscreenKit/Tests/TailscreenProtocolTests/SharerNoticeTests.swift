@@ -204,6 +204,108 @@ final class SharerNoticeTests: XCTestCase {
         }
     }
 
+    // MARK: - Action keys
+
+    /// The keys hosts put in the identifier slot of a notification button.
+    /// Pinned because they leave the process: the notification daemon stores
+    /// them with the banner and hands them back verbatim, so a rename lands on
+    /// buttons that are already on screen and silently stops routing them.
+    func testActionKeysAreStable() {
+        XCTAssertEqual(NoticeAction.approve.rawValue, "approve")
+        XCTAssertEqual(NoticeAction.deny.rawValue, "deny")
+        XCTAssertEqual(NoticeAction.dismiss.rawValue, "dismiss")
+    }
+
+    /// The mistake this type is shaped to prevent. A host that passes its
+    /// button *label* as the key gets a working English build and a localized
+    /// build where every press is dropped — no error, no log line. The lookup
+    /// must reject anything it did not mint, including the English label.
+    func testALabelIsNotAnActionKey() {
+        XCTAssertNil(NoticeAction(rawValue: "Accept"))
+        XCTAssertNil(NoticeAction(rawValue: "Deny"))
+        XCTAssertNil(NoticeAction(rawValue: "Godkänn"))
+        XCTAssertNil(NoticeAction(rawValue: ""))
+        XCTAssertEqual(NoticeAction(rawValue: "approve"), .approve)
+    }
+
+    // MARK: - Round-tripping the identifier
+
+    /// A press comes back as opaque strings and nothing else — the identifier
+    /// plus an action key on macOS and freedesktop, a single activation
+    /// argument on Windows — with no live state, no notice object, and possibly
+    /// an hour of delay. Every kind has to survive that round trip or its
+    /// buttons do nothing.
+    func testEveryKindRoundTripsThroughItsID() {
+        for kind in SharerNoticeKind.allCases {
+            let notice = SharerNotice(kind: kind, identity: "100.64.0.1:49152", label: "wisp")
+            let decoded = SharerNotice.decodeID(notice.id)
+            XCTAssertEqual(decoded?.kind, kind)
+            XCTAssertEqual(decoded?.identity, "100.64.0.1:49152")
+        }
+    }
+
+    /// The reason the split is on the FIRST colon. An IPv6 identity is almost
+    /// entirely colons, and a last-colon split reads as correct right up until
+    /// somebody shares over IPv6 — at which point Accept lands on a peer key
+    /// that never existed.
+    func testIdentityMayContainColons() {
+        let identities = [
+            "100.64.0.1:51820",
+            "fd7a:115c:a1e0::1234:5678",
+            "[fd7a:115c:a1e0::1234:5678]:7447",
+            "a:b:c:d",
+        ]
+        for identity in identities {
+            let notice = SharerNotice(kind: .viewerPending, identity: identity, label: "wisp")
+            XCTAssertEqual(SharerNotice.decodeID(notice.id)?.identity, identity)
+        }
+    }
+
+    /// Anything we did not mint decodes to nil rather than to a guess. Two
+    /// realistic sources: a banner posted by another build still sitting in
+    /// notification centre across an app update, and — on Windows, where the
+    /// platform delivers activation arguments from whatever posted them — a
+    /// string that was never ours at all. Acting on the wrong peer is worse
+    /// than a button that does nothing.
+    func testUnmintedIdentifiersDecodeToNil() {
+        XCTAssertNil(SharerNotice.decodeID("viewerPending"), "no separator")
+        XCTAssertNil(SharerNotice.decodeID("viewerPending:"), "empty identity")
+        XCTAssertNil(SharerNotice.decodeID("viewerRetired:100.64.0.1"), "unknown kind")
+        XCTAssertNil(SharerNotice.decodeID(":100.64.0.1"), "empty kind")
+        XCTAssertNil(SharerNotice.decodeID(""))
+        XCTAssertNil(
+            SharerNotice.decodeID("F1B0A5C2-3D4E-4A6B-8C9D-0E1F2A3B4C5D"),
+            "the random-UUID identifier this consolidation replaced")
+    }
+
+    // MARK: - Sound
+
+    /// A notification that succeeds is a notification on the screen being
+    /// captured, and the ding is played by the notification daemon — another
+    /// process, so the "exclude our own audio" flag every platform offers does
+    /// not drop it. It goes out with the share.
+    func testNothingSoundsWhileCapturing() {
+        XCTAssertFalse(SharerNoticeDecision.playsSound(isCapturing: true))
+    }
+
+    /// The one notice that arrives at an idle machine keeps its sound: there
+    /// is no capture for it to leak into, and it is the non-urgent kind, so
+    /// the sound is the only thing that makes it noticeable at all.
+    func testAnIdleMachineStillDings() {
+        XCTAssertTrue(SharerNoticeDecision.playsSound(isCapturing: false))
+    }
+
+    /// Every kind that can only occur mid-share is therefore always silent —
+    /// stated as a test so the rule can't be relaxed for one kind without the
+    /// leak coming back with it.
+    func testMidShareKindsAreAlwaysSilent() {
+        for kind in SharerNoticeKind.allCases where kind.blocksSomeone {
+            XCTAssertFalse(
+                SharerNoticeDecision.playsSound(isCapturing: true),
+                "\(kind) fires only during a share and must not be audible to viewers")
+        }
+    }
+
     // MARK: - Generation ordering
 
     func testOlderGenerationIsStale() {
@@ -234,39 +336,4 @@ final class SharerNoticeTests: XCTestCase {
         XCTAssertEqual(lastApplied, 3)
     }
 
-    // MARK: - id round trip
-
-    /// The inverse a host with only one opaque string to work with depends on.
-    /// Windows hands a button press back as the activation argument and
-    /// nothing else, so `id` is both halves and this is how they come apart.
-    func testIDRoundTripsForEveryKind() {
-        for kind in SharerNoticeKind.allCases {
-            let notice = SharerNotice(kind: kind, identity: "100.64.0.1:51820", label: "wisp")
-            let decoded = SharerNotice.decodeID(notice.id)
-            XCTAssertEqual(decoded?.kind, kind)
-            XCTAssertEqual(decoded?.identity, "100.64.0.1:51820")
-        }
-    }
-
-    /// The split is on the FIRST colon, and this is the case that proves it:
-    /// an identity that itself contains colons must come back whole. Splitting
-    /// on the last one reroutes the answer, and the two things it reroutes
-    /// between are "let this person watch" and "let this person control my
-    /// machine".
-    func testIdentityKeepsItsOwnColons() {
-        for identity in ["100.64.0.1:51820", "fd7a:115c:a1e0::1:9", "a:b:c:d"] {
-            let notice = SharerNotice(kind: .viewerPending, identity: identity, label: "x")
-            XCTAssertEqual(SharerNotice.decodeID(notice.id)?.identity, identity)
-        }
-    }
-
-    /// Activation arguments arrive from whatever posted them, so a string that
-    /// is not one of ours must not decode into an answer about a peer.
-    func testForeignIDsDecodeToNil() {
-        XCTAssertNil(SharerNotice.decodeID(""))
-        XCTAssertNil(SharerNotice.decodeID("viewerPending"))
-        XCTAssertNil(SharerNotice.decodeID("viewerPending:"))
-        XCTAssertNil(SharerNotice.decodeID(":100.64.0.1"))
-        XCTAssertNil(SharerNotice.decodeID("somethingElse:100.64.0.1"))
-    }
 }

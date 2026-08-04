@@ -295,7 +295,7 @@
 "Viewer Disconnected" = "Viewer Disconnected";
 "%@ stopped viewing your screen." = "%@ stopped viewing your screen.";
 "Viewer Wants to Connect" = "Viewer Wants to Connect";
-"%@ is asking to view your screen. Open Tailscreen to Accept or Deny." = "%@ is asking to view your screen. Open Tailscreen to Accept or Deny.";
+"%@ is asking to view your screen." = "%@ is asking to view your screen.";
 
 /* MARK: - Viewer menu commands (ViewerCommands.swift) */
 "Mute Microphone" = "Mute Microphone";
@@ -393,7 +393,7 @@
 
 /* Remote control */
 "Viewer Wants Control" = "Viewer Wants Control";
-"%@ is asking to control your Mac. Open Tailscreen to Grant or Deny." = "%@ is asking to control your Mac. Open Tailscreen to Grant or Deny.";
+"%@ is asking to control your Mac." = "%@ is asking to control your Mac.";
 "Accessibility Permission Needed" = "Accessibility Permission Needed";
 "To let a viewer control your Mac, allow Tailscreen under System Settings → Privacy & Security → Accessibility, then grant control again." = "To let a viewer control your Mac, allow Tailscreen under System Settings → Privacy & Security → Accessibility, then grant control again.";
 "Open Settings" = "Open Settings";
