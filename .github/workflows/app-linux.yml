@@ -62,6 +62,13 @@ on:
         required: false
         type: boolean
         default: true
+      screenshots:
+        description: >-
+          Capture PNGs of the app's --ui-preview / --ui-preview-video chrome
+          under Xvfb and upload them as an artifact.
+        required: false
+        type: boolean
+        default: false
       artifact_name:
         required: false
         type: string
@@ -248,6 +255,49 @@ jobs:
           cat /tmp/overlay-selftest.log
           test "$status" -eq 0
           grep -q 'CGTKOVERLAY_SELFTEST result=PASS' /tmp/overlay-selftest.log
+
+      - name: Screenshot the hub and session chrome (Xvfb)
+        # The app's own preview modes, built for exactly this: `--ui-preview`
+        # seeds the hub with fake sharers and `--ui-preview-video` adds the
+        # in-session view with one stroke per annotation tool — deterministic
+        # chrome, no tailnet, no network. The capture is the whole 1440x900
+        # virtual screen, which for an unmanaged Xvfb window means the app
+        # fills the frame. `kill -0` before each capture: a crashed app would
+        # otherwise produce a plausible-looking screenshot of an empty root
+        # window, and absence-looks-like-success is this repo's least favourite
+        # failure shape. Dash-compatible like the self-test steps above.
+        if: inputs.screenshots
+        run: |
+          apt-get install -y --no-install-recommends imagemagick >/dev/null
+          mkdir -p screenshots
+          Xvfb :96 -screen 0 1440x900x24 >/dev/null 2>&1 &
+          sleep 3
+          shoot() {
+            out="$1"; shift
+            env DISPLAY=:96 GDK_BACKEND=x11 LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe \
+              Apps/linux/.build/${{ inputs.configuration }}/tailscreen "$@" &
+            pid=$!
+            sleep 12
+            if ! kill -0 "$pid" 2>/dev/null; then
+              echo "app exited before the $out capture" >&2
+              exit 1
+            fi
+            import -display :96 -window root "screenshots/$out"
+            kill "$pid" 2>/dev/null || true
+            sleep 2
+          }
+          shoot linux-hub.png --ui-preview
+          shoot linux-session.png --ui-preview --ui-preview-video
+          ls -la screenshots/
+
+      - name: Upload screenshots
+        if: inputs.screenshots
+        uses: actions/upload-artifact@v7
+        with:
+          name: tailscreen-screenshots-linux-${{ env.PACKAGE_ARCH }}
+          path: screenshots/
+          retention-days: 14
+          if-no-files-found: error
 
       - name: Build the AppImage
         # Same script as the x86_64 release job. The app + c-archive are

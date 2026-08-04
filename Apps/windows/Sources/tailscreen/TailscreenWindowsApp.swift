@@ -12,15 +12,16 @@ import TailscreenHubUI
 // hits and solves the same way.
 import class TailscreenAudio.VoiceUplink
 import struct TailscreenProtocol.AccountProfileLayout
-import enum TailscreenProtocol.AnnotationTool
 import class TailscreenProtocol.AccountProfileStore
+import enum TailscreenProtocol.AnnotationTool
 import struct TailscreenProtocol.CaptureTimings
 import struct TailscreenProtocol.ControlRequestInfo
-import enum TailscreenProtocol.PeerPolicy
-import struct TailscreenProtocol.PendingShareRequest
+import struct TailscreenProtocol.NoticeCandidate
 import struct TailscreenProtocol.PeerListFilter
 import enum TailscreenProtocol.PeerListFilterStore
+import enum TailscreenProtocol.PeerPolicy
 import enum TailscreenProtocol.PeerSharingState
+import struct TailscreenProtocol.PendingShareRequest
 import struct TailscreenProtocol.QualitySettings
 import enum TailscreenProtocol.QualitySettingsStore
 import enum TailscreenProtocol.ScreenShareMessage
@@ -500,7 +501,24 @@ final class AppUIState: ObservableObject {
         // whose value only arrives once you press Share reads wrong at exactly
         // the moment you are deciding whether to press it.
         shareSession.onStatus = { [weak self] status in
-            Task { @MainActor in self?.sharing = status }
+            Task { @MainActor in self?.applySharingStatus(status) }
+        }
+        // A notification button answers exactly what the card's button does,
+        // through the same router — so there is one implementation of each
+        // decision and the two surfaces cannot drift. `answerPrompt` matches
+        // the identity against the live rows, which also makes a press about
+        // somebody who has since gone land nowhere instead of on whoever is
+        // there now.
+        notifications.onAnswer = { [weak self] _, identity, accept in
+            self?.answerPrompt(identity, accept: accept)
+        }
+        // The press half. Subscribed once, for the life of the process, and
+        // deliberately NOT gated on `notifications.isAvailable`: the two are
+        // different runtime facts, and a subscription with nothing to deliver
+        // costs nothing while the reverse — a toast whose button reaches
+        // nobody — is the failure that makes buttons worse than no buttons.
+        NotificationActivation.observe { [weak self] press in
+            self?.notifications.answer(activationID: press.id, action: press.action)
         }
         // The sharer's own voice. Both ends are WASAPI and both live in this
         // target, so they are handed over as closures — `WindowsShareSession`
@@ -528,9 +546,45 @@ final class AppUIState: ObservableObject {
             toggleViewerMic: { [weak self] in self?.toggleMic() })
         muteHotkey?.start()
         syncAccounts()
-        if hasPreviousLogin() {
+        if Self.isUIPreview {
+            seedUIPreview()
+        } else if hasPreviousLogin() {
             signIn()
         }
+    }
+
+    /// True when launched with `--ui-preview`: the hub renders a seeded,
+    /// deterministic peer list — no tsnet node, no networking — so CI can
+    /// screenshot the chrome. Same flag, same fake tailnet as the GTK app's
+    /// preview mode, so the platforms' screenshots read as one product.
+    static let isUIPreview = CommandLine.arguments.contains("--ui-preview")
+
+    /// The seeded preview state: tagged and untagged, online and offline,
+    /// one peer sharing and one relayed — so a single screenshot exercises
+    /// the sharing chip, the route line, the latency figure, and every axis
+    /// of the filter menu. Verbatim data, deliberately not localized.
+    private func seedUIPreview() {
+        phase = .ready
+        status = hubSignedInSubtitle(tailnet: "example.com", account: "robert@example.com")
+        activeAccountName = "robert@example.com"
+        peers = [
+            DiscoveredSharer(
+                id: "1", hostname: "robert-macbook", tailscaleIP: "100.64.0.12",
+                isOnline: true, route: .direct),
+            DiscoveredSharer(
+                id: "2", hostname: "studio-imac", tailscaleIP: "100.64.0.31",
+                isOnline: true, tags: ["tag:studio"], route: .relay(region: "sto")),
+            DiscoveredSharer(
+                id: "3", hostname: "living-room-tv", tailscaleIP: "100.64.0.44",
+                isOnline: false, tags: ["tag:media"])
+        ]
+        shareInfo = [
+            "1": TailscreenMetadata(
+                shareName: "robert's Screen", hostname: "robert-macbook",
+                screenResolution: .init(width: 1920, height: 1080),
+                isSharing: true, timestamp: Date(), videoCodec: .hevc)
+        ]
+        latencyMs = ["1": 12, "2": 38]
     }
 
     private func hasPreviousLogin() -> Bool {
@@ -545,6 +599,14 @@ final class AppUIState: ObservableObject {
     /// `init` and kept for the process — it decides for itself when to take
     /// and release the chord.
     private var muteHotkey: MuteHotkeyController?
+    /// Posts the sharer's notifications and routes their buttons back.
+    ///
+    /// The other half of the same problem the hotkey above solves: during a
+    /// share this window is behind the thing being shared, and raising it is
+    /// itself visible to the viewers. Built unconditionally — a machine that
+    /// cannot register is a normal state the type reports rather than an error
+    /// to avoid constructing.
+    private let notifications = SharerNotifications()
     /// Where viewers' voices come out while sharing.
     ///
     /// Its own sink, separate from the viewing session's: this app can share
@@ -800,6 +862,53 @@ final class AppUIState: ObservableObject {
             onDecline: { [weak self] id in self?.answerPrompt(id, accept: false) })
     }
 
+    /// Take a share-status snapshot, and reconcile the notifications with it.
+    ///
+    /// One function rather than a `didSet`, because the ORDER matters at the
+    /// end of a share: stopping expels every viewer at once, so a teardown
+    /// snapshot must clear the notification bookkeeping *before* the empty
+    /// rosters are reconciled against it — otherwise the sharer gets one
+    /// "stopped watching" toast per viewer at the exact moment they decided to
+    /// stop. The GTK app spells the same rule out in `SharerModel.stop()`.
+    @MainActor
+    private func applySharingStatus(_ status: WindowsShareSession.Status) {
+        let wasSharing = sharing.isSharing
+        sharing = status
+        guard status.isSharing else {
+            if wasSharing { notifications.stop() }
+            return
+        }
+        // Keyed by `ip:port`, deliberately: a genuine rejoin IS news, and the
+        // mac viewer-roster path keys the same way for the same reason.
+        notifications.applyViewers(
+            status.viewers.map { NoticeCandidate(identity: $0.id, label: $0.displayName) })
+        // The identity IS the id `approveViewer`/`denyViewer` take, so a button
+        // press routes back with nothing to re-derive.
+        notifications.applyAsk(
+            kind: .viewerPending,
+            candidates: status.pendingViewers.map {
+                NoticeCandidate(identity: $0.id, label: $0.displayName)
+            })
+        // Likewise the connection UUID `grantControl` takes.
+        notifications.applyAsk(
+            kind: .controlRequested,
+            candidates: status.controlRequests.map {
+                NoticeCandidate(identity: $0.id.uuidString, label: $0.displayName)
+            })
+    }
+
+    /// An ask to share, from the inbox rather than from a share status — this
+    /// one arrives while the machine is idle, which is exactly why it is not
+    /// urgent.
+    @MainActor
+    private func applyShareRequestNotifications() {
+        notifications.applyAsk(
+            kind: .requestToShare,
+            candidates: shareRequests.map {
+                NoticeCandidate(identity: $0.id.uuidString, label: $0.fromHostname)
+            })
+    }
+
     /// Route a card prompt back to whichever feature raised it.
     ///
     /// Two sources share one prompt list and one pair of buttons, so the id
@@ -882,6 +991,18 @@ final class AppUIState: ObservableObject {
         // Control is missing" with no explanation is a support ticket; "2
         // displays share this resolution" is something the sharer can act on.
         if !sharing.message.isEmpty { notes.append(sharing.message) }
+        // Said only while sharing, and only when it is true. The reason it is
+        // said at all: the approval gate defaults on, so a sharer who assumes
+        // they will be told about a waiting viewer and never is has no way to
+        // discover the difference — the share looks completely normal from
+        // here. Two distinct silences, because the fixes are different: no
+        // registration is the platform (the unpackaged build's runtime),
+        // switched off is this app's row in Windows' notification settings.
+        if !notifications.isAvailable {
+            notes.append("No desktop notifications on this system — approvals appear here only")
+        } else if !notifications.isVisible {
+            notes.append("Notifications are off for Tailscreen — approvals appear here only")
+        }
         // Where the frame time goes. A viewer's stats overlay can prove the
         // network is fine and still leave "why is it 2 fps" open — capture,
         // convert and encode are three different problems with three different
@@ -957,6 +1078,9 @@ final class AppUIState: ObservableObject {
     }
 
     func refreshPeers() {
+        // The preview's phase is .ready but its transport never started —
+        // a refresh would replace the seeded list with a discovery error.
+        guard !Self.isUIPreview else { return }
         guard phase == .ready, !isSearching else { return }
         isSearching = true
         detail = ""
@@ -1401,6 +1525,7 @@ final class AppUIState: ObservableObject {
                 connectionID: connectionID, nowNs: nowNs)
         else { return }
         shareRequests = inbox.requests
+        applyShareRequestNotifications()
     }
 
     /// Answer an ask: reply on its own connection, and on accept invite the
@@ -1408,6 +1533,9 @@ final class AppUIState: ObservableObject {
     func answerShareRequest(id: UUID, accept: Bool) {
         guard let request = inbox.remove(id: id) else { return }
         shareRequests = inbox.requests
+        // Reconciled after the row is gone, which is what takes the toast back
+        // when the ask was answered from the window instead.
+        applyShareRequestNotifications()
 
         if let connectionID = request.connectionID, let listener = controlListener {
             Task {

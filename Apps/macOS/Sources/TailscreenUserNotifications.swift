@@ -91,14 +91,22 @@ extension TailscreenNotificationDelegate: UNUserNotificationCenterDelegate {
     /// Three outcomes, and the split between the first two is the whole point
     /// of keeping the action *key* distinct from the button *label*:
     ///
-    ///   * one of our own keys (`NoticeAction.rawValue`) → the sharer answered,
-    ///     so `AppState` acts on it;
+    ///   * one of our own keys → the sharer answered, so `AppState` acts on it;
     ///   * the system's "user clicked the banner body" identifier → not an
     ///     answer, so it opens the surface where the decision lives and lets
-    ///     them look at it first;
-    ///   * anything else, including the system's dismiss identifier and any id
-    ///     this build did not mint → nothing at all. Swiping a banner away must
-    ///     never be recorded as a decision about a person.
+    ///     them look at it first. This is the macOS spelling of what Windows
+    ///     carries as `WindowsToastPayload.openActionKey`, and it has to be
+    ///     checked *before* the key lookup — `action(forKey:)` would fold it
+    ///     into `.dismiss`, which is the right default for a key nobody
+    ///     recognises and the wrong one for a click we can explain;
+    ///   * anything else, including the system's dismiss identifier and any
+    ///     activation string this build did not mint → nothing at all. Swiping
+    ///     a banner away must never be recorded as a decision about a person.
+    ///
+    /// The lookup is `SharerNoticeText.action(forKey:)` — the same one the
+    /// freedesktop and Windows backends route through — and never a comparison
+    /// against a button's title, which is localized and would match in English
+    /// only.
     @MainActor
     static func route(noticeID: String, actionIdentifier: String) {
         guard let decoded = SharerNotice.decodeID(noticeID) else { return }
@@ -107,12 +115,8 @@ extension TailscreenNotificationDelegate: UNUserNotificationCenterDelegate {
             appState.presentNoticeSurface(kind: decoded.kind)
             return
         }
-        // `NoticeAction(rawValue:)` and not a title comparison: titles are
-        // localized, so matching on them works in English and drops every
-        // press in every other language.
-        guard let action = NoticeAction(rawValue: actionIdentifier), action != .dismiss else {
-            return
-        }
+        let action = SharerNoticeText.action(forKey: actionIdentifier)
+        guard action != .dismiss else { return }
         appState.handleNoticeAction(kind: decoded.kind, identity: decoded.identity, action: action)
     }
 }

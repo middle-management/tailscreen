@@ -118,24 +118,29 @@ public struct SharerNotice: Equatable, Sendable, Identifiable {
         self.label = label
     }
 
-    /// Recover the `(kind, identity)` an `id` was minted from.
+    /// Recover the `(kind, identity)` an `id` was minted from — the inverse of
+    /// `id`, and the only reason a press can find the peer it was about.
     ///
-    /// A press arrives from the notification daemon as two opaque strings —
-    /// the notification's identifier and the action key — and nothing else.
-    /// Neither the host's live state nor the notice object is attached, and
-    /// the banner may have sat in a notification centre for an hour, so this
-    /// has to be a pure parse of the identifier.
+    /// Every platform hands a press back as opaque strings and nothing else:
+    /// the notification identifier plus an action key on macOS and freedesktop,
+    /// a single activation argument on Windows. No live state and no notice
+    /// object comes with it, and the banner may have sat in a notification
+    /// centre for an hour, so this has to be a pure parse. Carrying both halves
+    /// in the id is what lets every host skip keeping a table that would have
+    /// to survive that hour — and an app restart.
     ///
     /// **Splits on the first colon, never the last.** `identity` is routinely
-    /// full of colons — the viewer roster keys by `ip:port`, and an IPv6
+    /// full of colons — the roster and the gate key by `ip:port`, and an IPv6
     /// literal is mostly colons — while no kind's `rawValue` contains one. A
-    /// last-colon split works on IPv4 for exactly as long as nobody shares
-    /// over IPv6.
+    /// last-colon split works on IPv4 for exactly as long as nobody shares over
+    /// IPv6, and what it silently reroutes between is "let this person watch"
+    /// and "let this person control my machine".
     ///
-    /// Returns nil rather than guessing on anything it did not mint: an
-    /// unknown kind (an id from a newer build sitting in notification centre
-    /// across an update), or an empty identity. A wrong guess here acts on the
-    /// wrong peer, which is strictly worse than a button that does nothing.
+    /// Returns nil rather than guessing on anything it did not mint — an
+    /// unknown kind (an id from another build still sitting in notification
+    /// centre across an update), an empty identity, or an activation argument
+    /// from whatever else posted one. A wrong guess acts on the wrong peer,
+    /// which is strictly worse than a button that does nothing.
     public static func decodeID(_ id: String) -> (kind: SharerNoticeKind, identity: String)? {
         guard let separator = id.firstIndex(of: ":") else { return nil }
         guard let kind = SharerNoticeKind(rawValue: String(id[id.startIndex..<separator])) else {

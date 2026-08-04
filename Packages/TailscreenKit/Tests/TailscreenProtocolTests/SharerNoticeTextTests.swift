@@ -173,4 +173,31 @@ final class SharerNoticeTextTests: XCTestCase {
             kind: .viewerPending, candidates: candidates, alreadyNotified: notified)
         XCTAssertEqual(notified.subtracting(remaining), withdraw)
     }
+
+    // MARK: - Reading an action back
+
+    func testAnswerKeysMapToAnswers() {
+        XCTAssertEqual(SharerNoticeText.action(forKey: SharerNoticeText.approveKey), .approve)
+        XCTAssertEqual(SharerNoticeText.action(forKey: SharerNoticeText.denyKey), .deny)
+    }
+
+    /// The one that matters. Clicking a Windows toast's BODY activates the app
+    /// carrying `openActionKey`, and a freedesktop daemon can invoke a
+    /// `"default"` action nobody asked for. Reading either as a deny would
+    /// decide about a peer because somebody looked at the notification.
+    func testEverythingElseIsADismissalRatherThanADenial() {
+        for key in [WindowsToastPayload.openActionKey, "default", "", "DENY", "approve "] {
+            XCTAssertEqual(
+                SharerNoticeText.action(forKey: key), .dismiss,
+                "\(key) must not read as an answer")
+        }
+    }
+
+    /// The keys cross a process boundary — a daemon hands them back verbatim —
+    /// so a typo on either side is a button that silently does nothing.
+    func testActionKeysAreDistinctFromTheOpenKey() {
+        XCTAssertNotEqual(SharerNoticeText.approveKey, SharerNoticeText.denyKey)
+        XCTAssertNotEqual(SharerNoticeText.approveKey, WindowsToastPayload.openActionKey)
+        XCTAssertNotEqual(SharerNoticeText.denyKey, WindowsToastPayload.openActionKey)
+    }
 }

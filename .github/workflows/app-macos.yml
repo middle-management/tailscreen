@@ -96,6 +96,13 @@ on:
         required: false
         type: boolean
         default: false
+      screenshots:
+        description: >-
+          Launch the assembled .app on the runner, capture the screen to a PNG,
+          and upload it as an artifact.
+        required: false
+        type: boolean
+        default: false
     outputs:
       version:
         description: The resolved version string.
@@ -274,10 +281,20 @@ jobs:
           mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
           cp "${PRODUCTS_DIR}/${APP_NAME}" "$APP/Contents/MacOS/"
           # SwiftPM resource bundle backing `Bundle.module` (menubar PDFs,
-          # WelcomeIcon, etc.). Without this the app fatals on launch with
-          # "unable to find bundle named Tailscreen_Tailscreen".
-          cp -R "${PRODUCTS_DIR}/${APP_NAME}_${APP_NAME}.bundle" \
-            "$APP/Contents/Resources/"
+          # WelcomeIcon, etc.), named <package>_<target>.bundle. Globbed
+          # rather than spelled out: the package's rename to
+          # `tailscreen-macos` moved the bundle out from under the old
+          # hardcoded `Tailscreen_Tailscreen.bundle` and broke this step,
+          # and a glob can't be staled by the next rename. Without the
+          # bundle the app fatals on launch with "unable to find bundle
+          # named …", so an empty match fails loudly here instead.
+          bundle="$(find "${PRODUCTS_DIR}" -maxdepth 1 -name "*_${APP_NAME}.bundle" -print -quit)"
+          if [ -z "$bundle" ]; then
+            echo "::error::no *_${APP_NAME}.bundle in ${PRODUCTS_DIR} — the app would fatal on launch without its resources"
+            ls "${PRODUCTS_DIR}"
+            exit 1
+          fi
+          cp -R "$bundle" "$APP/Contents/Resources/"
           cp Apps/macOS/Resources/Tailscreen.icns "$APP/Contents/Resources/${APP_NAME}.icns"
 
           cat > "$APP/Contents/Info.plist" <<EOF
@@ -314,6 +331,37 @@ jobs:
           </dict>
           </plist>
           EOF
+
+      # `--ui-preview` renders the hub seeded with the same deterministic
+      # fake tailnet the GTK and Windows apps show — signed in, fake peers,
+      # no tsnet node, no network — and activates itself so the capture
+      # shows Tailscreen's menu bar rather than Finder's. Launched via
+      # `open` so LaunchServices gives it a proper GUI session.
+      # `screencapture` needs the Screen Recording TCC grant, which the
+      # hosted runner's session turned out to have (verified 2026-08 — the
+      # artifact showed the real window). The pgrep guard is: a crashed app
+      # must not turn into a convincing screenshot of an empty desktop.
+      - name: Screenshot the app
+        if: inputs.screenshots
+        run: |
+          set -euo pipefail
+          mkdir -p screenshots
+          open "${APP_NAME}.app" --args --ui-preview
+          sleep 15
+          pgrep -x "$APP_NAME" >/dev/null \
+            || { echo "app exited before the screenshot" >&2; exit 1; }
+          screencapture -x screenshots/macos-hub.png
+          pkill -x "$APP_NAME" || true
+          ls -la screenshots/
+
+      - name: Upload screenshots
+        if: inputs.screenshots
+        uses: actions/upload-artifact@v7
+        with:
+          name: tailscreen-screenshots-macos
+          path: screenshots/
+          retention-days: 14
+          if-no-files-found: error
 
       - name: Check signing availability
         id: signing

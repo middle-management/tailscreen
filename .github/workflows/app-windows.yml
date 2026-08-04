@@ -95,6 +95,13 @@ on:
         required: false
         type: boolean
         default: false
+      screenshots:
+        description: >-
+          Launch the staged exe on the runner's desktop, capture the screen to
+          a PNG, and upload it as an artifact.
+        required: false
+        type: boolean
+        default: false
       upload_dist:
         required: false
         type: boolean
@@ -370,6 +377,27 @@ jobs:
         run: |
           swift build --package-path Packages/WinHotkeyKit --product winhotkey-probe
           swift run --package-path Packages/WinHotkeyKit winhotkey-probe
+
+      # Desktop notifications: the Windows App SDK's AppNotificationManager,
+      # reached through raw WinRT because swift-winui does not project it. Via
+      # its PROBE for the usual reason (a library target is never linked), and
+      # RUN, because the run is the only thing on any runner anywhere that
+      # exercises `Register()` — the call the whole packaging fork turns on.
+      #
+      # A refusal is NOT a failure and the probe exits 0 for it. That is the
+      # design, not a hole in the gate: an unpackaged process with no reachable
+      # Windows App Runtime is expected to land there, and making it red would
+      # assert the opposite of what the package promises. What this proves is
+      # that the binary LINKS and that the platform answered at all.
+      #
+      # What no CI anywhere proves: that a toast was posted, seen, or pressed.
+      # Unlike Linux, where `linux-notify` runs a real dunst and presses a real
+      # button, there is no equivalent here — see the package README.
+      - name: WinNotifyKit
+        if: inputs.run_probes
+        run: |
+          swift build --package-path Packages/WinNotifyKit --product winnotify-probe
+          swift run --package-path Packages/WinNotifyKit winnotify-probe
 
       # Two thirds of this job is compiling swift-cross-ui, swift-winui and the
       # WindowsAppSDK bindings — ~1,450 compile units against our one app file,
@@ -825,6 +853,45 @@ jobs:
             exit 0
           }
           Write-Host "no loader failure; $hex is this app's own business"
+
+      # `--ui-preview` renders the hub seeded with the same deterministic
+      # fake tailnet the GTK and macOS apps show — signed in, fake peers, no
+      # tsnet node, no network. GitHub's hosted Windows runners have an
+      # interactive desktop session, so CopyFromScreen sees real pixels; the
+      # exe runs FROM dist/ so it loads exactly the DLL set a user would get.
+      # The HasExited guard matters for the usual reason: a dead app would
+      # otherwise yield a convincing screenshot of an empty desktop.
+      - name: Screenshot the app
+        if: inputs.screenshots
+        shell: pwsh
+        working-directory: dist
+        run: |
+          Add-Type -AssemblyName System.Windows.Forms
+          Add-Type -AssemblyName System.Drawing
+          $p = Start-Process -FilePath .\tailscreen.exe -ArgumentList '--ui-preview' -PassThru
+          Start-Sleep -Seconds 25
+          if ($p.HasExited) {
+            Write-Error "app exited ($($p.ExitCode)) before the screenshot"
+            exit 1
+          }
+          New-Item -ItemType Directory -Force ..\screenshots | Out-Null
+          $vs = [System.Windows.Forms.SystemInformation]::VirtualScreen
+          Write-Host "virtual screen: $($vs.Width)x$($vs.Height) at ($($vs.X),$($vs.Y))"
+          $bmp = New-Object System.Drawing.Bitmap($vs.Width, $vs.Height)
+          $g = [System.Drawing.Graphics]::FromImage($bmp)
+          $g.CopyFromScreen($vs.X, $vs.Y, 0, 0, $bmp.Size)
+          $bmp.Save("..\screenshots\windows-hub.png", [System.Drawing.Imaging.ImageFormat]::Png)
+          $g.Dispose(); $bmp.Dispose()
+          Stop-Process -Id $p.Id -Force
+
+      - name: Upload screenshots
+        if: inputs.screenshots
+        uses: actions/upload-artifact@v7
+        with:
+          name: tailscreen-screenshots-windows-${{ inputs.arch }}
+          path: screenshots/
+          retention-days: 14
+          if-no-files-found: error
 
       # The whole point of the UI stage: a human runs this on a real desktop.
       # The artifact is the WHOLE directory — an exe on its own is not a thing

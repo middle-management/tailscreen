@@ -230,9 +230,11 @@ final class SharerNoticeTests: XCTestCase {
 
     // MARK: - Round-tripping the identifier
 
-    /// A press comes back as the notification's identifier and nothing else —
-    /// no live state, no notice object, and possibly an hour later. Every kind
-    /// has to survive that round trip or its buttons do nothing.
+    /// A press comes back as opaque strings and nothing else — the identifier
+    /// plus an action key on macOS and freedesktop, a single activation
+    /// argument on Windows — with no live state, no notice object, and possibly
+    /// an hour of delay. Every kind has to survive that round trip or its
+    /// buttons do nothing.
     func testEveryKindRoundTripsThroughItsID() {
         for kind in SharerNoticeKind.allCases {
             let notice = SharerNotice(kind: kind, identity: "100.64.0.1:49152", label: "wisp")
@@ -247,18 +249,24 @@ final class SharerNoticeTests: XCTestCase {
     /// somebody shares over IPv6 — at which point Accept lands on a peer key
     /// that never existed.
     func testIdentityMayContainColons() {
-        let ipv6 = "fd7a:115c:a1e0::1234:5678"
-        let notice = SharerNotice(kind: .viewerPending, identity: ipv6, label: "wisp")
-        XCTAssertEqual(SharerNotice.decodeID(notice.id)?.identity, ipv6)
-
-        let roster = SharerNotice(kind: .viewerJoined, identity: "[\(ipv6)]:7447", label: "wisp")
-        XCTAssertEqual(SharerNotice.decodeID(roster.id)?.identity, "[\(ipv6)]:7447")
+        let identities = [
+            "100.64.0.1:51820",
+            "fd7a:115c:a1e0::1234:5678",
+            "[fd7a:115c:a1e0::1234:5678]:7447",
+            "a:b:c:d",
+        ]
+        for identity in identities {
+            let notice = SharerNotice(kind: .viewerPending, identity: identity, label: "wisp")
+            XCTAssertEqual(SharerNotice.decodeID(notice.id)?.identity, identity)
+        }
     }
 
-    /// Anything we did not mint decodes to nil rather than to a guess. The
-    /// realistic source is a banner posted by an older or newer build still
-    /// sitting in notification centre across an app update; acting on the
-    /// wrong peer is worse than a button that does nothing.
+    /// Anything we did not mint decodes to nil rather than to a guess. Two
+    /// realistic sources: a banner posted by another build still sitting in
+    /// notification centre across an app update, and — on Windows, where the
+    /// platform delivers activation arguments from whatever posted them — a
+    /// string that was never ours at all. Acting on the wrong peer is worse
+    /// than a button that does nothing.
     func testUnmintedIdentifiersDecodeToNil() {
         XCTAssertNil(SharerNotice.decodeID("viewerPending"), "no separator")
         XCTAssertNil(SharerNotice.decodeID("viewerPending:"), "empty identity")
@@ -327,4 +335,5 @@ final class SharerNoticeTests: XCTestCase {
         }
         XCTAssertEqual(lastApplied, 3)
     }
+
 }
