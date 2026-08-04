@@ -6,6 +6,13 @@ gem "github-pages", "~> 232", group: :jekyll_plugins
 gem "jekyll-remote-theme"
 gem "jekyll-seo-tag"
 
+# just-the-docs declares rake as a runtime dependency, and jekyll-remote-theme
+# requires a remote theme's runtime deps at build time. Outside a bundle, rake
+# resolves from Ruby's default gems and the build works by accident; under
+# setup-ruby's isolated vendored bundle it doesn't ("Yikes! It looks like you
+# don't have rake"), so name it explicitly.
+gem "rake"
+
 # Windows / JRuby compatibility (harmless on macOS/Linux)
 gem "tzinfo-data", platforms: [:mingw, :mswin, :x64_mingw, :jruby]
 gem "wdm", "~> 0.1.1", platforms: [:mingw, :mswin, :x64_mingw]
