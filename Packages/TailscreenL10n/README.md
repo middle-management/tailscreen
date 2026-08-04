@@ -93,7 +93,7 @@ Three consequences worth knowing:
 | Variable | Effect |
 |---|---|
 | `TAILSCREEN_LANG` | Force a language (`sv`, `en-GB`, or a comma-separated preference list), whatever the system says. |
-| `TAILSCREEN_L10N_BUNDLE` | Point the lookup at a directory of `.lproj`s, or at a `…_TailscreenL10n.bundle`. For tests and unusual packaging layouts. |
+| `TAILSCREEN_L10N_BUNDLE` | Point the lookup at a directory of `.lproj`s, or at a `…_TailscreenL10n.bundle`. For tests and unusual packaging layouts. Authoritative — when set, nowhere else is searched, so naming a directory that has no catalog gives you English rather than one found elsewhere. |
 
 Otherwise the preference order is `Locale.preferredLanguages` on Apple
 platforms, and `LC_ALL` / `LC_MESSAGES` / `LANG` (falling back to

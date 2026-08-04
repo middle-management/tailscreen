@@ -132,8 +132,12 @@ final class LocalizationCatalog: @unchecked Sendable {
     private static func searchDirectories() -> [URL] {
         var directories: [URL] = []
         let environment = ProcessInfo.processInfo.environment
+        // An explicit override is the ONLY place looked at, not the first of
+        // several. Somebody who names a directory and gets the catalog from a
+        // different one has been lied to — and the failure would be invisible,
+        // since both answers are plausible strings on screen.
         if let override = environment[bundlePathEnvironmentKey], !override.isEmpty {
-            directories.append(URL(fileURLWithPath: override))
+            return [URL(fileURLWithPath: override)]
         }
         // macOS: the app bundle's Contents/Resources, where the `.app`
         // assembly step drops every SwiftPM resource bundle.

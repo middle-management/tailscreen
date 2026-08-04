@@ -43,8 +43,8 @@ final class LocalizationLookupTests: XCTestCase {
 
     override func tearDown() {
         #if canImport(Darwin) || canImport(Glibc)
-        unsetenv(LocalizationCatalog.bundlePathEnvironmentKey)
-        unsetenv(LocalizationCatalog.languageEnvironmentKey)
+        _ = unsetenv(LocalizationCatalog.bundlePathEnvironmentKey)
+        _ = unsetenv(LocalizationCatalog.languageEnvironmentKey)
         LocalizationCatalog.shared.resetForTesting()
         if let created = directory { try? FileManager.default.removeItem(at: created) }
         #endif
@@ -53,14 +53,14 @@ final class LocalizationLookupTests: XCTestCase {
     private func use(language: String?, bundle: URL?) {
         #if canImport(Darwin) || canImport(Glibc)
         if let bundle {
-            setenv(LocalizationCatalog.bundlePathEnvironmentKey, bundle.path, 1)
+            _ = setenv(LocalizationCatalog.bundlePathEnvironmentKey, bundle.path, 1)
         } else {
-            unsetenv(LocalizationCatalog.bundlePathEnvironmentKey)
+            _ = unsetenv(LocalizationCatalog.bundlePathEnvironmentKey)
         }
         if let language {
-            setenv(LocalizationCatalog.languageEnvironmentKey, language, 1)
+            _ = setenv(LocalizationCatalog.languageEnvironmentKey, language, 1)
         } else {
-            unsetenv(LocalizationCatalog.languageEnvironmentKey)
+            _ = unsetenv(LocalizationCatalog.languageEnvironmentKey)
         }
         LocalizationCatalog.shared.resetForTesting()
         #endif
@@ -98,6 +98,11 @@ final class LocalizationLookupTests: XCTestCase {
         XCTAssertEqual(LocalizationCatalog.shared.activeLanguage, "en")
         XCTAssertEqual(L("Refresh"), "Refresh")
 
+        // A named-but-absent bundle is the packaging accident this whole
+        // fallback exists for. It also pins that the override is the ONLY
+        // place looked at: `.build/debug` next to this test binary really does
+        // hold the shipped catalog, and finding *that* instead would make the
+        // assertion below pass in Swedish.
         use(language: "sv", bundle: directory.appendingPathComponent("nowhere"))
         XCTAssertEqual(L("Refresh"), "Refresh")
         XCTAssertEqual(L("\(2) watching"), "2 watching")
