@@ -66,11 +66,29 @@ extension SharerNoticeKind {
 }
 
 /// What the user chose on a notice, normalized across platforms.
+///
+/// **The raw values are the action keys**, and that is load-bearing rather than
+/// incidental. Every platform's notification button carries two strings — one
+/// the user reads, one that comes back when it is pressed — and only the second
+/// is ours. `UNNotificationAction(identifier:title:)`, freedesktop's
+/// `actions` array of (key, label) pairs and `AppNotificationButton`'s
+/// argument string are all the same shape.
+///
+/// Putting a *label* in the key slot is the failure this doc exists to prevent.
+/// It works perfectly in English and then a localized build hands back "Godkänn"
+/// where the router expects "approve", the lookup misses, and the button does
+/// nothing at all — no error, no log line, just a banner that swallows presses.
+/// So hosts localize the title and pass `rawValue` verbatim as the key, and
+/// route a press back through `NoticeAction(rawValue:)` — which returns nil for
+/// anything it did not mint, including a translated label.
 public enum NoticeAction: String, Codable, Sendable, CaseIterable {
     case approve
     case deny
     /// Closed without choosing. Distinct from `deny` on purpose: dismissing a
     /// banner must never be read as a decision about a peer.
+    ///
+    /// Never an offered button (see `SharerNoticeKind.actions`) — hosts
+    /// synthesize it from their platform's "user swiped it away" signal.
     case dismiss
 }
 
@@ -85,12 +103,47 @@ public struct SharerNotice: Equatable, Sendable, Identifiable {
 
     /// Unique across kinds, so one host-side notified-set can serve all three
     /// without a peer's pending notice suppressing its later control request.
+    ///
+    /// Also the **posted notification's identifier**, which buys two things a
+    /// random UUID did not. A re-post of the same notice replaces the banner
+    /// in place instead of stacking a second one — every platform keys
+    /// replacement on this string. And it is the only thing that survives the
+    /// round trip out to the notification daemon and back, so it is how a
+    /// button press finds the peer it was about: see `decodeID`.
     public var id: String { "\(kind.rawValue):\(identity)" }
 
     public init(kind: SharerNoticeKind, identity: String, label: String) {
         self.kind = kind
         self.identity = identity
         self.label = label
+    }
+
+    /// Recover the `(kind, identity)` an `id` was minted from.
+    ///
+    /// A press arrives from the notification daemon as two opaque strings —
+    /// the notification's identifier and the action key — and nothing else.
+    /// Neither the host's live state nor the notice object is attached, and
+    /// the banner may have sat in a notification centre for an hour, so this
+    /// has to be a pure parse of the identifier.
+    ///
+    /// **Splits on the first colon, never the last.** `identity` is routinely
+    /// full of colons — the viewer roster keys by `ip:port`, and an IPv6
+    /// literal is mostly colons — while no kind's `rawValue` contains one. A
+    /// last-colon split works on IPv4 for exactly as long as nobody shares
+    /// over IPv6.
+    ///
+    /// Returns nil rather than guessing on anything it did not mint: an
+    /// unknown kind (an id from a newer build sitting in notification centre
+    /// across an update), or an empty identity. A wrong guess here acts on the
+    /// wrong peer, which is strictly worse than a button that does nothing.
+    public static func decodeID(_ id: String) -> (kind: SharerNoticeKind, identity: String)? {
+        guard let separator = id.firstIndex(of: ":") else { return nil }
+        guard let kind = SharerNoticeKind(rawValue: String(id[id.startIndex..<separator])) else {
+            return nil
+        }
+        let identity = String(id[id.index(after: separator)...])
+        guard !identity.isEmpty else { return nil }
+        return (kind, identity)
     }
 }
 
@@ -141,6 +194,31 @@ public enum SharerNoticeDecision {
                 SharerNotice(kind: kind, identity: candidate.identity, label: candidate.label))
         }
         return (post, notified)
+    }
+
+    /// Whether a notice may play a sound.
+    ///
+    /// The rule is "not while we are capturing", and it exists because a
+    /// notification that *succeeds* is a notification on the screen being
+    /// shared. The audible half of that leak is the one that cannot be seen
+    /// coming: a sharer capturing system audio is capturing the system mix,
+    /// and the exclusion every platform offers drops only *our own* process's
+    /// audio — a notification ding is played by the notification daemon, so it
+    /// is somebody else's audio and it goes out on the wire. The sharer hears
+    /// their own ding and has no way to know the viewers heard it too.
+    ///
+    /// Gating on the whole share rather than on "is system audio on" is
+    /// deliberate. The narrower flag is togglable mid-share and mid-post, so
+    /// it can be true between the decision and the sound; and the thing it
+    /// would buy back is a ding for a person who is, by definition, sitting in
+    /// front of the machine presenting. The banner is the notification.
+    ///
+    /// Note this only ever changes anything for `requestToShare`: the other
+    /// four kinds exist only *during* a share, so they are silent under this
+    /// rule always. An invitation arriving at an idle machine is the one
+    /// notice with nothing to leak into and the best reason to be heard.
+    public static func playsSound(isCapturing: Bool) -> Bool {
+        !isCapturing
     }
 
     /// Whether a snapshot carrying `generation` should be dropped because a

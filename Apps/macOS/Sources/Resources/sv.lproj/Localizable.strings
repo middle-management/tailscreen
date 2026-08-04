@@ -290,7 +290,7 @@
 "Viewer Disconnected" = "Tittare frånkopplad";
 "%@ stopped viewing your screen." = "%@ visar inte längre din skärm.";
 "Viewer Wants to Connect" = "Tittare vill ansluta";
-"%@ is asking to view your screen. Open Tailscreen to Accept or Deny." = "%@ vill visa din skärm. Öppna Tailscreen för att acceptera eller neka.";
+"%@ is asking to view your screen." = "%@ vill se din skärm.";
 
 /* MARK: - Viewer menu commands (ViewerCommands.swift) */
 "Mute Microphone" = "Stäng av mikrofon";
@@ -388,7 +388,7 @@
 
 /* Remote control */
 "Viewer Wants Control" = "Tittare vill styra";
-"%@ is asking to control your Mac. Open Tailscreen to Grant or Deny." = "%@ vill styra din Mac. Öppna Tailscreen för att bevilja eller neka.";
+"%@ is asking to control your Mac." = "%@ vill styra din Mac.";
 "Accessibility Permission Needed" = "Tillgänglighetsbehörighet krävs";
 "To let a viewer control your Mac, allow Tailscreen under System Settings → Privacy & Security → Accessibility, then grant control again." = "För att låta en tittare styra din Mac, tillåt Tailscreen under Systeminställningar → Integritet och säkerhet → Tillgänglighet och bevilja sedan styrning igen.";
 "Open Settings" = "Öppna Inställningar";

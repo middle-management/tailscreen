@@ -51,22 +51,35 @@ private struct TSLogger: LogSink {
     }
 }
 
-/// Thin wrapper around `UNUserNotificationCenter` for the
-/// viewer-connection feature. Two surfaces:
+/// `UNUserNotificationCenter` delivery for `SharerNotice` — the whole sharer
+/// notification surface, all five kinds, one code path.
 ///
-///   * `postJoined(label:)` — fired the moment a viewer's video starts
-///     flowing (open-door mode, or post-Accept in approval mode).
-///   * `postPending(label:)` — fired when a viewer arrives while the
-///     approval gate is on and is now waiting on the sharer's decision.
+/// **What is shared with the other platforms and what is not.** The *decisions*
+/// come from `TailscreenProtocol`: which candidates are worth a banner
+/// (`SharerNoticeDecision.noticesToPost`), which kinds break through a Focus
+/// (`SharerNoticeKind.blocksSomeone`), which offer buttons
+/// (`SharerNoticeKind.actions`), what a button press is called
+/// (`NoticeAction.rawValue`), and whether anything may make a sound
+/// (`SharerNoticeDecision.playsSound`). The *words* do not: macOS routes every
+/// user-facing string through `L(_:)` against `Bundle.module`, so the titles,
+/// bodies and button labels below are local and localized, and the shared
+/// English source text (`SharerNoticeText`, which the freedesktop backend
+/// renders from) is deliberately not consulted.
+///
+/// That split is exactly where a button stops routing if it is drawn wrong.
+/// The *label* on a button is localized and changes per language; the *key* it
+/// reports back is `NoticeAction.rawValue` and must not. So the two are
+/// separate arguments to `UNNotificationAction(identifier:title:)`, and
+/// `TailscreenNotificationDelegate` reads back the identifier, never the title.
 ///
 /// Authorization is requested on first use. Unbundled dev builds (no
 /// `CFBundleIdentifier`) can't use `UNUserNotificationCenter` at all —
 /// `current()` raises `NSInternalInconsistencyException` rather than
 /// returning a degraded instance — so we short-circuit when there's no
-/// bundle id. The in-popover SharingCard UI still shows pending rows.
+/// bundle id. The in-app pending lists still show every row.
 @MainActor
-final class ViewerJoinNotifier {
-    static let shared = ViewerJoinNotifier()
+final class SharerNoticeCenter {
+    static let shared = SharerNoticeCenter()
     private var didRequestAuthorization = false
     private let isBundled = Bundle.main.bundleIdentifier != nil
 
@@ -113,68 +126,24 @@ final class ViewerJoinNotifier {
         onAuthorizationChanged?(value)
     }
 
-    func postJoined(label: String) {
-        post(
-            prefix: "tailscreen.viewer.joined",
-            title: L("Viewer Connected"),
-            body: L("\(label) is now viewing your screen."),
-            blocksSomeone: false)
-    }
-
-    /// Fired when a viewer's session ends — they disconnected, the idle sweep
-    /// dropped them, or the sharer kicked them.
+    /// Post one notice.
     ///
-    /// The counterpart to `postJoined`: a sharer told somebody arrived and
-    /// never told they left has to go looking to find out whether anyone is
-    /// still watching, which is the same "ask the app" problem notifications
-    /// exist to remove. Same non-urgent level — nobody is stranded by a
-    /// departure.
-    func postLeft(label: String) {
-        post(
-            prefix: "tailscreen.viewer.left",
-            title: L("Viewer Disconnected"),
-            body: L("\(label) stopped viewing your screen."),
-            blocksSomeone: false)
-    }
-
-    func postPending(label: String) {
-        post(
-            prefix: "tailscreen.viewer.pending",
-            title: L("Viewer Wants to Connect"),
-            body: L("\(label) is asking to view your screen. Open Tailscreen to Accept or Deny."),
-            blocksSomeone: true)
-    }
-
-    func postControlRequested(label: String) {
-        post(
-            prefix: "tailscreen.control.requested",
-            title: L("Viewer Wants Control"),
-            body: L("\(label) is asking to control your Mac. Open Tailscreen to Grant or Deny."),
-            blocksSomeone: true)
-    }
-
-    /// One post path for all three, so the delivery decisions below can't
-    /// drift between them the way `.interruptionLevel` did — three
-    /// near-identical copies is how one of them ends up different.
+    /// One path for all five kinds, so the delivery decisions below can't
+    /// drift between them the way `.interruptionLevel` did — near-identical
+    /// copies is how one of them ends up different.
     ///
-    /// **No sound.** Every notice here fires *during* a share, and with system
-    /// audio shared the helper captures the system mix.
-    /// `excludesCurrentProcessAudio` drops only Tailscreen's own audio, and a
-    /// notification sound is played by another process — so a `.default` sound
-    /// here is a sound every viewer hears. The banner is the notification; the
-    /// ding was leaking the fact that one arrived.
-    ///
-    /// `blocksSomeone` decides whether the notice outranks a Focus. It is the
-    /// same split `SharerNoticeKind.blocksSomeone` makes in the portable tier;
-    /// this reimplements it locally so the two changes stay independently
-    /// reviewable, and should be replaced by that type when the actionable
-    /// notifications land.
-    private func post(prefix: String, title: String, body: String, blocksSomeone: Bool) {
+    /// `isCapturing` is the sound gate, and it is the caller's because only
+    /// `AppState` knows: see `SharerNoticeDecision.playsSound` for why a ding
+    /// during a share is audible to every viewer.
+    func post(_ notice: SharerNotice, isCapturing: Bool) {
         guard isBundled else { return }
         ensureAuthorization()
         let content = UNMutableNotificationContent()
-        content.title = title
-        content.body = body
+        content.title = Self.title(for: notice.kind)
+        content.body = Self.body(for: notice)
+        if SharerNoticeDecision.playsSound(isCapturing: isCapturing) {
+            content.sound = .default
+        }
         // A viewer parked at the approval gate cannot proceed until the sharer
         // answers, and "require approval" defaults on — so the person most
         // likely to be running a presentation Focus is exactly the person most
@@ -182,13 +151,134 @@ final class ViewerJoinNotifier {
         // through Focus and Do Not Disturb and needs no entitlement (that is
         // `.critical`); the user can still revoke it per-app. A viewer *join*
         // is a report, not an ask, so it stays at the default level.
-        content.interruptionLevel = blocksSomeone ? .timeSensitive : .active
+        content.interruptionLevel = notice.kind.blocksSomeone ? .timeSensitive : .active
+        // The category is what carries the buttons — an unregistered or empty
+        // identifier renders a plain banner, which is the correct outcome for
+        // the two informational kinds.
+        content.categoryIdentifier = Self.categoryIdentifier(for: notice.kind)
+        // `notice.id`, not a fresh UUID. Re-posting the same notice then
+        // replaces the banner in place rather than stacking a second one, and
+        // it is the only thing that survives the trip out to the notification
+        // daemon and back — `didReceive` decodes it to find the peer.
         let req = UNNotificationRequest(
-            identifier: "\(prefix).\(UUID().uuidString)",
+            identifier: notice.id,
             content: content,
             trigger: nil
         )
         UNUserNotificationCenter.current().add(req, withCompletionHandler: nil)
+    }
+
+    /// Withdraw a notice that has been answered elsewhere — in the hub window,
+    /// in the popover, or by the peer giving up.
+    ///
+    /// An actionable banner outlives what it is about. Left in Notification
+    /// Center, an "Accept / Deny" for a viewer who is already watching invites
+    /// a press that can only be a no-op, and reads as a broken button rather
+    /// than as a stale one. Withdrawing costs nothing and is the honest
+    /// counterpart to posting.
+    func withdraw(kind: SharerNoticeKind, identities: [String]) {
+        guard isBundled, !identities.isEmpty else { return }
+        // Round-tripped through `SharerNotice` rather than by formatting
+        // `"kind:identity"` here, so posting and withdrawing can't disagree
+        // about the identifier. The label is unused in `id` — that is the only
+        // reason the empty string is safe.
+        let ids = identities.map { SharerNotice(kind: kind, identity: $0, label: "").id }
+        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ids)
+    }
+
+    // MARK: - Words (macOS-local, localized)
+
+    /// The short line. Says nothing about *who* — that is the body's job, and
+    /// duplicating it reads as a stutter in a banner that shows both.
+    private static func title(for kind: SharerNoticeKind) -> String {
+        switch kind {
+        case .viewerPending: L("Viewer Wants to Connect")
+        case .controlRequested: L("Viewer Wants Control")
+        case .requestToShare: L("Tailscreen request")
+        case .viewerJoined: L("Viewer Connected")
+        case .viewerLeft: L("Viewer Disconnected")
+        }
+    }
+
+    /// The sentence naming the peer and what they want.
+    ///
+    /// The two asks used to end with "Open Tailscreen to Accept or Deny."
+    /// That sentence was true when the banner had no buttons and is now an
+    /// instruction to go the long way round past the two buttons directly
+    /// underneath it.
+    private static func body(for notice: SharerNotice) -> String {
+        let label = notice.label
+        switch notice.kind {
+        case .viewerPending: return L("\(label) is asking to view your screen.")
+        case .controlRequested: return L("\(label) is asking to control your Mac.")
+        case .requestToShare: return L("\(label) wants you to share your screen")
+        case .viewerJoined: return L("\(label) is now viewing your screen.")
+        case .viewerLeft: return L("\(label) stopped viewing your screen.")
+        }
+    }
+
+    // MARK: - Categories and buttons
+
+    /// A notification's buttons come from its *category*, registered once with
+    /// the system rather than attached per-post. One per actionable kind;
+    /// the two informational kinds get the empty identifier and no buttons.
+    static func categoryIdentifier(for kind: SharerNoticeKind) -> String {
+        kind.actions.isEmpty ? "" : "tailscreen.notice.\(kind.rawValue)"
+    }
+
+    /// Every category the app can post under, for
+    /// `setNotificationCategories` at launch.
+    ///
+    /// The affirmative is worded per kind rather than shared, matching the
+    /// in-app control for the same decision: the pending row says Accept, the
+    /// control request says Grant, and an invitation to start sharing is
+    /// answered with Share — "Accept" is right for a viewer at the gate and
+    /// limp for an invitation, where the answer is an action rather than
+    /// agreement. Only the labels vary; both keys are the shared
+    /// `NoticeAction` raw values, so one router handles all three.
+    static func categories() -> Set<UNNotificationCategory> {
+        var categories: Set<UNNotificationCategory> = []
+        for kind in SharerNoticeKind.allCases where !kind.actions.isEmpty {
+            let actions = kind.actions.compactMap { action -> UNNotificationAction? in
+                guard let title = label(for: action, kind: kind) else { return nil }
+                return UNNotificationAction(
+                    identifier: action.rawValue, title: title, options: options(for: action))
+            }
+            categories.insert(
+                UNNotificationCategory(
+                    identifier: categoryIdentifier(for: kind),
+                    actions: actions,
+                    intentIdentifiers: [],
+                    options: []))
+        }
+        return categories
+    }
+
+    /// `nil` for an action that is never drawn as a button — `dismiss` is
+    /// synthesized from the system's own "swiped away" identifier, never
+    /// offered, because closing a banner must not read as a decision about a
+    /// person.
+    private static func label(for action: NoticeAction, kind: SharerNoticeKind) -> String? {
+        switch (action, kind) {
+        case (.approve, .viewerPending): return L("Accept")
+        case (.approve, .controlRequested): return L("Grant")
+        case (.approve, .requestToShare): return L("Share")
+        case (.deny, .requestToShare): return L("Decline")
+        case (.deny, _): return L("Deny")
+        case (.approve, _), (.dismiss, _): return nil
+        }
+    }
+
+    /// Approving needs an unlocked Mac; denying does not.
+    ///
+    /// macOS can show notification actions on the lock screen, and two of the
+    /// three approvals here hand a stranger the screen or the pointer. The
+    /// deny half is deliberately left unguarded: it is the fail-safe answer,
+    /// and making the safe answer the harder one is how people learn to press
+    /// the other one.
+    private static func options(for action: NoticeAction) -> UNNotificationActionOptions {
+        guard action == .approve else { return [] }
+        return [.authenticationRequired]
     }
 
     private func ensureAuthorization() {
@@ -210,7 +300,7 @@ final class ViewerJoinNotifier {
         // authorized post actually appear.
         let record: @Sendable (Bool, (any Error)?) -> Void = { granted, _ in
             Task { @MainActor in
-                ViewerJoinNotifier.shared.setAuthorization(granted ? .authorized : .denied)
+                SharerNoticeCenter.shared.setAuthorization(granted ? .authorized : .denied)
             }
         }
         UNUserNotificationCenter.current().requestAuthorization(
@@ -248,7 +338,7 @@ final class ViewerJoinNotifier {
                 TSLogger().log(
                     "Notifications denied — viewer approval prompts will only appear in the app")
             }
-            Task { @MainActor in ViewerJoinNotifier.shared.setAuthorization(state) }
+            Task { @MainActor in SharerNoticeCenter.shared.setAuthorization(state) }
         }
         UNUserNotificationCenter.current().getNotificationSettings(completionHandler: apply)
     }

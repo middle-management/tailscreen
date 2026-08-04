@@ -209,6 +209,38 @@ Then add `UNNotificationCategory` + `UNNotificationAction` and implement
 `didReceive response`. Doing this first also validates the portable decision
 layer against a working implementation.
 
+> **Landed.** The buttons were the visible half; the deliverable was the
+> consolidation underneath them. All four macOS posting paths — the viewer
+> roster, the approval gate, control requests and request-to-share — now run
+> through `SharerNoticeDecision.noticesToPost`, so `notifiedViewerIDs`,
+> `AppState.controlRequestNotificationDecision` (deleted) and the bare snapshot
+> diff in `handlePendingViewersChanged` are one rule with four keys instead of
+> three implementations of it. `TailscreenUserNotifications` went with them:
+> request-to-share had its own authorization state machine, and two of those in
+> one process is two answers to "will this be shown".
+>
+> **The split that decides whether a press routes.** macOS shares the
+> *decisions* and the *action keys* — `NoticeAction.rawValue`, the string a
+> button reports back — and keeps its own localized words, because `L(_:)`
+> resolves against `Bundle.module` and `SharerNoticeText` is English source
+> text for the freedesktop backend to render. Put the label in the key slot and
+> the English build works perfectly while every other language silently drops
+> every press: `UNNotificationAction(identifier:title:)` takes both, and
+> `didReceive` reads only the identifier. `SharerNotice.id` doubles as the
+> notification identifier, which is what carries the peer across the process
+> boundary and back — and, incidentally, makes a re-post replace its banner
+> instead of stacking one.
+>
+> Two things fell out of having a real implementation. A banner outlives what
+> it is about, so every press resolves its identity against the *live* list
+> first and no-ops when the row is gone — an hour-old Accept must not land on
+> whoever holds that address now — and answering in the app withdraws the
+> banner, since an Accept that can only be a no-op reads as a broken button.
+> And the **audible** leak is closed: `SharerNoticeDecision.playsSound` is
+> false for the whole share, which in practice only changes `requestToShare`,
+> the one kind that arrives at an idle machine with nothing to leak into. The
+> *visual* half stays deferred for the reason written above it.
+
 **The part that cuts the other way.** A notification that succeeds is now on the
 screen being captured, and viewers see it — ours and every other app's. Two
 concrete leaks, both worth closing in the same pass:
@@ -506,9 +538,9 @@ Packages/WinNotifyKit/                                  new (CWinNotify + Swift)
 Apps/linux/Sources/tailscreen/Notifications.swift       new (GDBus)
 Apps/linux/Sources/tailscreen/CaptureOutline.swift      new (X11 shaped window)
 Apps/linux/Sources/CGtkVideo/ (or a sibling shim)       GtkShortcutsWindow
-Apps/macOS/Sources/ViewerApproval.swift                 interruption level, sound, categories
-Apps/macOS/Sources/TailscreenUserNotifications.swift    same, plus authorization read-back
-Apps/macOS/Sources/AppState.swift                       UN delegate, action responses
+Apps/macOS/Sources/ViewerApproval.swift                 SharerNoticeCenter: level, sound, categories
+Apps/macOS/Sources/TailscreenUserNotifications.swift    UN delegate + didReceive routing
+Apps/macOS/Sources/AppState.swift                       one dedupe path, action handlers
 Apps/macOS/Sources/SharerOverlayWindow.swift            border stroke for the whole share
 Apps/macOS/Sources/AppMenu.swift                        ⌃⌥M key equivalent
 Apps/macOS/Sources/GlobalHotkey.swift                   expose registration failure

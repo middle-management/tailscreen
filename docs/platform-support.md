@@ -183,7 +183,7 @@ Two things behind the ✅s are worth knowing:
 | Connection stats overlay | ✅ | ✅ | ✅ |
 | Localized strings | ✅ | ❌ | ❌ |
 | **Notified when a viewer is waiting for approval** | ✅ | ❌ | ❌ |
-| Answer that prompt from the notification | ❌ | ❌ | ❌ |
+| Answer that prompt from the notification | ✅ | ❌ | ❌ |
 | Told when notifications are switched off | ✅ | ❌ | ❌ |
 | Notified when a viewer joins / leaves | ✅ | ❌ | ❌ |
 | **Outline around what's being captured** | ✅ | ❌ | ⚠️ WGC's own, unconfirmed |
@@ -209,10 +209,12 @@ your viewers. Every mid-share action costs an interruption the audience can see.
 **Notifications are the worst of these gaps.** Approval defaults *on*, so a
 sharer who isn't watching the window silently strands whoever tries to connect;
 there is nothing to poll for and no way to find out. Linux and Windows post
-nothing at all. macOS posts, but weakly: every notification is left at
-`interruptionLevel = .active`, so a Focus — including the one people run while
-presenting — swallows it, and none of them carry *actions*, so at best you are
-told and then you go to the app.
+nothing at all. macOS now posts properly: the two asks that strand somebody
+mid-share are Time Sensitive, so a Focus — including the one people run while
+presenting — doesn't swallow them, and every ask carries Accept / Deny buttons
+you answer without leaving what you're doing. Nothing dings while a share is
+running, because a notification sound is played by another process and goes out
+with your shared system audio.
 
 **"Am I still sharing?" is a different question, and an outline answers it
 better than an icon.** A border drawn around the captured region says what a
