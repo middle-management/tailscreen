@@ -87,6 +87,8 @@ One skill loads on demand rather than by path: **`test-catalog`** — the extrac
 
 Longer-form design docs (published site) live in `docs/`: `architecture.md`, `protocol.md`, `security.md`, `platform-support.md` (the per-platform feature matrix — update it in the same commit as any change that opens or closes a platform gap), `porting-plan.md`, `linux-viewer-gtk-plan.md`, `viewer-windows-plan.md`, `mac-viewer-convergence.md`.
 
+**The docs site ships with the change that makes it true.** A PR that changes anything user-facing — a feature, an install step, an artifact name, a permission prompt, a platform gap opening or closing — updates the matching page under `docs/` (`index.md`, `install.md`, `usage.md`, `platform-support.md`, `troubleshooting.md`, …) in the same PR; there is no separate docs catch-up step. This is safe to do eagerly: `docs/` on `main` publishes only to the **/next** preview channel (tailscreen.dev/next, banner + noindex), while the root site builds from the **latest release tag** (see `pages.yml`), so docs merged with a feature never promise anything unreleased — and the root flips to them automatically when the release publishes.
+
 ## Git workflow notes
 
 - The libtailscale submodule is pinned with `ignore = dirty`, so a dirty upstream tree never shows up in `git status` — check it explicitly when a patch misbehaves.
