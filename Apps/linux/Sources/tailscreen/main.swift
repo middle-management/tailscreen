@@ -676,9 +676,19 @@ struct ViewerApp: App {
             statusLine: sharer.statusLine,
             isSharing: sharer.phase == .sharing,
             canShare: sharer.canShare,
-            // Only ever the one line, and only after a grant was refused —
-            // see `SharerModel.controlNote`.
-            notes: sharer.controlNote.map { [$0] } ?? [],
+            notes: {
+                var notes: [String] = []
+                // Only after a grant was refused — see `SharerModel.controlNote`.
+                if let controlNote = sharer.controlNote { notes.append(controlNote) }
+                // Said only while sharing, and only when true: the person this
+                // would have reached is the one who has stopped looking at
+                // this window, so they should be told before they do.
+                if sharer.phase == .sharing && sharer.notificationsUnavailable {
+                    notes.append(
+                        "No desktop notifications on this system — approvals appear here only.")
+                }
+                return notes
+            }(),
             // The roster: who is watching, and what can be done about them.
             // `notes` is now free for statistics; a person is not a note.
             viewers: sharer.viewers.map { viewer in
