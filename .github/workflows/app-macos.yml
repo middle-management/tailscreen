@@ -284,12 +284,14 @@ jobs:
           # runtime — the lookup degrades to the English keys — which is
           # precisely why it is asserted here instead of being noticed by a
           # Swedish user three releases later.
-          # Matched by SUFFIX: SwiftPM derives the first half of
-          # `<something>_TailscreenL10n.bundle` from the package, and that half
-          # is not stable across toolchains.
-          L10N_SRC=$(find -L "${PRODUCTS_DIR}" -maxdepth 1 -type d -name '*_TailscreenL10n.bundle' | head -1)
+          # Matched on the TARGET NAME: SwiftPM derives the first half of
+          # `<something>_TailscreenL10n.<ext>` from the package, and the
+          # extension is `.bundle` here but `.resources` off Darwin. Both are
+          # accepted so this step reads the same as the Linux one.
+          L10N_SRC=$(find -L "${PRODUCTS_DIR}" -maxdepth 1 -type d \
+            \( -name '*_TailscreenL10n.bundle' -o -name '*_TailscreenL10n.resources' \) | head -1)
           if [ -z "$L10N_SRC" ]; then
-            echo "::error::no *_TailscreenL10n.bundle in ${PRODUCTS_DIR}"
+            echo "::error::no *_TailscreenL10n.{bundle,resources} in ${PRODUCTS_DIR}"
             ls -la "${PRODUCTS_DIR}" || true
             exit 1
           fi

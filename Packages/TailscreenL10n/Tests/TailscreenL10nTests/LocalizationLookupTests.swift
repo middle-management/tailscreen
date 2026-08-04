@@ -129,8 +129,11 @@ final class LocalizationLookupTests: XCTestCase {
     /// matches on the suffix it owns.
     func testFindsTheCatalogInsideAGeneratedResourceBundle() throws {
         let parent = directory.appendingPathComponent("staged")
+        // `.resources`, not `.bundle`: that is the extension SwiftPM uses off
+        // Darwin, and the pair (unknown prefix, platform extension) is exactly
+        // what the first packaging run got wrong.
         let bundle = parent.appendingPathComponent(
-            "whatever-swiftpm-decided\(LocalizationCatalog.bundleNameSuffix)")
+            "whatever-swiftpm-decided\(LocalizationCatalog.bundleNameStem).resources")
         try FileManager.default.createDirectory(
             at: bundle.appendingPathComponent("sv.lproj"), withIntermediateDirectories: true)
         try #""Refresh" = "Uppdatera";"#.write(

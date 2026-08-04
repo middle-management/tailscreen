@@ -287,15 +287,16 @@ jobs:
           # testing, because the lookup degrades to the English keys rather
           # than failing — hence the hard check.
           #
-          # Matched by SUFFIX, not by full name: SwiftPM calls it
-          # `<something>_TailscreenL10n.bundle` and derives the first half from
-          # the package in a way that is not stable across toolchains — a
-          # hard-coded `TailscreenL10n_TailscreenL10n.bundle` is what failed
-          # the first run of this step.
+          # Matched on the TARGET NAME, not the full name: SwiftPM calls it
+          # `<something>_TailscreenL10n.<ext>`, derives the first half from the
+          # package, and uses `.resources` off Darwin where macOS gets
+          # `.bundle`. A hard-coded `TailscreenL10n_TailscreenL10n.bundle` is
+          # what failed the first run of this step.
           PRODUCTS="Apps/linux/.build/${{ inputs.configuration }}"
-          L10N_SRC=$(find -L "$PRODUCTS" -maxdepth 1 -type d -name '*_TailscreenL10n.bundle' | head -1)
+          L10N_SRC=$(find -L "$PRODUCTS" -maxdepth 1 -type d \
+            \( -name '*_TailscreenL10n.bundle' -o -name '*_TailscreenL10n.resources' \) | head -1)
           if [ -z "$L10N_SRC" ]; then
-            echo "::error::no *_TailscreenL10n.bundle in $PRODUCTS"
+            echo "::error::no *_TailscreenL10n.{bundle,resources} in $PRODUCTS"
             ls -la "$PRODUCTS" || true
             exit 1
           fi

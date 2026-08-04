@@ -46,26 +46,6 @@ if [ -z "$probe" ]; then
 fi
 cp "$probe" dist/tsnet-probe.exe
 
-# The string catalog, beside the exe — `LocalizationCatalog` searches the
-# executable's own directory, so dist/ is where it has to land (and MSIX
-# packaging takes dist/ wholesale, so nothing else needs to know about it).
-#
-# Hard failure, deliberately, and for the same reason the probe check above is:
-# a missing catalog does not break the app, it silently makes it English-only,
-# so there is no downstream symptom for anyone to notice.
-# Matched by SUFFIX: SwiftPM names it `<something>_TailscreenL10n.bundle` and
-# derives the first half from the package, which is not stable across
-# toolchains — a hard-coded full name is what failed the first Linux run of the
-# equivalent step.
-l10n_src=$(find Apps/windows/.build -path '*/release/*' -name '*_TailscreenL10n.bundle' -type d | head -1)
-if [ -z "$l10n_src" ]; then
-  echo "no *_TailscreenL10n.bundle produced" >&2
-  find Apps/windows/.build -path '*/release/*' -maxdepth 3 -name '*.bundle' -type d >&2 || true
-  exit 1
-fi
-l10n_bundle=$(basename "$l10n_src")
-rm -rf "dist/$l10n_bundle"
-cp -R "$l10n_src" "dist/$l10n_bundle"
 
 # The toolchain ships the runtime and the COMPILER in one bin
 # directory, so copying every DLL beside swiftCore.dll produced a
@@ -132,6 +112,20 @@ for bundle in "$exedir"/*.resources "$exedir"/*.bundle; do
   cp -R "$bundle" dist/
 done
 shopt -u nullglob
+
+# The string catalog is one of those bundles, and it is the one whose absence
+# is SILENT: the app launches, works, and is simply English-only forever. So
+# the sweep above is verified rather than trusted. Both extensions are
+# accepted because SwiftPM writes `.resources` off Darwin and `.bundle` on it,
+# and the prefix is derived from the package and varies — assuming a literal
+# `TailscreenL10n_TailscreenL10n.bundle` is what failed the equivalent Linux
+# step the first time it ran.
+if ! compgen -G "dist/*_TailscreenL10n.resources" > /dev/null \
+  && ! compgen -G "dist/*_TailscreenL10n.bundle" > /dev/null; then
+  echo "no *_TailscreenL10n.{bundle,resources} staged — the app would be English-only" >&2
+  ls -la dist/ >&2 || true
+  exit 1
+fi
 
 # WindowsAppRuntimeInstaller.exe is deliberately NOT staged any more: the
 # app ships the Windows App SDK runtime itself (stage-winappsdk.sh runs
