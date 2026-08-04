@@ -145,9 +145,9 @@ final class LocalizationCatalogTests: XCTestCase {
                     at: directory, includingPropertiesForKeys: [.isDirectoryKey])) ?? []
             for entry in entries {
                 var isDirectory: ObjCBool = false
-                if FileManager.default.fileExists(atPath: entry.path, isDirectory: &isDirectory),
-                    isDirectory.boolValue
-                {
+                let exists = FileManager.default.fileExists(
+                    atPath: entry.path, isDirectory: &isDirectory)
+                if exists, isDirectory.boolValue {
                     pending.append(entry)
                 } else if entry.pathExtension == "swift" {
                     found.append(entry)

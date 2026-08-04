@@ -89,6 +89,13 @@ enum StringsFile {
         if index < chars.count { index += 1 }
     }
 
+    /// The scalar behind a `\Uxxxx` escape, or nil if those four characters
+    /// aren't four hex digits (in which case the `U` is literal text).
+    private static func fourDigitScalar(_ hex: String) -> Unicode.Scalar? {
+        guard hex.count == 4, let value = UInt32(hex, radix: 16) else { return nil }
+        return Unicode.Scalar(value)
+    }
+
     /// Scan a double-quoted literal starting at `index`, resolving the escapes
     /// this format shares with Swift string literals.
     private static func scanQuoted(_ chars: [Character], _ index: inout Int) -> String? {
@@ -118,10 +125,7 @@ enum StringsFile {
                 // that escape non-ASCII. Anything shorter is passed through.
                 let start = scan + 1
                 let end = min(start + 4, chars.count)
-                let hex = String(chars[start..<end])
-                if hex.count == 4, let scalarValue = UInt32(hex, radix: 16),
-                    let scalar = Unicode.Scalar(scalarValue)
-                {
+                if let scalar = fourDigitScalar(String(chars[start..<end])) {
                     out.append(Character(scalar))
                     scan = end - 1
                 } else {
