@@ -1,5 +1,6 @@
 import ImageFormats
 import SwiftCrossUI
+import TailscreenL10n
 import TailscreenProtocol
 
 /// Centered spinner + status line — the pre-list phases (bringing the node up,
@@ -40,17 +41,17 @@ public struct HubLoginCard: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Sign in to Tailscale")
+            Text(L("Sign in to Tailscale"))
                 .font(.headline)
                 .fontWeight(.semibold)
-            Text("Open this URL in your browser to sign in:")
+            Text(L("Open this URL in your browser to sign in:"))
                 .font(.caption)
                 .foregroundColor(HubStyle.secondaryText)
             Text(url)
                 .font(.callout)
                 .textSelectionEnabled()
             if let onOpen {
-                Button("Open in Browser", action: onOpen)
+                Button(L("Open in Browser"), action: onOpen)
             }
         }
         .padding(14)
@@ -148,12 +149,12 @@ public struct ShareCard: View {
     let onDecline: @MainActor @Sendable (String) -> Void
 
     public init(
-        title: String = "My screen",
+        title: String = L("My screen"),
         statusLine: String,
         isSharing: Bool,
         canShare: Bool,
-        startLabel: String = "Share my screen",
-        stopLabel: String = "Stop sharing",
+        startLabel: String = L("Share my screen"),
+        stopLabel: String = L("Stop sharing"),
         notes: [String] = [],
         viewers: [HubViewerRow] = [],
         prompts: [HubPrompt] = [],
@@ -243,8 +244,8 @@ public struct ShareCard: View {
                         // to be on screen BEFORE it is needed — once armed,
                         // this window is behind the overlay and unreadable.
                         Text(drawing.note ?? (drawing.activeTool == nil
-                            ? "Drawing takes over the screen; Esc gives it back"
-                            : "Press Esc to stop drawing"))
+                            ? L("Drawing takes over the screen; Esc gives it back")
+                            : L("Press Esc to stop drawing")))
                             .font(.caption)
                             .foregroundColor(HubStyle.secondaryText)
                     }
@@ -307,8 +308,8 @@ public struct ShareCard: View {
                         // helper-restart path; neither of these hosts has one.)
                         Text(
                             quality.isSharing
-                                ? "Applies to your next share"
-                                : (quality.settings.preset.hubCaption ?? "Custom settings")
+                                ? L("Applies to your next share")
+                                : (quality.settings.preset.hubCaption ?? L("Custom settings"))
                         )
                         .font(.caption)
                         .foregroundColor(HubStyle.secondaryText)

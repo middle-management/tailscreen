@@ -3,6 +3,7 @@ included:
   - Apps/macOS/Tests
   - Apps/macOS/Examples
   - Packages/TailscreenKit/Sources
+  - Packages/TailscreenL10n/Sources
 
 excluded:
   - .build

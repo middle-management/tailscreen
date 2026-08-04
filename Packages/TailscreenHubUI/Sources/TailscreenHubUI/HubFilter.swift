@@ -1,4 +1,5 @@
 import SwiftCrossUI
+import TailscreenL10n
 import TailscreenProtocol
 
 /// Everything the header needs to draw the peer-list filter, in one value.
@@ -68,10 +69,10 @@ struct HubFilterMenu: View {
         // A dot rather than a count: the count of *active axes* is not what
         // anyone wants to know, and the count of hidden rows is already printed
         // under the list where the rows are missing from.
-        Menu(model.filter.isActive ? "Filter ●" : "Filter") {
-            Toggle("Hide offline devices", isOn: bind(\.hideOffline))
+        Menu(model.filter.isActive ? L("Filter ●") : L("Filter")) {
+            Toggle(L("Hide offline devices"), isOn: bind(\.hideOffline))
             if model.offersSharingAxis {
-                Toggle("Only screens being shared", isOn: bind(\.onlySharing))
+                Toggle(L("Only screens being shared"), isOn: bind(\.onlySharing))
             }
             if !model.tags.isEmpty {
                 Divider()
@@ -79,7 +80,7 @@ struct HubFilterMenu: View {
                 // both backends — which is the closest this subset gets to
                 // SwiftUI's `Section` header. There is no `Section` in a
                 // swift-cross-ui menu.
-                Text("Filter by tag")
+                Text(L("Filter by tag"))
                 ForEach(model.tags, id: \.self) { tag in
                     Toggle(PeerListFilter.displayName(forTag: tag), isOn: bindTag(tag))
                 }
@@ -87,12 +88,12 @@ struct HubFilterMenu: View {
                     // Only meaningful while a tag filter is active — with no
                     // tags selected the tag axis is off and every peer passes
                     // it, so an "Untagged" toggle would do nothing.
-                    Toggle("Untagged", isOn: bind(\.includeUntagged))
+                    Toggle(L("Untagged"), isOn: bind(\.includeUntagged))
                 }
             }
             if model.filter.isActive {
                 Divider()
-                Button("Clear Filters") { model.onChange(.default) }
+                Button(L("Clear Filters")) { model.onChange(.default) }
             }
         }
     }

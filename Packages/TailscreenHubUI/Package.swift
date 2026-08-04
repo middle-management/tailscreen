@@ -38,6 +38,11 @@ let package = Package(
             url: "https://github.com/stackotter/swift-cross-ui",
             revision: "199a85614e3b2346aa10736b12f969af14a1f1ea"),
         .package(path: "../TailscreenKit"),
+        // The string catalog the three apps share. This package is the reason
+        // it isn't a TailscreenKit tier: the chrome needs to say "Sign in to
+        // Tailscale" in the user's language and needs nothing else from the
+        // protocol core to do it.
+        .package(path: "../TailscreenL10n"),
         // Only for `ImageFormats.Image<RGBA>`, which is the argument type of
         // SwiftCrossUI's in-memory `Image` initializer — a package cannot hand
         // over raw pixels without naming it. Pinned exactly as swift-cross-ui
@@ -54,6 +59,7 @@ let package = Package(
             dependencies: [
                 .product(name: "SwiftCrossUI", package: "swift-cross-ui"),
                 .product(name: "TailscreenProtocol", package: "TailscreenKit"),
+                .product(name: "TailscreenL10n", package: "TailscreenL10n"),
                 .product(name: "ImageFormats", package: "swift-image-formats"),
             ]
         )

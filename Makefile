@@ -1,4 +1,4 @@
-.PHONY: help build run clean release install tailscale test test-protocol test-tsan lint lint-baseline format format-check e2e-up e2e-down test-e2e test-e2e-local test-e2e-harness icon
+.PHONY: help build run clean release install tailscale test test-protocol test-tsan test-l10n lint lint-baseline format format-check e2e-up e2e-down test-e2e test-e2e-local test-e2e-harness icon
 
 # Default target: print a one-line summary of every target. Targets are
 # self-documented via the `## description` suffix on each rule.
@@ -45,6 +45,15 @@ test-protocol: ## Build + smoke-test the portable TailscreenProtocol package
 	@$(MAKE) -C Packages/TailscaleKit apply-patches
 	swift test --package-path Packages/TailscreenKit
 
+# The shared string catalog (Packages/TailscreenL10n). Its suites are the ONLY
+# check on the GTK and WinUI apps' user-facing strings: they scan all four
+# source trees for `L("…")` keys and fail on any the catalog does not carry, and
+# they exercise the `.strings` parser / language resolution / `%@` substitution
+# that replaced Apple Foundation's. No dependencies at all, so it runs anywhere
+# Swift does; CI's linux-l10n job runs exactly this.
+test-l10n: ## Build + test the shared localization catalog package
+	swift test --package-path Packages/TailscreenL10n
+
 # Thread sanitizer build of the test suite. Catches data races on locks,
 # double-resumed continuations, callback ordering bugs that compile fine
 # under Swift 6 strict concurrency. Slower (~3x), so kept off `make test`.
@@ -73,7 +82,8 @@ lint-baseline: ## Regenerate the SwiftLint baseline from current state
 # and the Linux backends (Packages/TailscreenLinuxBackends/Sources) are NOT yet
 # covered: they still carry pre-existing swift-format violations. Fold each in
 # here once its tree is clean.
-FORMAT_PATHS := Apps/macOS/Sources Apps/macOS/Tests Packages/TailscreenKit/Sources Apps/linux/Sources/TailscreenViewerGtk
+FORMAT_PATHS := Apps/macOS/Sources Apps/macOS/Tests Packages/TailscreenKit/Sources \
+	Packages/TailscreenL10n/Sources Apps/linux/Sources/TailscreenViewerGtk
 
 format: ## Run swift-format in-place over the app package
 	@command -v swift-format >/dev/null 2>&1 || { echo "swift-format missing — install Xcode 16+ or run 'brew install swift-format'"; exit 1; }

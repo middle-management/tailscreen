@@ -60,6 +60,10 @@ let package = Package(
         // this chrome is hand-built from primitives, and building it twice
         // would have produced two apps that agreed on day one and never again.
         .package(path: "../../Packages/TailscreenHubUI"),
+        // The string catalog, shared with the macOS and GTK apps: `L(_:)` plus
+        // the `.lproj`s behind it. Same argument as the chrome above — a
+        // string translated once should be translated for all three apps.
+        .package(path: "../../Packages/TailscreenL10n"),
     ],
     targets: [
         .executableTarget(
@@ -124,6 +128,7 @@ let package = Package(
                 // the Linux typecheck path instead of behind an `#if`.
                 .product(name: "WinNotifyKit", package: "WinNotifyKit"),
                 .product(name: "TailscreenHubUI", package: "TailscreenHubUI"),
+                .product(name: "TailscreenL10n", package: "TailscreenL10n"),
             ],
             // libtailscale.a is a link-time input, so the flag belongs on this
             // executable rather than on the library targets that merely compile

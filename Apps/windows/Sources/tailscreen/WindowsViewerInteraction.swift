@@ -1,5 +1,6 @@
 import Foundation
 import SwiftCrossUI
+import TailscreenL10n
 
 // Targeted imports, the same dodge `TailscreenWindowsApp.swift` documents:
 // pulling all of TailscreenProtocol brings its `Published` / `ObservableObject`
@@ -65,9 +66,9 @@ final class WindowsViewerInteraction: ObservableObject {
     /// Label for the shared `RemoteControlBar`'s single button.
     var controlButtonLabel: String {
         switch controlState {
-        case .idle, .revoked: return "Request Control"
-        case .requested: return "Requesting…"
-        case .active: return "Release Control"
+        case .idle, .revoked: return L("Request Control")
+        case .requested: return L("Requesting…")
+        case .active: return L("Release Control")
         }
     }
 

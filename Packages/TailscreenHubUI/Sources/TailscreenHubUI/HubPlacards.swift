@@ -1,4 +1,5 @@
 import SwiftCrossUI
+import TailscreenL10n
 
 /// Where a viewing session is, for the placard shown before video arrives.
 ///
@@ -59,19 +60,19 @@ public struct SessionPlacard: View {
 
     private var title: String {
         switch phase {
-        case .connecting: return host.isEmpty ? "Connecting…" : "Connecting to \(host)…"
-        case .awaitingApproval: return "Waiting for approval"
+        case .connecting: return host.isEmpty ? L("Connecting…") : L("Connecting to \(host)…")
+        case .awaitingApproval: return L("Waiting for approval")
         case .viewing: return ""
-        case .declined: return "The sharer declined your request"
-        case .ended: return "The share has ended"
-        case .failed(let reason): return reason.isEmpty ? "Connection failed" : reason
+        case .declined: return L("The sharer declined your request")
+        case .ended: return L("The share has ended")
+        case .failed(let reason): return reason.isEmpty ? L("Connection failed") : reason
         }
     }
 
     private var detail: String? {
         switch phase {
-        case .awaitingApproval: return "The sharer needs to accept you as a viewer."
-        case .declined, .ended: return "Returning to the screen list…"
+        case .awaitingApproval: return L("The sharer needs to accept you as a viewer.")
+        case .declined, .ended: return L("Returning to the screen list…")
         default: return nil
         }
     }

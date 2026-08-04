@@ -1,6 +1,7 @@
 import Foundation
 import SwiftCrossUI
 import TailscreenHubUI
+import TailscreenL10n
 import TailscreenViewerTsnet
 
 // Targeted imports: bringing in all of TailscreenProtocol would collide with
@@ -138,11 +139,12 @@ final class PickerModel: ObservableObject {
     /// not deducible from anything else on screen.
     var statusLine: String {
         switch phase {
-        case .startingNode: return loginURL == nil ? "Starting Tailscale…" : "Waiting for login…"
-        case .discovering: return "Looking for screens…"
+        case .startingNode:
+            return loginURL == nil ? L("Starting Tailscale…") : L("Waiting for login…")
+        case .discovering: return L("Looking for screens…")
         case .picking:
             return hubSignedInSubtitle(tailnet: tailnetName, account: accountIdentity)
-        case .connecting(let host): return "Connecting to \(host)…"
+        case .connecting(let host): return L("Connecting to \(host)…")
         }
     }
 

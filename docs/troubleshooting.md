@@ -180,6 +180,29 @@ quality.
 construction. Check Console.app for Metal or VideoToolbox errors. Restart
 both apps as a first move.
 
+## The app is in English even though my system isn't
+
+Tailscreen ships English and Swedish today; anything else falls back to
+English, one string at a time, by design.
+
+If a language you expect *is* shipped and you still get English, the string
+catalog probably isn't beside the binary. It travels as a
+`…_TailscreenL10n.bundle` directory — inside `Tailscreen.app/Contents/
+Resources/` on macOS, next to `tailscreen` / `tailscreen.exe` on Linux and
+Windows. Copying just the executable out of a tarball or zip leaves it behind,
+and the app then renders in English rather than complaining.
+
+To check which language is being picked, or to see another one without changing
+your system settings:
+
+```bash
+TAILSCREEN_LANG=sv ./tailscreen
+```
+
+On Linux the language otherwise comes from `LC_ALL` / `LC_MESSAGES` / `LANG`,
+on Windows from the user's default UI language, and on macOS from the ordered
+list in System Settings → General → Language & Region.
+
 ## Build fails with linker errors
 
 You ran bare `swift build` without going through `make` first. The Go

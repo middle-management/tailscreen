@@ -1,4 +1,5 @@
 import SwiftCrossUI
+import TailscreenL10n
 import TailscreenProtocol
 
 /// One machine in the Screens list.
@@ -39,7 +40,7 @@ public struct HubScreen: Identifiable, Sendable {
     ///
     /// Sharing is not repeated here: it already has the green chip, and saying
     /// it twice in one row costs a line and adds nothing.
-    public var statusLine: String { isOnline ? "Online" : "Offline" }
+    public var statusLine: String { isOnline ? L("Online") : L("Offline") }
 
     public init(
         id: String, hostname: String, tailscaleIP: String, isOnline: Bool,
@@ -71,7 +72,7 @@ public struct HubScreen: Identifiable, Sendable {
         var name: String?
         var caption: String?
         if let metadata, metadata.isSharing {
-            let label = metadata.shareName.isEmpty ? "Sharing" : metadata.shareName
+            let label = metadata.shareName.isEmpty ? L("Sharing") : metadata.shareName
             name = label
             var text =
                 label + " · \(metadata.screenResolution.width) × \(metadata.screenResolution.height)"
@@ -233,17 +234,17 @@ public struct SharerDetail: View {
             }
             if isOnline {
                 HStack(spacing: 8) {
-                    Button("View Screen", action: onView)
+                    Button(L("View Screen"), action: onView)
                     if isAsking {
                         // A word, not a spinner: swift-cross-ui has no
                         // indeterminate progress control on both backends, and
                         // the fact that matters is "they have been asked", not
                         // that something is animating.
-                        Text("Asked — waiting for a reply")
+                        Text(L("Asked — waiting for a reply"))
                             .font(.caption)
                             .foregroundColor(HubStyle.secondaryText)
                     } else if let onAskToShare {
-                        Button("Ask to Share", action: onAskToShare)
+                        Button(L("Ask to Share"), action: onAskToShare)
                     }
                 }
                 if let askNote, !isAsking {
@@ -254,16 +255,16 @@ public struct SharerDetail: View {
                 }
             }
             VStack(alignment: .leading, spacing: 4) {
-                detailRow(label: "Host", value: hostname)
-                detailRow(label: "IP", value: ip)
+                detailRow(label: L("Host"), value: hostname)
+                detailRow(label: L("IP"), value: ip)
                 if let routeLine {
-                    detailRow(label: "Route", value: routeLine)
+                    detailRow(label: L("Route"), value: routeLine)
                 }
                 if !tags.isEmpty {
                     // Stripped of the `tag:` prefix, which every tag carries
                     // and none of them distinguish.
                     detailRow(
-                        label: "Tags",
+                        label: L("Tags"),
                         value: tags.map { $0.hasPrefix("tag:") ? String($0.dropFirst(4)) : $0 }
                             .joined(separator: ", "))
                 }
@@ -290,18 +291,18 @@ public struct SharerDetail: View {
     private var routeLine: String? {
         var parts: [String] = []
         switch route {
-        case .direct: parts.append("Direct")
-        case .relay(let region): parts.append("Relayed via \(region.uppercased())")
+        case .direct: parts.append(L("Direct"))
+        case .relay(let region): parts.append(L("Relayed via \(region.uppercased())"))
         case .unknown: break
         }
         if let latencyMs {
             let tier: String
             switch ConnectionQualityTier.forLatency(ms: latencyMs) {
-            case .good: tier = "good"
-            case .fair: tier = "fair"
-            case .poor: tier = "slow"
+            case .good: tier = L("good")
+            case .fair: tier = L("fair")
+            case .poor: tier = L("slow")
             }
-            parts.append("\(latencyMs) ms (\(tier))")
+            parts.append(L("\(latencyMs) ms (\(tier))"))
         }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
