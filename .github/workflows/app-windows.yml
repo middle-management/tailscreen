@@ -869,58 +869,73 @@ jobs:
         env:
           ARCH: ${{ inputs.arch }}
         run: |
-          $err = Join-Path $env:RUNNER_TEMP 'probe-stderr.txt'
-          $out = Join-Path $env:RUNNER_TEMP 'probe-stdout.txt'
-          # inittrace names the Go package if the stall is in runtime init.
-          $env:GODEBUG = 'inittrace=1'
-          $p = Start-Process -FilePath .\tsnet-probe.exe -PassThru `
-            -RedirectStandardOutput $out -RedirectStandardError $err
+          # RETRY ONCE on STATUS_DLL_NOT_FOUND, and only on it. Twice (runs
+          # 30763286492 and 30828639316, both windows-11-arm) this step failed
+          # with 0xC0000135 and EMPTY probe output — a loader-level failure
+          # staging didn't cause, because the identical dist/ passed on an
+          # untouched rerun both times. A genuinely missing DLL fails both
+          # attempts the same way, so the retry cannot mask a real regression;
+          # it only absorbs the runner's transient. Everything else — a stall,
+          # a crash after load — is a finding and gets no retry.
+          for ($attempt = 1; $attempt -le 2; $attempt++) {
+            $err = Join-Path $env:RUNNER_TEMP "probe-stderr-$attempt.txt"
+            $out = Join-Path $env:RUNNER_TEMP "probe-stdout-$attempt.txt"
+            # inittrace names the Go package if the stall is in runtime init.
+            $env:GODEBUG = 'inittrace=1'
+            $p = Start-Process -FilePath .\tsnet-probe.exe -PassThru `
+              -RedirectStandardOutput $out -RedirectStandardError $err
 
-          # POLL for the marker instead of waiting for exit.
-          #
-          # The probe does not exit on the success path — it goes on to block in
-          # up() waiting for a browser login that never comes — so
-          # WaitForExit(90000) always burned the full 90 seconds, on every run,
-          # including every green one. That was 7 % of this job spent watching a
-          # process we had already learned everything from.
-          #
-          # The marker is what the step asserts on anyway, so appearing is the
-          # real completion condition. 90s stays as the ceiling because node
-          # creation is sub-second when it works, so anything near it is the
-          # hang this step exists to catch.
-          $deadline = 90
-          for ($i = 0; $i -lt $deadline * 2; $i++) {
-            $so_far = ''
+            # POLL for the marker instead of waiting for exit.
+            #
+            # The probe does not exit on the success path — it goes on to block in
+            # up() waiting for a browser login that never comes — so
+            # WaitForExit(90000) always burned the full 90 seconds, on every run,
+            # including every green one. That was 7 % of this job spent watching a
+            # process we had already learned everything from.
+            #
+            # The marker is what the step asserts on anyway, so appearing is the
+            # real completion condition. 90s stays as the ceiling because node
+            # creation is sub-second when it works, so anything near it is the
+            # hang this step exists to catch.
+            $deadline = 90
+            for ($i = 0; $i -lt $deadline * 2; $i++) {
+              $so_far = ''
+              foreach ($f in @($out, $err)) {
+                if (Test-Path $f) { $so_far += (Get-Content $f -Raw -ErrorAction SilentlyContinue) }
+              }
+              if ($so_far -match 'subscribing to the IPN bus' -or $so_far -match 'calling up\(\)') {
+                Write-Host "marker seen after ~$([math]::Round($i / 2.0, 1))s"
+                break
+              }
+              if ($p.HasExited) { break }
+              Start-Sleep -Milliseconds 500
+            }
+            if (-not $p.HasExited) { $p.Kill() }
+            $p.WaitForExit()
+
+            $text = ''
             foreach ($f in @($out, $err)) {
-              if (Test-Path $f) { $so_far += (Get-Content $f -Raw -ErrorAction SilentlyContinue) }
+              if (Test-Path $f) {
+                Write-Host "--- $(Split-Path -Leaf $f) ---"
+                Get-Content $f | ForEach-Object { Write-Host $_ }
+                $text += (Get-Content $f -Raw)
+              }
             }
-            if ($so_far -match 'subscribing to the IPN bus' -or $so_far -match 'calling up\(\)') {
-              Write-Host "marker seen after ~$([math]::Round($i / 2.0, 1))s"
-              break
-            }
-            if ($p.HasExited) { break }
-            Start-Sleep -Milliseconds 500
-          }
-          if (-not $p.HasExited) { $p.Kill() }
-          $p.WaitForExit()
 
-          $text = ''
-          foreach ($f in @($out, $err)) {
-            if (Test-Path $f) {
-              Write-Host "--- $(Split-Path -Leaf $f) ---"
-              Get-Content $f | ForEach-Object { Write-Host $_ }
-              $text += (Get-Content $f -Raw)
+            # Hex + names, because "-1073741515" cost a decode round. Strings, not
+            # numeric -eq — the constants exceed Int32.MaxValue (see the load
+            # check above for the history).
+            $u = [System.BitConverter]::ToUInt32([System.BitConverter]::GetBytes([int32]$p.ExitCode), 0)
+            $hex = '0x{0:X8}' -f $u
+            Write-Host "exit code: $hex (attempt $attempt)"
+            if ($hex -ne '0xC0000135') { break }
+            if ($attempt -lt 2) {
+              Write-Host "::warning::STATUS_DLL_NOT_FOUND on attempt $attempt — the known windows-11-arm loader transient; retrying once"
+              Start-Sleep -Seconds 5
             }
           }
-
-          # Hex + names, because "-1073741515" cost a decode round. Strings, not
-          # numeric -eq — the constants exceed Int32.MaxValue (see the load
-          # check above for the history).
-          $u = [System.BitConverter]::ToUInt32([System.BitConverter]::GetBytes([int32]$p.ExitCode), 0)
-          $hex = '0x{0:X8}' -f $u
-          Write-Host "exit code: $hex"
           if ($hex -eq '0xC0000135') {
-            Write-Error 'STATUS_DLL_NOT_FOUND — the probe is missing a DLL from dist/ (on arm64, usually the Swift arm64 runtime)'
+            Write-Error 'STATUS_DLL_NOT_FOUND on both attempts — the probe is genuinely missing a DLL from dist/ (on arm64, usually the Swift arm64 runtime)'
             exit 1
           }
 
