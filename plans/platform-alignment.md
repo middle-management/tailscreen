@@ -530,25 +530,38 @@ Kind B. Sequenced by how many rows each unblocks.
   is explicitly re-choosing, and declining keeps the existing share running
   untouched — they refused a change, not the share.
 
-  **Change source, Windows — deliberately NOT done, and not merely unfinished.**
-  It carries a hazard the Linux path does not, verified by reading rather than
-  assumed: `WindowsInputInjector` is constructed with `regionProvider:
-  { resolved }`, closing over a FIXED rect, and `ScreenShareCaps.remoteControl`
-  / `.annotations` are decided once when the server is built and advertised per
-  viewer at HELLO time. So a mid-share change to a different target would leave
-  a granted viewer's clicks landing on the OLD target's rectangle while the
-  sharer still advertises that control works — and switching display→window
-  (the common case) would drop the resolvable region entirely, with no way to
-  withdraw a capability already advertised to admitted viewers. Doing this
-  properly means making the injector's region dynamic and deciding what
-  happens to a live grant when the new target has no geometry. That is a piece
-  of work, not a wiring change, and shipping the wiring alone would have been a
-  share that silently misdirects somebody's input.
+  **Change source, Windows.** This carried a hazard the Linux path does not,
+  and answering it — rather than shipping the wiring — is most of what the
+  Windows half is. `WindowsInputInjector` was constructed with
+  `regionProvider: { resolved }`, closing over a FIXED rect, while
+  `ScreenShareCaps.remoteControl` / `.annotations` are decided once when the
+  server is built and advertised per viewer at HELLO time. So a naive change
+  would have left a granted viewer's clicks landing on the OLD target's
+  rectangle, and display→window — the ordinary case — drops the resolvable
+  region entirely.
 
-  *Still open in 3.4: the Windows half above, and the preview thumbnail — the
-  `onPreviewImage` seam exists and neither non-mac backend fires it, which
-  needs an MJPEG encode off the captured planes and an image view the hub does
-  not currently have.*
+  Two things answer it, and the second is the one that matters:
+
+  - The provider now re-reads a `liveRegion` the session updates, so events map
+    to the new target, and a target with no geometry yields nil — which makes
+    the injector DROP events rather than place them on the previous window.
+    That is the safe half and it is **not sufficient**: a viewer holding a
+    grant would go on clicking into silence.
+  - So a live grant is **revoked with a reason the viewer reads**. The caps bit
+    stays advertised, because it is a static "this platform can inject" and the
+    protocol cannot withdraw it from viewers already admitted — but that is
+    exactly the distinction the runtime gate already draws, since the "Allow
+    control requests" toggle declines live requests the same way while the bit
+    stays set. The sharer's own pen goes too, for the same reason: no rectangle
+    to normalize against.
+
+  The annotation overlay is rebuilt rather than moved — it owns a window on its
+  own pump thread, sized at creation, and dropping it is how that thread is
+  joined.
+
+  *Still open in 3.4: the preview thumbnail. The `onPreviewImage` seam exists
+  and neither non-mac backend fires it, which needs an MJPEG encode off the
+  captured planes and an image view the hub does not currently have.*
 
 ## Phase 4 · Hub parity, which is cheap by construction (weeks)
 

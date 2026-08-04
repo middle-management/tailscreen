@@ -777,6 +777,14 @@ final class AppUIState: ObservableObject {
                     undo: { [weak self] in self?.shareSession.undoDrawing() },
                     clear: { [weak self] in self?.shareSession.clearDrawing() })
                 : nil,
+            // Windows can always re-point a live share: its picker offers
+            // every target, and losing the capture region on the way is
+            // handled rather than prevented (see
+            // `WindowsShareSession.changeSource`).
+            changeSource: sharing.isSharing
+                ? HubAction(
+                    label: "Change source…", perform: { [weak self] in self?.changeSource() })
+                : nil,
             onStart: { [weak self] in self?.startSharing() },
             onStop: { [weak self] in self?.stopSharing() },
             onAccept: { [weak self] id in self?.answerPrompt(id, accept: true) },
@@ -1259,6 +1267,33 @@ final class AppUIState: ObservableObject {
     /// `beginSharing`, which is the whole reason `WindowsShareSession` is not
     /// `@MainActor`: the same shape of mistake froze sign-in earlier in this
     /// port, and a share brings up a node exactly the same way.
+    /// Re-point the live share at something else, keeping the viewers.
+    ///
+    /// The same picker `startSharing` opens, so the person chooses from
+    /// everything Windows offers rather than a subset this app decided on.
+    /// Dismissing it changes nothing and says nothing — they declined a
+    /// change, not the share.
+    func changeSource() {
+        guard sharing.isSharing else { return }
+        let item: WGC.CaptureItem?
+        do {
+            item = try shareSession.pickTarget()
+        } catch {
+            detail = "Could not open the capture picker: \(error)"
+            return
+        }
+        guard let item else { return }
+
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await shareSession.changeSource(to: item)
+            } catch {
+                self.detail = "Could not change the shared source: \(error)"
+            }
+        }
+    }
+
     func startSharing() {
         guard phase == .ready, !sharing.isSharing else { return }
         detail = ""
