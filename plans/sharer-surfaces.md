@@ -242,13 +242,45 @@ Microsoft.Windows.AppNotifications.Builder.h  the fluent toast builder
 Windows.UI.Notifications.h                    classic UWP toasts
 ```
 
-A C++/raw-WinRT shim posts them — the same pattern as `WGCCaptureKit`. The
-*callback* half is already projected at Swift level:
+A C++/raw-WinRT shim posts them — the same pattern as `WGCCaptureKit`. Checked
+since this was written: swift-winui's **Swift** projection does not expose
+`AppNotificationManager` or `ToastNotificationManager`, so the shim is genuinely
+required; but the *callback* half is projected —
 `Microsoft.Windows.AppLifecycle` exposes `ExtendedActivationKind.AppNotification`,
-which is how a button click comes back. **A fork to settle:**
-`AppNotificationManager` works unpackaged, but needs `Register()` plus a COM
-activator; from the MSIX it is simpler. We ship both a zip and an MSIX, so either
-both paths work or the zip knowingly ships without toasts.
+which is how a button click comes back. Write the shim against the C ABI header
+that ships in the checkout rather than from memory:
+`Apps/windows/.build/checkouts/swift-winui/Sources/CWinRT/include/Microsoft.Windows.AppNotifications.h`
+(1157 lines, vtables included).
+
+**The packaging fork — decided.** `AppNotificationManager` works unpackaged but
+needs `Register()` plus a COM activator; from the MSIX it is simpler. We ship
+both a zip and an MSIX, so the question was whether both paths work or the zip
+knowingly ships without toasts.
+
+Neither, as a *build-time* choice. **Registration is a runtime fact**: the shim
+calls `Register()` and reports whether it succeeded, and a host that cannot post
+degrades to its in-window prompts. That is not a compromise between the two
+answers, it is the shape the Linux backend already has — `DesktopNotifier.init?`
+returns nil when there is no session bus or no daemon, and that is a *normal*
+state rather than an error, because a headless box and a minimal session are
+both real. A zip install that cannot register is the same kind of fact as a
+desktop with no notification daemon.
+
+Three things follow, and they are the reason this is the better answer rather
+than merely the tidier one:
+
+- **One code path, no build flag.** A packaged/unpackaged split would be two
+  configurations, and the zip's would be the one nobody tests.
+- **It is honest on the machine rather than in the release notes.** The host
+  already says "approvals appear here only" on the share card when it has
+  nowhere to post — that line was written for Linux and costs nothing to reuse.
+- **It cannot silently regress.** A build-time decision that stops working
+  produces toasts that quietly stop appearing; a runtime probe produces a
+  visible in-app statement.
+
+The `.desktop`-equivalent identity still has to be right for the MSIX path, so
+expect the packaged and unpackaged runs to differ in *whether* they register,
+not in what the code does about it.
 
 #### Linux
 
@@ -474,7 +506,7 @@ independently shippable and touches only macOS.
 | 1 · macOS notification delivery | **done** — interruption level (mid-share asks only), the UN delegate, authorization read-back, sound leak, viewer-left |
 | 2 · portable `SharerNotice` | **done** — `TailscreenProtocol`, 17 tests on Linux CI |
 | 3 · macOS categories + actions | not started — the step that collapses macOS's three dedupe mechanisms onto (2) |
-| 4 · Windows notification shim | not started |
+| 4 · Windows notification shim | not started — the packaging fork is **decided** (registration is a runtime fact, host degrades like Linux does with no daemon); see the Windows section |
 | 5 · Linux notification backend | not started — needs a GDBus C shim in the `CGtkVideo` mould |
 | 6 · confirm the Windows WGC border | **needs a real desktop**, not code |
 | 7 · outline: macOS | **done** — `CaptureOutlineWindow` |
