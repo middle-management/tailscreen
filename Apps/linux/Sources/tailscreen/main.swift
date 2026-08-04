@@ -17,6 +17,7 @@ import TailscreenViewerTsnet
 //
 //   tailscreen [<sharer-host>] [--port N] [--state-dir PATH] [--control-url URL]
 //   tailscreen --render-self-test | --overlay-self-test | --overlay-input-self-test
+//   tailscreen --outline-self-test
 //   tailscreen --capture-backend-report
 //   Env: TAILSCREEN_TS_AUTHKEY, TAILSCREEN_TS_CONTROL_URL
 //
@@ -59,6 +60,7 @@ let gSelfTest = gArgs.contains("--render-self-test")
 // the screen back through X11 capture to prove it landed. See OverlaySelfTest.
 let gOverlaySelfTest = gArgs.contains("--overlay-self-test")
 let gOverlayInputSelfTest = gArgs.contains("--overlay-input-self-test")
+let gOutlineSelfTest = gArgs.contains("--outline-self-test")
 // Which capture backend this machine would use, and why. Prints and exits;
 // raises no dialog. Covers the wiring between the environment and
 // `CaptureBackendSelection`, which its unit tests cannot reach.
@@ -167,6 +169,10 @@ if gSelfTest {
     // desktop when a tool is armed, and give it up again on Escape. Same
     // scheduling reason as above.
     DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { OverlayInputSelfTest.run() }
+} else if gOutlineSelfTest {
+    // The recording indicator: does the border reach a real desktop, and does
+    // it leave the middle of the screen alone. Same scheduling reason again.
+    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { OutlineSelfTest.run() }
 } else if gUIPreview {
     // Headless chrome preview: seed the picker with fake sharers and render the
     // hub without any networking, so the UI can be screenshotted / reviewed.
@@ -678,6 +684,19 @@ struct ViewerApp: App {
             statusLine: sharer.statusLine,
             isSharing: sharer.phase == .sharing,
             canShare: sharer.canShare,
+            notes: {
+                var notes: [String] = []
+                // Only after a grant was refused — see `SharerModel.controlNote`.
+                if let controlNote = sharer.controlNote { notes.append(controlNote) }
+                // Said only while sharing, and only when true: the person this
+                // would have reached is the one who has stopped looking at
+                // this window, so they should be told before they do.
+                if sharer.phase == .sharing && sharer.notificationsUnavailable {
+                    notes.append(
+                        L("No desktop notifications on this system — approvals appear here only."))
+                }
+                return notes
+            }(),
             // The roster: who is watching, and what can be done about them.
             // `notes` is now free for statistics; a person is not a note.
             viewers: sharer.viewers.map { viewer in
@@ -713,6 +732,14 @@ struct ViewerApp: App {
                     id: $0.id, message: L("\($0.label) wants to watch"),
                     acceptLabel: L("Accept"), declineLabel: L("Deny"))
             }
+                // Somebody already watching, asking to drive. Second, because
+                // a viewer at the gate has nothing on screen at all while this
+                // person can at least see what is happening.
+                + sharer.controlRequests.map {
+                    HubPrompt(
+                        id: $0.id.uuidString,
+                        message: "\($0.displayName) wants to control this machine")
+                }
                 // Somebody asking this machine to start sharing. Third source
                 // into one prompt list, and last on purpose: a viewer at the
                 // gate is stuck on a Connecting placard with nothing on
@@ -737,6 +764,14 @@ struct ViewerApp: App {
                 settings: sharer.quality,
                 isSharing: sharer.phase == .sharing,
                 onChange: { gSharer.setQuality($0) }),
+            // The only way to end a grant from this side. Named after the
+            // person holding it, because "revoke control" does not say who
+            // currently has it and that is the fact the sharer needs.
+            extraAction: sharer.controlGrantedTo.map { holder in
+                HubAction(label: L("Take back control from \(holder)")) {
+                    gSharer.revokeControl()
+                }
+            },
             // Absent unless a capture device was actually opened for this
             // share, so a machine with no microphone shows no control rather
             // than one that cannot unmute.
@@ -801,9 +836,19 @@ struct ViewerApp: App {
             }
             return
         }
-        guard let requestID = UUID(uuidString: id),
-            gSharer.shareRequests.contains(where: { $0.id == requestID })
-        else { return }
+        guard let requestID = UUID(uuidString: id) else { return }
+        // Two UUID-shaped sources now share this id space, which is exactly
+        // why the shape is never consulted: an ask to share and a request to
+        // drive this machine are very different things to say yes to.
+        if gSharer.controlRequests.contains(where: { $0.id == requestID }) {
+            if accept {
+                gSharer.grantControl(to: requestID)
+            } else {
+                gSharer.declineControl(requestID)
+            }
+            return
+        }
+        guard gSharer.shareRequests.contains(where: { $0.id == requestID }) else { return }
         gSharer.answerShareRequest(id: requestID, accept: accept)
     }
 

@@ -1,12 +1,6 @@
----
-title: Windows app on swift-cross-ui / WinUI
-nav_order: 14
-permalink: /viewer-windows-plan/
----
-
 # Bringing Tailscreen to Windows (swift-cross-ui / WinUI)
 
-This is **L5** of the [Linux GTK viewer plan](/linux-viewer-gtk-plan/): the same
+This is **L5** of the [Linux GTK viewer plan](linux-viewer-gtk-plan.md): the same
 native-feeling desktop app on **Windows**, reusing everything the Linux effort
 proved. It is a porting plan, not an implementation — except for one spike
 (below), which exists because the plan's original toolchain claim turned out to

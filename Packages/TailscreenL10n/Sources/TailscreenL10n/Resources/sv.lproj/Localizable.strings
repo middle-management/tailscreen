@@ -534,6 +534,7 @@
 "Drawing needs a compositing desktop" = "Ritläget kräver ett skrivbord med kompositor";
 "This desktop would not let the overlay take the keyboard" = "Det här skrivbordet lät inte överlägget ta tangentbordet";
 "Microphone unavailable" = "Mikrofonen är inte tillgänglig";
+"No desktop notifications on this system — approvals appear here only." = "Inga skrivbordsaviseringar på det här systemet — godkännanden visas bara här.";
 
 /* MARK: - Windows app (Apps/windows) ———————————————————————————————————— */
 

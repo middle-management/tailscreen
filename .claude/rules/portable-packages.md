@@ -68,4 +68,4 @@ Suites that touch mac-only symbols stay in `Apps/macOS/Tests/TailscreenTests`: a
 - **Linux CI (`linux-protocol`) fails after touching a package file** — you added an Apple-only dependency to a file in `Packages/TailscreenKit/Sources/`. Keep package files Foundation-only (see the package README's whitelist) or move the mac-bound piece into the app target. Reproduce with `make test-protocol` (works on macOS too).
 - **App fails to compile against a package type** ("initializer is inaccessible", "cannot find X in scope") — the declaration is `internal` in TailscreenKit. Mark what the app needs `public` (structs the app constructs need explicit public inits — Swift never synthesizes memberwise inits as public). Test-only seams should stay internal; tests use `@testable import TailscreenProtocol`/`TailscreenTransport`.
 
-The Linux/Windows roadmap this enables (viewer first, then sharer) lives in `docs/porting-plan.md`.
+The Linux/Windows roadmap this enables (viewer first, then sharer) lives in `plans/porting-plan.md`.

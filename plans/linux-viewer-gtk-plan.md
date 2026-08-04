@@ -1,9 +1,3 @@
----
-title: Live Linux viewer on swift-cross-ui / GTK
-nav_order: 13
-permalink: /linux-viewer-gtk-plan/
----
-
 # Building the live Linux viewer on swift-cross-ui / GTK
 
 A working plan (not a commitment) for turning today's headless
@@ -241,7 +235,7 @@ guarantee the SDL path never had.
   YUV→RGB shim (`CSwapChainVideo`), the unchanged threading model
   (`DispatcherQueue.TryEnqueue` for `g_idle_add`), the `windows-latest` +
   **WARP** render-self-test CI story, and the W0–W3 sub-phases — lives in
-  [`docs/viewer-windows-plan.md`](/viewer-windows-plan/). No Windows code can
+  [`plans/viewer-windows-plan.md`](viewer-windows-plan.md). No Windows code can
   compile in the Linux dev/CI container (WinUIBackend is the pruned target), so
   the plan is the deliverable; implementation follows a Windows toolchain.
 

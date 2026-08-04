@@ -3,7 +3,7 @@
 # checkout (swift-winui-selfcontained.patch, same directory).
 #
 # Why a checkout patch and not a fork: the decision is recorded in
-# docs/viewer-windows-plan.md (W9d). The checkout's content is deterministic —
+# plans/viewer-windows-plan.md (W9d). The checkout's content is deterministic —
 # Apps/windows/Package.resolved pins swift-winui by revision (df7642f via
 # swift-cross-ui's requirement), so this is the same patch-a-pinned-tree
 # discipline TailscaleKit already uses, minus the submodule. The patch is

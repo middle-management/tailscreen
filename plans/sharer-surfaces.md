@@ -1,6 +1,7 @@
 # Sharer surfaces — notifications, presence, hotkeys, discoverability
 
-> Status: plan only. Nothing implemented.
+> Status: partly implemented — see the table at the bottom, which is the
+> authority. Steps 1, 2, 5, 7 (macOS) and 8 have landed.
 
 ## Problem & motivation
 
@@ -252,6 +253,34 @@ both paths work or the zip knowingly ships without toasts.
 
 #### Linux
 
+**Landed** as `Packages/GNotifyKit` + `Apps/linux/Sources/tailscreen/SharerNotifications.swift`.
+Three things the plan did not anticipate, all found by building it:
+
+- **The `body` capability is as load-bearing as `actions`.** Every notice here
+  names a *person*, and the name naturally belongs in the body — so a
+  summary-only daemon renders "Someone wants to watch" with the someone
+  missing. `SharerNoticeText` folds the name up into the summary, name first,
+  because a summary is truncated from the end and the name is the part that
+  decides whether this is worth interrupting for.
+- **Withdrawal is not an optimisation.** A banner reading "someone is waiting
+  to be let in", with an Accept button, is actively WRONG once they have been
+  admitted from the window: pressing it does nothing, and on a host keyed by IP
+  it would land on whoever connects next. `noticesToWithdraw` is the set
+  `noticesToPost` was already discarding, named so both hosts use one rule.
+- **The signal path is the part nothing else can check.** GDBus delivers to the
+  thread-default `GMainContext` captured at *subscribe* time, so a notifier
+  built on a thread that never iterates one posts perfectly and reports no
+  button press ever. `Notify` being synchronous is what hides it. Only pressing
+  a real button catches it, which is what `linux-notify` does.
+
+The joined/left pair fell out of the same reconcile rather than needing its own
+mechanism: departures are exactly the identities `noticesToWithdraw` returns, so
+"only viewers whose arrival was announced get a departure" is free, and "nothing
+posts during teardown" is one ordering rule — clear the announced set before the
+rosters empty.
+
+The original note, still accurate:
+
 `org.freedesktop.Notifications` over D-Bus, which supports actions natively: an
 `actions` array in `Notify()`, an `ActionInvoked` signal back. The GTK app
 already links GLib, so GDBus needs no new dependency; libnotify is the
@@ -261,6 +290,27 @@ do not — so fall back to a plain notification plus the in-window prompt rather
 than posting buttons nobody can press.
 
 ### 2. Capture outline — the recording indicator
+
+> **Landed on Linux**, and cheaper than this section assumed. It is not a new
+> window: the sharer's annotation overlay is already exactly the capture
+> rectangle, already click-through, already composited, and already has an
+> upload path, so the outline is a layer painted under the strokes. A second
+> override-redirect window would have been a second thing to get wrong in the
+> same four ways.
+>
+> Two things the section did not anticipate, both of which would have shipped a
+> lying indicator:
+>
+> - **It is gated to X11 display shares.** The overlay is sized from the X
+>   display because that is the only geometry available here — the portal
+>   returns a stream size but no position — so a portal share of one window
+>   would get a border around the whole desktop while one window is on the
+>   wire. That is the exact opposite of what the outline claims. A portal share
+>   gets no indicator rather than a wrong one.
+> - **The thickness has to be clamped.** A border at or above half the smaller
+>   dimension fills the buffer, painting a solid rectangle over the shared
+>   window for the entire share, with no error anywhere.
+
 
 A thin, bright, click-through border drawn around exactly the region being
 captured, for the duration of the share. It replaces the tray's only defensible
@@ -472,13 +522,13 @@ independently shippable and touches only macOS.
 | Step | State |
 |---|---|
 | 1 · macOS notification delivery | **done** — interruption level (mid-share asks only), the UN delegate, authorization read-back, sound leak, viewer-left |
-| 2 · portable `SharerNotice` | **done** — `TailscreenProtocol`, 17 tests on Linux CI |
+| 2 · portable `SharerNotice` | **done** — `TailscreenProtocol`, 17 tests on Linux CI, plus `SharerNoticeText` (the words, and the two capability gaps) and `noticesToWithdraw` |
 | 3 · macOS categories + actions | not started — the step that collapses macOS's three dedupe mechanisms onto (2) |
 | 4 · Windows notification shim | not started |
-| 5 · Linux notification backend | not started — needs a GDBus C shim in the `CGtkVideo` mould |
+| 5 · Linux notification backend | **done** — `Packages/GNotifyKit` (GDBus shim + `DesktopNotifier`), wired into `SharerModel`, gated by `linux-notify` against a real dunst including a real button press. What it does NOT cover: how any of it looks |
 | 6 · confirm the Windows WGC border | **needs a real desktop**, not code |
 | 7 · outline: macOS | **done** — `CaptureOutlineWindow` |
-| 7 · outline: Linux | not started — the one piece with no existing machinery |
+| 7 · outline: Linux | **done** — `CaptureOutline` (portable, mutation-tested) painted under the strokes on the existing `CGtkOverlay`, gated by `--outline-self-test`. The plan's "no existing machinery" was wrong: the annotation overlay is already the capture rectangle, already click-through, already composited. Shown only for X11 display shares — see below |
 | 8 · macOS roster + hotkey docs | **done** — roster in the hub, ⌃⌥M in the menu, ⌃⌥. in the sheet, `isRegistered` |
 | 9 · portable `ShortcutCatalog` | **done** — 18 tests on Linux CI |
 | 10 · Windows/Linux hotkeys | **done for mute** — `Packages/X11HotkeyKit` (`XGrabKey`) + `Packages/WinHotkeyKit` (`RegisterHotKey`), driven by the portable `MuteHotkeyRouting` / `X11HotkeyMapping` / `WindowsHotkeyMapping`. `x11-hotkey-probe --live-check` is a real gate (Xvfb grab + XTEST press, repeated with Num Lock on, plus the refused-second-grab case); the Windows half is link-checked and mapping-tested only. Panic-revoke on those two platforms is still open — it needs the sharer-side grant UI first. |
