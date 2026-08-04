@@ -220,8 +220,9 @@ On macOS, the first time you share, a Screen Recording
 prompt pops up. Approve it in **System Settings → Privacy & Security → Screen
 Recording**, then quit and relaunch — macOS only applies the new
 permission to a restarted process. Linux and Windows have no equivalent
-prompt: capture permission is implicit in the session (X11) or granted
-through the system picker (Windows).
+standing prompt: on X11 capture permission is implicit in the session, on
+Wayland the compositor's portal dialog asks per share, and on Windows the
+system picker is the consent step.
 
 ## Uninstall
 

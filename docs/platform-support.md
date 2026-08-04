@@ -36,7 +36,7 @@ is `plans/platform-alignment.md`.
 | Share your screen | ✅ | ✅ | ✅ |
 | Share a single window | ✅ | ✅ portal | ✅ |
 | Share a single app / several apps | ✅ | ⚠️ single, via portal | ❌ |
-| Change source mid-share | ✅ | ❌ | ❌ |
+| Change source mid-share | ✅ | ✅ | ✅ |
 | Preview thumbnail of what you're sharing | ✅ | ❌ | ❌ |
 | Capture backend | ScreenCaptureKit | X11 (`libxcb`) / ScreenCast portal | Windows.Graphics.Capture |
 | Hardware encode | ✅ VideoToolbox | ❌ software libavcodec | ❌ software libavcodec |
@@ -50,7 +50,9 @@ own picker (the compositor is the thing that knows which windows exist and
 which ones this person may see), and the button is *absent* rather than
 greyed on portal-less setups, because sharing one window is a capability an
 X11-only desktop genuinely lacks; a window selection is never silently
-widened to the whole screen. **Wayland sharing works too.** The sharer picks its backend from the
+widened to the whole screen.
+
+**Wayland sharing works too.** The sharer picks its backend from the
 session kind — `XDG_SESSION_TYPE`, never `$DISPLAY`, because XWayland sets
 `$DISPLAY` and the old display-only gate made a Wayland desktop "share" an
 empty XWayland root while the UI said Sharing. An X11 session keeps direct
@@ -218,10 +220,11 @@ status glyph can't: not that a share is running somewhere, but that *this* is
 what viewers can see. Windows already has one and didn't have to build it — WGC
 draws its own capture border unless an app opts out, and ours doesn't.
 
-The remaining rows are gated on capabilities rather than on a surface: muting
-needs microphone capture, toggling drawing needs a sharer-side overlay that can
-take a click, and neither exists on Linux or Windows (see Audio and Interaction
-above). No surface can expose what isn't there.
+The capabilities behind the remaining rows now exist everywhere — microphone
+capture and the click-taking sharer overlay both landed — so what's left
+really is the *surface*: a way to toggle drawing, and a revoke hotkey,
+without raising the window over the thing being shared. The mute hotkey shows
+the shape those will take.
 
 swift-cross-ui offers nothing for any of this, so each surface needs a platform
 shim. The plan — including why notifications come first, why a tray icon was

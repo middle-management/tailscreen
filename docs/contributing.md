@@ -22,19 +22,23 @@ aimed at AI assistants working in the tree.
 ```
 tailscreen/
 ├── Apps/
-│   └── macOS/                  # The macOS app — a SwiftPM package (run app
-│       │                       #   `swift` commands from this directory)
-│       ├── Sources/            # Tailscreen executable (Swift)
-│       └── Tests/TailscreenTests/  # Unit + connectivity tests
-├── Packages/                   # Local SwiftPM packages the app depends on
-│   ├── TailscreenKit/          # Portable (Linux-buildable) protocol core
-│   ├── OpusKit/                # systemLibrary wrapper over libopus
-│   └── TailscaleKit/           # Wraps libtailscale
-│       ├── upstream/libtailscale/  # Git submodule
-│       ├── Sources/  lib/  include/  # Symlinks into upstream
-│       ├── Patches/            # .patch files applied on top of upstream Swift
-│       ├── Modules/libtailscale/   # Module map for the C library
-│       └── libtailscale.pc     # pkg-config file (consumed via PKG_CONFIG_PATH)
+│   ├── macOS/                  # The macOS app — a SwiftPM package (run app
+│   │                           #   `swift` commands from this directory)
+│   ├── linux/                  # The Linux app — swift-cross-ui / GTK4
+│   └── windows/                # The Windows app — swift-cross-ui / WinUI
+├── Packages/                   # Local SwiftPM packages the apps depend on
+│   ├── TailscreenKit/          # Portable protocol + viewer + sharer core all
+│   │                           #   three apps share (builds and tests on Linux)
+│   ├── TailscreenHubUI/        # Shared hub chrome for the GTK + WinUI apps
+│   ├── TailscaleKit/           # Wraps libtailscale
+│   │   ├── upstream/libtailscale/  # Git submodule
+│   │   ├── Patches/            # .patch files applied on top of upstream Swift
+│   │   └── libtailscale.pc     # pkg-config file (consumed via PKG_CONFIG_PATH)
+│   └── …                       # Platform backends (X11CaptureKit,
+│                               #   PortalCaptureKit, XTestInjectKit,
+│                               #   WGCCaptureKit, SendInputKit, WASAPIKit,
+│                               #   ALSAKit, …) and codec wrappers (OpusKit,
+│                               #   FFmpegKit, TailscreenVideoFFmpeg)
 ├── e2e/docker-compose.yml      # Local headscale control plane
 ├── scripts/e2e-{up,down,test}.sh
 ├── .github/workflows/
@@ -42,6 +46,11 @@ tailscreen/
 ├── Makefile                    # build entry point — always go through this
 └── test-local.sh               # multi-instance local launcher
 ```
+
+The Makefile drives the macOS app; the Linux and Windows apps are their own
+SwiftPM packages built with `swift build --package-path Apps/linux` /
+`Apps/windows` (system dependencies and the authoritative CI recipes are
+listed in [Install → From source]({% link install.md %}#from-source)).
 
 ## Build commands
 
