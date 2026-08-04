@@ -185,7 +185,7 @@ Candidates deliberately *not* yet spent:
 - **~~Opus~~ — no cap needed (decision: Opus-only).** Opus was the obvious
   "must-negotiate" future codec, but the pre-1.0 decision is to *replace*
   AAC with Opus rather than negotiate between them (see
-  `docs/porting-plan.md` #6). Opus has no support gap on any platform, so
+  `plans/porting-plan.md` #6). Opus has no support gap on any platform, so
   with no deployed AAC-only peers there's nothing to negotiate — one
   audio codec, distinguished on the wire by its payload type like the
   existing 98/99, no capability bit.

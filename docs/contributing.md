@@ -43,6 +43,7 @@ tailscreen/
 ├── scripts/e2e-{up,down,test}.sh
 ├── .github/workflows/
 ├── docs/                       # this site
+├── plans/                      # working design plans (not published)
 ├── Makefile                    # build entry point — always go through this
 └── test-local.sh               # multi-instance local launcher
 ```

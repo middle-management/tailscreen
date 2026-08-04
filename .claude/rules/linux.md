@@ -27,4 +27,4 @@ paths:
 
 ## Local E2E
 
-`scripts/e2e-linux-sharer.sh` (local-only) is the Linux sharer → Linux viewer counterpart of the mac harness — see `.claude/rules/testing.md`. The GTK viewer plan lives in `docs/linux-viewer-gtk-plan.md`.
+`scripts/e2e-linux-sharer.sh` (local-only) is the Linux sharer → Linux viewer counterpart of the mac harness — see `.claude/rules/testing.md`. The GTK viewer plan lives in `plans/linux-viewer-gtk-plan.md`.

@@ -242,7 +242,7 @@ jobs:
           # libopus — see Packages/OpusKit/README.md) must build and pass its
           # encode/decode round-trip tests on Linux. This is the portable
           # foundation for the Opus-only audio decision
-          # (docs/porting-plan.md #6). Cheap: one apt install, no submodules,
+          # (plans/porting-plan.md #6). Cheap: one apt install, no submodules,
           # no Go.
           - name: linux-opus
             apt: libopus-dev pkg-config
@@ -251,7 +251,7 @@ jobs:
           # Video-decode-portability gate: FFmpegKit (a systemLibrary wrapper
           # over libavcodec — see Packages/FFmpegKit/README.md) must build and
           # pass its decode tests on Linux. This is the portable video-decode
-          # foundation for the Linux/Windows viewer (docs/porting-plan.md —
+          # foundation for the Linux/Windows viewer (plans/porting-plan.md —
           # "Decode"). Cheap: one apt install, no submodules, no Go.
           # (libavutil-dev comes with libavcodec-dev; opus.pc-style
           # default-path resolution means no PKG_CONFIG_PATH entry is needed.)
@@ -565,7 +565,7 @@ jobs:
   # (Packages/TailscreenLinuxBackends) must build and pass its pipeline integration test on Linux.
   # This is where the concrete backends plug into the portable ViewerSession
   # core — FFmpegKit decode + ALSAKit audio behind the
-  # VideoDecoding/VideoSink/AudioSink seams (docs/porting-plan.md, "Viewer
+  # VideoDecoding/VideoSink/AudioSink seams (plans/porting-plan.md, "Viewer
   # wiring"). The `swift test` run:
   #   • runs `PipelineIntegrationTests` (real H.264 encode → RTP → ViewerSession
   #     → FFmpeg decode → collecting sinks — no tsnet, no window, no device), and

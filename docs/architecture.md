@@ -210,8 +210,7 @@ and puts a failing decoder on a cooldown rather than hammering it.
 
 The codec is Opus — libopus wrapped by the local `OpusKit` — which
 replaced the original AudioToolbox AAC-LC path. Royalty-free and
-software-only, so the exact same codec ports to Linux and Windows
-(see the [porting plan]({% link porting-plan.md %})).
+software-only, so the exact same codec runs on Linux and Windows.
 
 System audio is captured *in the capture helper* (`SCStream` grabs it
 with the video via `capturesAudio`, excluding Tailscreen's own output so

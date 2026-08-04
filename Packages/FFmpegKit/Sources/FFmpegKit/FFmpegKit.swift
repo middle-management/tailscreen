@@ -432,7 +432,7 @@ public enum FFmpeg {
 /// and Tailscreen's wire format) or **Annex-B** (each NAL prefixed by a
 /// `00 00 00 01` start code — what FFmpeg/libavcodec consume by default).
 /// This conversion belongs in the shared adapter layer, not reinvented per
-/// platform (see docs/porting-plan.md problem #3).
+/// platform (see plans/porting-plan.md problem #3).
 public enum NALUnit {
     /// Convert an AVCC access unit to Annex-B. `nalLengthSize` is the width of
     /// each NAL's length prefix (1, 2, or 4 bytes; H.264/HEVC avcC records use

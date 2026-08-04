@@ -8,7 +8,7 @@ video-decode path.
 
 Where the macOS app decodes H.264/HEVC with **VideoToolbox**, a portable
 client needs a software/GPU decoder that exists off-Apple. `libavcodec` is the
-obvious one (see `docs/porting-plan.md` — "Decode"). Rather than adopt one of
+obvious one (see `plans/porting-plan.md` — "Decode"). Rather than adopt one of
 the AVFoundation-bound Swift FFmpeg wrappers on the index, FFmpegKit wraps the
 plain C library the same way `OpusKit` wraps libopus and `TailscaleKit` wraps
 libtailscale: a SwiftPM `systemLibrary` target (`CFFmpeg`) plus a
@@ -47,7 +47,7 @@ a libavcodec-only module with no libswscale dependency).
 
 `NALUnit.avccToAnnexB(_:nalLengthSize:)` is the standalone AVCC ⇄ Annex-B
 container conversion FFmpeg needs (the shared-adapter-layer piece called out in
-`docs/porting-plan.md` problem #3).
+`plans/porting-plan.md` problem #3).
 
 ## Build & test
 
@@ -64,4 +64,4 @@ skipping if the build lacks an H.264 encoder).
 
 Decode foundation only. Wiring it into a portable viewer (a `ViewerSession`
 receive-loop + an SDL/Vulkan renderer + PipeWire audio out) is the follow-up
-work — see `docs/porting-plan.md`.
+work — see `plans/porting-plan.md`.

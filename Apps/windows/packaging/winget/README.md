@@ -30,7 +30,7 @@ files intentionally fail winget's schema validation (`InstallerSha256` expects
    winget-pkgs validation. Before the first submission, the workflow's signing
    step must be replaced with a real code-signing service (SignPath's free
    OSS tier, or an equivalent cert on FIPS 140-2 hardware — see
-   `docs/viewer-windows-plan.md` W8).
+   `plans/viewer-windows-plan.md` W8).
 
 3. **The `wingetcreate` / PR flow.** First submission:
 

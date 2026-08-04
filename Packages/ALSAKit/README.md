@@ -112,5 +112,5 @@ Two things `null` genuinely cannot prove, stated rather than faked:
 Standalone and additive. Playback is wired into the Linux viewer through
 `Packages/TailscreenLinuxBackends`; capture is not wired to anything yet — it's
 the device half of the Linux mic path, whose portable half (Opus encode, RTP
-packetization) already exists. See `docs/porting-plan.md` (Voice + system
+packetization) already exists. See `plans/porting-plan.md` (Voice + system
 audio).

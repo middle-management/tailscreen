@@ -8,7 +8,7 @@ Tailscreen's Opus-only audio path (mono, 48 kHz).
 The Opus packages on the SwiftPM index (`alta/swift-opus`, etc.) are
 Apple-only and bind to AVFoundation types (`AVAudioPCMBuffer` /
 `AVAudioEngine`) — exactly the platform coupling the Opus-only audio
-decision (see `docs/porting-plan.md` #6) exists to remove. Several are also
+decision (see `plans/porting-plan.md` #6) exists to remove. Several are also
 minimally maintained. So OpusKit wraps the plain C library the same way
 `TailscaleKit` wraps libtailscale: a SwiftPM `systemLibrary` target
 (`COpus`) plus a Foundation-only Swift wrapper (`OpusKit`). The same source

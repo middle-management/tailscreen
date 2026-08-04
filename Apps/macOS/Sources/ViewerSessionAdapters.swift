@@ -6,7 +6,7 @@ import TailscreenViewer
 // macOS adapters binding `ViewerSession`'s host-agnostic seams to the app's
 // existing VideoToolbox decoder and Metal renderer, so the mac viewer can
 // reuse the portable receive-side data plane. See
-// docs/mac-viewer-convergence.md for the phased plan.
+// plans/mac-viewer-convergence.md for the phased plan.
 //
 // Phase B: the adapters exist and are unit-tested, but are NOT yet wired into
 // `TailscaleScreenShareClient` — that rewiring (behind a feature flag) is

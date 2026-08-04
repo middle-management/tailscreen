@@ -57,7 +57,7 @@ The platform-portable core of Tailscreen, in five targets/tiers:
   on `TailscreenProtocol` + `TailscreenTransport` + `TailscaleKit`.
 
 All five build and run on Linux; they're the libraries a future non-macOS
-Tailscreen viewer or sharer links against. See `docs/porting-plan.md` for
+Tailscreen viewer or sharer links against. See `plans/porting-plan.md` for
 that roadmap.
 
 ## How it's put together

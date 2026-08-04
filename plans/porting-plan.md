@@ -1,9 +1,3 @@
----
-title: Porting Plan (Linux & Windows)
-nav_order: 11
-permalink: /porting-plan/
----
-
 # Porting plan: Linux & Windows
 
 This is a working plan, not a commitment. It records what porting Tailscreen
@@ -215,7 +209,7 @@ almost verbatim, the natural next consolidation is to make the mac viewer
 *reuse* it as its receive-side data plane (one tested implementation, run on
 Linux CI every PR). The seam work that unblocks that — starting with making
 the decoded video frame opaque to the session so a mac `CVPixelBuffer` flows
-through zero-copy — lives in **`docs/mac-viewer-convergence.md`**.
+through zero-copy — lives in **`plans/mac-viewer-convergence.md`**.
 
 *Landed:* the **viewer wiring** — `Packages/TailscreenLinuxBackends`, a SwiftPM package that plugs
 the concrete backends into `ViewerSession`: `FFmpegVideoDecoder`
