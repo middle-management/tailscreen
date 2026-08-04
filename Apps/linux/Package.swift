@@ -58,6 +58,11 @@ let package = Package(
         // needed the same design system and copying it would have guaranteed
         // the two drifted apart.
         .package(path: "../../Packages/TailscreenHubUI"),
+        // The string catalog, shared with the macOS and Windows apps: `L(_:)`
+        // plus the `.lproj`s behind it. A GTK build reads the same
+        // `Localizable.strings` the mac app does, so a string translated for
+        // one is translated for all three.
+        .package(path: "../../Packages/TailscreenL10n"),
     ],
     targets: [
         // OpenGL YUV→RGB renderer for the GLArea. C so it can call GL (via
@@ -105,6 +110,10 @@ let package = Package(
                 // GtkVideoView feeds it raw GDK integers. Already linked by the
                 // executable target, so no new system dependency.
                 .product(name: "TailscreenViewerCore", package: "TailscreenLinuxBackends"),
+                // The placard/status strings this target publishes are user
+                // facing, so it reads the catalog directly rather than
+                // handing English up to the app to translate.
+                .product(name: "TailscreenL10n", package: "TailscreenL10n"),
             ]
         ),
         .executableTarget(
@@ -147,6 +156,7 @@ let package = Package(
                 // this machine is not sharing.
                 .product(name: "TailscreenTransport", package: "TailscreenKit"),
                 .product(name: "TailscreenHubUI", package: "TailscreenHubUI"),
+                .product(name: "TailscreenL10n", package: "TailscreenL10n"),
             ],
             linkerSettings: [
                 // Resolve libtailscale.a for the tsnet transport. Belt and

@@ -3,7 +3,10 @@ import PackageDescription
 
 let package = Package(
     name: "tailscreen-macos",
-    defaultLocalization: "en",
+    // No `defaultLocalization:` — the `.lproj` catalogs moved to
+    // Packages/TailscreenL10n when Linux and Windows started reading them
+    // too, so this package no longer ships a localized resource. What's left
+    // under Sources/Resources is the unlocalized PDF/SVG artwork.
     platforms: [
         // 15.2 (Dec 2024) is the floor: SCContentFilter's
         // `includedDisplays` / `includedWindows` /
@@ -27,7 +30,11 @@ let package = Package(
         // which pulls in OpusKit/libopus), and the two host-agnostic data
         // planes — TailscreenViewer and TailscreenSharer, whose platform
         // backends this app supplies. All build on Linux — see its README.
-        .package(path: "../../Packages/TailscreenKit")
+        .package(path: "../../Packages/TailscreenKit"),
+        // The string catalog, shared with the GTK and WinUI apps. Supplies
+        // `L(_:)` and the `.lproj`s behind it; re-exported through
+        // Sources/ProtocolReexports.swift so call sites stay bare `L("…")`.
+        .package(path: "../../Packages/TailscreenL10n")
     ],
     targets: [
         .executableTarget(
@@ -38,7 +45,8 @@ let package = Package(
                 .product(name: "TailscreenTransport", package: "TailscreenKit"),
                 .product(name: "TailscreenAudio", package: "TailscreenKit"),
                 .product(name: "TailscreenViewer", package: "TailscreenKit"),
-                .product(name: "TailscreenSharer", package: "TailscreenKit")
+                .product(name: "TailscreenSharer", package: "TailscreenKit"),
+                .product(name: "TailscreenL10n", package: "TailscreenL10n")
             ],
             path: "Sources",
             resources: [

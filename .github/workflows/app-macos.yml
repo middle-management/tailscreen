@@ -295,6 +295,24 @@ jobs:
             exit 1
           fi
           cp -R "$bundle" "$APP/Contents/Resources/"
+          # The string catalog's bundle, from Packages/TailscreenL10n. A
+          # separate copy because it is a separate package: SwiftPM emits one
+          # bundle per target with resources. Missing it is NOT fatal at
+          # runtime — the lookup degrades to the English keys — which is
+          # precisely why it is asserted here instead of being noticed by a
+          # Swedish user three releases later.
+          # Matched on the TARGET NAME: SwiftPM derives the first half of
+          # `<something>_TailscreenL10n.<ext>` from the package, and the
+          # extension is `.bundle` here but `.resources` off Darwin. Both are
+          # accepted so this step reads the same as the Linux one.
+          L10N_SRC=$(find -L "${PRODUCTS_DIR}" -maxdepth 1 -type d \
+            \( -name '*_TailscreenL10n.bundle' -o -name '*_TailscreenL10n.resources' \) | head -1)
+          if [ -z "$L10N_SRC" ]; then
+            echo "::error::no *_TailscreenL10n.{bundle,resources} in ${PRODUCTS_DIR}"
+            ls -la "${PRODUCTS_DIR}" || true
+            exit 1
+          fi
+          cp -R "$L10N_SRC" "$APP/Contents/Resources/"
           cp Apps/macOS/Resources/Tailscreen.icns "$APP/Contents/Resources/${APP_NAME}.icns"
 
           cat > "$APP/Contents/Info.plist" <<EOF

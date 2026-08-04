@@ -46,6 +46,7 @@ if [ -z "$probe" ]; then
 fi
 cp "$probe" dist/tsnet-probe.exe
 
+
 # The toolchain ships the runtime and the COMPILER in one bin
 # directory, so copying every DLL beside swiftCore.dll produced a
 # 1.1 GB artifact: liblldb (160 MB), sourcekitdInProc (150 MB),
@@ -111,6 +112,20 @@ for bundle in "$exedir"/*.resources "$exedir"/*.bundle; do
   cp -R "$bundle" dist/
 done
 shopt -u nullglob
+
+# The string catalog is one of those bundles, and it is the one whose absence
+# is SILENT: the app launches, works, and is simply English-only forever. So
+# the sweep above is verified rather than trusted. Both extensions are
+# accepted because SwiftPM writes `.resources` off Darwin and `.bundle` on it,
+# and the prefix is derived from the package and varies — assuming a literal
+# `TailscreenL10n_TailscreenL10n.bundle` is what failed the equivalent Linux
+# step the first time it ran.
+if ! compgen -G "dist/*_TailscreenL10n.resources" > /dev/null \
+  && ! compgen -G "dist/*_TailscreenL10n.bundle" > /dev/null; then
+  echo "no *_TailscreenL10n.{bundle,resources} staged — the app would be English-only" >&2
+  ls -la dist/ >&2 || true
+  exit 1
+fi
 
 # WindowsAppRuntimeInstaller.exe is deliberately NOT staged any more: the
 # app ships the Windows App SDK runtime itself (stage-winappsdk.sh runs

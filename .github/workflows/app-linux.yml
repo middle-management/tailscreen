@@ -330,12 +330,37 @@ jobs:
           STAGE="dist/tailscreen-linux-${PACKAGE_ARCH}"
           mkdir -p "$STAGE"
           cp "Apps/linux/.build/${{ inputs.configuration }}/tailscreen" "$STAGE/tailscreen"
+          # The string catalog rides BESIDE the binary, which is where
+          # LocalizationCatalog looks (`Bundle.main.bundleURL`, i.e. the
+          # executable's own directory). Shipping it is what makes the GTK app
+          # speak anything but English; not shipping it is invisible in
+          # testing, because the lookup degrades to the English keys rather
+          # than failing — hence the hard check.
+          #
+          # Matched on the TARGET NAME, not the full name: SwiftPM calls it
+          # `<something>_TailscreenL10n.<ext>`, derives the first half from the
+          # package, and uses `.resources` off Darwin where macOS gets
+          # `.bundle`. A hard-coded `TailscreenL10n_TailscreenL10n.bundle` is
+          # what failed the first run of this step.
+          PRODUCTS="Apps/linux/.build/${{ inputs.configuration }}"
+          L10N_SRC=$(find -L "$PRODUCTS" -maxdepth 1 -type d \
+            \( -name '*_TailscreenL10n.bundle' -o -name '*_TailscreenL10n.resources' \) | head -1)
+          if [ -z "$L10N_SRC" ]; then
+            echo "::error::no *_TailscreenL10n.{bundle,resources} in $PRODUCTS"
+            ls -la "$PRODUCTS" || true
+            exit 1
+          fi
+          cp -R "$L10N_SRC" "$STAGE/$(basename "$L10N_SRC")"
           cat > "$STAGE/README.txt" <<EOF
           Tailscreen for Linux (${PACKAGE_ARCH})
           ============================
 
           Run:  ./tailscreen            (picker mode)
                 ./tailscreen <host>     (dial a sharer directly)
+
+          Keep the *_TailscreenL10n.bundle folder beside the binary — it
+          carries the translations, and the app falls back to English without
+          it. Force a language with TAILSCREEN_LANG=sv.
 
           Runtime dependencies (Ubuntu 24.04 package names):
             libgtk-4-1 libepoxy0 libavcodec60 libavutil58 libasound2t64

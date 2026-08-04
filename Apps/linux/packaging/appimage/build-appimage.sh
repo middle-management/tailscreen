@@ -70,6 +70,22 @@ echo "==> Assembling AppDir at $APPDIR"
 rm -rf "$APPDIR"
 install -Dm755 "$BIN_PATH" "$APPDIR/usr/bin/$BIN_NAME"
 
+# The string catalog, beside the binary — `LocalizationCatalog` looks in the
+# executable's own directory, so usr/bin is where it has to land. Hard failure
+# rather than a warning: a missing catalog degrades silently to English, so
+# nothing downstream would ever notice.
+# Matched on the target name — SwiftPM's `<something>_TailscreenL10n.<ext>`
+# varies in both the prefix (derived from the package) and the extension
+# (`.resources` off Darwin, `.bundle` on it).
+L10N_SRC=$(find -L "$BUILD_DIR" -maxdepth 1 -type d \
+  \( -name '*_TailscreenL10n.bundle' -o -name '*_TailscreenL10n.resources' \) | head -1)
+if [ -z "$L10N_SRC" ]; then
+  echo "error: no *_TailscreenL10n.{bundle,resources} in $BUILD_DIR" >&2
+  ls -la "$BUILD_DIR" >&2 || true
+  exit 1
+fi
+cp -R "$L10N_SRC" "$APPDIR/usr/bin/$(basename "$L10N_SRC")"
+
 # Desktop entry (generated here so the AppImage Icon= matches the icon basename).
 install -d "$APPDIR/usr/share/applications"
 cat > "$APPDIR/usr/share/applications/$APP_ID.desktop" <<EOF

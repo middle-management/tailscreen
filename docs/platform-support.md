@@ -181,7 +181,7 @@ Two things behind the ✅s are worth knowing:
 | Peer detail: route, latency, ACL tags | ✅ | ✅ | ✅ |
 | Quality settings UI | ✅ | ✅ | ✅ |
 | Connection stats overlay | ✅ | ✅ | ✅ |
-| Localized strings | ✅ | ❌ | ❌ |
+| Localized strings | ✅ | ✅ | ✅ |
 | **Notified when a viewer is waiting for approval** | ✅ | ✅ | ⚠️ MSIX only |
 | Answer that prompt from the notification | ❌ | ✅ | ⚠️ MSIX only, unverified |
 | Told when notifications are switched off | ✅ | ✅ | ✅ |
@@ -194,6 +194,10 @@ Two things behind the ✅s are worth knowing:
 
 Linux and Windows share their chrome (`Packages/TailscreenHubUI`), so hub work
 lands on both at once — which is why that block is the most aligned of the five.
+They now share their *strings* too: one catalog (`Packages/TailscreenL10n`)
+backs all three apps, so a string translated for macOS is translated for the
+other two, and adding a language is dropping one `<lang>.lproj` into that
+package. Force one with `TAILSCREEN_LANG=sv` to check your work.
 The peer-detail pane and the share card's quality menu are that principle in
 action: one component each (`HubQualityMenu`), serving both hosts, backed by
 the same portable `QualitySettings` model and `PeerRoute`/latency

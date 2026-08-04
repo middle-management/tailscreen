@@ -1,6 +1,7 @@
 import Foundation
 import SwiftCrossUI
 import TailscaleKit
+import TailscreenL10n
 import TailscreenSharer
 import TailscreenSharerLinux
 import TailscreenViewerTsnet
@@ -410,14 +411,15 @@ final class SharerModel: ObservableObject {
 
     var statusLine: String {
         switch phase {
-        case .idle: return unavailableReason ?? "Not sharing"
-        case .starting: return "Starting share…"
+        case .idle: return unavailableReason ?? L("Not sharing")
+        case .starting: return L("Starting share…")
         case .sharing:
             if !pendingViewers.isEmpty {
-                return "\(pendingViewers.count) waiting for approval"
+                return L("\(pendingViewers.count) waiting for approval")
             }
-            return viewers.isEmpty ? "Sharing — nobody watching yet" : "Sharing to \(viewers.count)"
-        case .failed(let why): return "Share failed: \(why)"
+            return viewers.isEmpty
+                ? L("Sharing — nobody watching yet") : L("Sharing to \(viewers.count)")
+        case .failed(let why): return L("Share failed: \(why)")
         }
     }
 
@@ -476,7 +478,7 @@ final class SharerModel: ObservableObject {
             // Unreachable while `canShareWindow` gates the button, and handled
             // rather than force-unwrapped because the gate and this switch are
             // two reads of one decision that could drift.
-            phase = .failed("this session cannot share a single window")
+            phase = .failed(L("this session cannot share a single window"))
         }
     }
 
@@ -556,7 +558,7 @@ final class SharerModel: ObservableObject {
                             return encoder
                         })
                 } catch {
-                    phase = .failed("could not change the shared source: \(error)")
+                    phase = .failed(L("could not change the shared source: \(error)"))
                 }
             case .cancelled:
                 // Keep sharing what we were already sharing. Saying nothing is
@@ -586,14 +588,14 @@ final class SharerModel: ObservableObject {
     /// Everything after "which backend": identical for both.
     private func beginShare(captureFactory: @escaping @Sendable () -> CaptureEncoding) {
         guard let node = nodeProvider?() else {
-            phase = .failed("Tailscale isn't up yet")
+            phase = .failed(L("Tailscale isn't up yet"))
             return
         }
         phase = .starting
 
         let selection = PickerSelection(kind: .display, displayID: 0, windowID: nil, bundleIDs: [])
         guard let selectionData = try? JSONEncoder().encode(selection) else {
-            phase = .failed("could not describe the display to capture")
+            phase = .failed(L("could not describe the display to capture"))
             return
         }
 
@@ -874,8 +876,9 @@ final class SharerModel: ObservableObject {
         drawing.mode = latch.activeTool.map { .drawing($0) } ?? .off
         drawingNote = latch.refusal.map {
             switch $0 {
-            case .noSurface: return "Drawing needs a compositing desktop"
-            case .noKeyboard: return "This desktop would not let the overlay take the keyboard"
+            case .noSurface: return L("Drawing needs a compositing desktop")
+            case .noKeyboard:
+                return L("This desktop would not let the overlay take the keyboard")
             }
         }
     }
@@ -1214,7 +1217,7 @@ final class SharerModel: ObservableObject {
     @discardableResult
     func grantControl(to requestID: UUID) -> Bool {
         let granted = server?.grantControl(toConnectionID: requestID) ?? false
-        controlNote = granted ? nil : "Remote control isn't available for this share."
+        controlNote = granted ? nil : L("Remote control isn't available for this share.")
         return granted
     }
 

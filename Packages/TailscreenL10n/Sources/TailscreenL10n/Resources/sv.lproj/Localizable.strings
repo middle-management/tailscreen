@@ -4,6 +4,10 @@
  * text). Only the values are translated. Format specifiers (%@, %lld),
  * key-equivalent glyphs (⌘Q), and brand names ("Tailscreen", "Tailscale")
  * are preserved.
+ *
+ * Serves all three apps. A key missing from this file is not an error — the
+ * lookup falls back to the key, which is the English text — so a partially
+ * translated catalog degrades string by string rather than all at once.
  */
 
 /* MARK: - Menu bar (AppMenu.swift) */
@@ -225,6 +229,9 @@
 "Speaker" = "Högtalare";
 "About" = "Om";
 "Version" = "Version";
+/* "Build" är etablerad teknisk svenska i det här sammanhanget. */
+"Build" = "Build";
+"%@ · %@ · fps cap %lld · codec %@" = "%@ · %@ · fps-tak %lld · codec %@";
 "Project on GitHub" = "Projekt på GitHub";
 
 /* MARK: - Window titles (AppState.swift) */
@@ -421,3 +428,149 @@
 "Remote control" = "Fjärrstyrning";
 "Allow control requests" = "Tillåt styrningsförfrågningar";
 "Viewers can ask to control your Mac while you share; you still approve each request. Turn off to decline requests automatically and silence their notifications." = "Tittare kan be om att styra din Mac medan du delar; du godkänner fortfarande varje förfrågan. Stäng av för att avböja förfrågningar automatiskt och tysta deras notiser.";
+
+/* MARK: - Shared hub chrome (Packages/TailscreenHubUI) —————————————————————
+ *
+ * Renderas av GTK- och WinUI-apparna. Flera nycklar ovanför delas också med
+ * dem — de skrevs för macOS först och säger samma sak på alla plattformar.
+ */
+
+/* Hub — sign-in card (HubCards.swift) */
+"Sign in to Tailscale" = "Logga in på Tailscale";
+"Open this URL in your browser to sign in:" = "Öppna den här adressen i webbläsaren för att logga in:";
+"Open in Browser" = "Öppna i webbläsaren";
+
+/* Hub — share card (HubCards.swift) */
+"My screen" = "Min skärm";
+"Share my screen" = "Dela min skärm";
+"Stop sharing" = "Sluta dela";
+"Drawing takes over the screen; Esc gives it back" = "Ritläget tar över skärmen; Esc lämnar tillbaka den";
+"Press Esc to stop drawing" = "Tryck Esc för att sluta rita";
+"Applies to your next share" = "Gäller vid nästa delning";
+"Custom settings" = "Egna inställningar";
+
+/* Hub — screens list (HubContent.swift) */
+"No Tailscreen screens found on your tailnet." = "Inga Tailscreen-skärmar hittades i ditt tailnet.";
+"No screens match your filters." = "Inga skärmar matchar dina filter.";
+"No screens match your search." = "Inga skärmar matchar din sökning.";
+
+/* Hub — header + filter menu (HubHeader.swift / HubFilter.swift) */
+"Refresh" = "Uppdatera";
+"Signed in" = "Inloggad";
+"Filter ●" = "Filter ●";
+"Filter" = "Filter";
+"Filter by tag" = "Filtrera på tagg";
+
+/* Hub — over-video chrome (HubOverlays.swift) */
+"%lld×%lld · %lld fps" = "%lld×%lld · %lld fps";
+"Control declined: %@" = "Styrning nekad: %@";
+"🎙 On" = "🎙 På";
+"🎙 Off" = "🎙 Av";
+
+/* Hub — session placards (HubPlacards.swift) */
+"Waiting for approval" = "Väntar på godkännande";
+"The sharer declined your request" = "Den som delar avböjde din förfrågan";
+"The share has ended" = "Delningen har avslutats";
+"Connection failed" = "Anslutningen misslyckades";
+"The sharer needs to accept you as a viewer." = "Den som delar måste släppa in dig som tittare.";
+"Returning to the screen list…" = "Återgår till skärmlistan…";
+
+/* Hub — quality menu (HubQuality.swift) */
+"Save bandwidth" = "Spara bandbredd";
+"Best quality" = "Bästa kvalitet";
+"15 fps, smaller picture — for slow or metered links" = "15 fps, mindre bild — för långsamma eller datataxerade förbindelser";
+"30 fps — the default" = "30 fps — standard";
+"60 fps, sharpest picture — needs a fast link" = "60 fps, skarpaste bilden — kräver en snabb förbindelse";
+"HEVC only" = "Endast HEVC";
+"Quality: %@" = "Kvalitet: %@";
+
+/* Hub — screen rows + peer detail (HubScreenList.swift) */
+"Online" = "Online";
+"Asked — waiting for a reply" = "Frågad — väntar på svar";
+"Host" = "Värd";
+"IP" = "IP";
+"Relayed via %@" = "Reläad via %@";
+/* Kvalitetsorden nedan visas inuti "%lld ms (%@)". */
+"good" = "bra";
+"fair" = "godtagbar";
+"slow" = "långsam";
+"%lld ms (%@)" = "%lld ms (%@)";
+
+/* Hub — viewer roster + approval prompts (HubViewerRoster.swift / HubStyle.swift) */
+"Allow" = "Tillåt";
+"Always allow" = "Tillåt alltid";
+"Block" = "Blockera";
+"Forget" = "Glöm";
+"Will apply once this peer is identified" = "Börjar gälla när den här enheten har identifierats";
+"Always allowed" = "Alltid tillåten";
+
+/* MARK: - Linux app (Apps/linux) ————————————————————————————————————————— */
+
+/* Picker + session status (PickerModel.swift / main.swift) */
+"Starting Tailscale…" = "Startar Tailscale…";
+"Waiting for login…" = "Väntar på inloggning…";
+"Tailscreen viewer" = "Tailscreen-tittare";
+"Viewer" = "Tittare";
+"Accepted — they're choosing what to share" = "Accepterat — de väljer vad som ska delas";
+"Declined" = "Avböjt";
+"No reply" = "Inget svar";
+"Requesting Control…" = "Begär styrning…";
+"Release Control" = "Lämna tillbaka styrningen";
+"%@ wants to watch" = "%@ vill titta";
+"Anyone on your tailnet who can reach this machine can watch." = "Vem som helst i ditt tailnet som når den här datorn kan titta.";
+"Share a window or app…" = "Dela ett fönster eller en app…";
+"Change source…" = "Byt källa…";
+
+/* Sharer status + failures (SharerModel.swift / VoiceControls.swift) */
+"Not sharing" = "Delar inte";
+"%lld waiting for approval" = "%lld väntar på godkännande";
+"Sharing — nobody watching yet" = "Delar — ingen tittar ännu";
+"Sharing to %lld" = "Delar till %lld";
+"Share failed: %@" = "Delningen misslyckades: %@";
+"this session cannot share a single window" = "den här sessionen kan inte dela ett enskilt fönster";
+"could not change the shared source: %@" = "kunde inte byta delad källa: %@";
+"Tailscale isn't up yet" = "Tailscale är inte igång ännu";
+"could not describe the display to capture" = "kunde inte beskriva skärmen som ska fångas";
+"Drawing needs a compositing desktop" = "Ritläget kräver ett skrivbord med kompositor";
+"This desktop would not let the overlay take the keyboard" = "Det här skrivbordet lät inte överlägget ta tangentbordet";
+"Microphone unavailable" = "Mikrofonen är inte tillgänglig";
+"No desktop notifications on this system — approvals appear here only" = "Inga skrivbordsaviseringar på det här systemet — godkännanden visas bara här";
+"Notifications are off for Tailscreen — approvals appear here only" = "Aviseringar är avstängda för Tailscreen — godkännanden visas bara här";
+
+/* MARK: - Windows app (Apps/windows) ———————————————————————————————————— */
+
+/* Viewer chrome (TailscreenWindowsApp.swift / WindowsViewerInteraction.swift) */
+"Watching %@" = "Tittar på %@";
+"Reset Zoom" = "Återställ zoom";
+"Hide stats" = "Dölj statistik";
+"Requesting…" = "Begär…";
+"Video is available on Windows only." = "Video är endast tillgängligt på Windows.";
+
+/* Sign-in + hub (TailscreenWindowsApp.swift) */
+"Sign in to your tailnet to share this screen or watch someone else's." = "Logga in på ditt tailnet för att dela den här skärmen eller titta på någon annans.";
+"Try again" = "Försök igen";
+"Screens on your tailnet" = "Skärmar i ditt tailnet";
+"Waiting for browser sign-in…" = "Väntar på inloggning i webbläsaren…";
+"Could not start Tailscale" = "Kunde inte starta Tailscale";
+"Discovery failed: %@" = "Sökningen misslyckades: %@";
+"Waiting for %@ to approve…" = "Väntar på att %@ ska godkänna…";
+"The sharer declined." = "Den som delar avböjde.";
+"Session ended: %@" = "Sessionen avslutades: %@";
+"Switching account…" = "Byter konto…";
+"Could not open a browser — copy the URL above. (%@)" = "Kunde inte öppna en webbläsare — kopiera adressen ovan. (%@)";
+
+/* Sharing (TailscreenWindowsApp.swift) */
+"Sharing %@" = "Delar %@";
+"Share this screen" = "Dela den här skärmen";
+"%@ wants to control this machine" = "%@ vill styra den här datorn";
+"Take back control from %@" = "Ta tillbaka styrningen från %@";
+"No one is watching yet" = "Ingen tittar ännu";
+"%lld watching" = "%lld tittar";
+"Viewers can ask to control this machine" = "Tittare kan be om att få styra den här datorn";
+"Viewers' drawings appear on this screen" = "Tittarnas ritningar visas på den här skärmen";
+"slowest stage: %@" = "långsammaste steget: %@";
+"Could not open the capture picker: %@" = "Kunde inte öppna skärmväljaren: %@";
+"Could not change the shared source: %@" = "Kunde inte byta delad källa: %@";
+"Could not start sharing: %@" = "Kunde inte börja dela: %@";
+"Not listening for share requests: %@" = "Lyssnar inte efter delningsförfrågningar: %@";
+"Remote control isn't available for this share." = "Fjärrstyrning är inte tillgängligt för den här delningen.";
