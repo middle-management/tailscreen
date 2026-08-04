@@ -512,10 +512,11 @@ Kind B. Sequenced by how many rows each unblocks.
   is the single highest-value thing anyone with a Wayland machine can do next,
   and it is worth more than the next increment of code.
 
-  *Still unbuilt: system audio (the portal has no equivalent), preview
-  thumbnails, and multi-stream shares.*
-- **3.4 · Change source mid-share, preview thumbnail** — the Linux half of
-  change-source has landed; the Windows half and the thumbnail have not.
+  *Still unbuilt: system audio (the portal has no equivalent) and multi-stream
+  shares. Preview thumbnails landed in 3.4.*
+- **3.4 · Change source mid-share, preview thumbnail** — ✅ **Done**, in three
+  increments: the Linux half of change-source, the Windows half, and the
+  thumbnail.
 
   **Change source, Linux.** `TailscaleScreenShareServer.changeSource` now takes
   an optional replacement capture factory, because **not every backend can be
@@ -559,9 +560,37 @@ Kind B. Sequenced by how many rows each unblocks.
   own pump thread, sized at creation, and dropping it is how that thread is
   joined.
 
-  *Still open in 3.4: the preview thumbnail. The `onPreviewImage` seam exists
-  and neither non-mac backend fires it, which needs an MJPEG encode off the
-  captured planes and an image view the hub does not currently have.*
+  **Preview thumbnail.** The sharer's own "this is what they can see", once a
+  second, under the status line on both hubs. The starting assumption — fire
+  the existing `onPreviewImage` seam — turned out to be wrong, and skipping it
+  is most of what makes this small. That seam carries *encoded* bytes because
+  the macOS helper is a separate process and has ImageIO on the far side of an
+  IPC boundary; these three backends are in-process and have neither, so
+  honouring it would mean adding an MJPEG encoder purely to decode it again one
+  view later. They publish raw pixels instead, through an `onPreviewThumbnail`
+  on each concrete backend attached inside the host's capture factory — the
+  shape `onTimings` already uses on Windows, which also means a backend
+  restarted by the server's restart budget keeps publishing.
+
+  The scaling is `ThumbnailScaler` in the portable tier: box-average (a
+  point-sampled 4 K desktop turns text into noise that reads as a broken image;
+  averaging turns it into grey, which reads as small text), padded-stride
+  aware, BGRA→RGBA because SwiftCrossUI's in-memory `Image` takes packed RGBA,
+  and never enlarging. Every one of those is a silent failure if wrong — a
+  channel swap reads as a colour-management problem, not a bug — so all four
+  are mutation-tested.
+
+  Two backends hand it the BGRA they were already given. X11 cannot: its
+  capture shim converts to I420 inside `grab` and the BGRA is gone, so that one
+  path converts back through `I420Converter`, which is why that type moved down
+  from `TailscreenViewer` to `TailscreenProtocol` — the viewer's CPU blit is no
+  longer its only caller.
+
+  It is also the answer to a real gap the status line cannot close: "Sharing to
+  2" reads identically whether the intended window is on the wire or the wrong
+  one is, and after a mid-share source change that is not hypothetical. The
+  preview is cleared on every teardown path, because a still picture of a
+  screen that is no longer going anywhere looks exactly like a live one.
 
 ## Phase 4 · Hub parity, which is cheap by construction (weeks)
 

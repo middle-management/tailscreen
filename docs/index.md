@@ -18,7 +18,7 @@ image: /assets/social-card.png
   macOS, Linux, and Windows. No meeting link, no server in the middle, no
   port to forward.</p>
   <p class="ts-hero-actions">
-    <a href="{% link install.md %}" class="btn btn-primary fs-5">Install</a>
+    <a href="{{ site.baseurl }}{% link install.md %}" class="btn btn-primary fs-5">Install</a>
     <a href="https://github.com/middle-management/tailscreen" class="btn fs-5">View on GitHub</a>
   </p>
   <p class="ts-hero-note">Free and open source. The only account it needs is the Tailscale login you already have.</p>
@@ -274,8 +274,8 @@ any other. Your screen never touches a third-party server.</p>
   <h2>Your screen, on theirs, in seconds.</h2>
   <p>Install it, sign in to Tailscale, choose what to share.</p>
   <p class="ts-cta-actions">
-    <a href="{% link install.md %}" class="btn btn-primary fs-5">Install Tailscreen</a>
-    <a href="{% link usage.md %}" class="btn fs-5">Read the docs</a>
+    <a href="{{ site.baseurl }}{% link install.md %}" class="btn btn-primary fs-5">Install Tailscreen</a>
+    <a href="{{ site.baseurl }}{% link usage.md %}" class="btn fs-5">Read the docs</a>
   </p>
 </div>
 </div>

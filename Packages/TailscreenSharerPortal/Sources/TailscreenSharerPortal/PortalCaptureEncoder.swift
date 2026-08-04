@@ -44,8 +44,10 @@ import TailscreenSharer
 /// - System-audio capture, so `setAudioEnabled` is a no-op and
 ///   `onAudioAccessUnit` never fires. Viewer voice is unaffected; that path
 ///   does not come through here.
-/// - Preview thumbnails (`onPreviewImage` never fires), as on the other two
-///   non-mac backends.
+/// - `onPreviewImage`, which carries *encoded* image bytes because the mac
+///   helper is a separate process with ImageIO on the far side. Raw pixels go
+///   up through `onPreviewThumbnail` instead, as on the other two non-mac
+///   backends.
 /// - Multiple streams. The portal can hand back several; this takes the one it
 ///   was constructed with. Sharing two monitors as one share is a separate
 ///   piece of work, not a flag.
@@ -60,6 +62,23 @@ public final class PortalCaptureEncoder: CaptureEncoding, @unchecked Sendable {
     public var onUnexpectedExit: ((String) -> Void)?
     public var onUserStopped: (() -> Void)?
     public var onActivity: (() -> Void)?
+
+    // MARK: Preview
+
+    /// The sharer's own "this is what they can see" thumbnail, at most once a
+    /// second (`ThumbnailScaler.intervalNs`).
+    ///
+    /// Not part of `CaptureEncoding` — see `onPreviewImage` above. Attached in
+    /// the host's capture factory, so a restart's fresh backend keeps
+    /// publishing.
+    ///
+    /// **Fires on PipeWire's thread**, from inside `ingest`. That thread must
+    /// not be blocked, which is why this is throttled to once a second and
+    /// scales straight out of the frame it was already handed rather than
+    /// keeping a copy for someone else to scale later: one pass over pixels
+    /// that are already in cache, next to the BGRA→I420 conversion that runs
+    /// on every frame and costs more.
+    public var onPreviewThumbnail: ((ThumbnailScaler.Thumbnail) -> Void)?
 
     public enum StartError: Error, CustomStringConvertible {
         case malformedSelection
@@ -122,6 +141,11 @@ public final class PortalCaptureEncoder: CaptureEncoding, @unchecked Sendable {
     /// PipeWire's thread would stall the whole graph.
     private var rebuildRequest: (width: Int, height: Int)?
     private var lastRebuildNs: UInt64?
+    /// When the last preview thumbnail was produced. Read and written only
+    /// on PipeWire's thread, but under the lock like everything else here —
+    /// the cost is a few instructions and the alternative is a field whose
+    /// thread confinement is a comment rather than a fact.
+    private var lastPreviewNs: UInt64?
 
     /// Codec choice, resolved at `start` and reused by every rebuild so a
     /// resize cannot silently switch codecs mid-share.
@@ -176,6 +200,7 @@ public final class PortalCaptureEncoder: CaptureEncoding, @unchecked Sendable {
         handoff = nil
         rebuildRequest = nil
         lastRebuildNs = nil
+        lastPreviewNs = nil
         running = true
         lock.unlock()
 
@@ -354,7 +379,31 @@ public final class PortalCaptureEncoder: CaptureEncoding, @unchecked Sendable {
                 }
             }
         }
+        publishPreview(frame: frame, nowNs: now)
         onActivity?()
+    }
+
+    /// Scale the frame just ingested into a preview, at most once a second.
+    ///
+    /// Deliberately reads `frame` rather than the converted planes: the BGRA is
+    /// right there and still valid for the length of this call, so the preview
+    /// costs one extra pass over pixels already in cache instead of a
+    /// round trip back out of I420.
+    private func publishPreview(frame: PortalStream.Frame, nowNs: UInt64) {
+        guard let sink = onPreviewThumbnail else { return }
+        let due = lock.withLock { () -> Bool in
+            guard ThumbnailScaler.shouldCapture(lastCaptureNs: lastPreviewNs, nowNs: nowNs) else {
+                return false
+            }
+            lastPreviewNs = nowNs
+            return true
+        }
+        guard due,
+            let thumbnail = ThumbnailScaler.thumbnail(
+                bgra: frame.bgra, stride: frame.stride,
+                width: frame.width, height: frame.height)
+        else { return }
+        sink(thumbnail)
     }
 
     // MARK: Encode loop

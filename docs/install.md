@@ -185,7 +185,7 @@ make build
 
 This compiles `libtailscale.a` from the Go submodule, applies the patches
 under `Packages/TailscaleKit/Patches/` to the upstream Swift sources (more on
-that in [Contributing]({% link contributing.md %})), builds the TailscaleKit
+that in [Contributing]({{ site.baseurl }}{% link contributing.md %})), builds the TailscaleKit
 wrapper, and finally builds the app. First build pulls Go modules, so it
 needs internet.
 

@@ -38,6 +38,15 @@ let package = Package(
             url: "https://github.com/stackotter/swift-cross-ui",
             revision: "199a85614e3b2346aa10736b12f969af14a1f1ea"),
         .package(path: "../TailscreenKit"),
+        // Only for `ImageFormats.Image<RGBA>`, which is the argument type of
+        // SwiftCrossUI's in-memory `Image` initializer — a package cannot hand
+        // over raw pixels without naming it. Pinned exactly as swift-cross-ui
+        // pins it, so both resolve to one copy of the type: two versions of a
+        // type that appears in a public initializer's signature would not be
+        // interchangeable, and the failure reads as a nonsense type error.
+        .package(
+            url: "https://github.com/stackotter/swift-image-formats",
+            .upToNextMinor(from: "0.5.0")),
     ],
     targets: [
         .target(
@@ -45,6 +54,7 @@ let package = Package(
             dependencies: [
                 .product(name: "SwiftCrossUI", package: "swift-cross-ui"),
                 .product(name: "TailscreenProtocol", package: "TailscreenKit"),
+                .product(name: "ImageFormats", package: "swift-image-formats"),
             ]
         )
     ]

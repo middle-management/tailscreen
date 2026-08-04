@@ -117,6 +117,6 @@ new `tailscreen-...` machine join.
   node down on the control plane just like it does against
   `controlplane.tailscale.com`.
 - **ACLs are still your access-control plane.** All the guidance in
-  [Privacy & Security]({% link security.md %}#access-control) about TCP
+  [Privacy & Security]({{ site.baseurl }}{% link security.md %}#access-control) about TCP
   and UDP port 7447 applies — just enforce it via your control plane's
   ACL system instead of Tailscale's.

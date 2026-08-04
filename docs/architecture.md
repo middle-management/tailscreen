@@ -170,7 +170,7 @@ as a per-viewer health dot: healthy, degraded, or limited-to-keyframes.
 
 Three cooperating mechanisms, all capability-negotiated so any mix of old
 and new peers degrades to plain PLI (the wire details are on the
-[protocol page]({% link protocol.md %})):
+[protocol page]({{ site.baseurl }}{% link protocol.md %})):
 
 - **NACK retransmission.** The viewer's `NACKScheduler` watches the
   sequence space, tolerates reordering, and requests exactly the missing
@@ -244,7 +244,7 @@ translation, so a hostile viewer can't smuggle arbitrary flag bits — and
 posts `CGEvent`s from a serial queue. Revocation is TOCTOU-safe: a sealed injector drops anything that
 raced the revoke and synthesizes a button-up for any button held
 mid-drag, so revoke never leaves a stuck mouse button. Keyboard scope is
-whole-Mac by design (see [Security]({% link security.md %}) for why, and
+whole-Mac by design (see [Security]({{ site.baseurl }}{% link security.md %}) for why, and
 for the grant-time disclosure).
 
 ## Tailscale integration

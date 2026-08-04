@@ -140,7 +140,10 @@ and `stop()` genuinely stops it.
 
 Current limits, deliberately explicit: display shares only (window/app
 selections are *refused*, not silently widened to the whole screen), X11 only,
-no system-audio capture, no preview thumbnails, software encoders only
+no system-audio capture, no `onPreviewImage` (the sharer's preview goes up as
+raw pixels through `onPreviewThumbnail` instead — that seam carries *encoded*
+bytes for the mac helper's sake, and there is no process boundary here to pay
+for), software encoders only
 (hardware VA-API/NVENC needs `AVHWFramesContext` upload this path doesn't do).
 
 ### Running it end to end

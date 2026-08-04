@@ -767,6 +767,15 @@ struct ViewerApp: App {
                 ? HubAction(
                     label: "Change source…", perform: { gSharer.changeSource() })
                 : nil,
+            // What is actually on the wire, once a second. Only while
+            // sharing: the model clears it on every teardown path, and this
+            // second gate means a preview that somehow outlived its capture
+            // still cannot be shown next to a Start button.
+            preview: sharer.phase == .sharing
+                ? sharer.preview.map {
+                    HubPreview(width: $0.width, height: $0.height, rgba: $0.rgba)
+                }
+                : nil,
             onStart: { gSharer.startSharing() },
             onStop: { gSharer.stopSharing() },
             onAccept: { Self.answerPrompt($0, accept: true) },

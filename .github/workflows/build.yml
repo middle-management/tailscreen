@@ -383,6 +383,91 @@ jobs:
               xvfb-run -a --server-args="-screen 0 1280x720x24" \
                 Packages/X11HotkeyKit/.build/debug/x11-hotkey-probe --live-check
 
+          # COMPILE, LINK AND LIVE-DAEMON gate for GNotifyKit — desktop
+          # notifications over org.freedesktop.Notifications.
+          #
+          # Unlike linux-portal, this one CAN be a real gate, and is. The
+          # portal is defined by a consent dialog a person clicks; a
+          # notification daemon is an ordinary D-Bus service, so CI runs a real
+          # one (dunst) on a private session bus and the probe talks to it. The
+          # button press is real too — `dunstctl action` invokes the default
+          # action, which is the daemon emitting ActionInvoked, not this repo
+          # simulating it.
+          #
+          # What this proves:
+          #
+          #   --live-check   the Notify argument signature. `(susssasa{sv}i)`
+          #                  is eight fields and two containers built through
+          #                  GVariantBuilder, and getting it wrong is an
+          #                  InvalidArgs error at call time that nothing else
+          #                  here would produce. Verified by breaking the
+          #                  signature deliberately.
+          #
+          #                  GetCapabilities, i.e. that "actions" and "body"
+          #                  are read rather than assumed. A daemon lacking
+          #                  "actions" silently DROPS buttons, so a host that
+          #                  did not ask would post an Accept/Deny pair that
+          #                  renders as a sentence with no way to answer it.
+          #
+          #                  replaces_id updating a banner in place rather than
+          #                  stacking a second one.
+          #
+          #                  THE SIGNAL PATH, which is the half no unit test
+          #                  can reach: GDBus delivers to the thread-default
+          #                  GMainContext captured at subscribe time, so a
+          #                  notifier built on a thread that never iterates one
+          #                  posts perfectly and reports nothing. Withdraw ->
+          #                  NotificationClosed(reason=3) and a real button ->
+          #                  ActionInvoked both fail if the subscription or the
+          #                  pump is wrong; both were verified to fail against
+          #                  a build with the subscriptions removed.
+          #
+          # What it does NOT prove: how any of this LOOKS. dunst under Xvfb
+          # draws to a screen nobody sees, and whether GNOME Shell renders two
+          # buttons or hides them behind a chevron is not something a probe can
+          # answer.
+          #
+          # Xvfb is not optional: dunst is a drawing daemon and exits without a
+          # display, at which point the bus activation below fails and the
+          # whole gate would fail rather than pass — which is the right way
+          # round, but worth knowing when it breaks.
+          - name: linux-notify
+            apt: pkg-config libglib2.0-dev libglib2.0-bin dbus dunst xvfb
+            # No submodules, no Go, no libtailscale: this package depends on
+            # nothing in TailscreenKit. It is delivery only — every decision
+            # about what to say lives in TailscreenProtocol, tested by
+            # linux-protocol.
+            submodules: false
+            go: none
+            libtailscale: none
+            cmd: |
+              swift build --package-path Packages/GNotifyKit --product gnotify-probe
+              # Exported so the inner single-quoted bash -c inherits it rather
+              # than needing three levels of quote escaping.
+              export PROBE="$PWD/Packages/GNotifyKit/.build/debug/gnotify-probe"
+              # Without a session bus the probe reports "no daemon" and exits 0
+              # — that is the link check, and it is deliberately NOT the gate.
+              "$PROBE"
+              # The gate. dbus-run-session gives a private bus so nothing here
+              # touches a developer's real one; dunst is backgrounded rather
+              # than bus-activated so its stderr does not hold this step open.
+              xvfb-run -a --server-args="-screen 0 1280x720x24" \
+                dbus-run-session -- bash -c '
+                  dunst > /tmp/dunst-ci.log 2>&1 &
+                  # ListNames rather than introspecting the daemon: touching
+                  # the notification name ACTIVATES it, which races a second
+                  # dunst against the one just backgrounded and fills the log
+                  # with a name-lost error that has nothing to do with anything.
+                  for _ in $(seq 100); do
+                    gdbus call --session --dest org.freedesktop.DBus \
+                      --object-path /org/freedesktop/DBus \
+                      --method org.freedesktop.DBus.ListNames 2>/dev/null \
+                      | grep -q org.freedesktop.Notifications && break
+                    sleep 0.1
+                  done
+                  "$PROBE" --live-check --invoke-with "dunstctl action"
+                '
+
           # COMPILE, LINK, D-BUS-PROTOCOL AND PIPEWIRE gate for
           # PortalCaptureKit — the xdg-desktop-portal ScreenCast + PipeWire
           # capture path.

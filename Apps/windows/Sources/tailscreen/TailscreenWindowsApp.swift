@@ -785,6 +785,15 @@ final class AppUIState: ObservableObject {
                 ? HubAction(
                     label: "Change source…", perform: { [weak self] in self?.changeSource() })
                 : nil,
+            // What is actually on the wire, once a second. Only while
+            // sharing: the session clears it on teardown, and this second gate
+            // means a preview that somehow outlived its capture still cannot
+            // be shown next to a Start button.
+            preview: sharing.isSharing
+                ? sharing.preview.map {
+                    HubPreview(width: $0.width, height: $0.height, rgba: $0.rgba)
+                }
+                : nil,
             onStart: { [weak self] in self?.startSharing() },
             onStop: { [weak self] in self?.stopSharing() },
             onAccept: { [weak self] id in self?.answerPrompt(id, accept: true) },

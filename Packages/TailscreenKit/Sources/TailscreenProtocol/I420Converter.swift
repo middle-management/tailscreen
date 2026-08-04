@@ -37,32 +37,62 @@ public enum I420Converter {
     /// nothing ever reaches the top of the range. A test pins that exact value.
     private static let rounding = 1 << 15
 
-    /// Convert `frame` into `destination`, which must have room for
+    /// The three source planes and the geometry they describe.
+    ///
+    /// A value rather than five arguments, mirroring `BGRAToI420.Source` — the
+    /// two converters are inverses and reading like inverses is worth
+    /// something. It also keeps the entry point under the parameter-count lint,
+    /// which is what surfaced the asymmetry.
+    public struct Source {
+        public let yPlane: [UInt8]
+        public let uPlane: [UInt8]
+        public let vPlane: [UInt8]
+        public let width: Int
+        public let height: Int
+
+        public init(yPlane: [UInt8], uPlane: [UInt8], vPlane: [UInt8], width: Int, height: Int) {
+            self.yPlane = yPlane
+            self.uPlane = uPlane
+            self.vPlane = vPlane
+            self.width = width
+            self.height = height
+        }
+    }
+
+    /// Convert I420 planes into `destination`, which must have room for
     /// `width × height × 4` bytes.
     ///
-    /// Returns `false` without writing anything if the frame's planes are
-    /// smaller than its declared dimensions — a truncated frame should show the
-    /// previous picture rather than garbage or a crash, and a decoder that
-    /// emits one is broken in a way the renderer cannot paper over.
+    /// Returns `false` without writing anything if the planes are smaller than
+    /// the declared dimensions — a truncated frame should show the previous
+    /// picture rather than garbage or a crash, and whatever produced it is
+    /// broken in a way this cannot paper over.
+    ///
+    /// The plane-based entry point, which is where the arithmetic lives.
+    ///
+    /// Takes planes rather than a `DecodedVideoFrame` because that type belongs
+    /// to the VIEWER tier and this conversion has two callers on opposite sides
+    /// of the app: the viewer's CPU blit, and the SHARER's preview thumbnail,
+    /// whose planes come straight off a capture backend and were never a
+    /// decoded frame. `TailscreenViewer` adds the frame-shaped overload.
     @discardableResult
     public static func convert(
-        _ frame: DecodedVideoFrame,
+        _ source: Source,
         into destination: UnsafeMutablePointer<UInt8>
     ) -> Bool {
-        let width = frame.width
-        let height = frame.height
+        let width = source.width
+        let height = source.height
         guard width > 0, height > 0 else { return false }
 
         let chromaWidth = (width + 1) / 2
         let chromaHeight = (height + 1) / 2
-        guard frame.yPlane.count >= width * height,
-            frame.uPlane.count >= chromaWidth * chromaHeight,
-            frame.vPlane.count >= chromaWidth * chromaHeight
+        guard source.yPlane.count >= width * height,
+            source.uPlane.count >= chromaWidth * chromaHeight,
+            source.vPlane.count >= chromaWidth * chromaHeight
         else { return false }
 
-        frame.yPlane.withUnsafeBufferPointer { y in
-            frame.uPlane.withUnsafeBufferPointer { u in
-                frame.vPlane.withUnsafeBufferPointer { v in
+        source.yPlane.withUnsafeBufferPointer { y in
+            source.uPlane.withUnsafeBufferPointer { u in
+                source.vPlane.withUnsafeBufferPointer { v in
                     for row in 0..<height {
                         let yRow = row * width
                         let chromaRow = (row / 2) * chromaWidth

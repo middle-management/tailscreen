@@ -74,7 +74,13 @@ jobs:
         uses: actions/configure-pages@v5
 
       # Both builds run against main's Gemfile (BUNDLE_GEMFILE), so a tag
-      # never dictates the toolchain — only the content.
+      # never dictates the toolchain — only the content. And both builds cd
+      # INTO their source directory rather than passing -s: Jekyll only
+      # auto-requires the :jekyll_plugins Gemfile group (the github-pages gem,
+      # which is what activates the remote theme and layouts) when a Gemfile
+      # exists in the CURRENT working directory. Built from the workspace
+      # root, every page renders bare — no layout, no CSS — while the build
+      # exits 0.
       - name: Build current (root) from the release tag
         env:
           BUNDLE_GEMFILE: ${{ github.workspace }}/docs/Gemfile
@@ -82,11 +88,11 @@ jobs:
           JEKYLL_ENV: production
         run: |
           if [ "${{ steps.tag.outputs.has_site }}" = "true" ]; then
-            src=/tmp/current/docs
+            cd /tmp/current/docs
           else
-            src=docs
+            cd docs
           fi
-          bundle exec jekyll build -s "$src" -d "$GITHUB_WORKSPACE/_site"
+          bundle exec jekyll build -d "$GITHUB_WORKSPACE/_site"
 
       - name: Build next (/next) from main
         env:
@@ -94,8 +100,9 @@ jobs:
           PAGES_REPO_NWO: ${{ github.repository }}
           JEKYLL_ENV: production
         run: |
-          bundle exec jekyll build -s docs -d "$GITHUB_WORKSPACE/_site/next" \
-            --config docs/_config.yml,docs/_config_next.yml
+          cd docs
+          bundle exec jekyll build -d "$GITHUB_WORKSPACE/_site/next" \
+            --config _config.yml,_config_next.yml
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

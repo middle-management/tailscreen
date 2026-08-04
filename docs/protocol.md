@@ -228,7 +228,7 @@ The sharer pings each cap-aware viewer about once a second
 
 That gives the sharer real per-viewer loss fraction, cumulative sequence
 position, jitter, and RTT — the inputs to the congestion controller (see
-[Architecture]({% link architecture.md %})). The trailing `fecRecovered`
+[Architecture]({{ site.baseurl }}{% link architecture.md %})). The trailing `fecRecovered`
 count exists only on FEC-negotiated links (a tolerant decoder reads 0
 from the legacy 20-byte form): packets repaired by FEC count as
 *received* in the loss fraction, so the bitrate controller reacts only to

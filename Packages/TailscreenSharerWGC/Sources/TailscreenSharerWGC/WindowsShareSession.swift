@@ -119,6 +119,14 @@ public final class WindowsShareSession: @unchecked Sendable {
         /// Live capture timings, so "it's slow" can be answered with which
         /// stage rather than a guess.
         public var timings: CaptureTimings?
+        /// The most recent preview of what viewers are receiving, refreshed
+        /// about once a second, or nil when nothing is being captured.
+        ///
+        /// Worth its own field rather than a note, and worth the bytes: the
+        /// status line reads the same whether the intended window is on the
+        /// wire or the wrong one is, and after a mid-share source change that
+        /// is not a hypothetical.
+        public var preview: ThumbnailScaler.Thumbnail?
 
         public init() {}
     }
@@ -371,10 +379,14 @@ public final class WindowsShareSession: @unchecked Sendable {
         let onTimings: @Sendable (CaptureTimings) -> Void = { [weak self] timings in
             self?.update { $0.timings = timings }
         }
+        let onPreview: @Sendable (ThumbnailScaler.Thumbnail) -> Void = { [weak self] thumbnail in
+            self?.update { $0.preview = thumbnail }
+        }
         let newServer = TailscaleScreenShareServer(
             captureFactory: {
                 let encoder = WGCCaptureEncoder(item: item)
                 encoder.onTimings = onTimings
+                encoder.onPreviewThumbnail = onPreview
                 return encoder
             },
             inputInjector: injector,
@@ -734,6 +746,15 @@ public final class WindowsShareSession: @unchecked Sendable {
         let onTimings: @Sendable (CaptureTimings) -> Void = { [weak self] timings in
             self?.update { $0.timings = timings }
         }
+        let onPreview: @Sendable (ThumbnailScaler.Thumbnail) -> Void = { [weak self] thumbnail in
+            self?.update { $0.preview = thumbnail }
+        }
+        // Stale the moment the target changes, and this is the one moment the
+        // preview is load-bearing — it is how the person confirms they got the
+        // window they meant. Cleared so the card shows nothing until the new
+        // backend produces its first frame, rather than the old target for
+        // another second.
+        update { $0.preview = nil }
         // The factory travels with the data: this backend is built against a
         // capture ITEM, so swapping the selection bytes alone would restart
         // the old target.
@@ -742,6 +763,7 @@ public final class WindowsShareSession: @unchecked Sendable {
             captureFactory: {
                 let encoder = WGCCaptureEncoder(item: item)
                 encoder.onTimings = onTimings
+                encoder.onPreviewThumbnail = onPreview
                 return encoder
             })
     }
@@ -789,6 +811,10 @@ public final class WindowsShareSession: @unchecked Sendable {
             $0.micAvailable = false
             $0.micOn = false
             $0.timings = nil
+            // A preview outliving its capture is a still picture of a screen
+            // that is no longer going anywhere, and it looks exactly like a
+            // live one.
+            $0.preview = nil
         }
     }
 

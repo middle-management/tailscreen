@@ -1,17 +1,28 @@
 import XCTest
 
-@testable import TailscreenViewer
+@testable import TailscreenProtocol
 
 /// The CPU colour conversion the Windows renderer blits through. Pure maths, so
 /// it is verified here rather than by looking at a Windows screen — which is the
 /// point of keeping it in the portable tier.
 final class I420ConverterTests: XCTestCase {
-    /// Build a solid-colour I420 frame.
-    private func solid(
-        width: Int, height: Int, y: UInt8, u: UInt8, v: UInt8
-    ) -> DecodedVideoFrame {
+    /// One solid-colour I420 frame, as planes.
+    ///
+    /// Planes rather than a `DecodedVideoFrame` because the arithmetic lives in
+    /// this tier while that type belongs to the viewer's — the frame-shaped
+    /// overload in `TailscreenViewer` is a three-line forwarder onto exactly
+    /// what is exercised here.
+    private struct Frame {
+        let width: Int
+        let height: Int
+        let yPlane: [UInt8]
+        let uPlane: [UInt8]
+        let vPlane: [UInt8]
+    }
+
+    private func solid(width: Int, height: Int, y: UInt8, u: UInt8, v: UInt8) -> Frame {
         let chromaCount = ((width + 1) / 2) * ((height + 1) / 2)
-        return DecodedVideoFrame(
+        return Frame(
             width: width,
             height: height,
             yPlane: [UInt8](repeating: y, count: width * height),
@@ -20,10 +31,14 @@ final class I420ConverterTests: XCTestCase {
         )
     }
 
-    private func convert(_ frame: DecodedVideoFrame) -> [UInt8] {
+    private func convert(_ frame: Frame) -> [UInt8] {
         var out = [UInt8](repeating: 0, count: frame.width * frame.height * 4)
         let ok = out.withUnsafeMutableBufferPointer {
-            I420Converter.convert(frame, into: $0.baseAddress!)
+            I420Converter.convert(
+                I420Converter.Source(
+                    yPlane: frame.yPlane, uPlane: frame.uPlane, vPlane: frame.vPlane,
+                    width: frame.width, height: frame.height),
+                into: $0.baseAddress!)
         }
         XCTAssertTrue(ok)
         return out
@@ -72,7 +87,7 @@ final class I420ConverterTests: XCTestCase {
     func testChromaIsSharedAcrossThePair() {
         var frame = solid(width: 4, height: 2, y: 128, u: 128, v: 128)
         // Two chroma columns; make them differ.
-        frame = DecodedVideoFrame(
+        frame = Frame(
             width: 4, height: 2,
             yPlane: frame.yPlane,
             uPlane: [40, 200, 40, 200],
@@ -95,15 +110,15 @@ final class I420ConverterTests: XCTestCase {
 
     /// A frame whose planes are too small is refused rather than read past.
     func testTruncatedPlanesRefused() {
-        let frame = DecodedVideoFrame(
-            width: 16, height: 16,
-            yPlane: [UInt8](repeating: 128, count: 4),
-            uPlane: [UInt8](repeating: 128, count: 4),
-            vPlane: [UInt8](repeating: 128, count: 4)
-        )
         var out = [UInt8](repeating: 7, count: 16 * 16 * 4)
         let ok = out.withUnsafeMutableBufferPointer {
-            I420Converter.convert(frame, into: $0.baseAddress!)
+            I420Converter.convert(
+                I420Converter.Source(
+                    yPlane: [UInt8](repeating: 128, count: 4),
+                    uPlane: [UInt8](repeating: 128, count: 4),
+                    vPlane: [UInt8](repeating: 128, count: 4),
+                    width: 16, height: 16),
+                into: $0.baseAddress!)
         }
         XCTAssertFalse(ok)
         XCTAssertTrue(out.allSatisfy { $0 == 7 }, "destination left untouched")
