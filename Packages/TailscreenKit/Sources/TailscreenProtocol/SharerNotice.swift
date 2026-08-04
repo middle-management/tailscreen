@@ -87,6 +87,32 @@ public struct SharerNotice: Equatable, Sendable, Identifiable {
     /// without a peer's pending notice suppressing its later control request.
     public var id: String { "\(kind.rawValue):\(identity)" }
 
+    /// The inverse of `id`.
+    ///
+    /// Needed by a host whose notification platform hands back **one opaque
+    /// string** and nothing else — Windows, where a button press arrives as
+    /// the activation argument the toast was posted with, long after whatever
+    /// table might have remembered what it meant. Rather than keep that table,
+    /// the id carries both halves and this reads them out.
+    ///
+    /// Split on the FIRST colon, not the last and not all of them: kinds never
+    /// contain one, and identities routinely do — `"100.64.0.1:51820"` for a
+    /// viewer at the gate. Splitting anywhere else silently reroutes an
+    /// answer, and the two things it could reroute between are "let this
+    /// person watch" and "let this person control my machine".
+    ///
+    /// Nil for anything that is not one of ours, since the platform delivers
+    /// activation arguments from whatever posted them.
+    public static func decodeID(_ id: String) -> (kind: SharerNoticeKind, identity: String)? {
+        guard let separator = id.firstIndex(of: ":") else { return nil }
+        guard let kind = SharerNoticeKind(rawValue: String(id[id.startIndex..<separator])) else {
+            return nil
+        }
+        let identity = String(id[id.index(after: separator)...])
+        guard !identity.isEmpty else { return nil }
+        return (kind, identity)
+    }
+
     public init(kind: SharerNoticeKind, identity: String, label: String) {
         self.kind = kind
         self.identity = identity

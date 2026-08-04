@@ -549,7 +549,8 @@
 "Drawing needs a compositing desktop" = "Drawing needs a compositing desktop";
 "This desktop would not let the overlay take the keyboard" = "This desktop would not let the overlay take the keyboard";
 "Microphone unavailable" = "Microphone unavailable";
-"No desktop notifications on this system — approvals appear here only." = "No desktop notifications on this system — approvals appear here only.";
+"No desktop notifications on this system — approvals appear here only" = "No desktop notifications on this system — approvals appear here only";
+"Notifications are off for Tailscreen — approvals appear here only" = "Notifications are off for Tailscreen — approvals appear here only";
 
 /* MARK: - Windows app (Apps/windows) ———————————————————————————————————— */
 

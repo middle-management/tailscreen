@@ -49,6 +49,12 @@ let package = Package(
         // themselves. Its shim stubs out off Windows, so the `linux-app` job
         // typechecks the wiring here.
         .package(path: "../../Packages/WinHotkeyKit"),
+        // Desktop notifications (AppNotificationManager), so a sharer whose
+        // attention is on the thing they are showing is still reachable when
+        // somebody is stuck at the approval gate. Same story as the hotkey
+        // above: its shim stubs out off Windows, so the `linux-app` job
+        // typechecks the wiring here.
+        .package(path: "../../Packages/WinNotifyKit"),
         // The hub's look, shared with the GTK viewer. Extracted from that app
         // rather than reinvented here: swift-cross-ui is a SwiftUI subset, so
         // this chrome is hand-built from primitives, and building it twice
@@ -117,6 +123,10 @@ let package = Package(
                 // Linux typecheck path rather than behind a platform
                 // condition.
                 .product(name: "WinHotkeyKit", package: "WinHotkeyKit"),
+                // Desktop notifications. Stubbed off Windows for the same
+                // reason, which is what keeps `SharerNotifications.swift` on
+                // the Linux typecheck path instead of behind an `#if`.
+                .product(name: "WinNotifyKit", package: "WinNotifyKit"),
                 .product(name: "TailscreenHubUI", package: "TailscreenHubUI"),
                 .product(name: "TailscreenL10n", package: "TailscreenL10n"),
             ],

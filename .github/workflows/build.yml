@@ -449,14 +449,27 @@ jobs:
           # round, but worth knowing when it breaks.
           - name: linux-notify
             apt: pkg-config libglib2.0-dev libglib2.0-bin dbus dunst xvfb
-            # No submodules, no Go, no libtailscale: this package depends on
-            # nothing in TailscreenKit. It is delivery only — every decision
-            # about what to say lives in TailscreenProtocol, tested by
-            # linux-protocol.
-            submodules: false
+            # Submodules for WinNotifyKit only: it depends on TailscreenKit,
+            # whose manifest names ../TailscaleKit, whose Sources/ are symlinks
+            # into the submodule — the same reason linux-hotkey needs them. No
+            # Go and no libtailscale.a: nothing here links the archive.
+            # GNotifyKit itself still depends on nothing in TailscreenKit.
+            submodules: recursive
             go: none
             libtailscale: none
             cmd: |
+              export PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit"
+              # WinNotifyKit — the WINDOWS backend, typechecked and decided
+              # here because Linux is where its decisions can be run at all.
+              # Its shim stubs off Windows, so this is the wrapper and the
+              # composition, not the platform. There is no Windows equivalent
+              # of the dunst gate below and there cannot be: the notification
+              # platform is part of the OS, nothing presses a toast button from
+              # a command line, and a Windows runner has no interactive session
+              # to render one into. See the package README's "What is proven".
+              swift test --package-path Packages/WinNotifyKit
+              swift build --package-path Packages/WinNotifyKit --product winnotify-probe
+              Packages/WinNotifyKit/.build/debug/winnotify-probe
               swift build --package-path Packages/GNotifyKit --product gnotify-probe
               # Exported so the inner single-quoted bash -c inherits it rather
               # than needing three levels of quote escaping.

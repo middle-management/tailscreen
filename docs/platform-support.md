@@ -182,10 +182,10 @@ Two things behind the ✅s are worth knowing:
 | Quality settings UI | ✅ | ✅ | ✅ |
 | Connection stats overlay | ✅ | ✅ | ✅ |
 | Localized strings | ✅ | ✅ | ✅ |
-| **Notified when a viewer is waiting for approval** | ✅ | ❌ | ❌ |
-| Answer that prompt from the notification | ❌ | ❌ | ❌ |
-| Told when notifications are switched off | ✅ | ❌ | ❌ |
-| Notified when a viewer joins / leaves | ✅ | ❌ | ❌ |
+| **Notified when a viewer is waiting for approval** | ✅ | ✅ | ⚠️ MSIX only |
+| Answer that prompt from the notification | ❌ | ✅ | ⚠️ MSIX only, unverified |
+| Told when notifications are switched off | ✅ | ✅ | ✅ |
+| Notified when a viewer joins / leaves | ✅ | ✅ | ⚠️ MSIX only |
 | **Outline around what's being captured** | ✅ | ❌ | ⚠️ WGC's own, unconfirmed |
 | Sharing controls outside the main window | ✅ menubar | ❌ | ❌ |
 | Mute / unmute from outside the window | ✅ | ✅ hotkey | ✅ hotkey |
@@ -210,13 +210,27 @@ coming forward. Linux and Windows put everything in one window — which during 
 share is behind the thing you're sharing, and raising it is itself visible to
 your viewers. Every mid-share action costs an interruption the audience can see.
 
-**Notifications are the worst of these gaps.** Approval defaults *on*, so a
-sharer who isn't watching the window silently strands whoever tries to connect;
-there is nothing to poll for and no way to find out. Linux and Windows post
-nothing at all. macOS posts, but weakly: every notification is left at
-`interruptionLevel = .active`, so a Focus — including the one people run while
-presenting — swallows it, and none of them carry *actions*, so at best you are
-told and then you go to the app.
+**Notifications used to be the worst of these gaps, and are now the most
+uneven.** Approval defaults *on*, so a sharer who isn't watching the window
+silently strands whoever tries to connect; there is nothing to poll for and no
+way to find out. All three platforms now post — the *decisions* behind them
+(what to say, when, when to take it back) are one shared, tested layer — but
+what reaches you differs:
+
+- **Linux** posts over `org.freedesktop.Notifications`, with Accept/Deny
+  buttons that answer through exactly the same methods the window's buttons do.
+  A daemon that can't render buttons is asked first, and the wording changes to
+  say where to answer instead.
+- **Windows** posts the same set through the Windows App SDK — but only when
+  the app can register with the notification platform, which today means the
+  **MSIX**. The zip ships a self-contained runtime that deliberately omits the
+  package those APIs need, so it degrades to in-window prompts and *says so on
+  the share card* rather than going quiet. The buttons and the press that comes
+  back are wired, and are the one part of this no CI anywhere can verify:
+  nothing in the project posts a Windows toast that a machine then observes.
+- **macOS** breaks through Focus for the two mid-share asks and reads back
+  whether you've turned notifications off — but its notifications still carry
+  no *actions*, so you are told and then you go to the app.
 
 **"Am I still sharing?" is a different question, and an outline answers it
 better than an icon.** A border drawn around the captured region says what a

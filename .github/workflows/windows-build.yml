@@ -57,6 +57,7 @@ on:
       - 'Packages/SendInputKit/**'
       - 'Packages/WinOverlayKit/**'
       - 'Packages/WinHotkeyKit/**'
+      - 'Packages/WinNotifyKit/**'
       - 'Packages/TailscreenHubUI/**'
       # The string catalog: a dependency of both the app target and
       # TailscreenHubUI, and the thing the staged

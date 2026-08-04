@@ -693,7 +693,7 @@ struct ViewerApp: App {
                 // this window, so they should be told before they do.
                 if sharer.phase == .sharing && sharer.notificationsUnavailable {
                     notes.append(
-                        L("No desktop notifications on this system — approvals appear here only."))
+                        L("No desktop notifications on this system — approvals appear here only"))
                 }
                 return notes
             }(),
