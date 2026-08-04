@@ -378,6 +378,27 @@ jobs:
           swift build --package-path Packages/WinHotkeyKit --product winhotkey-probe
           swift run --package-path Packages/WinHotkeyKit winhotkey-probe
 
+      # Desktop notifications: the Windows App SDK's AppNotificationManager,
+      # reached through raw WinRT because swift-winui does not project it. Via
+      # its PROBE for the usual reason (a library target is never linked), and
+      # RUN, because the run is the only thing on any runner anywhere that
+      # exercises `Register()` — the call the whole packaging fork turns on.
+      #
+      # A refusal is NOT a failure and the probe exits 0 for it. That is the
+      # design, not a hole in the gate: an unpackaged process with no reachable
+      # Windows App Runtime is expected to land there, and making it red would
+      # assert the opposite of what the package promises. What this proves is
+      # that the binary LINKS and that the platform answered at all.
+      #
+      # What no CI anywhere proves: that a toast was posted, seen, or pressed.
+      # Unlike Linux, where `linux-notify` runs a real dunst and presses a real
+      # button, there is no equivalent here — see the package README.
+      - name: WinNotifyKit
+        if: inputs.run_probes
+        run: |
+          swift build --package-path Packages/WinNotifyKit --product winnotify-probe
+          swift run --package-path Packages/WinNotifyKit winnotify-probe
+
       # Two thirds of this job is compiling swift-cross-ui, swift-winui and the
       # WindowsAppSDK bindings — ~1,450 compile units against our one app file,
       # 14m20s of a 21m30s run. They change only when a pinned revision moves,
