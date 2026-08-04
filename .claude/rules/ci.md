@@ -50,6 +50,10 @@ Runs `make build` + `make test` on every PR and push to `main`. Skips doc-only c
 - **`build-release` job** — `swift build -c release` compile check, required (release-config breaks used to surface only on published releases).
 - **diff-coverage gate** — `scripts/diff-coverage.sh`: lcov `DA:` records joined against `git diff -U0 origin/main...HEAD` changed lines in `Sources/*.swift`, fails under 70 % coverage of changed executable lines; currently `continue-on-error: true` with the same flip-to-required TODO convention as the `format` job.
 
+### Screenshots
+
+`workflow_dispatch`, plus a `pull_request` trigger scoped to its own file so edits prove themselves on their PR. Fans out to the three shared `app-*.yml` workflows with `screenshots: true` (one arch per platform — the chrome is arch-independent and x64 has the warm caches), uploading a PNG set per platform as artifacts. All three apps are launched with `--ui-preview`: a seeded, deterministic hub — signed in, the same fake peers on every platform, no tsnet node, no network — that exists for exactly this (grep `isUIPreview` / `gUIPreview`); Linux additionally captures `--ui-preview-video`, the in-session view. Capture is Xvfb+ImageMagick on Linux and the runner's real desktop on Windows (`CopyFromScreen`) and macOS (`screencapture` — the hosted runner's session has the Screen Recording grant; verified 2026-08). Every capture step guards on the app process being alive first, so a crashed app fails the step rather than producing a convincing screenshot of an empty desktop.
+
 ### Soak
 
 Nightly (`cron: 17 3 * * *`) + `workflow_dispatch`: runs `SoakTests` with `TAILSCREEN_SOAK=1` (the `ParserFuzzHarness` at ~50× PR budget plus the seeded `LossyChannel` impairment matrix). Deterministic — a red nightly names its reproducing seed/configuration.

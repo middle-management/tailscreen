@@ -1,10 +1,13 @@
 name: Screenshots
 
-# One PNG (or two) per platform, straight from CI: the Linux job renders the
-# app's deterministic --ui-preview / --ui-preview-video chrome under Xvfb, the
-# Windows and macOS jobs launch the real app on the runner's desktop and grab
-# the screen. Each platform's capture step lives in its shared app-*.yml
-# behind a `screenshots` input, so this file is only the fan-out.
+# One PNG (or two) per platform, straight from CI. All three apps carry a
+# `--ui-preview` mode — the hub seeded with the same deterministic fake
+# tailnet (signed in, fake peers, no tsnet node, no network) — so the shots
+# are consistent across platforms and stable across runs; the Linux job
+# additionally captures --ui-preview-video (the in-session view) under Xvfb,
+# while Windows and macOS run on the runner's real desktop. Each platform's
+# capture step lives in its shared app-*.yml behind a `screenshots` input,
+# so this file is only the fan-out.
 #
 # Two triggers: manual dispatch for "show me the current UI", and a
 # pull_request trigger scoped to THIS FILE so a change to the fan-out proves

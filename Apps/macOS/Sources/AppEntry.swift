@@ -66,6 +66,12 @@ enum TailscreenEntry {
                 // notification posted while Tailscreen is frontmost is
                 // silently suppressed by the system.
                 TailscreenNotificationDelegate.install()
+                // A UI-preview launch is screenshotted from CI, where nobody
+                // clicks the Dock icon: activate so the capture shows
+                // Tailscreen's menu bar and a focused window, not Finder's.
+                if AppState.isUIPreview {
+                    NSApp.activate(ignoringOtherApps: true)
+                }
             }
         }
         nc.addObserver(
