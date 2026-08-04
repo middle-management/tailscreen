@@ -16,6 +16,7 @@ import TailscreenViewerTsnet
 //
 //   tailscreen [<sharer-host>] [--port N] [--state-dir PATH] [--control-url URL]
 //   tailscreen --render-self-test | --overlay-self-test | --overlay-input-self-test
+//   tailscreen --outline-self-test
 //   tailscreen --capture-backend-report
 //   Env: TAILSCREEN_TS_AUTHKEY, TAILSCREEN_TS_CONTROL_URL
 //
@@ -58,6 +59,7 @@ let gSelfTest = gArgs.contains("--render-self-test")
 // the screen back through X11 capture to prove it landed. See OverlaySelfTest.
 let gOverlaySelfTest = gArgs.contains("--overlay-self-test")
 let gOverlayInputSelfTest = gArgs.contains("--overlay-input-self-test")
+let gOutlineSelfTest = gArgs.contains("--outline-self-test")
 // Which capture backend this machine would use, and why. Prints and exits;
 // raises no dialog. Covers the wiring between the environment and
 // `CaptureBackendSelection`, which its unit tests cannot reach.
@@ -166,6 +168,10 @@ if gSelfTest {
     // desktop when a tool is armed, and give it up again on Escape. Same
     // scheduling reason as above.
     DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { OverlayInputSelfTest.run() }
+} else if gOutlineSelfTest {
+    // The recording indicator: does the border reach a real desktop, and does
+    // it leave the middle of the screen alone. Same scheduling reason again.
+    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { OutlineSelfTest.run() }
 } else if gUIPreview {
     // Headless chrome preview: seed the picker with fake sharers and render the
     // hub without any networking, so the UI can be screenshotted / reviewed.

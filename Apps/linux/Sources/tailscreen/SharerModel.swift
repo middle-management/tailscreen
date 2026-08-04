@@ -378,6 +378,21 @@ final class SharerModel: ObservableObject {
     /// to change — an X11 session captures exactly one thing.
     @Published private(set) var canChangeSource = false
 
+    /// Whether the overlay's rectangle is genuinely what is being captured.
+    ///
+    /// **The outline must not lie.** `makeOverlay` sizes the window from the X
+    /// display, because that is the only geometry this side reliably has — the
+    /// portal hands back a stream size but no position on screen, so a share of
+    /// one window gets an overlay the size of the whole desktop. For
+    /// annotations that is a pre-existing coordinate problem; for the outline
+    /// it is worse in kind, because a border around the entire screen while one
+    /// window is being shared states the opposite of the truth.
+    ///
+    /// So the indicator is shown only where the two are known to agree: an X11
+    /// display share. A portal share gets no outline rather than a wrong one —
+    /// the same call the capability bits make everywhere else here.
+    private var captureMatchesOverlay = false
+
     /// The most recent preview of what viewers are receiving, or nil when
     /// nothing is being captured.
     ///
@@ -421,6 +436,7 @@ final class SharerModel: ObservableObject {
         case .x11(let display):
             // One display, one root window: nothing to re-point at.
             canChangeSource = false
+            captureMatchesOverlay = true
             let sink = previewSink()
             beginShare(captureFactory: {
                 let encoder = X11CaptureEncoder(display: display)
@@ -477,6 +493,10 @@ final class SharerModel: ObservableObject {
             switch await portal.negotiate(sources: sources) {
             case .granted(let nodeID):
                 canChangeSource = true
+                // See `captureMatchesOverlay`: the portal gives a stream size
+                // but no position, so the overlay's rectangle is the desktop's
+                // and the capture's may be a single window inside it.
+                captureMatchesOverlay = false
                 let sink = previewSink()
                 beginShare(captureFactory: {
                     let encoder = PortalCaptureEncoder(
@@ -737,6 +757,10 @@ final class SharerModel: ObservableObject {
                     controlListener: controlListener
                 )
                 phase = .sharing
+                // Only once the share is genuinely up: an indicator that
+                // appeared while the capture was still opening would say
+                // "they can see this" before anyone could.
+                overlay?.setShowsOutline(captureMatchesOverlay)
                 startVoice(on: server)
             } catch {
                 phase = .failed("\(error)")
@@ -947,6 +971,8 @@ final class SharerModel: ObservableObject {
         // succeeded leaves this model believing nothing is armed.
         latch.teardown(surface: armOverlay)
         publishLatch()
+        overlay?.setShowsOutline(false)
+        captureMatchesOverlay = false
         overlay?.clear()
         overlay = nil
         injector?.deactivate()
