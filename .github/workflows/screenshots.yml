@@ -1,0 +1,52 @@
+name: Screenshots
+
+# One PNG (or two) per platform, straight from CI: the Linux job renders the
+# app's deterministic --ui-preview / --ui-preview-video chrome under Xvfb, the
+# Windows and macOS jobs launch the real app on the runner's desktop and grab
+# the screen. Each platform's capture step lives in its shared app-*.yml
+# behind a `screenshots` input, so this file is only the fan-out.
+#
+# Two triggers: manual dispatch for "show me the current UI", and a
+# pull_request trigger scoped to THIS FILE so a change to the fan-out proves
+# itself on its own PR — the capture steps inside app-*.yml are exercised on
+# any PR that dispatches this workflow, not on every app-*.yml edit, because
+# three extra runners per workflow-refactor PR would be cost without a
+# question behind it.
+#
+# One arch per platform, deliberately: the chrome is identical across
+# architectures, and the x64 legs have the warm caches.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/screenshots.yml'
+
+concurrency:
+  group: screenshots-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    uses: ./.github/workflows/app-linux.yml
+    with:
+      arch: x64
+      self_test: false
+      screenshots: true
+
+  windows:
+    uses: ./.github/workflows/app-windows.yml
+    with:
+      arch: x64
+      screenshots: true
+      upload_dist: false
+
+  macos:
+    uses: ./.github/workflows/app-macos.yml
+    with:
+      ref: ${{ github.sha }}
+      version: 0.0.0
+      sign: false
+      notarize: false
+      cache: true
+      screenshots: true
