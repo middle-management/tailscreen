@@ -30,6 +30,14 @@ public final class ViewerSession {
     /// minimum spacing, not a wall-clock timer.
     public static let receiverReportIntervalNs: UInt64 = 1_000_000_000
 
+    /// Minimum spacing between keyframe requests while waiting for the FIRST
+    /// keyframe (see `maybeRequestKeyframe`). One second, chosen against the
+    /// sharer's own PLI-driven keyframe cadence of roughly two: fast enough that
+    /// a lost admission keyframe costs about a second rather than the session,
+    /// slow enough that a keyframe already on its way doesn't collect a queue of
+    /// duplicate requests behind it. Stops entirely at the first keyframe.
+    public static let keyframeRequestIntervalNs: UInt64 = 1_000_000_000
+
     // MARK: Collaborators
 
     /// Capabilities this viewer advertises in its HELLO (NACK / receiver-report
@@ -119,6 +127,12 @@ public final class ViewerSession {
     /// Whether at least one RR has been sent (so the first one fires promptly
     /// once a baseline exists, rather than waiting a full interval from 0).
     private var sentFirstReport = false
+    /// Clock reading of the last keyframe request sent while waiting for a first
+    /// keyframe. See `maybeRequestKeyframe`.
+    private var lastKeyframeRequestNs: UInt64 = 0
+    /// Whether a pre-keyframe request has been sent, so the first one fires on
+    /// the next tick after admission rather than an interval later.
+    private var sentKeyframeRequest = false
 
     /// - Parameters:
     ///   - caps: capabilities to advertise (NACK / receiver-report / FEC).
@@ -298,7 +312,39 @@ public final class ViewerSession {
         }
 
         maybeDisarmFEC()
+        maybeRequestKeyframe()
         maybeSendReceiverReport()
+    }
+
+    /// Ask for a keyframe, on a cadence, while admitted with none yet.
+    ///
+    /// The sharer forces a keyframe when a viewer joins (and again when a
+    /// pending viewer is approved), but that is a ONE-SHOT: if the IDR is lost
+    /// or torn in transit, nothing on either side asks again, and this viewer is
+    /// blank for the rest of the session on an otherwise perfect link. Neither
+    /// existing PLI path covers it — the decode-failure PLI can't fire because
+    /// `submit` gates P-frames before the decoder ever sees them, and the NACK
+    /// scheduler only PLIs on a gap it gave up on, so a clean link produces
+    /// nothing to recover from.
+    ///
+    /// A real Mac→Windows session showed exactly this: 112 access units
+    /// assembled in three seconds, every one of them a P-frame
+    /// (`aus == preKeyframeDrops`, `keyframe=false`), because the admission
+    /// keyframe was shredded while the receive loop was still overflowing its
+    /// socket and no second request ever went out.
+    ///
+    /// Gated on `assignedSSRC` — before the HELLO_ACK there is nothing admitted
+    /// to serve the request, and a PLI sent while parked at the approval prompt
+    /// would ask a sharer who hasn't let us in yet. Stops at the first keyframe,
+    /// after which the ordinary decode-failure and NACK paths own recovery.
+    private func maybeRequestKeyframe() {
+        guard !seenKeyframe, assignedSSRC != nil else { return }
+        let elapsed = nowNs &- lastKeyframeRequestNs
+        guard !sentKeyframeRequest || elapsed >= Self.keyframeRequestIntervalNs else { return }
+        lastKeyframeRequestNs = nowNs
+        sentKeyframeRequest = true
+        onControlToSend(ScreenShareControlMessage.encode(.pli))
+        onPLISent?()
     }
 
     /// Disarm the FEC machinery once parity stops flowing: the sharer gated
