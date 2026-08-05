@@ -677,9 +677,8 @@ public final class TsnetTransport {
             if loggedAdmitted {
                 let diagnostics = session.diagnostics
                 let nowNs = DispatchTime.now().uptimeNanoseconds
-                if diagnostics.framesDecoded == 0,
-                    nowNs &- lastDiagnosticNs >= Self.blankViewerDiagnosticIntervalNs
-                {
+                let sinceLast = nowNs &- lastDiagnosticNs
+                if diagnostics.framesDecoded == 0, sinceLast >= Self.blankViewerDiagnosticIntervalNs {
                     lastDiagnosticNs = nowNs
                     var line = "⚠ no video decoded yet — \(diagnostics.summary)"
                     if datagramsFromOthers > 0 {
