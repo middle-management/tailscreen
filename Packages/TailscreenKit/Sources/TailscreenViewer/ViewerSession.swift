@@ -166,8 +166,12 @@ public final class ViewerSession {
         // session; per `VideoDecoding`'s threading contract these fire on the
         // host's serialization context (synchronously for FFmpeg, after an
         // adapter hop for an async backend like VideoToolbox).
-        decoder.onDecodedFrame = { videoSink.present($0) }
+        decoder.onDecodedFrame = { [weak self] frame in
+            self?.framesDecoded += 1
+            videoSink.present(frame)
+        }
         decoder.onDecodeFailure = { [weak self] in
+            self?.decodeFailures += 1
             onControlToSend(ScreenShareControlMessage.encode(.pli))
             self?.onPLISent?()
         }
@@ -202,20 +206,84 @@ public final class ViewerSession {
         guard !data.isEmpty else { return }
 
         if ScreenShareControlMessage.looksLikeControl(data) {
+            controlPacketsReceived += 1
             handleControl(data)
             return
         }
 
-        guard let (header, _) = RTPHeader.decode(from: data) else { return }
+        guard let (header, _) = RTPHeader.decode(from: data) else {
+            undecodablePackets += 1
+            return
+        }
         switch header.payloadType {
         case RTPHeader.h264PayloadType, RTPHeader.hevcPayloadType:
+            videoPacketsReceived += 1
             handleVideo(data, header: header)
         case RTPHeader.voicePayloadType, RTPHeader.systemAudioPayloadType:
+            audioPacketsReceived += 1
             handleAudio(data)
         default:
-            break  // Unknown PT — drop (forward compatible).
+            unknownPayloadPackets += 1  // Unknown PT — drop (forward compatible).
         }
     }
+
+    // MARK: - Diagnostics
+
+    /// Inbound/decode tallies, for the "admitted but the window is blank" case.
+    ///
+    /// Every failure between admission and a first frame is otherwise SILENT —
+    /// unknown payload types, RTP that never reassembles, the keyframe gate
+    /// below, and a decoder that cannot be built are all a bare `return` or a
+    /// PLI. That left a real Mac→Windows blank-viewer report with no way to tell
+    /// "no packets arrived" from "packets arrived and nothing could be done with
+    /// them", which are opposite bugs. These counters are the cheapest thing
+    /// that separates them; `TsnetTransport` logs a snapshot while a session is
+    /// admitted with no frames yet.
+    public struct Diagnostics: Sendable {
+        public var videoPacketsReceived = 0
+        public var audioPacketsReceived = 0
+        public var controlPacketsReceived = 0
+        public var unknownPayloadPackets = 0
+        public var undecodablePackets = 0
+        public var accessUnitsAssembled = 0
+        public var preKeyframeDrops = 0
+        public var framesDecoded = 0
+        public var decodeFailures = 0
+        public var seenKeyframe = false
+
+        /// One line, for a log. Deliberately terse — it is printed on a cadence.
+        public var summary: String {
+            "video=\(videoPacketsReceived) audio=\(audioPacketsReceived) "
+                + "ctrl=\(controlPacketsReceived) unknownPT=\(unknownPayloadPackets) "
+                + "badRTP=\(undecodablePackets) aus=\(accessUnitsAssembled) "
+                + "preKeyframeDrops=\(preKeyframeDrops) keyframe=\(seenKeyframe) "
+                + "decoded=\(framesDecoded) decodeFailures=\(decodeFailures)"
+        }
+    }
+
+    public var diagnostics: Diagnostics {
+        var snapshot = Diagnostics()
+        snapshot.videoPacketsReceived = videoPacketsReceived
+        snapshot.audioPacketsReceived = audioPacketsReceived
+        snapshot.controlPacketsReceived = controlPacketsReceived
+        snapshot.unknownPayloadPackets = unknownPayloadPackets
+        snapshot.undecodablePackets = undecodablePackets
+        snapshot.accessUnitsAssembled = accessUnitsAssembled
+        snapshot.preKeyframeDrops = preKeyframeDropCount
+        snapshot.framesDecoded = framesDecoded
+        snapshot.decodeFailures = decodeFailures
+        snapshot.seenKeyframe = seenKeyframe
+        return snapshot
+    }
+
+    private var videoPacketsReceived = 0
+    private var audioPacketsReceived = 0
+    private var controlPacketsReceived = 0
+    private var unknownPayloadPackets = 0
+    private var undecodablePackets = 0
+    private var accessUnitsAssembled = 0
+    private var framesDecoded = 0
+    private var decodeFailures = 0
 
     // MARK: - Time-driven outputs
 
@@ -380,6 +448,7 @@ public final class ViewerSession {
     /// stay measurable (`preKeyframeDropCount`, surfaced via `onVideoStats`
     /// consumers that already poll).
     private func submit(_ au: VideoAccessUnit) {
+        accessUnitsAssembled += 1
         if !seenKeyframe {
             guard au.containsIDR else {
                 preKeyframeDropCount += 1

@@ -151,6 +151,11 @@ public struct PeerProbe: Sendable {
 public final class TsnetTransport {
     private let logger = StderrLogger()
 
+    /// How often to report a blank viewer's inbound/decode tallies. Slow on
+    /// purpose: this fires only while admitted with nothing decoded, and a
+    /// stalled stream is diagnosed from a handful of lines, not a stream of them.
+    private static let blankViewerDiagnosticIntervalNs: UInt64 = 3_000_000_000
+
     /// The brought-up ephemeral node, retained between `prepare` (+ optional
     /// `discoverPeers`) and `run` so a picker flow can list sharers on the live
     /// node before choosing one to dial. `run` brings it up itself if a caller
@@ -626,6 +631,18 @@ public final class TsnetTransport {
         // user sees admission / pending-approval rather than a silent window.
         var loggedPending = false
         var loggedAdmitted = false
+        // Blank-viewer diagnostics. Everything between admission and a first
+        // frame fails silently (see `ViewerSession.Diagnostics`), so while a
+        // session is admitted and has decoded nothing, say what arrived and what
+        // became of it on a slow cadence. Once a frame lands this goes quiet for
+        // the rest of the session.
+        var lastDiagnosticNs = DispatchTime.now().uptimeNanoseconds
+        // Datagrams from something other than the dialed sharer, which the guard
+        // below drops. Counted because "no video" and "video from an address
+        // that doesn't string-match `dest`" look identical from the outside —
+        // and the guard is a documented known limitation.
+        var datagramsFromOthers = 0
+        var lastOtherSender = ""
         while !pipeline.isStopped && !shouldClose() {
             pipeline.tick(nowNs: DispatchTime.now().uptimeNanoseconds)
             let session = pipeline.session
@@ -655,6 +672,27 @@ public final class TsnetTransport {
                 // mac viewer applies from the HELLO_ACK.
                 onAdmitted?(session.serverCaps)
             }
+            // Admitted, but nothing on screen yet — report what the wire and the
+            // decoder are actually doing. Silent once a frame has landed.
+            if loggedAdmitted {
+                let diagnostics = session.diagnostics
+                let nowNs = DispatchTime.now().uptimeNanoseconds
+                if diagnostics.framesDecoded == 0,
+                    nowNs &- lastDiagnosticNs >= Self.blankViewerDiagnosticIntervalNs
+                {
+                    lastDiagnosticNs = nowNs
+                    var line = "⚠ no video decoded yet — \(diagnostics.summary)"
+                    if datagramsFromOthers > 0 {
+                        // The `from == dest` guard fired. If this is climbing
+                        // while `video=0`, the sharer's media is arriving from an
+                        // address that does not string-match the dialed one and
+                        // is being dropped here, not upstream.
+                        line +=
+                            " droppedFromOthers=\(datagramsFromOthers) (last: \(lastOtherSender), dialed: \(dest))"
+                    }
+                    logger.log(line)
+                }
+            }
             do {
                 let (datagram, from) = try await listener.recv(timeout: 250)
                 guard !datagram.isEmpty else { continue }
@@ -666,7 +704,11 @@ public final class TsnetTransport {
                 // Tailscale *hostname* rather than a tailnet IP, `from` (the
                 // sharer's resolved IP) won't string-match and video is dropped.
                 // Dial by tailnet IP until this matches on the resolved peer.
-                guard from == dest else { continue }
+                guard from == dest else {
+                    datagramsFromOthers += 1
+                    lastOtherSender = from
+                    continue
+                }
                 pipeline.receive(datagram)
             } catch {
                 // recv timeouts surface as errors on some paths; keep looping

@@ -21,6 +21,18 @@ public final class FFmpegVideoDecoder: VideoDecoding {
     private var decoder: FFmpeg.VideoDecoder?
     private var currentCodec: VideoCodec?
 
+    /// Decode-error messages already reported, so a permanent failure names
+    /// itself once instead of 60 times a second.
+    ///
+    /// Reported at all because the alternative is what shipped: a decoder this
+    /// build simply does not have (`avcodec_find_decoder` → nil) throws a Swift
+    /// error, never reaches `av_log`, and is answered with a PLI — so the sharer
+    /// re-sends the same undecodable keyframe forever and the viewer stays blank
+    /// with NOT ONE line anywhere saying why. Both diagnosable failures on this
+    /// path (a missing codec, and the 8-bit-4:2:0 guard in `FFmpegKit`) are
+    /// invisible without this.
+    private var reportedFailures: Set<String> = []
+
     public init() {}
 
     /// libavcodec decodes synchronously, so frames are delivered through
@@ -39,8 +51,22 @@ public final class FFmpegVideoDecoder: VideoDecoding {
                 )
             }
         } catch {
+            report(error, codec: codec)
             onDecodeFailure?()
         }
+    }
+
+    /// Name a decode failure on stderr, once per distinct message.
+    ///
+    /// stderr rather than a logger: this package is a portable codec wrapper and
+    /// deliberately depends on neither TailscaleKit (whose `TSLogger` would drag
+    /// in libtailscale) nor any host. The Windows app's `ConsoleBridge` and the
+    /// GTK app's terminal both capture it, which is where these get read.
+    private func report(_ error: any Error, codec: VideoCodec) {
+        let message = "\(error)"
+        guard reportedFailures.insert(message).inserted else { return }
+        FileHandle.standardError.write(
+            Data("[video] \(codec) decode failed: \(message)\n".utf8))
     }
 
     /// Return the decoder for `codec`, (re)creating it if the codec changed.
