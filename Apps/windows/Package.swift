@@ -23,8 +23,9 @@ import PackageDescription
 let package = Package(
     name: "tailscreen-windows",
     products: [
-        // See the target comment: this is a diagnostic, not a shipped app.
-        .executable(name: "tsnet-probe", targets: ["tsnet-probe"])
+        // See the target comments: both are diagnostics, not shipped apps.
+        .executable(name: "tsnet-probe", targets: ["tsnet-probe"]),
+        .executable(name: "winvideo-selftest", targets: ["winvideo-selftest"]),
     ],
     dependencies: [
         .package(
@@ -185,6 +186,20 @@ let package = Package(
             ],
             linkerSettings: [
                 .unsafeFlags(["-L", "../../Packages/TailscaleKit/lib"])
+            ]
+        ),
+        // The headless render self-test: ColorBars through CWinVideo's D3D11
+        // shader, pixels read back, no XAML involved. Its own executable for the
+        // same reason `tsnet-probe` is — a CI diagnostic, not a shipped app —
+        // and specifically so it carries NO WinUI, which is what lets it run on
+        // a runner with no desktop session and no package identity.
+        //
+        // No libtailscale `-L`: unlike the probe, this touches no transport.
+        .executableTarget(
+            name: "winvideo-selftest",
+            dependencies: [
+                .product(name: "TailscreenViewer", package: "TailscreenKit"),
+                .target(name: "CWinVideo", condition: .when(platforms: [.windows])),
             ]
         )
     ]

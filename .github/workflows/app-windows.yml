@@ -650,6 +650,51 @@ jobs:
             exit 1
           }
 
+      # The GPU render gate. Counterpart of the Xvfb + software-GL render
+      # self-test the `linux-app` job runs, against the SAME `ColorBars` frame
+      # (which lives in TailscreenViewer so both can assert on it) — so a
+      # disagreement means the two shaders disagree about BT.709 rather than that
+      # one is broken in isolation.
+      #
+      # No GPU needed and nothing to configure: `winvideo_init` tries
+      # D3D_DRIVER_TYPE_HARDWARE and falls back to D3D_DRIVER_TYPE_WARP,
+      # Microsoft's software rasteriser, which implements the same feature levels.
+      # And no desktop needed: the check renders to an offscreen target, so it
+      # links no WinUI and needs no window, session or package identity.
+      #
+      # Same opus flags as the probe, and for the same non-obvious reason — it
+      # imports TailscreenViewer, which depends on TailscreenAudio, which links
+      # libopus. "Imports less" is not "links less".
+      - name: Build the render self-test
+        shell: bash
+        working-directory: Apps/windows
+        run: |
+          swift build -c "${{ inputs.configuration }}" --product winvideo-selftest \
+            -Xcc -I"$OPUS_ROOT/include/opus" \
+            -Xlinker "/LIBPATH:$OPUS_ROOT/lib"
+
+      # Exit codes carry the diagnosis, which is why this isn't just `|| exit 1`:
+      # 3 means the shader ran and produced the wrong pixels (read the
+      # WINVIDEO_SELFTEST bar lines above it), 2 means no D3D11 device could be
+      # created at all — including no WARP, which would be a runner-image
+      # regression and not ours.
+      - name: Render self-test (WARP)
+        shell: bash
+        working-directory: Apps/windows
+        run: |
+          set +e
+          exe=$(find .build -name winvideo-selftest.exe -print -quit)
+          if [ -z "$exe" ]; then echo "no winvideo-selftest.exe produced"; exit 1; fi
+          "$exe"
+          rc=$?
+          set -e
+          case "$rc" in
+            0) echo "render self-test PASS" ;;
+            2) echo "::error::no D3D11 device, not even WARP — runner image regression, not a shader fault"; exit 1 ;;
+            3) echo "::error::shader produced the wrong pixels — see the WINVIDEO_SELFTEST lines above"; exit 1 ;;
+            *) echo "::error::render self-test exited $rc"; exit 1 ;;
+          esac
+
       # `if: !cancelled()` is the entire reason this is a separate save step
       # rather than `actions/cache`, whose post step is `post-if: success()` and
       # so saves NOTHING when a job fails.

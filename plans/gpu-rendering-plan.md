@@ -126,7 +126,47 @@ This is the main genuinely new risk in the plan, and it is why the step exists
 separately rather than being folded into step 1. A viewer that goes black on a
 driver update and stays black is worse than one that is merely slow.
 
-### Step 4 — prove it, in CI, without a GPU
+### Step 4 — prove it, in CI, without a GPU — **DONE**
+
+Landed as `winvideo-selftest`, an executable target beside `tsnet-probe` (a CI
+diagnostic, not a shipped app), plus a `Build the render self-test` /
+`Render self-test (WARP)` step pair in `app-windows.yml`. It links `CWinVideo`
+and no WinUI, so it needs no window, no desktop session and no package identity;
+`winvideo_init`'s existing HARDWARE→WARP fallback means a GPU-less runner
+exercises the real shader with nothing to configure. Exit codes carry the
+diagnosis: 0 pass, 3 wrong pixels, 2 no D3D11 device at all (a runner-image
+regression, not ours).
+
+`makeColorBarsFrame()` moved from `Apps/linux/Sources/TailscreenViewerGtk/` into
+the portable `TailscreenViewer` tier so both platforms assert against one frame
+— the same trip `FrameRateCounter` made when Windows needed it.
+
+**Two corrections found while implementing, both of which would have made this
+step lie.**
+
+First, the Windows check's expectations were wrong, and wrong in the direction
+that fails a *correct* render: it expected the four bars at
+{235,235,235}/{16,16,16}/{235,16,16}/{16,16,235} within ±24. ColorBars' third bar
+is Y=128,U=128,V=255 — not saturated red but a mid-luma maximum-Cr colour, which
+BT.709 puts at rgb(255,63,130), 47 away on green; the fourth lands at
+rgb(130,103,255). Wired up as written, CI would have gone red and the obvious
+"fix" would have been to bend the shader to match a bad constant. It now asserts
+the same *relative predicates* `cgtkvideo_selftest_check` uses (`white > 200`,
+`black < 60`, `r > 180 ∧ r > b + 60`, `b > 180 ∧ b > r + 60`), which is what
+"reuse ColorBars" actually has to mean. The GL side's letterbox assertion is
+deliberately NOT carried over: this shader does no geometry, so there is no
+letterbox to find.
+
+Second, the check now also renders an **overlay** pass, because the version that
+only checked the video bars would have passed both real defects this work
+shipped — the overlay texture declared `R8G8B8A8` while `AnnotationRasterizer`
+writes b,g,r,a, and the composite multiplying by alpha twice on premultiplied
+data. Neither is a build error; both are wrong pictures. One half-transparent
+premultiplied red patch over the black bar catches both: correct gives r=128,
+double-multiplied alpha gives 64 (fails `r > 100`), swapped channels puts the 128
+in blue (fails `r > b + 60`).
+
+### The original sketch of step 4
 
 The `--ui-preview-video` mode and the existing screenshot jobs already exist for
 this. Add a Windows screenshot of the video surface showing a known synthetic

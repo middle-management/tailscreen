@@ -20,6 +20,7 @@
 #include <d3dcompiler.h>
 #include <dxgi.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <windows.h>
 
@@ -556,34 +557,134 @@ int32_t winvideo_selftest_check(int32_t width, int32_t height, const uint8_t *y,
     td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
     ID3D11Texture2D *staging = nullptr;
     int ok = 0;
+    ID3D11RenderTargetView *unbound = nullptr;
     if (SUCCEEDED(g.device->CreateTexture2D(&td, nullptr, &staging))) {
+        // Unbind before every CopyResource: reading a resource that is still set
+        // as a render target is what the debug layer exists to complain about.
+        g.context->OMSetRenderTargets(1, &unbound, nullptr);
         g.context->CopyResource(staging, target);
         D3D11_MAPPED_SUBRESOURCE m = {};
         if (SUCCEEDED(g.context->Map(staging, 0, D3D11_MAP_READ, 0, &m))) {
-            // Four bar centres: white, black, red, blue — the same expectations
-            // ColorBars encodes and the GL self-test samples.
-            const int expected[4][3] = {
-                {235, 235, 235}, {16, 16, 16}, {235, 16, 16}, {16, 16, 235}};
-            ok = 1;
+            // Four bar centres: white, black, red, blue — asserted with the SAME
+            // predicates `cgtkvideo_selftest_check` uses, deliberately, because
+            // agreeing with the GL shader is the whole point of sharing
+            // `ColorBars`.
+            //
+            // Predicates and not exact values with a tolerance. The first draft
+            // of this function expected {235,235,235}/{16,16,16}/{235,16,16}/
+            // {16,16,235} within ±24, which a CORRECT render fails: ColorBars'
+            // third bar is Y=128,U=128,V=255, which is not saturated red but a
+            // mid-luma high-Cr colour, and BT.709 puts it at rgb(255,63,130) —
+            // 47 away from the expected green. The fourth lands at
+            // rgb(130,103,255). Exact expectations would have made CI red and
+            // invited "fixing" the shader to match a bad constant.
+            //
+            // Loose enough to survive both shaders' rounding, tight enough to
+            // catch what actually breaks: a channel swap fails `r > b + 60` on
+            // bar 2 and `b > r + 60` on bar 3.
+            //
+            // The GL version also checks a letterbox row. That is deliberately
+            // absent here: this shader does no geometry — the surface is the
+            // video's own size and XAML scales the element — so there is no
+            // letterbox to find, and asserting one would fail by design.
+            const uint8_t *rowAt = (const uint8_t *)m.pData;
+            int bars[4][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
             for (int bar = 0; bar < 4; ++bar) {
                 const int px = width * (2 * bar + 1) / 8;
                 const int py = height / 2;
-                const uint8_t *p =
-                    (const uint8_t *)m.pData + (size_t)py * m.RowPitch + (size_t)px * 4;
-                const int b = p[0], gg = p[1], r = p[2];
-                const int tol = 24;
-                const int pass = abs(r - expected[bar][0]) <= tol &&
-                                 abs(gg - expected[bar][1]) <= tol &&
-                                 abs(b - expected[bar][2]) <= tol;
-                fprintf(stderr, "[winvideo] bar %d rgb=(%d,%d,%d) %s\n", bar, r, gg,
-                        b, pass ? "PASS" : "FAIL");
-                if (!pass) ok = 0;
+                const uint8_t *p = rowAt + (size_t)py * m.RowPitch + (size_t)px * 4;
+                bars[bar][0] = p[2];  // R — the target is B8G8R8A8
+                bars[bar][1] = p[1];  // G
+                bars[bar][2] = p[0];  // B
+                fprintf(stderr, "WINVIDEO_SELFTEST bar%d rgb=%d,%d,%d\n", bar,
+                        bars[bar][0], bars[bar][1], bars[bar][2]);
+            }
+            const int white = bars[0][0] > 200 && bars[0][1] > 200 && bars[0][2] > 200;
+            const int black = bars[1][0] < 60 && bars[1][1] < 60 && bars[1][2] < 60;
+            const int red = bars[2][0] > 180 && bars[2][0] > bars[2][2] + 60;
+            const int blue = bars[3][2] > 180 && bars[3][2] > bars[3][0] + 60;
+            ok = white && black && red && blue;
+            if (!ok) {
+                fprintf(stderr,
+                        "WINVIDEO_SELFTEST bars white=%d black=%d red=%d blue=%d\n",
+                        white, black, red, blue);
             }
             g.context->Unmap(staging, 0);
         }
+
+        // SECOND PASS — the overlay composite, which is where the two defects
+        // that actually shipped lived, and neither was a build error:
+        // the overlay texture was declared R8G8B8A8 while `AnnotationRasterizer`
+        // writes b,g,r,a, and the shader multiplied by alpha a second time on
+        // already-premultiplied data. One patch catches both.
+        //
+        // Half-transparent premultiplied red (b=0, g=0, r=128, a=128) laid over
+        // the BLACK bar, whose own contribution is zero, so the sampled pixel is
+        // the composite arithmetic and nothing else:
+        //   correct        -> r = 128   (0*(1-.502) + .502)
+        //   alpha twice    -> r =  64   (.502*.502) ............ fails r > 100
+        //   channels swapped -> r = 0, b = 128 .................. fails r > b+60
+        if (ok) {
+            const size_t obytes = (size_t)width * height * 4;
+            uint8_t *overlay = (uint8_t *)calloc(obytes, 1);
+            if (!overlay) {
+                ok = 0;
+            } else {
+                const int x0 = width / 4, x1 = width / 2;
+                for (int row = 0; row < height; ++row) {
+                    uint8_t *p = overlay + (size_t)row * width * 4;
+                    for (int col = x0; col < x1; ++col) {
+                        p[col * 4 + 0] = 0;    // B
+                        p[col * 4 + 1] = 0;    // G
+                        p[col * 4 + 2] = 128;  // R, premultiplied by a=128
+                        p[col * 4 + 3] = 128;  // A
+                    }
+                }
+                uploadPlane(g.texOverlay, overlay, width * 4, width, height, 4);
+                uploadPlane(g.texY, y, width, width, height, 1);
+                uploadPlane(g.texU, u, cw, cw, ch, 1);
+                uploadPlane(g.texV, v, cw, cw, ch, 1);
+                setParams(true);
+                // Re-bind the views after the uploads. WRITE_DISCARD renames the
+                // underlying allocation, so re-pointing the slots is the honest
+                // thing to do rather than trusting the rename to carry through a
+                // binding made before pass 1.
+                ID3D11ShaderResourceView *srvs2[4] = {g.srvY, g.srvU, g.srvV,
+                                                      g.srvOverlay};
+                g.context->PSSetShaderResources(0, 4, srvs2);
+                g.context->OMSetRenderTargets(1, &rtv, nullptr);
+                g.context->RSSetViewports(1, &vp);
+                g.context->Draw(4, 0);
+                free(overlay);
+
+                D3D11_MAPPED_SUBRESOURCE m2 = {};
+                g.context->OMSetRenderTargets(1, &unbound, nullptr);
+                g.context->CopyResource(staging, target);
+                if (SUCCEEDED(g.context->Map(staging, 0, D3D11_MAP_READ, 0, &m2))) {
+                    const int px = width * 3 / 8;  // centre of the black bar
+                    const int py = height / 2;
+                    const uint8_t *p =
+                        (const uint8_t *)m2.pData + (size_t)py * m2.RowPitch + (size_t)px * 4;
+                    const int b = p[0], gg = p[1], r = p[2];
+                    fprintf(stderr, "WINVIDEO_SELFTEST overlay rgb=%d,%d,%d\n", r, gg, b);
+                    const int bright = r > 100;
+                    const int notSwapped = r > b + 60;
+                    if (!bright || !notSwapped) {
+                        fprintf(stderr,
+                                "WINVIDEO_SELFTEST overlay premultiplied=%d "
+                                "channel_order=%d\n",
+                                bright, notSwapped);
+                        ok = 0;
+                    }
+                    g.context->Unmap(staging, 0);
+                } else {
+                    ok = 0;
+                }
+            }
+        }
         staging->Release();
     }
-    fprintf(stderr, "[winvideo] SELFTEST %s\n", ok ? "PASS" : "FAIL");
+    fprintf(stderr, "WINVIDEO_SELFTEST result=%s\n", ok ? "PASS" : "FAIL");
     fflush(stderr);
 
     ID3D11RenderTargetView *none = nullptr;
