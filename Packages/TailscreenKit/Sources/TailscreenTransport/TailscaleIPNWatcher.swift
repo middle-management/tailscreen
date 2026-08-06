@@ -15,10 +15,10 @@ public class TailscaleIPNWatcher: ObservableObject {
     public var onBrowseToURL: ((URL) -> Void)?
 
     private var messageProcessor: MessageProcessor?
-    private let logger: TSLogger
+    private let logger: PrintLogSink
 
     public init() {
-        self.logger = TSLogger()
+        self.logger = PrintLogSink(prefix: "IPNWatcher")
     }
 
     /// Start watching the IPN bus for peer status changes
@@ -149,12 +149,3 @@ public struct TailscalePeerStatus: Identifiable, Sendable {
     }
 }
 
-// MARK: - Logger Implementation
-
-private struct TSLogger: LogSink {
-    public var logFileHandle: Int32?
-
-    public func log(_ message: String) {
-        print("[IPNWatcher] \(message)")
-    }
-}

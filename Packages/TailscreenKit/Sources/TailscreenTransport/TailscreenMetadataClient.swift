@@ -31,7 +31,7 @@ public enum TailscreenMetadataClient {
                     tailscale: tailscaleHandle,
                     to: target,
                     proto: .tcp,
-                    logger: TSLogger()
+                    logger: PrintLogSink(prefix: "MetadataClient")
                 )
             }
             defer { Task { await conn.close() } }
@@ -83,7 +83,3 @@ public enum TailscreenMetadataClient {
     }
 }
 
-private struct TSLogger: LogSink {
-    var logFileHandle: Int32?
-    func log(_ message: String) { print("[MetadataClient] \(message)") }
-}

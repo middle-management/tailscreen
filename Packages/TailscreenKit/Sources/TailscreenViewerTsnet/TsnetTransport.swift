@@ -62,6 +62,10 @@ public struct ViewerConfig: Sendable {
 /// A minimal `LogSink` that writes both the Swift wrapper's logs and the Go
 /// backend's logs (`logFileHandle`) to stderr, keeping stdout clean for the
 /// eventual data path.
+///
+/// Deliberately NOT `TailscreenTransport.PrintLogSink` (the package's shared
+/// print sink): that one writes to stdout, and the stderr destination here is
+/// the point — viewer executables reserve stdout for data.
 struct StderrLogger: LogSink {
     var logFileHandle: Int32? { STDERR_FILENO }
     func log(_ message: String) {

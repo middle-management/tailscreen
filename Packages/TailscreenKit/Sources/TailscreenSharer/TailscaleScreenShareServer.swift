@@ -193,7 +193,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         }
     }
 
-    private let logger: TSLogger
+    private let logger: PrintLogSink
 
     /// Wall-clock anchor used to derive the 90 kHz RTP timestamp. Stays
     /// fixed for the lifetime of the server so the timestamp space is
@@ -844,7 +844,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         self.captureFactory.withLock { $0 = captureFactory }
         self.remoteControlInjector = inputInjector
         self.rendersAnnotations = rendersAnnotations
-        self.logger = TSLogger()
+        self.logger = PrintLogSink(prefix: "Tailscale", dropListeningNoise: true)
         self.rtpTimestampOriginNs = DispatchTime.now().uptimeNanoseconds
     }
 
@@ -4393,10 +4393,3 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     }
 }
 
-private struct TSLogger: LogSink {
-    var logFileHandle: Int32?
-    func log(_ message: String) {
-        if message.hasPrefix("Listening for ") { return }
-        print("[Tailscale] \(message)")
-    }
-}

@@ -24,7 +24,7 @@ import TailscreenProtocol
 /// annotation state).
 public final class TailscreenControlListener: @unchecked Sendable {
     private let port: UInt16
-    private let logger: TSLogger
+    private let logger: PrintLogSink
     private var listener: Listener?
     private var isRunning = false
     // `Mutex` (not `OSAllocatedUnfairLock`) keeps this file portable.
@@ -84,7 +84,7 @@ public final class TailscreenControlListener: @unchecked Sendable {
 
     public init(port: UInt16 = NetworkConfig.tailscreenPort) {
         self.port = port
-        self.logger = TSLogger()
+        self.logger = PrintLogSink(prefix: "ControlListener", dropListeningNoise: true)
     }
 
     /// Bind the listener on `node`'s tailnet interface and start the accept
@@ -245,10 +245,3 @@ public final class TailscreenControlListener: @unchecked Sendable {
     }
 }
 
-private struct TSLogger: LogSink {
-    var logFileHandle: Int32?
-    func log(_ message: String) {
-        if message.hasPrefix("Listening for ") { return }
-        print("[ControlListener] \(message)")
-    }
-}
