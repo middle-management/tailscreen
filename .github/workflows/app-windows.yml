@@ -749,77 +749,6 @@ jobs:
             -Xcc -I"$OPUS_ROOT/include/opus" \
             -Xlinker "/LIBPATH:$OPUS_ROOT/lib"
 
-      # Exit codes carry the diagnosis, which is why this isn't just `|| exit 1`:
-      # 3 means the shader ran and produced the wrong pixels (read the
-      # WINVIDEO_SELFTEST bar lines above it), 2 means no D3D11 device could be
-      # created at all — including no WARP, which would be a runner-image
-      # regression and not ours.
-      # Runs out of `.build`, NOT out of the staged dist/, so it has to bring its
-      # own DLLs — which is why it sits after "Put the Swift arm64 runtime on
-      # PATH" rather than beside the probe build. Two runtime dependencies, both
-      # of which fail as STATUS_DLL_NOT_FOUND (0xC0000135) before `main` and so
-      # would look like nothing at all:
-      #   - swiftCore.dll and friends. On x64 the toolchain setup leaves them on
-      #     PATH; on arm64 only that earlier step does, hence the ordering.
-      #   - opus.dll. vcpkg's triplets build libopus SHARED (see stage-app.sh,
-      #     which copies it into dist/ for the same reason), and this links
-      #     TailscreenViewer -> TailscreenAudio -> OpusKit. Added unconditionally:
-      #     harmless if the linker dropped the unreferenced objects, and the
-      #     difference is not worth a 30-minute cycle to find out.
-      - name: Render self-test (WARP)
-        shell: bash
-        working-directory: Apps/windows
-        run: |
-          export PATH="$OPUS_ROOT/bin:$PATH"
-          # The Swift runtime DLLs. APPENDED, not prepended, and that is the
-          # whole subtlety: on arm64 the earlier step has already put the
-          # correct ARM64 directory on PATH and it must keep priority, because
-          # the toolchain image carries more than one `swiftCore.dll` and only
-          # one of them is the right architecture — that step exists for
-          # precisely that reason. On x64 that step is SKIPPED (`if: arch ==
-          # 'arm64'`), nothing else puts the runtime on PATH for a bare exe run
-          # out of `.build`, and the first version of this step assumed
-          # otherwise and got `exited 127`.
-          # The backslashes matter. $SDKROOT is a native Windows path
-          # (C:\hostedtoolcache\...), and MSYS `find` cannot walk one — it finds
-          # nothing and says nothing. The first version of this searched
-          # "${SDKROOT%%Platforms*}" directly, matched zero files, skipped the
-          # PATH line, and the exe then failed to load and produced NO output at
-          # all, which is a remarkably quiet way to be broken.
-          root="${SDKROOT%%Platforms*}"
-          root="${root//\\//}"
-          rt=$(find "$root" -name swiftCore.dll -print -quit 2>/dev/null || true)
-          if [ -n "$rt" ]; then
-            echo "swift runtime: $(dirname "$rt")"
-            export PATH="$PATH:$(dirname "$rt")"
-          else
-            # Loud, not silent. Not finding it is the failure, not a nuance.
-            echo "::warning::swiftCore.dll not found under $root — the self-test will not start"
-          fi
-          set +e
-          exe=$(find .build -name winvideo-selftest.exe -print -quit)
-          if [ -z "$exe" ]; then echo "no winvideo-selftest.exe produced"; exit 1; fi
-          # Teed, because this job is ~2000 lines long and the post-job git
-          # cleanup that follows a failure is verbose enough to push these few
-          # lines out of any reasonable tail. The `Render self-test diagnosis`
-          # step at the very end reprints this file so the verdict is the LAST
-          # thing in the log rather than buried 40 lines up.
-          "$exe" 2>&1 | tee "$RUNNER_TEMP/winvideo-selftest.log"
-          rc=${PIPESTATUS[0]}
-          set -e
-          case "$rc" in
-            0) echo "render self-test PASS" ;;
-            2) echo "::error::no D3D11 device, not even WARP — runner image regression, not a shader fault"; exit 1 ;;
-            3) echo "::error::shader produced the wrong pixels — see the WINVIDEO_SELFTEST lines above"; exit 1 ;;
-            # 127 does NOT mean "no such file" here — the guard above already
-            # proved the exe exists. Git bash reports a Windows PE that failed to
-            # START (CreateProcess refused it, almost always
-            # STATUS_DLL_NOT_FOUND) as 127, so this is a missing DLL, not a
-            # missing binary. Compare against what stage-app.sh copies into
-            # dist/: the Swift runtime and opus.dll are the two that matter.
-            127) echo "::error::the exe could not be started — a DLL it needs is not on PATH (git bash reports that as 127); compare with the DLLs stage-app.sh copies into dist/"; exit 1 ;;
-            *) echo "::error::render self-test exited $rc"; exit 1 ;;
-          esac
 
       # Stage the exe TOGETHER WITH THE SWIFT RUNTIME.
       #
@@ -844,6 +773,59 @@ jobs:
       - name: Stage the app with its runtime
         shell: bash
         run: ./scripts/windows/stage-app.sh
+
+      # Runs out of the STAGED dist/, not out of `.build`, and that is the whole
+      # point. Every failure this gate had on x64 was the executable not LOADING
+      # — first `exited 127`, then an empty log — because a bare exe out of
+      # `.build` has no DLLs beside it and I was hand-assembling PATH: the Swift
+      # runtime (whose arm64 step is skipped on x64) and opus.dll (vcpkg builds
+      # libopus shared). Two attempts at that were wrong in two different ways,
+      # the second one silently.
+      #
+      # `stage-app.sh` has already assembled exactly the right DLL set in dist/,
+      # and CI proves it every run: `Check the app loads` launches the real app
+      # from there. Borrowing that environment deletes the whole failure class
+      # instead of chasing it, and it is what `tsnet-probe` already does.
+      #
+      # Exit codes carry the diagnosis so a red leg is readable without opening
+      # the shader: 3 is wrong pixels (read the WINVIDEO_SELFTEST bar lines), 2
+      # is no D3D11 device at all, including no WARP — a runner-image regression
+      # rather than ours.
+      - name: Render self-test (WARP)
+        shell: bash
+        run: |
+          set +e
+          exe=$(find Apps/windows/.build -name winvideo-selftest.exe -print -quit)
+          if [ -z "$exe" ]; then echo "no winvideo-selftest.exe produced"; exit 1; fi
+          # Copied IN rather than run in place, because Windows resolves a
+          # process's DLLs against the EXECUTABLE's directory, not the working
+          # directory — so putting dist/ on PATH or cd-ing into it would not
+          # reliably do it, but being in dist/ does.
+          cp "$exe" dist/
+          # Teed: this job is ~2000 lines and the post-failure cleanup pushes
+          # these lines out of any reasonable tail. `Render self-test diagnosis`
+          # at the end of the job reprints them.
+          ( cd dist && ./winvideo-selftest.exe ) 2>&1 | tee "$RUNNER_TEMP/winvideo-selftest.log"
+          rc=${PIPESTATUS[0]}
+          # Removed again before anything packages dist/. The zip and the MSIX
+          # are built from this directory a few steps down, and a CI diagnostic
+          # has no business shipping inside either. Unconditional: a failed
+          # self-test must not leave it behind for the packaging steps either.
+          rm -f dist/winvideo-selftest.exe
+          set -e
+          case "$rc" in
+            0) echo "render self-test PASS" ;;
+            2) echo "::error::no D3D11 device, not even WARP — runner image regression, not a shader fault"; exit 1 ;;
+            3) echo "::error::shader produced the wrong pixels — see the WINVIDEO_SELFTEST lines above"; exit 1 ;;
+            # 127 does NOT mean "no such file" here — the guard above already
+            # proved the exe exists. Git bash reports a Windows PE that failed to
+            # START (CreateProcess refused it, almost always
+            # STATUS_DLL_NOT_FOUND) as 127, so this is a missing DLL, not a
+            # missing binary. Compare against what stage-app.sh copies into
+            # dist/: the Swift runtime and opus.dll are the two that matter.
+            127) echo "::error::the exe could not be started — a DLL it needs is not on PATH (git bash reports that as 127); compare with the DLLs stage-app.sh copies into dist/"; exit 1 ;;
+            *) echo "::error::render self-test exited $rc"; exit 1 ;;
+          esac
 
       # The ~80 MB WinAppSDK nupkg, cached by exact version — nuget.org package
       # content is immutable, so this key never needs invalidating. Skipped on
