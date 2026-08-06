@@ -115,15 +115,17 @@ A window opens. You're done — unless the sharer has viewer approval on
 (the default), in which case the window says "Connecting to *name*…" and
 shows a waiting placard (with a Cancel button) until they accept you.
 
-The viewer window behaves like a proper macOS window: it remembers its
-size and position across launches, opens on the screen you're working on,
-and supports full screen (**View → Enter Full Screen**, ⌃⌘F). If the
-share ends — the sharer stops, the connection drops, or it times out —
-the window doesn't just vanish: it says what happened over the last
-frame, with a **Reconnect** button that rejoins the same peer and a
-**Close** button. Transient video problems (a codec fallback, a stall)
-appear as a banner at the top of the window instead of a modal alert;
-the stall banner carries its own Reconnect.
+On macOS the viewer window behaves like a proper Mac window: it remembers
+its size and position across launches, opens on the screen you're working
+on, and supports full screen (**View → Enter Full Screen**, ⌃⌘F).
+
+If the share ends — the sharer stops, the connection drops, or it times
+out — the viewer doesn't just vanish, on any platform: it says what
+happened, with a **Reconnect** button that rejoins the same peer and a
+way back to the screens list. On macOS, transient video problems (a
+codec fallback, a stall) additionally appear as a banner at the top of
+the window instead of a modal alert; the stall banner carries its own
+Reconnect.
 
 Want a look before you connect? Expand a row with its chevron: you get the
 live share's resolution and codec, the peer's MagicDNS name and IP (both

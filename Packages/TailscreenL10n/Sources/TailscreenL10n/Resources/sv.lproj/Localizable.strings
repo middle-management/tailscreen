@@ -647,3 +647,12 @@
 "Enter or exit full screen" = "Övergå till eller avsluta helskärmsläge";
 "Click anywhere or press Esc to dismiss." = "Klicka var som helst eller tryck Esc för att stänga.";
 "Press Esc to dismiss." = "Tryck Esc för att stänga.";
+
+/* MARK: - Portable chrome: hotkey notes, controlling indicator (TailscreenHubUI / GTK + WinUI apps) */
+"The mute shortcut (%@) doesn't work on Wayland — use the microphone button here" = "Mikrofongenvägen (%@) fungerar inte på Wayland — använd mikrofonknappen här";
+"The mute shortcut (%@) needs an X display — use the microphone button here" = "Mikrofongenvägen (%@) kräver en X-display — använd mikrofonknappen här";
+"Another app already uses the mute shortcut (%@) — use the microphone button here" = "En annan app använder redan mikrofongenvägen (%@) — använd mikrofonknappen här";
+"The mute shortcut (%@) can't be registered system-wide — use the microphone button here" = "Mikrofongenvägen (%@) kan inte registreras för hela systemet — använd mikrofonknappen här";
+"This build has no system-wide shortcuts — use the microphone button here" = "Det här bygget saknar systemomfattande genvägar — använd mikrofonknappen här";
+"You are controlling %@" = "Du styr %@";
+"You are controlling this screen" = "Du styr den här skärmen";
