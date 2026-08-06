@@ -111,9 +111,19 @@ The rules, spelled out:
    sharing carries a green chip with its share's name.
 3. Click their row.
 
-A window opens. You're done — unless the sharer has viewer approval on (the
-default), in which case you'll sit on the Connecting screen until they
-accept you.
+A window opens. You're done — unless the sharer has viewer approval on
+(the default), in which case the window says "Connecting to *name*…" and
+shows a waiting placard (with a Cancel button) until they accept you.
+
+The viewer window behaves like a proper macOS window: it remembers its
+size and position across launches, opens on the screen you're working on,
+and supports full screen (**View → Enter Full Screen**, ⌃⌘F). If the
+share ends — the sharer stops, the connection drops, or it times out —
+the window doesn't just vanish: it says what happened over the last
+frame, with a **Reconnect** button that rejoins the same peer and a
+**Close** button. Transient video problems (a codec fallback, a stall)
+appear as a banner at the top of the window instead of a modal alert;
+the stall banner carries its own Reconnect.
 
 Want a look before you connect? Expand a row with its chevron: you get the
 live share's resolution and codec, the peer's MagicDNS name and IP (both
@@ -185,7 +195,9 @@ required. And if you want Tailscreen ready the moment you log in, flip
 
 ## Annotations
 
-The viewer's toolbar has drawing tools. Doodle on the sharer's screen and
+The viewer's toolbar has drawing tools, plus a color swatch — pick one of
+the eight preset colors and your strokes carry it to the sharer and every
+other viewer. Doodle on the sharer's screen and
 your strokes appear in a transparent overlay window on their machine. The
 back-channel rides over TCP rather than the lossy UDP video stream — see
 [Network Protocol]({{ site.baseurl }}{% link protocol.md %}) — so individual stroke segments
@@ -248,11 +260,17 @@ A viewer can drive the sharer's machine — mouse and keyboard — but only
 after an explicit grant, and only one viewer at a time. (Granting requires
 a macOS or Windows sharer — see [Platform notes](#platform-notes).)
 
-**As the viewer:** open the menubar while viewing and click **Request
-Control**. You'll see "Waiting for the sharer to grant control" until the
-sharer answers. Once granted, your clicks and keystrokes in the viewer
-window are injected on their machine. Click **Stop controlling** when
-you're done.
+**As the viewer:** click **Request Control** in the viewer window's
+toolbar (it's also in the menubar popover; the toolbar button only
+appears when the sharer's build can inject input at all). The button
+shows "Requesting…" until the sharer answers — click it again to cancel.
+Once granted, your clicks and keystrokes in the viewer window are
+injected on their machine, an orange border outlines the video, and the
+title bar reads "— controlling" so there's no mistaking whose Mac your
+keystrokes land on. Stop with the toolbar's **Stop Controlling**,
+**File → Release Remote Control**, or **⌃⌥.** typed in the viewer window
+(the one chord that's never forwarded to the sharer; it follows the
+remap in Settings → Keyboard Shortcuts).
 
 **As the sharer:** a request shows up as "*name* wants control" with
 **Grant** and **Deny** buttons (plus a notification, carrying the same two
@@ -272,8 +290,10 @@ so we don't pretend otherwise.
 On macOS, the first grant prompts for **Accessibility** permission (System
 Settings → Privacy & Security → Accessibility) — that's the macOS
 permission for synthesizing input events, separate from Screen Recording.
-The grant is refused until it's given; allow Tailscreen there and grant
-again. Windows needs no equivalent permission.
+The grant you clicked is queued while you make the trip to System
+Settings (the request's row says "Waiting for Accessibility permission…")
+and completes on its own the moment the permission lands. Windows needs
+no equivalent permission.
 
 Ending it: the **Stop** button in the sharing card, **File → Stop Remote
 Control**, or the **⌃⌥.** panic hotkey — which is registered system-wide
@@ -329,9 +349,11 @@ for stats") so you don't need the overlay open to notice.
 
 ## Keyboard shortcuts
 
-Press **⇧⌘/** in the viewer window (or click the **?** button in its
-toolbar, or pick **Help → Keyboard Shortcuts**) to bring up a cheat sheet
-listing everything below. Hovering any toolbar button also surfaces its
+Press **⇧⌘/** — in the viewer window *or while sharing* (there it opens
+in its own floating panel) — or click the **?** button in the viewer
+toolbar, or pick **Help → Keyboard Shortcuts**, to bring up a cheat sheet
+listing everything below, with the remote-control shortcuts split by
+role. Esc dismisses it. Hovering any toolbar button also surfaces its
 shortcut. (These are the macOS app's shortcuts; the in-app cheat sheet is
 always the authority for the build you're running.)
 
@@ -341,19 +363,22 @@ always the authority for the build you're running.)
 | `⌘Z` | Undo the last annotation you drew |
 | `⇧⌘⌫` | Clear all annotations |
 | Right-click on the canvas | Clear all annotations |
-| `Esc` | Cancel the in-progress drag |
+| `Esc` | Dismiss the cheat sheet, else cancel the in-progress drag |
 | `⌥⌘+` / `⌥⌘-` | Zoom the video in / out |
 | `⌘0` | Reset zoom and window size |
+| `⌃⌘F` | Enter or exit full screen in the viewer window |
 | `⌃⌥M` | Toggle the microphone on/off (works system-wide, even when Tailscreen isn't focused; remappable in Settings → Keyboard Shortcuts) |
-| `⌃⌥.` | Sharer: instantly revoke remote control (system-wide, active only while a grant is live; remappable in Settings → Keyboard Shortcuts) |
+| `⌃⌥.` | Sharer: instantly revoke remote control (system-wide, active only while a grant is live). Viewer: release the control you hold — the one chord never forwarded to the sharer. Both remappable in Settings → Keyboard Shortcuts |
 | `⌘W` | Disconnect the viewer |
 | `⌘Q` | Quit Tailscreen |
-| `⇧⌘/` | Show/hide the keyboard-shortcut overlay |
+| `⇧⌘/` | Show/hide the keyboard-shortcut overlay (viewing or sharing) |
 
 ## Stopping
 
 - Sharer side: **Stop Sharing** in the menu, or quit the app.
-- Viewer side: **Disconnect** in the menu, or close the window.
+- Viewer side: **Disconnect** (⌘W) in the menu, or close the window.
+  Both surfaces' viewing cards also have a **Show Window** button when
+  the viewer window is buried.
 
 Either way, the ephemeral tsnet nodes get torn down. Nothing to clean up.
 
