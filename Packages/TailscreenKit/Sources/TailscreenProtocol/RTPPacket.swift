@@ -751,6 +751,9 @@ public struct RTPReorderBuffer {
     /// since `buffered` was last empty). nil while nothing is held. Drives the
     /// `gapHoldNs` deadline; only meaningful when `gapHoldNs > 0`.
     private var oldestGapNs: UInt64?
+    /// Gaps abandoned (loss declared) since this buffer was created. Survives
+    /// `reset` on purpose — it is a session tally for diagnostics, not state.
+    public private(set) var skippedGapCount = 0
 
     public init(maxDepth: Int = 16, gapHoldNs: UInt64 = 0) {
         self.maxDepth = maxDepth
@@ -830,6 +833,7 @@ public struct RTPReorderBuffer {
     }
 
     private mutating func skipGap() -> [Release] {
+        skippedGapCount += 1
         guard let want = nextSeq,
             let lowest = buffered.keys.min(by: { ($0 &- want) < ($1 &- want) }),
             let pkt = buffered.removeValue(forKey: lowest)
@@ -877,6 +881,11 @@ public final class H264Depacketizer {
     /// frame boundary; we return them one per `ingest` call, in order, to keep
     /// the `ingest(_:) -> VideoAccessUnit?` contract the caller relies on.
     private var readyQueue: [VideoAccessUnit] = []
+    /// Access units that completed and were then thrown away as torn. See the
+    /// drop site in `flushAU` for why this is counted rather than silent.
+    public private(set) var tornAUCount = 0
+    /// Gaps the reorder buffer gave up waiting for, i.e. declared loss.
+    public var skippedGapCount: Int { reorder.skippedGapCount }
 
     public init(reorderDepth: Int = 16, gapHoldNs: UInt64 = 0) {
         var au = Data()
@@ -1050,6 +1059,15 @@ public final class H264Depacketizer {
         if wasCorrupted {
             // Drop the AU but keep the loss flag latched so the next clean
             // AU still carries it — the caller uses that to drive PLI.
+            //
+            // COUNTED because this drop is otherwise perfectly invisible: the
+            // caller sees `ingest` return nil, which is also what a normal
+            // mid-frame packet returns. A blank viewer whose access-unit count
+            // sits still cannot be told from one where every frame arrives and
+            // is discarded here — and those want opposite fixes. The whole
+            // socket-drain hunt turned on that distinction and had to infer it
+            // from arrival rates.
+            tornAUCount &+= 1
             return nil
         }
         pendingLossSignal = false
@@ -1219,6 +1237,9 @@ public final class H265Depacketizer {
     /// See `H264Depacketizer.reorder` / `.readyQueue`.
     private var reorder: RTPReorderBuffer
     private var readyQueue: [VideoAccessUnit] = []
+    /// See `H264Depacketizer.tornAUCount` / `.skippedGapCount`.
+    public private(set) var tornAUCount = 0
+    public var skippedGapCount: Int { reorder.skippedGapCount }
 
     public init(reorderDepth: Int = 16, gapHoldNs: UInt64 = 0) {
         var au = Data()
@@ -1387,6 +1408,8 @@ public final class H265Depacketizer {
         currentTimestamp = nil
 
         if wasCorrupted {
+            // Counted for the same reason as the H.264 path — see there.
+            tornAUCount &+= 1
             return nil
         }
         pendingLossSignal = false
@@ -1459,6 +1482,13 @@ public final class MultiCodecDepacketizer {
     public func drainReady() -> [VideoAccessUnit] {
         h264.drainReady() + h265.drainReady()
     }
+
+    /// Access units that assembled and were discarded as torn, summed over both
+    /// codecs (only the active one is ever non-zero).
+    public var tornAUCount: Int { h264.tornAUCount + h265.tornAUCount }
+
+    /// Reorder gaps abandoned as loss, summed over both codecs.
+    public var skippedGapCount: Int { h264.skippedGapCount + h265.skippedGapCount }
 }
 
 extension Data {

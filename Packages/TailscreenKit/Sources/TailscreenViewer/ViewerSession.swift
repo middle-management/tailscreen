@@ -186,6 +186,7 @@ public final class ViewerSession {
         }
         decoder.onDecodeFailure = { [weak self] in
             self?.decodeFailures += 1
+            self?.keyframeRequestsSent += 1
             onControlToSend(ScreenShareControlMessage.encode(.pli))
             self?.onPLISent?()
         }
@@ -264,13 +265,34 @@ public final class ViewerSession {
         public var framesDecoded = 0
         public var decodeFailures = 0
         public var seenKeyframe = false
+        /// Access units that assembled and were discarded as torn. The
+        /// counterpart to `accessUnitsAssembled`, which counts only the ones
+        /// that survived: `aus` standing still with `tornAUs` climbing is a
+        /// wholly different fault from both standing still, and until this
+        /// existed the two were indistinguishable.
+        public var tornAUs = 0
+        /// Reorder gaps abandoned as loss.
+        public var skippedGaps = 0
+        /// Keyframe requests sent. If this climbs while `keyframe=false`, the
+        /// viewer is asking and not being answered — which points at the sharer
+        /// or the path, not at anything here.
+        public var keyframeRequests = 0
+        /// Codec of the first video packet seen, from its RTP payload type.
+        /// nil until video arrives. Named because "does this build have that
+        /// decoder" cost a round of guessing, and the log never said.
+        public var codec: VideoCodec?
+        /// Smoothed RTT from the NACK scheduler, ms. 0 before the first sample.
+        public var rttMs: Int = 0
 
         /// One line, for a log. Deliberately terse — it is printed on a cadence.
         public var summary: String {
             "video=\(videoPacketsReceived) audio=\(audioPacketsReceived) "
                 + "ctrl=\(controlPacketsReceived) unknownPT=\(unknownPayloadPackets) "
                 + "badRTP=\(undecodablePackets) aus=\(accessUnitsAssembled) "
+                + "tornAUs=\(tornAUs) skippedGaps=\(skippedGaps) "
                 + "preKeyframeDrops=\(preKeyframeDrops) keyframe=\(seenKeyframe) "
+                + "kfReq=\(keyframeRequests) codec=\(codec?.rawValue ?? "none") "
+                + "rtt=\(rttMs)ms "
                 + "decoded=\(framesDecoded) decodeFailures=\(decodeFailures)"
         }
     }
@@ -287,6 +309,11 @@ public final class ViewerSession {
         snapshot.framesDecoded = framesDecoded
         snapshot.decodeFailures = decodeFailures
         snapshot.seenKeyframe = seenKeyframe
+        snapshot.tornAUs = depacketizer.tornAUCount
+        snapshot.skippedGaps = depacketizer.skippedGapCount
+        snapshot.keyframeRequests = keyframeRequestsSent
+        snapshot.codec = observedCodec
+        snapshot.rttMs = Int(nack.rttEstimateNs / 1_000_000)
         return snapshot
     }
 
@@ -298,6 +325,11 @@ public final class ViewerSession {
     private var accessUnitsAssembled = 0
     private var framesDecoded = 0
     private var decodeFailures = 0
+    /// Every PLI this session has sent, from all three senders (the pre-keyframe
+    /// retry, a decode failure, and the NACK scheduler giving up on a gap).
+    private var keyframeRequestsSent = 0
+    /// Codec of the first video packet, read off its RTP payload type.
+    private var observedCodec: VideoCodec?
 
     // MARK: - Time-driven outputs
 
@@ -343,6 +375,7 @@ public final class ViewerSession {
         guard !sentKeyframeRequest || elapsed >= Self.keyframeRequestIntervalNs else { return }
         lastKeyframeRequestNs = nowNs
         sentKeyframeRequest = true
+        keyframeRequestsSent += 1
         onControlToSend(ScreenShareControlMessage.encode(.pli))
         onPLISent?()
     }
@@ -423,6 +456,12 @@ public final class ViewerSession {
 
     private func handleVideo(_ data: Data, header: RTPHeader) {
         let seq = header.sequenceNumber
+        // Which codec the sharer actually chose, off the payload type. Recorded
+        // on the first packet because the log never said, and "is the HEVC
+        // decoder present in this build" was guessed at for two rounds.
+        if observedCodec == nil {
+            observedCodec = header.payloadType == RTPHeader.hevcPayloadType ? .hevc : .h264
+        }
 
         // Feed the loss-recovery bookkeeping first (every received packet
         // counts, before reassembly), then drive NACK/PLI feedback.
@@ -545,6 +584,7 @@ public final class ViewerSession {
                 onControlToSend(ScreenShareControlMessage.encodeNACK(entries))
                 onNACKSent?()
             case .sendPLI:
+                keyframeRequestsSent += 1
                 onControlToSend(ScreenShareControlMessage.encode(.pli))
                 onPLISent?()
             }

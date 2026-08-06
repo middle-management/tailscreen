@@ -1035,6 +1035,11 @@ final class AppUIState: ObservableObject {
         // with `badInterfaceHandle` — which is exactly what happened after
         // watching a share once.
         transport.retainsNodeAcrossSessions = true
+        // The stamp was already computed and already displayed — in the window
+        // footer, which a stderr log never sees. Two rounds of blank-viewer
+        // diagnosis were spent on logs from a binary that predated the fix under
+        // test, so it goes in the log too.
+        transport.buildIdentity = BuildInfo.summary
 
         Task {
             do {
