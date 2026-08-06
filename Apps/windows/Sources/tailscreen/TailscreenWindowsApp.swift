@@ -105,8 +105,19 @@ struct TailscreenWindowsApp: App {
     var body: some Scene {
         WindowGroup("Tailscreen") {
             VStack(spacing: 0) {
-                header
-                Divider()
+                // The hub header is suppressed while a session owns the window.
+                // Its subtitle IS `status`, which during a session reads
+                // "Watching <host>" — the same sentence the session bar below
+                // already carries next to Stop, so the window opened with two
+                // identical headers stacked on each other. Everything else the
+                // header offers is already gated off mid-session (`canRefresh`
+                // and `showsAccountMenu` both require `watching == nil`), so
+                // what was left was a duplicate line and 44 points of video.
+                // macOS names the host once, in the window, for the same reason.
+                if state.watching == nil {
+                    header
+                    Divider()
+                }
                 content
                 Divider()
                 footer

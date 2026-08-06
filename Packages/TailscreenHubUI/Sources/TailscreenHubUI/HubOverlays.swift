@@ -83,7 +83,13 @@ public struct AnnotationToolbar: View {
             Button("↶", action: onUndo)
             Button("✕", action: onClear)
             if showsStats {
-                Button(statsShown ? "[▤]" : " ▤ ", action: onToggleStats)
+                // Worded, not a glyph, and behind a divider. As `▤` at the end
+                // of a row of drawing glyphs it read as a seventh drawing tool
+                // and was reported as a missing feature by someone looking
+                // straight at it. The no-annotations fallback in the Windows
+                // app has always spelled it out; these now match.
+                Divider()
+                Button(statsShown ? L("Hide stats") : L("Stats"), action: onToggleStats)
             }
             Spacer()
         }
