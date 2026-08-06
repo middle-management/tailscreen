@@ -639,7 +639,10 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                 if let onDeniedBySharer {
                     onDeniedBySharer()
                 } else {
-                    NotificationCenter.default.post(name: .tailscreenViewerPeerClosed, object: nil)
+                    // No deny handler installed — fall back to the generic
+                    // peer-closed teardown, attributed to the sharer since
+                    // a HELLO_DENY is their explicit decision.
+                    postPeerClosed(.sharerStopped)
                 }
                 break
             }
@@ -653,7 +656,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
             }
             if session.isStopped {
                 logger.log("Receive(VS): sharer stopped")
-                NotificationCenter.default.post(name: .tailscreenViewerPeerClosed, object: nil)
+                postPeerClosed(.sharerStopped)
                 break
             }
 
@@ -675,8 +678,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                         let nowNs = DispatchTime.now().uptimeNanoseconds
                         if !awaitingApproval && nowNs &- lastDataNs > idleDisconnectAfterNs {
                             logger.log("Receive(VS): idle for >timeout, assuming server gone")
-                            NotificationCenter.default.post(
-                                name: .tailscreenViewerPeerClosed, object: nil)
+                            postPeerClosed(.timedOut)
                             break
                         }
                         continue
@@ -690,7 +692,7 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                 let deadConsecutive = consecutiveErrors >= ReceiveLoopPolicy.maxConsecutiveErrors
                 let deadWindowed = windowCount >= ReceiveLoopPolicy.maxErrorsPerWindow
                 if deadConsecutive || deadWindowed {
-                    NotificationCenter.default.post(name: .tailscreenViewerPeerClosed, object: nil)
+                    postPeerClosed(.connectionLost)
                     break
                 }
                 try? await Task.sleep(
@@ -736,6 +738,17 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
             guard let vps = vps, let sps = sps, let pps = pps else { return nil }
             return .hevc(vps: vps, sps: sps, pps: pps)
         }
+    }
+
+    /// Post `.tailscreenViewerPeerClosed` with the reason riding along, so
+    /// AppState can explain the ending instead of collapsing sharer-stop,
+    /// idle timeout, and socket-error storms into one unexplained
+    /// disconnect.
+    private func postPeerClosed(_ reason: ViewerPeerCloseReason) {
+        NotificationCenter.default.post(
+            name: .tailscreenViewerPeerClosed,
+            object: nil,
+            userInfo: [ViewerPeerCloseReason.userInfoKey: reason.rawValue])
     }
 
     private func keepaliveLoop() async {
@@ -859,10 +872,27 @@ private struct TSLogger: LogSink {
     func log(_ message: String) { print("[Tailscale] \(message)") }
 }
 
+/// Why the viewer's receive loop declared the session over. Rides
+/// `.tailscreenViewerPeerClosed` as `userInfo[ViewerPeerCloseReason.userInfoKey]`
+/// (the raw value — Notification userInfo stays property-list-friendly) so
+/// AppState can tell the user *which* ending happened.
+enum ViewerPeerCloseReason: String, Sendable {
+    /// The sharer ended the session (SERVER_BYE / session stopped).
+    case sharerStopped
+    /// Nothing arrived for longer than the idle threshold.
+    case timedOut
+    /// The receive loop died on repeated socket errors.
+    case connectionLost
+
+    /// The `userInfo` key the raw value travels under.
+    static let userInfoKey = "reason"
+}
+
 extension Notification.Name {
-    /// Posted from the viewer's receive loop when the server appears to
-    /// have gone silent for longer than the idle threshold. AppState
-    /// observes this and runs disconnect() so the UI tears down.
+    /// Posted from the viewer's receive loop when the session is over —
+    /// sharer stop, idle timeout, or a socket-error storm, told apart by
+    /// the `ViewerPeerCloseReason` in `userInfo`. AppState observes this
+    /// and ends the session with an in-window explanation.
     static let tailscreenViewerPeerClosed = Notification.Name("tailscreen.viewer.peerClosed")
 
     /// Posted from the viewer's decoder when VideoToolbox can't build a
