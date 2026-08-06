@@ -88,6 +88,8 @@ public struct PendingViewerInfo: Sendable, Identifiable, Hashable {
 public final class TailscaleScreenShareServer: @unchecked Sendable {
     private let port: UInt16
 
+    // MARK: - Lifecycle state
+
     /// The share's lifecycle state, folded behind ONE lock because these
     /// fields change together at exactly two kinds of moment — `start()` /
     /// `stop()` bring-up and teardown, and the capture (re)spawn paths —
@@ -199,6 +201,8 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// fixed for the lifetime of the server so the timestamp space is
     /// monotonic across encoder restarts.
     private let rtpTimestampOriginNs: UInt64
+
+    // MARK: - Viewer roster & transport state
 
     /// Per-viewer state. Keyed by the UDP source address ("ip:port") that
     /// the HELLO arrived from — that's also the destination we echo packets
@@ -378,12 +382,6 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// saturation episode instead of on every dropped HELLO.
     private let pendingCapLogged = Mutex<Bool>(false)
 
-    /// Pure pending-cap gate: a HELLO is admitted to the pending set when it
-    /// refreshes an existing slot, or when the set is below `cap`. Extracted
-    /// so the DoS bound is unit testable.
-    public static func canAcceptPending(currentCount: Int, isExisting: Bool, cap: Int = maxPendingViewers) -> Bool {
-        isExisting || currentCount < cap
-    }
     /// Public projection of `pendingViewers` — built alongside it in the
     /// same critical sections, surfaced via `onPendingViewersChanged`.
     private let pendingViewerInfos = Mutex<[String: PendingViewerInfo]>([:])
@@ -805,6 +803,8 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// user can't see.
     public var nodeReadyBeforeUp: (@Sendable (TailscaleNode) async -> Void)?
 
+    // MARK: - Init
+
     /// - Parameters:
     ///   - captureFactory: builds a fresh capture+encode backend for each
     ///     share and each restart. `nil` runs the server headless — no video
@@ -847,6 +847,8 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         self.logger = PrintLogSink(prefix: "Tailscale", dropListeningNoise: true)
         self.rtpTimestampOriginNs = DispatchTime.now().uptimeNanoseconds
     }
+
+    // MARK: - Start
 
     /// Bring the server up. `filterData` is the JSON-encoded
     /// `PickerSelection` the picker subprocess produced. Pass `nil`
@@ -980,59 +982,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         }
     }
 
-    /// What to do about a helper process that exited without being asked to.
-    public enum HelperExitDisposition: Equatable {
-        /// replayd refused the capture slot (another same-bundle process
-        /// already holds one). Respawning hits the exact same wall — bail
-        /// straight to teardown instead of burning the crash budget.
-        case slotRefused
-        /// The captured window / display / app no longer resolves — the user
-        /// closed it (`writeFatal("source-gone: …")`). Non-retryable, but an
-        /// *expected* stop the UI reports as a gentle notice, not an error.
-        case sourceGone
-        /// The helper tagged its own death as non-retryable (decode failure,
-        /// startup-watchdog timeout, …) via `writeFatal("permanent: …")`.
-        case permanent
-        /// Anything else — worth respawning, subject to the crash budget.
-        case retryable
-    }
-
-    /// Pure classification of a helper's unexpected-exit reason string.
-    /// -3805 ("application connection being interrupted") on the helper's
-    /// first SCStream startup is replayd refusing the slot; `permanent:` is
-    /// the helper's own non-retryable marker. Extracted from
-    /// `onUnexpectedExit` so the routing is unit testable.
-    public static func classifyHelperExit(reason: String) -> HelperExitDisposition {
-        if reason.contains("-3805") || reason.localizedCaseInsensitiveContains("being interrupted") {
-            return .slotRefused
-        }
-        if reason.contains("source-gone:") {
-            return .sourceGone
-        }
-        if reason.contains("permanent:") {
-            return .permanent
-        }
-        return .retryable
-    }
-
-    /// Crash budget: give up after this many helper exits inside the sliding
-    /// window (see `slidingWindowCrashCount`).
-    public static let maxHelperCrashesPerWindow = TransportTuning.maxHelperCrashesPerWindow
-
-    /// Pure sliding-window crash accounting: prune timestamps older than
-    /// `windowNs`, record `nowNs`, and return how many crashes the window now
-    /// holds (including this one). The caller gives up once the result
-    /// exceeds `maxHelperCrashesPerWindow`. Extracted from `onUnexpectedExit`
-    /// so the budget math is unit testable.
-    public static func slidingWindowCrashCount(
-        _ stamps: inout [UInt64],
-        appending nowNs: UInt64,
-        windowNs: UInt64 = TransportTuning.helperCrashWindowNs
-    ) -> Int {
-        stamps.removeAll { nowNs &- $0 > windowNs }
-        stamps.append(nowNs)
-        return stamps.count
-    }
+    // MARK: - Capture supervision (helper spawn / restart / crash budget)
 
     private func startHelperCapture(filterData: Data) throws {
         guard let factory = captureFactory.withLock({ $0 }) else {
@@ -1384,6 +1334,8 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             return work
         }
     }
+
+    // MARK: - Control channel (annotations, remote control)
 
     /// True when some admitted viewer's UDP source shares `ip` (the viewer
     /// keys are `ip:port`; the TCP annotation channel dials from the same
@@ -1746,6 +1698,8 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             }
         }
     }
+
+    // MARK: - Receive loop
 
     /// `NSError` domain marking a dead UDP receive loop. AppState treats
     /// this domain as non-recoverable: respawning the capture helper can't
@@ -2134,31 +2088,6 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         }
     }
 
-    /// Pure inbound-audio relay decision. The sender must be a registered
-    /// viewer AND the embedded SSRC must match the one we assigned to that
-    /// address — without the SSRC check, a registered viewer could spoof
-    /// another viewer's audio by stuffing its SSRC into the RTP header. On
-    /// success, returns every *other* viewer as a relay recipient. Extracted
-    /// from `handleInboundAudioRTP` so the anti-spoof gate is unit testable.
-    public static func audioRelayDecision(
-        viewerAudioSSRCs: [String: UInt32],
-        sender: String,
-        headerSSRC: UInt32
-    ) -> (valid: Bool, recipients: [String]) {
-        guard let assigned = viewerAudioSSRCs[sender], assigned == headerSSRC else {
-            return (false, [])
-        }
-        return (true, viewerAudioSSRCs.keys.filter { $0 != sender })
-    }
-
-    /// Pure per-viewer send-chain gate: enqueue a frame/packet only while
-    /// fewer than `cap` are already queued behind a stalled send (drop-newest
-    /// past the cap). Extracted so the drop policy — shared by the video and
-    /// audio chains — is unit testable.
-    public static func shouldEnqueue(queued: Int, cap: Int) -> Bool {
-        queued < cap
-    }
-
     /// Enqueue one audio packet onto each recipient's own send chain. Recipient
     /// N+1's packet awaits only its own previous send (`await prev?.value`), so
     /// one stalled viewer's audio doesn't delay everyone else's — the isolation
@@ -2210,101 +2139,6 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         onAudioReceived?(packet)
     }
 
-    /// Pure PLI-ring append: add `timestampNs` and drop the oldest entries
-    /// once the ring exceeds `cap`. Extracted from `recordPLI` so the
-    /// bounded-growth invariant is unit testable.
-    public static func appendingPLI(_ ring: [UInt64], timestampNs: UInt64, cap: Int = 32) -> [UInt64] {
-        var out = ring
-        out.append(timestampNs)
-        if out.count > cap {
-            out.removeFirst(out.count - cap)
-        }
-        return out
-    }
-
-    /// Per-viewer loss attribution: is loss this window isolated to one
-    /// viewer (whose link we can throttle without touching the shared
-    /// encoder) or widespread (everyone's suffering — cut the global rate)?
-    public enum LossVerdict: Equatable {
-        /// No viewer over the loss threshold.
-        case healthy
-        /// Exactly one viewer over threshold, every OTHER viewer perfectly
-        /// clean (0 PLIs), and at least two viewers total. That viewer's
-        /// link — not the encoder — is the problem, so throttle it alone.
-        case isolated(addr: String, plis: Int)
-        /// More than one viewer losing (or a merely-nonzero peer), or a
-        /// single viewer with no peers to protect: today's global cut.
-        case widespread(worstPLIs: Int)
-    }
-
-    /// Pure loss attribution. Rules: no viewer over `lossThreshold` →
-    /// `.healthy`; exactly one over threshold with every other viewer at 0
-    /// PLIs and ≥2 viewers total → `.isolated`; anything else → `.widespread`
-    /// (with a single viewer there is no "everyone else", so it stays
-    /// `.widespread` — identical to today's behavior). Extracted so the
-    /// precedence is unit testable, same pattern as `audioRelayDecision`.
-    public static func lossAttribution(pliCounts: [String: Int], lossThreshold: Int = 2) -> LossVerdict {
-        let worst = pliCounts.values.max() ?? 0
-        guard worst > lossThreshold else { return .healthy }
-        let over = pliCounts.filter { $0.value > lossThreshold }
-        if over.count == 1, pliCounts.count >= 2, let bad = over.first {
-            let othersAllClean = pliCounts.allSatisfy { $0.key == bad.key || $0.value == 0 }
-            if othersAllClean {
-                return .isolated(addr: bad.key, plis: bad.value)
-            }
-        }
-        return .widespread(worstPLIs: worst)
-    }
-
-    /// Output of `fairnessDecision`: which viewers to keep in keyframe-only
-    /// mode this window, and the PLI count (worst over the NON-throttled
-    /// viewers) to feed the global `nextAdaptiveBitrate`.
-    public struct FairnessDecision: Equatable {
-        public var throttle: [String]  // sorted for determinism
-        public var globalBitrateInput: Int
-
-        public init(throttle: [String], globalBitrateInput: Int) {
-            self.throttle = throttle
-            self.globalBitrateInput = globalBitrateInput
-        }
-    }
-
-    /// Pure fairness decision layered over `lossAttribution`. An `.isolated`
-    /// viewer is throttled (keyframe-only) so its bad link stops dragging the
-    /// session; an already-throttled viewer is renewed while it keeps losing
-    /// (over threshold) and expires after a clean window (asymmetric
-    /// hysteresis, matching the sweep's style). Throttled viewers never drive
-    /// the global bitrate — they're deliberately frame-skipped, so their PLIs
-    /// are expected and must not re-introduce the worst-link-wins coupling.
-    /// The global input is therefore the worst PLI count over the
-    /// *non-throttled* viewers, which for a `.widespread` verdict with nobody
-    /// throttled equals the true max (today's path, so `AdaptiveBitrateTests`
-    /// stay valid).
-    public static func fairnessDecision(
-        pliCounts: [String: Int],
-        currentlyThrottled: Set<String>,
-        lossThreshold: Int = 2
-    ) -> FairnessDecision {
-        let verdict = lossAttribution(pliCounts: pliCounts, lossThreshold: lossThreshold)
-        var throttle = currentlyThrottled.filter { (pliCounts[$0] ?? 0) > lossThreshold }
-        if case .isolated(let addr, _) = verdict {
-            throttle.insert(addr)
-        }
-        let globalInput = pliCounts.filter { !throttle.contains($0.key) }.values.max() ?? 0
-        return FairnessDecision(throttle: throttle.sorted(), globalBitrateInput: globalInput)
-    }
-
-    /// Pure per-viewer broadcast gate: does this viewer receive this frame
-    /// (and advance its sequence cursor)? A throttled viewer skips inter
-    /// frames — but ALWAYS receives keyframes — so it gets a decodable
-    /// keyframe-only slideshow. Crucially the caller advances `nextSequence`
-    /// only when this returns true, so the throttled viewer sees a contiguous
-    /// stream, not a perceived-loss gap that would provoke a PLI storm.
-    public static func shouldSendFrame(isKeyframe: Bool, throttledUntilNs: UInt64, nowNs: UInt64) -> Bool {
-        if isKeyframe { return true }
-        return nowNs >= throttledUntilNs
-    }
-
     /// Append a PLI timestamp to the viewer's ring. The adaptive sweep
     /// (every 5 s) reads these to decide whether to step bitrate down.
     /// Drop the oldest entry once we hold more than 32 — at our
@@ -2322,71 +2156,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         if recorded { onPLIRecordedForTesting?(addr) }
     }
 
-    /// What to do with a not-yet-connected viewer's HELLO.
-    public enum Admission: Equatable {
-        /// Join the fan-out set immediately (remembered allow, or gate off).
-        case admit
-        /// Park in `pendingViewers` awaiting the sharer's Accept / Deny.
-        case park
-        /// Reject outright (remembered deny) — HELLO_DENY + SERVER_BYE.
-        case reject
-    }
-
-    /// Pure admission gate: remembered `deny` always rejects (a blocked
-    /// peer stays blocked even in open-door mode), remembered `allow`
-    /// always admits, and an unremembered peer parks behind the approval
-    /// gate when it's on. Extracted so the precedence
-    /// (blocklist > allowlist > gate) is unit testable — same pattern as
-    /// `audioRelayDecision`.
-    public static func admissionDecision(policy: PeerPolicy?, requireApproval: Bool) -> Admission {
-        switch policy {
-        case .deny:
-            return .reject
-        case .allow:
-            return .admit
-        case nil:
-            return requireApproval ? .park : .admit
-        }
-    }
-
-    /// Pure drain decision for `setRequireApproval(false)`: everyone parked
-    /// pending gets admitted *except* remembered-deny peers, who are denied
-    /// instead. Peers whose StableNodeID never resolved (`nil`) can't match
-    /// a policy and are admitted — the post-resolution deny check in
-    /// `applyResolvedIdentity` still expels them if they turn out to be
-    /// blocked. Results are sorted for determinism.
-    public static func drainDecision(
-        pendingStableIDs: [String: String?],
-        policies: [String: PeerPolicy]
-    ) -> (approve: [String], deny: [String]) {
-        var approve: [String] = []
-        var deny: [String] = []
-        for (addr, stableID) in pendingStableIDs {
-            let policy = stableID.flatMap { policies[$0] }
-            if policy == .deny {
-                deny.append(addr)
-            } else {
-                approve.append(addr)
-            }
-        }
-        return (approve.sorted(), deny.sorted())
-    }
-
-    /// Pure connected-roster deny sweep: which currently-connected
-    /// addresses now resolve to a remembered `deny`? Used by
-    /// `setAccessPolicies` so a "Deny & Block" applied to an
-    /// already-connected peer expels it instead of only blocking future
-    /// HELLOs. Unresolved (`nil`) StableNodeIDs can't match a policy and
-    /// are left alone. Sorted for determinism.
-    public static func connectedDenyList(
-        viewerStableIDs: [String: String?],
-        policies: [String: PeerPolicy]
-    ) -> [String] {
-        viewerStableIDs.compactMap { (addr, stableID) -> String? in
-            guard let stableID, policies[stableID] == .deny else { return nil }
-            return addr
-        }.sorted()
-    }
+    // MARK: - Admission bookkeeping & roster maintenance
 
     private func registerOrRefresh(addr: String, isNew: Bool) {
         let now = DispatchTime.now().uptimeNanoseconds
@@ -2861,6 +2631,8 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         return ip
     }
 
+    // MARK: - Identity resolution
+
     /// How many times the shared resolver re-queries LocalAPI before giving
     /// up, one second apart. A freshly-joined (e.g. ephemeral) peer can
     /// HELLO before its entry lands in our netmap snapshot; a couple of
@@ -3046,37 +2818,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         if policy == .deny { expelViewer(addr: addr, reason: "remembered deny") }
     }
 
-    /// Pure kicked-viewer quiet-window decision: prune entries older than
-    /// `quietNs` and report whether `addr` is still inside its window (its
-    /// straggler KEEPALIVEs must be answered with denial, not re-run
-    /// through the admission gate). Extracted from `registerOrRefresh` so
-    /// the window math is unit testable.
-    public static func expelledQuietDecision(
-        expelledAtNs: [String: UInt64], addr: String, nowNs: UInt64, quietNs: UInt64
-    ) -> (remaining: [String: UInt64], isQuieted: Bool) {
-        let remaining = expelledAtNs.filter { nowNs &- $0.value <= quietNs }
-        return (remaining, remaining[addr] != nil)
-    }
-
-    /// Pure staleness computation: which addresses have been silent longer
-    /// than `timeoutNs` as of `nowNs`? Shared by the connected-viewer and
-    /// pending-viewer sweeps (which differ only in their timeout). Extracted
-    /// from `sweepIdleViewers` so the timeout math is unit testable.
-    public static func staleAddrs(
-        lastSeenNs: [String: UInt64], nowNs: UInt64, timeoutNs: UInt64
-    ) -> [String] {
-        lastSeenNs.filter { nowNs &- $0.value > timeoutNs }.map(\.key)
-    }
-
-    /// Pure hung-helper predicate: a helper is considered wedged when it has
-    /// produced *something* before (`lastActivityNs != 0` — 0 means no helper
-    /// yet) but nothing within `timeoutNs`. Extracted from the watchdog in
-    /// `sweepIdleViewers` so the liveness math is unit testable.
-    public static func helperLooksHung(
-        lastActivityNs: UInt64, nowNs: UInt64, timeoutNs: UInt64
-    ) -> Bool {
-        lastActivityNs != 0 && nowNs &- lastActivityNs > timeoutNs
-    }
+    // MARK: - Sweeps (idle viewers, watchdog, adaptive bitrate, FEC arm)
 
     /// Periodically prunes viewers that haven't said anything in a while.
     /// Covers the case where a viewer crashes without sending BYE — we
@@ -3409,399 +3151,6 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         }
     }
 
-    /// Pure adaptive-bitrate decision: given the worst per-viewer PLI count in
-    /// the last window, the current and baseline bitrates, and how long since
-    /// the last change, return the next bitrate — or `nil` to hold steady.
-    ///
-    /// Cut 25 % (never below the floor of 30 % of baseline or 500 kbps) when
-    /// loss exceeds `lossThreshold` and the down-hysteresis has elapsed; recover
-    /// +10 % (min 100 kbps step, capped at baseline) after a clean window once
-    /// the longer up-hysteresis has elapsed. Asymmetric hysteresis makes cuts
-    /// fast and recovery slow. A `current` above `baseline` clamps straight
-    /// down to it with no hysteresis (see below). Extracted from the sweep so
-    /// the math is unit testable without a live encoder.
-    public static func nextAdaptiveBitrate(
-        worstPLIs: Int,
-        current: Int,
-        baseline: Int,
-        elapsedSinceChangeNs: UInt64,
-        lossThreshold: Int = 2,
-        downHysteresisNs: UInt64 = 5_000_000_000,
-        upHysteresisNs: UInt64 = 10_000_000_000
-    ) -> Int? {
-        guard baseline > 0 else { return nil }
-        // Self-heal: a mid-share ceiling drop can race an in-flight sweep
-        // apply and leave `current` parked above the (new, lower) baseline,
-        // where neither arm below would ever fire on a loss-free link (the
-        // raise arm requires current < baseline). Clamp straight down, no
-        // hysteresis — the encoder should never run above the effective
-        // ceiling.
-        if current > baseline { return baseline }
-        // 30 % of baseline, never below 500 kbps (see TransportTuning).
-        let floor = TransportTuning.adaptiveBitrateFloor(baseline: baseline)
-        if worstPLIs > lossThreshold && elapsedSinceChangeNs >= downHysteresisNs && current > floor {
-            return max(floor, current * 3 / 4)  // -25 %
-        } else if worstPLIs == 0 && elapsedSinceChangeNs >= upHysteresisNs && current < baseline {
-            return min(baseline, current + max(current / 10, 100_000))  // +10 %, min step 100 kbps
-        }
-        return nil
-    }
-
-    /// Measured congestion inputs for `nextCongestionDecision`. Bundled so the
-    /// decision stays under the argument-count limit and the sweep builds it in
-    /// one place. Legacy viewers contribute only `pliCount` (their RR fraction
-    /// is 0 and they never NACK), so a PLI-only session degrades to exactly the
-    /// `nextAdaptiveBitrate` behavior `AdaptiveBitrateTests` pins.
-    public struct CongestionInputs: Equatable {
-        /// Worst per-viewer RR "fraction lost" this window, Q8 (0…255).
-        public var lossFractionQ8: Int
-        /// Worst non-throttled per-viewer PLI count this window (legacy signal).
-        public var pliCount: Int
-        /// Retransmits served this window. NACK-recovered loss is cheap (one
-        /// packet, not a keyframe), so it weighs half a PLI in the cut decision.
-        public var nackServed: Int
-        public var current: Int
-        public var baseline: Int
-        /// Current capture frame-rate tier (60 / 30 / 15).
-        public var fpsTier: Int
-        /// Session fps cap (from `QualitySettings.fpsCap`). The fps-recovery
-        /// ladder must never raise above this — a `.low`-preset 30 fps session
-        /// must not be pushed to 60.
-        public var fpsCap: Int = 60
-        public var elapsedSinceChangeNs: UInt64
-
-        public init(
-            lossFractionQ8: Int, pliCount: Int, nackServed: Int, current: Int, baseline: Int,
-            fpsTier: Int, fpsCap: Int = 60, elapsedSinceChangeNs: UInt64
-        ) {
-            self.lossFractionQ8 = lossFractionQ8
-            self.pliCount = pliCount
-            self.nackServed = nackServed
-            self.current = current
-            self.baseline = baseline
-            self.fpsTier = fpsTier
-            self.fpsCap = fpsCap
-            self.elapsedSinceChangeNs = elapsedSinceChangeNs
-        }
-    }
-
-    /// Bitrate + fps-tier decision from receiver feedback. `nil` on either
-    /// field means "leave it". Extracted as a pure func (same pattern as
-    /// `nextAdaptiveBitrate`) so the loss bands, NACK weighting, and fps-ladder
-    /// transitions are unit testable without a live encoder.
-    public struct CongestionDecision: Equatable, Sendable {
-        public var bitrate: Int?
-        public var fpsTier: Int?
-        public static let hold = CongestionDecision(bitrate: nil, fpsTier: nil)
-    }
-
-    /// The fps downshift ladder: 60 → 30 → 15 (and back). `nil` at the ends.
-    public static func lowerFpsTier(_ tier: Int) -> Int? {
-        if tier > 30 { return 30 }
-        if tier > 15 { return 15 }
-        return nil
-    }
-    /// Next tier up, clamped to the session `cap` — a capped (e.g. 30 fps
-    /// `.low`) session must never be raised above its cap. `nil` when already
-    /// at the top rung or the cap.
-    public static func raiseFpsTier(_ tier: Int, cap: Int) -> Int? {
-        let next: Int
-        if tier < 30 {
-            next = 30
-        } else if tier < 60 {
-            next = 60
-        } else {
-            return nil
-        }
-        let clamped = min(next, cap)
-        return clamped > tier ? clamped : nil
-    }
-
-    /// Convert an RR "fraction lost" (Q8, 0…255) into a PLI-equivalent loss
-    /// count so RR loss flows through the SAME per-viewer fairness/isolation
-    /// gate as PLIs. ~10 % loss (highLossQ8 = 26) maps to just over the 2-PLI
-    /// threshold, so a viewer reporting high RR loss with no PLIs is still
-    /// eligible for keyframe-only isolation instead of dragging the global rate.
-    public static func rrLossPLIEquivalent(fracLostQ8: Int) -> Int {
-        max(0, fracLostQ8) / 8
-    }
-
-    /// Global congestion inputs derived from per-viewer signals, folding RR
-    /// loss into the same isolation gate as PLI. Returns the viewers to throttle
-    /// (keyframe-only) and the worst PLI / RR-loss over ONLY the non-throttled
-    /// viewers — so one viewer's (possibly fabricated) RR loss gets it isolated
-    /// first and can't set the shared rate for everyone.
-    public struct GlobalCongestionInputs: Equatable {
-        public var throttle: [String]
-        public var pliInput: Int
-        public var lossQ8Input: Int
-    }
-    public static func congestionInputs(
-        pliCounts: [String: Int],
-        lossQ8ByAddr: [String: Int],
-        currentlyThrottled: Set<String>,
-        lossThreshold: Int = 2
-    ) -> GlobalCongestionInputs {
-        // Combined per-viewer loss folds RR into PLI-equivalent units so the
-        // fairness gate can isolate an RR-lossy-but-PLI-quiet viewer.
-        var combined: [String: Int] = [:]
-        for key in Set(pliCounts.keys).union(lossQ8ByAddr.keys) {
-            let pli = pliCounts[key] ?? 0
-            let rr = rrLossPLIEquivalent(fracLostQ8: lossQ8ByAddr[key] ?? 0)
-            combined[key] = max(pli, rr)
-        }
-        let fairness = fairnessDecision(
-            pliCounts: combined, currentlyThrottled: currentlyThrottled, lossThreshold: lossThreshold)
-        let throttleSet = Set(fairness.throttle)
-        let pliInput = pliCounts.filter { !throttleSet.contains($0.key) }.values.max() ?? 0
-        let lossQ8Input = lossQ8ByAddr.filter { !throttleSet.contains($0.key) }.values.max() ?? 0
-        return GlobalCongestionInputs(
-            throttle: fairness.throttle, pliInput: pliInput, lossQ8Input: lossQ8Input)
-    }
-
-    /// Receiver-feedback congestion control. Bitrate is the primary lever (cut
-    /// 25 % on heavy loss, recover 10 % on a clean window, asymmetric
-    /// hysteresis — same math as `nextAdaptiveBitrate`); the fps ladder is the
-    /// second lever once bitrate bottoms out. Loss severity comes from the RR
-    /// fraction (> ~10 % Q8 cut, < ~2 % clean) *or* the legacy PLI count, so a
-    /// PLI-only session behaves exactly as before. NACK-served packets soften
-    /// the cut (recoverable loss the retransmit path already handled).
-    ///
-    /// fps rules: downshift only when the bitrate is already at the floor and
-    /// loss persists; on recovery, restore fps *before* letting bitrate climb
-    /// past ~60 % of baseline (frame rate hurts perception less than blocking
-    /// artifacts).
-    ///
-    /// Known property (recorded design trade-off, not a bug): this arm sees
-    /// **residual** loss only — FEC-recovered packets count as received — so
-    /// on a congestion-limited link FEC can mask the loss, let the
-    /// clean-window up-ramp raise the rate, and re-induce the loss: a slow
-    /// sawtooth bounded by the up-hysteresis and the +10 % step. The RR's
-    /// `fecRecovered` term de-oscillates only the FEC arm by design; feeding
-    /// raw loss here would double-penalize loss the parity already repaired
-    /// and suppress recovery exactly on the links FEC targets.
-    public static func nextCongestionDecision(
-        _ inputs: CongestionInputs,
-        lossThreshold: Int = 2,
-        downHysteresisNs: UInt64 = 5_000_000_000,
-        upHysteresisNs: UInt64 = 10_000_000_000
-    ) -> CongestionDecision {
-        guard inputs.baseline > 0 else { return .hold }
-        if inputs.current > inputs.baseline {
-            return CongestionDecision(bitrate: inputs.baseline, fpsTier: nil)
-        }
-
-        let highLossQ8 = 26  // ~10 %
-        let lowLossQ8 = 5  // ~2 %
-        let floor = TransportTuning.adaptiveBitrateFloor(baseline: inputs.baseline)
-        // NACK recoveries halve the effective PLI weight — the loss was fixed
-        // cheaply, so it shouldn't drive a full-rate cut on its own.
-        let effectivePLIs = inputs.pliCount - min(inputs.pliCount, inputs.nackServed / 2)
-        let heavyLoss = inputs.lossFractionQ8 > highLossQ8 || effectivePLIs > lossThreshold
-        // Recovery is NOT gated on `nackServed == 0`: on a real WAN a NACK is
-        // served most windows, and the retransmit already repaired that loss,
-        // so requiring literally zero NACKs would suppress recovery exactly on
-        // the lossy links NACK targets. Low RR loss + no PLIs is "clean enough".
-        let clean = inputs.lossFractionQ8 <= lowLossQ8 && inputs.pliCount == 0
-
-        let downReady = inputs.elapsedSinceChangeNs >= downHysteresisNs
-        let upReady = inputs.elapsedSinceChangeNs >= upHysteresisNs
-
-        // Bitrate cut.
-        if heavyLoss && downReady && inputs.current > floor {
-            return CongestionDecision(bitrate: max(floor, inputs.current * 3 / 4), fpsTier: nil)
-        }
-        // fps downshift: bitrate can't cut further (at/below floor) but loss
-        // persists — drop the frame-rate tier instead.
-        if heavyLoss && downReady && inputs.current <= floor {
-            if let lower = lowerFpsTier(inputs.fpsTier) {
-                return CongestionDecision(bitrate: nil, fpsTier: lower)
-            }
-            return .hold
-        }
-        // Recovery. Restore fps first once bitrate has climbed back to ~60 %
-        // of baseline; otherwise raise bitrate.
-        if clean && upReady {
-            let sixtyPct = inputs.baseline * 6 / 10
-            if inputs.current >= sixtyPct, let higher = raiseFpsTier(inputs.fpsTier, cap: inputs.fpsCap) {
-                return CongestionDecision(bitrate: nil, fpsTier: higher)
-            }
-            if inputs.current < inputs.baseline {
-                let raised = min(inputs.baseline, inputs.current + max(inputs.current / 10, 100_000))
-                return CongestionDecision(bitrate: raised, fpsTier: nil)
-            }
-        }
-        return .hold
-    }
-
-    // MARK: - Adaptive FEC (pure decisions — see plans/fec-xor-recovery.md)
-
-    /// Adaptive-FEC state carried across sweep windows: the active group size
-    /// (0 = FEC off) and the consecutive-clean-window count driving the
-    /// off-gate hysteresis.
-    public struct FECState: Equatable, Sendable {
-        public var groupSize: Int = 0
-        public var cleanWindows: Int = 0
-
-        public init(groupSize: Int = 0, cleanWindows: Int = 0) {
-            self.groupSize = groupSize
-            self.cleanWindows = cleanWindows
-        }
-    }
-
-    /// Per-viewer measurements the sweep snapshots for the FEC arm.
-    public struct FECViewerSample: Equatable, Sendable {
-        /// Latest RR-derived RTT (0 = unknown).
-        public var rttNs: UInt64 = 0
-        /// Freshness-decayed residual (post-FEC) RR loss, Q8.
-        public var residualLossQ8: Int = 0
-        /// FEC-recovered packets this viewer reported this window.
-        public var recovered: Int = 0
-        /// NACK-recovered packets this viewer reported this window. Feeds
-        /// raw-loss reconstruction identically to `recovered`: a served
-        /// retransmit masks link loss (counts as received), so without it a
-        /// link NACK is quietly repairing reads clean and FEC never gates on —
-        /// even at the high RTT where NACK's per-loss round trip is the very
-        /// latency FEC's zero-RTT recovery removes.
-        public var nackRecovered: Int = 0
-        /// Video packets planned for THIS viewer this window — the
-        /// denominator for its own recovered-loss fraction. Per-viewer on
-        /// purpose: a shared template-stream count would sum recoveries
-        /// across viewers against one stream (two viewers each recovering
-        /// 3 % must not read as 6 %) and would deflate a keyframe-only
-        /// throttled viewer's rate (its expected count is a small fraction
-        /// of the templates), dropping its gate and inviting a
-        /// loss → PLI-storm → re-gate oscillation.
-        public var expectedPackets: Int = 0
-        /// Viewer advertised `.fec` in its HELLO.
-        public var fecCapable: Bool = false
-
-        public init(
-            rttNs: UInt64 = 0, residualLossQ8: Int = 0, recovered: Int = 0,
-            nackRecovered: Int = 0, expectedPackets: Int = 0, fecCapable: Bool = false
-        ) {
-            self.rttNs = rttNs
-            self.residualLossQ8 = residualLossQ8
-            self.recovered = recovered
-            self.nackRecovered = nackRecovered
-            self.expectedPackets = expectedPackets
-            self.fecCapable = fecCapable
-        }
-    }
-
-    /// One sweep step of the FEC arm: the next adaptive state plus the set
-    /// of viewers gated for parity delivery this window.
-    public struct FECSweepDecision: Equatable, Sendable {
-        public var state = FECState()
-        public var gated: Set<String> = []
-    }
-
-    /// Convert a per-window recovered-packet count to a Q8 loss fraction
-    /// against that viewer's own expected packet count (same fixed point as
-    /// the RR `fracLostQ8`). Raw link loss ≈ residual + this.
-    public static func fecRecoveredQ8(recovered: Int, expectedPackets: Int) -> Int {
-        guard expectedPackets > 0, recovered > 0 else { return 0 }
-        return min(255, recovered * 256 / expectedPackets)
-    }
-
-    /// The raw-loss → group-size ladder: 2–4 % → 10, 4–8 % → 7, > 8 % → 5.
-    private static func fecLadder(rawLossQ8: Int) -> Int {
-        if rawLossQ8 > TransportTuning.fecHighLossQ8 { return TransportTuning.fecGroupSizeHeavy }
-        if rawLossQ8 > TransportTuning.fecMidLossQ8 { return TransportTuning.fecGroupSizeMedium }
-        if rawLossQ8 > TransportTuning.fecOnGateLossQ8 { return TransportTuning.fecGroupSizeLight }
-        return 0
-    }
-
-    /// Pure per-viewer parity gate: this viewer receives parity only when
-    /// its **own** measured path passes the on-gate — RTT > 150 ms and raw
-    /// (residual + recovered, against its own expected count) loss > 2 %.
-    /// Clean-link viewers pay zero overhead even mid-share with a lossy
-    /// peer; legacy / non-`.fec` viewers never pass (the caller keys the
-    /// gate off the caps map).
-    public static func fecViewerGate(rttNs: UInt64, rawLossQ8: Int) -> Bool {
-        rttNs > TransportTuning.fecOnGateRTTNs && rawLossQ8 > TransportTuning.fecOnGateLossQ8
-    }
-
-    /// Pure adaptive-FEC decision, one step per sweep window. Everything is
-    /// **per-viewer first**: each `.fec` viewer's raw loss is residual +
-    /// recovered against its own expected count (the recovered term is the
-    /// anti-oscillation input — FEC hiding all loss zeroes the residual,
-    /// and without it the decision would switch FEC off and re-trigger the
-    /// loss it was hiding), and its gate needs BOTH high RTT and raw loss on
-    /// the same path. Mixing worst-RTT and worst-loss across *different*
-    /// viewers is exactly wrong: viewer A (slow, clean) + viewer B (fast,
-    /// lossy) must not switch FEC on with nobody gated, paying the encoder
-    /// compensation for parity no one receives.
-    ///
-    /// - **On-gate** (FEC currently off): at least one viewer passes its own
-    ///   gate → ON, group size laddered from the worst raw loss over the
-    ///   gated viewers.
-    /// - **While on:** re-ladder from the gated viewers' worst raw loss.
-    ///   With loss present but nobody gated (gray zone / RTT recovered),
-    ///   hold N for a quick re-arm — the applier sends no parity and pays
-    ///   no compensation while `gated` is empty, so a held N is free.
-    /// - **Off-gate:** two consecutive windows with every `.fec` viewer's
-    ///   raw loss under ~1 % step FEC off (asymmetric hysteresis, matching
-    ///   the sweep's style).
-    public static func fecSweepDecision(
-        samples: [String: FECViewerSample], state: FECState
-    ) -> FECSweepDecision {
-        var gated: Set<String> = []
-        var worstGatedRawQ8 = 0
-        var worstRawQ8 = 0
-        for (addr, sample) in samples where sample.fecCapable {
-            // Raw link loss = residual (post-recovery RR loss) + everything the
-            // link lost but a recovery masked. BOTH FEC and NACK recoveries
-            // count as received in `fracLostQ8`, so both must be added back to
-            // reconstruct raw loss — else NACK's own success on a high-RTT link
-            // hides the loss that justifies turning FEC on.
-            let rawLossQ8 = min(
-                255,
-                sample.residualLossQ8
-                    + fecRecoveredQ8(
-                        recovered: sample.recovered + sample.nackRecovered,
-                        expectedPackets: sample.expectedPackets))
-            worstRawQ8 = max(worstRawQ8, rawLossQ8)
-            if fecViewerGate(rttNs: sample.rttNs, rawLossQ8: rawLossQ8) {
-                gated.insert(addr)
-                worstGatedRawQ8 = max(worstGatedRawQ8, rawLossQ8)
-            }
-        }
-
-        let next: FECState
-        if state.groupSize == 0 {
-            // A gated viewer's raw loss is > the on-gate by definition, so
-            // the ladder always yields a nonzero group here.
-            next = gated.isEmpty ? FECState() : FECState(groupSize: fecLadder(rawLossQ8: worstGatedRawQ8))
-        } else if worstRawQ8 < TransportTuning.fecCleanLossQ8 {
-            let clean = state.cleanWindows + 1
-            next =
-                clean >= TransportTuning.fecCleanWindowsToDisable
-                ? FECState()
-                : FECState(groupSize: state.groupSize, cleanWindows: clean)
-        } else if !gated.isEmpty {
-            let laddered = fecLadder(rawLossQ8: worstGatedRawQ8)
-            next = FECState(groupSize: laddered > 0 ? laddered : state.groupSize, cleanWindows: 0)
-        } else {
-            next = FECState(groupSize: state.groupSize, cleanWindows: 0)
-        }
-        return FECSweepDecision(state: next, gated: next.groupSize > 0 ? gated : [])
-    }
-
-    /// Encoder-rate compensation: with an effective group size of N, media +
-    /// parity together must stay at the congestion-controlled rate, so the
-    /// encoder runs at N/(N+1) of it. Skipping this would make FEC *add*
-    /// 10–20 % load precisely on lossy links. 0 (FEC off, or on with nobody
-    /// gated — no parity flowing) passes through unchanged. The result is
-    /// clamped so compensation can never push the encoder below the adaptive
-    /// floor's own compensated equivalent.
-    public static func fecCompensatedBitrate(_ bitrate: Int, groupSize: Int) -> Int {
-        guard groupSize > 0 else { return bitrate }
-        let scaled = bitrate * groupSize / (groupSize + 1)
-        let floor = TransportTuning.adaptiveFloorMinBps * groupSize / (groupSize + 1)
-        return max(scaled, floor)
-    }
-
     /// Push a new bitrate to the live encoder and update the bookkeeping
     /// the sweep reads on the next tick. Forces a keyframe on a down-step
     /// so viewers don't have to wait for the next periodic IDR to recover
@@ -3902,6 +3251,8 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             logger.log("Quality ceiling: baseline now \(newBaseline / 1000) kbps")
         }
     }
+
+    // MARK: - Fan-out (video RTP, audio RTP, system audio)
 
     /// Convert an encoded AVCC access unit into RTP packets and fan them out
     /// to every registered viewer with a per-viewer SSRC and sequence number.
@@ -4111,23 +3462,6 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         return UInt32(truncatingIfNeeded: ticks)
     }
 
-    /// Overwrites bytes 2-3 (sequence) and 8-11 (SSRC) of an RTP packet.
-    /// Avoids re-encoding the whole header per viewer. Internal (not
-    /// private) so the per-viewer rewrite is unit testable.
-    ///
-    /// The big-endian byte stores are open-coded on purpose: this is an
-    /// in-place overwrite at fixed offsets, not an append, and
-    /// TailscreenProtocol's internal `appendBE`/`readBE` helpers neither fit
-    /// that shape nor cross the module boundary.
-    public static func rewriteRTPHeader(_ packet: inout Data, sequence: UInt16, ssrc: UInt32) {
-        packet[2] = UInt8((sequence >> 8) & 0xFF)
-        packet[3] = UInt8(sequence & 0xFF)
-        packet[8] = UInt8((ssrc >> 24) & 0xFF)
-        packet[9] = UInt8((ssrc >> 16) & 0xFF)
-        packet[10] = UInt8((ssrc >> 8) & 0xFF)
-        packet[11] = UInt8(ssrc & 0xFF)
-    }
-
     /// Send one outbound audio RTP packet (sharer's mic) to all viewers.
     /// VoiceChannel calls this from its onSend closure. Fans out on the
     /// per-viewer audio send chains so a slow viewer's `pl.send` parks only
@@ -4191,6 +3525,8 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         guard let node = node else { throw TailscaleError.badInterfaceHandle }
         return try await node.addrs()
     }
+
+    // MARK: - Teardown
 
     public func stop() async {
         logger.log("Server stopping…")
