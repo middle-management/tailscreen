@@ -244,4 +244,3 @@ public final class TailscreenControlListener: @unchecked Sendable {
         }
     }
 }
-

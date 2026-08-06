@@ -112,4 +112,3 @@ public enum TailscreenRequestToShareClient {
         return .noAnswer
     }
 }
-

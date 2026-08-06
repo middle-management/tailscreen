@@ -82,4 +82,3 @@ public enum TailscreenMetadataClient {
         return nil
     }
 }
-

@@ -148,4 +148,3 @@ public struct TailscalePeerStatus: Identifiable, Sendable {
         self.tags = tags
     }
 }
-

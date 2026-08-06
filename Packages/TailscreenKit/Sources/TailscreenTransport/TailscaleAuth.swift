@@ -236,4 +236,3 @@ public enum TailscaleAuthError: Error, LocalizedError {
         }
     }
 }
-

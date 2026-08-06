@@ -4392,4 +4392,3 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         broadcastSystemAudio(au: au)
     }
 }
-

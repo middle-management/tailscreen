@@ -362,4 +362,3 @@ public final class ResumeBox<T>: @unchecked Sendable {
         c?.resume(throwing: error)
     }
 }
-
