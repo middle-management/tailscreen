@@ -251,7 +251,8 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
     /// Re-render the mic item's tooltip so its parenthetical chord tracks a
     /// Settings remap — the `$isMicOn` sink only fires on mic toggles, so
     /// `AppState.micHotkeyChord.didSet` calls this (its channel into the
-    /// toolbar, alongside `AppMenu.reinstall()` and the cheat-sheet sync).
+    /// toolbar, alongside the cheat-sheet sync — the menu needs no push,
+    /// it's SwiftUI Commands reading the @Published chord).
     func refreshMicChordDisplay() {
         guard let appState else { return }
         updateMicIcon(isOn: appState.isMicOn)

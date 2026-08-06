@@ -4,7 +4,7 @@ import CoreAudio
 import SwiftUI
 
 /// Native System-Settings-style preferences surface, presented in its own
-/// window via ⌘, (`AppMenu`'s "Settings…" item and the in-popover
+/// window via ⌘, (`AppCommands`' "Settings…" item and the in-popover
 /// "Settings…" row both route to `AppState.presentSettings()`).
 ///
 /// The menubar module surfaces the same quick toggles inline — Control Center
@@ -581,7 +581,7 @@ struct SettingsView: View {
     }
 
     /// Marketing version, with the build number appended only when it
-    /// differs — matches the About panel's logic in `AppMenu`.
+    /// differs — matches `AboutPanel`'s logic (AppCommands.swift).
     private static var versionString: String {
         let info = Bundle.main.infoDictionary ?? [:]
         let short = (info["CFBundleShortVersionString"] as? String) ?? "dev"

@@ -326,7 +326,8 @@ class AppState: ObservableObject {
             guard micHotkeyChord != oldValue else { return }
             HotkeyChordStore.saveMic(micHotkeyChord)
             registerMicHotkey()
-            AppMenu.reinstall()
+            // The File-menu key equivalent updates by itself: the menu is
+            // SwiftUI Commands reading this @Published chord.
             syncShortcutChordDisplays()
             viewerToolbar?.refreshMicChordDisplay()
         }
@@ -352,9 +353,10 @@ class AppState: ObservableObject {
                     keyCode: revokeHotkeyChord.keyCode,
                     modifiers: revokeHotkeyChord.modifiers)
             }
-            AppMenu.reinstall()
             // The viewer-side twins of the chord: the capture layer's
-            // intercept and the cheat sheet's printed rows.
+            // intercept and the cheat sheet's printed rows. (The two
+            // File-menu key equivalents update by themselves — SwiftUI
+            // Commands read this @Published chord.)
             viewerControlInput?.releaseChord = revokeHotkeyChord
             syncShortcutChordDisplays()
         }
@@ -2252,9 +2254,17 @@ class AppState: ObservableObject {
         overlay.frame = host.bounds
         host.contentSubview = overlay
         host.addSubview(overlay)
-        // Plug this canvas into the app menu so Tools / Edit / File menu
-        // items act on it. ViewerCommands holds the model weakly.
+        // Plug this canvas into the toolbar + the SwiftUI Commands menu.
+        // ViewerCommands holds the model weakly; the menu's Tools
+        // checkmarks and Undo/Clear enabling read it through
+        // `ViewerCommands.shared`, so forward the model's changes into
+        // this object's publisher — that re-evaluation is what keeps a
+        // `Commands`-declared menu current (there is no AppKit
+        // validation pass to lean on anymore).
         ViewerCommands.shared.activeOverlay = overlayModel
+        overlayModel.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
         self.viewerOverlay = overlay
 
         // Remote-control input-capture layer, above the annotation overlay.
@@ -2712,11 +2722,6 @@ class AppState: ObservableObject {
             model?.micChord = micShortcutDisplay
             model?.controlChord = revokeShortcutDisplay
         }
-    }
-
-    /// View → Enter Full Screen (⌃⌘F) on the viewer window.
-    func toggleViewerWindowFullScreen() {
-        viewerWindow?.toggleFullScreen(nil)
     }
 
     /// True when launched with `--ui-preview`: the hub renders a seeded,

@@ -1,5 +1,6 @@
 import AppKit
 import Carbon.HIToolbox
+import SwiftUI
 import TailscaleKit
 
 /// Process-wide hotkey via Carbon `RegisterEventHotKey`. SwiftUI's
@@ -243,7 +244,7 @@ struct HotkeyChord: Codable, Equatable, Sendable {
     /// modifier mask), or nil when the key can't map — the menu item then
     /// keeps an empty equivalent instead of advertising a chord that won't
     /// fire. The special-key characters follow the menu conventions already
-    /// in `AppMenu` ("\u{8}" renders as ⌫ on the Clear All item).
+    /// AppKit expects ("\u{8}" renders as ⌫ in a key equivalent).
     var menuKeyEquivalent: (key: String, mask: NSEvent.ModifierFlags)? {
         guard let shortcutKey else { return nil }
         let key: String
@@ -263,6 +264,31 @@ struct HotkeyChord: Codable, Equatable, Sendable {
         if modifiers & UInt32(shiftKey) != 0 { mask.insert(.shift) }
         if modifiers & UInt32(cmdKey) != 0 { mask.insert(.command) }
         return (key, mask)
+    }
+
+    /// The chord as a SwiftUI `KeyboardShortcut`, for the `Commands`-built
+    /// menu items that mirror the global hotkeys. Same nil contract as
+    /// `menuKeyEquivalent`: an unmappable key yields no shortcut rather
+    /// than a chord that won't fire — `.keyboardShortcut(_:)` takes the
+    /// optional directly, so the item simply loses its printed chord.
+    var swiftUIShortcut: KeyboardShortcut? {
+        guard let shortcutKey else { return nil }
+        let key: KeyEquivalent
+        switch shortcutKey {
+        case .character(let raw):
+            guard let character = raw.lowercased().first else { return nil }
+            key = KeyEquivalent(character)
+        case .delete:
+            key = .delete
+        case .escape:
+            key = .escape
+        }
+        var mods: EventModifiers = []
+        if modifiers & UInt32(controlKey) != 0 { mods.insert(.control) }
+        if modifiers & UInt32(optionKey) != 0 { mods.insert(.option) }
+        if modifiers & UInt32(shiftKey) != 0 { mods.insert(.shift) }
+        if modifiers & UInt32(cmdKey) != 0 { mods.insert(.command) }
+        return KeyboardShortcut(key, modifiers: mods)
     }
 
     /// AppKit → Carbon modifier translation for the shortcut recorder
@@ -298,7 +324,7 @@ struct HotkeyChord: Codable, Equatable, Sendable {
 
 /// Persisted hotkey chords. Mirrors `ViewerApprovalDefaults` — plain
 /// `UserDefaults` so non-SwiftUI call sites (`AppState.init`'s
-/// stored-property initialisers, `AppMenu.install`) can read the saved
+/// stored-property initialisers) can read the saved
 /// value without `@AppStorage`. A missing, corrupt, or invalid blob (no
 /// required modifier, unmappable key — e.g. hand-edited defaults) degrades
 /// to the shipped chord rather than to a hotkey the UI can't spell.
