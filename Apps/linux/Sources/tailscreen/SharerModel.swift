@@ -20,6 +20,7 @@ import struct TailscreenProtocol.ControlRequestInfo
 import enum TailscreenProtocol.SharerNoticeDecision
 import enum TailscreenProtocol.SharerNoticeKind
 import struct TailscreenProtocol.NoticeCandidate
+import enum TailscreenProtocol.TailscreenInstance
 import protocol TailscreenSharer.CaptureEncoding
 import class TailscreenSharerPortal.PortalCaptureEncoder
 import class PortalCaptureKit.PortalSession
@@ -1280,15 +1281,10 @@ final class SharerModel: ObservableObject {
 /// A stable, tailnet-legal node name for this host's share-capable node.
 ///
 /// Stable across launches on purpose: a peer that reconnects should find the
-/// same screen rather than a new one each time the app restarts. Sanitised
-/// because tsnet hostnames are DNS labels — anything outside `[a-z0-9-]` would
-/// be rejected or silently mangled by the control plane.
+/// same screen rather than a new one each time the app restarts. Sanitised by
+/// the shared `TailscreenInstance.nodeLabel` — tsnet hostnames are DNS labels,
+/// and this rule used to be written per-app with only this copy correct.
 @MainActor
 func localShareName() -> String {
-    let raw = ProcessInfo.processInfo.hostName
-    let cleaned = raw.lowercased().map { ch -> Character in
-        ch.isLetter || ch.isNumber ? ch : "-"
-    }
-    let trimmed = String(cleaned).trimmingCharacters(in: CharacterSet(charactersIn: "-"))
-    return trimmed.isEmpty ? "linux" : String(trimmed.prefix(48))
+    TailscreenInstance.nodeLabel(from: ProcessInfo.processInfo.hostName, fallback: "linux")
 }

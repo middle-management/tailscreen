@@ -68,4 +68,30 @@ public enum TailscreenInstance {
     public static func isTailscreenServerHostname(_ hostname: String) -> Bool {
         hostname.hasPrefix(serverHostnamePrefix) && !hostname.hasPrefix(clientHostnamePrefix)
     }
+
+    /// Sanitize a machine name into a tailnet-legal node label.
+    ///
+    /// tsnet hostnames are DNS labels: `[a-z0-9-]` only, no leading or
+    /// trailing hyphen, bounded length. Anything else is rejected or silently
+    /// mangled by the control plane. This is the ONE implementation both
+    /// swift-cross-ui hosts feed into `NodeRole.shareCapable(name:)` — it
+    /// used to exist per-app, and the Windows copy neither trimmed hyphens
+    /// nor capped length, so a `COMPUTERNAME` of `-lab-box` registered an
+    /// illegal label.
+    ///
+    /// Strictly ASCII: `isLetter` would admit `é` or `漢`, which are just as
+    /// illegal in a DNS label as `_`. Non-ASCII maps to `-` like any other
+    /// disallowed scalar, so word boundaries survive ("Robert's PC" →
+    /// "robert-s-pc"). The 48-char cap leaves room for
+    /// `serverHostnamePrefix` under DNS's 63-char label limit, and the trim
+    /// runs after the cap too, so a name cut at a hyphen stays legal.
+    public static func nodeLabel(from raw: String, fallback: String) -> String {
+        let mapped = raw.lowercased().map { ch -> Character in
+            ("a"..."z").contains(ch) || ("0"..."9").contains(ch) ? ch : "-"
+        }
+        let hyphens = CharacterSet(charactersIn: "-")
+        let trimmed = String(mapped).trimmingCharacters(in: hyphens)
+        let capped = String(trimmed.prefix(48)).trimmingCharacters(in: hyphens)
+        return capped.isEmpty ? fallback : capped
+    }
 }

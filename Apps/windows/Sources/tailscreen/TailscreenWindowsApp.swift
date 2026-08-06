@@ -27,6 +27,7 @@ import struct TailscreenProtocol.QualitySettings
 import enum TailscreenProtocol.QualitySettingsStore
 import enum TailscreenProtocol.ScreenShareMessage
 import struct TailscreenProtocol.ShareRequestInbox
+import enum TailscreenProtocol.TailscreenInstance
 import struct TailscreenProtocol.TailscreenMetadata
 import enum TailscreenProtocol.ViewerApprovalPreference
 import class TailscreenSharerWGC.WindowsShareSession
@@ -1663,14 +1664,15 @@ final class AppUIState: ObservableObject {
     /// This machine's name, as the tailnet sees it.
     ///
     /// `TsnetTransport` prefixes it with `serverHostnamePrefix`, so what is
-    /// returned here is the bare name — filtered to what a hostname may
-    /// contain, and never empty.
+    /// returned here is the bare name — sanitised by the shared
+    /// `TailscreenInstance.nodeLabel`, and never empty. The old inline filter
+    /// neither trimmed hyphens nor capped length, so a `COMPUTERNAME` of
+    /// `-lab-box` registered a DNS-illegal label.
     private static func machineName() -> String {
         let machine =
             ProcessInfo.processInfo.environment["COMPUTERNAME"]
             ?? ProcessInfo.processInfo.hostName
-        let cleaned = machine.lowercased().filter { $0.isLetter || $0.isNumber || $0 == "-" }
-        return cleaned.isEmpty ? "windows" : cleaned
+        return TailscreenInstance.nodeLabel(from: machine, fallback: "windows")
     }
 
     private static var architecture: String {

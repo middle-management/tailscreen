@@ -39,4 +39,42 @@ final class TailscreenInstanceTests: XCTestCase {
         XCTAssertFalse(TailscreenInstance.isTailscreenServerHostname("Tailscreen-wisp"))
         XCTAssertFalse(TailscreenInstance.isTailscreenServerHostname("TAILSCREEN-wisp"))
     }
+
+    // MARK: - nodeLabel
+
+    func testNodeLabelLowercasesAndMapsPunctuation() {
+        XCTAssertEqual(TailscreenInstance.nodeLabel(from: "Robert's PC", fallback: "x"), "robert-s-pc")
+        XCTAssertEqual(TailscreenInstance.nodeLabel(from: "lab_box.local", fallback: "x"), "lab-box-local")
+    }
+
+    func testNodeLabelTrimsLeadingAndTrailingHyphens() {
+        // A COMPUTERNAME of "-lab-box" used to register an illegal DNS label
+        // on Windows (labels may not begin with a hyphen).
+        XCTAssertEqual(TailscreenInstance.nodeLabel(from: "-lab-box", fallback: "x"), "lab-box")
+        XCTAssertEqual(TailscreenInstance.nodeLabel(from: "box-", fallback: "x"), "box")
+        XCTAssertEqual(TailscreenInstance.nodeLabel(from: "((box))", fallback: "x"), "box")
+    }
+
+    func testNodeLabelCapsLengthAndStaysLegalAfterTheCut() {
+        let long = String(repeating: "a", count: 60)
+        XCTAssertEqual(TailscreenInstance.nodeLabel(from: long, fallback: "x").count, 48)
+        // A name whose 48th character lands on a hyphen must not keep it —
+        // a trailing hyphen is as illegal as a leading one.
+        let hyphenAtCut = String(repeating: "a", count: 47) + "-zzz"
+        XCTAssertEqual(TailscreenInstance.nodeLabel(from: hyphenAtCut, fallback: "x").count, 47)
+        XCTAssertFalse(TailscreenInstance.nodeLabel(from: hyphenAtCut, fallback: "x").hasSuffix("-"))
+    }
+
+    func testNodeLabelIsASCIIStrict() {
+        // `isLetter` would admit é/ü/漢 — all illegal in a DNS label. They
+        // map to hyphens like any other disallowed scalar.
+        XCTAssertEqual(TailscreenInstance.nodeLabel(from: "café", fallback: "x"), "caf")
+        XCTAssertEqual(TailscreenInstance.nodeLabel(from: "漢字", fallback: "x"), "x")
+    }
+
+    func testNodeLabelFallsBackWhenNothingSurvives() {
+        XCTAssertEqual(TailscreenInstance.nodeLabel(from: "", fallback: "linux"), "linux")
+        XCTAssertEqual(TailscreenInstance.nodeLabel(from: "---", fallback: "windows"), "windows")
+        XCTAssertEqual(TailscreenInstance.nodeLabel(from: "!!!", fallback: "windows"), "windows")
+    }
 }
