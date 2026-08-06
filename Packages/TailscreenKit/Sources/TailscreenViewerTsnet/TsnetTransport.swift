@@ -617,16 +617,30 @@ public final class TsnetTransport {
             senderTask.cancel()
         }
 
-        // Inbound, off this actor. The socket is read by its own task and
-        // handed over through a bounded queue the loop drains synchronously —
+        // Inbound, genuinely off this actor. The socket is read by its own task
+        // and handed over through a bounded queue the loop drains synchronously,
         // so how fast the UI gets back around the loop no longer decides how
-        // many packets survive. See `DatagramInbox` for the measurements that
-        // made this necessary.
+        // many packets survive. See `DatagramInbox` for the measurements.
         //
-        // Symmetric with `senderTask` above, which already captures `listener`
-        // off the MainActor, so this adds no new isolation assumption about it.
+        // `Task.detached`, NOT `Task` — and that is the entire difference
+        // between this working and not. `Task { }` created in an actor-isolated
+        // context INHERITS that isolation, so the first version of this ran its
+        // `recv` loop on the MainActor, interleaving with the run loop on one
+        // executor instead of escaping it. It measured 15.6 datagrams/s on the
+        // Windows viewer — exactly the rate the one-datagram-per-pass loop had
+        // before any of this, and 5× WORSE than the plain batched drain it
+        // replaced, because the two now took turns on the same actor with a
+        // 5 ms idle sleep between them.
+        //
+        // The `senderTask` above is not the precedent it looks like: it is
+        // `Task { }` in this same @MainActor scope, so it never crossed an
+        // isolation boundary either and proved nothing about `PacketListener`.
+        // The real evidence is `TailscaleScreenShareServer` — `@unchecked
+        // Sendable`, not actor-isolated — which captures its `PacketListener`
+        // in a bare `Task { }` and sends from it. That closure is `@Sendable`,
+        // so the type must be `Sendable` for shipped code to compile.
         let inbox = DatagramInbox()
-        let receiverTask = Task {
+        let receiverTask = Task.detached {
             while !Task.isCancelled {
                 do {
                     let (datagram, from) = try await listener.recv(timeout: 250)
