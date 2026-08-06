@@ -324,6 +324,16 @@ private struct StartingShareCard: View {
 private struct SharingCard: View {
     @EnvironmentObject var appState: AppState
 
+    /// Mic-button tooltip. The parenthetical chord tracks the configurable
+    /// hotkey; an unmappable stored chord is hidden rather than misprinted
+    /// (nil `micShortcutDisplay`).
+    private var micTooltip: String {
+        guard let chord = appState.micShortcutDisplay else {
+            return appState.isMicOn ? L("Mute Mic") : L("Unmute Mic")
+        }
+        return appState.isMicOn ? L("Mute Mic (\(chord))") : L("Unmute Mic (\(chord))")
+    }
+
     private var resolutionText: String? {
         guard let res = appState.metadataService.currentMetadata?.screenResolution else { return nil }
         return "\(res.width) × \(res.height)"
@@ -479,15 +489,7 @@ private struct SharingCard: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .help(
-                    // The parenthetical chord tracks the configurable
-                    // hotkey; an unmappable stored chord is hidden rather
-                    // than misprinted (nil `micShortcutDisplay`).
-                    appState.isMicOn
-                        ? (appState.micShortcutDisplay.map { L("Mute Mic (\($0))") }
-                            ?? L("Mute Mic"))
-                        : (appState.micShortcutDisplay.map { L("Unmute Mic (\($0))") }
-                            ?? L("Unmute Mic")))
+                .help(micTooltip)
                 .accessibilityLabel(appState.isMicOn ? L("Mute microphone") : L("Unmute microphone"))
                 .accessibilityHint(L("Toggles voice chat with viewers"))
 
@@ -932,6 +934,13 @@ struct ApprovalToggle: View {
 private struct ViewingCard: View {
     @EnvironmentObject var appState: AppState
 
+    /// Same configurable-chord sourcing as the SharingCard mic tooltip:
+    /// the chord tracks the remappable hotkey, hidden when unspellable.
+    private var micTooltip: String {
+        guard let chord = appState.micShortcutDisplay else { return L("Toggle mic") }
+        return L("Toggle mic (\(chord))")
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 10) {
@@ -980,11 +989,7 @@ private struct ViewingCard: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .help(
-                    // Same configurable-chord sourcing as the SharingCard
-                    // mic tooltip above.
-                    appState.micShortcutDisplay.map { L("Toggle mic (\($0))") }
-                        ?? L("Toggle mic"))
+                .help(micTooltip)
                 .accessibilityLabel(appState.isMicOn ? L("Mute microphone") : L("Unmute microphone"))
                 .accessibilityHint(L("Toggles voice chat with the sharer"))
 
