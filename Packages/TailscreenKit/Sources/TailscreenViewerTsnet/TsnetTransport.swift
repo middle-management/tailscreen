@@ -151,6 +151,29 @@ public struct PeerProbe: Sendable {
 public final class TsnetTransport {
     private let logger = StderrLogger()
 
+    /// How often to report a blank viewer's inbound/decode tallies. Slow on
+    /// purpose: this fires only while admitted with nothing decoded, and a
+    /// stalled stream is diagnosed from a handful of lines, not a stream of them.
+    private static let blankViewerDiagnosticIntervalNs: UInt64 = 3_000_000_000
+
+    /// Datagrams to drain from the socket per pass of the run loop before
+    /// yielding back to `tick` and `shouldClose`.
+    ///
+    /// The loop used to take exactly ONE datagram per pass, which made the
+    /// inbound packet rate equal to the loop's own iteration rate — everything
+    /// else in the pass (the tick, the host's UI work on the same actor) set the
+    /// ceiling. Measured on the Windows viewer: 15.6 datagrams/s against a
+    /// stream sending several hundred, so ~96% of it overflowed the socket
+    /// buffer and was discarded by the OS before `recv` ever saw it. Every
+    /// frame arrived with holes, so every access unit was dropped as torn and
+    /// the viewer stayed blank with a perfectly healthy-looking wire.
+    ///
+    /// 256 clears a keyframe's packet count in a couple of passes while keeping
+    /// the tick cadence well inside the reorder buffer's gap hold — the cap
+    /// exists so a flood can't starve `tick` (which owns NACK/PLI/RR) or delay
+    /// noticing that the window closed, not to limit throughput.
+    private static let maxDatagramsPerReceivePass = 256
+
     /// The brought-up ephemeral node, retained between `prepare` (+ optional
     /// `discoverPeers`) and `run` so a picker flow can list sharers on the live
     /// node before choosing one to dial. `run` brings it up itself if a caller
@@ -626,6 +649,23 @@ public final class TsnetTransport {
         // user sees admission / pending-approval rather than a silent window.
         var loggedPending = false
         var loggedAdmitted = false
+        // Blank-viewer diagnostics. Everything between admission and a first
+        // frame fails silently (see `ViewerSession.Diagnostics`), so while a
+        // session is admitted and has decoded nothing, say what arrived and what
+        // became of it on a slow cadence. Once a frame lands this goes quiet for
+        // the rest of the session.
+        var lastDiagnosticNs = DispatchTime.now().uptimeNanoseconds
+        // Datagrams from something other than the dialed sharer, which the guard
+        // below drops. Counted because "no video" and "video from an address
+        // that doesn't string-match `dest`" look identical from the outside —
+        // and the guard is a documented known limitation.
+        var datagramsFromOthers = 0
+        var lastOtherSender = ""
+        // Receive passes that hit the per-pass drain cap. Reported below because
+        // a socket-drain ceiling is exactly what produced a blank viewer once
+        // already, and a non-zero value names the cap as a suspect instead of
+        // leaving it to be re-derived from arrival rates.
+        var saturatedPasses = 0
         while !pipeline.isStopped && !shouldClose() {
             pipeline.tick(nowNs: DispatchTime.now().uptimeNanoseconds)
             let session = pipeline.session
@@ -655,9 +695,55 @@ public final class TsnetTransport {
                 // mac viewer applies from the HELLO_ACK.
                 onAdmitted?(session.serverCaps)
             }
-            do {
-                let (datagram, from) = try await listener.recv(timeout: 250)
-                guard !datagram.isEmpty else { continue }
+            // Admitted, but nothing on screen yet — report what the wire and the
+            // decoder are actually doing. Silent once a frame has landed.
+            if loggedAdmitted {
+                let diagnostics = session.diagnostics
+                let nowNs = DispatchTime.now().uptimeNanoseconds
+                let sinceLast = nowNs &- lastDiagnosticNs
+                if diagnostics.framesDecoded == 0, sinceLast >= Self.blankViewerDiagnosticIntervalNs {
+                    lastDiagnosticNs = nowNs
+                    var line = "⚠ no video decoded yet — \(diagnostics.summary)"
+                    if datagramsFromOthers > 0 {
+                        // The `from == dest` guard fired. If this is climbing
+                        // while `video=0`, the sharer's media is arriving from an
+                        // address that does not string-match the dialed one and
+                        // is being dropped here, not upstream.
+                        line +=
+                            " droppedFromOthers=\(datagramsFromOthers) (last: \(lastOtherSender), dialed: \(dest))"
+                    }
+                    if saturatedPasses > 0 {
+                        line += " saturatedPasses=\(saturatedPasses)"
+                    }
+                    logger.log(line)
+                }
+            }
+            // Drain everything already queued on the socket, not one datagram
+            // per pass — see `maxDatagramsPerReceivePass` for what the old
+            // one-per-pass shape cost. The first recv of a pass carries the idle
+            // wait so a quiet session doesn't spin; the rest use a 1 ms timeout
+            // and only the last (empty) one actually waits.
+            //
+            // 1 ms rather than 0: a zero timeout means "return immediately" in
+            // some poll-style APIs and "block forever" in others, and the
+            // libtailscale wrapper doesn't state which. 1 ms is unambiguous and
+            // costs a millisecond per pass, once.
+            var drained = 0
+            while drained < Self.maxDatagramsPerReceivePass {
+                let received: (Data, String)
+                do {
+                    received = try await listener.recv(timeout: drained == 0 ? 250 : 1)
+                } catch {
+                    // recv timeouts surface as errors on some paths. End the
+                    // pass so `tick` and `shouldClose` run; a truly dead socket
+                    // keeps erroring and is bounded by the outer shouldClose.
+                    break
+                }
+                let (datagram, from) = received
+                // Empty is the other way this wrapper reports "nothing there":
+                // end the pass rather than spinning to the cap on empties.
+                guard !datagram.isEmpty else { break }
+                drained += 1
                 // The sharer is the only expected sender (it learned our addr
                 // from the HELLO); ignore anything else.
                 // KNOWN LIMITATION (only affects the direct-host path; the
@@ -666,14 +752,17 @@ public final class TsnetTransport {
                 // Tailscale *hostname* rather than a tailnet IP, `from` (the
                 // sharer's resolved IP) won't string-match and video is dropped.
                 // Dial by tailnet IP until this matches on the resolved peer.
-                guard from == dest else { continue }
+                guard from == dest else {
+                    datagramsFromOthers += 1
+                    lastOtherSender = from
+                    continue
+                }
                 pipeline.receive(datagram)
-            } catch {
-                // recv timeouts surface as errors on some paths; keep looping
-                // so `tick` and `shouldClose` still run. A truly dead socket
-                // will keep erroring — bounded by the outer shouldClose.
-                continue
             }
+            // A pass that filled the batch had more waiting behind it. Rare and
+            // self-correcting (the next pass starts immediately); sustained, it
+            // means the cap is now the ceiling and wants raising.
+            if drained >= Self.maxDatagramsPerReceivePass { saturatedPasses += 1 }
         }
         if pipeline.session.wasDenied {
             logger.log("▶ Sharer declined this viewer.")

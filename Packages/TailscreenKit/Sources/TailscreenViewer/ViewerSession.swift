@@ -30,6 +30,14 @@ public final class ViewerSession {
     /// minimum spacing, not a wall-clock timer.
     public static let receiverReportIntervalNs: UInt64 = 1_000_000_000
 
+    /// Minimum spacing between keyframe requests while waiting for the FIRST
+    /// keyframe (see `maybeRequestKeyframe`). One second, chosen against the
+    /// sharer's own PLI-driven keyframe cadence of roughly two: fast enough that
+    /// a lost admission keyframe costs about a second rather than the session,
+    /// slow enough that a keyframe already on its way doesn't collect a queue of
+    /// duplicate requests behind it. Stops entirely at the first keyframe.
+    public static let keyframeRequestIntervalNs: UInt64 = 1_000_000_000
+
     // MARK: Collaborators
 
     /// Capabilities this viewer advertises in its HELLO (NACK / receiver-report
@@ -119,6 +127,12 @@ public final class ViewerSession {
     /// Whether at least one RR has been sent (so the first one fires promptly
     /// once a baseline exists, rather than waiting a full interval from 0).
     private var sentFirstReport = false
+    /// Clock reading of the last keyframe request sent while waiting for a first
+    /// keyframe. See `maybeRequestKeyframe`.
+    private var lastKeyframeRequestNs: UInt64 = 0
+    /// Whether a pre-keyframe request has been sent, so the first one fires on
+    /// the next tick after admission rather than an interval later.
+    private var sentKeyframeRequest = false
 
     /// - Parameters:
     ///   - caps: capabilities to advertise (NACK / receiver-report / FEC).
@@ -166,8 +180,12 @@ public final class ViewerSession {
         // session; per `VideoDecoding`'s threading contract these fire on the
         // host's serialization context (synchronously for FFmpeg, after an
         // adapter hop for an async backend like VideoToolbox).
-        decoder.onDecodedFrame = { videoSink.present($0) }
+        decoder.onDecodedFrame = { [weak self] frame in
+            self?.framesDecoded += 1
+            videoSink.present(frame)
+        }
         decoder.onDecodeFailure = { [weak self] in
+            self?.decodeFailures += 1
             onControlToSend(ScreenShareControlMessage.encode(.pli))
             self?.onPLISent?()
         }
@@ -202,20 +220,84 @@ public final class ViewerSession {
         guard !data.isEmpty else { return }
 
         if ScreenShareControlMessage.looksLikeControl(data) {
+            controlPacketsReceived += 1
             handleControl(data)
             return
         }
 
-        guard let (header, _) = RTPHeader.decode(from: data) else { return }
+        guard let (header, _) = RTPHeader.decode(from: data) else {
+            undecodablePackets += 1
+            return
+        }
         switch header.payloadType {
         case RTPHeader.h264PayloadType, RTPHeader.hevcPayloadType:
+            videoPacketsReceived += 1
             handleVideo(data, header: header)
         case RTPHeader.voicePayloadType, RTPHeader.systemAudioPayloadType:
+            audioPacketsReceived += 1
             handleAudio(data)
         default:
-            break  // Unknown PT — drop (forward compatible).
+            unknownPayloadPackets += 1  // Unknown PT — drop (forward compatible).
         }
     }
+
+    // MARK: - Diagnostics
+
+    /// Inbound/decode tallies, for the "admitted but the window is blank" case.
+    ///
+    /// Every failure between admission and a first frame is otherwise SILENT —
+    /// unknown payload types, RTP that never reassembles, the keyframe gate
+    /// below, and a decoder that cannot be built are all a bare `return` or a
+    /// PLI. That left a real Mac→Windows blank-viewer report with no way to tell
+    /// "no packets arrived" from "packets arrived and nothing could be done with
+    /// them", which are opposite bugs. These counters are the cheapest thing
+    /// that separates them; `TsnetTransport` logs a snapshot while a session is
+    /// admitted with no frames yet.
+    public struct Diagnostics: Sendable {
+        public var videoPacketsReceived = 0
+        public var audioPacketsReceived = 0
+        public var controlPacketsReceived = 0
+        public var unknownPayloadPackets = 0
+        public var undecodablePackets = 0
+        public var accessUnitsAssembled = 0
+        public var preKeyframeDrops = 0
+        public var framesDecoded = 0
+        public var decodeFailures = 0
+        public var seenKeyframe = false
+
+        /// One line, for a log. Deliberately terse — it is printed on a cadence.
+        public var summary: String {
+            "video=\(videoPacketsReceived) audio=\(audioPacketsReceived) "
+                + "ctrl=\(controlPacketsReceived) unknownPT=\(unknownPayloadPackets) "
+                + "badRTP=\(undecodablePackets) aus=\(accessUnitsAssembled) "
+                + "preKeyframeDrops=\(preKeyframeDrops) keyframe=\(seenKeyframe) "
+                + "decoded=\(framesDecoded) decodeFailures=\(decodeFailures)"
+        }
+    }
+
+    public var diagnostics: Diagnostics {
+        var snapshot = Diagnostics()
+        snapshot.videoPacketsReceived = videoPacketsReceived
+        snapshot.audioPacketsReceived = audioPacketsReceived
+        snapshot.controlPacketsReceived = controlPacketsReceived
+        snapshot.unknownPayloadPackets = unknownPayloadPackets
+        snapshot.undecodablePackets = undecodablePackets
+        snapshot.accessUnitsAssembled = accessUnitsAssembled
+        snapshot.preKeyframeDrops = preKeyframeDropCount
+        snapshot.framesDecoded = framesDecoded
+        snapshot.decodeFailures = decodeFailures
+        snapshot.seenKeyframe = seenKeyframe
+        return snapshot
+    }
+
+    private var videoPacketsReceived = 0
+    private var audioPacketsReceived = 0
+    private var controlPacketsReceived = 0
+    private var unknownPayloadPackets = 0
+    private var undecodablePackets = 0
+    private var accessUnitsAssembled = 0
+    private var framesDecoded = 0
+    private var decodeFailures = 0
 
     // MARK: - Time-driven outputs
 
@@ -230,7 +312,39 @@ public final class ViewerSession {
         }
 
         maybeDisarmFEC()
+        maybeRequestKeyframe()
         maybeSendReceiverReport()
+    }
+
+    /// Ask for a keyframe, on a cadence, while admitted with none yet.
+    ///
+    /// The sharer forces a keyframe when a viewer joins (and again when a
+    /// pending viewer is approved), but that is a ONE-SHOT: if the IDR is lost
+    /// or torn in transit, nothing on either side asks again, and this viewer is
+    /// blank for the rest of the session on an otherwise perfect link. Neither
+    /// existing PLI path covers it — the decode-failure PLI can't fire because
+    /// `submit` gates P-frames before the decoder ever sees them, and the NACK
+    /// scheduler only PLIs on a gap it gave up on, so a clean link produces
+    /// nothing to recover from.
+    ///
+    /// A real Mac→Windows session showed exactly this: 112 access units
+    /// assembled in three seconds, every one of them a P-frame
+    /// (`aus == preKeyframeDrops`, `keyframe=false`), because the admission
+    /// keyframe was shredded while the receive loop was still overflowing its
+    /// socket and no second request ever went out.
+    ///
+    /// Gated on `assignedSSRC` — before the HELLO_ACK there is nothing admitted
+    /// to serve the request, and a PLI sent while parked at the approval prompt
+    /// would ask a sharer who hasn't let us in yet. Stops at the first keyframe,
+    /// after which the ordinary decode-failure and NACK paths own recovery.
+    private func maybeRequestKeyframe() {
+        guard !seenKeyframe, assignedSSRC != nil else { return }
+        let elapsed = nowNs &- lastKeyframeRequestNs
+        guard !sentKeyframeRequest || elapsed >= Self.keyframeRequestIntervalNs else { return }
+        lastKeyframeRequestNs = nowNs
+        sentKeyframeRequest = true
+        onControlToSend(ScreenShareControlMessage.encode(.pli))
+        onPLISent?()
     }
 
     /// Disarm the FEC machinery once parity stops flowing: the sharer gated
@@ -380,6 +494,7 @@ public final class ViewerSession {
     /// stay measurable (`preKeyframeDropCount`, surfaced via `onVideoStats`
     /// consumers that already poll).
     private func submit(_ au: VideoAccessUnit) {
+        accessUnitsAssembled += 1
         if !seenKeyframe {
             guard au.containsIDR else {
                 preKeyframeDropCount += 1

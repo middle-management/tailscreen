@@ -641,4 +641,89 @@ final class ViewerSessionTests: XCTestCase {
         XCTAssertEqual(decoder.decoded.count, 2, "keyframe + post-keyframe P-frame both decode")
         XCTAssertEqual(session.preKeyframeDropCount, 2, "the counter stops once the gate opens")
     }
+
+    // MARK: - Keyframe request while blank
+
+    /// The sharer forces a keyframe on admission, but only once. A live
+    /// Mac→Windows session lost that IDR and stayed blank for the whole session
+    /// on a clean link: 112 access units in three seconds, every one a P-frame,
+    /// nothing left to ask again. These cover the retry that closes it.
+    private func makeAdmittedSession(
+        _ decoder: StubDecoder, _ sink: StubVideoSink, _ control: ControlCollector
+    ) -> ViewerSession {
+        let session = ViewerSession(
+            caps: fullCaps, decoder: decoder, videoSink: sink,
+            audioSink: nil, onControlToSend: control.send
+        )
+        session.receiveRTP(ScreenShareControlMessage.encodeHelloAck(ssrc: 7, caps: fullCaps))
+        return session
+    }
+
+    func testBlankAdmittedViewerRequestsAKeyframeOnCadence() {
+        let control = ControlCollector()
+        let session = makeAdmittedSession(StubDecoder(), StubVideoSink(), control)
+        XCTAssertEqual(control.count(of: .pli), 0, "admission itself must not ask")
+
+        session.tick(nowNs: 1_000)
+        XCTAssertEqual(control.count(of: .pli), 1, "first tick after admission asks straight away")
+
+        session.tick(nowNs: 2_000)
+        XCTAssertEqual(control.count(of: .pli), 1, "inside the interval, no duplicate request")
+
+        session.tick(nowNs: 1_000 + ViewerSession.keyframeRequestIntervalNs)
+        XCTAssertEqual(control.count(of: .pli), 2, "one request per interval while still blank")
+    }
+
+    func testKeyframeRequestWaitsForAdmission() {
+        let control = ControlCollector()
+        let session = ViewerSession(
+            caps: fullCaps, decoder: StubDecoder(), videoSink: StubVideoSink(),
+            audioSink: nil, onControlToSend: control.send
+        )
+
+        // No HELLO_ACK: nothing has admitted us, so there is nobody to serve a
+        // keyframe and a viewer parked at the approval prompt must stay quiet.
+        session.tick(nowNs: 1_000)
+        session.tick(nowNs: 5 * ViewerSession.keyframeRequestIntervalNs)
+        XCTAssertEqual(control.count(of: .pli), 0)
+    }
+
+    func testPFramesAloneDoNotSatisfyTheKeyframeRequest() {
+        let control = ControlCollector()
+        let session = makeAdmittedSession(StubDecoder(), StubVideoSink(), control)
+        session.tick(nowNs: 1_000)
+        XCTAssertEqual(control.count(of: .pli), 1)
+
+        // Exactly the observed failure: an access unit assembles cleanly and is
+        // dropped by the pre-keyframe gate. That must not read as progress.
+        let packetizer = H264Packetizer()
+        let pFrame = AVCCParser.nalUnits(from: makeAVCC(byteCount: 200, marker: 0x41))
+        for pkt in packetizer.packetize(nals: pFrame, timestamp: 9000, ssrc: 7, startSequence: 0) {
+            session.receiveRTP(pkt)
+        }
+        XCTAssertEqual(session.preKeyframeDropCount, 1, "the P-frame was assembled and dropped")
+
+        session.tick(nowNs: 1_000 + ViewerSession.keyframeRequestIntervalNs)
+        XCTAssertEqual(control.count(of: .pli), 2, "still blank, so still asking")
+    }
+
+    func testKeyframeStopsTheRequests() {
+        let decoder = StubDecoder()
+        let control = ControlCollector()
+        let session = makeAdmittedSession(decoder, StubVideoSink(), control)
+        session.tick(nowNs: 1_000)
+        XCTAssertEqual(control.count(of: .pli), 1)
+
+        let packetizer = H264Packetizer()
+        let idr = AVCCParser.nalUnits(from: makeAVCC(byteCount: 200))
+        for pkt in packetizer.packetize(nals: idr, timestamp: 9000, ssrc: 7, startSequence: 0) {
+            session.receiveRTP(pkt)
+        }
+        XCTAssertEqual(decoder.decoded.count, 1, "the keyframe decoded")
+
+        session.tick(nowNs: 1_000 + 5 * ViewerSession.keyframeRequestIntervalNs)
+        XCTAssertEqual(
+            control.count(of: .pli), 1,
+            "once a keyframe has landed the decode-failure and NACK paths own recovery")
+    }
 }
