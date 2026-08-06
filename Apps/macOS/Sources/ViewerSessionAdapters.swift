@@ -138,40 +138,14 @@ final class VTVideoDecoderAdapter: VideoDecoding, @unchecked Sendable {
         decoder.decode(data: accessUnit, isKeyframe: isKeyframe)
     }
 
-    /// Pull SPS/PPS (H.264) or VPS/SPS/PPS (HEVC) out of an AVCC access unit —
-    /// the same in-band extraction the client's `extractParameterSets` does,
-    /// specialized to raw AVCC + codec. Internal for unit testing.
+    /// Pull SPS/PPS (H.264) or VPS/SPS/PPS (HEVC) out of an AVCC access unit.
+    /// The type-mask table itself is the portable `ParameterSetExtraction`
+    /// (pinned by the package's `ParameterSetExtractionTests`); this wrapper
+    /// only supplies the AVCC split. That works because an AVCC-split NAL and
+    /// an Annex-B-split NAL are the same bytes once the length prefix / start
+    /// code is gone. Internal for unit testing.
     static func parameterSets(fromAVCC avcc: Data, codec: VideoCodec) -> CodecParameterSets? {
-        let nals = AVCCParser.nalUnits(from: avcc)
-        switch codec {
-        case .h264:
-            var sps: Data?
-            var pps: Data?
-            for nal in nals {
-                guard let header = nal.first else { continue }
-                switch header & 0x1F {
-                case 7: sps = nal
-                case 8: pps = nal
-                default: break
-                }
-            }
-            guard let sps, let pps else { return nil }
-            return .h264(sps: sps, pps: pps)
-        case .hevc:
-            var vps: Data?
-            var sps: Data?
-            var pps: Data?
-            for nal in nals {
-                guard let header = nal.first else { continue }
-                switch (header >> 1) & 0x3F {
-                case 32: vps = nal
-                case 33: sps = nal
-                case 34: pps = nal
-                default: break
-                }
-            }
-            guard let vps, let sps, let pps else { return nil }
-            return .hevc(vps: vps, sps: sps, pps: pps)
-        }
+        ParameterSetExtraction.parameterSets(
+            fromAnnexBNALs: AVCCParser.nalUnits(from: avcc), codec: codec)
     }
 }

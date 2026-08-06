@@ -701,45 +701,6 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         }
     }
 
-    /// Pulls parameter sets out of an IDR access unit. The server prepends
-    /// them in-band on every keyframe (SPS+PPS for H.264; VPS+SPS+PPS for
-    /// HEVC) so any AU flagged `containsIDR` should carry them. NAL types
-    /// 7/8 for H.264; 32/33/34 for HEVC. Internal (not private) so the
-    /// extraction is unit testable.
-    static func extractParameterSets(from au: VideoAccessUnit) -> CodecParameterSets? {
-        let nals = AVCCParser.nalUnits(from: au.avcc)
-        switch au.codec {
-        case .h264:
-            var sps: Data?
-            var pps: Data?
-            for nal in nals {
-                guard let header = nal.first else { continue }
-                switch header & 0x1F {
-                case 7: sps = nal
-                case 8: pps = nal
-                default: break
-                }
-            }
-            guard let sps = sps, let pps = pps else { return nil }
-            return .h264(sps: sps, pps: pps)
-        case .hevc:
-            var vps: Data?
-            var sps: Data?
-            var pps: Data?
-            for nal in nals {
-                guard let header = nal.first else { continue }
-                switch (header >> 1) & 0x3F {
-                case 32: vps = nal
-                case 33: sps = nal
-                case 34: pps = nal
-                default: break
-                }
-            }
-            guard let vps = vps, let sps = sps, let pps = pps else { return nil }
-            return .hevc(vps: vps, sps: sps, pps: pps)
-        }
-    }
-
     /// Post `.tailscreenViewerPeerClosed` with the reason riding along, so
     /// AppState can explain the ending instead of collapsing sharer-stop,
     /// idle timeout, and socket-error storms into one unexplained
