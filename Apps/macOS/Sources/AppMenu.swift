@@ -99,30 +99,50 @@ enum AppMenu {
         disconnect.target = ViewerCommands.shared
         fileMenu.addItem(disconnect)
 
-        // Mirrors the ⌃⌥M global hotkey, exactly as Stop Remote Control below
-        // mirrors ⌃⌥.. A menu key equivalent only fires while Tailscreen is
-        // frontmost — the global registration covers the rest — but printing
-        // it here is what makes the shortcut *findable*: the menu is the first
-        // place a Mac user looks, and it is also what feeds Help-menu search,
-        // VoiceOver, and remapping in System Settings → Keyboard Shortcuts.
-        // Registered and undocumented is the same as not registered.
+        // Mirrors the global mic-toggle hotkey (⌃⌥M unless remapped in
+        // Settings → Keyboard Shortcuts), exactly as Stop Remote Control
+        // below mirrors the panic-revoke chord. A menu key equivalent only
+        // fires while Tailscreen is frontmost — the global registration
+        // covers the rest — but printing it here is what makes the shortcut
+        // *findable*: the menu is the first place a Mac user looks, and it
+        // is also what feeds Help-menu search, VoiceOver, and remapping in
+        // System Settings → Keyboard Shortcuts. Registered and undocumented
+        // is the same as not registered.
+        //
+        // The chord comes from the live AppState when one exists (it always
+        // does after `AppState.init` assigns `ViewerCommands.shared.appState`
+        // — chord edits call `reinstall()` through that same AppState); the
+        // persisted store covers the first install racing launch, and the
+        // two can't disagree because AppState saves before reinstalling. An
+        // unmappable stored key leaves the equivalent empty rather than
+        // printing a chord that won't fire.
+        let micChord = ViewerCommands.shared.appState?.micHotkeyChord ?? HotkeyChordStore.loadMic()
         let micItem = NSMenuItem(
             title: L("Microphone"),
             action: #selector(ViewerCommands.toggleMicrophone(_:)),
-            keyEquivalent: "m")
-        micItem.keyEquivalentModifierMask = [.control, .option]
+            keyEquivalent: "")
+        if let equivalent = micChord.menuKeyEquivalent {
+            micItem.keyEquivalent = equivalent.key
+            micItem.keyEquivalentModifierMask = equivalent.mask
+        }
         micItem.target = ViewerCommands.shared
         fileMenu.addItem(micItem)
 
         fileMenu.addItem(.separator())
 
-        // Sharer-side panic revoke, mirroring the ⌃⌥. global hotkey. Disabled
-        // (via ViewerCommands validation) unless a viewer holds control.
+        // Sharer-side panic revoke, mirroring the global hotkey (⌃⌥. unless
+        // remapped). Disabled (via ViewerCommands validation) unless a
+        // viewer holds control. Same chord sourcing as the mic item above.
+        let revokeChord =
+            ViewerCommands.shared.appState?.revokeHotkeyChord ?? HotkeyChordStore.loadRevoke()
         let stopControl = NSMenuItem(
             title: L("Stop Remote Control"),
             action: #selector(ViewerCommands.stopRemoteControl(_:)),
-            keyEquivalent: ".")
-        stopControl.keyEquivalentModifierMask = [.control, .option]
+            keyEquivalent: "")
+        if let equivalent = revokeChord.menuKeyEquivalent {
+            stopControl.keyEquivalent = equivalent.key
+            stopControl.keyEquivalentModifierMask = equivalent.mask
+        }
         stopControl.target = ViewerCommands.shared
         fileMenu.addItem(stopControl)
 

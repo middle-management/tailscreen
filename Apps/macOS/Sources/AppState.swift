@@ -1,5 +1,4 @@
 import AppKit
-import Carbon.HIToolbox
 import Combine
 import CoreAudio
 import CoreGraphics
@@ -7,6 +6,7 @@ import Foundation
 import Observation
 import QuartzCore
 import ScreenCaptureKit
+import ServiceManagement
 import SwiftUI
 import TailscaleKit
 
@@ -257,6 +257,119 @@ class AppState: ObservableObject {
     /// Debounce task for `qualitySettings.didSet` (see above). MainActor,
     /// like everything else on AppState.
     private var qualitySettingsSyncTask: Task<Void, Never>?
+
+    /// User preference: opt the capture helper into 10-bit HEVC capture.
+    /// A spawn-time env knob (`TAILSCREEN_ENABLE_10BIT`) exactly like the
+    /// quality settings: pushed into `HelperScreenCapture.colorEnvironment`
+    /// so every helper spawn — share start, crash restart, Change Source —
+    /// picks it up, which means a mid-share flip applies on the next spawn
+    /// rather than instantly. The Settings caption says so; no new restart
+    /// machinery for a toggle this rare.
+    @Published var enable10BitCapture: Bool = ColorCaptureDefaults.load10Bit() {
+        didSet {
+            guard enable10BitCapture != oldValue else { return }
+            ColorCaptureDefaults.save10Bit(enable10BitCapture)
+            pushColorCaptureEnvironment()
+        }
+    }
+
+    /// Same knob for HDR (`TAILSCREEN_ENABLE_HDR`, BT.2020 PQ — implies
+    /// 10-bit in the helper). The helper additionally gates it on the
+    /// captured display actually having EDR headroom, so the toggle is an
+    /// opt-in, not a promise.
+    @Published var enableHDRCapture: Bool = ColorCaptureDefaults.loadHDR() {
+        didSet {
+            guard enableHDRCapture != oldValue else { return }
+            ColorCaptureDefaults.saveHDR(enableHDRCapture)
+            pushColorCaptureEnvironment()
+        }
+    }
+
+    /// Project the two color toggles into the helper-spawn environment
+    /// overlay. Explicit "0"s (not removal) so the Settings choice also
+    /// overrides a launch-time `TAILSCREEN_ENABLE_10BIT=1` once the user
+    /// has expressed one — the same value `ColorCaptureDefaults.load*`
+    /// seeded from in the first place.
+    private func pushColorCaptureEnvironment() {
+        HelperScreenCapture.colorEnvironment.withLock {
+            $0 = [
+                ColorCaptureDefaults.tenBitEnvKey: enable10BitCapture ? "1" : "0",
+                ColorCaptureDefaults.hdrEnvKey: enableHDRCapture ? "1" : "0"
+            ]
+        }
+    }
+
+    // MARK: - Global hotkey chords
+
+    /// User-configurable chord for the global mic toggle (⌃⌥M unless
+    /// remapped). Persisted via `HotkeyChordStore`; the setter re-creates
+    /// the live Carbon registration and reinstalls the menu bar so the
+    /// File → Microphone key equivalent tracks the change.
+    @Published var micHotkeyChord: HotkeyChord = HotkeyChordStore.loadMic() {
+        didSet {
+            guard micHotkeyChord != oldValue else { return }
+            HotkeyChordStore.saveMic(micHotkeyChord)
+            registerMicHotkey()
+            AppMenu.reinstall()
+        }
+    }
+
+    /// User-configurable chord for the panic revoke (⌃⌥. unless remapped).
+    /// The real registration is grant-scoped (`syncRevokeControlHotkey`),
+    /// so outside a grant the setter only *probes* the chord — a transient
+    /// register-and-release — to keep `revokeHotkeyRegistered` honest.
+    @Published var revokeHotkeyChord: HotkeyChord = HotkeyChordStore.loadRevoke() {
+        didSet {
+            guard revokeHotkeyChord != oldValue else { return }
+            HotkeyChordStore.saveRevoke(revokeHotkeyChord)
+            if revokeControlHotkey != nil {
+                // A grant is live: swap the registration in place. Tear the
+                // old instance down first — its deinit unregisters — so the
+                // (signature, id: 2) pair is free before the replacement
+                // claims it.
+                revokeControlHotkey = nil
+                syncRevokeControlHotkey(grantActive: true)
+            } else {
+                revokeHotkeyRegistered = GlobalHotkey.probeAvailability(
+                    keyCode: revokeHotkeyChord.keyCode,
+                    modifiers: revokeHotkeyChord.modifiers)
+            }
+            AppMenu.reinstall()
+        }
+    }
+
+    /// Whether the last (re)registration of each global hotkey actually
+    /// took. `RegisterEventHotKey` refuses a chord another app already owns
+    /// and the refusal is only a return code — the user would otherwise
+    /// press the key forever while nothing happens. Settings → Keyboard
+    /// Shortcuts shows an inline warning while one of these is false. The
+    /// revoke flag is updated both by the availability probe (chord change,
+    /// launch) and by the real grant-scoped registration.
+    @Published private(set) var micHotkeyRegistered = true
+    @Published private(set) var revokeHotkeyRegistered = true
+
+    /// "⌃⌥M"-style display strings for the two chords, nil when the stored
+    /// chord names a key outside the display vocabulary — consumers (menu
+    /// bar, tooltips, cheat sheet) hide the chord rather than misprint it.
+    var micShortcutDisplay: String? { micHotkeyChord.displayString }
+    var revokeShortcutDisplay: String? { revokeHotkeyChord.displayString }
+
+    /// (Re)register the global mic-toggle hotkey from `micHotkeyChord`.
+    /// Tears any prior registration down first — `GlobalHotkey.deinit`
+    /// unregisters, and the (signature, id: 1) pair must be free before a
+    /// replacement instance can claim it.
+    private func registerMicHotkey() {
+        micHotkey = nil
+        micHotkey = GlobalHotkey(
+            keyCode: micHotkeyChord.keyCode,
+            modifiers: micHotkeyChord.modifiers
+        ) { [weak self] in
+            Task { @MainActor [weak self] in
+                await self?.toggleMic()
+            }
+        }
+        micHotkeyRegistered = micHotkey?.isRegistered ?? false
+    }
 
     /// Debounce task + force latch for the Cloaked Apps live re-push (see
     /// `scheduleCloakRepush`). MainActor, like everything else on AppState.
@@ -762,24 +875,27 @@ class AppState: ObservableObject {
             }
         )
 
-        // ⌃⌥M from anywhere — toggle mic without finding the menubar
-        // popover or clicking through. Useful during a screen share
-        // when the popover isn't visible.
-        micHotkey = GlobalHotkey(
-            keyCode: UInt32(kVK_ANSI_M),
-            modifiers: .controlOptionMask
-        ) { [weak self] in
-            Task { @MainActor [weak self] in
-                await self?.toggleMic()
-            }
-        }
+        // ⌃⌥M (by default — Settings → Keyboard Shortcuts can remap it)
+        // from anywhere — toggle mic without finding the menubar popover
+        // or clicking through. Useful during a screen share when the
+        // popover isn't visible.
+        registerMicHotkey()
 
         // NOTE: the ⌃⌥. panic-revoke hotkey is deliberately NOT registered
         // here. It's grant-scoped — created when a remote-control grant
         // appears and destroyed when it clears (`syncRevokeControlHotkey`,
         // driven by `onControlGrantChanged`) — so an idle menubar session or
         // a pure viewer doesn't swallow ⌃⌥. system-wide for a handler that
-        // would just no-op.
+        // would just no-op. Probe its chord once anyway so the Settings
+        // pane can warn about a combo another app owns without waiting for
+        // a grant to find out.
+        revokeHotkeyRegistered = GlobalHotkey.probeAvailability(
+            keyCode: revokeHotkeyChord.keyCode,
+            modifiers: revokeHotkeyChord.modifiers)
+
+        // Seed the helper-spawn environment overlay with the persisted
+        // color-capture opt-ins (the didSet only fires on later changes).
+        pushColorCaptureEnvironment()
 
         ViewerCommands.shared.appState = self
 
@@ -2983,18 +3099,78 @@ class AppState: ObservableObject {
 
     /// Open (or re-focus) the preferences window. A real titled `NSWindow`
     /// hosting `SettingsView`, kept around for the process lifetime.
+    /// Resizable above a floor rather than the old fixed 440×600 — the
+    /// grouped Form scrolls either way, but the Accounts and Keyboard
+    /// Shortcuts rows earn their width, and a fixed frame fights large
+    /// system text sizes. `SettingsView` declares the same minimum via
+    /// `.frame(minWidth:minHeight:)`; `contentMinSize` is the AppKit-side
+    /// belt to those SwiftUI braces.
     func presentSettings() {
         if settingsWindow == nil {
             let hosting = NSHostingController(rootView: SettingsView(appState: self))
             let win = NSWindow(contentViewController: hosting)
             win.title = L("Tailscreen Settings")
-            win.styleMask = [.titled, .closable, .miniaturizable]
+            win.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+            win.setContentSize(NSSize(width: 480, height: 640))
+            win.contentMinSize = NSSize(width: 440, height: 480)
             win.isReleasedWhenClosed = false
             win.center()
             settingsWindow = win
         }
+        // The OS owns the login-item truth (the user can flip it in System
+        // Settings behind our back) — re-read it on every open/refocus so
+        // the General toggle never lies.
+        refreshLaunchAtLoginStatus()
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    // MARK: - Launch at login
+
+    /// Whether this process can register a login item at all: `SMAppService`
+    /// registers the *bundle*, so a dev build running as a bare executable
+    /// (`make run`, `swift run`) has nothing registrable — `register()`
+    /// would just throw on every flip. The Settings toggle disables itself
+    /// with an explanatory caption instead.
+    let launchAtLoginAvailable = Bundle.main.bundleURL.pathExtension == "app"
+
+    /// Mirror of `SMAppService.mainApp.status == .enabled`. Refreshed on
+    /// Settings open and after every toggle — the OS owns the truth, so
+    /// this is `private(set)` observed state, never a stored preference.
+    @Published private(set) var launchAtLoginEnabled = false
+
+    /// True when registration parked in `.requiresApproval`: macOS holds
+    /// the login item until the user approves it under System Settings →
+    /// General → Login Items. The pane shows a caption pointing there.
+    @Published private(set) var launchAtLoginRequiresApproval = false
+
+    /// Re-read the login-item status from the OS. Cheap; called from
+    /// `presentSettings` and after `setLaunchAtLogin`.
+    func refreshLaunchAtLoginStatus() {
+        guard launchAtLoginAvailable else { return }
+        let status = SMAppService.mainApp.status
+        launchAtLoginEnabled = status == .enabled
+        launchAtLoginRequiresApproval = status == .requiresApproval
+    }
+
+    /// Register / unregister the app as a login item. Errors surface via
+    /// the standard alert path, and the published state is re-read from
+    /// `SMAppService` afterwards either way — reflecting what the OS
+    /// actually did, not what we asked for.
+    func setLaunchAtLogin(_ enabled: Bool) {
+        guard launchAtLoginAvailable else { return }
+        do {
+            if enabled {
+                try SMAppService.mainApp.register()
+            } else {
+                try SMAppService.mainApp.unregister()
+            }
+        } catch {
+            showAlertMessage(
+                title: L("Couldn't Update Login Item"),
+                message: L("macOS refused to change Launch at login: \(error.localizedDescription)"))
+        }
+        refreshLaunchAtLoginStatus()
     }
 
     /// Open (or re-focus) the docked main window. Routes through the
@@ -3237,8 +3413,9 @@ class AppState: ObservableObject {
         server?.revokeControl(reason: reason)
     }
 
-    /// Register / unregister the ⌃⌥. panic-revoke hotkey to track the live
-    /// grant. Registration is cheap (Carbon), and scoping it to the grant
+    /// Register / unregister the panic-revoke hotkey (⌃⌥. by default,
+    /// remappable via `revokeHotkeyChord`) to track the live grant.
+    /// Registration is cheap (Carbon), and scoping it to the grant
     /// means Tailscreen only claims the system-wide chord while a viewer can
     /// actually control this Mac. Keeps `id: 2` — the mic hotkey (`id: 1`)
     /// may be live at the same time, and `GlobalHotkey.handlerShouldFire`'s
@@ -3247,12 +3424,15 @@ class AppState: ObservableObject {
         if grantActive {
             guard revokeControlHotkey == nil else { return }
             revokeControlHotkey = GlobalHotkey(
-                keyCode: UInt32(kVK_ANSI_Period),
-                modifiers: .controlOptionMask,
+                keyCode: revokeHotkeyChord.keyCode,
+                modifiers: revokeHotkeyChord.modifiers,
                 id: 2
             ) { [weak self] in
                 self?.revokeRemoteControl(reason: "panic hotkey")
             }
+            // The real registration is the authoritative availability
+            // answer — it supersedes whatever the last probe reported.
+            revokeHotkeyRegistered = revokeControlHotkey?.isRegistered ?? false
         } else {
             revokeControlHotkey = nil  // deinit unregisters
         }
@@ -3537,6 +3717,52 @@ class AppState: ObservableObject {
             label.trailingAnchor.constraint(lessThanOrEqualTo: effect.trailingAnchor, constant: -16)
         ])
         return effect
+    }
+}
+
+/// Persistence for the Settings → Color capture opt-ins. Mirrors
+/// `ViewerApprovalDefaults` — plain `UserDefaults` so `AppState.init`'s
+/// stored-property initialisers can read the saved value without
+/// `@AppStorage`. Tri-state on purpose: a never-touched install (no stored
+/// object) seeds from the pre-Settings env-var escape hatches
+/// (`TAILSCREEN_ENABLE_10BIT=1` / `TAILSCREEN_ENABLE_HDR=1`) so an existing
+/// scripted setup keeps its behavior; once the user flips a toggle the
+/// stored choice wins, in either direction.
+enum ColorCaptureDefaults {
+    static let tenBitKey = "enable10BitCapture"
+    static let hdrKey = "enableHDRCapture"
+    /// Env names are owned by `CaptureHelperMain.captureColorInfo` (the
+    /// helper-side reader) — keep the literals in sync with it.
+    static let tenBitEnvKey = "TAILSCREEN_ENABLE_10BIT"
+    static let hdrEnvKey = "TAILSCREEN_ENABLE_HDR"
+
+    static func load10Bit(
+        defaults: UserDefaults = .standard,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        load(key: tenBitKey, envKey: tenBitEnvKey, defaults: defaults, environment: environment)
+    }
+
+    static func loadHDR(
+        defaults: UserDefaults = .standard,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        load(key: hdrKey, envKey: hdrEnvKey, defaults: defaults, environment: environment)
+    }
+
+    static func save10Bit(_ value: Bool, defaults: UserDefaults = .standard) {
+        defaults.set(value, forKey: tenBitKey)
+    }
+
+    static func saveHDR(_ value: Bool, defaults: UserDefaults = .standard) {
+        defaults.set(value, forKey: hdrKey)
+    }
+
+    private static func load(
+        key: String, envKey: String, defaults: UserDefaults, environment: [String: String]
+    ) -> Bool {
+        if let stored = defaults.object(forKey: key) as? Bool { return stored }
+        return environment[envKey] == "1"
     }
 }
 
