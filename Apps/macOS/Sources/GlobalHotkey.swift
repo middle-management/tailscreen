@@ -283,7 +283,9 @@ struct HotkeyChord: Codable, Equatable, Sendable {
         case .escape:
             key = .escape
         }
-        var mods: EventModifiers = []
+        // Qualified: Carbon's HIToolbox typedefs its own `EventModifiers`
+        // (UInt16), and this file imports both worlds.
+        var mods: SwiftUI.EventModifiers = []
         if modifiers & UInt32(controlKey) != 0 { mods.insert(.control) }
         if modifiers & UInt32(optionKey) != 0 { mods.insert(.option) }
         if modifiers & UInt32(shiftKey) != 0 { mods.insert(.shift) }
