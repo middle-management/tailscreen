@@ -2,9 +2,10 @@ import Foundation
 import SwiftCrossUI
 import TailscreenL10n
 
-// Targeted import: all of TailscreenProtocol would collide with SwiftCrossUI's
+// Targeted imports: all of TailscreenProtocol would collide with SwiftCrossUI's
 // own `Published` / `ObservableObject` (both ship reactive shims on Linux, where
-// Combine is absent). Only the tool enum is needed here.
+// Combine is absent). Only the tool enum and the color type are needed here.
+import struct TailscreenProtocol.Annotation
 import enum TailscreenProtocol.AnnotationTool
 
 /// Observable UI state for the viewer chrome (placards, and later the stats
@@ -98,10 +99,15 @@ public final class ViewerUIState: ObservableObject, @unchecked Sendable {
 
     /// Annotation toolbar state (shown only when the sharer advertised
     /// `ScreenShareCaps.annotations`): the armed drawing tool, or nil when
-    /// drawing is off (so drags zoom/pan or drive remote control). The stroke
-    /// COLOR isn't here — like the mac, it's assigned from the local identity
-    /// (`AnnotationStore.color`), not chosen.
+    /// drawing is off (so drags zoom/pan or drive remote control).
     @Published public var activeTool: AnnotationTool?
+
+    /// The color this viewer draws in — a published MIRROR of
+    /// `AnnotationStore.color`, which stays the source of truth the capture
+    /// path reads. Published so the toolbar swatch re-renders when a color is
+    /// picked from its menu; nil until a pick, and the host falls back to the
+    /// store's identity-derived default.
+    @Published public var inkColor: Annotation.RGBA?
 
     public init() {}
 

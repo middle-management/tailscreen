@@ -17,6 +17,7 @@ import class TailscreenProtocol.AccountProfileStore
 import enum TailscreenProtocol.AnnotationTool
 import struct TailscreenProtocol.CaptureTimings
 import struct TailscreenProtocol.ControlRequestInfo
+import enum TailscreenProtocol.GlobalHotkeyUnavailability
 import struct TailscreenProtocol.NoticeCandidate
 import struct TailscreenProtocol.PeerListFilter
 import enum TailscreenProtocol.PeerListFilterStore
@@ -266,9 +267,10 @@ struct TailscreenWindowsApp: App {
             if interaction.annotationsAvailable {
                 AnnotationToolbar(
                     activeTool: interaction.activeTool,
-                    inkColor: interaction.annotations.color,
+                    inkColor: interaction.inkColor,
                     statsShown: state.showStats,
                     onSelectTool: { interaction.selectTool($0) },
+                    onSelectColor: { interaction.selectColor($0) },
                     onUndo: { interaction.undoAnnotation() },
                     onClear: { interaction.clearAnnotations() },
                     onToggleStats: { model.showStats.toggle() })
@@ -309,12 +311,15 @@ struct TailscreenWindowsApp: App {
                     if state.micAvailable {
                         MicrophoneButton(
                             isOn: state.micOn, failureNote: state.micFailure,
+                            chordHint: state.muteChordHint,
                             onToggle: { model.toggleMic() })
                     }
                     if interaction.remoteControlAvailable {
                         RemoteControlBar(
                             buttonLabel: interaction.controlButtonLabel,
                             declinedReason: interaction.controlDeclinedReason,
+                            isControlling: interaction.isControlling,
+                            controllingHost: host,
                             onToggle: { interaction.toggleControl() })
                     }
                 }
@@ -344,6 +349,12 @@ struct TailscreenWindowsApp: App {
             screens: state.hubScreens,
             loginURL: state.loginURL,
             emptyMessage: L("No Tailscreen screens found on your tailnet."),
+            // The empty list's way out: every machine that could appear there
+            // is one without Tailscreen yet. Same link (and catalog key) as
+            // the macOS hub.
+            emptyAction: HubAction(
+                label: L("Get Tailscreen for your other devices"),
+                perform: { model.openInstallPage() }),
             hiddenByFilter: state.hiddenByFilter,
             askingIDs: state.asking,
             askNotes: state.askOutcome,
@@ -593,6 +604,13 @@ final class AppUIState: ObservableObject {
             viewerMicAvailable: { [weak self] in self?.micAvailable ?? false },
             toggleSharerMic: { [weak self] in self?.toggleShareMic() },
             toggleViewerMic: { [weak self] in self?.toggleMic() })
+        // Mirror the chord's failure into a published field the share card
+        // reads: the controller's own report goes to the console, which
+        // reaches nobody mid-share, and an unregistered mute shortcut looks
+        // exactly like one that works — until it is trusted.
+        muteHotkey?.onUnavailabilityChange = { [weak self] reason in
+            self?.hotkeyUnavailability = reason
+        }
         muteHotkey?.start()
         syncAccounts()
         if Self.isUIPreview {
@@ -648,6 +666,13 @@ final class AppUIState: ObservableObject {
     /// `init` and kept for the process — it decides for itself when to take
     /// and release the chord.
     private var muteHotkey: MuteHotkeyController?
+    /// Why the system-wide mute chord could not be taken, mirrored from
+    /// `MuteHotkeyController` so the share card can say so. Nil while the
+    /// chord is held, or before a microphone made holding it worthwhile.
+    @Published private(set) var hotkeyUnavailability: GlobalHotkeyUnavailability?
+    /// The mute chord to advertise on the viewer's mic control, or nil while
+    /// the hotkey is not actually registered.
+    var muteChordHint: String? { muteHotkey?.chordHint }
     /// Posts the sharer's notifications and routes their buttons back.
     ///
     /// The other half of the same problem the hotkey above solves: during a
@@ -1055,6 +1080,14 @@ final class AppUIState: ObservableObject {
             notes.append(L("No desktop notifications on this system — approvals appear here only"))
         } else if !notifications.isVisible {
             notes.append(L("Notifications are off for Tailscreen — approvals appear here only"))
+        }
+        // The mute chord's failure, said beside the microphone it would have
+        // muted: the press that discovers it is the one made believing this
+        // side had gone quiet.
+        if sharing.micAvailable, let hotkey = muteHotkey,
+            let reason = hotkeyUnavailability {
+            notes.append(
+                MuteHotkeyNote.text(chord: hotkey.chordDisplay, unavailability: reason))
         }
         // Where the frame time goes. A viewer's stats overlay can prove the
         // network is fine and still leave "why is it 2 fps" open — capture,
@@ -1733,15 +1766,26 @@ final class AppUIState: ObservableObject {
         Task { await transport.teardown() }
     }
 
-    /// Open the login URL in the default browser.
+    /// Open the login URL in the default browser. A failure here is not
+    /// fatal: the URL stays on screen to be copied by hand.
+    func openLoginURL() {
+        guard let url = loginURL else { return }
+        openBrowser(url)
+    }
+
+    /// Open the install page — the empty screen list's CTA, pointing at the
+    /// same URL the macOS hub links.
+    func openInstallPage() {
+        openBrowser("https://tailscreen.dev/install/")
+    }
+
+    /// Open a URL in the default browser.
     ///
     /// Via `cmd /c start` rather than `ShellExecuteW`, to keep WinSDK out of
     /// this module: WinSDK carries `#define uuid_t UUID`, which makes every
     /// `Foundation.UUID` ambiguous — the same trap documented in
-    /// `TailscreenProtocol`'s PortabilityShims. A failure here is not fatal:
-    /// the URL stays on screen to be copied by hand.
-    func openLoginURL() {
-        guard let url = loginURL else { return }
+    /// `TailscreenProtocol`'s PortabilityShims.
+    private func openBrowser(_ url: String) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "C:\\Windows\\System32\\cmd.exe")
         // The empty argument is `start`'s title parameter. Without it, a URL in

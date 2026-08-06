@@ -90,6 +90,17 @@ func fail(_ message: String) -> Never {
     exit(2)
 }
 
+/// Open a URL in the local browser (best-effort) — the same `xdg-open` hop
+/// `gOpenLogin` takes, shared so the empty list's install CTA does not grow a
+/// second spelling of it.
+@MainActor
+func openInBrowser(_ urlString: String) {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+    process.arguments = ["xdg-open", urlString]
+    try? process.run()
+}
+
 /// Parse the live-run arguments. The host is OPTIONAL — its absence selects
 /// picker mode. The returned `ViewerConfig` carries an empty hostname then
 /// (`prepare` ignores hostname; the chosen sharer's IP fills it in before `run`).
@@ -338,6 +349,13 @@ if gSelfTest {
             viewerMicAvailable: { gUIState.micAvailable },
             toggleSharerMic: { gSharer.toggleMic() },
             toggleViewerMic: { gVoice.toggle() })
+        // Mirror the chord's failure into the model the share card observes:
+        // the controller's own report goes to stderr, which reaches nobody
+        // mid-share, and an unregistered mute shortcut looks exactly like one
+        // that works — until it is trusted.
+        gMuteHotkey?.onUnavailabilityChange = { reason in
+            gSharer.setMuteHotkeyUnavailability(reason)
+        }
         gMuteHotkey?.start()
     }
 
@@ -773,6 +791,15 @@ struct ViewerApp: App {
                     notes.append(
                         L("No desktop notifications on this system — approvals appear here only"))
                 }
+                // The mute chord's failure, said beside the microphone it
+                // would have muted: the press that discovers it is the one
+                // made believing this side had gone quiet.
+                if sharer.micAvailable, let hotkey = gMuteHotkey,
+                    let reason = sharer.muteHotkeyUnavailability {
+                    notes.append(
+                        MuteHotkeyNote.text(
+                            chord: hotkey.chordDisplay, unavailability: reason))
+                }
                 return notes
             }(),
             // The roster: who is watching, and what can be done about them.
@@ -987,7 +1014,7 @@ struct ViewerApp: App {
                 if ui.annotationsAvailable {
                     AnnotationToolbar(
                         activeTool: ui.activeTool,
-                        inkColor: gAnnotations.color,
+                        inkColor: ui.inkColor ?? gAnnotations.color,
                         statsShown: ui.showStats,
                         onSelectTool: { tool in
                             // Radio behaviour like the mac tool group, plus
@@ -996,6 +1023,12 @@ struct ViewerApp: App {
                             let disarm = gUIState.activeTool == tool
                             gUIState.activeTool = disarm ? nil : tool
                             gAnnotations.mode = disarm ? .off : .drawing(tool)
+                        },
+                        onSelectColor: { color in
+                            // The store is what strokes read; the published
+                            // mirror is what re-renders the swatch.
+                            gAnnotations.color = color
+                            gUIState.inkColor = color
                         },
                         onUndo: { gAnnotations.undo() },
                         onClear: { gAnnotations.clearAll() },
@@ -1031,12 +1064,16 @@ struct ViewerApp: App {
                                 if ui.micAvailable {
                                     MicrophoneButton(
                                         isOn: ui.micOn, failureNote: ui.micFailure,
+                                        chordHint: gMuteHotkey?.chordHint,
                                         onToggle: { gVoice.toggle() })
                                 }
                                 if ui.remoteControlAvailable {
                                     RemoteControlBar(
                                         buttonLabel: controlButtonLabel,
                                         declinedReason: revokedReason,
+                                        isControlling: ui.controlState == .active,
+                                        controllingHost: sessionHost.isEmpty
+                                            ? nil : sessionHost,
                                         onToggle: { gControls.toggleControl() })
                                 }
                             }
@@ -1079,6 +1116,12 @@ struct ViewerApp: App {
                         screens: hubScreens,
                         loginURL: picker.loginURL,
                         autoExpandFirst: gUIPreview,
+                        // The empty list's way out: every machine that could
+                        // appear there is one without Tailscreen yet. Same
+                        // link (and catalog key) as the macOS hub.
+                        emptyAction: HubAction(
+                            label: L("Get Tailscreen for your other devices"),
+                            perform: { openInBrowser("https://tailscreen.dev/install/") }),
                         hiddenByFilter: picker.hiddenByFilter,
                         askingIDs: picker.asking,
                         askNotes: picker.askOutcome,
