@@ -395,7 +395,8 @@
 "Viewer Wants Control" = "Viewer Wants Control";
 "%@ is asking to control your Mac." = "%@ is asking to control your Mac.";
 "Accessibility Permission Needed" = "Accessibility Permission Needed";
-"To let a viewer control your Mac, allow Tailscreen under System Settings → Privacy & Security → Accessibility, then grant control again." = "To let a viewer control your Mac, allow Tailscreen under System Settings → Privacy & Security → Accessibility, then grant control again.";
+"To let a viewer control your Mac, allow Tailscreen under System Settings → Privacy & Security → Accessibility. Tailscreen will grant control automatically once the permission is enabled." = "To let a viewer control your Mac, allow Tailscreen under System Settings → Privacy & Security → Accessibility. Tailscreen will grant control automatically once the permission is enabled.";
+"Waiting for Accessibility permission…" = "Waiting for Accessibility permission…";
 "Open Settings" = "Open Settings";
 "Cancel" = "Cancel";
 "Remote Control Ended" = "Remote Control Ended";

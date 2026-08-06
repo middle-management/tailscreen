@@ -397,7 +397,8 @@
 "Viewer Wants Control" = "Tittare vill styra";
 "%@ is asking to control your Mac." = "%@ vill styra din Mac.";
 "Accessibility Permission Needed" = "Tillgänglighetsbehörighet krävs";
-"To let a viewer control your Mac, allow Tailscreen under System Settings → Privacy & Security → Accessibility, then grant control again." = "För att låta en tittare styra din Mac, tillåt Tailscreen under Systeminställningar → Integritet och säkerhet → Tillgänglighet och bevilja sedan styrning igen.";
+"To let a viewer control your Mac, allow Tailscreen under System Settings → Privacy & Security → Accessibility. Tailscreen will grant control automatically once the permission is enabled." = "För att låta en tittare styra din Mac, tillåt Tailscreen under Systeminställningar → Integritet och säkerhet → Tillgänglighet. Tailscreen beviljar styrning automatiskt så snart behörigheten är aktiverad.";
+"Waiting for Accessibility permission…" = "Väntar på tillgänglighetsbehörighet…";
 "Open Settings" = "Öppna Inställningar";
 "Cancel" = "Avbryt";
 "Remote Control Ended" = "Fjärrstyrning avslutad";

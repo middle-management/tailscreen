@@ -142,11 +142,13 @@ stalled alert, reconnecting is the reliable reset.
 Granting control the first time pops **"Accessibility Permission
 Needed"**. This is expected: injecting mouse and keyboard events requires
 the Accessibility permission, which is separate from Screen Recording.
-Open **System Settings → Privacy & Security → Accessibility**, toggle
-Tailscreen on, then grant control again — the grant is refused (not
-queued) until the permission exists, so you do need to click Grant a
-second time. If you launched Tailscreen from Terminal, the permission may
-need to go to Terminal instead, same as with Screen Recording.
+Open **System Settings → Privacy & Security → Accessibility** and toggle
+Tailscreen on — the grant you clicked is queued (the request's row says
+"Waiting for Accessibility permission…") and completes on its own the
+moment the permission lands, as long as that viewer is still asking. No
+second click needed. If you launched Tailscreen from Terminal, the
+permission may need to go to Terminal instead, same as with Screen
+Recording.
 
 ## Capture restarts by itself mid-share
 
