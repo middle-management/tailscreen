@@ -66,6 +66,25 @@ let package = Package(
         .package(path: "../../Packages/TailscreenL10n"),
     ],
     targets: [
+        // D3D11 YUV->RGB for the video surface — the sibling of the GTK app's
+        // `CGtkVideo`, and the reason `WinUIVideoView` no longer converts colour
+        // on the CPU. C++ because D3D11 is COM; the header is `extern "C"` so
+        // Swift imports it as a plain C module.
+        //
+        // The Windows SDK libraries are named here rather than assumed: a
+        // `systemLibrary` target would need a module map for headers that are
+        // already on the SDK include path, and `d3dcompiler` is a link-time
+        // dependency the runtime DLL satisfies (it ships with the staged
+        // self-contained runtime). `microsoft.ui.xaml.media.dxinterop.h` comes
+        // from the swift-winui dependency's bundled nuget headers.
+        .target(
+            name: "CWinVideo",
+            linkerSettings: [
+                .linkedLibrary("d3d11", .when(platforms: [.windows])),
+                .linkedLibrary("dxgi", .when(platforms: [.windows])),
+                .linkedLibrary("d3dcompiler", .when(platforms: [.windows])),
+            ]
+        ),
         .executableTarget(
             name: "tailscreen",
             dependencies: [
@@ -92,6 +111,7 @@ let package = Package(
                 .product(
                     name: "WinUI", package: "swift-winui",
                     condition: .when(platforms: [.windows])),
+                .target(name: "CWinVideo", condition: .when(platforms: [.windows])),
                 .product(name: "TailscreenProtocol", package: "TailscreenKit"),
                 // libavcodec behind the portable VideoDecoding seam — the same
                 // decoder the Linux viewer uses, which is why it is a shared
