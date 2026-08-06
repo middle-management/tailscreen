@@ -183,16 +183,40 @@ struct WinUIVideoView: WinUIElementRepresentable {
             }
 
             if source == nil || sourceWidth != frame.width || sourceHeight != frame.height {
-                let fresh = SurfaceImageSource(Int32(frame.width), Int32(frame.height))
+                // `isOpaque: true` is the third argument on purpose. The shader
+                // writes alpha 1.0 over the whole surface, so declaring it lets
+                // XAML skip blending the video against what is behind it — and
+                // it makes the shader's "the source is created opaque" comment
+                // true rather than aspirational, which is what the two-argument
+                // initializer left it as.
+                let fresh = SurfaceImageSource(
+                    Int32(frame.width), Int32(frame.height), true)
                 // The QueryInterface for `ISurfaceImageSourceNative` happens in
                 // C++, so no IID is spelled in Swift; all this side owes is a
-                // valid `IUnknown*` for the WinRT object. `pUnk.borrow` is that
-                // pointer — the same handoff `NotificationActivation` makes to
-                // `CWinNotify`. Borrowed for the duration of the call; the C++
-                // side takes its own reference on the interface it queries.
-                let bound = winvideo_bind_source(
-                    UnsafeMutableRawPointer(fresh.pUnk.borrow),
-                    Int32(frame.width), Int32(frame.height))
+                // valid `IUnknown*` for the WinRT object.
+                //
+                // Getting to it is two hops, and the shape is not guessable —
+                // a swift-winui class projection is a `WinRTClass`, which
+                // WRAPS its COM pointer in `_inner` rather than inheriting
+                // `IUnknown`, so `pUnk` does not exist on the class itself.
+                // `thisPtr` is the public bridge (`IWinRTObject`), and it is
+                // an `IInspectable`, which does carry `pUnk` — the same
+                // `pUnk.borrow` handoff `NotificationActivation` makes to
+                // `CWinNotify`. Do NOT reach for the projection's own
+                // `queryInterface`: on `WinRTClass` it is
+                // `@_spi(WinRTImplements)`, so calling it would drag an SPI
+                // import into the app for no gain.
+                //
+                // `withExtendedLifetime` because `thisPtr` hands back a fresh
+                // reference: the pointer must outlive the call, and the C++
+                // side takes its own reference on the interface it queries
+                // before returning.
+                let inspectable = fresh.thisPtr
+                let bound = withExtendedLifetime(inspectable) {
+                    winvideo_bind_source(
+                        UnsafeMutableRawPointer(inspectable.pUnk.borrow),
+                        Int32(frame.width), Int32(frame.height))
+                }
                 guard bound != 0 else { return }
                 source = fresh
                 sourceWidth = frame.width
