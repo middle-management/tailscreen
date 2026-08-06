@@ -1,6 +1,11 @@
 # XOR FEC: zero-RTT single-loss recovery (loss-recovery phase 2)
 
-> Status: planned. This is the "phase 3 (deferred FEC)" continuation of
+> Status: implemented. Shipped as `FECCodec.swift` + `FECGroupBuffer.swift`
+> (TailscreenProtocol), wired sharer→viewer end to end (the `0x0D` parity
+> datagram, `fecSweepDecision`, the RR's `fecRecovered` field — see
+> `.claude/rules/protocol.md`) and pinned by `FECCodecTests` /
+> `FECGroupBufferTests` on Linux CI (`linux-protocol`).
+> This was the "phase 3 (deferred FEC)" continuation of
 > `plans/loss-recovery-nack-fec.md` — that plan's NACK + receiver-report +
 > congestion-control layer is merged; this plan builds on the merged code
 > (not the original sketch) and records where it deviates from the sketch.

@@ -66,6 +66,9 @@ target (`.DEFAULT_GOAL := help`). The highlights:
 | `make install`      | Release build + copy to `~/bin/Tailscreen`.                        |
 | `make clean`        | Wipe `.build/`, run `swift package clean`, clean TailscaleKit.     |
 | `make test`         | `swift test` (after rebuilding `libtailscale`).                    |
+| `make test-protocol`| Test the portable TailscreenKit package — no Apple frameworks, no built `libtailscale.a`; also runs on Linux. |
+| `make test-l10n`    | Test the shared string catalog; its suites scan all four source trees for `L("…")` keys the catalog is missing. |
+| `make test-tsan`    | `swift test` under ThreadSanitizer — catches data races strict concurrency can't. ~3x slower, so not part of `make test`. |
 | `make lint`         | Run SwiftLint (baseline-gated; only new violations fail).          |
 | `make format`       | Run `swift-format` in-place over the app + TailscreenKit sources.          |
 | `make format-check` | Run `swift-format` in lint mode (no changes). CI uses this.        |

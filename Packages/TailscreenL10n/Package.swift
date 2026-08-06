@@ -5,7 +5,7 @@ import PackageDescription
 //
 // The macOS app has been localized since before Linux and Windows existed, via
 // `L("…")` over `String(localized:bundle: .module)`. That mechanism is Apple
-// Foundation, so `docs/porting-plan.md` recorded localization as the one piece
+// Foundation, so `plans/porting-plan.md` recorded localization as the one piece
 // of the mac UI with no portable path — and the two swift-cross-ui apps grew
 // ~200 hard-coded English literals in the meantime.
 //

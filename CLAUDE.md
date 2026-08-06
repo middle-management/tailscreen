@@ -66,7 +66,7 @@ Port **7447**, TCP **and** UDP. Video and audio are RTP over UDP (video PT 96 = 
 - **`swift build` fails with linker errors** — you skipped `make tailscale`. The Go build emits `libtailscale.a`; without it nothing links. (And "no Package.swift" at the repo root means you forgot to `cd Apps/macOS` first.)
 - **Two local instances see no peers** — both processes are sharing one Tailscale state dir. Use `./test-local.sh` (or set `TAILSCREEN_INSTANCE` manually).
 - **Editing `Packages/TailscaleKit/Sources/` directly** — those paths are symlinks into the upstream submodule. Add a patch under `Packages/TailscaleKit/Patches/` instead.
-- **Port 7447 is hardcoded** across the discovery, server, client, and metadata paths. If you make it configurable, search for `7447` and update everywhere it appears.
+- **Port 7447 lives in `NetworkConfig.tailscreenPort`** (TailscreenProtocol/NetworkConfig.swift) — the discovery, server, client, and metadata paths all read it from there. Route any new listener or dial through it rather than writing the literal.
 - **Auth flow needs an active node** — interactive login only works after `Start Sharing` or `Connect to…` has initialized the tsnet node.
 - **CI uses submodules.** Workflows already pass `submodules: recursive`; if you add a new workflow that builds, do the same.
 

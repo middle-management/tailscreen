@@ -9,7 +9,8 @@ import PackageDescription
 // package's public API is the app's compile-time contract. CI enforces
 // the portability boundary (linux-protocol job).
 //
-// Three portability tiers, three targets:
+// Six portability tiers, one source target each (test targets sit beside
+// them and are not part of the tier contract):
 //   - TailscreenProtocol: wire protocol + pure decision logic. NO Apple
 //     frameworks, NO dependencies — Foundation/Synchronization only.
 //   - TailscreenTransport: tsnet-facing peer discovery + IPN-bus watcher.
@@ -30,6 +31,9 @@ import PackageDescription
 //     seams). Like the viewer tier it owns no capture, encoder, or input
 //     backend — the macOS app plugs in its capture helper and CGEvent
 //     injector; a Linux sharer plugs in portal/PipeWire + libavcodec.
+//   - TailscreenViewerTsnet: the tsnet-backed viewer transport the Linux
+//     and Windows apps drive their viewers with (see the comment on its
+//     target declaration below).
 let package = Package(
     name: "TailscreenKit",
     platforms: [
