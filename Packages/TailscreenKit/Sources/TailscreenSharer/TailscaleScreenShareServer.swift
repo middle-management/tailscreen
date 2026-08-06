@@ -2153,6 +2153,11 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     public struct FairnessDecision: Equatable {
         public var throttle: [String]  // sorted for determinism
         public var globalBitrateInput: Int
+
+        public init(throttle: [String], globalBitrateInput: Int) {
+            self.throttle = throttle
+            self.globalBitrateInput = globalBitrateInput
+        }
     }
 
     /// Pure fairness decision layered over `lossAttribution`. An `.isolated`
@@ -3355,6 +3360,20 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         /// must not be pushed to 60.
         public var fpsCap: Int = 60
         public var elapsedSinceChangeNs: UInt64
+
+        public init(
+            lossFractionQ8: Int, pliCount: Int, nackServed: Int, current: Int, baseline: Int,
+            fpsTier: Int, fpsCap: Int = 60, elapsedSinceChangeNs: UInt64
+        ) {
+            self.lossFractionQ8 = lossFractionQ8
+            self.pliCount = pliCount
+            self.nackServed = nackServed
+            self.current = current
+            self.baseline = baseline
+            self.fpsTier = fpsTier
+            self.fpsCap = fpsCap
+            self.elapsedSinceChangeNs = elapsedSinceChangeNs
+        }
     }
 
     /// Bitrate + fps-tier decision from receiver feedback. `nil` on either
@@ -3514,6 +3533,11 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     public struct FECState: Equatable, Sendable {
         public var groupSize: Int = 0
         public var cleanWindows: Int = 0
+
+        public init(groupSize: Int = 0, cleanWindows: Int = 0) {
+            self.groupSize = groupSize
+            self.cleanWindows = cleanWindows
+        }
     }
 
     /// Per-viewer measurements the sweep snapshots for the FEC arm.
@@ -3542,6 +3566,18 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         public var expectedPackets: Int = 0
         /// Viewer advertised `.fec` in its HELLO.
         public var fecCapable: Bool = false
+
+        public init(
+            rttNs: UInt64 = 0, residualLossQ8: Int = 0, recovered: Int = 0,
+            nackRecovered: Int = 0, expectedPackets: Int = 0, fecCapable: Bool = false
+        ) {
+            self.rttNs = rttNs
+            self.residualLossQ8 = residualLossQ8
+            self.recovered = recovered
+            self.nackRecovered = nackRecovered
+            self.expectedPackets = expectedPackets
+            self.fecCapable = fecCapable
+        }
     }
 
     /// One sweep step of the FEC arm: the next adaptive state plus the set

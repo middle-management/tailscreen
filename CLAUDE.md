@@ -31,7 +31,7 @@ Use `rg` to find specific files; the per-area rules files below carry the rest.
 
 Always go through `make` (`make build`, `test`, `run`, `release`, …) — the root Makefile sets `PKG_CONFIG_PATH=$(CURDIR)/Packages/TailscaleKit` so SwiftPM's `systemLibrary` target finds `libtailscale.pc`, which in turn supplies the `-L` flag for `libtailscale.a`. Two targets whose purpose isn't obvious from the Makefile:
 
-- `make test-protocol` — builds + smoke-tests the portable TailscreenProtocol package with no libtailscale and no Apple frameworks. Also runs on Linux, and is how you reproduce a `linux-protocol` CI failure locally.
+- `make test-protocol` — builds + smoke-tests the portable TailscreenKit package with no Apple frameworks. Also runs on Linux, and is how you reproduce a `linux-protocol` CI failure locally. It builds `libtailscale.a` first: the package's `TailscreenSharerTests` bundle links `TailscreenSharer` → `TailscaleKit`, so the archive is a link-time input even though no test calls tsnet.
 - `make test-l10n` — builds + tests the shared string catalog. Its suites scan **all four** source trees for `L("…")` keys the catalog is missing, so it is the only check on the GTK and WinUI apps' user-facing strings; reproduces a `linux-l10n` CI failure.
 - `make test-e2e` — one-shot `e2e-up` → `swift test --filter TailscaleConnectivityTests` → `e2e-down` against a local headscale in Docker.
 

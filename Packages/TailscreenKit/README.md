@@ -16,7 +16,10 @@ The platform-portable core of Tailscreen, in five targets/tiers:
   itself builds on Linux — see `Packages/TailscaleKit/Patches/022`).
   *Compiling* it needs only the checked-out submodule with patches applied
   (`make -C ../TailscaleKit apply-patches`); the built
-  `libtailscale.a` is a link-time input that nothing in this package links.
+  `libtailscale.a` is a link-time input that no library target links — but
+  the `TailscreenSharerTests` test bundle is an executable and does link it
+  (via `TailscreenSharer` → `TailscaleKit`), so *testing* the package needs
+  the archive built (`make -C ../TailscaleKit`).
   Their Combine surface (`ObservableObject`/`@Published`, which mac
   Foundation re-exports) compiles on Linux via the shims in
   `PortabilityShims.swift` — including a `$prop.values`-compatible
@@ -83,18 +86,26 @@ that roadmap.
   wire, screen-share/share-response protocol, share lock, quality settings,
   instance naming, viewer zoom math, Opus codec, the multi-account
   `AccountProfileStore` incl. both hosts' migration paths). They run on Linux CI
-  (`linux-protocol`). A suite belongs here iff it imports no Apple framework
-  and references only package types; anything that mixes in a mac symbol (an
-  Apple-framework import, a server/`AppState`/`VideoDecoder`/`VoiceChannel`
-  decision, or a shared helper with a mac consumer like `LossyChannel` /
-  `ParserFuzzHarness`) stays in the main repo's `Tests/TailscreenTests`, which
-  exercises this package through the app's dependency.
+  (`linux-protocol`). `Tests/TailscreenSharerTests` holds the sharer-tier
+  decision suites (`CongestionDecisionTests`, `FECOverheadDecisionTests`,
+  `PerViewerFairnessDecisionTests`, `HelperRestartDecisionTests`,
+  `ViewerLifecycleDecisionTests`) — they consume the deliberately-public
+  decision surface through a plain `import TailscreenSharer`, no `@testable`,
+  and run on the same job. A suite belongs in the package iff it imports no
+  Apple framework and references only package types; anything that mixes in a
+  mac symbol (an Apple-framework import, an
+  `AppState`/`VideoDecoder`/`VoiceChannel` decision, or a shared helper with a
+  mac consumer like `LossyChannel` / `ParserFuzzHarness`) stays in the main
+  repo's `Tests/TailscreenTests`, which exercises this package through the
+  app's dependency.
 
 ## Build & test
 
 ```bash
-make test-protocol   # from the repo root (applies TailscaleKit patches first)
-# or directly (after `make -C Packages/TailscaleKit apply-patches`):
+make test-protocol   # from the repo root (applies TailscaleKit patches and
+                     # builds libtailscale.a first — the sharer test bundle
+                     # links the archive)
+# or directly (after `make -C Packages/TailscaleKit`):
 PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" \
   swift test --package-path Packages/TailscreenKit  # macOS and Linux
 ```

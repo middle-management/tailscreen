@@ -1,9 +1,6 @@
 import XCTest
 
-@testable import Tailscreen
-@testable import TailscreenProtocol
-@testable import TailscreenSharer
-@testable import TailscreenTransport
+import TailscreenSharer
 
 /// Pure-decision tests for the receiver-feedback congestion controller
 /// (`nextCongestionDecision`) and its fps ladder. Covers the loss-fraction
