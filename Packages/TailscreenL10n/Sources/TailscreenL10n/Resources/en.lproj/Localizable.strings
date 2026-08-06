@@ -181,6 +181,12 @@
 "Refresh available screens" = "Refresh available screens";
 "Looking for screens…" = "Looking for screens…";
 "No Tailscreen devices on your tailnet" = "No Tailscreen devices on your tailnet";
+"Screens appear here when their devices are running Tailscreen." = "Screens appear here when their devices are running Tailscreen.";
+"Get Tailscreen for your other devices" = "Get Tailscreen for your other devices";
+"Clear search" = "Clear search";
+"Copied" = "Copied";
+"Show Window" = "Show Window";
+"Brings the viewer window to the front" = "Brings the viewer window to the front";
 "Offline" = "Offline";
 "%@, %@" = "%@, %@";
 "online" = "online";

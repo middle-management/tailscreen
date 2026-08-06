@@ -182,6 +182,12 @@
 "Refresh available screens" = "Uppdatera tillgängliga skärmar";
 "Looking for screens…" = "Söker efter skärmar…";
 "No Tailscreen devices on your tailnet" = "Inga Tailscreen-enheter på ditt tailnet";
+"Screens appear here when their devices are running Tailscreen." = "Skärmar visas här när deras enheter kör Tailscreen.";
+"Get Tailscreen for your other devices" = "Hämta Tailscreen till dina andra enheter";
+"Clear search" = "Rensa sökning";
+"Copied" = "Kopierat";
+"Show Window" = "Visa fönster";
+"Brings the viewer window to the front" = "Tar fram tittarfönstret";
 "Offline" = "Frånkopplad";
 "%@, %@" = "%@, %@";
 "online" = "ansluten";
