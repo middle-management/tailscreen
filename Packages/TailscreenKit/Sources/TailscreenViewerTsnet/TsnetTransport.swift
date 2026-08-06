@@ -174,6 +174,18 @@ public final class TsnetTransport {
     /// noticing that the window closed, not to limit throughput.
     private static let maxDatagramsPerReceivePass = 256
 
+    /// `PeerRoute` for a log line. Spells the relay region out because "relayed
+    /// via fra" and "relayed via lax" are different stories about the same
+    /// symptom, and `.relay(region:)`'s default reflection is noisier than
+    /// either.
+    private static func describe(_ route: PeerRoute) -> String {
+        switch route {
+        case .direct: return "direct"
+        case .relay(let region): return "DERP relay (\(region))"
+        case .unknown: return "unknown"
+        }
+    }
+
     /// How long the loop parks when the inbox came back empty. With the socket
     /// on its own task there is no blocking `recv` left in the loop to pace it,
     /// and 5 ms keeps the tick cadence (NACK aging, RR, `shouldClose`) far
@@ -229,6 +241,20 @@ public final class TsnetTransport {
     /// (the macOS app does this by owning the node in `AppState` and passing it
     /// to both the server and the client). Set this before `run`.
     public var retainsNodeAcrossSessions = false
+
+    /// Which build the host is, e.g. `"a1b2c3d release"`. Logged once per
+    /// session and nowhere else.
+    ///
+    /// Set this. Two separate rounds of blank-viewer diagnosis were spent on a
+    /// log produced by a binary that predated the fix being tested, and neither
+    /// the log nor the app said so — "the new counter isn't there" and "you are
+    /// running last hour's exe" are the same observation until something names
+    /// the commit. The Windows app has `BuildInfo.summary` for this and was
+    /// showing it only in a window footer, where a stderr log never sees it.
+    ///
+    /// Optional because the transport cannot know it: the stamp is a per-app
+    /// build-time substitution, so it has to arrive from the host.
+    public var buildIdentity: String?
 
     /// The tsnet hostname and ephemerality a role implies. Pure, so the
     /// discovery-visibility contract can be tested without a tailnet: a
@@ -559,6 +585,22 @@ public final class TsnetTransport {
             tailscale: tailscale, address: bindAddr, logger: logger)
         let dest = Self.formatAddr(host: config.hostname, port: config.port)
         logger.log("Bound local UDP; dialing \(dest)")
+        // Name the build and the path before anything else can go wrong. Both
+        // are things a blank-viewer log was read without and should not have
+        // been: the build because a stale binary and a missing fix look
+        // identical, the path because a DERP-relayed session has loss and RTT
+        // characteristics a direct one does not, and every packet-loss
+        // conclusion in this file's history was drawn without knowing which
+        // it was.
+        logger.log("▶ Build \(buildIdentity ?? "unknown") — viewer session starting")
+        // Best-effort, and deliberately not fatal: one status seed, matched
+        // against whatever string we dialed. `try?` because a viewer that can
+        // reach the sharer must not lose the session to a failed diagnostic.
+        let dialed = config.hostname
+        let seededPeers = (try? await discoverPeers()) ?? []
+        if let peer = seededPeers.first(where: { $0.tailscaleIP == dialed || $0.hostname == dialed }) {
+            logger.log("▶ Path to \(peer.hostname): \(Self.describe(peer.route))")
+        }
 
         // Outbound TCP back-channel (annotations / control), reusing the same
         // node handle. It dials + reconnects on its own task, so failure here
@@ -617,16 +659,30 @@ public final class TsnetTransport {
             senderTask.cancel()
         }
 
-        // Inbound, off this actor. The socket is read by its own task and
-        // handed over through a bounded queue the loop drains synchronously —
+        // Inbound, genuinely off this actor. The socket is read by its own task
+        // and handed over through a bounded queue the loop drains synchronously,
         // so how fast the UI gets back around the loop no longer decides how
-        // many packets survive. See `DatagramInbox` for the measurements that
-        // made this necessary.
+        // many packets survive. See `DatagramInbox` for the measurements.
         //
-        // Symmetric with `senderTask` above, which already captures `listener`
-        // off the MainActor, so this adds no new isolation assumption about it.
+        // `Task.detached`, NOT `Task` — and that is the entire difference
+        // between this working and not. `Task { }` created in an actor-isolated
+        // context INHERITS that isolation, so the first version of this ran its
+        // `recv` loop on the MainActor, interleaving with the run loop on one
+        // executor instead of escaping it. It measured 15.6 datagrams/s on the
+        // Windows viewer — exactly the rate the one-datagram-per-pass loop had
+        // before any of this, and 5× WORSE than the plain batched drain it
+        // replaced, because the two now took turns on the same actor with a
+        // 5 ms idle sleep between them.
+        //
+        // The `senderTask` above is not the precedent it looks like: it is
+        // `Task { }` in this same @MainActor scope, so it never crossed an
+        // isolation boundary either and proved nothing about `PacketListener`.
+        // The real evidence is `TailscaleScreenShareServer` — `@unchecked
+        // Sendable`, not actor-isolated — which captures its `PacketListener`
+        // in a bare `Task { }` and sends from it. That closure is `@Sendable`,
+        // so the type must be `Sendable` for shipped code to compile.
         let inbox = DatagramInbox()
-        let receiverTask = Task {
+        let receiverTask = Task.detached {
             while !Task.isCancelled {
                 do {
                     let (datagram, from) = try await listener.recv(timeout: 250)

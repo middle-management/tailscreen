@@ -707,6 +707,52 @@ final class ViewerSessionTests: XCTestCase {
         XCTAssertEqual(control.count(of: .pli), 2, "still blank, so still asking")
     }
 
+    // MARK: - Diagnostics that separate look-alike faults
+
+    /// The distinction the socket-drain hunt had to infer from arrival rates:
+    /// an access unit that assembles and is thrown away as torn must not look
+    /// like an access unit that never assembled.
+    func testTornAccessUnitIsCountedSeparatelyFromOneThatNeverAssembles() {
+        let control = ControlCollector()
+        let session = makeAdmittedSession(StubDecoder(), StubVideoSink(), control)
+        session.markKeyframeSeenForTesting()
+
+        // Feed a fragmented AU with its first packet missing, then a marker
+        // packet, so the AU completes torn rather than never completing.
+        let packetizer = H264Packetizer()
+        let nals = AVCCParser.nalUnits(from: makeAVCC())
+        let packets = packetizer.packetize(nals: nals, timestamp: 9000, ssrc: 7, startSequence: 0)
+        XCTAssertGreaterThan(packets.count, 2, "need a fragmented AU for this to mean anything")
+        for packet in packets.dropFirst() {
+            session.receiveRTP(packet)
+        }
+
+        let diagnostics = session.diagnostics
+        XCTAssertGreaterThan(diagnostics.videoPacketsReceived, 0, "packets did arrive")
+        XCTAssertEqual(diagnostics.accessUnitsAssembled, 0, "nothing survived to the decoder")
+        XCTAssertGreaterThan(
+            diagnostics.tornAUs, 0,
+            "the torn AU must be visible — otherwise this is indistinguishable from no AU at all")
+    }
+
+    func testDiagnosticsNameTheCodecAndCountKeyframeRequests() {
+        let control = ControlCollector()
+        let session = makeAdmittedSession(StubDecoder(), StubVideoSink(), control)
+        XCTAssertNil(session.diagnostics.codec, "no video yet, so nothing to claim")
+
+        session.tick(nowNs: 1_000)
+        XCTAssertEqual(
+            session.diagnostics.keyframeRequests, 1,
+            "the pre-keyframe retry is a keyframe request and must be counted as one")
+
+        let packetizer = H264Packetizer()
+        let nals = AVCCParser.nalUnits(from: makeAVCC(byteCount: 200))
+        for pkt in packetizer.packetize(nals: nals, timestamp: 9000, ssrc: 7, startSequence: 0) {
+            session.receiveRTP(pkt)
+        }
+        XCTAssertEqual(session.diagnostics.codec, .h264, "payload type 96 is H.264")
+    }
+
     func testKeyframeStopsTheRequests() {
         let decoder = StubDecoder()
         let control = ControlCollector()
