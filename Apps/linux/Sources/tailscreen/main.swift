@@ -54,6 +54,16 @@ var gAddAccount: (@MainActor @Sendable () -> Void)?
 // interactive-login URL in a browser. Wired in the picker block.
 var gReturnToPicker: (@MainActor @Sendable () -> Void)?
 var gOpenLogin: (@MainActor @Sendable () -> Void)?
+// The sharer the current/most recent session dialed — IP for the redial,
+// hostname for display. Retained across the session's end so the ended
+// placard's Reconnect has somewhere to go; wired in the live block.
+var gLastDial: (ip: String, name: String)?
+// Redial `gLastDial` (the ended/failed placard's Reconnect). Wired in the
+// live block; nil in previews/self-tests, which hides the button.
+// Deliberately NOT `@Sendable`, unlike its neighbours: it captures
+// `startSession`, whose captures (the FFmpeg decoder, the audio sink) are not
+// Sendable — and it is only ever called from the main actor anyway.
+var gReconnect: (@MainActor () -> Void)?
 let gArgs = Array(CommandLine.arguments.dropFirst())
 let gSelfTest = gArgs.contains("--render-self-test")
 // Headless SHARER gate: draw a known stroke on the annotation overlay and read
@@ -154,6 +164,21 @@ func parseConfig() -> (config: ViewerConfig, host: String?, wantAudio: Bool, exp
     return (config, host, wantAudio, explicitStateDir)
 }
 
+/// The transport's close reason as the UI's end reason. The wire carries ONE
+/// deny byte for both a declined approval and a mid-session kick; whether an
+/// SSRC had been assigned (`wasAdmitted`) is what splits the wording — the
+/// same context split the macOS viewer applies.
+func sessionEndReason(
+    _ reason: ViewerCloseReason, wasAdmitted: Bool
+) -> ViewerUIState.EndReason {
+    switch reason {
+    case .sharerStopped: return .sharerStopped
+    case .timedOut: return .timedOut
+    case .connectionLost: return .connectionLost
+    case .deniedOrKicked: return wasAdmitted ? .disconnectedBySharer : .declined
+    }
+}
+
 if gSelfTest {
     // Headless render gate: a colour-bars frame the GtkVideoView renders and
     // the self-test verifies via glReadPixels. No transport.
@@ -210,6 +235,9 @@ if gSelfTest {
         // self-test keeps using the small colour-bars frame, which its pixel
         // assertions are calibrated against.)
         gStore.set(makePreviewFrame(width: 960, height: 540))
+        // Name the fake peer so the watching bar's "Watching <host>" reads as
+        // it would live rather than trailing off into nothing.
+        gLastDial = (ip: "100.64.0.12", name: "robert-macbook")
         gUIState.remoteControlAvailable = true
         gUIState.annotationsAvailable = true
         gUIState.hasVideo = true
@@ -314,25 +342,32 @@ if gSelfTest {
     }
 
     // Run a viewing session against a chosen host/IP. Shared by the direct-host
-    // path and the picker's selection callback (both on the main actor). Drives
-    // the session-lifecycle placard and, in picker mode, returns to the list
-    // when the session ends or is declined.
-    func startSession(host dialHost: String) {
+    // path, the picker's selection callback, and the ended placard's Reconnect
+    // (all on the main actor). Drives the session-lifecycle placard; the way
+    // OUT of an ended session is the placard's own Reconnect / Back buttons —
+    // no timed auto-return, because a sentence that explains why a session
+    // ended must stay readable until the person acts on it.
+    func startSession(host dialHost: String, displayName: String) {
         var config = baseConfig
         config.hostname = dialHost
+        gLastDial = (ip: dialHost, name: displayName)
         sink.resetForNewSession()  // the sink outlives one session
         gAnnotations.resetForNewSession()
         gUIState.beginSession()
         gUIState.setMicAvailable(false)
-        // A reference box for the decline flag, set from the @Sendable
-        // onDeclined callback (both it and the post-run read run on MainActor).
-        final class DeclinedFlag: @unchecked Sendable { var value = false }
-        let declined = DeclinedFlag()
+        // A reference box for the transport's end verdict, set from the
+        // @Sendable onEnded callback (both it and the post-run read run on
+        // MainActor). nil after `run` returns means the USER ended it (the
+        // placard's Cancel / the in-session Stop via `closeRequested`).
+        final class EndedBox: @unchecked Sendable {
+            var value: (reason: ViewerCloseReason, wasAdmitted: Bool)?
+        }
+        let ended = EndedBox()
         Task { @MainActor in
             do {
                 try await transport.run(
                     config: config, decoder: decoder, videoSink: sink,
-                    audioSink: audioSink, shouldClose: { false },
+                    audioSink: audioSink, shouldClose: { gUIState.closeRequested },
                     backChannelHandlers: backChannelHandlers,
                     microphone: microphone,
                     onVoiceReady: { uplink in
@@ -350,37 +385,53 @@ if gSelfTest {
                             annotations: caps.contains(.annotations))
                     },
                     onAwaitingApproval: { gUIState.post(sessionPhase: .awaitingApproval) },
-                    onDeclined: {
-                        declined.value = true
-                        gUIState.post(sessionPhase: .declined)
+                    onEnded: { reason, wasAdmitted in
+                        ended.value = (reason, wasAdmitted)
                     })
                 FileHandle.standardError.write(Data("session ended\n".utf8))
                 gVoice.detach()
-                gUIState.post(sessionPhase: declined.value ? .declined : .ended)
+                if let end = ended.value {
+                    // Sharer stop / deny / kick / timeout / socket death: the
+                    // placard explains it and offers Reconnect / Back.
+                    gUIState.post(
+                        sessionPhase: .ended(
+                            sessionEndReason(end.reason, wasAdmitted: end.wasAdmitted)))
+                } else if gPickerMode {
+                    // The user ended it — no explanation owed, straight back.
+                    gReturnToPicker?()
+                } else {
+                    // Direct-host mode has no list; rest on the status pane.
+                    gUIState.returnToPickerState()
+                    gUIState.post(status: L("Session Ended"))
+                }
             } catch {
                 FileHandle.standardError.write(Data("session failed: \(error)\n".utf8))
                 gVoice.detach()
                 gUIState.post(sessionPhase: .failed(L("Connection failed")))
             }
-            // Back to the picker after a beat so the declined/ended placard is
-            // readable (picker mode only; a direct-host run has no list to
-            // return to, so it rests on the placard).
-            if gPickerMode, let ret = gReturnToPicker {
-                try? await Task.sleep(nanoseconds: 1_800_000_000)
-                ret()
-            }
         }
+    }
+
+    // The ended/failed placard's Reconnect: redial whoever this session (or
+    // the last one) dialed. The picker's row callback is not reusable here —
+    // the peer may have dropped off the refreshed list while their share
+    // merely restarted.
+    gReconnect = {
+        guard let dial = gLastDial else { return }
+        startSession(host: dial.ip, displayName: dial.name)
     }
 
     if let host {
         // Direct connect — a host was named on the command line.
-        startSession(host: host)
+        startSession(host: host, displayName: host)
     } else {
         // Picker mode: bring the node up, discover sharers, and let the user
         // choose. Dialing the chosen sharer's tailnet IP (not its hostname)
         // also sidesteps the `from == dest` hostname-match limitation.
         gPickerMode = true
-        gPicker.onSelect = { sharer in startSession(host: sharer.tailscaleIP) }
+        gPicker.onSelect = { sharer in
+            startSession(host: sharer.tailscaleIP, displayName: sharer.hostname)
+        }
         // Ask a machine to start sharing. The task parks for up to two minutes
         // on the far side, so nothing here awaits it inline — the row shows
         // that the ask is outstanding and the window stays usable, including
@@ -651,9 +702,11 @@ struct ViewerApp: App {
     /// is mounted only when there's something to show, so the hub chrome sits on
     /// the native GTK window background rather than over a black GL surface — the
     /// first frame is stored before `hasVideo` flips, so mounting renders it.
-    // The host being connected to (for the session placard), from the picker's
-    // connecting phase.
+    // The host this session dialed (for the session placard and the watching
+    // bar) — the retained dial target, falling back to the picker's connecting
+    // phase for anything that races the retention.
     private var sessionHost: String {
+        if let dial = gLastDial { return dial.name }
         if case .connecting(let host) = picker.phase { return host }
         return ""
     }
@@ -661,7 +714,7 @@ struct ViewerApp: App {
     /// The viewer's session state as the shared placard's phase.
     ///
     /// Two enums rather than one because the chrome must not import a viewer's
-    /// session model to draw five sentences — the same reason it takes
+    /// session model to draw a handful of sentences — the same reason it takes
     /// `HubScreen` instead of `DiscoveredSharer`. The cost is this function;
     /// the benefit is a UI package that compiles without a transport.
     private static func hubPhase(_ phase: ViewerUIState.SessionPhase) -> HubSessionPhase {
@@ -669,10 +722,35 @@ struct ViewerApp: App {
         case .connecting: return .connecting
         case .awaitingApproval: return .awaitingApproval
         case .viewing: return .viewing
-        case .declined: return .declined
-        case .ended: return .ended
+        case .ended(let reason): return .ended(hubEndReason(reason))
         case .failed(let reason): return .failed(reason)
         }
+    }
+
+    /// The UI state's end reason as the chrome's — case for case; two enums
+    /// for the same import-direction reason as `hubPhase`.
+    private static func hubEndReason(_ reason: ViewerUIState.EndReason) -> HubSessionEndReason {
+        switch reason {
+        case .sharerStopped: return .sharerStopped
+        case .timedOut: return .timedOut
+        case .connectionLost: return .connectionLost
+        case .declined: return .declined
+        case .disconnectedBySharer: return .disconnectedBySharer
+        }
+    }
+
+    /// Reconnect for the ended/failed placard — absent (nil) when nothing was
+    /// ever dialed, e.g. the `--ui-preview` chrome shots.
+    private var placardReconnect: (@MainActor @Sendable () -> Void)? {
+        guard gLastDial != nil, gReconnect != nil else { return nil }
+        return { gReconnect?() }
+    }
+
+    /// Back to the screen list — picker mode only; the direct-host CLI has no
+    /// list to go back to, so the button is absent rather than dead.
+    private var placardBack: (@MainActor @Sendable () -> Void)? {
+        guard gPickerMode else { return nil }
+        return { gReturnToPicker?() }
     }
 
     /// The hub's sharing card. Only offered in picker mode: the direct-host
@@ -870,11 +948,42 @@ struct ViewerApp: App {
     @ViewBuilder private var rootView: some View {
         if gSelfTest {
             GtkVideoView(store: gStore, selfTest: true)
+        } else if ui.inSession && ui.sessionIsOver {
+            // Ended/failed placard. Checked BEFORE `hasVideo` on purpose: once
+            // video had flowed, `hasVideo` stays set, and the old order left a
+            // finished session as a frozen frame with the explanation
+            // unreachable underneath it. The placard owns the way out —
+            // Reconnect redials the retained sharer, Back returns to the list.
+            VStack(spacing: 0) {
+                ViewerHeader(subtitle: L("Viewer"))
+                Divider()
+                SessionPlacard(
+                    phase: Self.hubPhase(ui.sessionPhase),
+                    host: sessionHost,
+                    onReconnect: placardReconnect,
+                    onBack: placardBack)
+            }
         } else if ui.hasVideo {
             // Toolbar ROW above the video (the mac viewer puts its annotation
             // NSToolbar in the window's title bar, not floating over the
             // content), then the video with its overlays beneath it.
             VStack(spacing: 0) {
+                // Who is being watched, and the one way to leave from this
+                // side — the same slim bar the Windows viewer carries, and the
+                // first time the GTK viewer can end its own session (the
+                // transport's `shouldClose` polls `closeRequested`).
+                HStack(spacing: 8) {
+                    Text(L("Watching \(sessionHost)"))
+                        .font(.caption)
+                        .foregroundColor(HubStyle.secondaryText)
+                    Spacer()
+                    Button(L("Stop")) { gUIState.requestSessionClose() }
+                }
+                .padding(.horizontal, 16)
+                .frame(height: Double(HubStyle.toolbarHeight))
+                .frame(maxWidth: .infinity)
+                .background(HubStyle.barFill)
+                Divider()
                 if ui.annotationsAvailable {
                     AnnotationToolbar(
                         activeTool: ui.activeTool,
@@ -937,12 +1046,16 @@ struct ViewerApp: App {
                 }
             }
         } else if ui.inSession {
-            // A session is up but no video yet: connecting / awaiting approval /
-            // declined / ended placard.
+            // A session is up but no video yet: connecting / awaiting-approval
+            // placard, with a working Cancel — waiting at somebody else's
+            // approval prompt must never be a state you cannot leave.
             VStack(spacing: 0) {
                 ViewerHeader(subtitle: L("Viewer"))
                 Divider()
-                SessionPlacard(phase: Self.hubPhase(ui.sessionPhase), host: sessionHost)
+                SessionPlacard(
+                    phase: Self.hubPhase(ui.sessionPhase),
+                    host: sessionHost,
+                    onCancel: { gUIState.requestSessionClose() })
             }
         } else {
             VStack(spacing: 0) {

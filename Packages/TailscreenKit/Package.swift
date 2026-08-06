@@ -145,7 +145,16 @@ let package = Package(
         ),
         .testTarget(
             name: "TailscreenViewerTests",
-            dependencies: ["TailscreenViewer", "TailscreenProtocol", "TailscreenAudio"],
+            // TailscreenViewerTsnet rides along for the transport's PURE
+            // end-of-session decisions (idle timeout, receive-error storm) —
+            // the same nodeIdentity-style seam, reached via @testable. Like
+            // every target that touches TailscaleKit, compiling it needs only
+            // the patched header (`make test-protocol` applies patches first);
+            // no socket or tailnet is involved in the tests themselves.
+            dependencies: [
+                "TailscreenViewer", "TailscreenProtocol", "TailscreenAudio",
+                "TailscreenViewerTsnet"
+            ],
             path: "Tests/TailscreenViewerTests"
         )
     ]

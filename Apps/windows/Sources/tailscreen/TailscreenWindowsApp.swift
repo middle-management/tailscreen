@@ -34,6 +34,7 @@ import class TailscreenTransport.TailscreenControlListener
 import class TailscreenVideoFFmpeg.FFmpegVideoDecoder
 import class TailscreenViewer.FrameStore
 import class TailscreenViewer.ThreadedAudioSink
+import enum TailscreenViewer.ViewerCloseReason
 import struct TailscreenViewerTsnet.DiscoveredSharer
 import struct TailscreenViewerTsnet.PeerProbe
 import class TailscreenViewerTsnet.TsnetTransport
@@ -199,12 +200,35 @@ struct TailscreenWindowsApp: App {
 
     @ViewBuilder private var content: some View {
         if let host = state.watching {
-            watching(host: host)
+            // The session owns the window from dial to dismissal, but the
+            // video UI only renders once ADMITTED — before that the honest
+            // state is a placard (connecting / waiting for approval, with a
+            // working Cancel), and after a non-user end it is the ended
+            // placard with the reason + Reconnect / Back, never a silent
+            // snap back to the hub.
+            if let phase = state.sessionPhase, phase != .viewing {
+                sessionPlacard(host: host, phase: phase)
+            } else {
+                watching(host: host)
+            }
         } else if state.phase == .idle || state.phase == .failed {
             signIn
         } else {
             hub
         }
+    }
+
+    /// The shared session placard, with every action routed at the model. The
+    /// placard itself decides which buttons each phase shows (Cancel while
+    /// connecting/pending; Reconnect + Back once ended/failed).
+    private func sessionPlacard(host: String, phase: HubSessionPhase) -> some View {
+        let model = state
+        return SessionPlacard(
+            phase: phase,
+            host: host,
+            onReconnect: { model.reconnectSession() },
+            onBack: { model.dismissEndedSession() },
+            onCancel: { model.disconnect() })
     }
 
     /// Watching: the video gets the window, with one way out.
@@ -474,8 +498,21 @@ final class AppUIState: ObservableObject {
     /// portable `.default` (every axis off) is the right first-run state.
     @Published private(set) var filter = PeerListFilterStore.load()
     @Published var isSearching = false
-    /// Non-nil while a viewing session is running — the hostname on screen.
+    /// Non-nil while a viewing session OWNS THE WINDOW — from the dial until
+    /// the session's UI is dismissed. That is deliberately longer than the
+    /// session itself: after a non-user end the ended placard stays up (with
+    /// the reason and Reconnect / Back) instead of the window silently
+    /// snapping back to the hub, and everything gated on `watching == nil`
+    /// (header, refresh, account switching) stays gated until the person
+    /// dismisses it.
     @Published var watching: String?
+    /// Where the session UI is — placard phases before admission, `.viewing`
+    /// while the video renders, `.ended`/`.failed` afterwards. nil whenever
+    /// `watching` is nil.
+    @Published var sessionPhase: HubSessionPhase?
+    /// The last dialed peer's row id, retained past the session's end so the
+    /// ended placard's Reconnect can redial through `connect(toID:)`.
+    private var lastPeerID: String?
     /// Bumped per decoded frame so SwiftCrossUI re-runs `updateWinUIElement`.
     /// The frame itself travels through `frameStore`, never through this.
     @Published var frameGeneration = 0
@@ -1178,6 +1215,8 @@ final class AppUIState: ObservableObject {
         guard phase == .ready, sessionTask == nil else { return }
         stopRequested = false
         watching = peer.hostname
+        sessionPhase = .connecting
+        lastPeerID = peer.id
         status = L("Connecting to \(peer.hostname)…")
         detail = ""
 
@@ -1209,6 +1248,14 @@ final class AppUIState: ObservableObject {
             // apartment affinity, same as the sink), so building this cannot
             // fail here — "there is no microphone" arrives as `onStopped`.
             let microphone = makeWASAPIMicrophone()
+            // The transport's end verdict, set from the @Sendable onEnded
+            // callback (both it and the post-run read run on the main actor).
+            // nil after `run` returns means the USER stopped it.
+            final class EndedBox: @unchecked Sendable {
+                var value: (reason: ViewerCloseReason, wasAdmitted: Bool)?
+            }
+            let ended = EndedBox()
+            var failureMessage: String?
             do {
                 try await transport.run(
                     config: ViewerConfig(
@@ -1232,33 +1279,91 @@ final class AppUIState: ObservableObject {
                     },
                     onAdmitted: { [weak self] caps in
                         Task { @MainActor in
-                            self?.status = L("Watching \(peer.hostname)")
+                            // The hop can land after the session tail on a
+                            // session that ended immediately — a stale
+                            // `.viewing` must not clobber the ended placard.
+                            guard let self, self.sessionTask != nil else { return }
+                            self.status = L("Watching \(peer.hostname)")
+                            self.sessionPhase = .viewing
                             // Drawing and Request Control appear only if the
                             // sharer said it can serve them. Withheld bits mean
                             // a quieter UI, never a broken one.
-                            self?.interaction.setCaps(caps)
+                            self.interaction.setCaps(caps)
                         }
                     },
                     onAwaitingApproval: { [weak self] in
                         Task { @MainActor in
-                            self?.status = L("Waiting for \(peer.hostname) to approve…")
+                            // Same stale-hop guard as `onAdmitted`.
+                            guard let self, self.sessionTask != nil else { return }
+                            self.status = L("Waiting for \(peer.hostname) to approve…")
+                            self.sessionPhase = .awaitingApproval
                         }
                     },
-                    onDeclined: { [weak self] in
-                        Task { @MainActor in self?.detail = L("The sharer declined.") }
+                    onEnded: { reason, wasAdmitted in
+                        ended.value = (reason, wasAdmitted)
                     }
                 )
             } catch {
                 detail = L("Session ended: \(error)")
+                failureMessage = L("Session ended: \(error)")
             }
-            watching = nil
             sessionTask = nil
             detachVoice()
             // Before the status line, so a stale grant or armed tool can never
             // outlive the session that produced it.
             interaction.endSession()
             status = transport.accountIdentity.map { L("Signed in as \($0)") } ?? L("Signed in")
+            if let end = ended.value {
+                // Sharer stop / deny / kick / timeout / socket death: keep
+                // `watching` so the window shows the ended placard with the
+                // reason — never a silent snap back to the hub. The deny byte
+                // is worded by admission context, the same split the macOS
+                // viewer applies.
+                sessionPhase = .ended(Self.endReason(end.reason, wasAdmitted: end.wasAdmitted))
+            } else if let failureMessage {
+                // The session threw (dial/bring-up failure): same placard
+                // shape, with the error as the sentence.
+                sessionPhase = .failed(failureMessage)
+            } else {
+                // The user stopped it — no explanation owed.
+                watching = nil
+                sessionPhase = nil
+            }
         }
+    }
+
+    /// The transport's close reason as the placard's, with the one deny byte
+    /// split by whether an SSRC had been assigned when it landed: declined at
+    /// the approval gate vs disconnected (kicked) mid-watch.
+    nonisolated static func endReason(
+        _ reason: ViewerCloseReason, wasAdmitted: Bool
+    ) -> HubSessionEndReason {
+        switch reason {
+        case .sharerStopped: return .sharerStopped
+        case .timedOut: return .timedOut
+        case .connectionLost: return .connectionLost
+        case .deniedOrKicked: return wasAdmitted ? .disconnectedBySharer : .declined
+        }
+    }
+
+    /// The ended/failed placard's Reconnect: redial the retained peer. The
+    /// row id resolves against the live `peers` list, so a peer that has
+    /// genuinely left the tailnet makes this a quiet return to the hub rather
+    /// than a dial into nothing.
+    func reconnectSession() {
+        guard sessionTask == nil else { return }
+        sessionPhase = nil
+        watching = nil
+        guard let id = lastPeerID else { return }
+        connect(toID: id)
+    }
+
+    /// The ended/failed placard's Back: dismiss the explanation, return to
+    /// the hub.
+    func dismissEndedSession() {
+        guard sessionTask == nil else { return }
+        sessionPhase = nil
+        watching = nil
     }
 
     func disconnect() {
@@ -1624,6 +1729,7 @@ final class AppUIState: ObservableObject {
         detail = ""
         peers = []
         watching = nil
+        sessionPhase = nil
         Task { await transport.teardown() }
     }
 

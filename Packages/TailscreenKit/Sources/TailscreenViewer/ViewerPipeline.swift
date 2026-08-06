@@ -44,4 +44,9 @@ public final class ViewerPipeline {
 
     /// True once the sharer said goodbye / declined us — the host should stop.
     public var isStopped: Bool { session.isStopped }
+
+    /// Why the session is over (nil while live) — see `ViewerSession.closeReason`.
+    /// Wire-side causes only; the host's transport supplies `timedOut` /
+    /// `connectionLost` itself.
+    public var closeReason: ViewerCloseReason? { session.closeReason }
 }
