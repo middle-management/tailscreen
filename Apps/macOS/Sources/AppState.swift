@@ -3014,6 +3014,18 @@ class AppState: ObservableObject {
         }
     }
 
+    /// Raise the persistent viewer window — the "Show Window" action on
+    /// the hub's and the popover's viewing cards. Re-fronts only, same
+    /// ordering as the connect path: the window is built by connect and
+    /// is nil until a first session, in which case there's nothing to
+    /// show — never create one here.
+    func focusViewerWindow() {
+        guard let viewerWindow else { return }
+        NSApp.activate(ignoringOtherApps: true)
+        viewerWindow.orderFrontRegardless()
+        viewerWindow.makeKeyAndOrderFront(nil)
+    }
+
     /// Surface an error to the user as an `NSAlert`. Using AppKit
     /// directly (rather than a SwiftUI `.alert` modifier on the
     /// menubar view) is required because `MenuBarExtra(.window)`
