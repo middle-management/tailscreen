@@ -780,10 +780,21 @@ jobs:
           # 'arm64'`), nothing else puts the runtime on PATH for a bare exe run
           # out of `.build`, and the first version of this step assumed
           # otherwise and got `exited 127`.
-          rt=$(find "${SDKROOT%%Platforms*}" -name swiftCore.dll -print -quit 2>/dev/null || true)
+          # The backslashes matter. $SDKROOT is a native Windows path
+          # (C:\hostedtoolcache\...), and MSYS `find` cannot walk one — it finds
+          # nothing and says nothing. The first version of this searched
+          # "${SDKROOT%%Platforms*}" directly, matched zero files, skipped the
+          # PATH line, and the exe then failed to load and produced NO output at
+          # all, which is a remarkably quiet way to be broken.
+          root="${SDKROOT%%Platforms*}"
+          root="${root//\\//}"
+          rt=$(find "$root" -name swiftCore.dll -print -quit 2>/dev/null || true)
           if [ -n "$rt" ]; then
             echo "swift runtime: $(dirname "$rt")"
             export PATH="$PATH:$(dirname "$rt")"
+          else
+            # Loud, not silent. Not finding it is the failure, not a nuance.
+            echo "::warning::swiftCore.dll not found under $root — the self-test will not start"
           fi
           set +e
           exe=$(find .build -name winvideo-selftest.exe -print -quit)
@@ -1294,9 +1305,17 @@ jobs:
         shell: bash
         run: |
           f="$RUNNER_TEMP/winvideo-selftest.log"
-          if [ -f "$f" ]; then
+          if [ -s "$f" ]; then
             echo '--- render self-test output (reprinted; see the step above) ---'
             cat "$f"
+          elif [ -f "$f" ]; then
+            # EMPTY is a diagnosis, not an absence, and distinguishing it from
+            # missing is worth the extra branch: the file exists because `tee`
+            # created it, so the exe was launched, but it printed nothing at all.
+            # Since `winvideo_init` prints on both success AND failure, and
+            # flushes, no output means no line of our own code ran — i.e. the
+            # process never loaded. That is a missing DLL, every time.
+            echo 'render self-test produced NO output — the process never started (missing DLL); compare PATH against the DLLs stage-app.sh copies into dist/'
           else
             echo 'no render self-test output — it did not get as far as running'
           fi
