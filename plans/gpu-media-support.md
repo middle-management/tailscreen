@@ -98,6 +98,84 @@ Note the ordering consequence: doing hardware decode first buys less than it
 looks like, because the frame would land on the GPU and then be pulled back to
 the CPU for `I420Converter`.
 
+## RESULTS: what the builds actually carry
+
+`FFmpeg.capabilityReport()` ran on both platforms (5fa2254). The open question
+below is now closed, and two of this document's claims were wrong.
+
+**Windows — BtbN LGPL 7.1:**
+
+```
+h264 decoders: h264 h264_qsv h264_cuvid
+h264 encoders: libopenh264 h264_nvenc h264_amf h264_qsv h264_vaapi h264_mf
+hevc decoders: hevc hevc_qsv hevc_cuvid
+hevc encoders: hevc_nvenc hevc_amf hevc_qsv hevc_vaapi hevc_mf
+hw device types: cuda vaapi dxva2 qsv d3d11va opencl vulkan d3d12va
+```
+
+**Linux — distro libavcodec:**
+
+```
+h264 decoders: h264 h264_qsv h264_cuvid h264_v4l2m2m
+h264 encoders: libx264 h264_nvenc h264_qsv h264_vaapi h264_v4l2m2m
+hevc decoders: hevc hevc_qsv hevc_cuvid hevc_v4l2m2m
+hevc encoders: libx265 hevc_nvenc hevc_qsv hevc_vaapi hevc_v4l2m2m
+hw device types: vdpau cuda vaapi qsv drm opencl vulkan
+```
+
+### Every hardware encoder we might want is already present
+
+NVENC, AMF, QSV and VAAPI on Windows; NVENC, QSV, VAAPI and V4L2M2M on Linux.
+The licensing worry was misplaced — the LGPL build excludes `libx264`/`libx265`
+but ships the hardware encoders, because those are vendor SDKs rather than GPL
+code. Nothing needs a different FFmpeg build.
+
+Windows additionally has **`h264_mf` / `hevc_mf`** — Media Foundation. This
+document dismissed MF as "probably irrelevant"; it is the opposite. MF is
+**vendor-neutral**: it wraps whatever the OS exposes, so one ladder entry covers
+Intel, AMD and NVIDIA without probing for the GPU. It is the obvious *first*
+entry on Windows, with NVENC/AMF/QSV after it for cases where the vendor SDK
+beats the OS wrapper.
+
+### CORRECTION: hardware decode is far cheaper than claimed above
+
+The section above says hardware decode "is a feature the wrapper does not have"
+and describes `av_hwdevice_ctx_create` + `get_format` plumbing. That is true
+only for the **hwaccel** route (`d3d11va`, `vaapi`).
+
+`h264_qsv`, `h264_cuvid`, `hevc_qsv`, `hevc_cuvid` and `h264_v4l2m2m` are
+**standalone named decoders** — selectable with `avcodec_find_decoder_by_name`
+exactly like an encoder. So a decoder-name ladder mirroring the encoder ladder
+gets QSV and NVDEC for roughly the same effort as the encode change, with no
+`AVHWFramesContext` anywhere. The expensive plumbing only buys `d3d11va`/`vaapi`
+and zero-copy.
+
+That reorders the recommendations: hardware decode is no longer a distant
+step 4.
+
+### A defect this uncovered: HEVC sharing from Windows cannot work
+
+`WGCCaptureEncoder.defaultHEVCEncoders` is `["libx265"]`, and the Windows build
+has **no software HEVC encoder at all** — every `hevc_*` entry is hardware. The
+ladder is `for name in names where FFmpeg.isEncoderAvailable(name)`, so with
+`libx265` absent the loop body never executes, `opened` stays nil, and start
+fails with "none of [libx265] present in this libavcodec build".
+
+So a Windows sharer that asks for HEVC fails to start, today, on every machine.
+It is invisible because the default codec preference is `auto`. Adding the
+hardware names fixes a broken feature rather than optimising a working one,
+which makes it the highest-value entry on the list.
+
+Linux is unaffected: `libx265` is present there.
+
+### Licensing note, pre-existing
+
+Linux's distro libavcodec carries `libx264`/`libx265`, which are GPL, and the
+Linux ladder lists `libx264` first. That predates this spike and is unchanged by
+it, but the capability report is the first place it has been visible — worth a
+look at how the AppImage and Flatpak bundle FFmpeg before anyone assumes it is
+fine.
+
 ## The step that costs nothing and should come first
 
 **Nobody currently knows what our FFmpeg builds contain.** CI uses BtbN's
@@ -127,16 +205,27 @@ is measurable in the environment we actually test in.
 
 ## Recommended order
 
-1. **Print encoder/decoder/hwaccel availability in CI**, both platforms. Free,
-   unblocks every decision below.
-2. **Windows: `SwapChainPanel` + D3D11 with a YUV→RGB shader.** Largest verified
-   asymmetry, confined to `WinUIVideoView`, seam already designed for it,
-   benefit visible in a VM, and Linux is the working reference.
-3. **Hardware encode, NVENC/AMF first** (system-memory frames, additive to an
-   existing ladder). Helps the Win→Mac and Linux→any directions.
-4. **Hardware decode with `av_hwframe_transfer_data`**, then zero-copy once (2)
-   exists.
-5. **VAAPI/QSV encode** with `AVHWFramesContext`, if Linux Intel/AMD matters.
+Revised after the capability report; step 1 is done (5fa2254).
+
+1. ~~Print encoder/decoder/hwaccel availability in CI.~~ **Done** — results above.
+2. **Fix the HEVC ladder.** `["libx265"]` matches nothing in the Windows build,
+   so HEVC sharing from Windows fails to start. Put `hevc_mf` first, then
+   `hevc_nvenc` / `hevc_amf` / `hevc_qsv`, keeping `libx265` for Linux. This is a
+   broken feature, not a tuning knob, and it is a two-line change to an existing
+   fall-through ladder.
+3. **Hardware H.264 encode**, same shape: `h264_mf` first on Windows (vendor
+   neutral), then NVENC/AMF/QSV; `h264_nvenc`/`h264_vaapi` ahead of `libx264` on
+   Linux. Verify the frame format we already produce is accepted — NVENC, AMF and
+   MF take system-memory `nv12`/`yuv420p`, so no `AVHWFramesContext` is needed.
+4. **Hardware decode by name** — a `["h264_qsv", "h264_cuvid", "h264"]`-shaped
+   ladder in `FFmpegKit.VideoDecoder`, mirroring the encoder's. No hwaccel
+   plumbing; this is the cheap 80% of the decode win and it moved up three
+   places once the report showed those decoders exist.
+5. **Windows: `SwapChainPanel` + D3D11 with a YUV→RGB shader.** Still the largest
+   verified asymmetry and the only item whose benefit shows up under UTM, but it
+   is a bigger change than 2–4 and now sits behind them.
+6. **Zero-copy decode** (`d3d11va`/`vaapi` + `get_format`), which only pays off
+   once (5) exists.
 
 ## Not investigated
 
