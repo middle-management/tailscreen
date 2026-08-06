@@ -123,8 +123,8 @@
 "Draw" = "Draw";
 "Stop drawing on screen" = "Stop drawing on screen";
 "Draw on screen" = "Draw on screen";
-"Mute Mic (⌃⌥M)" = "Mute Mic (⌃⌥M)";
-"Unmute Mic (⌃⌥M)" = "Unmute Mic (⌃⌥M)";
+"Mute Mic (%@)" = "Mute Mic (%@)";
+"Unmute Mic (%@)" = "Unmute Mic (%@)";
 "Toggles voice chat with viewers" = "Toggles voice chat with viewers";
 "Share System Audio" = "Share System Audio";
 "Mute System Audio" = "Mute System Audio";
@@ -160,7 +160,8 @@
 "Connected over Tailscale" = "Connected over Tailscale";
 "Mute Mic" = "Mute Mic";
 "Unmute Mic" = "Unmute Mic";
-"Toggle mic (⌃⌥M)" = "Toggle mic (⌃⌥M)";
+"Toggle mic (%@)" = "Toggle mic (%@)";
+"Toggle mic" = "Toggle mic";
 "Toggles voice chat with the sharer" = "Toggles voice chat with the sharer";
 "Closes the viewer window and ends this session" = "Closes the viewer window and ends this session";
 
@@ -228,7 +229,33 @@
 "Automatic" = "Automatic";
 "Limit bandwidth" = "Limit bandwidth";
 "%lld Mbps" = "%lld Mbps";
-"Frame rate and codec changes apply the next time you start sharing." = "Frame rate and codec changes apply the next time you start sharing.";
+"Frame rate, codec, and encoder quality changes apply the next time you start sharing." = "Frame rate, codec, and encoder quality changes apply the next time you start sharing.";
+"Encoder quality" = "Encoder quality";
+"Color" = "Color";
+"10-bit color" = "10-bit color";
+"Applies the next time you start sharing. HDR needs a display with EDR headroom, and if a viewer can't decode 10-bit video the share falls back to 8-bit for everyone." = "Applies the next time you start sharing. HDR needs a display with EDR headroom, and if a viewer can't decode 10-bit video the share falls back to 8-bit for everyone.";
+
+/* MARK: - Settings: General / Accounts / Keyboard Shortcuts (SettingsView.swift) */
+"General" = "General";
+"Launch at login" = "Launch at login";
+"Launch at login needs the packaged Tailscreen app — a development build running outside an app bundle can't register itself." = "Launch at login needs the packaged Tailscreen app — a development build running outside an app bundle can't register itself.";
+"Waiting for approval — allow Tailscreen under System Settings → General → Login Items." = "Waiting for approval — allow Tailscreen under System Settings → General → Login Items.";
+"Couldn't Update Login Item" = "Couldn't Update Login Item";
+"macOS refused to change Launch at login: %@" = "macOS refused to change Launch at login: %@";
+"Accounts" = "Accounts";
+"Not signed in yet" = "Not signed in yet";
+"Active" = "Active";
+"Removing an account deletes its sign-in state from this Mac. To remove the account you're signed in to, switch to another account first." = "Removing an account deletes its sign-in state from this Mac. To remove the account you're signed in to, switch to another account first.";
+"Toggle Microphone" = "Toggle Microphone";
+"Both actions use the same shortcut, so only one of them will fire. Record a different combination for one of them." = "Both actions use the same shortcut, so only one of them will fire. Record a different combination for one of them.";
+"These shortcuts work system-wide. Click one, then press a new combination that includes at least one of ⌃, ⌥, or ⌘ — Esc cancels recording." = "These shortcuts work system-wide. Click one, then press a new combination that includes at least one of ⌃, ⌥, or ⌘ — Esc cancels recording.";
+"Record a new shortcut for %@" = "Record a new shortcut for %@";
+"Reset" = "Reset";
+"Reset to Default" = "Reset to Default";
+"Reset %@ to default" = "Reset %@ to default";
+"This shortcut is already in use by another app, so it won't work here. Record a different one." = "This shortcut is already in use by another app, so it won't work here. Record a different one.";
+"Record Shortcut" = "Record Shortcut";
+"Type shortcut…" = "Type shortcut…";
 "HEVC never falls back to H.264 — viewers that can only decode H.264 won't be able to watch. Choose Automatic to fall back when needed." = "HEVC never falls back to H.264 — viewers that can only decode H.264 won't be able to watch. Choose Automatic to fall back when needed.";
 "Audio" = "Audio";
 "Speaker" = "Speaker";

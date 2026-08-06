@@ -124,8 +124,8 @@
 "Draw" = "Rita";
 "Stop drawing on screen" = "Sluta rita på skärmen";
 "Draw on screen" = "Rita på skärmen";
-"Mute Mic (⌃⌥M)" = "Stäng av mik (⌃⌥M)";
-"Unmute Mic (⌃⌥M)" = "Slå på mik (⌃⌥M)";
+"Mute Mic (%@)" = "Stäng av mik (%@)";
+"Unmute Mic (%@)" = "Slå på mik (%@)";
 "Toggles voice chat with viewers" = "Växlar röstchatt med tittare";
 "Share System Audio" = "Dela systemljud";
 "Mute System Audio" = "Stäng av systemljud";
@@ -161,7 +161,8 @@
 "Connected over Tailscale" = "Ansluten via Tailscale";
 "Mute Mic" = "Stäng av mik";
 "Unmute Mic" = "Slå på mik";
-"Toggle mic (⌃⌥M)" = "Växla mik (⌃⌥M)";
+"Toggle mic (%@)" = "Växla mik (%@)";
+"Toggle mic" = "Växla mik";
 "Toggles voice chat with the sharer" = "Växlar röstchatt med den som delar";
 "Closes the viewer window and ends this session" = "Stänger tittarfönstret och avslutar sessionen";
 
@@ -229,7 +230,33 @@
 "Automatic" = "Automatisk";
 "Limit bandwidth" = "Begränsa bandbredd";
 "%lld Mbps" = "%lld Mbps";
-"Frame rate and codec changes apply the next time you start sharing." = "Ändringar av bildfrekvens och codec gäller nästa gång du börjar dela.";
+"Frame rate, codec, and encoder quality changes apply the next time you start sharing." = "Ändringar av bildfrekvens, codec och kodningskvalitet gäller nästa gång du börjar dela.";
+"Encoder quality" = "Kodningskvalitet";
+"Color" = "Färg";
+"10-bit color" = "10-bitars färg";
+"Applies the next time you start sharing. HDR needs a display with EDR headroom, and if a viewer can't decode 10-bit video the share falls back to 8-bit for everyone." = "Gäller nästa gång du börjar dela. HDR kräver en skärm med EDR-utrymme, och om en tittare inte kan avkoda 10-bitars video faller delningen tillbaka till 8 bitar för alla.";
+
+/* MARK: - Settings: General / Accounts / Keyboard Shortcuts (SettingsView.swift) */
+"General" = "Allmänt";
+"Launch at login" = "Starta vid inloggning";
+"Launch at login needs the packaged Tailscreen app — a development build running outside an app bundle can't register itself." = "Starta vid inloggning kräver den paketerade Tailscreen-appen — ett utvecklingsbygge som körs utanför ett appaket kan inte registrera sig självt.";
+"Waiting for approval — allow Tailscreen under System Settings → General → Login Items." = "Väntar på godkännande — tillåt Tailscreen under Systeminställningar → Allmänt → Inloggningsobjekt.";
+"Couldn't Update Login Item" = "Kunde inte uppdatera inloggningsobjekt";
+"macOS refused to change Launch at login: %@" = "macOS nekade ändringen av Starta vid inloggning: %@";
+"Accounts" = "Konton";
+"Not signed in yet" = "Inte inloggad än";
+"Active" = "Aktivt";
+"Removing an account deletes its sign-in state from this Mac. To remove the account you're signed in to, switch to another account first." = "Att ta bort ett konto raderar dess inloggningsdata från den här datorn. För att ta bort kontot du är inloggad med, byt först till ett annat konto.";
+"Toggle Microphone" = "Växla mikrofon";
+"Both actions use the same shortcut, so only one of them will fire. Record a different combination for one of them." = "Båda åtgärderna använder samma kortkommando, så bara en av dem kommer att utlösas. Spela in en annan kombination för en av dem.";
+"These shortcuts work system-wide. Click one, then press a new combination that includes at least one of ⌃, ⌥, or ⌘ — Esc cancels recording." = "De här kortkommandona fungerar i hela systemet. Klicka på ett och tryck sedan en ny kombination som innehåller minst en av ⌃, ⌥ eller ⌘ — Esc avbryter inspelningen.";
+"Record a new shortcut for %@" = "Spela in ett nytt kortkommando för %@";
+"Reset" = "Återställ";
+"Reset to Default" = "Återställ till standard";
+"Reset %@ to default" = "Återställ %@ till standard";
+"This shortcut is already in use by another app, so it won't work here. Record a different one." = "Det här kortkommandot används redan av en annan app, så det fungerar inte här. Spela in ett annat.";
+"Record Shortcut" = "Spela in kortkommando";
+"Type shortcut…" = "Tryck kortkommando…";
 "HEVC never falls back to H.264 — viewers that can only decode H.264 won't be able to watch. Choose Automatic to fall back when needed." = "HEVC faller aldrig tillbaka till H.264 — tittare som bara kan avkoda H.264 kommer inte att kunna titta. Välj Automatisk för att falla tillbaka vid behov.";
 "Audio" = "Ljud";
 "Speaker" = "Högtalare";
