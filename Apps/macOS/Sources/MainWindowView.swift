@@ -819,7 +819,8 @@ private struct PeerListSection: View {
         guard !peers.isEmpty else { return .ignored }
         let target: TailscreenPeer
         if let current = highlightedPeerID,
-            let index = peers.firstIndex(where: { $0.id == current }) {
+            let index = peers.firstIndex(where: { $0.id == current })
+        {
             guard peers.indices.contains(index + delta) else { return .handled }
             target = peers[index + delta]
         } else {

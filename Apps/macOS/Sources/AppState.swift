@@ -306,12 +306,13 @@ class AppState: ObservableObject {
     /// has expressed one — the same value `ColorCaptureDefaults.load*`
     /// seeded from in the first place.
     private func pushColorCaptureEnvironment() {
-        HelperScreenCapture.colorEnvironment.withLock {
-            $0 = [
-                ColorCaptureDefaults.tenBitEnvKey: enable10BitCapture ? "1" : "0",
-                ColorCaptureDefaults.hdrEnvKey: enableHDRCapture ? "1" : "0"
-            ]
-        }
+        // Snapshot on the MainActor first — `withLock`'s closure is
+        // @Sendable, so it may not read actor-isolated properties.
+        let overlay = [
+            ColorCaptureDefaults.tenBitEnvKey: enable10BitCapture ? "1" : "0",
+            ColorCaptureDefaults.hdrEnvKey: enableHDRCapture ? "1" : "0"
+        ]
+        HelperScreenCapture.colorEnvironment.withLock { $0 = overlay }
     }
 
     // MARK: - Global hotkey chords
@@ -4038,7 +4039,9 @@ class AppState: ObservableObject {
         viewerHost?.showsControlBorder = true
         refreshViewerWindowTitle()
         postViewerAccessibilityAnnouncement(
-            L("Remote control granted — your input now controls the shared Mac. Use Stop Controlling in the toolbar to release."))
+            L(
+                "Remote control granted — your input now controls the shared Mac. Use Stop Controlling in the toolbar to release."
+            ))
     }
 
     /// Leave control mode after the sharer revokes (`onControlRevoked`) or on

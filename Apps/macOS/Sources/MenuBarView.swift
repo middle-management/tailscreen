@@ -484,7 +484,8 @@ private struct SharingCard: View {
                     // hotkey; an unmappable stored chord is hidden rather
                     // than misprinted (nil `micShortcutDisplay`).
                     appState.isMicOn
-                        ? (appState.micShortcutDisplay.map { L("Mute Mic (\($0))") } ?? L("Mute Mic"))
+                        ? (appState.micShortcutDisplay.map { L("Mute Mic (\($0))") }
+                            ?? L("Mute Mic"))
                         : (appState.micShortcutDisplay.map { L("Unmute Mic (\($0))") }
                             ?? L("Unmute Mic")))
                 .accessibilityLabel(appState.isMicOn ? L("Mute microphone") : L("Unmute microphone"))
@@ -982,7 +983,8 @@ private struct ViewingCard: View {
                 .help(
                     // Same configurable-chord sourcing as the SharingCard
                     // mic tooltip above.
-                    appState.micShortcutDisplay.map { L("Toggle mic (\($0))") } ?? L("Toggle mic"))
+                    appState.micShortcutDisplay.map { L("Toggle mic (\($0))") }
+                        ?? L("Toggle mic"))
                 .accessibilityLabel(appState.isMicOn ? L("Mute microphone") : L("Unmute microphone"))
                 .accessibilityHint(L("Toggles voice chat with the sharer"))
 
