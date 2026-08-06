@@ -309,7 +309,17 @@ int32_t winvideo_init(void) {
         if (SUCCEEDED(hr)) break;
     }
     if (FAILED(hr)) {
-        logOnce("D3D11CreateDevice", hr);
+        // Genuinely once here, unlike `logOnce`, which is deliberately not
+        // rate-limited because every other caller is a one-shot setup path. This
+        // one is not: the view retries `winvideo_init` on EVERY frame while it has
+        // no device, so a machine that cannot create one at all — no GPU, no WARP,
+        // a broken driver — would otherwise write this line sixty times a second
+        // into tailscreen.log and bury whatever else the user was told.
+        static bool reported = false;
+        if (!reported) {
+            reported = true;
+            logOnce("D3D11CreateDevice", hr);
+        }
         return 0;
     }
 

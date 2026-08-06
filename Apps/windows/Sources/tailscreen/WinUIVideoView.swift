@@ -174,6 +174,18 @@ struct WinUIVideoView: WinUIElementRepresentable {
             // that goes black and stays black is worse than a slow one. Rebuild
             // from scratch and let the next frame land.
             if winvideo_device_lost() != 0 {
+                // The plan's rollback for this step is "keep the rebuild path
+                // behind a log line so it is visible in the wild", and it is the
+                // whole reason this branch is auditable at all: the three C sites
+                // that detect the loss already log their HRESULT, but nothing
+                // said whether recovery was ever ATTEMPTED. A viewer that
+                // recovers silently and one that is wedged look identical in a
+                // log otherwise, and this path is too hard to trigger on purpose
+                // to leave that ambiguous.
+                //
+                // Fires once per loss episode, not once per frame: `winvideo_reset`
+                // clears the flag, so the next frame takes the init path instead.
+                print("[winvideo] device lost — rebuilding the D3D11 device")
                 winvideo_reset()
                 gpuReady = false
                 source = nil
