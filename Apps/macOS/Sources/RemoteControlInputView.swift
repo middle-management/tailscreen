@@ -1,4 +1,5 @@
 import AppKit
+import Carbon.HIToolbox
 import CoreGraphics
 
 /// Transparent capture layer inside the viewer window that, while remote
@@ -16,6 +17,13 @@ final class RemoteControlInputView: NSView {
     /// Emits each captured input event. AppState forwards it to the client's
     /// TCP back-channel.
     var onEvent: ((InputEvent) -> Void)?
+
+    /// Fires when the user presses the ⌃⌥. release chord while input capture
+    /// is live. Every other keystroke is forwarded to the sharer; this one is
+    /// the viewer's exit hatch and must never be — a forwarded chord would be
+    /// replayed on the sharer instead of releasing the grant, stranding a
+    /// keyboard-only user in capture mode.
+    var onReleaseChord: (() -> Void)?
 
     private var trackingArea: NSTrackingArea?
     /// ~90 Hz throttle on move emission. Down/up/scroll/key are never dropped.
@@ -140,6 +148,14 @@ final class RemoteControlInputView: NSView {
     // MARK: - Keyboard
 
     override func keyDown(with event: NSEvent) {
+        // ⌃⌥. — Release Remote Control (mirrors the File-menu item).
+        // Intercepted before forwarding; see `onReleaseChord`.
+        if event.keyCode == UInt16(kVK_ANSI_Period),
+            event.modifierFlags.intersection([.shift, .control, .option, .command]) == [.control, .option]
+        {
+            onReleaseChord?()
+            return
+        }
         // Keys outside the HID table have no wire representation — drop
         // rather than guess (see MacKeyCodeMapping).
         guard let usage = MacKeyCodeMapping.hidUsage(forMacKeyCode: event.keyCode) else { return }

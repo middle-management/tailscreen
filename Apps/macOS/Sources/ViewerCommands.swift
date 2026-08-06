@@ -44,6 +44,16 @@ final class ViewerCommands: NSObject {
         NSApp.mainMenu?.update()
     }
 
+    /// Toolbar color menu → set the drawing color for new annotations.
+    /// The sender's `tag` indexes `Annotation.RGBA.palette` (see
+    /// `ViewerToolbar.makeColorMenu`).
+    @objc func selectAnnotationColor(_ sender: Any?) {
+        guard let item = sender as? NSMenuItem else { return }
+        let palette = Annotation.RGBA.palette
+        guard palette.indices.contains(item.tag) else { return }
+        activeOverlay?.currentColor = palette[item.tag]
+    }
+
     // MARK: - Edit
 
     @objc func undoLastAnnotation(_ sender: Any?) {
@@ -87,6 +97,34 @@ final class ViewerCommands: NSObject {
     /// enable while a viewer holds control.
     @objc func stopRemoteControl(_ sender: Any?) {
         appState?.revokeRemoteControl(reason: "menu")
+    }
+
+    /// File → Release Remote Control (⌃⌥., viewer side). Releases the
+    /// control *we* hold on someone else's Mac (or cancels a pending
+    /// request). Shares the chord with the sharer-side revoke above;
+    /// validation keeps the two disjoint by state.
+    @objc func releaseRemoteControl(_ sender: Any?) {
+        appState?.stopViewerControl()
+    }
+
+    /// Viewer-toolbar remote-control button: request when idle, cancel a
+    /// pending request, or stop controlling — one affordance cycling the
+    /// same state machine the menubar popover renders.
+    @objc func toggleRemoteControlRequest(_ sender: Any?) {
+        guard let appState else { return }
+        switch appState.viewerControlState {
+        case .none:
+            appState.requestRemoteControl()
+        case .requested, .controlling:
+            appState.stopViewerControl()
+        }
+    }
+
+    /// View → Enter Full Screen (⌃⌘F). Targets the viewer window
+    /// specifically — a responder-chain `toggleFullScreen` would grab
+    /// whichever window happens to be key, hub included.
+    @objc func toggleViewerFullScreen(_ sender: Any?) {
+        appState?.toggleViewerWindowFullScreen()
     }
 
     /// Toolbar/menu → Show Stats. Flips the renderer's stats-overlay
@@ -145,9 +183,15 @@ final class ViewerCommands: NSObject {
     /// `isVisible` without depending on AppState directly.
     weak var statsModel: ViewerStatsModel?
 
-    /// Help → Keyboard Shortcuts (⇧⌘/). Flips the visibility of the
-    /// shortcut cheat-sheet overlay above the viewer window.
+    /// Help → Keyboard Shortcuts (⇧⌘/). With a viewer window on screen the
+    /// cheat-sheet overlays it; while sharing (no viewer window) the same
+    /// content opens in its own centered panel, so ⌘? answers everywhere a
+    /// session is running.
     @objc func toggleShortcutsOverlay(_ sender: Any?) {
+        if let appState, appState.viewerWindow?.isVisible != true {
+            appState.toggleShortcutsPanel()
+            return
+        }
         shortcutsModel?.isVisible.toggle()
     }
 
@@ -182,11 +226,36 @@ extension ViewerCommands: NSMenuItemValidation {
             return overlay?.canUndo ?? false
         case #selector(clearAllAnnotations(_:)):
             return overlay?.canClearAll ?? false
+        case #selector(selectAnnotationColor(_:)):
+            // Checkmark on the current color; the tag indexes the palette.
+            let palette = Annotation.RGBA.palette
+            let isCurrent =
+                palette.indices.contains(menuItem.tag)
+                && overlay?.currentColor == palette[menuItem.tag]
+            menuItem.state = isCurrent ? .on : .off
+            return overlay != nil && (appState?.sharerSupportsAnnotations ?? true)
         case #selector(disconnectViewer(_:)):
-            return true
+            // ⌘W acts on an actual session: disconnect while viewing, or
+            // close the ended-state viewer window. Anything else has no
+            // session to end.
+            guard let appState else { return false }
+            return appState.connectionState == .viewing || appState.viewerSessionEnding != nil
         case #selector(stopRemoteControl(_:)):
-            // Sharer-side: enabled only while a viewer is actively controlling.
+            // Sharer-side: enabled only while a viewer is actively
+            // controlling. ⌃⌥. is shared with Release Remote Control below;
+            // the two validations are disjoint by state (a grant issued to
+            // a viewer vs. a grant held as a viewer), so a keypress
+            // resolves to the one that applies.
             return appState?.controlGrantee != nil
+        case #selector(releaseRemoteControl(_:)):
+            // Viewer-side ⌃⌥.; see the disambiguation note above.
+            return appState?.viewerControlState == .controlling
+        case #selector(toggleViewerFullScreen(_:)):
+            guard let win = appState?.viewerWindow else { return false }
+            menuItem.title =
+                win.styleMask.contains(.fullScreen)
+                ? L("Exit Full Screen") : L("Enter Full Screen")
+            return win.isVisible
         case #selector(toggleMicrophone(_:)):
             let isOn = appState?.isMicOn ?? false
             menuItem.state = isOn ? .on : .off
@@ -197,20 +266,51 @@ extension ViewerCommands: NSMenuItemValidation {
             menuItem.state = isVisible ? .on : .off
             return statsModel != nil
         case #selector(toggleShortcutsOverlay(_:)):
-            let isVisible = shortcutsModel?.isVisible ?? false
-            menuItem.state = isVisible ? .on : .off
-            return shortcutsModel != nil
+            let overlayUp = shortcutsModel?.isVisible ?? false
+            let panelUp = appState?.isShortcutsPanelVisible ?? false
+            menuItem.state = (overlayUp || panelUp) ? .on : .off
+            // ⌘? answers while sharing too, not only in the viewer window
+            // (the panel presentation covers the no-viewer-window case).
+            guard let appState else { return shortcutsModel != nil }
+            let sharing = appState.sharingState != .idle
+            let viewing = appState.viewerWindow?.isVisible == true
+            return sharing || viewing || panelUp
         case #selector(viewerZoomActualSize(_:)),
             #selector(viewerZoomHalf(_:)),
             #selector(viewerZoomDouble(_:)),
             #selector(viewerContentZoomIn(_:)),
             #selector(viewerContentZoomOut(_:)):
-            // `setViewerZoom` / `zoomViewerContent` already no-op when
-            // there's no viewer window or no decoded frame yet, so leaving
-            // these enabled always is harmless — and avoids the pill-style
-            // menus on macOS 15+ rendering disabled items so faintly that
-            // users miss them entirely.
+            // Zoom acts on a live stream. The old always-enabled answer
+            // left ⌘0/⌘±/⌥⌘± silently no-op'ing with no session at all.
+            return appState?.connectionState == .viewing
+        default:
             return true
+        }
+    }
+}
+
+extension ViewerCommands: NSToolbarItemValidation {
+    /// Explicit toolbar validation. The AppKit default re-enables any item
+    /// whose target merely responds to its action — which silently undid
+    /// `ViewerToolbar.setAnnotationsEnabled(false)` and left Undo/Clear
+    /// clickable with nothing to undo or clear. Toolbar items target this
+    /// object, so this is the single mirror of the menu validation above.
+    func validateToolbarItem(_ item: NSToolbarItem) -> Bool {
+        let annotationsAvailable = appState?.sharerSupportsAnnotations ?? true
+        switch item.action {
+        case #selector(toolbarSelectedTool(_:)):
+            return annotationsAvailable && activeOverlay != nil
+        case #selector(undoLastAnnotation(_:)):
+            return annotationsAvailable && (activeOverlay?.canUndo ?? false)
+        case #selector(clearAllAnnotations(_:)):
+            return annotationsAvailable && (activeOverlay?.canClearAll ?? false)
+        case #selector(toggleRemoteControlRequest(_:)):
+            guard let appState else { return false }
+            // Requesting needs a live session against a supporting sharer;
+            // the cancel/stop forms stay enabled so an exit affordance
+            // can't grey out mid-teardown.
+            return appState.viewerControlState != .none
+                || (appState.sharerSupportsRemoteControl && appState.connectionState == .viewing)
         default:
             return true
         }

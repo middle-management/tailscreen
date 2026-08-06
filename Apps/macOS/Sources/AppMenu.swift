@@ -126,6 +126,21 @@ enum AppMenu {
         stopControl.target = ViewerCommands.shared
         fileMenu.addItem(stopControl)
 
+        // Viewer-side counterpart: release the control *we* hold on someone
+        // else's Mac (or cancel a pending request). Deliberately the same
+        // chord as the sharer-side revoke above — one muscle memory for
+        // "stop remote control" in either role — with the two validations
+        // disjoint by state so they never both enable. The chord is also
+        // intercepted inside `RemoteControlInputView`, where every other
+        // keystroke is forwarded to the sharer.
+        let releaseControl = NSMenuItem(
+            title: L("Release Remote Control"),
+            action: #selector(ViewerCommands.releaseRemoteControl(_:)),
+            keyEquivalent: ".")
+        releaseControl.keyEquivalentModifierMask = [.control, .option]
+        releaseControl.target = ViewerCommands.shared
+        fileMenu.addItem(releaseControl)
+
         // ── Edit ──
         let editItem = NSMenuItem(title: "Edit", action: nil, keyEquivalent: "")
         let editMenu = NSMenu(title: "Edit")
@@ -197,6 +212,20 @@ enum AppMenu {
         contentZoomOut.keyEquivalentModifierMask = [.command, .option]
         contentZoomOut.target = ViewerCommands.shared
         viewMenu.addItem(contentZoomOut)
+
+        viewMenu.addItem(.separator())
+
+        // ⌃⌘F — the standard macOS full-screen chord, aimed at the viewer
+        // window (the SwiftUI hub scene manages its own). Validation flips
+        // the title between Enter and Exit and requires the viewer window
+        // to be on screen.
+        let fullScreen = NSMenuItem(
+            title: L("Enter Full Screen"),
+            action: #selector(ViewerCommands.toggleViewerFullScreen(_:)),
+            keyEquivalent: "f")
+        fullScreen.keyEquivalentModifierMask = [.control, .command]
+        fullScreen.target = ViewerCommands.shared
+        viewMenu.addItem(fullScreen)
 
         // ── Tools ──
         let toolsItem = NSMenuItem(title: "Tools", action: nil, keyEquivalent: "")

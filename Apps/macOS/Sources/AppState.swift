@@ -32,6 +32,20 @@ enum ConnectionState: Equatable {
     case viewing
 }
 
+/// Why the last viewer session ended, presented in-window (reason text +
+/// Reconnect/Close over the last frame) instead of the window silently
+/// vanishing. The first three arrive on `.tailscreenViewerPeerClosed`
+/// (`ViewerPeerCloseReason`); the deny-flavored two come from
+/// `onDeniedBySharer`, which keeps its explicit alert but now also lands
+/// the window in this state.
+enum ViewerSessionEnding: Equatable {
+    case sharerStopped
+    case timedOut
+    case connectionLost
+    case disconnectedBySharer
+    case declined
+}
+
 @MainActor
 class AppState: ObservableObject {
     @Published var sharingState: SharingState = .idle
@@ -393,6 +407,73 @@ class AppState: ObservableObject {
         }
     }
 
+    /// True from `connect()` until the sharer's HELLO_ACK admits us (the
+    /// SSRC assignment is the admission signal; the first decoded frame
+    /// clears it too, belt-and-braces). `connect()` returns after HELLO —
+    /// *before* admission — so `.viewing` alone would let the window title
+    /// claim "Viewing" while the sharer hasn't let us in yet. Drives the
+    /// "Connecting to <host>…" title; the approval placard stays on the
+    /// separate HELLO_PENDING signal (`viewerAwaitingApproval`).
+    @Published var isAwaitingAdmission: Bool = false {
+        didSet {
+            guard isAwaitingAdmission != oldValue else { return }
+            refreshViewerWindowTitle()
+        }
+    }
+
+    /// Non-nil while the viewer window shows the in-window "session ended"
+    /// state. Set by `endViewerSession(reason:)`; cleared by
+    /// reconnect / dismiss / a fresh `connect()`. Published so the other
+    /// surfaces (menubar popover, hub) can reflect it if they choose.
+    @Published private(set) var viewerSessionEnding: ViewerSessionEnding? {
+        didSet {
+            guard viewerSessionEnding != oldValue else { return }
+            viewerSessionEndedHost?.model.state = viewerSessionEnding.map {
+                sessionEndedPresentation($0)
+            }
+            refreshViewerWindowTitle()
+        }
+    }
+
+    /// Peer of the current / most recent viewer session, kept so the ended
+    /// pane's Reconnect (and the stall banner's) can redial without the
+    /// user re-finding the row. `host` is what `connect(to:)` dialed (IP or
+    /// name); `displayName` is what titles and messages show.
+    private var lastViewerPeer: (host: String, displayName: String)?
+
+    /// Hosts for the ended-state pane and the non-modal notice banner,
+    /// built alongside the other viewer overlays in `ensureViewer`.
+    private var viewerSessionEndedHost: ViewerSessionEndedOverlayHost?
+    private var viewerNoticeBannerHost: ViewerNoticeBannerHost?
+    /// Auto-dismiss task for the transient banner (cancel-and-replace).
+    private var viewerNoticeDismissTask: Task<Void, Never>?
+
+    /// Target trampoline for the waiting placard's Cancel button — AppKit
+    /// target/action needs an NSObject, which AppState isn't.
+    private var viewerPlacardCancelTarget: ClosureActionTarget?
+
+    /// The video surface's accessibility stand-in (image role, "Shared
+    /// screen from <host>"), framed to the fit rect by AspectFitHostView.
+    private var viewerVideoAccessibilityView: ViewerVideoAccessibilityView?
+
+    /// Standalone ⌘? cheat-sheet panel used while sharing, when there is
+    /// no viewer window to overlay. Lazy, process-lifetime like the
+    /// settings window.
+    private var shortcutsPanelHost: ViewerShortcutsPanelHost?
+
+    /// True when the shortcuts panel is on screen — read by ⌘? menu
+    /// validation.
+    var isShortcutsPanelVisible: Bool { shortcutsPanelHost?.isVisible ?? false }
+
+    /// Set at viewer-window creation when a frame saved by a previous run
+    /// was restored: the user put the window there, so the first-frame
+    /// auto-snap must not fight it. Cleared by the View-menu size presets,
+    /// which are an explicit "snap me" ask.
+    private var viewerRestoredSavedFrame = false
+
+    /// `frameAutosaveName` for the viewer window.
+    private static let viewerFrameAutosaveName = "TailscreenViewerWindow"
+
     // Peer discovery
     @Published var availablePeers: [TailscreenPeer] = []
     @Published var isDiscovering = false
@@ -661,25 +742,31 @@ class AppState: ObservableObject {
             }
         }
 
-        // Sharer dropped its end of the TCP connection — viewer needs to
-        // run its disconnect() so the UI doesn't sit on a stale last
-        // frame.
+        // The session is over without the user asking — sharer stop, idle
+        // timeout, or a socket-error storm, told apart by the reason in
+        // userInfo. Instead of the window silently vanishing, end in the
+        // in-window "session ended" state (reason + Reconnect/Close over
+        // the last frame).
         notificationObservers.append(
             NotificationCenter.default.addObserver(
                 forName: .tailscreenViewerPeerClosed,
                 object: nil,
                 queue: .main
-            ) { [weak self] _ in
+            ) { [weak self] note in
+                let reason =
+                    (note.userInfo?[ViewerPeerCloseReason.userInfoKey] as? String)
+                    .flatMap(ViewerPeerCloseReason.init(rawValue:)) ?? .connectionLost
                 Task { @MainActor [weak self] in
                     guard let self = self, self.connectionState == .viewing else { return }
-                    await self.disconnect()
+                    await self.endViewerSession(reason: Self.sessionEnding(for: reason))
                 }
             }
         )
 
         // Viewer's decoder couldn't build a session for the stream's codec.
-        // The client has already asked the sharer to fall back to H.264; tell
-        // the user so a momentary black screen isn't a silent mystery.
+        // The client has already asked the sharer to fall back to H.264 and
+        // recovery is imminent — a transient in-window banner, not a modal
+        // alert parked over a stream that's about to fix itself.
         notificationObservers.append(
             NotificationCenter.default.addObserver(
                 forName: .tailscreenViewerDecodeFailed,
@@ -689,20 +776,20 @@ class AppState: ObservableObject {
                 let codec = (note.userInfo?["codec"] as? String) ?? "this"
                 Task { @MainActor [weak self] in
                     guard let self = self, self.connectionState == .viewing else { return }
-                    self.showAlertMessage(
-                        title: L("Can't decode the video"),
+                    self.showViewerNotice(
                         message: L(
-                            "This Mac can't decode the \(codec) video stream from the sharer (it likely lacks \(codec) hardware decode). Asking the sharer to switch to H.264 — the screen should appear in a moment."
-                        ))
+                            "This Mac can't decode the \(codec) video stream. Asking the sharer to switch to H.264 — the picture should return in a moment."
+                        ),
+                        persistent: false)
                 }
             }
         )
 
         // The decode-failure escalation ladder's last rung: frames are
         // arriving but decoding has been failing for several seconds despite
-        // a keyframe request and a decoder-session rebuild. Tell the user
-        // the video has stalled rather than letting a frozen frame
-        // masquerade as a live stream.
+        // a keyframe request and a decoder-session rebuild. Persistent
+        // banner with the recovery action attached, replacing the alert
+        // that told the user to disconnect and reconnect by hand.
         notificationObservers.append(
             NotificationCenter.default.addObserver(
                 forName: .tailscreenViewerVideoStalled,
@@ -711,16 +798,19 @@ class AppState: ObservableObject {
             ) { [weak self] _ in
                 Task { @MainActor [weak self] in
                     guard let self = self, self.connectionState == .viewing else { return }
-                    self.showAlertMessage(
-                        title: L("Video Has Stalled"),
+                    self.showViewerNotice(
                         message: L(
-                            "Decoding has been failing for several seconds and automatic recovery hasn't helped. Check the connection on both ends, or disconnect and reconnect."
-                        ))
+                            "Video has stalled — decoding keeps failing and automatic recovery hasn't helped."
+                        ),
+                        persistent: true,
+                        actionTitle: L("Reconnect"),
+                        action: { [weak self] in self?.reconnectViewerSession() })
                 }
             }
         )
 
-        // File → Disconnect (⌘W) posts this; bounce to disconnect().
+        // File → Disconnect (⌘W) posts this; bounce to disconnect(), or —
+        // on the ended-state window — to a plain close.
         notificationObservers.append(
             NotificationCenter.default.addObserver(
                 forName: .tailscreenDisconnectRequested,
@@ -728,8 +818,12 @@ class AppState: ObservableObject {
                 queue: .main
             ) { [weak self] _ in
                 Task { @MainActor [weak self] in
-                    guard let self = self, self.connectionState == .viewing else { return }
-                    await self.disconnect()
+                    guard let self = self else { return }
+                    if self.connectionState == .viewing {
+                        await self.disconnect()
+                    } else if self.viewerSessionEnding != nil {
+                        self.dismissViewerWindow()
+                    }
                 }
             }
         )
@@ -1654,16 +1748,29 @@ class AppState: ObservableObject {
         server?.setShareSystemAudio(isSystemAudioOn)
     }
 
-    func connect(to host: String) async {
+    /// Connect to a sharer. `displayName` is what titles and messages call
+    /// the peer (defaults to `host`, which may be a bare tailnet IP).
+    func connect(to host: String, displayName: String? = nil) async {
         guard !host.isEmpty else { return }
 
         connectionState = .connecting
         defer {
-            if connectionState == .connecting { connectionState = .idle }
+            if connectionState == .connecting {
+                connectionState = .idle
+                isAwaitingAdmission = false
+            }
         }
         viewerWasDenied = false
         viewerAwaitingApproval = false
+        // A fresh connect owns the window again — drop any leftover
+        // ended-state pane / notice banner from the previous session.
+        viewerSessionEnding = nil
+        dismissViewerNotice()
+        lastViewerPeer = (host: host, displayName: displayName ?? host)
+        isAwaitingAdmission = true
         let renderer = ensureViewer()
+        refreshViewerWindowTitle()
+        refreshViewerVideoAccessibilityLabel()
         // Belt-and-braces zoom reset at session entry: disconnect()
         // already resets, and `videoSize.didSet` resets on a resolution
         // change — but a new sharer streaming at the *same* resolution
@@ -1703,10 +1810,19 @@ class AppState: ObservableObject {
                     // approval placard means our request was declined;
                     // already watching (placard long gone) means the
                     // sharer kicked us mid-session. Snapshot before
-                    // disconnect() resets `viewerAwaitingApproval`.
+                    // teardown resets `viewerAwaitingApproval`.
                     let wasWatching = state == .viewing && !self.viewerAwaitingApproval
                     self.viewerWasDenied = true
-                    await self.disconnect()
+                    // When the window is already on screen, land it in the
+                    // ended state so it doesn't vanish under the alert; a
+                    // deny that raced `connect()` (window never shown)
+                    // keeps the plain teardown.
+                    if self.viewerWindow?.isVisible == true {
+                        await self.endViewerSession(
+                            reason: wasWatching ? .disconnectedBySharer : .declined)
+                    } else {
+                        await self.disconnect()
+                    }
                     if wasWatching {
                         self.showAlertMessage(
                             title: L("Disconnected by Sharer"),
@@ -1782,6 +1898,9 @@ class AppState: ObservableObject {
             c.onAudioSSRCAssigned = { [weak self, weak c] ssrc in
                 Task { @MainActor [weak self, weak c] in
                     guard let self = self, let c = c else { return }
+                    // The SSRC assignment IS the admission signal — the
+                    // pre-admission "Connecting to…" title ends here.
+                    self.isAwaitingAdmission = false
                     guard self.voiceChannel == nil else { return }
                     self.micCapture?.stop()
                     self.micCapture = nil
@@ -1816,14 +1935,16 @@ class AppState: ObservableObject {
             if viewerWasDenied { return }
 
             connectionState = .viewing
-            connectedHostname = host
-            viewerWindow?.title = L("Viewing \(host)")
+            connectedHostname = displayName ?? host
+            refreshViewerWindowTitle()
+            refreshViewerVideoAccessibilityLabel()
             NSApp.activate(ignoringOtherApps: true)
             viewerWindow?.orderFrontRegardless()
             viewerWindow?.makeKeyAndOrderFront(nil)
         } catch {
             presentError(.connectionFailed(host: host, underlying: error))
             client = nil
+            isAwaitingAdmission = false
         }
     }
 
@@ -1855,9 +1976,18 @@ class AppState: ObservableObject {
         )
         // Reflect the peer in the title bar (native apps put the context
         // there); falls back to the app name before the first connect.
+        // `refreshViewerWindowTitle` owns it from here on.
         win.title = connectedHostname.map { L("Viewing \($0)") } ?? "Tailscreen"
         win.backgroundColor = .black
         win.isReleasedWhenClosed = false
+        // Full-screen capable (⌃⌘F / the zoom button's Enter Full Screen).
+        win.collectionBehavior.insert(.fullScreenPrimary)
+        // Standard frame persistence. A frame restored from a previous run
+        // must win over the first-frame auto-snap — the user put the
+        // window there — so remember whether one existed; the View-menu
+        // size presets clear the latch, being an explicit "snap me" ask.
+        viewerRestoredSavedFrame = win.setFrameUsingName(Self.viewerFrameAutosaveName)
+        _ = win.setFrameAutosaveName(Self.viewerFrameAutosaveName)
 
         // Drawing toolbar: pen / line / arrow / rectangle / oval +
         // undo + clear. Items target ViewerCommands.shared, same wiring
@@ -1873,8 +2003,18 @@ class AppState: ObservableObject {
         let delegate = ViewerWindowDelegate(
             onClose: { [weak self] in
                 Task { @MainActor [weak self] in
-                    guard let self = self, self.connectionState == .viewing else { return }
-                    await self.disconnect()
+                    guard let self = self else { return }
+                    if self.connectionState == .viewing {
+                        await self.disconnect()
+                    } else {
+                        // Ended state, mid-connect, or a stray close: act
+                        // like a plain close. The NSWindow itself stays
+                        // alive (process-lifetime), so this orders out
+                        // rather than letting AppKit run the release
+                        // cascade — previously this branch was a no-op and
+                        // the close button did nothing outside `.viewing`.
+                        self.dismissViewerWindow()
+                    }
                 }
             },
             onUserResize: { [weak self] in
@@ -1913,6 +2053,16 @@ class AppState: ObservableObject {
         host.metalLayer = r.metalLayer
         host.layer?.addSublayer(r.metalLayer)
         self.viewerHost = host
+
+        // Accessibility stand-in for the video surface: decoded frames
+        // render into a CAMetalLayer, which is not a view — without this
+        // the window reads as empty to VoiceOver. Framed to the same fit
+        // rect as the Metal layer; never participates in hit-testing.
+        let videoA11y = ViewerVideoAccessibilityView(frame: hostFrame)
+        host.addSubview(videoA11y)
+        host.accessibilitySubview = videoA11y
+        self.viewerVideoAccessibilityView = videoA11y
+        refreshViewerVideoAccessibilityLabel()
         // Mirror any video-size changes onto the host so it relays out the
         // overlay to the new aspect rect, and (unless the user has
         // dragged the viewer to a custom size) snap the window to the
@@ -1928,8 +2078,10 @@ class AppState: ObservableObject {
             guard let self, let win else { return }
             MainActor.assumeIsolated {
                 // First decoded frame implies the sharer accepted us — clear
-                // the "waiting for approval" placard regardless of resize.
+                // the "waiting for approval" placard (and the pre-admission
+                // title) regardless of resize.
                 self.viewerAwaitingApproval = false
+                self.isAwaitingAdmission = false
                 // Scripted local E2E harness greps for this marker to know
                 // the viewer end-to-end pipeline is working. Cheap; only
                 // fires once per session.
@@ -1938,13 +2090,15 @@ class AppState: ObservableObject {
                     self.logger.log(
                         "E2E_MARKER firstFrame width=\(Int(size.width)) height=\(Int(size.height))")
                 }
-                guard !self.userResizedViewer else { return }
+                // Auto-snap only when neither the user nor a restored
+                // saved frame has already decided the window's size.
+                guard !self.userResizedViewer, !self.viewerRestoredSavedFrame else { return }
                 self.programmaticSnap(win, toVideoPixelSize: size)
             }
         }
         if r.videoSize != .zero {
             host.videoSize = r.videoSize
-            if !userResizedViewer {
+            if !userResizedViewer && !viewerRestoredSavedFrame {
                 programmaticSnap(win, toVideoPixelSize: r.videoSize)
             }
         }
@@ -1958,6 +2112,17 @@ class AppState: ObservableObject {
             forIdentity: TailscaleScreenShareClient.localIdentity())
         overlayModel.onOp = { [weak self] op in
             Task { [weak self] in await self?.client?.sendAnnotationOp(op) }
+        }
+        // Esc lands on the annotation canvas (it's the first responder).
+        // Dismissing the cheat-sheet wins while it's visible; otherwise
+        // Esc cancels the in-progress drag, as the sheet documents.
+        overlayModel.onEscape = { [weak self] in
+            guard let self else { return }
+            if let shortcuts = self.viewerShortcutsHost, shortcuts.model.isVisible {
+                shortcuts.model.isVisible = false
+                return
+            }
+            self.viewerOverlay?.model.cancelDrag()
         }
         let overlay = AnnotationOverlayHostView(model: overlayModel)
         overlay.frame = host.bounds
@@ -1974,6 +2139,11 @@ class AppState: ObservableObject {
         let controlInput = RemoteControlInputView(frame: host.bounds)
         controlInput.onEvent = { [weak self] event in
             Task { [weak self] in await self?.client?.sendInputEvent(event) }
+        }
+        // ⌃⌥. while capturing releases control instead of being forwarded
+        // to the sharer — the defensive twin of the File-menu item.
+        controlInput.onReleaseChord = { [weak self] in
+            self?.stopViewerControl()
         }
         host.addSubview(controlInput)
         host.inputCaptureSubview = controlInput
@@ -1998,46 +2168,73 @@ class AppState: ObservableObject {
         // overlay above may be hidden, the toolbar never is.
         toolbar.bind(statsModel: r.statsModel)
 
+        // Non-modal notice banner (decode fallback, stall) pinned
+        // top-center below the toolbar. Above the stats HUD so a notice is
+        // never buried under it.
+        let bannerHost = ViewerNoticeBannerHost()
+        host.addSubview(bannerHost.view)
+        bannerHost.layout(in: host)
+        self.viewerNoticeBannerHost = bannerHost
+
+        // "Session ended" pane over the last frame (reason + Reconnect /
+        // Close). Above annotations, stats and the banner; beneath the
+        // shortcuts cheat-sheet, which is user-initiated and dismissible.
+        let endedHost = ViewerSessionEndedOverlayHost()
+        endedHost.model.onReconnect = { [weak self] in self?.reconnectViewerSession() }
+        endedHost.model.onClose = { [weak self] in self?.dismissViewerWindow() }
+        host.addSubview(endedHost.view)
+        endedHost.layout(in: host)
+        self.viewerSessionEndedHost = endedHost
+
         // Shortcut cheat-sheet overlay (toggled by toolbar "?" /
-        // Help → Keyboard Shortcuts / ⇧⌘/). Added last so it draws
-        // above both the stats overlay and the annotation canvas,
+        // Help → Keyboard Shortcuts / ⇧⌘/). Added late so it draws
+        // above the stats overlay and the annotation canvas,
         // and so its tap-to-dismiss backdrop wins on hit-test.
         let shortcutsHost = ViewerShortcutsOverlayHost()
         host.addSubview(shortcutsHost.view)
         shortcutsHost.layout(in: host)
         self.viewerShortcutsHost = shortcutsHost
 
-        // "Waiting for sharer to accept" placard. Centered, fixed size,
-        // hidden by default; visibility flipped from
-        // `viewerAwaitingApproval`. Added last so HELLO_PENDING during a
-        // shortcuts-overlay-up moment still draws above strokes/stats and
-        // sits beneath the shortcuts cheat-sheet (acceptable — the
-        // cheat-sheet is user-initiated and dismissible).
+        // "Waiting for sharer to accept" placard. Constraint-centered so
+        // long translations grow it instead of truncating (the old fixed
+        // 360×80 frame clipped anything wider); hidden by default,
+        // visibility flipped from `viewerAwaitingApproval`. Added last so
+        // HELLO_PENDING during a shortcuts-overlay-up moment still draws
+        // above strokes/stats and sits beneath the shortcuts cheat-sheet
+        // (acceptable — the cheat-sheet is user-initiated and
+        // dismissible).
         let placard = makeWaitingPlacard()
-        let placardSize = NSSize(width: 360, height: 80)
-        placard.frame = NSRect(
-            x: (host.bounds.width - placardSize.width) / 2,
-            y: (host.bounds.height - placardSize.height) / 2,
-            width: placardSize.width,
-            height: placardSize.height
-        )
-        placard.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin, .maxYMargin]
         placard.isHidden = !viewerAwaitingApproval
         host.addSubview(placard)
+        NSLayoutConstraint.activate([
+            placard.centerXAnchor.constraint(equalTo: host.centerXAnchor),
+            placard.centerYAnchor.constraint(equalTo: host.centerYAnchor),
+            placard.widthAnchor.constraint(lessThanOrEqualTo: host.widthAnchor, constant: -40)
+        ])
         self.viewerWaitingPlacard = placard
         ViewerCommands.shared.shortcutsModel = shortcutsHost.model
 
         win.contentView = host
         win.makeFirstResponder(overlay)
 
-        // Center on the main screen so the first connect doesn't dump the
-        // window in the bottom-left corner.
-        if let screenFrame = NSScreen.main?.visibleFrame {
-            win.setFrameOrigin(
-                NSPoint(
-                    x: screenFrame.midX - win.frame.width / 2,
-                    y: screenFrame.midY - win.frame.height / 2
-                ))
+        // Center on the screen the user is working on — the hub window's
+        // screen when it's up, else the one holding the mouse — so the
+        // first connect doesn't land the viewer on an arbitrary display. A
+        // frame restored from a previous run keeps its own position.
+        if !viewerRestoredSavedFrame {
+            let hubScreen = NSApp.windows.first {
+                $0.isVisible && $0.identifier?.rawValue.hasPrefix(TailscreenApp.mainWindowID) == true
+            }?.screen
+            let mouseScreen = NSScreen.screens.first {
+                NSMouseInRect(NSEvent.mouseLocation, $0.frame, false)
+            }
+            if let screenFrame = (hubScreen ?? mouseScreen ?? NSScreen.main)?.visibleFrame {
+                win.setFrameOrigin(
+                    NSPoint(
+                        x: screenFrame.midX - win.frame.width / 2,
+                        y: screenFrame.midY - win.frame.height / 2
+                    ))
+            }
         }
 
         r.start(in: host)
@@ -2060,6 +2257,9 @@ class AppState: ObservableObject {
             r.videoSize.width > 0, r.videoSize.height > 0
         else { return }
         userResizedViewer = false
+        // The presets are an explicit "snap me" — a restored saved frame
+        // stops vetoing the auto-snap from here on.
+        viewerRestoredSavedFrame = false
         let target = CGSize(
             width: r.videoSize.width * factor,
             height: r.videoSize.height * factor)
@@ -2134,10 +2334,7 @@ class AppState: ObservableObject {
     }
 
     func connectToPeer(_ peer: TailscreenPeer) async {
-        await connect(to: peer.tailscaleIP)
-        if connectionState == .viewing {
-            connectedHostname = peer.hostname
-        }
+        await connect(to: peer.tailscaleIP, displayName: peer.hostname)
     }
 
     func disconnect() async {
@@ -2150,12 +2347,15 @@ class AppState: ObservableObject {
         connectionState = .idle
         connectedHostname = nil
         viewerAwaitingApproval = false
+        isAwaitingAdmission = false
+        viewerSessionEnding = nil
+        dismissViewerNotice()
         sharerSupportsRemoteControl = false
         sharerSupportsAnnotations = true
-        // End any remote-control session and stop capturing input.
+        // End any remote-control session and stop capturing input (also
+        // clears the control border + announces to VoiceOver).
         if viewerControlState != .none {
-            viewerControlState = .none
-            setViewerControlCapturing(false)
+            exitViewerControl()
         }
         viewerRenderer?.clearPendingBuffer()
         // The window survives disconnect (process-lifetime); drop the
@@ -2168,6 +2368,216 @@ class AppState: ObservableObject {
         userResizedViewer = false
         // Allow the next session to re-emit the E2E_MARKER on its first frame.
         didLogFirstViewerFrame = false
+        refreshViewerWindowTitle()
+    }
+
+    /// The session ended without the user asking — sharer stop, timeout,
+    /// connection loss, or a deny/kick. `disconnect()`'s teardown half,
+    /// minus everything that hides the window or clears the last frame:
+    /// the window stays up showing the frozen frame under an explicit
+    /// "session ended" pane (reason + Reconnect / Close).
+    func endViewerSession(reason: ViewerSessionEnding) async {
+        await client?.disconnect()
+        client = nil
+        micCapture?.stop()
+        micCapture = nil
+        voiceChannel = nil
+        isMicOn = false
+        connectionState = .idle
+        connectedHostname = nil
+        viewerAwaitingApproval = false
+        isAwaitingAdmission = false
+        sharerSupportsRemoteControl = false
+        sharerSupportsAnnotations = true
+        if viewerControlState != .none {
+            exitViewerControl()
+        }
+        dismissViewerNotice()
+        viewerSessionEnding = reason
+        postViewerAccessibilityAnnouncement(sessionEndedPresentation(reason).message)
+        // Deliberately NOT: clearPendingBuffer (the last frame is the
+        // context for the reason text), orderOut (the whole point), or the
+        // zoom / resize-tracking resets — `dismissViewerWindow` owns those.
+        didLogFirstViewerFrame = false
+    }
+
+    /// Ended-pane Close, ⌘W on the ended state, and the close button
+    /// outside `.viewing`: a plain close of the process-lifetime viewer
+    /// window (orderOut, never an AppKit close/release).
+    func dismissViewerWindow() {
+        viewerSessionEnding = nil
+        dismissViewerNotice()
+        viewerRenderer?.clearPendingBuffer()
+        viewerHost?.zoomState = ViewerZoomState()
+        viewerWindow?.orderOut(nil)
+        userResizedViewer = false
+        didLogFirstViewerFrame = false
+        refreshViewerWindowTitle()
+    }
+
+    /// Redial the current / most recent peer. Serves both the ended pane's
+    /// Reconnect button and the stall banner's — from a live (stalled)
+    /// session it disconnects first.
+    func reconnectViewerSession() {
+        guard let peer = lastViewerPeer else { return }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            if self.connectionState == .viewing {
+                await self.disconnect()
+            }
+            await self.connect(to: peer.host, displayName: peer.displayName)
+            // A failed redial has already alerted (`connectionFailed`);
+            // don't leave a visible window as an unexplained frozen frame
+            // behind that alert. The deny path sets its own ending.
+            if self.connectionState != .viewing, self.viewerSessionEnding == nil,
+                self.viewerWindow?.isVisible == true
+            {
+                self.viewerSessionEnding = .connectionLost
+            }
+        }
+    }
+
+    /// Map the client's wire-side close reason onto the presentation enum.
+    nonisolated static func sessionEnding(for reason: ViewerPeerCloseReason) -> ViewerSessionEnding {
+        switch reason {
+        case .sharerStopped: return .sharerStopped
+        case .timedOut: return .timedOut
+        case .connectionLost: return .connectionLost
+        }
+    }
+
+    /// Localized title + message for the ended pane (and the VoiceOver
+    /// announcement). The deny-flavored wordings reuse the alert copy so
+    /// the two surfaces can't tell the same story differently.
+    private func sessionEndedPresentation(_ reason: ViewerSessionEnding) -> ViewerSessionEndedModel.EndedState {
+        // `lastViewerPeer` is set at every `connect()` entry, so the
+        // fallback (same key the hub's session strip uses) is defensive.
+        let name = lastViewerPeer?.displayName ?? L("peer")
+        switch reason {
+        case .sharerStopped:
+            return .init(
+                title: L("Session Ended"),
+                message: L("\(name) stopped sharing their screen."))
+        case .timedOut:
+            return .init(
+                title: L("Session Ended"),
+                message: L("The connection to \(name) went quiet and timed out."))
+        case .connectionLost:
+            return .init(
+                title: L("Session Ended"),
+                message: L("The connection to \(name) was lost."))
+        case .disconnectedBySharer:
+            return .init(
+                title: L("Disconnected by Sharer"),
+                message: L("The sharer disconnected you from their screen share."))
+        case .declined:
+            return .init(
+                title: L("Connection Declined"),
+                message: L("The sharer declined your request to view their screen."))
+        }
+    }
+
+    /// Single source for the viewer window's title, so the pre-admission,
+    /// viewing, controlling, and ended states can't disagree.
+    private func refreshViewerWindowTitle() {
+        guard let win = viewerWindow else { return }
+        if viewerSessionEnding != nil {
+            win.title = L("Session Ended")
+            return
+        }
+        guard let name = lastViewerPeer?.displayName ?? connectedHostname else {
+            win.title = "Tailscreen"
+            return
+        }
+        if connectionState == .connecting || isAwaitingAdmission {
+            win.title = L("Connecting to \(name)…")
+        } else if viewerControlState == .controlling {
+            // Reflect the active grant in the title too — the orange
+            // border and toolbar item carry it, but the title survives
+            // Mission Control and the Window menu.
+            win.title = L("Viewing \(name) — controlling")
+        } else if connectionState == .viewing {
+            win.title = L("Viewing \(name)")
+        } else {
+            win.title = "Tailscreen"
+        }
+    }
+
+    /// Keep the video surface's VoiceOver label naming the current peer.
+    private func refreshViewerVideoAccessibilityLabel() {
+        let name = connectedHostname ?? lastViewerPeer?.displayName
+        let label = name.map { L("Shared screen from \($0)") } ?? L("Shared screen")
+        viewerVideoAccessibilityView?.setAccessibilityLabel(label)
+    }
+
+    /// Show a non-modal notice at the top of the viewer window. Transient
+    /// notices auto-dismiss after a few seconds; persistent ones stay
+    /// until dismissed or their action runs. Falls back to the alert
+    /// surface if there is somehow no viewer window to pin a banner to.
+    private func showViewerNotice(
+        message: String, persistent: Bool,
+        actionTitle: String? = nil, action: (@MainActor () -> Void)? = nil
+    ) {
+        guard let bannerHost = viewerNoticeBannerHost, viewerWindow?.isVisible == true else {
+            showAlertMessage(title: L("Connection Problem"), message: message)
+            return
+        }
+        viewerNoticeDismissTask?.cancel()
+        viewerNoticeDismissTask = nil
+        let notice = ViewerNotice(
+            message: message, isPersistent: persistent,
+            actionTitle: actionTitle, action: action)
+        bannerHost.model.notice = notice
+        // The banner is visual only — say it too.
+        postViewerAccessibilityAnnouncement(message)
+        guard !persistent else { return }
+        let id = notice.id
+        viewerNoticeDismissTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(6))
+            guard !Task.isCancelled, let self else { return }
+            // Only dismiss the notice we posted — a newer one owns the slot.
+            if self.viewerNoticeBannerHost?.model.notice?.id == id {
+                self.viewerNoticeBannerHost?.model.notice = nil
+            }
+        }
+    }
+
+    private func dismissViewerNotice() {
+        viewerNoticeDismissTask?.cancel()
+        viewerNoticeDismissTask = nil
+        viewerNoticeBannerHost?.model.notice = nil
+    }
+
+    /// Speak `message` through VoiceOver (high priority). Used for state
+    /// changes with no focused control to carry them — control
+    /// grant/revoke, session end, banner notices.
+    private func postViewerAccessibilityAnnouncement(_ message: String) {
+        let element: Any
+        if let win = viewerWindow {
+            element = win
+        } else {
+            element = NSApp as Any
+        }
+        NSAccessibility.post(
+            element: element,
+            notification: .announcementRequested,
+            userInfo: [
+                .announcement: message,
+                .priority: NSAccessibilityPriorityLevel.high.rawValue
+            ])
+    }
+
+    /// ⌘? while sharing (no viewer window): the cheat-sheet in its own
+    /// centered panel. Lazily built, kept for the process lifetime.
+    func toggleShortcutsPanel() {
+        let host = shortcutsPanelHost ?? ViewerShortcutsPanelHost()
+        shortcutsPanelHost = host
+        host.toggle()
+    }
+
+    /// View → Enter Full Screen (⌃⌘F) on the viewer window.
+    func toggleViewerWindowFullScreen() {
+        viewerWindow?.toggleFullScreen(nil)
     }
 
     /// True when launched with `--ui-preview`: the hub renders a seeded,
@@ -3295,20 +3705,36 @@ class AppState: ObservableObject {
         guard viewerControlState != .none else { return }
         viewerControlState = .none
         setViewerControlCapturing(false)
+        viewerHost?.showsControlBorder = false
+        refreshViewerWindowTitle()
         Task { [weak self] in await self?.client?.releaseControl() }
     }
 
     /// Enter control mode after the sharer grants (`onControlGranted`).
+    /// Lights the orange content-rect border, reflects the grant in the
+    /// window title, and announces it — the state change has no focused
+    /// control of its own for VoiceOver to speak.
     private func enterViewerControl() {
         viewerControlState = .controlling
         setViewerControlCapturing(true)
+        viewerHost?.showsControlBorder = true
+        refreshViewerWindowTitle()
+        postViewerAccessibilityAnnouncement(
+            L("Remote control granted — your input now controls the shared Mac. Press Control-Option-Period to release."))
     }
 
     /// Leave control mode after the sharer revokes (`onControlRevoked`) or on
-    /// disconnect.
+    /// disconnect. Announces only when control was actually held —
+    /// cancelling a pending request isn't "control ended".
     private func exitViewerControl() {
+        let wasControlling = viewerControlState == .controlling
         viewerControlState = .none
         setViewerControlCapturing(false)
+        viewerHost?.showsControlBorder = false
+        refreshViewerWindowTitle()
+        if wasControlling {
+            postViewerAccessibilityAnnouncement(L("Remote control ended"))
+        }
     }
 
     /// Show/hide the input-capture layer and force the annotation overlay
@@ -3510,9 +3936,11 @@ class AppState: ObservableObject {
         }
     }
 
-    /// Vibrancy-backed centered placard reading "Waiting for sharer to
-    /// accept your connection…". Sized in caller; held by AppState and
-    /// toggled via `viewerWaitingPlacard?.isHidden` from
+    /// Vibrancy-backed centered placard shown between HELLO_PENDING and
+    /// the first decoded frame: spinner + "Waiting for the sharer…" +
+    /// Cancel. Constraint-sized (the caller centers it and caps its
+    /// width), so long translations grow it instead of truncating. Held by
+    /// AppState and toggled via `viewerWaitingPlacard?.isHidden` from
     /// `viewerAwaitingApproval.didSet`.
     @MainActor
     private func makeWaitingPlacard() -> NSView {
@@ -3523,21 +3951,92 @@ class AppState: ObservableObject {
         effect.wantsLayer = true
         effect.layer?.cornerRadius = 12
         effect.layer?.masksToBounds = true
+        effect.translatesAutoresizingMaskIntoConstraints = false
 
-        let label = NSTextField(labelWithString: "Waiting for sharer to accept your connection…")
+        let spinner = NSProgressIndicator()
+        spinner.style = .spinning
+        spinner.controlSize = .small
+        spinner.isIndeterminate = true
+        spinner.startAnimation(nil)
+
+        let waitingText = L("Waiting for the sharer to accept your connection…")
+        let label = NSTextField(wrappingLabelWithString: waitingText)
         label.alignment = .center
-        label.font = .systemFont(ofSize: 14, weight: .medium)
+        label.font = .preferredFont(forTextStyle: .body)
         label.textColor = .labelColor
-        label.translatesAutoresizingMaskIntoConstraints = false
-        effect.addSubview(label)
+        label.preferredMaxLayoutWidth = 320
+
+        // Cancel = the same full disconnect ⌘W performs — without it the
+        // only exits from an unanswered approval gate were the close
+        // button and the menu bar.
+        let cancelTarget = ClosureActionTarget { [weak self] in
+            Task { @MainActor [weak self] in await self?.disconnect() }
+        }
+        viewerPlacardCancelTarget = cancelTarget
+        let cancel = NSButton(
+            title: L("Cancel"),
+            target: cancelTarget,
+            action: #selector(ClosureActionTarget.invoke(_:)))
+        cancel.bezelStyle = .rounded
+
+        let row = NSStackView(views: [spinner, label])
+        row.orientation = .horizontal
+        row.spacing = 8
+        row.alignment = .centerY
+
+        let stack = NSStackView(views: [row, cancel])
+        stack.orientation = .vertical
+        stack.spacing = 12
+        stack.alignment = .centerX
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        effect.addSubview(stack)
         NSLayoutConstraint.activate([
-            label.centerXAnchor.constraint(equalTo: effect.centerXAnchor),
-            label.centerYAnchor.constraint(equalTo: effect.centerYAnchor),
-            label.leadingAnchor.constraint(greaterThanOrEqualTo: effect.leadingAnchor, constant: 16),
-            label.trailingAnchor.constraint(lessThanOrEqualTo: effect.trailingAnchor, constant: -16)
+            stack.leadingAnchor.constraint(equalTo: effect.leadingAnchor, constant: 20),
+            stack.trailingAnchor.constraint(equalTo: effect.trailingAnchor, constant: -20),
+            stack.topAnchor.constraint(equalTo: effect.topAnchor, constant: 16),
+            stack.bottomAnchor.constraint(equalTo: effect.bottomAnchor, constant: -16)
         ])
+
+        // Grouped for VoiceOver with the waiting text as the group label;
+        // the label and the Cancel button stay individually reachable
+        // inside it.
+        effect.setAccessibilityElement(true)
+        effect.setAccessibilityRole(.group)
+        effect.setAccessibilityLabel(waitingText)
         return effect
     }
+}
+
+/// NSObject trampoline so AppKit target/action controls can call a
+/// closure — AppState is not an NSObject and can't be a target itself.
+@MainActor
+private final class ClosureActionTarget: NSObject {
+    private let handler: () -> Void
+    init(handler: @escaping () -> Void) {
+        self.handler = handler
+    }
+    @objc func invoke(_ sender: Any?) {
+        handler()
+    }
+}
+
+/// Invisible view whose only job is to represent the video surface to
+/// accessibility: decoded frames render into a `CAMetalLayer`, which is
+/// not a view and therefore invisible to VoiceOver — without this the
+/// viewer window reads as empty. Framed to the aspect-fit rect by
+/// `AspectFitHostView.layout`; never participates in hit-testing, so
+/// every click still lands on the annotation canvas above it.
+private final class ViewerVideoAccessibilityView: NSView {
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setAccessibilityElement(true)
+        setAccessibilityRole(.image)
+        setAccessibilityLabel(L("Shared screen"))
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
 // Simple logger for LocalAPIClient
@@ -3595,6 +4094,40 @@ private final class AspectFitHostView: NSView {
     /// Remote-control input-capture layer, framed congruently with the video
     /// rect so normalizing within its bounds yields `[0, 1]` video coordinates.
     weak var inputCaptureSubview: NSView?
+    /// The video surface's accessibility stand-in, framed to the video
+    /// rect so VoiceOver's cursor outlines what the eye sees.
+    weak var accessibilitySubview: NSView?
+
+    /// While this viewer holds a remote-control grant, draw a highly
+    /// visible orange outline around the video content rect. The toolbar
+    /// item, window title and VoiceOver announcement carry the same state,
+    /// so the color is never the only signal.
+    var showsControlBorder: Bool = false {
+        didSet {
+            guard showsControlBorder != oldValue else { return }
+            if showsControlBorder {
+                let border = controlBorderLayer ?? makeControlBorderLayer()
+                border.isHidden = false
+            } else {
+                controlBorderLayer?.isHidden = true
+            }
+            needsLayout = true
+        }
+    }
+    private var controlBorderLayer: CALayer?
+
+    private func makeControlBorderLayer() -> CALayer {
+        let border = CALayer()
+        border.borderWidth = 4
+        border.borderColor = NSColor.systemOrange.cgColor
+        // Above the sibling subview layers so the ring stays visible over
+        // strokes; its interior is empty, so it obscures nothing.
+        border.zPosition = 100
+        layer?.addSublayer(border)
+        controlBorderLayer = border
+        return border
+    }
+
     var videoSize: CGSize = .zero {
         didSet {
             guard videoSize != oldValue else { return }
@@ -3628,9 +4161,11 @@ private final class AspectFitHostView: NSView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         metalLayer?.frame = rect
+        controlBorderLayer?.frame = rect
         CATransaction.commit()
         contentSubview?.frame = rect
         inputCaptureSubview?.frame = rect
+        accessibilitySubview?.frame = rect
     }
 
     // MARK: - Content zoom gestures

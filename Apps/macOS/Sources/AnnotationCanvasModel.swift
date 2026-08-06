@@ -176,6 +176,20 @@ final class AnnotationCanvasModel: ObservableObject {
         onOp?(.clearAll)
     }
 
+    /// Cancel the in-progress drag without committing it (the Esc
+    /// behaviour the cheat-sheet documents). Permanent tools have already
+    /// streamed throttled `.add` ops mid-drag, so peers hold a partial
+    /// shape under this id — broadcast an undo to erase it there too.
+    /// Harmless when nothing was emitted: undoing an unknown id is a no-op
+    /// on every canvas.
+    func cancelDrag() {
+        guard let ip = inProgress else { return }
+        inProgress = nil
+        if Self.ephemeralLifetime(for: ip.tool) == nil {
+            onOp?(.undo(ip.id))
+        }
+    }
+
     /// Notify the host that the user pressed Esc inside the canvas.
     func escapePressed() { onEscape?() }
 
