@@ -933,6 +933,20 @@ private struct ViewingCard: View {
 
             RemoteControlViewerButton()
 
+            // Way back to the video: the viewer window can end up buried
+            // under other apps, and the popover is where people look while
+            // viewing. Bordered + small like the row below so Disconnect
+            // keeps its slot as the session-ending action.
+            Button {
+                appState.focusViewerWindow()
+            } label: {
+                Label(L("Show Window"), systemImage: "macwindow")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .accessibilityHint(L("Brings the viewer window to the front"))
+
             HStack(spacing: 6) {
                 Button {
                     Task { await appState.toggleMic() }
