@@ -608,6 +608,7 @@
 "The connection to %@ went quiet and timed out." = "Anslutningen till %@ tystnade och löpte ut.";
 "The connection to %@ was lost." = "Anslutningen till %@ förlorades.";
 "Reconnect" = "Återanslut";
+"Back to screens" = "Tillbaka till skärmar";
 "Close" = "Stäng";
 "Dismiss notice" = "Stäng meddelandet";
 "Connection Problem" = "Anslutningsproblem";

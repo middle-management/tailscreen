@@ -623,6 +623,7 @@
 "The connection to %@ went quiet and timed out." = "The connection to %@ went quiet and timed out.";
 "The connection to %@ was lost." = "The connection to %@ was lost.";
 "Reconnect" = "Reconnect";
+"Back to screens" = "Back to screens";
 "Close" = "Close";
 "Dismiss notice" = "Dismiss notice";
 "Connection Problem" = "Connection Problem";
