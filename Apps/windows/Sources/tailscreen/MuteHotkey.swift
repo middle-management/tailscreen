@@ -25,6 +25,25 @@ final class MuteHotkeyController {
     /// presses it believing they have gone quiet.
     private(set) var unavailability: GlobalHotkeyUnavailability?
 
+    /// Invoked (on the main actor) whenever `unavailability` changes, so the
+    /// host can mirror it into whatever its views observe. A callback rather
+    /// than making this an `ObservableObject`: this file imports
+    /// TailscreenProtocol wholesale, and adding SwiftCrossUI beside that
+    /// resurrects the `Published` collision the app's targeted imports exist
+    /// to dodge.
+    var onUnavailabilityChange: (@MainActor (GlobalHotkeyUnavailability?) -> Void)?
+
+    /// The chord's platform spelling ("Ctrl+Alt+M"), for UI that names it.
+    var chordDisplay: String { chord.display(.words) }
+
+    /// The chord to advertise on microphone controls, or nil while the hotkey
+    /// is not actually registered — a tooltip naming a chord that does
+    /// nothing would teach someone their mute key works right up to the
+    /// moment it matters.
+    var chordHint: String? {
+        unavailability == nil ? chordDisplay : nil
+    }
+
     /// Which microphone the chord currently flips, for the UI to say so.
     private(set) var target: MuteHotkeyTarget?
 
@@ -110,17 +129,25 @@ final class MuteHotkeyController {
         switch WindowsHotkey.hold(chord) {
         case .success(let held):
             hotkey = held
-            unavailability = nil
+            setUnavailability(nil)
             loggedUnavailability = false
             note("\(chord.display(.words)) holds the microphone toggle")
         case .failure(let reason):
-            unavailability = reason
+            setUnavailability(reason)
             guard !loggedUnavailability else { return }
             loggedUnavailability = true
             note(
                 "warning: \(chord.display(.words)) is unavailable — \(reason.reason); "
                     + "use the microphone button in the window")
         }
+    }
+
+    /// Record a transition and tell the host about it — only on change, so a
+    /// failure re-reported every 50 ms tick is one mirror write, not many.
+    private func setUnavailability(_ reason: GlobalHotkeyUnavailability?) {
+        guard reason != unavailability else { return }
+        unavailability = reason
+        onUnavailabilityChange?(reason)
     }
 
     private func relinquish() {
