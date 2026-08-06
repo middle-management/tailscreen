@@ -302,11 +302,23 @@ int32_t winvideo_init(void) {
     const D3D_DRIVER_TYPE types[] = {D3D_DRIVER_TYPE_HARDWARE,
                                      D3D_DRIVER_TYPE_WARP};
     HRESULT hr = E_FAIL;
+    // Which driver won, and at what feature level, is printed because it is the
+    // first thing worth knowing when one architecture's self-test passes and
+    // another's does not: a runner that satisfies HARDWARE with a virtual
+    // adapter is not running the same code path as one that falls through to
+    // WARP, and nothing else in the log would say so.
+    D3D_FEATURE_LEVEL level = (D3D_FEATURE_LEVEL)0;
     for (D3D_DRIVER_TYPE type : types) {
         hr = D3D11CreateDevice(nullptr, type, nullptr, flags, nullptr, 0,
-                               D3D11_SDK_VERSION, &g.device, nullptr,
+                               D3D11_SDK_VERSION, &g.device, &level,
                                &g.context);
-        if (SUCCEEDED(hr)) break;
+        if (SUCCEEDED(hr)) {
+            fprintf(stderr, "WINVIDEO_SELFTEST driver=%s feature_level=0x%04X\n",
+                    type == D3D_DRIVER_TYPE_HARDWARE ? "hardware" : "warp",
+                    (unsigned)level);
+            fflush(stderr);
+            break;
+        }
     }
     if (FAILED(hr)) {
         // Genuinely once here, unlike `logOnce`, which is deliberately not

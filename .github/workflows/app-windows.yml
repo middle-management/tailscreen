@@ -788,8 +788,13 @@ jobs:
           set +e
           exe=$(find .build -name winvideo-selftest.exe -print -quit)
           if [ -z "$exe" ]; then echo "no winvideo-selftest.exe produced"; exit 1; fi
-          "$exe"
-          rc=$?
+          # Teed, because this job is ~2000 lines long and the post-job git
+          # cleanup that follows a failure is verbose enough to push these few
+          # lines out of any reasonable tail. The `Render self-test diagnosis`
+          # step at the very end reprints this file so the verdict is the LAST
+          # thing in the log rather than buried 40 lines up.
+          "$exe" 2>&1 | tee "$RUNNER_TEMP/winvideo-selftest.log"
+          rc=${PIPESTATUS[0]}
           set -e
           case "$rc" in
             0) echo "render self-test PASS" ;;
@@ -1273,6 +1278,28 @@ jobs:
             echo "> and the MSIX installs; the .zip (unzip and run \`tailscreen.exe\`)"
             echo "> needs no trust step at all. SignPath signing replaces this."
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # LAST on purpose. A failing render self-test is the one verdict in this
+      # job that is a single line of arithmetic, and it was sitting ~40 verbose
+      # lines of post-job git cleanup up from the end of a ~2000-line log —
+      # far enough that reading it back through the Actions log API was not
+      # reliably possible. Reprinting it here puts the bar values and the exit
+      # code at the very end, where any `tail` finds them.
+      #
+      # `if: failure()` rather than a condition on the self-test specifically:
+      # it costs nothing when the file is absent, and a job that failed for
+      # some other reason simply prints nothing.
+      - name: Render self-test diagnosis
+        if: failure()
+        shell: bash
+        run: |
+          f="$RUNNER_TEMP/winvideo-selftest.log"
+          if [ -f "$f" ]; then
+            echo '--- render self-test output (reprinted; see the step above) ---'
+            cat "$f"
+          else
+            echo 'no render self-test output — it did not get as far as running'
+          fi
 
       - name: CI summary
         if: ${{ always() && inputs.verify_msix }}
