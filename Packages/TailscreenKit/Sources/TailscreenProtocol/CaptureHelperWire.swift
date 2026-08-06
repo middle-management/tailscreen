@@ -188,7 +188,7 @@ public struct HelperFrameReader {
     public func readNext() -> (type: UInt8, payload: Data)? {
         guard let header = readExactly(5) else { return nil }
         let type = header[0]
-        let len = UInt32(header[1]) << 24 | UInt32(header[2]) << 16 | UInt32(header[3]) << 8 | UInt32(header[4])
+        let len = header.readBE(UInt32.self, at: header.startIndex + 1)
         let payload: Data
         if len > 0 {
             guard let data = readExactly(Int(len)) else { return nil }
@@ -227,7 +227,7 @@ public struct HelperControlReader {
     public func readNext() -> (type: UInt8, payload: Data)? {
         guard let header = readExactly(5) else { return nil }
         let type = header[0]
-        let len = UInt32(header[1]) << 24 | UInt32(header[2]) << 16 | UInt32(header[3]) << 8 | UInt32(header[4])
+        let len = header.readBE(UInt32.self, at: header.startIndex + 1)
         let payload = len > 0 ? (readExactly(Int(len)) ?? Data()) : Data()
         return (type, payload)
     }
@@ -284,11 +284,4 @@ public final class HelperControlWriter {
     }
 }
 
-extension Data {
-    fileprivate mutating func appendBE(_ value: UInt32) {
-        append(UInt8((value >> 24) & 0xFF))
-        append(UInt8((value >> 16) & 0xFF))
-        append(UInt8((value >> 8) & 0xFF))
-        append(UInt8(value & 0xFF))
-    }
-}
+// `appendBE`/`readBE` live in `DataBigEndian.swift`, shared module-wide.

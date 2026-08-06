@@ -4114,6 +4114,11 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// Overwrites bytes 2-3 (sequence) and 8-11 (SSRC) of an RTP packet.
     /// Avoids re-encoding the whole header per viewer. Internal (not
     /// private) so the per-viewer rewrite is unit testable.
+    ///
+    /// The big-endian byte stores are open-coded on purpose: this is an
+    /// in-place overwrite at fixed offsets, not an append, and
+    /// TailscreenProtocol's internal `appendBE`/`readBE` helpers neither fit
+    /// that shape nor cross the module boundary.
     public static func rewriteRTPHeader(_ packet: inout Data, sequence: UInt16, ssrc: UInt32) {
         packet[2] = UInt8((sequence >> 8) & 0xFF)
         packet[3] = UInt8(sequence & 0xFF)
