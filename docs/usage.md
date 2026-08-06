@@ -178,6 +178,11 @@ browser-free. **Add Account…** starts a fresh sign-in, holding ⌥ over a
 profile row swaps it for **Remove Account…**, and the menubar's identity
 strip always shows which account a new share will start on.
 
+The same accounts also live in **Settings → Accounts** (macOS) with
+visible per-row Remove buttons and an Add Account… — no hidden ⌥-click
+required. And if you want Tailscreen ready the moment you log in, flip
+**Settings → General → Launch at login**.
+
 ## Annotations
 
 The viewer's toolbar has drawing tools. Doodle on the sharer's screen and
@@ -192,7 +197,8 @@ sharing and they're gone.
 ## Voice chat
 
 Both sides have a mic button (on macOS, **⌃⌥M** also works system-wide,
-even when Tailscreen isn't focused). Audio is Opus over the same tunnel as
+even when Tailscreen isn't focused — remappable in **Settings → Keyboard
+Shortcuts**, which also warns when another app already owns the combo). Audio is Opus over the same tunnel as
 the video.
 With multiple viewers, everyone hears everyone — the sharer relays each
 viewer's voice to the other viewers. The receive path runs an adaptive
@@ -289,13 +295,25 @@ and silently.
   for constrained links; High spends more encoder quality. Touch any knob
   individually and the preset re-labels itself Custom.
 - **Frame rate** — 15 / 30 / 60 fps cap.
-- **Codec** — Automatic (HEVC with H.264 fallback) or H.264.
+- **Codec** — Automatic (HEVC with H.264 fallback), HEVC, or H.264.
+  Explicit HEVC is the no-safety-net choice: it never falls back, so
+  viewers that can only decode H.264 won't be able to watch — the pane
+  says so when you pick it.
+- **Encoder quality** — a 0.30–1.00 slider for the encoder's
+  quality/bitrate trade-off. It's what the presets mostly differ on, so it
+  unlocks only on Custom (the other presets just show their value).
 - **Limit bandwidth** — an optional hard ceiling, 1–50 Mbps.
 
-The bandwidth ceiling applies live, mid-share. Frame rate and codec
-changes apply the next time you start sharing. Note these are *caps*, not
-targets — the adaptive congestion control still reduces bitrate and frame
-rate below them when the network demands it.
+**Settings → Color** holds the 10-bit and HDR capture opt-ins that used
+to require environment variables. Both apply the next time you start
+sharing; HDR needs a display with EDR headroom, and if a viewer can't
+decode 10-bit video the share falls back to 8-bit for everyone.
+
+The bandwidth ceiling applies live, mid-share. Frame rate, codec,
+encoder quality, and color changes apply the next time you start sharing.
+Note these are *caps*, not targets — the adaptive congestion control
+still reduces bitrate and frame rate below them when the network demands
+it.
 
 ## The stats overlay
 
@@ -326,8 +344,8 @@ always the authority for the build you're running.)
 | `Esc` | Cancel the in-progress drag |
 | `⌥⌘+` / `⌥⌘-` | Zoom the video in / out |
 | `⌘0` | Reset zoom and window size |
-| `⌃⌥M` | Toggle the microphone on/off (works system-wide, even when Tailscreen isn't focused) |
-| `⌃⌥.` | Sharer only: instantly revoke remote control (system-wide, active only while a grant is live) |
+| `⌃⌥M` | Toggle the microphone on/off (works system-wide, even when Tailscreen isn't focused; remappable in Settings → Keyboard Shortcuts) |
+| `⌃⌥.` | Sharer: instantly revoke remote control (system-wide, active only while a grant is live; remappable in Settings → Keyboard Shortcuts) |
 | `⌘W` | Disconnect the viewer |
 | `⌘Q` | Quit Tailscreen |
 | `⇧⌘/` | Show/hide the keyboard-shortcut overlay |
