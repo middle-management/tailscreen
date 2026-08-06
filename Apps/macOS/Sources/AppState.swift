@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import Carbon.HIToolbox
 import Combine
 import CoreAudio
@@ -3208,6 +3209,15 @@ class AppState: ObservableObject {
     /// live request; only the notification is deduped.
     private func handleControlRequestsChanged(_ requests: [ControlRequestInfo]) {
         controlRequests = requests
+        // A queued Accessibility-grant intent dies with its request:
+        // however the request left the list — denied, released, viewer
+        // disconnected, share stopped — auto-granting later would grant
+        // something the sharer is no longer looking at.
+        if let intentID = pendingAccessibilityGrantRequestID,
+            !requests.contains(where: { $0.id == intentID })
+        {
+            clearAccessibilityGrantIntent()
+        }
         let candidates = Self.noticeCandidates(requests)
         let answered = SharerNoticeDecision.noticesToWithdraw(
             candidates: candidates, alreadyNotified: notifiedControlRequestIPs)
@@ -3219,16 +3229,109 @@ class AppState: ObservableObject {
         post(decision.post)
     }
 
-    /// Grant remote control to the requesting viewer on `connectionID`. The
-    /// server refuses (and fires `onControlAccessibilityRequired`) if the app
-    /// lacks the Accessibility TCC grant, so this never installs a dead grant.
+    /// The control request the sharer explicitly clicked Grant on while the
+    /// app lacked the Accessibility permission. In-memory only — deliberately
+    /// never persisted, so a relaunch can't resurrect a stale intent — and
+    /// only ever set from an explicit Grant press (`grantRemoteControl`).
+    /// While set, the request's row in `ControlRequestsList` shows a
+    /// "Waiting for Accessibility permission…" caption and
+    /// `accessibilityGrantRecheckTimer` watches for the permission landing.
+    @Published private(set) var pendingAccessibilityGrantRequestID: UUID?
+
+    /// 1 s poll scoped to a queued grant intent: started when the intent is
+    /// set, invalidated the moment it clears. A poll rather than an
+    /// app-activation observer because a TCC toggle takes effect with no
+    /// edge this process can observe — the sharer flips the switch in
+    /// System Settings and may interact only with the menubar popover
+    /// afterwards, never re-activating the app. Same polling shape as
+    /// `shareLockProbeTimer`, but intent-scoped like `revokeControlHotkey`
+    /// so idle sessions never tick it.
+    private var accessibilityGrantRecheckTimer: Timer?
+
+    /// Grant remote control to the requesting viewer on `connectionID`. If
+    /// the app lacks the Accessibility TCC grant the server refuses (and
+    /// fires `onControlAccessibilityRequired` → alert + settings deep-link)
+    /// — but the click is remembered as an intent for this specific
+    /// request, and the moment the permission lands while the request is
+    /// still pending the grant completes automatically, so the sharer
+    /// doesn't have to notice the still-pending row and click Grant a
+    /// second time after the trip to System Settings.
     func grantRemoteControl(_ connectionID: UUID) {
-        server?.grantControl(toConnectionID: connectionID)
+        // The newest explicit click wins: a grant aimed at one request
+        // supersedes an intent queued for another — control goes to exactly
+        // one viewer, and it must be the one the sharer chose last.
+        if pendingAccessibilityGrantRequestID != connectionID {
+            clearAccessibilityGrantIntent()
+        }
+        guard server?.grantControl(toConnectionID: connectionID) == true else {
+            // Refused. The only refusal a later re-click could cure is the
+            // missing Accessibility permission — queue the intent for
+            // exactly that case, and only while the request is still
+            // pending (an intent for a vanished request has nothing to
+            // complete).
+            if !AXIsProcessTrusted(),
+                controlRequests.contains(where: { $0.id == connectionID })
+            {
+                pendingAccessibilityGrantRequestID = connectionID
+                startAccessibilityGrantRecheck()
+            }
+            return
+        }
+        clearAccessibilityGrantIntent()
     }
 
-    /// Deny a pending control request without granting.
+    /// Deny a pending control request without granting. Also drops a queued
+    /// Accessibility-grant intent for it — a denied request must never
+    /// auto-grant later.
     func denyRemoteControl(_ connectionID: UUID) {
+        if pendingAccessibilityGrantRequestID == connectionID {
+            clearAccessibilityGrantIntent()
+        }
         server?.declineControlRequest(connectionID: connectionID)
+    }
+
+    /// Start the recheck poll behind a queued grant intent. Idempotent.
+    private func startAccessibilityGrantRecheck() {
+        guard accessibilityGrantRecheckTimer == nil else { return }
+        let timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.recheckAccessibilityGrantIntent()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        accessibilityGrantRecheckTimer = timer
+    }
+
+    /// One poll tick: complete the queued grant if the Accessibility
+    /// permission has landed and the request is still pending. Also drops
+    /// an intent whose request vanished by a path that bypasses
+    /// `handleControlRequestsChanged` (`stopSharing` clears
+    /// `controlRequests` directly), so a stale intent self-clears within a
+    /// tick instead of polling forever.
+    private func recheckAccessibilityGrantIntent() {
+        guard let intentID = pendingAccessibilityGrantRequestID else {
+            clearAccessibilityGrantIntent()  // stray timer with no intent
+            return
+        }
+        guard controlRequests.contains(where: { $0.id == intentID }) else {
+            clearAccessibilityGrantIntent()
+            return
+        }
+        guard AXIsProcessTrusted() else { return }
+        logger.log("Accessibility permission landed — completing the queued control grant")
+        clearAccessibilityGrantIntent()
+        if server?.grantControl(toConnectionID: intentID) != true {
+            logger.log("Queued control grant no longer applicable — dropped")
+        }
+    }
+
+    /// Drop the queued grant intent (if any) and stop its poll.
+    private func clearAccessibilityGrantIntent() {
+        if pendingAccessibilityGrantRequestID != nil {
+            pendingAccessibilityGrantRequestID = nil
+        }
+        accessibilityGrantRecheckTimer?.invalidate()
+        accessibilityGrantRecheckTimer = nil
     }
 
     /// Revoke the live grant (menu item, SharingCard Stop button, or panic
@@ -3259,12 +3362,14 @@ class AppState: ObservableObject {
     }
 
     /// Alert + deep-link when a grant is refused for want of Accessibility
-    /// permission. Mirrors the Screen Recording settings deep-link.
+    /// permission. Mirrors the Screen Recording settings deep-link. The
+    /// refused grant is queued by `grantRemoteControl`, so the copy promises
+    /// auto-completion rather than asking for a second click.
     private func presentAccessibilityRequiredAlert() {
         let alert = NSAlert()
         alert.messageText = L("Accessibility Permission Needed")
         alert.informativeText = L(
-            "To let a viewer control your Mac, allow Tailscreen under System Settings → Privacy & Security → Accessibility, then grant control again."
+            "To let a viewer control your Mac, allow Tailscreen under System Settings → Privacy & Security → Accessibility. Tailscreen will grant control automatically once the permission is enabled."
         )
         alert.addButton(withTitle: L("Open Settings"))
         alert.addButton(withTitle: L("Cancel"))

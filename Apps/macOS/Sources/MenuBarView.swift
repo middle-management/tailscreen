@@ -794,8 +794,10 @@ struct PendingViewersList: View {
 
 /// One row per viewer asking for remote control, with inline Grant / Deny
 /// buttons. Shown in the SharingCard whenever a viewer has requested control.
-/// Granting revokes any current grantee (single-holder). Granting is refused
-/// with an Accessibility prompt if the app lacks that permission.
+/// Granting revokes any current grantee (single-holder). Granting without the
+/// Accessibility permission prompts for it and queues the grant: the row
+/// shows a waiting caption, and the grant completes automatically once the
+/// permission lands (see `AppState.grantRemoteControl`).
 struct ControlRequestsList: View {
     @EnvironmentObject var appState: AppState
     let requests: [ControlRequestInfo]
@@ -803,34 +805,45 @@ struct ControlRequestsList: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             ForEach(requests) { request in
-                HStack(spacing: 6) {
-                    Image(systemName: "cursorarrow.rays")
-                        .font(.subheadline)
-                        .foregroundStyle(.blue)
-                    Text(L("\(request.displayName) wants control"))
-                        .font(.subheadline.weight(.medium))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Spacer(minLength: 4)
-                    Button(L("Deny")) {
-                        appState.denyRemoteControl(request.id)
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "cursorarrow.rays")
+                            .font(.subheadline)
+                            .foregroundStyle(.blue)
+                        Text(L("\(request.displayName) wants control"))
+                            .font(.subheadline.weight(.medium))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer(minLength: 4)
+                        Button(L("Deny")) {
+                            appState.denyRemoteControl(request.id)
+                        }
+                        .font(.caption)
+                        .buttonStyle(.bordered)
+                        .controlSize(.mini)
+                        .fixedSize()
+                        .accessibilityLabel(L("Deny control for \(request.displayName)"))
+                        Button(L("Grant")) {
+                            appState.grantRemoteControl(request.id)
+                        }
+                        .font(.caption)
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.mini)
+                        .fixedSize()
+                        .help(L("Grants full keyboard and mouse control of your entire Mac"))
+                        .accessibilityLabel(L("Grant control to \(request.displayName)"))
+                        .accessibilityHint(
+                            L("Gives full keyboard and mouse control of your entire Mac, not just the shared window"))
                     }
-                    .font(.caption)
-                    .buttonStyle(.bordered)
-                    .controlSize(.mini)
-                    .fixedSize()
-                    .accessibilityLabel(L("Deny control for \(request.displayName)"))
-                    Button(L("Grant")) {
-                        appState.grantRemoteControl(request.id)
+                    // A Grant clicked without the Accessibility permission is
+                    // queued, not refused — say so on the row, or it looks
+                    // untouched and the eventual auto-grant is a surprise.
+                    if appState.pendingAccessibilityGrantRequestID == request.id {
+                        Text(L("Waiting for Accessibility permission…"))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                    .font(.caption)
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.mini)
-                    .fixedSize()
-                    .help(L("Grants full keyboard and mouse control of your entire Mac"))
-                    .accessibilityLabel(L("Grant control to \(request.displayName)"))
-                    .accessibilityHint(
-                        L("Gives full keyboard and mouse control of your entire Mac, not just the shared window"))
                 }
             }
             // Whole-Mac scope warning: keyboard input lands on the sharer's
