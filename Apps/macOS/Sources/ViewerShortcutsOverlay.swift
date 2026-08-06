@@ -86,7 +86,7 @@ struct ViewerShortcutsOverlay: View {
                     Shortcut(keys: L("Double-tap"), description: L("Toggle 2× zoom")),
                     Shortcut(keys: "⌥⌘+ / ⌥⌘-", description: L("Zoom in / out")),
                     Shortcut(keys: "⌘0", description: L("Reset zoom and window size"))
-                ]),
+                ])
         ]
         if let micChord = model.micChord {
             out.append(

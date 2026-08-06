@@ -194,15 +194,6 @@ class AppState: ObservableObject {
         generation < lastApplied
     }
 
-    /// User preference: park new viewers in a pending state and require
-    /// explicit Accept/Deny before they see video. Persisted to
-    /// UserDefaults under `requireViewerApproval`. Defaults **on** for
-    /// installs that never touched the toggle (tri-state migration in
-    /// `ViewerApprovalDefaults.load`); an explicit opt-out sticks, and
-    /// `TAILSCREEN_OPEN_DOOR=1` forces it off for the scripted harnesses.
-    /// SwiftUI views bind to this via `appState.requireViewerApproval`;
-    /// the setter syncs the live server too so the toggle takes effect
-    /// mid-share.
     /// True only when we *know* macOS will not display our notifications —
     /// the user explicitly denied them. Never true for "not asked yet", which
     /// would be crying wolf.
@@ -213,6 +204,15 @@ class AppState: ObservableObject {
     /// UI built on this only ever renders a warning, and never reassures.
     @Published private(set) var notificationsDenied = false
 
+    /// User preference: park new viewers in a pending state and require
+    /// explicit Accept/Deny before they see video. Persisted to
+    /// UserDefaults under `requireViewerApproval`. Defaults **on** for
+    /// installs that never touched the toggle (tri-state migration in
+    /// `ViewerApprovalDefaults.load`); an explicit opt-out sticks, and
+    /// `TAILSCREEN_OPEN_DOOR=1` forces it off for the scripted harnesses.
+    /// SwiftUI views bind to this via `appState.requireViewerApproval`;
+    /// the setter syncs the live server too so the toggle takes effect
+    /// mid-share.
     @Published var requireViewerApproval: Bool = ViewerApprovalDefaults.load() {
         didSet {
             ViewerApprovalDefaults.save(requireViewerApproval)
@@ -327,6 +327,7 @@ class AppState: ObservableObject {
             registerMicHotkey()
             AppMenu.reinstall()
             syncShortcutChordDisplays()
+            viewerToolbar?.refreshMicChordDisplay()
         }
     }
 

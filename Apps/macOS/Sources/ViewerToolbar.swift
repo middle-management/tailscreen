@@ -248,6 +248,15 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
         toolbar.validateVisibleItems()
     }
 
+    /// Re-render the mic item's tooltip so its parenthetical chord tracks a
+    /// Settings remap — the `$isMicOn` sink only fires on mic toggles, so
+    /// `AppState.micHotkeyChord.didSet` calls this (its channel into the
+    /// toolbar, alongside `AppMenu.reinstall()` and the cheat-sheet sync).
+    func refreshMicChordDisplay() {
+        guard let appState else { return }
+        updateMicIcon(isOn: appState.isMicOn)
+    }
+
     // MARK: - NSToolbarDelegate
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -475,7 +484,7 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
             row.image = Self.swatchImage(for: color)
             menu.addItem(row)
         }
-        item.itemMenu = menu
+        item.menu = menu
         item.isEnabled = annotationsEnabled
         colorMenuItem = item
         applyColorVisuals(to: item)

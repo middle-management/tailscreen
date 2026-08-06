@@ -242,11 +242,17 @@ extension ViewerCommands: NSMenuItemValidation {
             return appState.connectionState == .viewing || appState.viewerSessionEnding != nil
         case #selector(stopRemoteControl(_:)):
             // Sharer-side: enabled only while a viewer is actively
-            // controlling. ⌃⌥. is shared with Release Remote Control below;
-            // the two validations are disjoint by state (a grant issued to
-            // a viewer vs. a grant held as a viewer), so a keypress
-            // resolves to the one that applies.
-            return appState?.controlGrantee != nil
+            // controlling. The chord is shared with Release Remote Control
+            // below, and sharing-while-viewing makes both roles live at
+            // once — menu key equivalents dispatch to the FIRST enabled
+            // item, so while *we* are controlling someone else's Mac the
+            // release must win the chord (revoking our own grantee on a
+            // release keypress would be the wrong grant). Yielding here
+            // only cedes the keypress — the sharer-side revoke stays one
+            // click away in the SharingCard either way.
+            guard let appState else { return false }
+            return appState.controlGrantee != nil
+                && appState.viewerControlState != .controlling
         case #selector(releaseRemoteControl(_:)):
             // Viewer-side ⌃⌥.; see the disambiguation note above.
             return appState?.viewerControlState == .controlling
