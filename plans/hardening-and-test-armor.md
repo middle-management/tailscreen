@@ -1,6 +1,16 @@
 # Hardening & test armor: wire-byte registry, parser fuzzing, and closing known gaps
 
-> Status: proposed (this PR is plan-only; no code changes).
+> Status: implemented (verified against the tree 2026-08-06). All ten steps
+> below landed: `WireByteRegistryTests` + its seams (`CaseIterable` on the
+> four wire enums, `RTPHeader.firstViewerSSRC`, `PickerHelperFraming`),
+> `ParserFuzzTests` with the `decodeParameterSets` internal seam,
+> `RRAccounting` (now in TailscreenProtocol) + `RRAccountingTests`, the
+> NACK wraparound cases, the NaN/Infinity pinning (incl. the NaN-safe
+> `RemoteControlMapping.globalPoint`), `RemoteControlDefaults` +
+> `AppState.allowControlRequests` + the Settings toggle, the panic-hotkey
+> grant-scoped lifecycle, the `build-release` job + diff-coverage gate in
+> `build.yml` + `soak.yml`/`SoakTests`, and the test bookkeeping (now the
+> `test-catalog` skill). Kept for the rationale and the file map.
 
 ## Problem & motivation
 
@@ -426,30 +436,30 @@ suite.
 
 ## Implementation steps (ordered checklist)
 
-1. [ ] Source seams for the registry: `CaseIterable` on the four wire enums;
+1. [x] Source seams for the registry: `CaseIterable` on the four wire enums;
    `RTPHeader.firstViewerSSRC = 2` (+ use at `TailscaleScreenShareServer.swift:2034`);
    hoist picker framing writer/reader to an internal `PickerHelperFraming`.
-2. [ ] `Tests/TailscreenTests/WireByteRegistryTests.swift` — five channel tables, exactness +
+2. [x] `Tests/TailscreenTests/WireByteRegistryTests.swift` — five channel tables, exactness +
    exhaustiveness + uniqueness helpers, channel invariants (≤0x7F, PT range, SSRC ordering,
    picker round-trip), the cross-channel disjointness documentation assertion. Fold the three
    pinned bytes out of `LossRecoveryWireTests.testNewControlBytesAreDistinctAndInControlRange`.
-3. [ ] Fix `decodeParameterSets` indexing to `startIndex`-relative and make it `internal`
+3. [x] Fix `decodeParameterSets` indexing to `startIndex`-relative and make it `internal`
    (`HelperScreenCapture.swift:284-319`); `Tests/TailscreenTests/ParserFuzzTests.swift` with
    the four strategies × seven targets, seeded, budgeted.
-4. [ ] `RRAccounting` extraction + baseline/duplicate fixes in
+4. [x] `RRAccounting` extraction + baseline/duplicate fixes in
    `TailscaleScreenShareClient.swift:913-957`; new `RRAccountingTests` (baseline interval,
    duplicate storm, wrap across 65535 via extended seq, retransmit-counts-once).
-5. [ ] NACK wrap tests in `NACKSchedulerTests` (+ `encodeNACK`/`decodeNACK` wrap round-trip in
+5. [x] NACK wrap tests in `NACKSchedulerTests` (+ `encodeNACK`/`decodeNACK` wrap round-trip in
    `RTPPacketTests`); fix anything they surface.
-6. [ ] NaN/Infinity: parser-reject cases in `ScreenShareProtocolTests`; NaN-safe
+6. [x] NaN/Infinity: parser-reject cases in `ScreenShareProtocolTests`; NaN-safe
    `globalPoint` + `RemoteControlMappingTests` cases; invariant comment on `decodeInputEvent`.
-7. [ ] `RemoteControlDefaults` + `AppState.allowControlRequests` + Settings section + server
+7. [x] `RemoteControlDefaults` + `AppState.allowControlRequests` + Settings section + server
    gate + `.controlRevoked` decline reply; pure notification-dedupe decision + tests
    (`RemoteControlPolicyTests` or a small new suite); catalog entries for `en`/`sv`.
-8. [ ] Panic-hotkey lifecycle move into the `onControlGrantChanged` handler.
-9. [ ] CI: `build-release` job; `scripts/diff-coverage.sh` + gate step (warn-first);
+8. [x] Panic-hotkey lifecycle move into the `onControlGrantChanged` handler.
+9. [x] CI: `build-release` job; `scripts/diff-coverage.sh` + gate step (warn-first);
    `.github/workflows/soak.yml` + `SoakTests.swift`.
-10. [ ] CLAUDE.md bookkeeping in the same commits: new suites added to the pure-decision test
+10. [x] CLAUDE.md bookkeeping in the same commits: new suites added to the pure-decision test
     list; the two new env affordances (`TAILSCREEN_SOAK`) in the env-var table; CI section
     gains the two new jobs/workflow.
 

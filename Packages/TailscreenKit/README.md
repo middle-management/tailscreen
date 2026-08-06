@@ -1,6 +1,6 @@
 # TailscreenKit
 
-The platform-portable core of Tailscreen, in five targets/tiers:
+The platform-portable core of Tailscreen, in six targets/tiers:
 
 - **`TailscreenProtocol`** — the port-7447 wire protocol (RTP
   packetization, framed TCP messages, UDP control bytes, helper/picker IPC
@@ -58,8 +58,21 @@ The platform-portable core of Tailscreen, in five targets/tiers:
   `CaptureHelperWire`'s `OutType`/`InType` — the seam already existed as an
   IPC wire and simply hadn't been named as a portability boundary. Depends
   on `TailscreenProtocol` + `TailscreenTransport` + `TailscaleKit`.
+- **`TailscreenViewerTsnet`** — the `@MainActor` tsnet-backed viewer
+  transport (`TsnetTransport` + `ViewerBackChannel`) the Linux and Windows
+  apps drive their viewers with: node bring-up (including the interactive
+  browser-login URL off the IPN bus), peer discovery, the UDP media socket,
+  the TCP back-channel, and the run loop that feeds `ViewerPipeline`. It
+  lived in `Packages/TailscreenLinuxBackends` until the Windows app needed
+  it; nothing in it was ever Linux-specific, and moving it here means
+  consuming the transport no longer drags in a video decoder or an audio
+  backend a host may implement differently. Like `TailscreenTransport`,
+  compiling it needs only the patched libtailscale header —
+  `libtailscale.a` is a link-time input for the executable. Depends on
+  `TailscreenProtocol` + `TailscreenAudio` + `TailscreenTransport` +
+  `TailscreenViewer` + `TailscaleKit`.
 
-All five build and run on Linux; they're the libraries a future non-macOS
+All six build and run on Linux; they're the libraries a non-macOS
 Tailscreen viewer or sharer links against. See `plans/porting-plan.md` for
 that roadmap.
 
@@ -71,21 +84,23 @@ that roadmap.
   products so app code keeps using the types unqualified).
 - Because the app crosses a module boundary, everything the app touches is
   `public` — including explicit memberwise initializers (Swift never
-  synthesizes those as public). Test-only seams stay `internal`: the test
-  suite uses `@testable import TailscreenProtocol` /
-  `@testable import TailscreenTransport` / `@testable import TailscreenAudio` /
-  `@testable import TailscreenSharer`. The sharer tier is the one place this
-  rule bends: its extracted decision functions (`nextAdaptiveBitrate`,
-  `fecSweepDecision`, `admissionDecision`, …) are `public` even though only
-  tests call them today — they're the reusable part of the data plane, and a
-  second host implementation is exactly who would want them.
+  synthesizes those as public). Test-only seams stay `internal`: the package
+  suites use `@testable import TailscreenProtocol` /
+  `@testable import TailscreenAudio` / `@testable import TailscreenViewer`.
+  The sharer tier needs no `@testable`: its extracted decision functions
+  (`nextAdaptiveBitrate`, `fecSweepDecision`, `admissionDecision`, …) are
+  `public` — they're the reusable part of the data plane, and a second host
+  implementation is exactly who would want them — so `TailscreenSharerTests`
+  imports the module plainly. `TailscreenTransport` has no package tests;
+  the macOS app's suite exercises it through the app's dependency.
 - `Tests/TailscreenProtocolTests` began as a shallow smoke suite and now
   also holds the **migrated pure suites** — the loss-recovery/RTP/wire/util
   tests whose subject types live entirely in this package (FEC, NACK,
   retransmit, RR, RTP packet/buffer/audio, receive-loop policy, capture-helper
   wire, screen-share/share-response protocol, share lock, quality settings,
   instance naming, viewer zoom math, Opus codec, the multi-account
-  `AccountProfileStore` incl. both hosts' migration paths). They run on Linux CI
+  `AccountProfileStore` incl. both hosts' migration paths); the viewer tier has
+  its own `Tests/TailscreenViewerTests`. They run on Linux CI
   (`linux-protocol`). `Tests/TailscreenSharerTests` holds the sharer-tier
   decision suites (`CongestionDecisionTests`, `FECOverheadDecisionTests`,
   `PerViewerFairnessDecisionTests`, `HelperRestartDecisionTests`,
