@@ -326,6 +326,7 @@ class AppState: ObservableObject {
             HotkeyChordStore.saveMic(micHotkeyChord)
             registerMicHotkey()
             AppMenu.reinstall()
+            syncShortcutChordDisplays()
         }
     }
 
@@ -350,6 +351,10 @@ class AppState: ObservableObject {
                     modifiers: revokeHotkeyChord.modifiers)
             }
             AppMenu.reinstall()
+            // The viewer-side twins of the chord: the capture layer's
+            // intercept and the cheat sheet's printed rows.
+            viewerControlInput?.releaseChord = revokeHotkeyChord
+            syncShortcutChordDisplays()
         }
     }
 
@@ -2257,8 +2262,10 @@ class AppState: ObservableObject {
         controlInput.onEvent = { [weak self] event in
             Task { [weak self] in await self?.client?.sendInputEvent(event) }
         }
-        // ⌃⌥. while capturing releases control instead of being forwarded
-        // to the sharer — the defensive twin of the File-menu item.
+        // The release chord (⌃⌥. unless remapped) while capturing releases
+        // control instead of being forwarded to the sharer — the defensive
+        // twin of the File-menu item. Seeded here, re-pushed on remap.
+        controlInput.releaseChord = revokeHotkeyChord
         controlInput.onReleaseChord = { [weak self] in
             self?.stopViewerControl()
         }
@@ -2311,6 +2318,7 @@ class AppState: ObservableObject {
         host.addSubview(shortcutsHost.view)
         shortcutsHost.layout(in: host)
         self.viewerShortcutsHost = shortcutsHost
+        syncShortcutChordDisplays()
 
         // "Waiting for sharer to accept" placard. Constraint-centered so
         // long translations grow it instead of truncating (the old fixed
@@ -2689,7 +2697,19 @@ class AppState: ObservableObject {
     func toggleShortcutsPanel() {
         let host = shortcutsPanelHost ?? ViewerShortcutsPanelHost()
         shortcutsPanelHost = host
+        syncShortcutChordDisplays()
         host.toggle()
+    }
+
+    /// Push the current mic/revoke display chords into every cheat-sheet
+    /// model, so the sheet prints what Settings → Keyboard Shortcuts
+    /// actually stores. Called when a sheet host is (re)created and from
+    /// both chord `didSet`s.
+    func syncShortcutChordDisplays() {
+        for model in [viewerShortcutsHost?.model, shortcutsPanelHost?.model] {
+            model?.micChord = micShortcutDisplay
+            model?.controlChord = revokeShortcutDisplay
+        }
     }
 
     /// View → Enter Full Screen (⌃⌘F) on the viewer window.
@@ -4017,7 +4037,7 @@ class AppState: ObservableObject {
         viewerHost?.showsControlBorder = true
         refreshViewerWindowTitle()
         postViewerAccessibilityAnnouncement(
-            L("Remote control granted — your input now controls the shared Mac. Press Control-Option-Period to release."))
+            L("Remote control granted — your input now controls the shared Mac. Use Stop Controlling in the toolbar to release."))
     }
 
     /// Leave control mode after the sharer revokes (`onControlRevoked`) or on

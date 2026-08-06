@@ -311,10 +311,6 @@
 "Sign Out Failed" = "Utloggning misslyckades";
 "Error" = "Fel";
 "Failed to start sharing: %@" = "Misslyckades att starta delning: %@";
-"Can't decode the video" = "Kan inte avkoda videon";
-"This Mac can't decode the %@ video stream from the sharer (it likely lacks %@ hardware decode). Asking the sharer to switch to H.264 — the screen should appear in a moment." = "Den här datorn kan inte avkoda %@-videoströmmen från delaren (den saknar troligen maskinvaruavkodning för %@). Ber delaren att byta till H.264 — skärmen bör visas om en stund.";
-"Video Has Stalled" = "Videon har stannat";
-"Decoding has been failing for several seconds and automatic recovery hasn't helped. Check the connection on both ends, or disconnect and reconnect." = "Avkodningen har misslyckats i flera sekunder och automatisk återställning har inte hjälpt. Kontrollera anslutningen i båda ändar, eller koppla från och anslut igen.";
 "Sharing Stopped" = "Delning stoppad";
 "The connection to your viewers was lost and couldn't be re-established, so the share was stopped. Check the network and start sharing again." = "Anslutningen till dina tittare förlorades och kunde inte återupprättas, så delningen stoppades. Kontrollera nätverket och starta delningen igen.";
 "Screen sharing couldn't continue because the capture source became unavailable. Start sharing again to pick a new source." = "Skärmdelningen kunde inte fortsätta eftersom källan blev otillgänglig. Starta delningen igen för att välja en ny källa.";
@@ -361,7 +357,6 @@
 /* MARK: - Shortcuts overlay (ViewerShortcutsOverlay.swift) */
 "Tools" = "Verktyg";
 "Annotation" = "Anteckning";
-"Remote Control" = "Fjärrstyrning";
 "Window" = "Fönster";
 "Revoke remote control (system-wide)" = "Återkalla fjärrstyrning (hela systemet)";
 "Pinch" = "Nyp";
@@ -380,7 +375,6 @@
 "Show / hide this help" = "Visa / dölj den här hjälpen";
 "Keyboard shortcuts" = "Tangentbordsgenvägar";
 "Close keyboard shortcuts" = "Stäng tangentbordsgenvägar";
-"Click anywhere or press ⇧⌘/ to dismiss." = "Klicka var som helst eller tryck på ⇧⌘/ för att stänga.";
 
 /* MARK: - Viewer toolbar (ViewerToolbar.swift) */
 "Undo" = "Ångra";
@@ -392,7 +386,6 @@
 "Mic" = "Mik";
 "Mute microphone" = "Stäng av mikrofon";
 "Unmute microphone" = "Slå på mikrofon";
-"Toggle microphone (⌃⌥M)" = "Växla mikrofon (⌃⌥M)";
 "Stats" = "Statistik";
 "Toggle stream stats overlay" = "Växla statistiköverlägg";
 "Connection degraded — click for stats" = "Anslutningen är försämrad — klicka för statistik";
@@ -608,3 +601,48 @@
 "Could not start sharing: %@" = "Kunde inte börja dela: %@";
 "Not listening for share requests: %@" = "Lyssnar inte efter delningsförfrågningar: %@";
 "Remote control isn't available for this share." = "Fjärrstyrning är inte tillgängligt för den här delningen.";
+
+/* MARK: - Viewer window: session states, remote control, cheat sheet (AppState.swift / ViewerToolbar.swift / ViewerSessionOverlays.swift / ViewerShortcutsOverlay.swift) */
+"Session Ended" = "Sessionen avslutad";
+"%@ stopped sharing their screen." = "%@ slutade dela sin skärm.";
+"The connection to %@ went quiet and timed out." = "Anslutningen till %@ tystnade och löpte ut.";
+"The connection to %@ was lost." = "Anslutningen till %@ förlorades.";
+"Reconnect" = "Återanslut";
+"Close" = "Stäng";
+"Dismiss notice" = "Stäng meddelandet";
+"Connection Problem" = "Anslutningsproblem";
+"This Mac can't decode the %@ video stream. Asking the sharer to switch to H.264 — the picture should return in a moment." = "Den här datorn kan inte avkoda videoströmmen i %@. Ber delaren att byta till H.264 — bilden bör återkomma om en stund.";
+"Video has stalled — decoding keeps failing and automatic recovery hasn't helped." = "Videon har stannat — avkodningen fortsätter att misslyckas och den automatiska återhämtningen har inte hjälpt.";
+"Waiting for the sharer to accept your connection…" = "Väntar på att delaren ska acceptera din anslutning…";
+"Viewing %@ — controlling" = "Visar %@ — styr";
+"Shared screen" = "Delad skärm";
+"Shared screen from %@" = "Delad skärm från %@";
+"Remote control granted — your input now controls the shared Mac. Use Stop Controlling in the toolbar to release." = "Fjärrstyrning beviljad — dina inmatningar styr nu den delade datorn. Använd Sluta styra i verktygsfältet för att släppa.";
+"Remote control ended" = "Fjärrstyrningen avslutad";
+"Release Remote Control" = "Släpp fjärrstyrning";
+"Enter Full Screen" = "Övergå till helskärmsläge";
+"Exit Full Screen" = "Avsluta helskärmsläge";
+"Request control of the shared Mac" = "Be om att styra den delade datorn";
+"Waiting for the sharer to grant control — click to cancel" = "Väntar på att delaren ska bevilja styrning — klicka för att avbryta";
+"Cancel the pending control request" = "Avbryt den väntande styrningsförfrågan";
+"Stop Controlling" = "Sluta styra";
+"You are controlling the shared Mac — click to stop" = "Du styr den delade datorn — klicka för att sluta";
+"Stop controlling the shared Mac" = "Sluta styra den delade datorn";
+"Mute microphone (%@)" = "Stäng av mikrofon (%@)";
+"Unmute microphone (%@)" = "Slå på mikrofon (%@)";
+"Drawing Color" = "Ritfärg";
+"Drawing color: %@" = "Ritfärg: %@";
+"Red" = "Röd";
+"Blue" = "Blå";
+"Green" = "Grön";
+"Orange" = "Orange";
+"Purple" = "Lila";
+"Teal" = "Blågrön";
+"Pink" = "Rosa";
+"Yellow" = "Gul";
+"Remote control — while viewing" = "Fjärrstyrning — när du tittar";
+"Remote control — while sharing" = "Fjärrstyrning — när du delar";
+"Release remote control" = "Släpp fjärrstyrning";
+"Enter or exit full screen" = "Övergå till eller avsluta helskärmsläge";
+"Click anywhere or press Esc to dismiss." = "Klicka var som helst eller tryck Esc för att stänga.";
+"Press Esc to dismiss." = "Tryck Esc för att stänga.";

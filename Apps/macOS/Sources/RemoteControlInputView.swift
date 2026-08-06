@@ -1,5 +1,4 @@
 import AppKit
-import Carbon.HIToolbox
 import CoreGraphics
 
 /// Transparent capture layer inside the viewer window that, while remote
@@ -18,12 +17,17 @@ final class RemoteControlInputView: NSView {
     /// TCP back-channel.
     var onEvent: ((InputEvent) -> Void)?
 
-    /// Fires when the user presses the ⌃⌥. release chord while input capture
-    /// is live. Every other keystroke is forwarded to the sharer; this one is
-    /// the viewer's exit hatch and must never be — a forwarded chord would be
-    /// replayed on the sharer instead of releasing the grant, stranding a
-    /// keyboard-only user in capture mode.
+    /// Fires when the user presses the release chord (⌃⌥. unless remapped)
+    /// while input capture is live. Every other keystroke is forwarded to the
+    /// sharer; this one is the viewer's exit hatch and must never be — a
+    /// forwarded chord would be replayed on the sharer instead of releasing
+    /// the grant, stranding a keyboard-only user in capture mode.
     var onReleaseChord: (() -> Void)?
+
+    /// The chord `keyDown` intercepts — kept in lockstep with the remappable
+    /// revoke/release hotkey by `AppState` (set at creation, re-pushed from
+    /// `revokeHotkeyChord.didSet`).
+    var releaseChord: HotkeyChord = .defaultRevokeControl
 
     private var trackingArea: NSTrackingArea?
     /// ~90 Hz throttle on move emission. Down/up/scroll/key are never dropped.
@@ -148,10 +152,11 @@ final class RemoteControlInputView: NSView {
     // MARK: - Keyboard
 
     override func keyDown(with event: NSEvent) {
-        // ⌃⌥. — Release Remote Control (mirrors the File-menu item).
-        // Intercepted before forwarding; see `onReleaseChord`.
-        if event.keyCode == UInt16(kVK_ANSI_Period),
-            event.modifierFlags.intersection([.shift, .control, .option, .command]) == [.control, .option]
+        // Release Remote Control (⌃⌥. unless remapped — mirrors the
+        // File-menu item). Intercepted before forwarding; see
+        // `onReleaseChord`.
+        if UInt32(event.keyCode) == releaseChord.keyCode,
+            HotkeyChord.carbonModifiers(from: event.modifierFlags) == releaseChord.modifiers
         {
             onReleaseChord?()
             return

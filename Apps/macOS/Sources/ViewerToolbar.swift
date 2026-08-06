@@ -92,7 +92,13 @@ final class ViewerToolbar: NSObject, NSToolbarDelegate {
         // tooltip must flip with the state, or the item keeps announcing
         // the action that already happened.
         let a11y = isOn ? L("Mute microphone") : L("Unmute microphone")
-        let tip = isOn ? L("Mute microphone (⌃⌥M)") : L("Unmute microphone (⌃⌥M)")
+        // Parenthetical chord tracks the remappable hotkey; hidden when the
+        // stored chord can't be spelled (nil display) rather than misprinted.
+        let chord = appState?.micShortcutDisplay
+        let tip =
+            isOn
+            ? (chord.map { L("Mute microphone (\($0))") } ?? a11y)
+            : (chord.map { L("Unmute microphone (\($0))") } ?? a11y)
         micToolbarItem?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: a11y)
         micToolbarItem?.toolTip = tip
     }

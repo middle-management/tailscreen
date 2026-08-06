@@ -16,6 +16,12 @@ import SwiftUI
 /// closes it.
 final class ViewerShortcutsModel: ObservableObject, @unchecked Sendable {
     @Published var isVisible: Bool = false
+    /// Display chords for the two remappable global hotkeys, refreshed by
+    /// `AppState.syncShortcutChordDisplays()` so a Settings remap shows up
+    /// in the sheet. nil = the stored chord can't be spelled — the affected
+    /// rows are dropped rather than misprinted.
+    @Published var micChord: String? = "⌃⌥M"
+    @Published var controlChord: String? = "⌃⌥."
 }
 
 struct ViewerShortcutsOverlay: View {
@@ -27,10 +33,9 @@ struct ViewerShortcutsOverlay: View {
     /// differently (tap-anywhere vs. Esc / close), so the host supplies it.
     var dismissHint: String = L("Click anywhere or press Esc to dismiss.")
 
-    /// The revoke/release chord, spelled once for both role rows below.
-    private static let controlChord = "⌃⌥."
-    /// The full-screen chord, likewise mentioned only here (its menu item
-    /// carries the real key equivalent).
+    /// The full-screen chord, mentioned only here (its menu item carries
+    /// the real key equivalent). Not remappable, unlike the mic/control
+    /// chords, which come off the model so Settings remaps show up live.
     private static let fullScreenChord = "⌃⌘F"
 
     /// Fixed key-column width scales with the monospaced text it holds.
@@ -48,64 +53,81 @@ struct ViewerShortcutsOverlay: View {
         let items: [Shortcut]
     }
 
-    private static let sections: [Section] = [
-        Section(
-            title: L("Tools"),
-            items: [
-                Shortcut(keys: "1  or  ⌘1", description: L("Pen")),
-                Shortcut(keys: "2  or  ⌘2", description: L("Line")),
-                Shortcut(keys: "3  or  ⌘3", description: L("Arrow")),
-                Shortcut(keys: "4  or  ⌘4", description: L("Rectangle")),
-                Shortcut(keys: "5  or  ⌘5", description: L("Oval")),
-                Shortcut(keys: "6  or  ⌘6", description: L("Pointer / Click"))
-            ]),
-        Section(
-            title: L("Annotation"),
-            items: [
-                Shortcut(keys: "⌘Z", description: L("Undo last annotation")),
-                Shortcut(keys: "⇧⌘⌫", description: L("Clear all annotations")),
-                Shortcut(keys: "Esc", description: L("Cancel current drag")),
-                Shortcut(keys: "Right-click", description: L("Clear all annotations"))
-            ]),
-        Section(
-            title: L("Zoom"),
-            items: [
-                Shortcut(keys: L("Pinch"), description: L("Zoom in or out at the cursor")),
-                Shortcut(keys: L("⌥ Scroll"), description: L("Zoom in or out at the cursor")),
-                Shortcut(keys: L("Scroll"), description: L("Pan while zoomed in")),
-                Shortcut(keys: L("Double-tap"), description: L("Toggle 2× zoom")),
-                Shortcut(keys: "⌥⌘+ / ⌥⌘-", description: L("Zoom in / out")),
-                Shortcut(keys: "⌘0", description: L("Reset zoom and window size"))
-            ]),
-        Section(
-            title: L("Audio"),
-            items: [
-                Shortcut(keys: "⌃⌥M", description: L("Toggle microphone (system-wide)"))
-            ]),
-        // Both roles keep a ⌃⌥. exit — the viewer releases the control it
-        // holds, the sharer revokes the control it granted. Split into
-        // role-labelled sections: the old single "Remote Control" heading
-        // listed only the sharer's revoke, in the sheet the *viewer* is
-        // most likely to be reading.
-        Section(
-            title: L("Remote control — while viewing"),
-            items: [
-                Shortcut(keys: controlChord, description: L("Release remote control"))
-            ]),
-        Section(
-            title: L("Remote control — while sharing"),
-            items: [
-                Shortcut(keys: controlChord, description: L("Revoke remote control (system-wide)"))
-            ]),
-        Section(
-            title: L("Window"),
-            items: [
-                Shortcut(keys: "⌘W", description: L("Disconnect viewer")),
-                Shortcut(keys: fullScreenChord, description: L("Enter or exit full screen")),
-                Shortcut(keys: "⌘Q", description: L("Quit Tailscreen")),
-                Shortcut(keys: "⇧⌘/", description: L("Show / hide this help"))
-            ])
-    ]
+    /// Computed (not static) because the mic/control rows print the
+    /// *current* chords off the model — a Settings remap re-renders the
+    /// sheet. A chord the display vocabulary can't spell drops its rows
+    /// (and an emptied section) rather than misprinting the default.
+    private var sections: [Section] {
+        var out: [Section] = [
+            Section(
+                title: L("Tools"),
+                items: [
+                    Shortcut(keys: "1  or  ⌘1", description: L("Pen")),
+                    Shortcut(keys: "2  or  ⌘2", description: L("Line")),
+                    Shortcut(keys: "3  or  ⌘3", description: L("Arrow")),
+                    Shortcut(keys: "4  or  ⌘4", description: L("Rectangle")),
+                    Shortcut(keys: "5  or  ⌘5", description: L("Oval")),
+                    Shortcut(keys: "6  or  ⌘6", description: L("Pointer / Click"))
+                ]),
+            Section(
+                title: L("Annotation"),
+                items: [
+                    Shortcut(keys: "⌘Z", description: L("Undo last annotation")),
+                    Shortcut(keys: "⇧⌘⌫", description: L("Clear all annotations")),
+                    Shortcut(keys: "Esc", description: L("Cancel current drag")),
+                    Shortcut(keys: "Right-click", description: L("Clear all annotations"))
+                ]),
+            Section(
+                title: L("Zoom"),
+                items: [
+                    Shortcut(keys: L("Pinch"), description: L("Zoom in or out at the cursor")),
+                    Shortcut(keys: L("⌥ Scroll"), description: L("Zoom in or out at the cursor")),
+                    Shortcut(keys: L("Scroll"), description: L("Pan while zoomed in")),
+                    Shortcut(keys: L("Double-tap"), description: L("Toggle 2× zoom")),
+                    Shortcut(keys: "⌥⌘+ / ⌥⌘-", description: L("Zoom in / out")),
+                    Shortcut(keys: "⌘0", description: L("Reset zoom and window size"))
+                ]),
+        ]
+        if let micChord = model.micChord {
+            out.append(
+                Section(
+                    title: L("Audio"),
+                    items: [
+                        Shortcut(keys: micChord, description: L("Toggle microphone (system-wide)"))
+                    ]))
+        }
+        // Both roles keep the same exit chord (⌃⌥. unless remapped) — the
+        // viewer releases the control it holds, the sharer revokes the
+        // control it granted. Split into role-labelled sections: the old
+        // single "Remote Control" heading listed only the sharer's revoke,
+        // in the sheet the *viewer* is most likely to be reading.
+        if let controlChord = model.controlChord {
+            out.append(
+                Section(
+                    title: L("Remote control — while viewing"),
+                    items: [
+                        Shortcut(keys: controlChord, description: L("Release remote control"))
+                    ]))
+            out.append(
+                Section(
+                    title: L("Remote control — while sharing"),
+                    items: [
+                        Shortcut(
+                            keys: controlChord,
+                            description: L("Revoke remote control (system-wide)"))
+                    ]))
+        }
+        out.append(
+            Section(
+                title: L("Window"),
+                items: [
+                    Shortcut(keys: "⌘W", description: L("Disconnect viewer")),
+                    Shortcut(keys: Self.fullScreenChord, description: L("Enter or exit full screen")),
+                    Shortcut(keys: "⌘Q", description: L("Quit Tailscreen")),
+                    Shortcut(keys: "⇧⌘/", description: L("Show / hide this help"))
+                ]))
+        return out
+    }
 
     var body: some View {
         ZStack {
@@ -144,7 +166,7 @@ struct ViewerShortcutsOverlay: View {
             Divider().background(Color.white.opacity(0.2))
 
             VStack(alignment: .leading, spacing: 14) {
-                ForEach(Self.sections) { section in
+                ForEach(sections) { section in
                     sectionView(section)
                 }
             }

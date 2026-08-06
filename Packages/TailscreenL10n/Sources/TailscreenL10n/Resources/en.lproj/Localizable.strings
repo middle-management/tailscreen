@@ -309,10 +309,6 @@
 "Sign Out Failed" = "Sign Out Failed";
 "Error" = "Error";
 "Failed to start sharing: %@" = "Failed to start sharing: %@";
-"Can't decode the video" = "Can't decode the video";
-"This Mac can't decode the %@ video stream from the sharer (it likely lacks %@ hardware decode). Asking the sharer to switch to H.264 — the screen should appear in a moment." = "This Mac can't decode the %@ video stream from the sharer (it likely lacks %@ hardware decode). Asking the sharer to switch to H.264 — the screen should appear in a moment.";
-"Video Has Stalled" = "Video Has Stalled";
-"Decoding has been failing for several seconds and automatic recovery hasn't helped. Check the connection on both ends, or disconnect and reconnect." = "Decoding has been failing for several seconds and automatic recovery hasn't helped. Check the connection on both ends, or disconnect and reconnect.";
 "Sharing Stopped" = "Sharing Stopped";
 "The connection to your viewers was lost and couldn't be re-established, so the share was stopped. Check the network and start sharing again." = "The connection to your viewers was lost and couldn't be re-established, so the share was stopped. Check the network and start sharing again.";
 "Screen sharing couldn't continue because the capture source became unavailable. Start sharing again to pick a new source." = "Screen sharing couldn't continue because the capture source became unavailable. Start sharing again to pick a new source.";
@@ -359,7 +355,6 @@
 /* MARK: - Shortcuts overlay (ViewerShortcutsOverlay.swift) */
 "Tools" = "Tools";
 "Annotation" = "Annotation";
-"Remote Control" = "Remote Control";
 "Window" = "Window";
 "Revoke remote control (system-wide)" = "Revoke remote control (system-wide)";
 "Pinch" = "Pinch";
@@ -378,7 +373,6 @@
 "Show / hide this help" = "Show / hide this help";
 "Keyboard shortcuts" = "Keyboard shortcuts";
 "Close keyboard shortcuts" = "Close keyboard shortcuts";
-"Click anywhere or press ⇧⌘/ to dismiss." = "Click anywhere or press ⇧⌘/ to dismiss.";
 
 /* MARK: - Viewer toolbar (ViewerToolbar.swift) */
 "Undo" = "Undo";
@@ -390,7 +384,6 @@
 "Mic" = "Mic";
 "Mute microphone" = "Mute microphone";
 "Unmute microphone" = "Unmute microphone";
-"Toggle microphone (⌃⌥M)" = "Toggle microphone (⌃⌥M)";
 "Stats" = "Stats";
 "Toggle stream stats overlay" = "Toggle stream stats overlay";
 "Connection degraded — click for stats" = "Connection degraded — click for stats";
@@ -623,3 +616,48 @@
 "Could not start sharing: %@" = "Could not start sharing: %@";
 "Not listening for share requests: %@" = "Not listening for share requests: %@";
 "Remote control isn't available for this share." = "Remote control isn't available for this share.";
+
+/* MARK: - Viewer window: session states, remote control, cheat sheet (AppState.swift / ViewerToolbar.swift / ViewerSessionOverlays.swift / ViewerShortcutsOverlay.swift) */
+"Session Ended" = "Session Ended";
+"%@ stopped sharing their screen." = "%@ stopped sharing their screen.";
+"The connection to %@ went quiet and timed out." = "The connection to %@ went quiet and timed out.";
+"The connection to %@ was lost." = "The connection to %@ was lost.";
+"Reconnect" = "Reconnect";
+"Close" = "Close";
+"Dismiss notice" = "Dismiss notice";
+"Connection Problem" = "Connection Problem";
+"This Mac can't decode the %@ video stream. Asking the sharer to switch to H.264 — the picture should return in a moment." = "This Mac can't decode the %@ video stream. Asking the sharer to switch to H.264 — the picture should return in a moment.";
+"Video has stalled — decoding keeps failing and automatic recovery hasn't helped." = "Video has stalled — decoding keeps failing and automatic recovery hasn't helped.";
+"Waiting for the sharer to accept your connection…" = "Waiting for the sharer to accept your connection…";
+"Viewing %@ — controlling" = "Viewing %@ — controlling";
+"Shared screen" = "Shared screen";
+"Shared screen from %@" = "Shared screen from %@";
+"Remote control granted — your input now controls the shared Mac. Use Stop Controlling in the toolbar to release." = "Remote control granted — your input now controls the shared Mac. Use Stop Controlling in the toolbar to release.";
+"Remote control ended" = "Remote control ended";
+"Release Remote Control" = "Release Remote Control";
+"Enter Full Screen" = "Enter Full Screen";
+"Exit Full Screen" = "Exit Full Screen";
+"Request control of the shared Mac" = "Request control of the shared Mac";
+"Waiting for the sharer to grant control — click to cancel" = "Waiting for the sharer to grant control — click to cancel";
+"Cancel the pending control request" = "Cancel the pending control request";
+"Stop Controlling" = "Stop Controlling";
+"You are controlling the shared Mac — click to stop" = "You are controlling the shared Mac — click to stop";
+"Stop controlling the shared Mac" = "Stop controlling the shared Mac";
+"Mute microphone (%@)" = "Mute microphone (%@)";
+"Unmute microphone (%@)" = "Unmute microphone (%@)";
+"Drawing Color" = "Drawing Color";
+"Drawing color: %@" = "Drawing color: %@";
+"Red" = "Red";
+"Blue" = "Blue";
+"Green" = "Green";
+"Orange" = "Orange";
+"Purple" = "Purple";
+"Teal" = "Teal";
+"Pink" = "Pink";
+"Yellow" = "Yellow";
+"Remote control — while viewing" = "Remote control — while viewing";
+"Remote control — while sharing" = "Remote control — while sharing";
+"Release remote control" = "Release remote control";
+"Enter or exit full screen" = "Enter or exit full screen";
+"Click anywhere or press Esc to dismiss." = "Click anywhere or press Esc to dismiss.";
+"Press Esc to dismiss." = "Press Esc to dismiss.";

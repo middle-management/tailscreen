@@ -149,15 +149,19 @@ enum AppMenu {
         // Viewer-side counterpart: release the control *we* hold on someone
         // else's Mac (or cancel a pending request). Deliberately the same
         // chord as the sharer-side revoke above — one muscle memory for
-        // "stop remote control" in either role — with the two validations
-        // disjoint by state so they never both enable. The chord is also
-        // intercepted inside `RemoteControlInputView`, where every other
-        // keystroke is forwarded to the sharer.
+        // "stop remote control" in either role, so it follows the same
+        // remappable chord — with the two validations disjoint by state so
+        // they never both enable. The chord is also intercepted inside
+        // `RemoteControlInputView`, where every other keystroke is
+        // forwarded to the sharer.
         let releaseControl = NSMenuItem(
             title: L("Release Remote Control"),
             action: #selector(ViewerCommands.releaseRemoteControl(_:)),
-            keyEquivalent: ".")
-        releaseControl.keyEquivalentModifierMask = [.control, .option]
+            keyEquivalent: "")
+        if let equivalent = revokeChord.menuKeyEquivalent {
+            releaseControl.keyEquivalent = equivalent.key
+            releaseControl.keyEquivalentModifierMask = equivalent.mask
+        }
         releaseControl.target = ViewerCommands.shared
         fileMenu.addItem(releaseControl)
 
