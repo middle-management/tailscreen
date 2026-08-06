@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// SwiftUI renderer for the shared annotation canvas. Used by both the
@@ -9,8 +10,9 @@ import SwiftUI
 /// list diffs and only the changed shape re-renders during a drag (the
 /// in-progress stroke). Ephemeral tools (clicks today) live in the same
 /// `annotations` list and animate themselves via `withAnimation` in
-/// `onAppear`; the model removes them from the list after their lifetime,
-/// at which point SwiftUI tears their views down.
+/// `onAppear` (held static under Reduce Motion); the model removes them
+/// from the list after their lifetime, at which point SwiftUI tears their
+/// views down.
 ///
 /// Pointer input arrives via a single zero-distance ``DragGesture``, which
 /// fires for both taps and drags. Keyboard and right-click are handled by
@@ -250,6 +252,11 @@ private struct EphemeralAnnotationView: View {
 /// animates via `withAnimation` in `onAppear`; the model removes the
 /// annotation from the canvas list after the lifetime elapses, at which
 /// point SwiftUI tears this view down.
+///
+/// Under Reduce Motion the ripple never scales: the view holds the same
+/// static bullseye the in-progress preview draws (``ClickMarker``), and the
+/// model's lifetime removal makes it appear and disappear on the exact
+/// schedule the animated form has.
 private struct ClickRippleView: View {
     let annotation: Annotation
 
@@ -261,7 +268,24 @@ private struct ClickRippleView: View {
 
     private static let totalDuration: Double = AnnotationCanvasModel.clickAnimationDuration
 
+    /// AppKit-side Reduce Motion check: this view lives inside the
+    /// borderless overlay panels' hosting views, so read the workspace
+    /// value directly rather than relying on the SwiftUI environment.
+    private var reduceMotion: Bool {
+        NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+    }
+
     var body: some View {
+        if reduceMotion {
+            ClickMarker(annotation: annotation)
+                .allowsHitTesting(false)
+        } else {
+            animatedRipple
+        }
+    }
+
+    @ViewBuilder
+    private var animatedRipple: some View {
         let color = annotation.color
         let lineWidth = CGFloat(annotation.width)
         let startR = max(8.0, lineWidth * 3)

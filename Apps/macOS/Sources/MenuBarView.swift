@@ -324,6 +324,16 @@ private struct StartingShareCard: View {
 private struct SharingCard: View {
     @EnvironmentObject var appState: AppState
 
+    /// Mic-button tooltip. The parenthetical chord tracks the configurable
+    /// hotkey; an unmappable stored chord is hidden rather than misprinted
+    /// (nil `micShortcutDisplay`).
+    private var micTooltip: String {
+        guard let chord = appState.micShortcutDisplay else {
+            return appState.isMicOn ? L("Mute Mic") : L("Unmute Mic")
+        }
+        return appState.isMicOn ? L("Mute Mic (\(chord))") : L("Unmute Mic (\(chord))")
+    }
+
     private var resolutionText: String? {
         guard let res = appState.metadataService.currentMetadata?.screenResolution else { return nil }
         return "\(res.width) × \(res.height)"
@@ -479,7 +489,7 @@ private struct SharingCard: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .help(appState.isMicOn ? L("Mute Mic (⌃⌥M)") : L("Unmute Mic (⌃⌥M)"))
+                .help(micTooltip)
                 .accessibilityLabel(appState.isMicOn ? L("Mute microphone") : L("Unmute microphone"))
                 .accessibilityHint(L("Toggles voice chat with viewers"))
 
@@ -794,8 +804,10 @@ struct PendingViewersList: View {
 
 /// One row per viewer asking for remote control, with inline Grant / Deny
 /// buttons. Shown in the SharingCard whenever a viewer has requested control.
-/// Granting revokes any current grantee (single-holder). Granting is refused
-/// with an Accessibility prompt if the app lacks that permission.
+/// Granting revokes any current grantee (single-holder). Granting without the
+/// Accessibility permission prompts for it and queues the grant: the row
+/// shows a waiting caption, and the grant completes automatically once the
+/// permission lands (see `AppState.grantRemoteControl`).
 struct ControlRequestsList: View {
     @EnvironmentObject var appState: AppState
     let requests: [ControlRequestInfo]
@@ -803,34 +815,45 @@ struct ControlRequestsList: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             ForEach(requests) { request in
-                HStack(spacing: 6) {
-                    Image(systemName: "cursorarrow.rays")
-                        .font(.subheadline)
-                        .foregroundStyle(.blue)
-                    Text(L("\(request.displayName) wants control"))
-                        .font(.subheadline.weight(.medium))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Spacer(minLength: 4)
-                    Button(L("Deny")) {
-                        appState.denyRemoteControl(request.id)
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "cursorarrow.rays")
+                            .font(.subheadline)
+                            .foregroundStyle(.blue)
+                        Text(L("\(request.displayName) wants control"))
+                            .font(.subheadline.weight(.medium))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer(minLength: 4)
+                        Button(L("Deny")) {
+                            appState.denyRemoteControl(request.id)
+                        }
+                        .font(.caption)
+                        .buttonStyle(.bordered)
+                        .controlSize(.mini)
+                        .fixedSize()
+                        .accessibilityLabel(L("Deny control for \(request.displayName)"))
+                        Button(L("Grant")) {
+                            appState.grantRemoteControl(request.id)
+                        }
+                        .font(.caption)
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.mini)
+                        .fixedSize()
+                        .help(L("Grants full keyboard and mouse control of your entire Mac"))
+                        .accessibilityLabel(L("Grant control to \(request.displayName)"))
+                        .accessibilityHint(
+                            L("Gives full keyboard and mouse control of your entire Mac, not just the shared window"))
                     }
-                    .font(.caption)
-                    .buttonStyle(.bordered)
-                    .controlSize(.mini)
-                    .fixedSize()
-                    .accessibilityLabel(L("Deny control for \(request.displayName)"))
-                    Button(L("Grant")) {
-                        appState.grantRemoteControl(request.id)
+                    // A Grant clicked without the Accessibility permission is
+                    // queued, not refused — say so on the row, or it looks
+                    // untouched and the eventual auto-grant is a surprise.
+                    if appState.pendingAccessibilityGrantRequestID == request.id {
+                        Text(L("Waiting for Accessibility permission…"))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                    .font(.caption)
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.mini)
-                    .fixedSize()
-                    .help(L("Grants full keyboard and mouse control of your entire Mac"))
-                    .accessibilityLabel(L("Grant control to \(request.displayName)"))
-                    .accessibilityHint(
-                        L("Gives full keyboard and mouse control of your entire Mac, not just the shared window"))
                 }
             }
             // Whole-Mac scope warning: keyboard input lands on the sharer's
@@ -911,6 +934,13 @@ struct ApprovalToggle: View {
 private struct ViewingCard: View {
     @EnvironmentObject var appState: AppState
 
+    /// Same configurable-chord sourcing as the SharingCard mic tooltip:
+    /// the chord tracks the remappable hotkey, hidden when unspellable.
+    private var micTooltip: String {
+        guard let chord = appState.micShortcutDisplay else { return L("Toggle mic") }
+        return L("Toggle mic (\(chord))")
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 10) {
@@ -933,6 +963,20 @@ private struct ViewingCard: View {
 
             RemoteControlViewerButton()
 
+            // Way back to the video: the viewer window can end up buried
+            // under other apps, and the popover is where people look while
+            // viewing. Bordered + small like the row below so Disconnect
+            // keeps its slot as the session-ending action.
+            Button {
+                appState.focusViewerWindow()
+            } label: {
+                Label(L("Show Window"), systemImage: "macwindow")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .accessibilityHint(L("Brings the viewer window to the front"))
+
             HStack(spacing: 6) {
                 Button {
                     Task { await appState.toggleMic() }
@@ -945,7 +989,7 @@ private struct ViewingCard: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .help(L("Toggle mic (⌃⌥M)"))
+                .help(micTooltip)
                 .accessibilityLabel(appState.isMicOn ? L("Mute microphone") : L("Unmute microphone"))
                 .accessibilityHint(L("Toggles voice chat with the sharer"))
 

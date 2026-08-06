@@ -69,6 +69,12 @@ struct TailscreenApp: App {
         // The toolbar carries the identity block ("Tailscreen" + tailnet
         // login) instead of a window title — the Tailscale-app look.
         .windowStyle(.hiddenTitleBar)
+        // The whole menu bar, declared where SwiftUI owns it — see
+        // `AppCommands` for why this replaced the hand-built `NSMenu`
+        // (scene updates used to stomp the AppKit menu mid-share).
+        .commands {
+            AppCommands(appState: appState)
+        }
 
         // The menubar icon shows the brand mark at idle and switches to
         // state-conveying SF Symbols while sharing or viewing — the

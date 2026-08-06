@@ -47,11 +47,13 @@ Walk this checklist in order:
 
 ## Viewer stuck on the Connecting screen
 
-If the connection succeeds but you sit on "Connecting…" indefinitely,
-you're most likely **waiting in the sharer's approval queue**. "Require
-approval for new viewers" is on by default: the sharer's menubar (and a
-notification) is showing an Accept/Deny row for you, and nothing happens
-until they click it. Ask them to look at the menubar.
+If the connection succeeds but the window sits on "Connecting to
+*name*…" with the waiting placard, you're most likely **waiting in the
+sharer's approval queue**. "Require approval for new viewers" is on by
+default: the sharer's menubar *and* hub window (and a notification) are
+showing an Accept/Deny row for you, and nothing happens until they click
+it. Ask them to look at either surface — or press the placard's Cancel
+button to give up.
 
 If you instead get **"Connection Declined"**, the sharer denied you — or
 has previously hit "Deny & Block" on your machine, in which case every
@@ -125,28 +127,30 @@ The Stats button turning into a "Connection degraded — click for stats"
 badge means video decoding has been failing repeatedly and the automatic
 recovery ladder is already several rungs in. The viewer escalates
 through: request a keyframe → recreate the decoder session → show this
-badge → and finally a **"Video Has Stalled"** alert if several seconds
-pass with no successful decode.
+badge → and finally a **"Video has stalled"** banner at the top of the
+window if several seconds pass with no successful decode.
 
 The badge is informational — recovery keeps running behind it, and a
 single good keyframe clears it. If it persists, click it: the stats
 overlay's **PLIs sent**, **Dropped**, and **FEC recovered** rows tell you
 whether you're looking at network loss (fix the network — see the DERP
 and Wi-Fi sections above) versus **Decode errs** climbing on a clean
-connection (a decoder problem — disconnect and reconnect, and check
-Console.app for VideoToolbox errors). If you get all the way to the
-stalled alert, reconnecting is the reliable reset.
+connection (a decoder problem — reconnect, and check Console.app for
+VideoToolbox errors). If you get all the way to the stalled banner, its
+**Reconnect** button is the reliable reset.
 
 ## Remote control grant fails asking for Accessibility
 
 Granting control the first time pops **"Accessibility Permission
 Needed"**. This is expected: injecting mouse and keyboard events requires
 the Accessibility permission, which is separate from Screen Recording.
-Open **System Settings → Privacy & Security → Accessibility**, toggle
-Tailscreen on, then grant control again — the grant is refused (not
-queued) until the permission exists, so you do need to click Grant a
-second time. If you launched Tailscreen from Terminal, the permission may
-need to go to Terminal instead, same as with Screen Recording.
+Open **System Settings → Privacy & Security → Accessibility** and toggle
+Tailscreen on — the grant you clicked is queued (the request's row says
+"Waiting for Accessibility permission…") and completes on its own the
+moment the permission lands, as long as that viewer is still asking. No
+second click needed. If you launched Tailscreen from Terminal, the
+permission may need to go to Terminal instead, same as with Screen
+Recording.
 
 ## Capture restarts by itself mid-share
 

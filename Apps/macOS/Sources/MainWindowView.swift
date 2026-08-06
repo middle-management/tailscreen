@@ -468,13 +468,17 @@ private struct WelcomePane: View {
 private struct HubView: View {
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                PendingRequestsBanner()
-                ShareStatusSection()
-                PeerListSection()
+            // Reader inside the ScrollView so `PeerListSection` can keep
+            // the keyboard highlight scrolled into view as ↑/↓ move it.
+            ScrollViewReader { proxy in
+                VStack(alignment: .leading, spacing: 16) {
+                    PendingRequestsBanner()
+                    ShareStatusSection()
+                    PeerListSection(scrollProxy: proxy)
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 16)
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 16)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
@@ -579,6 +583,17 @@ private struct ShareStatusSection: View {
                     }
                     .accessibilityHint(L("Closes the viewer window and ends this session"))
                 }
+                // Secondary path back to the video — the viewer window can
+                // sit buried under other apps, and without this the card's
+                // only button is the one that ends the session. Small so
+                // Disconnect above keeps the primary slot.
+                Button {
+                    appState.focusViewerWindow()
+                } label: {
+                    Label(L("Show Window"), systemImage: "macwindow")
+                }
+                .controlSize(.small)
+                .accessibilityHint(L("Brings the viewer window to the front"))
             case (_, .connecting):
                 HStack(spacing: 10) {
                     ProgressView().controlSize(.small)
@@ -655,18 +670,39 @@ private struct ShareStatusSection: View {
 /// The tailnet screens list: a large heading, a search field, then
 /// dot + name + IP rows (the Tailscale device-list idiom). Filter and
 /// refresh live in the window toolbar.
+///
+/// Keyboard model: ⌘F focuses the search field; ↑/↓ move an accent
+/// highlight through the visible rows (from the search field too,
+/// Spotlight-style); Return acts on the highlighted row exactly like
+/// clicking it; Esc collapses the expanded pane, then clears the search.
+/// Only those four keys are claimed — ordinary typing stays with the
+/// search field.
 private struct PeerListSection: View {
     @EnvironmentObject var appState: AppState
     /// Suppresses the list's glide/expand animations when the user has
     /// asked the system to reduce motion.
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Proxy for the hub's scroll column (owned by `HubView`), used to
+    /// keep the keyboard highlight on screen as ↑/↓ move it.
+    let scrollProxy: ScrollViewProxy
     @State private var didAutoDiscover = false
     @State private var searchText = ""
+    /// Focus handle for the search field — ⌘F's target.
+    @FocusState private var searchFieldFocused: Bool
 
     /// Peer whose inline detail pane is expanded, if any. Selection is a
     /// UI-only affordance — connecting moved from row-click into the
     /// pane's explicit View Screen button.
     @State private var selectedPeerID: String?
+
+    /// Keyboard highlight — the ↑/↓ cursor through `visiblePeers`.
+    /// Deliberately separate from `selectedPeerID` (the expanded pane)
+    /// and from hover: arrows move it, Return acts on it, and it renders
+    /// as an accent tint so it can't be mistaken for the gray hover.
+    @State private var highlightedPeerID: String?
+
+    /// The docs site's install page — the empty state's CTA target.
+    private static let installPageURL = URL(string: "https://tailscreen.dev/install/")!
 
     /// Off until the initial seed has landed: the initial population snaps
     /// into place, and only changes that happen while the user is actually
@@ -712,6 +748,36 @@ private struct PeerListSection: View {
         .onChange(of: appState.filteredPeers.count) { _, count in
             if count > 0 { lastPeerRowCount = min(count, Self.maxSkeletonRows) }
         }
+        // Keyboard navigation. The handlers sit on the section so they
+        // fire wherever focus rests inside it — the search field or the
+        // focusable row list below — because unhandled presses bubble up
+        // from the focused descendant. Only these four keys are claimed;
+        // everything else (typing!) flows to the search field untouched.
+        .onKeyPress(.downArrow) { moveHighlight(by: 1) }
+        .onKeyPress(.upArrow) { moveHighlight(by: -1) }
+        .onKeyPress(.return) { activateHighlight() }
+        .onKeyPress(.escape) { collapseOrClearSearch() }
+        .onChange(of: visiblePeers) { _, peers in
+            // Search/filter changes can drop the highlighted row from the
+            // list — a highlight pointing at a hidden peer would make the
+            // next Return act on something invisible.
+            if let id = highlightedPeerID, !peers.contains(where: { $0.id == id }) {
+                highlightedPeerID = nil
+            }
+        }
+        .background(
+            // Invisible ⌘F target: `keyboardShortcut` needs a control to
+            // hang off, and the search field itself can't carry one. Zero
+            // opacity (not `.hidden()`) keeps it in the hierarchy the
+            // shortcut resolver walks; hit-testing off so it can't
+            // swallow clicks meant for the section. Scoped to the main
+            // window by living in its view tree.
+            Button("") { searchFieldFocused = true }
+                .keyboardShortcut("f", modifiers: .command)
+                .opacity(0)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        )
     }
 
     /// Glide curve for list changes: off until the initial population has
@@ -735,6 +801,70 @@ private struct PeerListSection: View {
         }
     }
 
+    /// Same gate as `PeerMenuRow.canConnect`: connecting out is only
+    /// offered while the app is fully idle — the status cards own the
+    /// session otherwise.
+    private func canConnect(_ peer: TailscreenPeer) -> Bool {
+        peer.isOnline
+            && appState.sharingState == .idle
+            && appState.connectionState == .idle
+    }
+
+    /// ↑/↓: step the keyboard highlight through `visiblePeers`, clamped
+    /// at the ends (no wrap — the AppKit list feel), scrolling the
+    /// landing row into view. No highlight yet: enter the list from the
+    /// end the arrow moves away from.
+    private func moveHighlight(by delta: Int) -> KeyPress.Result {
+        let peers = visiblePeers
+        guard !peers.isEmpty else { return .ignored }
+        let target: TailscreenPeer
+        if let current = highlightedPeerID,
+            let index = peers.firstIndex(where: { $0.id == current })
+        {
+            guard peers.indices.contains(index + delta) else { return .handled }
+            target = peers[index + delta]
+        } else {
+            target = delta > 0 ? peers[0] : peers[peers.count - 1]
+        }
+        highlightedPeerID = target.id
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.15)) {
+            scrollProxy.scrollTo(target.id)
+        }
+        return .handled
+    }
+
+    /// Return: act on the highlighted row exactly like clicking it —
+    /// connect when idle and online, otherwise toggle the detail pane.
+    /// No highlight: leave the press alone, so a natively focused
+    /// control (search field, a row button) still gets it.
+    private func activateHighlight() -> KeyPress.Result {
+        guard let id = highlightedPeerID,
+            let peer = visiblePeers.first(where: { $0.id == id })
+        else { return .ignored }
+        if canConnect(peer) {
+            Task { await appState.connectToPeer(peer) }
+        } else {
+            toggleSelection(peer)
+        }
+        return .handled
+    }
+
+    /// Esc, in priority order: collapse the expanded detail pane, else
+    /// clear the search text. Nothing to do → let the press bubble.
+    private func collapseOrClearSearch() -> KeyPress.Result {
+        if selectedPeerID != nil {
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.15)) {
+                selectedPeerID = nil
+            }
+            return .handled
+        }
+        if !searchText.isEmpty {
+            searchText = ""
+            return .handled
+        }
+        return .ignored
+    }
+
     private var searchField: some View {
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass")
@@ -742,6 +872,22 @@ private struct PeerListSection: View {
                 .accessibilityHidden(true)
             TextField(L("Search screens"), text: $searchText)
                 .textFieldStyle(.plain)
+                .focused($searchFieldFocused)
+            if !searchText.isEmpty {
+                // A real always-visible button, not a hover reveal —
+                // keyboard and VoiceOver users clear the field with it
+                // too (Esc also clears, but only an affordance you can
+                // see is discoverable).
+                Button {
+                    searchText = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help(L("Clear search"))
+                .accessibilityLabel(L("Clear search"))
+            }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
@@ -789,11 +935,22 @@ private struct PeerListSection: View {
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(L("Looking for screens…"))
         } else if appState.availablePeers.isEmpty {
-            Text(L("No Tailscreen devices on your tailnet"))
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .frame(minHeight: 28)
-                .transition(.opacity)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(L("No Tailscreen devices on your tailnet"))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .frame(minHeight: 28)
+                // Not a dead end: say how screens get here and link the
+                // install page. Caption + link styling keeps it quiet —
+                // this state is normal right after a first install.
+                Text(L("Screens appear here when their devices are running Tailscreen."))
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Link(L("Get Tailscreen for your other devices"), destination: Self.installPageURL)
+                    .font(.caption)
+            }
+            .transition(.opacity)
         } else if visiblePeers.isEmpty {
             // Devices exist but the filter/search hides them all — say so
             // rather than showing the misleading "no devices" empty state.
@@ -808,15 +965,24 @@ private struct PeerListSection: View {
                     PeerMenuRow(
                         peer: peer,
                         isExpanded: selectedPeerID == peer.id,
+                        isHighlighted: highlightedPeerID == peer.id,
                         onToggle: { toggleSelection(peer) },
                         onConnect: { Task { await appState.connectToPeer(peer) } }
                     )
+                    // Explicit anchor for `scrollProxy.scrollTo` — keeps
+                    // the ↑/↓ highlight from walking off screen.
+                    .id(peer.id)
                     if selectedPeerID == peer.id {
                         PeerDetailView(peer: peer)
                             .transition(.opacity)
                     }
                 }
             }
+            // Tab stop (keyboard-navigation mode only) so focus can rest
+            // on the list itself and ↑/↓ work without first putting the
+            // caret in the search field — the key handlers live on the
+            // section and presses bubble up from here.
+            .focusable()
             .transition(.opacity)
 
             let hidden = appState.availablePeers.count - appState.filteredPeers.count
@@ -982,13 +1148,16 @@ private struct PeerRowSkeleton: View {
 /// over the peer's Tailscale IP — the Tailscale device-row idiom. The
 /// row itself is the inline action: clicking connects when the app is
 /// idle and the peer is online (no expand-first hop); otherwise it
-/// toggles the detail pane. The always-visible trailing chevron is a
+/// toggles the detail pane — and `PeerListSection`'s Return-on-highlight
+/// mirrors exactly that split. The always-visible trailing chevron is a
 /// real button that toggles the pane regardless — reachable by
 /// keyboard/VoiceOver, unlike a hover-only affordance.
 private struct PeerMenuRow: View {
     @EnvironmentObject var appState: AppState
     let peer: TailscreenPeer
     let isExpanded: Bool
+    /// The section's ↑/↓ keyboard cursor sits on this row.
+    let isHighlighted: Bool
     let onToggle: () -> Void
     let onConnect: () -> Void
     @State private var isHovered = false
@@ -1080,8 +1249,24 @@ private struct PeerMenuRow: View {
             .accessibilityLabel(L("Show details"))
         }
         .opacity(peer.isOnline ? 1.0 : 0.7)
-        .background(MenuRowHoverBackground(isHovered: isHovered || isExpanded))
+        .background(rowBackground)
         .onHover { isHovered = $0 }
+    }
+
+    /// Keyboard highlight vs. hover: same slot (mirrors
+    /// `MenuRowHoverBackground`'s radius-6 shape and 4pt inset so the two
+    /// can't disagree about geometry), but an accent tint instead of the
+    /// hover gray — the ↑/↓ cursor must read as its own state, not as a
+    /// mouse that happens to be parked here.
+    @ViewBuilder
+    private var rowBackground: some View {
+        if isHighlighted {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(Color.accentColor.opacity(0.18))
+                .padding(.horizontal, 4)
+        } else {
+            MenuRowHoverBackground(isHovered: isHovered || isExpanded)
+        }
     }
 }
 
@@ -1157,10 +1342,11 @@ private struct PeerDetailView: View {
             }
 
             VStack(alignment: .leading, spacing: 6) {
-                infoRow(label: "DNS", value: dnsDisplay)
-                infoRow(label: "IP", value: peer.tailscaleIP)
+                CopyableInfoRow(label: "DNS", value: dnsDisplay, labelColumnWidth: labelColumnWidth)
+                CopyableInfoRow(
+                    label: "IP", value: peer.tailscaleIP, labelColumnWidth: labelColumnWidth)
                 if let v6 = peer.tailscaleIPs.first(where: { $0.contains(":") }) {
-                    infoRow(label: "IPv6", value: v6)
+                    CopyableInfoRow(label: "IPv6", value: v6, labelColumnWidth: labelColumnWidth)
                 }
                 if let entry = rememberedEntry {
                     HStack(spacing: 6) {
@@ -1316,9 +1502,29 @@ private struct PeerDetailView: View {
         guard let date else { return nil }
         return RelativeDateTimeFormatter().localizedString(for: date, relativeTo: Date())
     }
+}
 
-    /// Caption label + selectable monospaced value + a copy button.
-    private func infoRow(label: String, value: String) -> some View {
+/// Caption label + selectable monospaced value + a copy button. Its own
+/// view (rather than a builder func on `PeerDetailView`) because the
+/// post-copy confirmation is per-row state: the icon flips to a green
+/// checkmark for a moment so the otherwise-silent pasteboard write
+/// visibly landed.
+private struct CopyableInfoRow: View {
+    let label: String
+    let value: String
+    /// Passed down from `PeerDetailView`'s scaled gutter so this row's
+    /// label column stays in lockstep with the non-copyable rows around it.
+    let labelColumnWidth: CGFloat
+    /// Only the confirmation's cross-fade is motion; the state swap
+    /// itself always happens.
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// True for the moment after a copy — drives the checkmark.
+    @State private var confirmingCopy = false
+    /// Pending revert, kept so a re-copy extends the confirmation
+    /// instead of an old sleeper cutting the new one short.
+    @State private var revertTask: Task<Void, Never>?
+
+    var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
             Text(verbatim: label)
                 .font(.caption)
@@ -1333,15 +1539,35 @@ private struct PeerDetailView: View {
                 let pasteboard = NSPasteboard.general
                 pasteboard.clearContents()
                 pasteboard.setString(value, forType: .string)
+                confirmCopy()
             } label: {
-                Image(systemName: "doc.on.doc")
+                Image(systemName: confirmingCopy ? "checkmark" : "doc.on.doc")
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(
+                        confirmingCopy ? AnyShapeStyle(Color.green) : AnyShapeStyle(.secondary))
             }
             .buttonStyle(.plain)
-            .help(L("Copy"))
-            .accessibilityLabel(L("Copy"))
+            .help(confirmingCopy ? L("Copied") : L("Copy"))
+            // The green is decorative; "Copied" carries the state for
+            // VoiceOver — checkmark + label, never color alone.
+            .accessibilityLabel(confirmingCopy ? L("Copied") : L("Copy"))
             Spacer(minLength: 0)
+        }
+    }
+
+    /// Show the checkmark, then revert after a beat. The swap cross-fades
+    /// only when motion is allowed; under Reduce Motion it cuts.
+    private func confirmCopy() {
+        revertTask?.cancel()
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.15)) {
+            confirmingCopy = true
+        }
+        revertTask = Task {
+            try? await Task.sleep(for: .seconds(1.5))
+            guard !Task.isCancelled else { return }
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.15)) {
+                confirmingCopy = false
+            }
         }
     }
 }

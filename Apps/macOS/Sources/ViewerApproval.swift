@@ -61,7 +61,7 @@ private struct TSLogger: LogSink {
 /// (`SharerNoticeKind.actions`), what a button press is called
 /// (`NoticeAction.rawValue`), and whether anything may make a sound
 /// (`SharerNoticeDecision.playsSound`). The *words* do not: macOS routes every
-/// user-facing string through `L(_:)` against `Bundle.module`, so the titles,
+/// user-facing string through `L(_:)` (the shared TailscreenL10n catalog), so the titles,
 /// bodies and button labels below are local and localized, and
 /// `SharerNoticeText` — English source text for the freedesktop backend to
 /// render — is deliberately not consulted for any of them.

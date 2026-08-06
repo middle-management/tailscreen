@@ -17,6 +17,18 @@ final class RemoteControlInputView: NSView {
     /// TCP back-channel.
     var onEvent: ((InputEvent) -> Void)?
 
+    /// Fires when the user presses the release chord (⌃⌥. unless remapped)
+    /// while input capture is live. Every other keystroke is forwarded to the
+    /// sharer; this one is the viewer's exit hatch and must never be — a
+    /// forwarded chord would be replayed on the sharer instead of releasing
+    /// the grant, stranding a keyboard-only user in capture mode.
+    var onReleaseChord: (() -> Void)?
+
+    /// The chord `keyDown` intercepts — kept in lockstep with the remappable
+    /// revoke/release hotkey by `AppState` (set at creation, re-pushed from
+    /// `revokeHotkeyChord.didSet`).
+    var releaseChord: HotkeyChord = .defaultRevokeControl
+
     private var trackingArea: NSTrackingArea?
     /// ~90 Hz throttle on move emission. Down/up/scroll/key are never dropped.
     private var lastMoveEmitNs: UInt64 = 0
@@ -140,6 +152,15 @@ final class RemoteControlInputView: NSView {
     // MARK: - Keyboard
 
     override func keyDown(with event: NSEvent) {
+        // Release Remote Control (⌃⌥. unless remapped — mirrors the
+        // File-menu item). Intercepted before forwarding; see
+        // `onReleaseChord`.
+        if UInt32(event.keyCode) == releaseChord.keyCode,
+            HotkeyChord.carbonModifiers(from: event.modifierFlags) == releaseChord.modifiers
+        {
+            onReleaseChord?()
+            return
+        }
         // Keys outside the HID table have no wire representation — drop
         // rather than guess (see MacKeyCodeMapping).
         guard let usage = MacKeyCodeMapping.hidUsage(forMacKeyCode: event.keyCode) else { return }
