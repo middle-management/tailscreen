@@ -4,6 +4,12 @@
 #include <libavcodec/avcodec.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/opt.h>
+// Hardware device enumeration (av_hwdevice_iterate_types /
+// av_hwdevice_get_type_name). Needed because D3D11VA, DXVA2 and VAAPI are not
+// separate decoders you can look up by name — they are hwaccels attached to the
+// ordinary one — so the only way to ask "can this build decode on the GPU" is
+// to enumerate device types.
+#include <libavutil/hwcontext.h>
 #include <errno.h>
 
 // AVERROR(...) and AVERROR_EOF are macros, which Swift can't evaluate. Expose
