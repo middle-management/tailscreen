@@ -277,57 +277,6 @@ public final class TsnetTransport {
         }
     }
 
-    /// The receive task's error bookkeeping — a consecutive run plus the
-    /// sliding-window stamps behind `ReceiveLoopPolicy`'s two give-up
-    /// thresholds. A value type so `receiveFailureIsFatal` stays a pure
-    /// function a test can drive without a socket.
-    struct ReceiveFailureTally: Sendable {
-        var consecutiveErrors = 0
-        var errorStampsNs: [UInt64] = []
-    }
-
-    /// Fold one failed receive into the tally and decide whether the socket is
-    /// dead. Mirrors the macOS client's receive loop: a benign poll timeout
-    /// resets the consecutive run (but never the window — the windowed
-    /// backstop exists precisely for a flapping socket whose errors interleave
-    /// with timeouts), a genuine error counts against both thresholds, and
-    /// either threshold reached means give up and end with `.connectionLost`.
-    ///
-    /// `nonisolated` because it's pure — the transport is `@MainActor` for its
-    /// loop, but this decision is made on the detached receive task and tested
-    /// with neither.
-    nonisolated static func receiveFailureIsFatal(
-        _ tally: inout ReceiveFailureTally, benignTimeout: Bool, nowNs: UInt64
-    ) -> Bool {
-        if benignTimeout {
-            tally.consecutiveErrors = 0
-            return false
-        }
-        tally.consecutiveErrors += 1
-        let windowCount = ReceiveLoopPolicy.slidingWindowErrorCount(
-            &tally.errorStampsNs, appending: nowNs)
-        return tally.consecutiveErrors >= ReceiveLoopPolicy.maxConsecutiveErrors
-            || windowCount >= ReceiveLoopPolicy.maxErrorsPerWindow
-    }
-
-    /// One run-loop pass's idle-timeout decision: nothing from the sharer for
-    /// longer than the threshold means the sharer is gone (crashed, or its BYE
-    /// was lost — UDP makes no promises), so the session ends with `.timedOut`
-    /// instead of freezing on its last frame forever.
-    ///
-    /// Suppressed while parked at the approval prompt, mirroring the macOS
-    /// client's guard: a sharer deliberating over Accept/Deny sends nothing,
-    /// and timing the wait out would turn every slow approval into a phantom
-    /// disconnect (the sharer side prunes stale pending viewers on its own,
-    /// longer clock). `nonisolated` because it's pure.
-    nonisolated static func idleTimedOut(
-        nowNs: UInt64, lastDatagramNs: UInt64, isPendingApproval: Bool,
-        timeoutNs: UInt64 = TransportTuning.clientIdleDisconnectNs
-    ) -> Bool {
-        guard !isPendingApproval else { return false }
-        return nowNs &- lastDatagramNs > timeoutNs
-    }
-
     /// The live node, for a host that needs to lend it to something else —
     /// notably `TailscaleScreenShareServer(existingNode:)`. Non-nil only
     /// between `prepare` and `teardown`.
@@ -748,7 +697,7 @@ public final class TsnetTransport {
         let receiveFailure = ReceiveFailureFlag()
         let receiveLogger = logger
         let receiverTask = Task.detached {
-            var tally = ReceiveFailureTally()
+            var tally = TransportEndDecision.ReceiveFailureTally()
             while !Task.isCancelled {
                 let recvStartNs = DispatchTime.now().uptimeNanoseconds
                 do {
@@ -773,7 +722,9 @@ public final class TsnetTransport {
                             elapsedNs: elapsedNs)
                     }
                     let nowNs = DispatchTime.now().uptimeNanoseconds
-                    if Self.receiveFailureIsFatal(&tally, benignTimeout: benignTimeout, nowNs: nowNs) {
+                    if TransportEndDecision.receiveFailureIsFatal(
+                        &tally, benignTimeout: benignTimeout, nowNs: nowNs)
+                    {
                         // The loop reads the flag on its next pass and ends the
                         // session with `.connectionLost`; this task's job is
                         // over — a socket this sick has nothing left to read.
@@ -960,7 +911,7 @@ public final class TsnetTransport {
             // the sharer feed `lastDatagramNs` — same rule as the macOS loop —
             // and the wait at the approval prompt is exempt, since a sharer
             // deliberating over Accept/Deny legitimately sends nothing.
-            if Self.idleTimedOut(
+            if TransportEndDecision.idleTimedOut(
                 nowNs: DispatchTime.now().uptimeNanoseconds,
                 lastDatagramNs: lastDatagramNs,
                 isPendingApproval: session.isPendingApproval)
