@@ -174,6 +174,13 @@ public final class TsnetTransport {
     /// noticing that the window closed, not to limit throughput.
     private static let maxDatagramsPerReceivePass = 256
 
+    /// How long the loop parks when the inbox came back empty. With the socket
+    /// on its own task there is no blocking `recv` left in the loop to pace it,
+    /// and 5 ms keeps the tick cadence (NACK aging, RR, `shouldClose`) far
+    /// inside every deadline that depends on it while costing an idle viewer
+    /// almost nothing. Skipped entirely whenever datagrams were drained.
+    private static let idlePollIntervalMs = 5
+
     /// The brought-up ephemeral node, retained between `prepare` (+ optional
     /// `discoverPeers`) and `run` so a picker flow can list sharers on the live
     /// node before choosing one to dial. `run` brings it up itself if a caller
@@ -610,6 +617,34 @@ public final class TsnetTransport {
             senderTask.cancel()
         }
 
+        // Inbound, off this actor. The socket is read by its own task and
+        // handed over through a bounded queue the loop drains synchronously —
+        // so how fast the UI gets back around the loop no longer decides how
+        // many packets survive. See `DatagramInbox` for the measurements that
+        // made this necessary.
+        //
+        // Symmetric with `senderTask` above, which already captures `listener`
+        // off the MainActor, so this adds no new isolation assumption about it.
+        let inbox = DatagramInbox()
+        let receiverTask = Task {
+            while !Task.isCancelled {
+                do {
+                    let (datagram, from) = try await listener.recv(timeout: 250)
+                    // Empty is how this wrapper reports "nothing arrived before
+                    // the timeout" on some paths; a throw is how it reports it
+                    // on others. Neither is an error.
+                    guard !datagram.isEmpty else { continue }
+                    inbox.push(DatagramInbox.Datagram(payload: datagram, from: from))
+                } catch {
+                    continue
+                }
+            }
+        }
+        defer {
+            receiverTask.cancel()
+            inbox.close()
+        }
+
         // The viewer's own voice, out through the same ordered queue the
         // control bytes use — one socket, one send order.
         //
@@ -715,35 +750,26 @@ public final class TsnetTransport {
                     if saturatedPasses > 0 {
                         line += " saturatedPasses=\(saturatedPasses)"
                     }
+                    // Inbox overflow means this actor is not consuming as fast
+                    // as the socket is delivering — a consumer problem, and a
+                    // different one from the socket ceiling this loop used to
+                    // have. Depth rides along so a backlog that is merely deep
+                    // reads differently from one that is losing.
+                    let inboxDropped = inbox.droppedCount
+                    if inboxDropped > 0 {
+                        line += " inboxDropped=\(inboxDropped) inboxDepth=\(inbox.depth)"
+                    }
                     logger.log(line)
                 }
             }
-            // Drain everything already queued on the socket, not one datagram
-            // per pass — see `maxDatagramsPerReceivePass` for what the old
-            // one-per-pass shape cost. The first recv of a pass carries the idle
-            // wait so a quiet session doesn't spin; the rest use a 1 ms timeout
-            // and only the last (empty) one actually waits.
-            //
-            // 1 ms rather than 0: a zero timeout means "return immediately" in
-            // some poll-style APIs and "block forever" in others, and the
-            // libtailscale wrapper doesn't state which. 1 ms is unambiguous and
-            // costs a millisecond per pass, once.
-            var drained = 0
-            while drained < Self.maxDatagramsPerReceivePass {
-                let received: (Data, String)
-                do {
-                    received = try await listener.recv(timeout: drained == 0 ? 250 : 1)
-                } catch {
-                    // recv timeouts surface as errors on some paths. End the
-                    // pass so `tick` and `shouldClose` run; a truly dead socket
-                    // keeps erroring and is bounded by the outer shouldClose.
-                    break
-                }
-                let (datagram, from) = received
-                // Empty is the other way this wrapper reports "nothing there":
-                // end the pass rather than spinning to the cap on empties.
-                guard !datagram.isEmpty else { break }
-                drained += 1
+            // Take a batch from the inbox rather than reading the socket here.
+            // The cap bounds how long `tick` (NACK/PLI/RR) and `shouldClose` can
+            // be starved by a burst; it is not a throughput limit — anything
+            // left over is still queued and goes out on the next pass, which
+            // starts immediately because a non-empty drain skips the idle wait.
+            let batch = inbox.drain(max: Self.maxDatagramsPerReceivePass)
+            if batch.count >= Self.maxDatagramsPerReceivePass { saturatedPasses += 1 }
+            for datagram in batch {
                 // The sharer is the only expected sender (it learned our addr
                 // from the HELLO); ignore anything else.
                 // KNOWN LIMITATION (only affects the direct-host path; the
@@ -752,17 +778,24 @@ public final class TsnetTransport {
                 // Tailscale *hostname* rather than a tailnet IP, `from` (the
                 // sharer's resolved IP) won't string-match and video is dropped.
                 // Dial by tailnet IP until this matches on the resolved peer.
-                guard from == dest else {
+                guard datagram.from == dest else {
                     datagramsFromOthers += 1
-                    lastOtherSender = from
+                    lastOtherSender = datagram.from
                     continue
                 }
-                pipeline.receive(datagram)
+                pipeline.receive(datagram.payload)
             }
-            // A pass that filled the batch had more waiting behind it. Rare and
-            // self-correcting (the next pass starts immediately); sustained, it
-            // means the cap is now the ceiling and wants raising.
-            if drained >= Self.maxDatagramsPerReceivePass { saturatedPasses += 1 }
+            // Pacing. `recv`'s timeout used to be what kept this loop from
+            // spinning; with the socket on its own task, an empty inbox is the
+            // idle signal and this sleep is the tick cadence. Only taken when
+            // nothing arrived, so it costs a busy session nothing.
+            //
+            // Crude on purpose for a first cut: the loop still polls rather
+            // than being woken by the receive task, which is worth replacing
+            // with a proper signal — see the PR description.
+            if batch.isEmpty {
+                try? await Task.sleep(for: .milliseconds(Self.idlePollIntervalMs))
+            }
         }
         if pipeline.session.wasDenied {
             logger.log("▶ Sharer declined this viewer.")
