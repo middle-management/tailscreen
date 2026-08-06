@@ -254,7 +254,7 @@ public struct QualitySettings: Codable, Equatable, Sendable {
     }
 }
 
-/// Persisted quality settings. Mirrors `ViewerApprovalDefaults` — plain
+/// Persisted quality settings. Mirrors `ViewerApprovalPreference` — plain
 /// `UserDefaults` so non-SwiftUI call sites (`AppState.init`'s
 /// stored-property initialiser) can read the saved value without going
 /// through `@AppStorage`. The `defaults` parameter exists for tests, which

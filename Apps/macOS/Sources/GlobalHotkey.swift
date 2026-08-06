@@ -324,7 +324,7 @@ struct HotkeyChord: Codable, Equatable, Sendable {
     }()
 }
 
-/// Persisted hotkey chords. Mirrors `ViewerApprovalDefaults` — plain
+/// Persisted hotkey chords. Mirrors `ViewerApprovalPreference` — plain
 /// `UserDefaults` so non-SwiftUI call sites (`AppState.init`'s
 /// stored-property initialisers) can read the saved
 /// value without `@AppStorage`. A missing, corrupt, or invalid blob (no
