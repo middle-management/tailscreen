@@ -57,37 +57,70 @@ A C (or C++) target mirroring `CGtkVideo`'s interface as closely as the API
 allows:
 
 ```
-winvideo_init(void *swapChainPanelNative)   // bind to the panel
+winvideo_init(void)                         // D3D11 device + shader
+winvideo_bind_source(void *surfaceImageSourceNative)
 winvideo_draw_yuv(w, h, y, u, v)            // 3 textures + YUV→RGB shader
 winvideo_draw_annotations(...)              // second pass, same transform
 winvideo_clear()                            // black, no frame yet
-winvideo_resize(w, h)                       // swap-chain buffers
+winvideo_set_view(zoom, pan_x, pan_y)       // mirrors cgtkvideo_set_view
+winvideo_reset(void)                        // drop device objects, re-init next draw
 ```
 
 Deliberately the same function-per-concern split, so the two platforms can be
 read side by side and a bug fixed in one is findable in the other.
 
-Contents: `ID3D11Device` + swap chain via `IDXGIFactory2::CreateSwapChainForComposition`,
+Contents: a BGRA-capable `ID3D11Device` (which `SurfaceImageSource` requires),
 three `R8_UNORM` textures (one per plane), a pixel shader doing BT.709 limited-range
-YUV→RGB, and the same letterbox/zoom/pan maths the GL shader already has —
+YUV→RGB rendered into the `IDXGISurface` that
+`ISurfaceImageSourceNative::BeginDraw` returns, and the same letterbox/zoom/pan maths the GL shader already has —
 **ported, not reinvented**, since `ViewerZoomMath` is already portable and tested
 and the GL version is the working reference.
 
-### Step 2 — `WinUIVideoView` swaps its element
+### Step 2 — `WinUIVideoView` swaps its image SOURCE, not its element
 
-`WinUIElementRepresentable` already lets any `FrameworkElement` be hosted; today
-it hosts `WinUI.Image`, and it would host `WinUI.SwapChainPanel` instead. The
-polling, the `generation` bump, the zoom/annotation/remote-control wiring and the
-`FrameStore` read all stay. `I420Converter` and the `WriteableBitmap` go.
+**Corrected after checking the dependency.** This step originally said to host
+`WinUI.SwapChainPanel` instead of `WinUI.Image`. That is not available:
+**swift-winui 0.2.1 has no `SwapChainPanel` binding at all** — zero occurrences
+across `Sources/WinUI/` — while `WinUI.Image` is bound
+(`Microsoft.UI.Xaml.Controls.swift:6122`). `WinUIElementRepresentable` needs a
+Swift-typed `WinUIElementType`, so a panel we cannot name in Swift cannot be
+hosted, and the C++ side cannot supply one either.
 
-The file's own comment promises this is a one-file change. This step is where
-that promise gets tested.
+Generating the missing binding is possible in principle — swift-winui is
+generated from WinMD — but that is upstream work on a third-party dependency,
+which is a poor thing to put underneath a rendering change.
+
+**What is available, and is bound:** `SurfaceImageSource` (and
+`VirtualSurfaceImageSource`, and `WriteableBitmap`, and `SoftwareBitmapSource`).
+`microsoft.ui.xaml.media.dxinterop.h` — the header declaring
+`ISwapChainPanelNative` *and* `ISurfaceImageSourceNative` — ships inside the
+dependency at `Sources/CWinAppSDK/nuget/include/`, so the native interfaces are
+reachable from a C/C++ target.
+
+So the element stays `WinUI.Image` and the **source** changes:
+`WriteableBitmap` → `SurfaceImageSource`, whose `ISurfaceImageSourceNative`
+hands us an `IDXGISurface` from `BeginDraw`, which the D3D11 device from step 1
+renders the YUV→RGB pass into before `EndDraw`.
+
+Everything the plan wanted survives: three plane textures, a BT.709 shader, no
+CPU colour conversion, no CPU upload of a converted frame. The representable, the
+polling, the `generation` bump and the zoom/annotation/remote-control wiring are
+all untouched — this is a smaller change than the original step, not a bigger one.
+
+**The honest trade-off:** `SurfaceImageSource` is composed by XAML rather than
+presented as an independent swap chain, so it gives up the last hop of a
+`SwapChainPanel`'s efficiency. That hop is not where the cost is — the cost is
+~7 MP of CPU colour conversion plus a full-frame CPU→GPU upload per frame, and
+both of those go away either way. If profiling later shows XAML composition is
+the remaining bottleneck, the answer is to get a `SwapChainPanel` binding
+upstream, with a measurement in hand to justify it.
 
 ### Step 3 — the failure mode the current path does not have
 
-`WriteableBitmap` cannot lose its device. A swap chain can, and must handle it:
-`DXGI_ERROR_DEVICE_REMOVED` / `DEVICE_RESET` means tearing down and rebuilding
-device, swap chain and textures, then redrawing from `FrameStore.current()`.
+`WriteableBitmap` cannot lose its device. A D3D11 device can, and must handle it:
+`BeginDraw` returns `DXGI_ERROR_DEVICE_REMOVED` / `DEVICE_RESET`, which means
+rebuilding the device, the `SurfaceImageSource` binding and the textures, then
+redrawing from `FrameStore.current()`.
 
 This is the main genuinely new risk in the plan, and it is why the step exists
 separately rather than being folded into step 1. A viewer that goes black on a
@@ -129,8 +162,8 @@ Steps 1 and 4 can proceed in parallel with the encode/decode work in
   surface straight to it. Doing it before there is a GPU renderer would mean
   pulling the frame back to the CPU, which is the point made in
   `gpu-media-support.md`.
-- **It does not use `SwapChainPanel` for the annotation overlay's hit-testing or
-  the remote-control pointer mapping.** Those go through `ViewerZoomMath` and
+- **It does not change the annotation overlay's hit-testing or the
+  remote-control pointer mapping.** Those go through `ViewerZoomMath` and
   `WindowsPointerMapping` on normalized coordinates and are renderer-independent
   by construction — but the mapping must be re-verified once the transform moves
   into a shader, because a letterbox computed in two places is a classic way for
