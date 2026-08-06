@@ -32,7 +32,7 @@ The same pattern covers the rest of the server's untestable-live machinery, all 
 ### Audio decisions
 
 - `VoiceResilienceDecisionTests` — the voice-path resilience decisions extracted from `VoiceChannel` (decoder-failure cooldown gate, wrap-aware sequence-gap concealment, adaptive jitter-buffer sizing, clamp-log throttle, single-pass clamp), with the `LossyChannel`-driven end-to-end case (seeded loss/reorder/dup → `receive` → concealment counters) living in `VoiceChannelTests`.
-- `SystemAudioFramerTests` — the helper-side 960-sample framer (`SystemAudioFramer`: exact boundary, remainder carry, multi-frame drain, order preservation).
+- The 960-sample framing (exact boundary, remainder carry, multi-frame drain, order preservation) is the portable `PCMFramer` (TailscreenAudio), pinned by the framing section of the package's `MicrophoneCaptureTests` — the mac tap paths (`SystemAudioTap`, `TapBuffer`) consume it rather than keeping their own framers.
 - `SystemAudioRoutingTests` — the viewer-side demux (`VoiceChannel.audioRoute` PT→route decision, plus an in-process `receive` that proves a real PT-99 packet fires `onSystemAudioPCM` and never `onMixedPCM`). `RTPAudioTests` and `CaptureHelperWireTests` also carry system-audio cases (PT-99/SSRC-1 packetizer, depacketizer accepting 98/99 while still rejecting 96/97, the `audioAccessUnit`/`setAudioEnabled` frame round-trips, and the `PickerSelection.captureAudio` field's backward-compatible decode).
 
 ### Access control, consent, and requests
