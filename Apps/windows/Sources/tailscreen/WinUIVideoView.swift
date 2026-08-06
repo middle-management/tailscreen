@@ -186,13 +186,13 @@ struct WinUIVideoView: WinUIElementRepresentable {
                 let fresh = SurfaceImageSource(Int32(frame.width), Int32(frame.height))
                 // The QueryInterface for `ISurfaceImageSourceNative` happens in
                 // C++, so no IID is spelled in Swift; all this side owes is a
-                // valid `IUnknown*` for the WinRT object.
-                guard let unknown = fresh.queryInterface(IID_IUnknown) else { return }
-                let bound = unknown.borrow { ptr in
-                    winvideo_bind_source(
-                        UnsafeMutableRawPointer(ptr), Int32(frame.width),
-                        Int32(frame.height))
-                }
+                // valid `IUnknown*` for the WinRT object. `pUnk.borrow` is that
+                // pointer — the same handoff `NotificationActivation` makes to
+                // `CWinNotify`. Borrowed for the duration of the call; the C++
+                // side takes its own reference on the interface it queries.
+                let bound = winvideo_bind_source(
+                    UnsafeMutableRawPointer(fresh.pUnk.borrow),
+                    Int32(frame.width), Int32(frame.height))
                 guard bound != 0 else { return }
                 source = fresh
                 sourceWidth = frame.width
@@ -228,8 +228,7 @@ struct WinUIVideoView: WinUIElementRepresentable {
                     AnnotationRasterizer.draw(
                         annotations,
                         into: AnnotationRasterizer.Surface(
-                            bgra: UnsafeMutableRawBufferPointer(
-                                start: base, count: buf.count),
+                            bgra: base,
                             stride: frame.width * AnnotationRasterizer.bytesPerPixel,
                             width: frame.width,
                             height: frame.height))

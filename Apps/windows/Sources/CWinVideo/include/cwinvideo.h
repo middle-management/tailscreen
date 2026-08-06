@@ -40,18 +40,25 @@ int32_t winvideo_bind_source(void *surface_image_source_unknown,
 // Draw a tightly-packed I420 frame (Y: w*h, U/V: ceil(w/2)*ceil(h/2)) into the
 // bound source with a BT.709 limited-range shader.
 //
-// `overlay_rgba` is an optional premultiplied-straight RGBA image the same size
-// as the frame, composited over the video in the same pass — this is how
+// `overlay_bgra` is an optional **premultiplied BGRA** image the same size as
+// the frame, composited over the video in the same pass — this is how
 // annotations arrive, so they stay part of the picture and keep scaling with the
 // element's transform exactly as they did when they were rasterized into the
 // BGRA buffer. NULL when nobody is drawing, which is the common case and costs
 // no upload.
 //
+// Both halves of that description are load-bearing and neither is checkable at
+// compile time: the byte order is B,G,R,A because the portable
+// `AnnotationRasterizer` writes what `UpdateLayeredWindow` wants, and the colour
+// channels are already scaled by alpha. The shader's texture format and its
+// composite each match one of those facts; changing the rasterizer means
+// changing both.
+//
 // Returns 1 if a frame was presented, 0 otherwise (no binding, device lost — see
 // `winvideo_device_lost`).
 int32_t winvideo_draw_yuv(int32_t width, int32_t height,
                           const uint8_t *y, const uint8_t *u, const uint8_t *v,
-                          const uint8_t *overlay_rgba);
+                          const uint8_t *overlay_bgra);
 
 // True (1) if the last draw failed because the D3D device was removed or reset.
 // The caller's recovery is `winvideo_reset()` then `winvideo_init()` +

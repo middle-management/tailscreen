@@ -101,8 +101,13 @@ float4 ps_main(VSOut i) : SV_TARGET {
     rgb = saturate(rgb);
 
     if (hasOverlay > 0.5) {
+        // PREMULTIPLIED source, so `o.rgb` is already scaled by `o.a` — the
+        // rasterizer premultiplies because UpdateLayeredWindow requires it.
+        // Multiplying by alpha again here would darken every antialiased stroke
+        // edge toward black and make a half-transparent stroke a quarter as
+        // bright as it should be.
         float4 o = texOverlay.Sample(samp, i.uv);
-        rgb = rgb * (1.0 - o.a) + o.rgb * o.a;
+        rgb = rgb * (1.0 - o.a) + o.rgb;
     }
     // Opaque: the source is created opaque, and a stray alpha here shows up as
     // the desktop bleeding through the video.
@@ -205,8 +210,14 @@ bool ensureTextures(int w, int h) {
     if (!makePlaneTexture(w, h, &g.texY, &g.srvY, DXGI_FORMAT_R8_UNORM)) return false;
     if (!makePlaneTexture(cw, ch, &g.texU, &g.srvU, DXGI_FORMAT_R8_UNORM)) return false;
     if (!makePlaneTexture(cw, ch, &g.texV, &g.srvV, DXGI_FORMAT_R8_UNORM)) return false;
+    // B8G8R8A8, not R8G8B8A8: the overlay arrives from the portable
+    // `AnnotationRasterizer`, which writes b,g,r,a in that byte order because
+    // that is what `UpdateLayeredWindow` composites directly. Declaring the
+    // texture RGBA would sample byte 0 as `.r` and swap red with blue in every
+    // stroke — a wrong picture, not a build error, which is exactly the kind of
+    // mistake the WARP self-test exists to catch.
     if (!makePlaneTexture(w, h, &g.texOverlay, &g.srvOverlay,
-                          DXGI_FORMAT_R8G8B8A8_UNORM))
+                          DXGI_FORMAT_B8G8R8A8_UNORM))
         return false;
     g.texWidth = w;
     g.texHeight = h;
@@ -398,7 +409,7 @@ int32_t winvideo_bind_source(void *surface_image_source_unknown, int32_t width,
 
 int32_t winvideo_draw_yuv(int32_t width, int32_t height, const uint8_t *y,
                           const uint8_t *u, const uint8_t *v,
-                          const uint8_t *overlay_rgba) {
+                          const uint8_t *overlay_bgra) {
     if (!g.device || !g.source || !y || !u || !v) return 0;
     if (width <= 0 || height <= 0) return 0;
     if (!ensureTextures(width, height)) return 0;
@@ -408,9 +419,9 @@ int32_t winvideo_draw_yuv(int32_t width, int32_t height, const uint8_t *y,
     if (!uploadPlane(g.texY, y, width, width, height, 1)) return 0;
     if (!uploadPlane(g.texU, u, cw, cw, ch, 1)) return 0;
     if (!uploadPlane(g.texV, v, cw, cw, ch, 1)) return 0;
-    const bool hasOverlay = overlay_rgba != nullptr;
+    const bool hasOverlay = overlay_bgra != nullptr;
     if (hasOverlay) {
-        if (!uploadPlane(g.texOverlay, overlay_rgba, width * 4, width, height, 4))
+        if (!uploadPlane(g.texOverlay, overlay_bgra, width * 4, width, height, 4))
             return 0;
     }
 
