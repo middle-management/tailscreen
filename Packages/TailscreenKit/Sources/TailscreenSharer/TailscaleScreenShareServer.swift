@@ -74,23 +74,125 @@ public struct PendingViewerInfo: Sendable, Identifiable, Hashable {
     public let arrivedAt: Date
 }
 
+/// `@unchecked Sendable`: every mutable field lives behind a
+/// `Synchronization.Mutex` — the roster/policy/adaptive state each behind
+/// its own, and the share's lifecycle state (node, listeners, capture
+/// backend, `isRunning`) together behind the single `lifecycle` lock —
+/// with one deliberate exception: the public callback properties
+/// (`onViewersChanged`, `onCaptureStopped`, `onAudioReceived`, …) are bare
+/// stored vars. Their contract is **assign before `start()` and leave them
+/// alone until after `stop()` returns**: they are read from arbitrary
+/// threads with no lock, so a mid-share reassignment is a data race. Every
+/// production host wires them once during setup, which is why they carry a
+/// contract instead of a lock.
 public final class TailscaleScreenShareServer: @unchecked Sendable {
     private let port: UInt16
-    public var node: TailscaleNode?
-    /// True when this server created the tsnet node itself; false when it
-    /// borrowed a node owned by AppState. Controls whether `stop()` tears
-    /// the node down or just releases its reference.
-    private var ownsNode: Bool = true
-    /// External TCP listener (owned by AppState) on which the server
-    /// registers annotation handlers for the duration of a share. nil when
-    /// running standalone (e.g. legacy callers / tests that create their
-    /// own node) — in that case `start()` falls back to its own listener.
-    private var controlListener: TailscreenControlListener?
-    /// Backing listener when the server owns its own. Mutually exclusive
-    /// with `controlListener` (the external case).
-    private var ownedControlListener: TailscreenControlListener?
-    private var packetListener: PacketListener?
-    private var isRunning = false
+
+    /// The share's lifecycle state, folded behind ONE lock because these
+    /// fields change together at exactly two kinds of moment — `start()` /
+    /// `stop()` bring-up and teardown, and the capture (re)spawn paths —
+    /// and are read from every concurrent context the server has: the UDP
+    /// receive loop, the capture backend's delivery thread (`broadcast`),
+    /// its exit-callback thread (`onUserStopped` / `onUnexpectedExit`), the
+    /// sweep tasks, the restart chain, and MainActor entry points. They
+    /// used to be bare stored properties on this `@unchecked Sendable`
+    /// class — unsynchronized cross-thread reads/writes that mostly
+    /// "worked" because the values change rarely.
+    ///
+    /// Lock discipline: hold the lock only to read / copy / swap fields.
+    /// Never invoke a callback, `await`, send, or take another lock inside
+    /// `lifecycle.withLock` — copy out, then act. Nothing in this class
+    /// takes `lifecycle` while holding it or any other lock's critical
+    /// section open, so it cannot participate in a lock-ordering cycle.
+    private struct Lifecycle {
+        /// The tsnet node the share runs on (see `ownsNode`). nil'd by
+        /// `stop()` after the node is released or closed.
+        var node: TailscaleNode?
+        /// True when this server created the tsnet node itself; false when
+        /// it borrowed a node owned by AppState. Controls whether `stop()`
+        /// tears the node down or just releases its reference.
+        var ownsNode: Bool = true
+        /// External TCP listener (owned by AppState) on which the server
+        /// registers annotation handlers for the duration of a share. nil
+        /// when running standalone (e.g. legacy callers / tests that
+        /// create their own node) — in that case `start()` falls back to
+        /// its own listener.
+        var controlListener: TailscreenControlListener?
+        /// Backing listener when the server owns its own. Mutually
+        /// exclusive with `controlListener` (the external case).
+        var ownedControlListener: TailscreenControlListener?
+        /// The UDP media + control socket. `stop()` detaches it under this
+        /// lock before closing it, so `broadcast` / NACK service / audio
+        /// fan-out / denial datagrams all observe nil and no-op rather
+        /// than racing the close.
+        var packetListener: PacketListener?
+        /// The share's master latch: set true at the end of `start()`'s
+        /// bring-up, false first thing in `stop()` (and in deinit). Every
+        /// loop, guard, and (re)spawn path gates on a locked read, so a
+        /// stop is visible to all of them at their next check.
+        var isRunning = false
+        /// The live capture+encode backend for this share, built by
+        /// `captureFactory` at share start and rebuilt on every restart.
+        /// On macOS this is the wrapper around the `--capture-helper`
+        /// child process (which holds the SCStream and VideoToolbox
+        /// session); the field is still named `helperCapture` because
+        /// every restart/watchdog path around it is written in those
+        /// terms. Written by `startHelperCapture`, the restart chain,
+        /// `stop()`, and the backend's own exit callbacks (which fire on
+        /// its callback thread); read from broadcast, the sweeps, and
+        /// every keyframe/bitrate push. Teardown paths detach it via
+        /// `takeHelperCapture()` so no two of them can claim (or leak)
+        /// the same instance.
+        var helperCapture: (any CaptureEncoding)?
+        /// Codec the helper's encoder is producing. Set when the helper
+        /// sends its first parameter-sets blob (on the backend's delivery
+        /// thread); consumed by `broadcast()` to pick H.264 vs HEVC RTP
+        /// payload type. Cleared by `stop()` but deliberately NOT by
+        /// `changeSource` / restarts — the fresh helper overwrites it, in
+        /// order, before its first encoded AU broadcasts.
+        var helperCodec: VideoCodec?
+    }
+    private let lifecycle = Mutex<Lifecycle>(Lifecycle())
+
+    /// The tsnet node the share is running on (nil when stopped). Backed by
+    /// the guarded lifecycle storage; the setter exists to keep the public
+    /// API shape, but production callers only read (`server?.node`) — the
+    /// server itself installs the node in `start()` and releases it in
+    /// `stop()`.
+    public var node: TailscaleNode? {
+        get { lifecycle.withLock { $0.node } }
+        set { lifecycle.withLock { $0.node = newValue } }
+    }
+
+    // Locked snapshots of the hot lifecycle fields. A getter copies the
+    // value out under the lock; whatever is then called on the result (a
+    // `requestKeyframe()`, an `await pl.send`) runs OUTSIDE it. Note a
+    // check-then-act on one of these is a snapshot race by construction —
+    // benign for the keyframe/ping/sweep paths, which tolerate acting on a
+    // just-stopped share; paths that must NOT lose that race (the restart
+    // chain, `stop()`'s teardown) do their read-and-clear inside a single
+    // `lifecycle.withLock` hold instead.
+    private var isRunning: Bool { lifecycle.withLock { $0.isRunning } }
+    private var controlListener: TailscreenControlListener? {
+        lifecycle.withLock { $0.controlListener }
+    }
+    private var packetListener: PacketListener? { lifecycle.withLock { $0.packetListener } }
+    private var helperCapture: (any CaptureEncoding)? { lifecycle.withLock { $0.helperCapture } }
+    private var helperCodec: VideoCodec? { lifecycle.withLock { $0.helperCodec } }
+
+    /// Atomically detach and return the current capture backend (nil when
+    /// none). The single point through which every teardown leg — the
+    /// restart chain's predecessor-stop, its post-spawn orphan checks, and
+    /// `stop()` — claims the backend, so two racing legs can never both
+    /// stop, or both miss, the same instance.
+    private func takeHelperCapture() -> (any CaptureEncoding)? {
+        lifecycle.withLock { lc -> (any CaptureEncoding)? in
+            let capture = lc.helperCapture
+            lc.helperCapture = nil
+            return capture
+        }
+    }
+
     private let logger: TSLogger
 
     /// Wall-clock anchor used to derive the 90 kHz RTP timestamp. Stays
@@ -467,13 +569,8 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// like the class's other locked mutables.
     private let lastFilterData = Mutex<Data?>(nil)
 
-    /// The live capture+encode backend for this share, built by
-    /// ``captureFactory`` at share start and rebuilt on every restart. On
-    /// macOS this is the wrapper around the `--capture-helper` child process
-    /// (which holds the SCStream and VideoToolbox session); the field is
-    /// still named `helperCapture` because every restart/watchdog path around
-    /// it is written in those terms.
-    private var helperCapture: (any CaptureEncoding)?
+    // (`helperCapture` lives in `Lifecycle` above — detached via
+    // `takeHelperCapture()` by every teardown leg.)
 
     /// Builds a fresh capture backend per share and per restart. `nil` means
     /// this host has no capture backend wired — the headless mode the
@@ -497,10 +594,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// factory along with the new data.
     private let captureFactory = Mutex<(@Sendable () -> any CaptureEncoding)?>(nil)
 
-    /// Codec the helper's encoder is producing. Set when the helper
-    /// sends its first parameter-sets blob; consumed by `broadcast()`
-    /// to pick H.264 vs HEVC RTP payload type.
-    private var helperCodec: VideoCodec?
+    // (`helperCodec` lives in `Lifecycle` above.)
 
     /// Latched on when a viewer reports (via CODEC_NO) that it can't decode
     /// the current stream. Forces the helper's encoder to H.264 — the
@@ -782,8 +876,10 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             // for sign-in. Avoids spinning up a second tsnet machine that
             // would need its own browser login.
             node = existing
-            self.node = existing
-            self.ownsNode = false
+            lifecycle.withLock { lc in
+                lc.node = existing
+                lc.ownsNode = false
+            }
             logger.log("Screen-share server reusing existing Tailscale node")
         } else {
             let statePath =
@@ -812,8 +908,10 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             )
 
             let newNode = try TailscaleNode(config: config, logger: logger)
-            self.node = newNode
-            self.ownsNode = true
+            lifecycle.withLock { lc in
+                lc.node = newNode
+                lc.ownsNode = true
+            }
             if let ready = nodeReadyBeforeUp {
                 await ready(newNode)
             }
@@ -841,13 +939,15 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         // callers (tests) pass nil and we create one bound to the lifetime
         // of this share.
         if let provided = controlListener {
-            self.controlListener = provided
+            lifecycle.withLock { $0.controlListener = provided }
             logger.log("Screen-share server attaching to shared control listener")
         } else {
             let owned = TailscreenControlListener(port: port)
             try await owned.start(node: node)
-            self.ownedControlListener = owned
-            self.controlListener = owned
+            lifecycle.withLock { lc in
+                lc.ownedControlListener = owned
+                lc.controlListener = owned
+            }
             logger.log("Screen-share server started owned control listener on :\(port)")
         }
         installControlHandlers()
@@ -862,10 +962,10 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             address: bindAddr,
             logger: logger
         )
-        self.packetListener = packetListener
+        lifecycle.withLock { $0.packetListener = packetListener }
         logger.log("UDP video stream listening on \(bindAddr)")
 
-        isRunning = true
+        lifecycle.withLock { $0.isRunning = true }
 
         Task { [weak self] in await self?.receiveControlLoop() }
         Task { [weak self] in await self?.sweepIdleViewers() }
@@ -959,8 +1059,8 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         helper.onParameterSets = { [weak self] params in
             self?.parameterSets.withLock { $0 = params }
             switch params {
-            case .h264: self?.helperCodec = .h264
-            case .hevc: self?.helperCodec = .hevc
+            case .h264: self?.lifecycle.withLock { $0.helperCodec = .h264 }
+            case .hevc: self?.lifecycle.withLock { $0.helperCodec = .hevc }
             }
         }
         helper.onEncoderResolution = { [weak self] width, height in
@@ -1008,7 +1108,9 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         }
         helper.onUserStopped = { [weak self] in
             self?.logger.log("CaptureEncoding: user stopped capture out-of-app")
-            self?.helperCapture = nil
+            // Detach only (no stop() — the backend already ended itself).
+            // Fires on the backend's callback thread; the write is guarded.
+            _ = self?.takeHelperCapture()
             // Surface a userStopped error so the host's
             // `isUserInitiatedCaptureStop` branch tears the share
             // down quietly instead of trying to recover.
@@ -1022,7 +1124,9 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         helper.onUnexpectedExit = { [weak self] reason in
             guard let self else { return }
             self.logger.log("HelperScreenCapture: unexpected exit (\(reason))")
-            self.helperCapture = nil
+            // Detach only (the process is already dead). Fires on the
+            // backend's callback thread; the write is guarded.
+            _ = self.takeHelperCapture()
             switch Self.classifyHelperExit(reason: reason) {
             case .slotRefused:
                 let err = NSError(
@@ -1100,7 +1204,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         }
         try helper.start(
             selectionData: filterData, forceH264: forceH264.withLock { $0 }, qualityEnv: qualityEnv)
-        helperCapture = helper
+        lifecycle.withLock { $0.helperCapture = helper }
         // Re-send the system-audio emission latch after every (re)spawn so a
         // helper restart preserves the toggle (mirrors the forceH264 handling).
         helper.setAudioEnabled(shareSystemAudio.withLock { $0 })
@@ -1210,14 +1314,20 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     ///      `--capture-helper` that keeps holding replayd's recording slot
     ///      (the stuck-badge bug).
     ///   2. `stop()` drains `restartTask` and awaits the in-flight work before
-    ///      nulling `helperCapture` — the slot always holds the *newest*
+    ///      detaching `helperCapture` — the slot always holds the *newest*
     ///      restart, and awaiting it transitively drains the whole chain, so
     ///      a respawn can't finish *after* teardown unnoticed.
     ///   3. The Task re-checks `isRunning` *after* `startHelperCapture` assigns
     ///      `helperCapture` and tears the new helper back down if the share was
     ///      stopped meanwhile. This post-spawn check — not just the await — is
     ///      what prevents a Stop-Sharing that races the respawn from orphaning
-    ///      a child process holding replayd's recording slot.
+    ///      a child process holding replayd's recording slot. Both the flag
+    ///      and the backend slot live behind the `lifecycle` Mutex: `stop()`
+    ///      writes `isRunning = false` under the lock before draining this
+    ///      chain, so the post-spawn check here reads the real value rather
+    ///      than a data-racy stale one — and every teardown leg claims the
+    ///      backend through `takeHelperCapture()`'s atomic take-and-clear,
+    ///      so no two legs can stop (or leak) the same instance.
     ///
     /// `resetCrashBudget` clears the sliding crash-window so the AppState-driven
     /// recovery path gets a fresh run of auto-restarts; the auto-restart path
@@ -1242,8 +1352,9 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
                 // CancellationError) before touching `helperCapture`.
                 _ = await previous?.value
                 guard let self else { return nil }
-                if let existing = self.helperCapture {
-                    self.helperCapture = nil
+                // Claim the outgoing backend atomically, stop it outside
+                // the lock (stop() awaits — never inside a Mutex hold).
+                if let existing = self.takeHelperCapture() {
                     await existing.stop()
                 }
                 if resetCrashBudget {
@@ -1260,14 +1371,12 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
                     try self.startHelperCapture(filterData: filterData)
                 } catch {
                     if !self.isRunning {
-                        await self.helperCapture?.stop()
-                        self.helperCapture = nil
+                        await self.takeHelperCapture()?.stop()
                     }
                     return error
                 }
                 if !self.isRunning {
-                    await self.helperCapture?.stop()
-                    self.helperCapture = nil
+                    await self.takeHelperCapture()?.stop()
                 }
                 return nil
             }
@@ -2153,6 +2262,11 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     public struct FairnessDecision: Equatable {
         public var throttle: [String]  // sorted for determinism
         public var globalBitrateInput: Int
+
+        public init(throttle: [String], globalBitrateInput: Int) {
+            self.throttle = throttle
+            self.globalBitrateInput = globalBitrateInput
+        }
     }
 
     /// Pure fairness decision layered over `lossAttribution`. An `.isolated`
@@ -3355,6 +3469,20 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         /// must not be pushed to 60.
         public var fpsCap: Int = 60
         public var elapsedSinceChangeNs: UInt64
+
+        public init(
+            lossFractionQ8: Int, pliCount: Int, nackServed: Int, current: Int, baseline: Int,
+            fpsTier: Int, fpsCap: Int = 60, elapsedSinceChangeNs: UInt64
+        ) {
+            self.lossFractionQ8 = lossFractionQ8
+            self.pliCount = pliCount
+            self.nackServed = nackServed
+            self.current = current
+            self.baseline = baseline
+            self.fpsTier = fpsTier
+            self.fpsCap = fpsCap
+            self.elapsedSinceChangeNs = elapsedSinceChangeNs
+        }
     }
 
     /// Bitrate + fps-tier decision from receiver feedback. `nil` on either
@@ -3514,6 +3642,11 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     public struct FECState: Equatable, Sendable {
         public var groupSize: Int = 0
         public var cleanWindows: Int = 0
+
+        public init(groupSize: Int = 0, cleanWindows: Int = 0) {
+            self.groupSize = groupSize
+            self.cleanWindows = cleanWindows
+        }
     }
 
     /// Per-viewer measurements the sweep snapshots for the FEC arm.
@@ -3542,6 +3675,18 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         public var expectedPackets: Int = 0
         /// Viewer advertised `.fec` in its HELLO.
         public var fecCapable: Bool = false
+
+        public init(
+            rttNs: UInt64 = 0, residualLossQ8: Int = 0, recovered: Int = 0,
+            nackRecovered: Int = 0, expectedPackets: Int = 0, fecCapable: Bool = false
+        ) {
+            self.rttNs = rttNs
+            self.residualLossQ8 = residualLossQ8
+            self.recovered = recovered
+            self.nackRecovered = nackRecovered
+            self.expectedPackets = expectedPackets
+            self.fecCapable = fecCapable
+        }
     }
 
     /// One sweep step of the FEC arm: the next adaptive state plus the set
@@ -3765,6 +3910,11 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// decode the very first frame they observe. (For HEVC that's VPS+SPS+
     /// PPS; for H.264 it's SPS+PPS.)
     private func broadcast(avccData: Data, isKeyframe: Bool) {
+        // Locked lifecycle snapshots: `stop()` clears both slots under the
+        // same lock (listener detached before it is closed), so a broadcast
+        // racing a stop either copies out the still-live listener — whose
+        // remaining sends just fail once the socket closes — or reads nil
+        // here and no-ops. Nothing below holds the lock.
         guard let pl = packetListener else { return }
         // Codec is cached from the parameter-sets blob the helper
         // sends right after its first encoded frame.
@@ -4039,7 +4189,13 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
 
     public func stop() async {
         logger.log("Server stopping…")
-        isRunning = false
+        // Guarded write, first thing: every loop, sweep, backend callback,
+        // and restart leg gates on a locked `isRunning` read, so the stop
+        // is visible to all of them at their next check — in particular to
+        // the restart chain's post-spawn re-check (see
+        // `scheduleHelperRestart`), which is drained below before this
+        // function touches the capture backend.
+        lifecycle.withLock { $0.isRunning = false }
 
         // End any remote-control session. Viewers are torn down by SERVER_BYE
         // below, so there's no need to send a per-connection revoke — just
@@ -4061,8 +4217,11 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
 
         // Drain any in-flight `restartCapture` before we touch
         // `helperCapture`. The restart's final assignment otherwise
-        // races with our nil-out and orphans a child helper process —
+        // races with our detach and orphans a child helper process —
         // the macOS screen-recording badge stays on after Stop Sharing.
+        // (The lifecycle lock makes each individual access atomic; this
+        // drain is what orders the *sequences* — spawn-then-recheck over
+        // there, detach-then-stop below.)
         let pending = restartTask.withLock { task -> Task<Error?, Never>? in
             let t = task
             task = nil
@@ -4096,9 +4255,16 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             try? await Task.sleep(for: .milliseconds(200))
         }
 
-        await helperCapture?.stop()
-        helperCapture = nil
-        helperCodec = nil
+        // Claim the backend atomically (and clear the codec with it, under
+        // the same hold), then stop it outside the lock — from this point
+        // `broadcast()` reads nil codec/backend and no-ops.
+        let capture = lifecycle.withLock { lc -> (any CaptureEncoding)? in
+            let c = lc.helperCapture
+            lc.helperCapture = nil
+            lc.helperCodec = nil
+            return c
+        }
+        await capture?.stop()
         lastAnchorInputs.withLock { $0 = nil }
         logger.log("Server stop: capture done")
 
@@ -4121,8 +4287,16 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         notifyViewersChanged()
         notifyPendingViewersChanged()
 
-        await packetListener?.close()
-        packetListener = nil
+        // Detach-then-close (atomically detached, closed outside the lock):
+        // once the slot is nil every sender — broadcast, NACK service,
+        // audio fan-out, denial datagrams — snapshots nil and no-ops
+        // instead of racing the close.
+        let packetListenerToClose = lifecycle.withLock { lc -> PacketListener? in
+            let pl = lc.packetListener
+            lc.packetListener = nil
+            return pl
+        }
+        await packetListenerToClose?.close()
         logger.log("Server stop: packet listener closed")
 
         let receiveErrors = receiveLoopErrorTotal.withLock { count -> Int in
@@ -4147,27 +4321,37 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         // Only tear down the listener if we created it ourselves. When
         // AppState owns it (the production path), leave it running so
         // request-to-share traffic keeps flowing after the share ends.
-        if let owned = ownedControlListener {
-            await owned.stop()
+        // Both slots clear under one hold; the stop happens outside it.
+        let ownedListener = lifecycle.withLock { lc -> TailscreenControlListener? in
+            let owned = lc.ownedControlListener
+            lc.ownedControlListener = nil
+            lc.controlListener = nil
+            return owned
+        }
+        if let ownedListener {
+            await ownedListener.stop()
             logger.log("Server stop: owned control listener closed")
         }
-        ownedControlListener = nil
-        controlListener = nil
 
         // Only close the node if this server actually owns it. When AppState
         // hands us its own node, AppState retains ownership and closes it on
         // sign-out — closing it here would break peer discovery and the
-        // signed-in UI state.
-        if let node = node, ownsNode {
-            try? await node.close()
+        // signed-in UI state. Reference and ownership bit read (and the slot
+        // released) under one hold; the close runs outside it.
+        let (nodeToClose, ownsIt) = lifecycle.withLock { lc -> (TailscaleNode?, Bool) in
+            let n = lc.node
+            lc.node = nil
+            return (n, lc.ownsNode)
         }
-        self.node = nil
+        if let nodeToClose, ownsIt {
+            try? await nodeToClose.close()
+        }
 
         logger.log("Server stopped")
     }
 
     deinit {
-        isRunning = false
+        lifecycle.withLock { $0.isRunning = false }
     }
 
     // MARK: - Test-only entrypoints
@@ -4184,8 +4368,8 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     public func injectSyntheticParameters(_ params: CodecParameterSets) {
         parameterSets.withLock { $0 = params }
         switch params {
-        case .h264: helperCodec = .h264
-        case .hevc: helperCodec = .hevc
+        case .h264: lifecycle.withLock { $0.helperCodec = .h264 }
+        case .hevc: lifecycle.withLock { $0.helperCodec = .hevc }
         }
     }
 

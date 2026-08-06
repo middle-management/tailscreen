@@ -36,13 +36,13 @@ test: tailscale ## Run the unit test suite (swift test)
 # The platform-portable sub-package (wire protocol + pure decision logic +
 # the tsnet-facing transport tier — see Packages/TailscreenKit/README.md).
 # The app depends on it as a real SwiftPM dependency; the files live only in
-# the package. Needs no built libtailscale.a and no Apple framework, so it
-# also runs on Linux; CI's linux-protocol job runs exactly this. The
-# TailscreenTransport target compiles against TailscaleKit, which needs the
-# submodule checked out with patches applied (header only — no Go build),
-# hence the apply-patches prerequisite.
-test-protocol: ## Build + smoke-test the portable TailscreenProtocol package
-	@$(MAKE) -C Packages/TailscaleKit apply-patches
+# the package. Needs no Apple framework, so it also runs on Linux; CI's
+# linux-protocol job runs exactly this. Compiling still needs only the
+# patched header, but the test bundle LINKS libtailscale.a — the
+# Tests/TailscreenSharerTests executable links TailscreenSharer, which
+# names TailscaleKit — hence the full `tailscale` prerequisite (which
+# also applies the patches).
+test-protocol: tailscale ## Build + smoke-test the portable TailscreenKit package
 	swift test --package-path Packages/TailscreenKit
 
 # The shared string catalog (Packages/TailscreenL10n). Its suites are the ONLY

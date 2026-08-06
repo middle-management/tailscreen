@@ -10,7 +10,7 @@ public struct ViewerConfig: Sendable {
     /// Sharer host to dial — a Tailscale hostname or tailnet IP.
     public var hostname: String
     /// UDP/TCP port the sharer listens on.
-    public var port: UInt16 = 7447
+    public var port: UInt16 = NetworkConfig.tailscreenPort
     /// Tailscale pre-auth key (or nil for interactive/existing login).
     public var authKey: String?
     /// Control server URL (headscale for local dev, else Tailscale's).
@@ -42,7 +42,7 @@ public struct ViewerConfig: Sendable {
 
     public init(
         hostname: String,
-        port: UInt16 = 7447,
+        port: UInt16 = NetworkConfig.tailscreenPort,
         authKey: String? = nil,
         controlURL: String = kDefaultControlURL,
         statePath: String,
@@ -871,12 +871,18 @@ public final class TsnetTransport {
         // covers the throwing exit paths).
     }
 
-    /// Surface an interactive-login URL: print it prominently on stderr (so it
+    /// Surface an interactive-login URL: print it prominently on stderr, so it
     /// stands out from the `[tsnet]` log stream — the common case is a headless
-    /// guest where the user copies it to a browser on another machine) and, if
-    /// a desktop session is present, best-effort `xdg-open` it locally. Nothing
-    /// here can throw into the login path — a failed open just leaves the
-    /// printed URL.
+    /// guest where the user copies it to a browser on another machine.
+    ///
+    /// Opening the URL locally is the HOST's job, via the `onLoginURL`
+    /// callback that arrives alongside this banner (the GTK app shows it with
+    /// an explicit open button; the Windows app opens via `cmd /c start`).
+    /// This used to also spawn `xdg-open` behind a `DISPLAY` check — the one
+    /// platform-specific process spawn in the package, a silent no-op on
+    /// Windows, and a second unprompted browser open on a Linux desktop where
+    /// the app was already presenting the URL. Same seam shape as
+    /// `TailscaleAuth.onOpenAuthURL` / `TailscaleIPNWatcher.onBrowseToURL`.
     nonisolated static func surfaceLoginURL(_ url: URL) {
         let line = String(repeating: "─", count: 60)
         let banner = """
@@ -889,14 +895,6 @@ public final class TsnetTransport {
 
             """
         FileHandle.standardError.write(Data(banner.utf8))
-
-        // Only attempt a local open when a display is available; in a headless
-        // guest there's no browser and xdg-open would just error.
-        guard ProcessInfo.processInfo.environment["DISPLAY"] != nil else { return }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["xdg-open", url.absoluteString]
-        try? process.run()
     }
 
     /// Bracket IPv6 literals ("[::1]:7447"); leave IPv4 untouched.

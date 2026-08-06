@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// Small per-packetizer pool of reusable `Data` buffers for RTP packet
 /// construction. The brief: at 60 fps × N viewers the packetizer emits
@@ -41,17 +42,29 @@ import Foundation
 /// It is impossible for two `Data` values returned by `acquire` (across
 /// calls) to share a live buffer with anything else in a mutating way.
 ///
-/// `@unchecked Sendable` because the pool's owning packetizer is itself
-/// `@unchecked Sendable` (the screen-share server serializes calls
-/// behind `broadcastTail`) and `Data`'s COW handles the cross-batch
-/// alias safety.
-public final class RTPPacketBufferPool: @unchecked Sendable {
-    /// Buffers handed over from the previous `packetize` call. Each entry
-    /// is a `Data` whose underlying storage is either uniquely held by
-    /// the pool (consumer released) or shared (consumer still holding).
-    /// Either way, the pool's mutating `removeAll(keepingCapacity:)` is
-    /// safe.
-    private var recycled: [Data] = []
+/// ### Thread safety
+///
+/// `recycled` lives behind a `Mutex` (the same `Synchronization` primitive
+/// `RetransmitBuffer` uses), so `acquire` / `handOver` / `recycledCount`
+/// are safe from any thread: each `acquire` pops its entry under the lock,
+/// so two concurrent calls can never receive the same `Data` value, and
+/// `Data`'s COW handles the cross-batch alias safety exactly as above.
+/// (An earlier revision instead relied on the screen-share server
+/// serializing all packetizer calls behind a single send-chain Task —
+/// `broadcastTail` — but that chain was replaced by per-*viewer* send
+/// chains, which serialize sends, not calls into the shared packetizers.
+/// The lock makes the pool correct on its own terms instead of borrowing
+/// an invariant from a caller that no longer holds it.) Interleaved
+/// concurrent batches at worst forfeit reuse — one `handOver` dropping
+/// another's leftovers just falls back to fresh allocation — never
+/// correctness.
+public final class RTPPacketBufferPool: Sendable {
+    /// Buffers handed over from the previous `packetize` call, behind the
+    /// pool's lock. Each entry is a `Data` whose underlying storage is
+    /// either uniquely held by the pool (consumer released) or shared
+    /// (consumer still holding). Either way, the mutating
+    /// `removeAll(keepingCapacity:)` a popped entry receives is safe.
+    private let recycled = Mutex<[Data]>([])
 
     /// Default target capacity for a freshly-allocated buffer. Set just
     /// above one MTU's worth of RTP packet (RTP header 12 + payload 1100
@@ -72,7 +85,7 @@ public final class RTPPacketBufferPool: @unchecked Sendable {
 
     /// Number of buffers available to recycle (informational, used by the
     /// packetizer to hint `reserveCapacity`).
-    public var recycledCount: Int { recycled.count }
+    public var recycledCount: Int { recycled.withLock { $0.count } }
 
     /// Acquire a buffer with `size == 0` and capacity sufficient for
     /// `minCapacity`. Reuses storage from the previous batch when the ask
@@ -86,20 +99,21 @@ public final class RTPPacketBufferPool: @unchecked Sendable {
         if minCapacity > defaultCapacity {
             return Data(capacity: minCapacity)
         }
-        if !recycled.isEmpty {
-            // popLast (not removeFirst) — O(1), and we don't care about
-            // emission order matching recycle order: each emitted packet
-            // is independent of every other.
-            var buf = recycled.removeLast()
-            // After removeLast, the pool no longer references `buf`. If
-            // the previous batch's consumer has also dropped their copy,
-            // `buf` is now uniquely owned and removeAll reuses storage.
-            // If not, COW kicks in and `buf` gets a fresh buffer — still
-            // valid, just no reuse this round.
-            buf.removeAll(keepingCapacity: true)
-            return buf
+        // popLast (not removeFirst) — O(1), and we don't care about
+        // emission order matching recycle order: each emitted packet
+        // is independent of every other.
+        guard var buf = recycled.withLock({ $0.popLast() }) else {
+            return Data(capacity: defaultCapacity)
         }
-        return Data(capacity: defaultCapacity)
+        // After the locked pop, the pool no longer references `buf` and no
+        // other `acquire` can have received the same entry. If the previous
+        // batch's consumer has also dropped their copy, `buf` is now
+        // uniquely owned and removeAll reuses storage. If not, COW kicks in
+        // and `buf` gets a fresh buffer — still valid, just no reuse this
+        // round. Deliberately outside the lock: the COW check/copy needs no
+        // pool state.
+        buf.removeAll(keepingCapacity: true)
+        return buf
     }
 
     /// Stash the freshly-built batch so the *next* `packetize` call can
@@ -112,15 +126,17 @@ public final class RTPPacketBufferPool: @unchecked Sendable {
     /// if the caller has by then released their array (Task completed),
     /// refcount drops to 1 and the reset is in-place.
     public func handOver(_ batch: [Data]) {
-        // Drop any prior leftovers — those buffers' storage will be freed
-        // (or kept alive by their consumer copies, who are responsible
-        // for their own lifecycle now).
-        recycled.removeAll(keepingCapacity: true)
-        if batch.count <= softLimit {
-            recycled.append(contentsOf: batch)
-        } else {
-            // Cap pool growth on pathological frames.
-            recycled.append(contentsOf: batch.prefix(softLimit))
+        recycled.withLock { recycled in
+            // Drop any prior leftovers — those buffers' storage will be freed
+            // (or kept alive by their consumer copies, who are responsible
+            // for their own lifecycle now).
+            recycled.removeAll(keepingCapacity: true)
+            if batch.count <= softLimit {
+                recycled.append(contentsOf: batch)
+            } else {
+                // Cap pool growth on pathological frames.
+                recycled.append(contentsOf: batch.prefix(softLimit))
+            }
         }
     }
 }

@@ -115,7 +115,7 @@ final class SharerVoiceSink {
 func parseConfig() -> (config: ViewerConfig, host: String?, wantAudio: Bool, explicitStateDir: Bool) {
     var args = gArgs
     var host: String?
-    var port: UInt16 = 7447
+    var port: UInt16 = NetworkConfig.tailscreenPort
     var wantAudio = true
     var explicitStateDir = false
     var statePath = FileManager.default.currentDirectoryPath + "/.tailscreen-state"
@@ -424,6 +424,13 @@ if gSelfTest {
                     // says is down buys nothing but a timeout.
                     gPicker.sharers = peers
                     let online = peers.filter { $0.isOnline }
+                    // Prune share status for peers no longer online — same
+                    // rule as quietRefresh below. Without it a peer that left
+                    // discovery kept its `shareInfo` entry, so the same id
+                    // returning later showed a stale "Sharing" chip until its
+                    // next probe landed.
+                    let onlineIDs = Set(online.map(\.id))
+                    gPicker.shareInfo = gPicker.shareInfo.filter { onlineIDs.contains($0.key) }
                     // Label the header with the tailnet these rows belong to
                     // (falling back to the login) — set before `.picking`, so
                     // the placard never flashes the old guidance text.
