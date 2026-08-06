@@ -9,16 +9,43 @@
 
 #include "include/cwinvideo.h"
 
+// Compiled to nothing off Windows. The `linux-app` job typechecks the Windows
+// app on Linux (that is where the WinUI sources get their only per-PR check), so
+// a target that unconditionally includes <d3d11.h> fails a leg that has no
+// business building D3D at all. Same shape as WinNotifyKit's shim, for the same
+// reason.
+#if defined(_WIN32)
+
 #include <d3d11.h>
 #include <d3dcompiler.h>
 #include <dxgi.h>
 #include <stdio.h>
+#include <string.h>
 #include <windows.h>
 
-// ISurfaceImageSourceNative. Ships inside the swift-winui dependency at
-// Sources/CWinAppSDK/nuget/include/, which is why this target can reach it
-// without adding a Windows SDK search path of its own.
-#include <microsoft.ui.xaml.media.dxinterop.h>
+// ISurfaceImageSourceNative, declared here rather than included.
+//
+// The interface lives in `microsoft.ui.xaml.media.dxinterop.h`, which the
+// swift-winui dependency vendors at Sources/CWinAppSDK/nuget/include/ — but that
+// directory is not any target's public headers path and CWinAppSDK is not an
+// exported product, so there is no supported way to include it from here. The
+// first attempt did and CI answered "'microsoft.ui.xaml.media.dxinterop.h' file
+// not found".
+//
+// So the three methods we call are declared directly. The IID and the vtable
+// order are copied from that vendored header, NOT guessed: WinUI 3's
+// Microsoft.UI.Xaml interface has a different IID from the UWP
+// Windows.UI.Xaml one of the same name, and a wrong GUID here would fail at
+// QueryInterface — at runtime, in a viewer, with nothing at compile time to
+// catch it.
+struct __declspec(uuid("e4cecd6c-f14b-4f46-83c3-8bbda27c6504"))
+    ISurfaceImageSourceNative : public IUnknown {
+    virtual HRESULT STDMETHODCALLTYPE SetDevice(IDXGIDevice *device) = 0;
+    virtual HRESULT STDMETHODCALLTYPE BeginDraw(RECT updateRect,
+                                               IDXGISurface **surface,
+                                               POINT *offset) = 0;
+    virtual HRESULT STDMETHODCALLTYPE EndDraw(void) = 0;
+};
 
 namespace {
 
@@ -556,3 +583,5 @@ int32_t winvideo_selftest_check(int32_t width, int32_t height, const uint8_t *y,
 }
 
 }  // extern "C"
+
+#endif  // _WIN32

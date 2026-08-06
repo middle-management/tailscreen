@@ -8,9 +8,6 @@ import struct TailscreenProtocol.KeyModifiers
 import enum TailscreenProtocol.ViewerPointerMapping
 import enum TailscreenProtocol.ViewerZoomMath
 import enum TailscreenProtocol.WindowsKeyCodeMapping
-// Moved down to the portable tier when the SHARER's preview thumbnail needed
-// the same maths: this blit is one of its two callers now, not its owner.
-import CWinVideo
 import class TailscreenViewer.FrameStore
 
 // This is the app's ONLY genuinely Windows-bound file, and the `#else` at the
@@ -29,6 +26,11 @@ import class TailscreenViewer.FrameStore
 // Linux compiles and tests. What is left here is event plumbing: read a
 // pointer, hand over four numbers.
 #if os(Windows)
+
+// Inside the guard on purpose: `CWinVideo` is a `.when(platforms: [.windows])`
+// dependency, so on Linux the module does not exist and a top-of-file import
+// breaks the `linux-app` typecheck that exists to catch exactly this.
+import CWinVideo
 
 import WinUI
 // `WinUIElementRepresentable` lives in the BACKEND module, not in SwiftCrossUI
