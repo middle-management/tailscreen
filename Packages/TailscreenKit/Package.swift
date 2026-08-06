@@ -147,6 +147,11 @@ let package = Package(
             name: "TailscreenViewerTests",
             dependencies: ["TailscreenViewer", "TailscreenProtocol", "TailscreenAudio"],
             path: "Tests/TailscreenViewerTests"
+        ),
+        .testTarget(
+            name: "TailscreenSharerTests",
+            dependencies: ["TailscreenSharer", "TailscreenProtocol"],
+            path: "Tests/TailscreenSharerTests"
         )
     ]
 )
