@@ -93,6 +93,45 @@ feature. Two things follow:
 
 This is the highest-leverage next step and it ships nothing to users.
 
+## Why not move the macOS app onto swift-cross-ui too
+
+The AppKit backend makes this a fair question — one UI codebase would align the
+three apps by construction rather than by discipline. The answer is still no,
+for four reasons, the first of which is on its own decisive.
+
+**1. There is no menu-bar-extra scene.** The scene types are `Window`,
+`WindowGroup`, `AlertScene` and `Commands`. `AppKitBackend+MenuBar.swift` builds
+the *application* menu bar (App/File/Edit/View) — there is no `NSStatusItem`
+anywhere in the framework, and no `MenuBarExtra` equivalent. The macOS app's
+entire sharer surface is a menubar item: share status, start/stop, mic, system
+audio, drawing. Porting would mean keeping a hand-written AppKit surface for the
+half of the app that matters most, so the "one codebase" benefit evaporates
+before anything else is considered.
+
+**2. It would level down, not up.** The gap list above is what macOS would
+*lose*: no `buttonStyle`, no `shadow`, no animation, no materials. The macOS app
+is the design reference precisely because it looks the way we want; rebuilding
+it on the subset would make it look like the ports rather than the reverse. The
+goal is to raise two apps, not lower three.
+
+**3. The reference implementation is the wrong thing to bet.** The dependency is
+pinned to a git revision, not a release. That is an acceptable risk for two
+secondary platforms and a poor one for the app that works, is most used, and
+carries ScreenCaptureKit, VideoToolbox, Metal, TCC prompts and `NSWindow`
+construction — all of which would need representables or native escapes anyway.
+
+**4. The cosmetic problem does not need it.** Everything the ports are actually
+missing — native toggles, tooltips, hover, matched spacing and wording — is
+available today and unused. Spending a macOS rewrite to fix that would be
+solving an unrelated problem.
+
+**What is worth taking from the idea:** the harness above, plus the discipline
+it enables. Add an AppKit-backend rendering of `TailscreenHubUI` to the
+screenshot jobs, and drift between the shared hub and the macOS design becomes
+mechanically visible instead of something a person notices two platforms later.
+That is alignment-by-construction pressure without a rewrite, and it points the
+convergence the right way: the shared code moves toward macOS.
+
 ## What our UI is leaving on the table
 
 The shared chrome already does the structural work — `HubStyle` carries a
