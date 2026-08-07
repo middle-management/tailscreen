@@ -188,6 +188,14 @@ public final class LinuxShareSession {
     /// the control is absent rather than present-and-inert.
     private var voice: SharerVoice?
 
+    /// Where the server hands inbound viewer audio.
+    ///
+    /// Long-lived and installed on the server BEFORE `start()`, because the
+    /// server's callbacks are bare stored vars its receive thread reads with
+    /// no lock — see `SharerVoiceRoute`. `startVoice` publishes into this
+    /// rather than reassigning `server.onAudioReceived` mid-share.
+    private let inboundVoice = SharerVoiceRoute()
+
     /// The generation of the last grant snapshot applied.
     ///
     /// The server stamps every `onControlGrantChanged` with a monotonic
@@ -196,8 +204,30 @@ public final class LinuxShareSession {
     /// clear a grant that is still live — the sharer would be told nobody is
     /// controlling their machine while somebody is. `SharerNoticeDecision.isStale`
     /// owns the comparison; this is the field it compares against. It resets
-    /// on teardown — see `clearControlState`.
+    /// at both ends of a share — see `beginShareGeneration` /
+    /// `endShareGeneration` and `clearControlState`.
     private var lastGrantGeneration: UInt64 = 0
+
+    /// Which share attempt the engine is on.
+    ///
+    /// Every one of the server's callbacks reaches this actor through a
+    /// `Task { @MainActor }` hop, and so does `beginShare`'s own continuation
+    /// after `server.start()` — the actor is released across that await, so a
+    /// stop, or a whole second share, can land in the middle. Each of those
+    /// closures captures the generation it was created under and drops itself
+    /// when it no longer matches, so nothing from a share that has ended can
+    /// publish a roster, a grant or a teardown over a share that has not.
+    ///
+    /// It is also what closes the grant guard's backward hole. `isStale` only
+    /// rejects a generation *below* the high-water mark, and teardown resets
+    /// that mark to zero (it has to: a fresh server starts its own sequence at
+    /// zero). So a snapshot still in flight from the OLD server — generation
+    /// 7, say — was not stale against 0: it was applied, telling the sharer
+    /// somebody was driving a machine they had just stopped sharing, and it
+    /// left the mark at 7, which then discarded the next share's first
+    /// snapshots as stale. A grant that silently never appears, from a stop
+    /// that looked clean.
+    private var shareGeneration: UInt64 = 0
 
     /// Remembered allow/deny, and the queue for decisions made before a peer's
     /// identity resolved. Portable and tested on Linux CI — the host only
@@ -274,6 +304,7 @@ public final class LinuxShareSession {
         showsOutline: Bool,
         captureFactory: @escaping @Sendable () -> CaptureEncoding
     ) {
+        let generation = beginShareGeneration()
         setPhase(.starting)
 
         // The annotation overlay has to exist BEFORE the server, because
@@ -340,6 +371,10 @@ public final class LinuxShareSession {
         access.onPoliciesChanged = { [weak server] policies in
             server?.setAccessPolicies(policies)
         }
+        // Every one of these hops to this actor, and a hop can land after the
+        // share it belongs to has ended — so each carries `generation` and
+        // drops itself when the engine has moved on. Without that, a snapshot
+        // from a stopped server repopulates a roster nobody is sharing to.
         server.onViewersChanged = { infos in
             // Mapped off the main actor (the callback is not on it), then
             // handed over whole. `stableID` travels with each row because the
@@ -349,7 +384,10 @@ public final class LinuxShareSession {
                     id: $0.id, label: $0.hostname ?? $0.tailscaleIP, stableID: $0.stableID,
                     health: $0.health == .good ? nil : "\($0.health)")
             }
-            Task { @MainActor [weak self] in self?.applyConnected(rows) }
+            Task { @MainActor [weak self] in
+                guard let self, self.shareGeneration == generation else { return }
+                self.applyConnected(rows)
+            }
         }
         server.onPendingViewersChanged = { pending in
             // Keyed by the server's `"ip:port"` id, NOT the bare IP — see
@@ -358,27 +396,39 @@ public final class LinuxShareSession {
                 PendingViewer(
                     id: $0.id, label: $0.hostname ?? $0.tailscaleIP, stableID: $0.stableID)
             }
-            Task { @MainActor [weak self] in self?.applyPending(waiting) }
+            Task { @MainActor [weak self] in
+                guard let self, self.shareGeneration == generation else { return }
+                self.applyPending(waiting)
+            }
         }
         server.onControlRequestsChanged = { [weak self] requests in
             // Fires off the main actor; hop. No mapping needed — the card
             // renders `ControlRequestInfo.displayName` directly, the same
             // shape the Windows app passes through.
-            Task { @MainActor [weak self] in self?.onControlRequestsChanged?(requests) }
-        }
-        server.onControlGrantChanged = { [weak self] generation, grant in
             Task { @MainActor [weak self] in
-                guard let self,
-                    !SharerNoticeDecision.isStale(
-                        generation: generation, lastApplied: self.lastGrantGeneration)
-                else { return }
-                self.lastGrantGeneration = generation
-                self.onControlGrantChanged?(grant?.displayName)
+                guard let self, self.shareGeneration == generation else { return }
+                self.onControlRequestsChanged?(requests)
+            }
+        }
+        server.onControlGrantChanged = { [weak self] grantGeneration, grant in
+            Task { @MainActor [weak self] in
+                self?.applyControlGrant(
+                    share: generation, generation: grantGeneration,
+                    displayName: grant?.displayName)
             }
         }
         server.onCaptureStopped = { error in
-            Task { @MainActor [weak self] in self?.handleCaptureStopped(error) }
+            Task { @MainActor [weak self] in
+                guard let self, self.shareGeneration == generation else { return }
+                self.handleCaptureStopped(error)
+            }
         }
+        // Installed HERE, before `start()`, and never reassigned: the server's
+        // callbacks are bare stored vars its receive thread reads with no
+        // lock. `startVoice` publishes into the route once the capture device
+        // is open — see `SharerVoiceRoute` for why the device is not opened
+        // this early.
+        server.onAudioReceived = { [inboundVoice] packet in inboundVoice.receive(packet) }
         // Anyone whose ask was accepted before this server existed. Replayed
         // BEFORE start, so the gate already knows them when their HELLO lands.
         for ip in pendingPreApprovedIPs { server.preApproveViewer(ip: ip) }
@@ -403,6 +453,17 @@ public final class LinuxShareSession {
                     // rebound to the share's own.
                     controlListener: askToShare.controlListener
                 )
+                // The actor is released across that await, so a stop — or a
+                // whole second `beginShare` — can have landed while the
+                // capture and the node were coming up. Publishing `.sharing`
+                // now would overwrite `.idle` for a share nobody asked to keep,
+                // arm an outline over somebody's screen, and open a microphone
+                // for it; and the server this closure holds is one the engine
+                // no longer references, so nothing else would ever stop it.
+                guard self.shareGeneration == generation else {
+                    await server.stop()
+                    return
+                }
                 setPhase(.sharing)
                 // Only once the share is genuinely up: an indicator that
                 // appeared while the capture was still opening would say
@@ -410,6 +471,12 @@ public final class LinuxShareSession {
                 overlay?.setShowsOutline(showsOutline)
                 startVoice(on: server)
             } catch {
+                // Same check: a start that failed for a share already stopped
+                // has nothing left to unwind — `stopSharing` did it — and
+                // reporting `.failed` over `.idle` would tell the person their
+                // share broke when they had ended it themselves.
+                guard self.shareGeneration == generation else { return }
+                endShareGeneration()
                 setPhase(.failed("\(error)"))
                 self.server = nil
                 self.teardownOverlay()
@@ -419,7 +486,51 @@ public final class LinuxShareSession {
         }
     }
 
+    /// Open a share generation: everything stamped with an older one is
+    /// ignored from here on.
+    ///
+    /// The grant high-water mark restarts with it, because a fresh server
+    /// starts its own `onControlGrantChanged` sequence at zero and a mark
+    /// carried over from the last share would discard this one's first
+    /// snapshots as stale. Internal so the engine suite can drive the guards
+    /// with no node and no server behind them.
+    @discardableResult
+    func beginShareGeneration() -> UInt64 {
+        shareGeneration &+= 1
+        lastGrantGeneration = 0
+        return shareGeneration
+    }
+
+    /// Close the current share generation — a stop, a capture death, or a
+    /// start that failed. Anything still in flight from the server that just
+    /// ended is dropped when it lands.
+    func endShareGeneration() {
+        shareGeneration &+= 1
+        lastGrantGeneration = 0
+    }
+
+    /// Apply one grant snapshot, dropping it when it belongs to a share this
+    /// engine has moved on from or when a newer one was already applied.
+    ///
+    /// Both guards, not either: `isStale` alone cannot tell a late snapshot
+    /// from a dead server apart from a fresh one, precisely because teardown
+    /// resets the mark it compares against — see `shareGeneration`. Internal
+    /// so the engine suite can pin the pair without a server.
+    func applyControlGrant(share: UInt64, generation: UInt64, displayName: String?) {
+        guard share == shareGeneration else { return }
+        guard
+            !SharerNoticeDecision.isStale(
+                generation: generation, lastApplied: lastGrantGeneration)
+        else { return }
+        lastGrantGeneration = generation
+        onControlGrantChanged?(displayName)
+    }
+
     public func stopSharing() {
+        // First, and unconditionally: from here on, nothing the ending
+        // share's server says reaches this engine — including a `beginShare`
+        // continuation still parked inside `server.start()`.
+        endShareGeneration()
         guard let server else {
             setPhase(.idle)
             teardownOverlay()
@@ -463,6 +574,10 @@ public final class LinuxShareSession {
     /// The capture ended on its own — an error, or the person pressing stop in
     /// the compositor's own indicator.
     private func handleCaptureStopped(_ error: Error?) {
+        // The share is over — see `stopSharing`. `self.server` is deliberately
+        // left alone: the server drives its own teardown from here, and the
+        // engine's control/roster surface is emptied below.
+        endShareGeneration()
         if let error {
             setPhase(.failed("\(error)"))
         } else {
@@ -640,9 +755,10 @@ public final class LinuxShareSession {
                 }
             }
             // Inbound viewer audio, already vetted by the server's anti-spoof
-            // gate. Fires on the receive thread; `VoiceDownlink` does
-            // arithmetic only and hands the result on.
-            server.onAudioReceived = { [weak voice] packet in voice?.receive(packet) }
+            // gate, reaches `voice.receive` from here on. The server's
+            // handler was installed before `start()` and is NOT touched now —
+            // see `SharerVoiceRoute`.
+            inboundVoice.setVoice(voice)
             try voice.start()
             self.voice = voice
             setVoiceState(available: true, on: false)
@@ -653,6 +769,10 @@ public final class LinuxShareSession {
     }
 
     private func stopVoice() {
+        // Unroute first: the server may still be delivering, and a packet
+        // handed to a voice that is being torn down is exactly the race
+        // `VoiceDownlink`'s lock exists for. Stop reaching it at all.
+        inboundVoice.setVoice(nil)
         voice?.stop()
         voice = nil
         setVoiceState(available: false, on: false)
@@ -815,10 +935,12 @@ public final class LinuxShareSession {
 
     /// Drop every control row on teardown.
     ///
-    /// The generation counter resets too: a fresh server starts its own
-    /// sequence at zero, so carrying the old high-water mark forward would
-    /// make `isStale` discard the new share's first snapshots — a grant that
-    /// silently never appears in the UI.
+    /// The high-water mark resets too: a fresh server starts its own sequence
+    /// at zero, so carrying the old mark forward would make `isStale` discard
+    /// the new share's first snapshots — a grant that silently never appears
+    /// in the UI. That reset is also why the mark alone is not enough to
+    /// reject a snapshot still in flight from the server that just ended: it
+    /// is not stale against zero. `shareGeneration` is what rejects it.
     private func clearControlState() {
         onControlRequestsChanged?([])
         onControlGrantChanged?(nil)
