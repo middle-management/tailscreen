@@ -20,7 +20,14 @@ import TailscreenProtocol
 /// server's anti-spoof gate has vetted the sender's SSRC — so by the time a
 /// packet reaches `receive` it is a packet from an admitted viewer speaking
 /// under the SSRC that viewer was assigned.
-public final class SharerVoice {
+///
+/// `@unchecked Sendable`, and it has to be: `receive` runs on the server's
+/// receive thread while `stop()` runs on whichever thread tore the share down,
+/// and the server's callback contract ("assign before `start()`, leave alone
+/// until after `stop()` returns") means no host can detach `onAudioReceived`
+/// first to drain it. Both halves own their own lock — `VoiceUplink`'s, and
+/// `VoiceDownlink`'s.
+public final class SharerVoice: @unchecked Sendable {
     private let uplink: VoiceUplink
     private let downlink = VoiceDownlink()
 
@@ -76,6 +83,11 @@ public final class SharerVoice {
     /// Called on share teardown, not left to `deinit`: an open capture device
     /// after Stop Sharing keeps the OS microphone indicator lit, which reads to
     /// everyone in the room as "still recording".
+    ///
+    /// Safe to call while inbound audio is still arriving — which it always
+    /// is, since both hosts stop voice before the server. `VoiceUplink.stop`
+    /// waits for an in-flight delivery and `VoiceDownlink.reset` takes the
+    /// downlink's lock, so neither drops state through the middle of a packet.
     public func stop() {
         uplink.stop()
         downlink.reset()
