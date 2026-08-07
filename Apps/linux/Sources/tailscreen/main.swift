@@ -281,7 +281,6 @@ if gSelfTest {
     // so `present` — and thus the GLArea repaint — happens on the main thread.
     let (baseConfig, host, wantAudio, explicitStateDir) = parseConfig()
     let sink = GtkVideoSink(store: gStore, uiState: gUIState)
-    let decoder = FFmpegVideoDecoder()
     let transport = TsnetTransport()
     // Audio out: an ALSA sink fronted by a background thread so its blocking
     // device write never runs on the GTK main thread (the transport loop is
@@ -382,6 +381,13 @@ if gSelfTest {
         }
         let ended = EndedBox()
         Task { @MainActor in
+            // A fresh decoder per session (matching the Windows host, and the
+            // mac client's per-connect `VideoDecoder`): no stale codec context
+            // leaks across sessions, and creating it here — inside the main
+            // actor, where the transport drives it and where the ladder's
+            // reset callback fires — is what lets both hold it without
+            // crossing an isolation region.
+            let decoder = FFmpegVideoDecoder()
             do {
                 try await transport.run(
                     config: config, decoder: decoder, videoSink: sink,
@@ -405,6 +411,21 @@ if gSelfTest {
                     onAwaitingApproval: { gUIState.post(sessionPhase: .awaitingApproval) },
                     onEnded: { reason, wasAdmitted in
                         ended.value = (reason, wasAdmitted)
+                    },
+                    // Decode-recovery ladder opt-in: at the wedged-decoder rung
+                    // drop the lazy libavcodec context so the next AU (a fresh
+                    // keyframe — the session asks for one) rebuilds it.
+                    onDecoderResetNeeded: { decoder.reset() },
+                    onDecodeFatal: {
+                        // Terminal rung: name the stall on the session placard
+                        // instead of leaving a frozen last frame. Unlatch the
+                        // sink first so a frame that somehow decodes later
+                        // re-announces video and clears the placard.
+                        sink.resetForNewSession()
+                        gUIState.noteVideoStalled(
+                            L(
+                                "Video has stalled — decoding keeps failing and automatic recovery hasn't helped."
+                            ))
                     })
                 FileHandle.standardError.write(Data("session ended\n".utf8))
                 gVoice.detach()

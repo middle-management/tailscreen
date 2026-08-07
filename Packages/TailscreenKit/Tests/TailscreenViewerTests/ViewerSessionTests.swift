@@ -828,4 +828,176 @@ final class ViewerSessionTests: XCTestCase {
             control.count(of: .pli), 1,
             "once a keyframe has landed the decode-failure and NACK paths own recovery")
     }
+
+    // MARK: - Decode-recovery ladder (opt-in escalation)
+
+    /// Feed `count` single-packet IDR AUs starting at `startSeq` (the keyframe
+    /// gate opens on the first), one distinct seq/timestamp per AU. Returns the
+    /// next unused sequence number so episodes can be chained.
+    @discardableResult
+    private func feedAUs(_ session: ViewerSession, count: Int, startSeq: UInt16 = 0) -> UInt16 {
+        let packetizer = H264Packetizer()
+        let nals = AVCCParser.nalUnits(from: makeAVCC(byteCount: 200))
+        var seq = startSeq
+        for _ in 0..<count {
+            let packets = packetizer.packetize(
+                nals: nals, timestamp: 9000 &+ UInt32(seq) &* 3000, ssrc: 7, startSequence: seq)
+            for packet in packets {
+                session.receiveRTP(packet)
+            }
+            seq &+= 1
+        }
+        return seq
+    }
+
+    /// With NEITHER ladder callback installed the session keeps the historical
+    /// flat path: exactly one PLI per decode failure, no escalation. This is
+    /// the behavior pin for hosts that don't opt in (including the macOS
+    /// client, whose adapter never reports per-frame failures here at all).
+    func testNoLadderCallbacksKeepsFlatPLIPerFailure() {
+        let decoder = StubDecoder()
+        decoder.shouldThrow = true
+        let control = ControlCollector()
+        let session = ViewerSession(
+            caps: [.receiverReport], decoder: decoder, videoSink: StubVideoSink(),
+            audioSink: nil, onControlToSend: control.send
+        )
+        var plis = 0
+        session.onPLISent = { plis += 1 }
+
+        feedAUs(session, count: 10)
+
+        XCTAssertEqual(control.count(of: .pli), 10, "flat path: one PLI per decode failure")
+        XCTAssertEqual(plis, 10, "onPLISent mirrors each flat-path PLI")
+        XCTAssertEqual(session.diagnostics.decodeFailures, 10)
+    }
+
+    /// Ladder-mode assembly: a failing session with both callbacks installed,
+    /// plus counters for every observable output.
+    private struct LadderHarness {
+        let session: ViewerSession
+        let decoder: StubDecoder
+        let control: ControlCollector
+        let resets: Counter
+        let fatals: Counter
+
+        final class Counter {
+            var value = 0
+        }
+    }
+
+    private func makeLadderHarness() -> LadderHarness {
+        let decoder = StubDecoder()
+        decoder.shouldThrow = true
+        let control = ControlCollector()
+        let session = ViewerSession(
+            caps: [.receiverReport], decoder: decoder, videoSink: StubVideoSink(),
+            audioSink: nil, onControlToSend: control.send
+        )
+        let resets = LadderHarness.Counter()
+        let fatals = LadderHarness.Counter()
+        session.onDecoderResetNeeded = { resets.value += 1 }
+        session.onDecodeFatal = { fatals.value += 1 }
+        return LadderHarness(
+            session: session, decoder: decoder, control: control, resets: resets, fatals: fatals)
+    }
+
+    /// With the callbacks installed, failures escalate instead of spamming
+    /// PLIs: nothing below the first rung, one PLI at the keyframe rung, and
+    /// nothing more until the next rung.
+    func testLadderFiresKeyframeRungOnceAtThreshold() {
+        let harness = makeLadderHarness()
+
+        var seq = feedAUs(harness.session, count: DecodeRecovery.requestKeyframeFailureThreshold - 1)
+        XCTAssertEqual(harness.control.count(of: .pli), 0, "below the first rung nothing fires")
+
+        seq = feedAUs(harness.session, count: 1, startSeq: seq)
+        XCTAssertEqual(harness.control.count(of: .pli), 1, "the keyframe rung asks exactly once")
+
+        feedAUs(
+            harness.session,
+            count: DecodeRecovery.recreateSessionFailureThreshold - DecodeRecovery.requestKeyframeFailureThreshold - 1,
+            startSeq: seq)
+        XCTAssertEqual(harness.control.count(of: .pli), 1, "latched until the next rung")
+        XCTAssertEqual(harness.resets.value, 0)
+        XCTAssertEqual(harness.fatals.value, 0)
+    }
+
+    /// The reset rung fires `onDecoderResetNeeded` exactly once, with the PLI
+    /// that asks for the keyframe the rebuilt decoder needs.
+    func testLadderFiresResetRungOnceWithKeyframeRequest() {
+        let harness = makeLadderHarness()
+
+        let seq = feedAUs(harness.session, count: DecodeRecovery.recreateSessionFailureThreshold)
+        XCTAssertEqual(harness.resets.value, 1, "the reset rung fires at its threshold")
+        XCTAssertEqual(
+            harness.control.count(of: .pli), 2,
+            "keyframe rung + the reset rung's own keyframe request")
+        XCTAssertEqual(harness.fatals.value, 0, "the terminal rung hasn't been reached")
+
+        feedAUs(harness.session, count: 30, startSeq: seq)
+        XCTAssertEqual(harness.resets.value, 1, "latched — each rung once per episode")
+        XCTAssertEqual(harness.control.count(of: .pli), 2)
+    }
+
+    /// The terminal rung fires `onDecodeFatal` exactly once, after the reset
+    /// rung already had its chance, and stays latched however long the
+    /// failures continue.
+    func testLadderFiresFatalRungOnceAtTerminalThreshold() {
+        let harness = makeLadderHarness()
+
+        var seq = feedAUs(harness.session, count: DecodeRecovery.surfaceErrorFailureThreshold - 1)
+        XCTAssertEqual(harness.fatals.value, 0, "one failure short of the terminal rung")
+
+        seq = feedAUs(harness.session, count: 1, startSeq: seq)
+        XCTAssertEqual(harness.fatals.value, 1, "the terminal rung surfaces the stall")
+
+        feedAUs(harness.session, count: 100, startSeq: seq)
+        XCTAssertEqual(harness.fatals.value, 1, "latched — never re-surfaced within the episode")
+        XCTAssertEqual(harness.resets.value, 1)
+        XCTAssertEqual(harness.control.count(of: .pli), 2)
+    }
+
+    /// A successful decode resets the consecutive counter — a fresh failing
+    /// run needs the full threshold again — and clears the per-episode
+    /// latches, so a NEW episode walks the rungs again.
+    func testSuccessfulDecodeResetsLadderCounterAndLatches() {
+        let harness = makeLadderHarness()
+
+        // Fail one short of the first rung, then decode one frame.
+        var seq = feedAUs(harness.session, count: DecodeRecovery.requestKeyframeFailureThreshold - 1)
+        harness.decoder.shouldThrow = false
+        seq = feedAUs(harness.session, count: 1, startSeq: seq)
+        harness.decoder.shouldThrow = true
+
+        // The next run starts from zero: the same one-short count fires
+        // nothing, and the threshold-th consecutive failure fires the rung.
+        seq = feedAUs(
+            harness.session, count: DecodeRecovery.requestKeyframeFailureThreshold - 1, startSeq: seq)
+        XCTAssertEqual(
+            harness.control.count(of: .pli), 0,
+            "the success reset the counter — 4 + 4 non-consecutive failures fire nothing")
+        seq = feedAUs(harness.session, count: 1, startSeq: seq)
+        XCTAssertEqual(harness.control.count(of: .pli), 1, "five consecutive failures fire the rung")
+
+        // Walk this episode to the terminal rung, recover, then fail again:
+        // the cleared latches let every rung fire a second time.
+        seq = feedAUs(
+            harness.session,
+            count: DecodeRecovery.surfaceErrorFailureThreshold, startSeq: seq)
+        XCTAssertEqual(harness.resets.value, 1)
+        XCTAssertEqual(harness.fatals.value, 1)
+
+        harness.decoder.shouldThrow = false
+        seq = feedAUs(harness.session, count: 1, startSeq: seq)
+        harness.decoder.shouldThrow = true
+
+        seq = feedAUs(
+            harness.session, count: DecodeRecovery.surfaceErrorFailureThreshold, startSeq: seq)
+        XCTAssertEqual(harness.resets.value, 2, "a fresh episode reaches the reset rung again")
+        XCTAssertEqual(harness.fatals.value, 2, "and the terminal rung again")
+        XCTAssertEqual(
+            harness.control.count(of: .pli), 4,
+            "two PLI-bearing rungs (keyframe + reset) per episode, two episodes")
+    }
 }

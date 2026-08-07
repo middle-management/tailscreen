@@ -77,6 +77,34 @@ public final class ViewerSession {
     /// Called each time the session recovers a packet via FEC.
     public var onFECRecovered: (() -> Void)?
 
+    // MARK: Decode-recovery ladder opt-in (optional; host cooperation)
+
+    /// Installing EITHER callback below opts the session into the shared
+    /// decode-failure escalation ladder (`DecodeRecovery`, the same
+    /// 5/30/90/300-consecutive-failure policy the macOS viewer runs inside its
+    /// own `VideoDecoder`): per-frame decode failures are then counted
+    /// consecutively and answered per rung — a PLI at `.requestKeyframe`,
+    /// `onDecoderResetNeeded` (plus a PLI, since a fresh IDR is what un-wedges
+    /// a rebuilt decoder) at `.recreateSession`, and `onDecodeFatal` at
+    /// `.surfaceError` — each rung at most once per failing episode, with the
+    /// counter and latches reset by the next successfully decoded frame.
+    /// (`.signalDegraded` is latched for ordering but currently has no
+    /// portable surface.) With BOTH left nil the session keeps today's flat
+    /// path: one PLI per decode failure, no escalation — so a host that
+    /// doesn't opt in sees no behavior change.
+    ///
+    /// Fired synchronously on the host's serialization context (the same one
+    /// `receiveRTP` runs on), like every other decode-path callback here.
+
+    /// The `.recreateSession` rung: the decoder looks wedged (30 consecutive
+    /// failures despite a keyframe request), so the host should reset/recreate
+    /// its concrete decoder (e.g. `FFmpegVideoDecoder.reset()`).
+    public var onDecoderResetNeeded: (() -> Void)?
+    /// The `.surfaceError` rung: decoding has been failing for hundreds of
+    /// consecutive frames despite a keyframe request and a decoder reset —
+    /// surface a user-visible session error.
+    public var onDecodeFatal: (() -> Void)?
+
     private let decoder: VideoDecoding
     private let videoSink: VideoSink
     private let audioSink: AudioSink?
@@ -207,21 +235,20 @@ public final class ViewerSession {
         }
         self.nack = NACKScheduler()
 
-        // Route decoded frames straight to the sink, and decode failures to a
-        // PLI (keyframe request), regardless of NACK negotiation. Captured
-        // directly (not via `self`) so the decoder's callbacks don't retain the
-        // session; per `VideoDecoding`'s threading contract these fire on the
-        // host's serialization context (synchronously for FFmpeg, after an
-        // adapter hop for an async backend like VideoToolbox).
+        // Route decoded frames straight to the sink, and decode failures to
+        // recovery (a flat PLI, or the escalation ladder once a host installs
+        // `onDecoderResetNeeded`/`onDecodeFatal`), regardless of NACK
+        // negotiation. The sink is captured directly (not via `self`) so the
+        // frame callback doesn't retain the session; per `VideoDecoding`'s
+        // threading contract these fire on the host's serialization context
+        // (synchronously for FFmpeg, after an adapter hop for an async backend
+        // like VideoToolbox).
         decoder.onDecodedFrame = { [weak self] frame in
-            self?.framesDecoded += 1
+            self?.noteDecodedFrame()
             videoSink.present(frame)
         }
         decoder.onDecodeFailure = { [weak self] in
-            self?.decodeFailures += 1
-            self?.keyframeRequestsSent += 1
-            onControlToSend(ScreenShareControlMessage.encode(.pli))
-            self?.onPLISent?()
+            self?.handleDecodeFailure()
         }
 
         // Every voice, mixed by the sink. The SSRC the downlink tags each
@@ -594,6 +621,70 @@ public final class ViewerSession {
     /// streams keep asserting on frame counts. Internal via @testable, per the
     /// package convention.
     func markKeyframeSeenForTesting() { seenKeyframe = true }
+
+    // MARK: - Decode failure recovery
+
+    /// Consecutive per-frame decode failures in the current failing episode.
+    /// Only consulted in ladder mode; reset by the first successful frame.
+    private var consecutiveDecodeFailures = 0
+    /// Rungs already fired this episode — the `DecodeRecovery` latch set,
+    /// cleared with the counter on the first successful frame.
+    private var firedDecodeRecoveryRungs: Set<DecodeRecoveryAction> = []
+
+    /// One per-frame decode failure, reported by the decoder. With no ladder
+    /// callbacks installed this is exactly the historical flat path (one PLI
+    /// per failure); with a host opted in, failures are counted consecutively
+    /// and answered per `DecodeRecovery` rung instead — the same policy the
+    /// macOS `VideoDecoder` applies internally, so all three hosts escalate
+    /// identically.
+    private func handleDecodeFailure() {
+        decodeFailures += 1
+        guard onDecoderResetNeeded != nil || onDecodeFatal != nil else {
+            sendDecodeRecoveryPLI()
+            return
+        }
+        consecutiveDecodeFailures += 1
+        let decision = DecodeRecovery.action(
+            consecutiveFailures: consecutiveDecodeFailures,
+            alreadyFired: firedDecodeRecoveryRungs)
+        guard let action = decision else { return }
+        firedDecodeRecoveryRungs.insert(action)
+        switch action {
+        case .requestKeyframe:
+            sendDecodeRecoveryPLI()
+        case .recreateSession:
+            // Reset the host's decoder, then ask for the fresh IDR the
+            // rebuilt decoder needs (in-band parameter sets ride keyframes) —
+            // the same PLI the mac client sends on this rung.
+            onDecoderResetNeeded?()
+            sendDecodeRecoveryPLI()
+        case .signalDegraded:
+            // Latched for rung ordering; no portable surface yet (macOS
+            // renders its degraded badge host-side).
+            break
+        case .surfaceError:
+            onDecodeFatal?()
+        }
+    }
+
+    /// A successfully decoded frame: reset the ladder's counter and latches so
+    /// the next failing run starts a fresh episode (mirrors the mac decoder's
+    /// success-path reset).
+    private func noteDecodedFrame() {
+        framesDecoded += 1
+        consecutiveDecodeFailures = 0
+        if !firedDecodeRecoveryRungs.isEmpty {
+            firedDecodeRecoveryRungs.removeAll()
+        }
+    }
+
+    /// A decode-recovery keyframe request (both the flat path and the ladder's
+    /// PLI-bearing rungs), counted like every other PLI this session sends.
+    private func sendDecodeRecoveryPLI() {
+        keyframeRequestsSent += 1
+        onControlToSend(ScreenShareControlMessage.encode(.pli))
+        onPLISent?()
+    }
 
     // MARK: - Audio handling
 

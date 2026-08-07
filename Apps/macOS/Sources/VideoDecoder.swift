@@ -2,27 +2,18 @@ import AppKit
 import CoreMedia
 import CoreVideo
 import TailscaleKit
+import TailscreenViewer
 import VideoToolbox
 import os
 
-/// One rung of the viewer's consecutive-decode-failure escalation ladder.
-/// Produced by `VideoDecoder.decodeRecoveryAction(consecutiveFailures:
-/// alreadyFired:)` — `>=` thresholds plus a per-episode fired-rung latch, so
-/// each rung fires once per failing episode even if the counter ever skips a
-/// value; counter and latches reset on the next successfully decoded frame.
-enum DecodeRecoveryAction: Hashable, Sendable {
-    /// Ask the sharer for a fresh keyframe — a new IDR often un-wedges a
-    /// decoder whose reference state was corrupted by loss, and it's cheap.
-    case requestKeyframe
-    /// Invalidate and rebuild the decompression session from the installed
-    /// format description (handled inside `VideoDecoder` itself).
-    case recreateSession
-    /// Show a "Connection degraded" indication — the stream has been dead
-    /// for a second or two of wall-clock video.
-    case signalDegraded
-    /// Surface the stall through the app's alert path.
-    case surfaceError
-}
+// The consecutive-decode-failure escalation ladder itself — the
+// `DecodeRecoveryAction` rungs, the 5/30/90/300 thresholds, and the pure
+// `DecodeRecovery.action(consecutiveFailures:alreadyFired:)` decision — lives
+// in the portable `TailscreenViewer` tier (`DecodeRecovery.swift`), shared
+// with the Linux/Windows viewers via `ViewerSession`. This decoder keeps the
+// mac-side application of it: the on-queue counter + latch set, the
+// VideoToolbox session rebuild on `.recreateSession`, and the pass-through
+// callbacks the client drives UI from.
 
 final class VideoDecoder: @unchecked Sendable {
     var onDecodedFrame: ((CVPixelBuffer) -> Void)?
@@ -62,11 +53,11 @@ final class VideoDecoder: @unchecked Sendable {
     /// Reset when the installed codec changes (e.g. the sharer falls back).
     private var didReportDecodeFailure = false
     /// Consecutive per-frame decode failures. Mutated only on `queue`;
-    /// reset by the first successful frame delivery. Drives the escalation
-    /// ladder below.
+    /// reset by the first successful frame delivery. Drives the portable
+    /// escalation ladder (`DecodeRecovery`).
     private var consecutiveFailures = 0
     /// Rungs that already fired during the current failing episode. Paired
-    /// with the `>=` thresholds in `decodeRecoveryAction` so each rung fires
+    /// with `DecodeRecovery.action`'s `>=` thresholds so each rung fires
     /// once per episode even when the counter skips a value. Mutated only on
     /// `queue`; cleared with the counter on the first successful frame.
     private var firedRecoveryActions: Set<DecodeRecoveryAction> = []
@@ -89,45 +80,11 @@ final class VideoDecoder: @unchecked Sendable {
 
     // MARK: - Decode-failure escalation ladder
 
-    /// Failures before the first rung: ask the sharer for a keyframe.
-    static let requestKeyframeFailureThreshold = 5
-    /// Failures before the decompression session is torn down and rebuilt.
-    static let recreateSessionFailureThreshold = 30
-    /// Failures before the degraded indication (~1.5–3 s of dead video at
-    /// 30–60 fps).
-    static let signalDegradedFailureThreshold = 90
-    /// Failures before the stall is surfaced as an alert (~5–10 s).
-    static let surfaceErrorFailureThreshold = 300
-
-    /// Pure escalation decision (CI-tested by `DecodeRecoveryDecisionTests`):
-    /// the highest rung whose threshold `consecutiveFailures` meets or
-    /// exceeds — returned only if it hasn't fired yet this episode, nil once
-    /// it has. `>=` plus the `alreadyFired` latch (instead of exact `==`
-    /// matching) keeps the ladder moving even when the counting is imperfect
-    /// and a threshold value gets skipped. Rungs below the highest met one
-    /// are superseded, never fired late, so an episode's rungs always fire
-    /// in order and at most once. The caller resets its latch set along with
-    /// the counter on the first successful frame.
-    static func decodeRecoveryAction(
-        consecutiveFailures: Int,
-        alreadyFired: Set<DecodeRecoveryAction>
-    ) -> DecodeRecoveryAction? {
-        let rungsHighestFirst: [(threshold: Int, action: DecodeRecoveryAction)] = [
-            (surfaceErrorFailureThreshold, .surfaceError),
-            (signalDegradedFailureThreshold, .signalDegraded),
-            (recreateSessionFailureThreshold, .recreateSession),
-            (requestKeyframeFailureThreshold, .requestKeyframe)
-        ]
-        for rung in rungsHighestFirst where consecutiveFailures >= rung.threshold {
-            if alreadyFired.contains(rung.action) { return nil }
-            return rung.action
-        }
-        return nil
-    }
-
     /// Record one per-frame decode failure and act on any escalation
-    /// threshold it crosses. `.recreateSession` is handled here (the session
-    /// is this class's own state); every rung is also forwarded to
+    /// threshold it crosses (the pure decision is the portable
+    /// `DecodeRecovery.action`, CI-tested by the package's
+    /// `DecodeRecoveryDecisionTests`). `.recreateSession` is handled here (the
+    /// session is this class's own state); every rung is also forwarded to
     /// `onRecoveryAction` so the client can request keyframes / update UI.
     /// `reason` feeds a throttled log line — first failure of the run, then
     /// every 60th, matching the client's AU-log idiom — so a stalled 60 fps
@@ -139,7 +96,7 @@ final class VideoDecoder: @unchecked Sendable {
             logger.log("VideoDecoder: decode failure #\(consecutiveFailures): \(reason)")
         }
         onFrameDecodeFailed?()
-        let decision = Self.decodeRecoveryAction(
+        let decision = DecodeRecovery.action(
             consecutiveFailures: consecutiveFailures, alreadyFired: firedRecoveryActions)
         guard let action = decision else { return }
         firedRecoveryActions.insert(action)

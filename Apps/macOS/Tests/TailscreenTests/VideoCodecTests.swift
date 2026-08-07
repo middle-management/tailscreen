@@ -1,5 +1,6 @@
 import CoreMedia
 import CoreVideo
+import TailscreenViewer
 import XCTest
 
 @testable import Tailscreen
@@ -115,9 +116,9 @@ final class VideoCodecTests: XCTestCase {
     /// Garbage AVCC fed to a decoder with *real* parameter sets must count
     /// consecutive per-frame failures and fire the escalation ladder's first
     /// rung (`.requestKeyframe`) at the threshold. Exercises the live
-    /// counter + ladder wiring that `DecodeRecoveryDecisionTests` covers
-    /// only as pure math. Skips when VideoToolbox produces no output (or
-    /// happens to accept the garbage), e.g. on virtualized runners.
+    /// counter + ladder wiring that the package's `DecodeRecoveryDecisionTests`
+    /// covers only as pure math. Skips when VideoToolbox produces no output
+    /// (or happens to accept the garbage), e.g. on virtualized runners.
     func testConsecutiveGarbageFramesEscalateToKeyframeRequest() throws {
         let width = 320
         let height = 240
@@ -160,7 +161,7 @@ final class VideoCodecTests: XCTestCase {
         // the bitstream.
         var garbage = Data([0x00, 0x00, 0x00, 0x41, 0x65])
         garbage.append(Data(repeating: 0x5A, count: 0x40))
-        for _ in 0..<(VideoDecoder.requestKeyframeFailureThreshold + 5) {
+        for _ in 0..<(DecodeRecovery.requestKeyframeFailureThreshold + 5) {
             decoder.decode(data: garbage, isKeyframe: false)
         }
         let result = XCTWaiter.wait(for: [keyframeRequested], timeout: 5.0)
