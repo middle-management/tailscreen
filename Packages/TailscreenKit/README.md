@@ -27,7 +27,15 @@ The platform-portable core of Tailscreen, in six targets/tiers:
 - **`TailscreenAudio`** — the Opus voice/system-audio codec
   (`OpusVoiceEncoder`, `OpusVoiceDecoder`, `OpusPCM`): the Float32↔Int16
   conversion + 960-sample (20 ms) framing over `OpusKit` (the local
-  `systemLibrary` wrapper around libopus). Foundation + OpusKit only, so it
+  `systemLibrary` wrapper around libopus), plus the voice receive path's
+  pure loss-resilience decision layer (`VoiceReceiveDecisions` — route
+  demux, decoder-failure cooldown, wrap-aware gap policy, adaptive jitter
+  sizing, concealment cap/fade, stale-SSRC eviction), extracted from the
+  macOS `VoiceChannel` so both endpoints decide identically. The portable
+  `VoiceDownlink` composes those decisions (concealing gaps with Opus's
+  native PLC via `OpusVoiceDecoder.conceal()`), so the Linux/Windows
+  receive path degrades under loss the way the mac one does.
+  Foundation + OpusKit only, so it
   builds on Linux/Windows too; a future non-macOS client reuses the exact
   codec and supplies its own platform audio I/O (`VoiceChannel` /
   `SystemAudioTap` are the mac-side consumers). It `@_exported`s OpusKit so
@@ -98,7 +106,7 @@ that roadmap.
   tests whose subject types live entirely in this package (FEC, NACK,
   retransmit, RR, RTP packet/buffer/audio, receive-loop policy, capture-helper
   wire, screen-share/share-response protocol, share lock, quality settings,
-  instance naming, viewer zoom math, Opus codec, the multi-account
+  instance naming, viewer zoom math, Opus codec, voice receive decisions, the multi-account
   `AccountProfileStore` incl. both hosts' migration paths); the viewer tier has
   its own `Tests/TailscreenViewerTests`. They run on Linux CI
   (`linux-protocol`). `Tests/TailscreenSharerTests` holds the sharer-tier

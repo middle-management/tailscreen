@@ -5,28 +5,15 @@ import XCTest
 @testable import TailscreenProtocol
 @testable import TailscreenTransport
 
-/// CI-able coverage of the viewer-side audio demux: the pure
-/// `VoiceChannel.audioRoute` decision plus an in-process `receive` that proves
-/// a real PT-99 packet fires `onSystemAudioPCM` and never `onMixedPCM`.
+/// In-process coverage of the viewer-side audio demux: a real PT-99 packet
+/// through `VoiceChannel.receive` fires `onSystemAudioPCM` and never
+/// `onMixedPCM`. The pure route decision it exercises
+/// (`VoiceReceiveDecisions.audioRoute`) is pinned in the portable package's
+/// `VoiceResilienceDecisionTests`.
 final class SystemAudioRoutingTests: XCTestCase {
     /// Reference box so the closures can flip a flag without a mutable capture.
     private final class Flag: @unchecked Sendable {
         var value = false
-    }
-
-    func testVoicePayloadTypeRoutesToVoice() {
-        XCTAssertEqual(VoiceChannel.audioRoute(payloadType: RTPHeader.voicePayloadType), .voice)
-    }
-
-    func testSystemAudioPayloadTypeRoutesToSystemAudio() {
-        XCTAssertEqual(
-            VoiceChannel.audioRoute(payloadType: RTPHeader.systemAudioPayloadType), .systemAudio)
-    }
-
-    func testVideoPayloadTypesDrop() {
-        XCTAssertEqual(VoiceChannel.audioRoute(payloadType: RTPHeader.h264PayloadType), .drop)
-        XCTAssertEqual(VoiceChannel.audioRoute(payloadType: RTPHeader.hevcPayloadType), .drop)
-        XCTAssertEqual(VoiceChannel.audioRoute(payloadType: 200), .drop)
     }
 
     func testReceiveRoutesSystemAudioToSystemCallbackOnly() throws {

@@ -39,6 +39,27 @@ final class OpusAudioCodecTests: XCTestCase {
         XCTAssertLessThan(rms, 1.5, "decoded sine should not be wildly clipped, got \(rms)")
     }
 
+    func testConcealSynthesizesAFullFrameAndDecodingContinues() throws {
+        let encoder = try OpusVoiceEncoder()
+        let decoder = try OpusVoiceDecoder()
+        // Prime the decoder so PLC has recent history to extrapolate from.
+        for _ in 0..<5 {
+            let au = try XCTUnwrap(try encoder.encode(pcm: sineFrame()))
+            _ = try decoder.decode(au: au)
+        }
+
+        // A lost packet still yields one whole 20 ms frame, and it carries
+        // extrapolated signal rather than silence.
+        let concealed = try decoder.conceal()
+        XCTAssertEqual(concealed.count, OpusVoiceEncoder.frameSamples)
+        let rms = sqrt(concealed.reduce(0) { $0 + $1 * $1 } / Float(concealed.count))
+        XCTAssertGreaterThan(rms, 0.05, "PLC should extrapolate the primed tone, got RMS \(rms)")
+
+        // The decoder state stays continuous: the next real packet decodes.
+        let au = try XCTUnwrap(try encoder.encode(pcm: sineFrame()))
+        XCTAssertEqual(try decoder.decode(au: au).count, OpusVoiceEncoder.frameSamples)
+    }
+
     func testWrongFrameSizeThrows() throws {
         let encoder = try OpusVoiceEncoder()
         // 1024 samples (the old AAC AU size) is not a valid Opus frame — the

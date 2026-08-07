@@ -1,8 +1,8 @@
 import Foundation
-import TailscreenProtocol
 import XCTest
 
 @testable import TailscreenAudio
+@testable import TailscreenProtocol
 
 /// The voice path both endpoints share: the capture thread that pumps a
 /// blocking device, the uplink that turns microphone buffers into RTP, and the
@@ -390,6 +390,245 @@ final class VoicePathTests: XCTestCase {
         XCTAssertEqual(downlink.voiceCount, 1)
         downlink.reset()
         XCTAssertEqual(downlink.voiceCount, 0)
+    }
+
+    // MARK: - VoiceDownlink loss resilience
+
+    /// Milliseconds → the nanosecond clock `ingest` takes.
+    private func ms(_ value: Int) -> UInt64 { UInt64(value) * 1_000_000 }
+
+    /// Encode `count` phase-continuous 20 ms tone frames and packetize them
+    /// under one sequence space, so tests can feed subsets and open real gaps.
+    private func voicePackets(count: Int, ssrc: UInt32) throws -> [Data] {
+        let encoder = try OpusVoiceEncoder()
+        let packetizer = AudioRTPPacketizer(ssrc: ssrc, payloadType: RTPHeader.voicePayloadType)
+        var packets: [Data] = []
+        for frame in 0..<count {
+            let tone = (0..<960).map { Float(sin(Double(frame * 960 + $0) * 0.05)) * 0.4 }
+            if let au = try encoder.encode(pcm: tone) {
+                packets.append(packetizer.packetize(au: au))
+            }
+        }
+        return packets
+    }
+
+    func testGapConcealsWithOpusPLCUpToTheCapAndFadesOut() throws {
+        let downlink = VoiceDownlink()
+        var heard: [[Float]] = []
+        downlink.onPCM = { _, pcm in heard.append(pcm) }
+        let packets = try voicePackets(count: 10, ssrc: 7)
+        try XCTSkipIf(packets.count < 10, "Opus encoder produced no usable output on this host")
+
+        let base = ms(1000)
+        for i in 0..<3 { downlink.ingest(packets[i], nowNs: base + ms(20 * i)) }
+        XCTAssertEqual(heard.count, 3)
+
+        // Packets 3...6 lost — a 4-frame gap. Concealment is capped at
+        // playbackSlackBuffers - 1 == 2 frames, then the arrived packet.
+        downlink.ingest(packets[7], nowNs: base + ms(140))
+        XCTAssertEqual(heard.count, 6, "2 concealment frames + the decoded packet")
+        XCTAssertEqual(downlink.concealedFrameCount, 2)
+        XCTAssertEqual(downlink.discontinuityCount, 0, "a concealable gap is not a resync")
+
+        let firstConcealed = heard[3]
+        XCTAssertEqual(firstConcealed.count, 960, "PLC must synthesize a whole 20 ms frame")
+        let rms = sqrt(firstConcealed.reduce(0) { $0 + $1 * $1 } / Float(firstConcealed.count))
+        XCTAssertGreaterThan(rms, 0.01, "Opus PLC should extrapolate the tone, not emit silence")
+        XCTAssertEqual(heard[4].last, 0, "a capped gap's last concealment frame must end at silence")
+
+        // The first real frame after the uncovered remainder fades back in.
+        XCTAssertLessThan(abs(heard[5][0]), 0.05, "the resume frame must start from (near) silence")
+        XCTAssertGreaterThan(heard[5].map { abs($0) }.max() ?? 0, 0.05, "and still carry audio")
+
+        // The stream keeps flowing normally afterwards.
+        downlink.ingest(packets[8], nowNs: base + ms(160))
+        downlink.ingest(packets[9], nowNs: base + ms(180))
+        XCTAssertEqual(heard.count, 8)
+        XCTAssertEqual(downlink.concealedFrameCount, 2)
+    }
+
+    func testLatePacketAfterConcealmentIsDroppedStale() throws {
+        let downlink = VoiceDownlink()
+        var heard = 0
+        downlink.onPCM = { _, _ in heard += 1 }
+        let packets = try voicePackets(count: 6, ssrc: 9)
+        try XCTSkipIf(packets.count < 6, "Opus encoder produced no usable output on this host")
+
+        let base = ms(1000)
+        downlink.ingest(packets[0], nowNs: base)
+        downlink.ingest(packets[1], nowNs: base + ms(20))
+        // Packet 2 lost; 3 arrives → one PLC frame (gap fully covered) + the
+        // decoded packet itself.
+        downlink.ingest(packets[3], nowNs: base + ms(60))
+        XCTAssertEqual(heard, 4)
+        XCTAssertEqual(downlink.concealedFrameCount, 1)
+
+        // The lost packet finally straggles in — its 20 ms were already
+        // played as concealment, so it must not play again.
+        downlink.ingest(packets[2], nowNs: base + ms(80))
+        XCTAssertEqual(heard, 4, "a late packet whose gap was concealed must not decode")
+        XCTAssertEqual(downlink.concealedFrameCount, 1)
+
+        downlink.ingest(packets[4], nowNs: base + ms(100))
+        XCTAssertEqual(heard, 5, "the stream continues in order after the straggler")
+        XCTAssertEqual(downlink.discontinuityCount, 0)
+    }
+
+    func testLargeGapResyncsInsteadOfConcealing() throws {
+        let downlink = VoiceDownlink()
+        var heard = 0
+        downlink.onPCM = { _, _ in heard += 1 }
+        let packets = try voicePackets(count: 10, ssrc: 12)
+        try XCTSkipIf(packets.count < 10, "Opus encoder produced no usable output on this host")
+
+        let base = ms(1000)
+        downlink.ingest(packets[0], nowNs: base)
+        downlink.ingest(packets[9], nowNs: base + ms(180))
+        XCTAssertEqual(heard, 2, "a resync decodes without filling the gap")
+        XCTAssertEqual(downlink.concealedFrameCount, 0)
+        XCTAssertEqual(downlink.discontinuityCount, 1)
+    }
+
+    func testDecoderInitFailureCooldownGatesThenRecovers() throws {
+        let downlink = VoiceDownlink()
+        var heard = 0
+        downlink.onPCM = { _, _ in heard += 1 }
+        let packets = try voicePackets(count: 6, ssrc: 4)
+        try XCTSkipIf(packets.count < 6, "Opus encoder produced no usable output on this host")
+
+        let base = ms(1000)
+        downlink.ingest(packets[0], nowNs: base)
+        XCTAssertEqual(heard, 1)
+
+        let record = VoiceReceiveDecisions.DecoderFailureRecord(
+            consecutiveInitFailures: 1, lastFailureNs: base)
+        downlink.injectDecoderFailureForTesting(ssrc: 4, record: record)
+        downlink.ingest(packets[1], nowNs: base + ms(20))
+        downlink.ingest(packets[2], nowNs: base + ms(40))
+        XCTAssertEqual(heard, 1, "packets inside the cooldown must be dropped")
+        XCTAssertEqual(
+            downlink.decoderFailuresForTesting[4], record,
+            "dropping packets must not mutate the failure record")
+
+        // Past the 5 s cooldown the retry is allowed, decodes, and clears the
+        // record — and the gate-dropped packets advanced the baseline, so the
+        // resume is not misread as a gap.
+        downlink.ingest(packets[3], nowNs: base + ms(6000))
+        XCTAssertEqual(heard, 2, "an elapsed cooldown must allow the retry")
+        XCTAssertNil(downlink.decoderFailuresForTesting[4])
+        XCTAssertEqual(downlink.concealedFrameCount, 0, "the gated stretch must not read as a gap")
+        XCTAssertEqual(downlink.discontinuityCount, 0)
+    }
+
+    func testIdleSSRCIsEvictedWhileTheActiveOneIsKept() throws {
+        let downlink = VoiceDownlink()
+        let encoder = try OpusVoiceEncoder()
+        let tone = (0..<960).map { Float(sin(Double($0) * 0.05)) * 0.4 }
+        let au = try XCTUnwrap(encoder.encode(pcm: tone))
+
+        let base = ms(1000)
+        let idle = AudioRTPPacketizer(ssrc: 2, payloadType: RTPHeader.voicePayloadType)
+        downlink.ingest(idle.packetize(au: au), nowNs: base)
+        XCTAssertTrue(downlink.hasVoice(2))
+
+        // SSRC 3 keeps talking for 12 s; SSRC 2 stays silent past the 10 s
+        // idle window, so the ~1 Hz sweep forgets it — a departed peer's
+        // frozen jitter must not pin the target for the session.
+        let active = AudioRTPPacketizer(ssrc: 3, payloadType: RTPHeader.voicePayloadType)
+        for i in 1...600 {
+            downlink.ingest(active.packetize(au: au), nowNs: base + ms(20 * i))
+        }
+        XCTAssertFalse(downlink.hasVoice(2), "an idle stream must be evicted")
+        XCTAssertTrue(downlink.hasVoice(3), "the active stream must survive the sweep")
+    }
+
+    func testJitterTargetAdaptsUpUnderJitterAndDecaysWhenCalm() throws {
+        let downlink = VoiceDownlink()
+        let encoder = try OpusVoiceEncoder()
+        let tone = (0..<960).map { Float(sin(Double($0) * 0.05)) * 0.4 }
+        let au = try XCTUnwrap(encoder.encode(pcm: tone))
+
+        // Hand-built RTP so the timestamps carry the deviation — the arrival
+        // clock has to stay monotonic, so it cannot.
+        var seq: UInt16 = 0
+        var ts: UInt32 = 0
+        func packet(tsStep: UInt32) -> Data {
+            ts &+= tsStep
+            var data = Data()
+            let header = RTPHeader(
+                marker: true, payloadType: RTPHeader.voicePayloadType,
+                sequenceNumber: seq, timestamp: ts, ssrc: 6)
+            header.encode(into: &data)
+            data.append(au)
+            seq &+= 1
+            return data
+        }
+
+        XCTAssertEqual(
+            downlink.currentJitterTargetDepth, VoiceReceiveDecisions.initialJitterTargetDepth)
+
+        // 5 s of sustained ~100 ms deviation (RTP steps alternate 0 and 9600
+        // samples against a steady 20 ms arrival cadence): the sweep deepens
+        // the recommended queue one step per second.
+        var now = ms(1000)
+        for i in 0..<250 {
+            downlink.ingest(packet(tsStep: i % 2 == 0 ? 0 : 9600), nowNs: now)
+            now += ms(20)
+        }
+        let noisyTarget = downlink.currentJitterTargetDepth
+        XCTAssertGreaterThanOrEqual(noisyTarget, 5, "sustained jitter must deepen the target")
+
+        // 7 s of a perfectly paced stream: the estimator decays and the
+        // target steps back down to its floor.
+        for _ in 0..<350 {
+            downlink.ingest(packet(tsStep: 960), nowNs: now)
+            now += ms(20)
+        }
+        XCTAssertEqual(downlink.currentJitterTargetDepth, 2, "a calm stream must decay to the floor")
+    }
+
+    func testSystemAudioGapsAreNotConcealed() throws {
+        let downlink = VoiceDownlink()
+        var heard = 0
+        downlink.onPCM = { _, _ in heard += 1 }
+        let encoder = try OpusVoiceEncoder(application: .audio)
+        let packetizer = AudioRTPPacketizer(
+            ssrc: RTPHeader.systemAudioSSRC, payloadType: RTPHeader.systemAudioPayloadType)
+        var packets: [Data] = []
+        for _ in 0..<6 {
+            if let au = try encoder.encode(pcm: [Float](repeating: 0.15, count: 960)) {
+                packets.append(packetizer.packetize(au: au))
+            }
+        }
+        try XCTSkipIf(packets.count < 6, "Opus encoder produced no usable output on this host")
+
+        let base = ms(1000)
+        for (index, packet) in packets.enumerated() where !(2...3).contains(index) {
+            downlink.ingest(packet, nowNs: base + ms(20 * index))
+        }
+        XCTAssertEqual(heard, 4, "system audio decodes straight through")
+        XCTAssertEqual(downlink.concealedFrameCount, 0, "PT 99 must skip the voice concealment path")
+        XCTAssertEqual(downlink.discontinuityCount, 0)
+    }
+
+    func testFadeToSilenceRampsMonotonicallyToZero() {
+        var samples = [Float](repeating: 1, count: 8)
+        VoiceDownlink.fadeToSilence(&samples)
+        for i in 1..<samples.count {
+            XCTAssertLessThan(samples[i], samples[i - 1], "the ramp must decrease monotonically")
+        }
+        XCTAssertEqual(samples.last, 0)
+    }
+
+    func testApplyFadeInRampsTheLeadingEdgeOnly() {
+        var samples = [Float](repeating: 1, count: 960)
+        VoiceDownlink.applyFadeIn(&samples)
+        XCTAssertEqual(samples[0], 1.0 / 64.0, accuracy: 1e-6)
+        XCTAssertEqual(samples[63], 1.0, accuracy: 1e-6)
+        for i in 1..<64 {
+            XCTAssertGreaterThan(samples[i], samples[i - 1], "the ramp must increase monotonically")
+        }
+        XCTAssertTrue(samples[64...].allSatisfy { $0 == 1.0 }, "everything past the ramp is untouched")
     }
 }
 

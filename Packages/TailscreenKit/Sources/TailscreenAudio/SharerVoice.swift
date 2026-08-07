@@ -84,8 +84,13 @@ public final class SharerVoice {
     /// Feed one inbound audio datagram, straight from the server's
     /// `onAudioReceived`. Non-audio or malformed bytes decode to nil and are
     /// dropped.
-    public func receive(_ packet: Data) {
-        downlink.ingest(packet)
+    ///
+    /// - Parameter nowNs: optional monotonic clock for the downlink's
+    ///   loss-resilience decisions (gap concealment, decoder cooldown, idle
+    ///   eviction). Hosts that pass nothing — both shipped sharer hosts call
+    ///   this straight off the receive thread — get the uptime clock.
+    public func receive(_ packet: Data, nowNs: UInt64? = nil) {
+        downlink.ingest(packet, nowNs: nowNs)
     }
 
     /// Live viewer voices. Test visibility for the bound, same as the
