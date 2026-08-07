@@ -150,6 +150,61 @@ final class LinuxShareSessionTests: XCTestCase {
         XCTAssertFalse(changed)
     }
 
+    // MARK: Control-grant staleness
+
+    /// The high-water mark alone cannot reject a snapshot from a share that
+    /// has ended, and that is not a detail: teardown **resets** the mark to
+    /// zero, because a fresh server starts its own `onControlGrantChanged`
+    /// sequence at zero and a carried-over mark would discard the next share's
+    /// first snapshots. So a snapshot still in flight from the old server is
+    /// not stale against zero — it lands, telling the sharer somebody is
+    /// driving a machine they just stopped sharing, and it leaves the mark
+    /// high enough to swallow the next share's grant entirely.
+    @MainActor
+    func testALateGrantFromAnEndedShareIsIgnoredAndDoesNotPoisonTheNextShare() async throws {
+        let engine = makeEngine()
+        var grants: [String?] = []
+        engine.onControlGrantChanged = { grants.append($0) }
+
+        let share = engine.beginShareGeneration()
+        engine.applyControlGrant(share: share, generation: 3, displayName: "robert-macbook")
+        XCTAssertEqual(grants, ["robert-macbook"])
+
+        // What `stopSharing` / `handleCaptureStopped` leave behind.
+        engine.endShareGeneration()
+        grants.removeAll()
+        engine.applyControlGrant(share: share, generation: 3, displayName: "robert-macbook")
+        XCTAssertTrue(
+            grants.isEmpty,
+            "a snapshot from a share that ended must not announce a live grant")
+
+        // And the next share's own first snapshot — a low generation, from a
+        // server that starts counting again — still has to land.
+        let next = engine.beginShareGeneration()
+        engine.applyControlGrant(share: next, generation: 1, displayName: "studio-imac")
+        XCTAssertEqual(grants, ["studio-imac"])
+    }
+
+    /// Within one share the reorder guard is unchanged: a hop can deliver an
+    /// older snapshot last, and applying its `nil` would tell the sharer
+    /// nobody is controlling their machine while somebody is.
+    @MainActor
+    func testAReorderedGrantSnapshotWithinAShareIsStillDiscarded() async throws {
+        let engine = makeEngine()
+        var grants: [String?] = []
+        engine.onControlGrantChanged = { grants.append($0) }
+
+        let share = engine.beginShareGeneration()
+        engine.applyControlGrant(share: share, generation: 5, displayName: "robert-macbook")
+        engine.applyControlGrant(share: share, generation: 4, displayName: nil)
+        XCTAssertEqual(grants, ["robert-macbook"])
+
+        // Equal generations are NOT stale — two racing notifies can observe
+        // the same pair, and re-applying it is idempotent.
+        engine.applyControlGrant(share: share, generation: 5, displayName: "robert-macbook")
+        XCTAssertEqual(grants, ["robert-macbook", "robert-macbook"])
+    }
+
     // MARK: Access facade
 
     @MainActor

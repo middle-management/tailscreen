@@ -392,6 +392,44 @@ final class VoicePathTests: XCTestCase {
         XCTAssertEqual(downlink.voiceCount, 0)
     }
 
+    /// `reset()` genuinely races `ingest` in production: both sharer hosts
+    /// call `SharerVoice.stop()` while the server is still delivering inbound
+    /// audio, because `onAudioReceived`'s contract forbids detaching it
+    /// mid-share. Before the downlink took a lock this dropped the decoder and
+    /// the per-SSRC maps out from under a decode in flight.
+    ///
+    /// Passing here is necessary, not sufficient — it is the `--sanitize=thread`
+    /// leg that reads the accesses. A crash or a corrupt `voiceCount` on an
+    /// ordinary run is the loud version of the same bug.
+    func testResetIsSafeAgainstConcurrentIngest() throws {
+        let downlink = VoiceDownlink()
+        downlink.onPCM = { _, _ in }
+        let encoder = try OpusVoiceEncoder()
+        let tone = (0..<960).map { Float(sin(Double($0) * 0.05)) * 0.4 }
+        let au = try XCTUnwrap(encoder.encode(pcm: tone))
+        let packets = (0..<8).map { ssrc in
+            AudioRTPPacketizer(ssrc: UInt32(ssrc), payloadType: RTPHeader.voicePayloadType)
+                .packetize(au: au)
+        }
+
+        let ingesting = expectation(description: "ingest loop finished")
+        let resetting = expectation(description: "reset loop finished")
+        DispatchQueue.global().async {
+            for _ in 0..<200 { for packet in packets { downlink.ingest(packet) } }
+            ingesting.fulfill()
+        }
+        DispatchQueue.global().async {
+            for _ in 0..<400 { downlink.reset() }
+            resetting.fulfill()
+        }
+        wait(for: [ingesting, resetting], timeout: 60)
+
+        // Whatever order the two landed in, the maps are coherent and bounded.
+        XCTAssertLessThanOrEqual(downlink.voiceCount, packets.count)
+        downlink.reset()
+        XCTAssertEqual(downlink.voiceCount, 0)
+    }
+
     // MARK: - VoiceDownlink loss resilience
 
     /// Milliseconds → the nanosecond clock `ingest` takes.

@@ -51,8 +51,15 @@ import TailscreenProtocol
 /// do not (the sharer receive threads) omit it and the downlink reads the
 /// monotonic uptime clock itself.
 ///
-/// **Not** thread-safe: driven from the host's receive loop, which is serial.
-public final class VoiceDownlink {
+/// **Thread-safe by lock**, not by contract. Ingest runs on the host's receive
+/// loop, which is serial — but `reset()` does not: both sharer hosts call
+/// `SharerVoice.stop()` from the thread that tore the share down while the
+/// server is still delivering inbound audio (`onAudioReceived` is documented
+/// as "assign before `start()`, leave alone until after `stop()` returns", so
+/// there is no detach that could drain it first). Dropping every decoder and
+/// every per-SSRC map out from under an in-flight `ingest` is a genuine data
+/// race, so all mutable state below is guarded — see `lock`.
+public final class VoiceDownlink: @unchecked Sendable {
     /// Concurrent voices to keep decoders for.
     ///
     /// A bound, not a capacity guess. Each SSRC allocates an Opus decoder, and
@@ -63,7 +70,28 @@ public final class VoiceDownlink {
 
     /// Decoded 48 kHz mono PCM, tagged with the SSRC it came from. Concealment
     /// frames are emitted through the same hook, under the gap's SSRC.
-    public var onPCM: ((UInt32, [Float]) -> Void)?
+    public var onPCM: ((UInt32, [Float]) -> Void)? {
+        get { lock.withLock { pcmSink } }
+        set { lock.withLock { pcmSink = newValue } }
+    }
+
+    /// One buffer of decoded (or concealed) PCM, on its way out.
+    ///
+    /// Emissions are collected inside the critical section and delivered after
+    /// it: `onPCM` reaches a host's playback device (ALSA, WASAPI, a MainActor
+    /// hop), and holding a lock across that would park a share teardown behind
+    /// an audio device. Buffering keeps the order the decode produced, which
+    /// is what makes concealment-then-decode still arrive in that order.
+    private typealias Emission = (ssrc: UInt32, samples: [Float])
+
+    /// Guards every mutable field below — the decoder pool, the per-SSRC
+    /// sequence/jitter state, the failure records, the counters and `pcmSink`.
+    ///
+    /// The two contenders are the host's receive thread (`ingest`) and
+    /// whichever thread stopped the share (`reset`). Nothing is emitted while
+    /// it is held; see `Emission`.
+    private let lock = NSLock()
+    private var pcmSink: ((UInt32, [Float]) -> Void)?
 
     private let depacketizer = AudioRTPDepacketizer()
     private var decoders: [UInt32: OpusVoiceDecoder] = [:]
@@ -85,9 +113,13 @@ public final class VoiceDownlink {
     // Resilience counters. Internal on purpose: they exist so the package
     // tests can see what was concealed/resynced/clamped without asserting on
     // audio; a host wanting a stats line would promote them deliberately.
-    private(set) var concealedFrameCount = 0
-    private(set) var discontinuityCount = 0
-    private(set) var clampedBufferCount = 0
+    private var concealed = 0
+    private var discontinuities = 0
+    private var clampedBuffers = 0
+
+    var concealedFrameCount: Int { lock.withLock { concealed } }
+    var discontinuityCount: Int { lock.withLock { discontinuities } }
+    var clampedBufferCount: Int { lock.withLock { clampedBuffers } }
 
     public init() {}
 
@@ -95,7 +127,7 @@ public final class VoiceDownlink {
     /// recommends — `VoiceReceiveDecisions.jitterBufferTarget` over the worst
     /// live stream, moved one step per sweep. A host with a pacing playback
     /// queue can consult it; ignoring it is also fine.
-    public var currentJitterTargetDepth: Int { jitterTarget }
+    public var currentJitterTargetDepth: Int { lock.withLock { jitterTarget } }
 
     /// Feed one audio RTP datagram (PT 98 or 99). Anything else decodes to nil
     /// and is dropped.
@@ -104,40 +136,53 @@ public final class VoiceDownlink {
     ///   Pass the host's clock where one is already threaded (deterministic,
     ///   testable); nil reads the process's monotonic uptime clock.
     public func ingest(_ packet: Data, nowNs: UInt64? = nil) {
-        guard let parsed = depacketizer.unpack(packet) else { return }
         let now = nowNs ?? Self.monotonicNowNs()
-        ingestCount &+= 1
-        lastSeen[parsed.ssrc] = ingestCount
+        let (sink, emissions) = lock.withLock {
+            () -> (((UInt32, [Float]) -> Void)?, [Emission]) in
+            guard let parsed = depacketizer.unpack(packet) else { return (nil, []) }
+            ingestCount &+= 1
+            lastSeen[parsed.ssrc] = ingestCount
 
-        switch VoiceReceiveDecisions.audioRoute(payloadType: parsed.payloadType) {
-        case .drop:
-            return  // Unreachable — `unpack` admits only PT 98/99 — but total.
-        case .systemAudio:
-            ingestSystemAudio(parsed, nowNs: now)
-        case .voice:
-            ingestVoice(parsed, nowNs: now)
+            var out: [Emission] = []
+            switch VoiceReceiveDecisions.audioRoute(payloadType: parsed.payloadType) {
+            case .drop:
+                return (nil, [])  // Unreachable — `unpack` admits only PT 98/99 — but total.
+            case .systemAudio:
+                ingestSystemAudio(parsed, nowNs: now, into: &out)
+            case .voice:
+                ingestVoice(parsed, nowNs: now, into: &out)
+            }
+            sweepIfDue(nowNs: now)
+            return (pcmSink, out)
         }
-        sweepIfDue(nowNs: now)
+        guard let sink else { return }
+        for emission in emissions { sink(emission.ssrc, emission.samples) }
     }
 
     /// Drop every decoder and all resilience state — a new session, or a
     /// sharer switch.
+    ///
+    /// Safe against a concurrent `ingest`: it takes the same lock, so this
+    /// either runs before that packet's whole decode or after it, never
+    /// through the middle of one.
     public func reset() {
-        decoders.removeAll()
-        lastSeen.removeAll()
-        ingestCount = 0
-        receiveStates.removeAll()
-        decoderFailures.removeAll()
-        jitterTarget = VoiceReceiveDecisions.initialJitterTargetDepth
-        lastSweepNs = 0
-        concealedFrameCount = 0
-        discontinuityCount = 0
-        clampedBufferCount = 0
+        lock.withLock {
+            decoders.removeAll()
+            lastSeen.removeAll()
+            ingestCount = 0
+            receiveStates.removeAll()
+            decoderFailures.removeAll()
+            jitterTarget = VoiceReceiveDecisions.initialJitterTargetDepth
+            lastSweepNs = 0
+            concealed = 0
+            discontinuities = 0
+            clampedBuffers = 0
+        }
     }
 
     /// Live decoders. Exposed so a test can see the bound hold, which is the
     /// only way to observe it.
-    public var voiceCount: Int { decoders.count }
+    public var voiceCount: Int { lock.withLock { decoders.count } }
 
     /// Whether this SSRC currently holds a decoder.
     ///
@@ -145,11 +190,18 @@ public final class VoiceDownlink {
     /// assert the map stayed bounded while the policy evicts precisely the
     /// wrong stream, which is a green check over a call where whoever is
     /// talking is the one being cut off.
-    func hasVoice(_ ssrc: UInt32) -> Bool { decoders[ssrc] != nil }
+    func hasVoice(_ ssrc: UInt32) -> Bool { lock.withLock { decoders[ssrc] != nil } }
 
     // MARK: - Voice path (gap concealment + jitter tracking)
+    //
+    // Everything from here to the sweep runs with `lock` HELD, and appends
+    // what it wants played to the caller's `out` buffer rather than calling
+    // `pcmSink` — see `Emission`. Nothing below may take the lock again:
+    // `NSLock` is not recursive.
 
-    private func ingestVoice(_ parsed: AudioRTPDepacketizer.Parsed, nowNs: UInt64) {
+    private func ingestVoice(
+        _ parsed: AudioRTPDepacketizer.Parsed, nowNs: UInt64, into out: inout [Emission]
+    ) {
         // Single dictionary fetch per packet (50 Hz hot path), same shape as
         // the macOS pipeline: helpers thread `state` through and each exit
         // path writes it back once.
@@ -179,21 +231,21 @@ public final class VoiceDownlink {
         case .decode:
             break
         case .concealThenDecode(let missing):
-            let emitted = emitConcealment(for: parsed.ssrc, missing: missing)
+            let emitted = emitConcealment(for: parsed.ssrc, missing: missing, into: &out)
             // A gap the cap did not fully cover leaves real silence before
             // this packet — fade it back in so the boundary has no step. A
             // fully covered gap is continuous through Opus PLC and needs
             // neither fade.
             concealedShort = emitted < missing
         case .discontinuity:
-            discontinuityCount += 1
+            discontinuities += 1
             discontinuity = true
         }
         Self.trackArrival(
             &state, parsed: parsed, arrivalNs: nowNs,
             needsFadeIn: concealedShort || discontinuity,
             skipJitterFold: discontinuity)
-        decodeAndEmit(parsed, state: &state, nowNs: nowNs)
+        decodeAndEmit(parsed, state: &state, nowNs: nowNs, into: &out)
         receiveStates[parsed.ssrc] = state
     }
 
@@ -201,7 +253,9 @@ public final class VoiceDownlink {
     /// decoder + failure-cooldown machinery apply; the voice jitter and
     /// concealment machinery deliberately do not (playback is queue-paced by
     /// the host, and the SSRC spaces are disjoint so the maps never collide).
-    private func ingestSystemAudio(_ parsed: AudioRTPDepacketizer.Parsed, nowNs: UInt64) {
+    private func ingestSystemAudio(
+        _ parsed: AudioRTPDepacketizer.Parsed, nowNs: UInt64, into out: inout [Emission]
+    ) {
         guard
             case .allow = VoiceReceiveDecisions.decoderGateAction(
                 record: decoderFailures[parsed.ssrc], nowNs: nowNs)
@@ -211,8 +265,8 @@ public final class VoiceDownlink {
             var samples = try decoder.decode(au: parsed.au)
             decoderFailures.removeValue(forKey: parsed.ssrc)
             guard !samples.isEmpty else { return }
-            if VoiceReceiveDecisions.clampToUnitRange(&samples) { clampedBufferCount += 1 }
-            onPCM?(parsed.ssrc, samples)
+            if VoiceReceiveDecisions.clampToUnitRange(&samples) { clampedBuffers += 1 }
+            out.append((parsed.ssrc, samples))
         } catch {
             recordDecodeFailure(for: parsed.ssrc, nowNs: nowNs)
         }
@@ -222,9 +276,11 @@ public final class VoiceDownlink {
     /// Opus's native PLC, fading the last one to silence when the cap left
     /// part of the gap uncovered. Returns how many frames were emitted.
     /// Counts only what is actually emitted (no sink, no history → nothing).
-    private func emitConcealment(for ssrc: UInt32, missing: Int) -> Int {
+    private func emitConcealment(
+        for ssrc: UInt32, missing: Int, into out: inout [Emission]
+    ) -> Int {
         let frames = VoiceReceiveDecisions.concealmentEmitCount(missing: missing)
-        guard frames > 0, let emit = onPCM, let decoder = decoders[ssrc] else { return 0 }
+        guard frames > 0, pcmSink != nil, let decoder = decoders[ssrc] else { return 0 }
         var emitted = 0
         for index in 0..<frames {
             guard var frame = try? decoder.conceal(), !frame.isEmpty else { break }
@@ -232,9 +288,9 @@ public final class VoiceDownlink {
                 Self.fadeToSilence(&frame)
             }
             _ = VoiceReceiveDecisions.clampToUnitRange(&frame)
-            concealedFrameCount += 1
+            concealed += 1
             emitted += 1
-            emit(ssrc, frame)
+            out.append((ssrc, frame))
         }
         return emitted
     }
@@ -242,7 +298,8 @@ public final class VoiceDownlink {
     private func decodeAndEmit(
         _ parsed: AudioRTPDepacketizer.Parsed,
         state: inout VoiceReceiveDecisions.ReceiveState?,
-        nowNs: UInt64
+        nowNs: UInt64,
+        into out: inout [Emission]
     ) {
         do {
             let decoder = try ensureDecoder(for: parsed.ssrc)
@@ -251,13 +308,13 @@ public final class VoiceDownlink {
             // forget any failure history.
             decoderFailures.removeValue(forKey: parsed.ssrc)
             guard !samples.isEmpty else { return }
-            if VoiceReceiveDecisions.clampToUnitRange(&samples) { clampedBufferCount += 1 }
+            if VoiceReceiveDecisions.clampToUnitRange(&samples) { clampedBuffers += 1 }
             if var updated = state, updated.needsFadeIn {
                 Self.applyFadeIn(&samples)
                 updated.needsFadeIn = false
                 state = updated
             }
-            onPCM?(parsed.ssrc, samples)
+            out.append((parsed.ssrc, samples))
         } catch {
             recordDecodeFailure(for: parsed.ssrc, nowNs: nowNs)
         }
@@ -425,7 +482,7 @@ public final class VoiceDownlink {
 
     /// Snapshot the per-SSRC decoder-failure records.
     var decoderFailuresForTesting: [UInt32: VoiceReceiveDecisions.DecoderFailureRecord] {
-        decoderFailures
+        lock.withLock { decoderFailures }
     }
 
     /// Inject a failure record so the cooldown/clear paths can be exercised
@@ -433,6 +490,6 @@ public final class VoiceDownlink {
     func injectDecoderFailureForTesting(
         ssrc: UInt32, record: VoiceReceiveDecisions.DecoderFailureRecord
     ) {
-        decoderFailures[ssrc] = record
+        lock.withLock { decoderFailures[ssrc] = record }
     }
 }

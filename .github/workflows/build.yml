@@ -678,6 +678,36 @@ jobs:
             libtailscale: host
             cmd: PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" swift test --package-path Packages/TailscaleKit
 
+          # Data-race gate: the same TailscreenKit suites `linux-protocol`
+          # runs, rebuilt under ThreadSanitizer.
+          #
+          # Its own leg rather than a flag on `linux-protocol` because the two
+          # answer different questions and have to fail separately: that one is
+          # the PORTABILITY gate (an Apple import in a package file), this one
+          # reads the actual memory accesses. Same apt set, same submodule, and
+          # the same `libtailscale: host` + `go: preinstalled` pair for the
+          # same reason — Tests/TailscreenSharerTests links TailscreenSharer →
+          # TailscaleKit, so the archive is a link-time input even though no
+          # test calls tsnet (see ci.md's link-a-symbol-nothing-calls pitfall).
+          #
+          # Whole package, not scoped to the audio and sharer targets: the
+          # instrumented build shares no object tree with the plain one, so it
+          # compiles from scratch either way, and the full run measured ~31 s
+          # locally (981 tests) — cheaper than the argument for narrowing it.
+          #
+          # NOT `continue-on-error`, unlike the macOS `test-tsan` job. That one
+          # runs the app target, where TSan trips over third-party C nothing
+          # here can fix (libtailscale's Go runtime, ScreenCaptureKit's XPC),
+          # and is informational for exactly that reason. This package imports
+          # no Apple framework and calls no tsnet; it was clean on its first
+          # run, so there is no noise to tolerate and a warning is a real race.
+          - name: linux-tsan
+            apt: golang-go make gcc libc6-dev libopus-dev pkg-config
+            submodules: recursive
+            go: preinstalled
+            libtailscale: host
+            cmd: PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" swift test --package-path Packages/TailscreenKit --sanitize=thread
+
     steps:
       - uses: actions/checkout@v7
         with:

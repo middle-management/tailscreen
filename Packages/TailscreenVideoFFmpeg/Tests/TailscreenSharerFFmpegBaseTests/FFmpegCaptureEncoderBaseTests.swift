@@ -1,3 +1,4 @@
+import Foundation
 import TailscreenProtocol
 import XCTest
 
@@ -210,6 +211,98 @@ final class FFmpegCaptureEncoderBaseTests: XCTestCase {
         // max(1, fps) — a zero fps must not divide by zero; it paces at 1 fps.
         XCTAssertEqual(
             Base.frameSleepSeconds(elapsedNs: 0, fps: 0) ?? -1, 1.0, accuracy: 1e-9)
+    }
+
+    // MARK: Parameter-set latch
+
+    /// An AVCC access unit carrying one H.264 SPS and one PPS — the smallest
+    /// input `emitParameterSets` accepts.
+    private func avccKeyframe() -> Data {
+        func lengthPrefixed(_ nal: [UInt8]) -> Data {
+            var out = Data()
+            var length = UInt32(nal.count).bigEndian
+            withUnsafeBytes(of: &length) { out.append(contentsOf: $0) }
+            out.append(contentsOf: nal)
+            return out
+        }
+        // 0x67 = nal_ref_idc 3, type 7 (SPS); 0x68 = type 8 (PPS).
+        return lengthPrefixed([0x67, 0x42, 0x00, 0x1E])
+            + lengthPrefixed([0x68, 0xCE, 0x3C, 0x80])
+    }
+
+    func testParameterSetsAreEmittedOnce() {
+        let base = Base()
+        var emitted = 0
+        base.onParameterSets = { _ in emitted += 1 }
+        base.emitParameterSets(from: avccKeyframe())
+        base.emitParameterSets(from: avccKeyframe())
+        XCTAssertEqual(emitted, 1, "the latch is per encoder configuration")
+        XCTAssertTrue(base.sentParameterSets)
+    }
+
+    /// The latch is CLAIMED, not merely set. The cheap "have we sent?" read
+    /// and the flip used to be two separate critical sections, so two encode
+    /// threads could both pass the read and both emit — and the server's
+    /// bitrate anchor re-anchors on a second set, undoing whatever the
+    /// congestion controller had done.
+    func testConcurrentEmissionsStillEmitExactlyOnce() {
+        for _ in 0..<20 {
+            let base = Base()
+            let counter = Counter()
+            base.onParameterSets = { _ in counter.increment() }
+            let avcc = avccKeyframe()
+
+            let group = DispatchGroup()
+            let ready = DispatchSemaphore(value: 0)
+            let go = DispatchSemaphore(value: 0)
+            for _ in 0..<4 {
+                DispatchQueue.global().async(group: group) {
+                    ready.signal()
+                    go.wait()
+                    base.emitParameterSets(from: avcc)
+                }
+            }
+            for _ in 0..<4 { ready.wait() }
+            for _ in 0..<4 { go.signal() }
+            XCTAssertEqual(group.wait(timeout: .now() + 30), .success)
+
+            XCTAssertEqual(counter.value, 1)
+        }
+    }
+
+    /// A thread-safe tally: the emissions above genuinely run concurrently, so
+    /// a bare `var` here would be the very race the test is checking for.
+    private final class Counter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var count = 0
+        func increment() { lock.withLock { count += 1 } }
+        var value: Int { lock.withLock { count } }
+    }
+
+    // MARK: Capture thread
+
+    func testCaptureThreadIsRecordedAndRunsWhileRunning() {
+        let base = Base()
+        base.lock.withLock { base.running = true }
+        let ran = expectation(description: "capture body ran")
+        base.startCaptureThread(named: "test-capture") { ran.fulfill() }
+        XCTAssertNotNil(base.lock.withLock { base.thread })
+        wait(for: [ran], timeout: 30)
+    }
+
+    /// A backend that is not running must not get a capture loop. `stop()`
+    /// drops `running` and then clears `thread`, so a thread started after
+    /// that would be one nothing is left to wind down — and the record that
+    /// followed it used to resurrect a stopped backend's `thread` field.
+    func testCaptureThreadIsNotStartedWhenNotRunning() {
+        let base = Base()
+        let started = Counter()
+        base.startCaptureThread(named: "test-capture") { started.increment() }
+        XCTAssertNil(base.lock.withLock { base.thread })
+        // Nothing to wait on — assert on the absence after enough time that a
+        // spawned thread would have got going.
+        Thread.sleep(forTimeInterval: 0.2)
+        XCTAssertEqual(started.value, 0)
     }
 
     // MARK: Error texts

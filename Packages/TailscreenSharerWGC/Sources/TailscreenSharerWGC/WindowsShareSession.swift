@@ -232,6 +232,23 @@ public final class WindowsShareSession: @unchecked Sendable {
     private var liveItem: WGC.CaptureItem?
     /// Live voice for the current share. Guarded by `lock`, like `server`.
     private var voice: SharerVoice?
+    /// Where the server hands inbound viewer audio.
+    ///
+    /// Long-lived and installed on each server BEFORE `start()`, because the
+    /// server's callbacks are bare stored vars its receive thread reads with
+    /// no lock — see `SharerVoiceRoute`. `startVoice` publishes into this
+    /// rather than reassigning `server.onAudioReceived` on a running share.
+    private let inboundVoice = SharerVoiceRoute()
+    /// Which share attempt this session is on.
+    ///
+    /// `beginSharing` releases nothing while it awaits `newServer.start()` —
+    /// that await spans tsnet bring-up, which on an interactive login is
+    /// minutes — so a `stopSharing()` can and does land in the middle. Every
+    /// callback and the post-await tail carry the generation they were made
+    /// under and drop themselves when it no longer matches, so a server the
+    /// session has let go of cannot publish status for a share nobody is
+    /// running. Guarded by `lock`.
+    private var shareGeneration: UInt64 = 0
     private var status = Status()
     /// The gate to apply to the next share, and to the running one.
     ///
@@ -309,6 +326,7 @@ public final class WindowsShareSession: @unchecked Sendable {
         existingNode: TailscaleNode? = nil,
         controlListener: TailscreenControlListener? = nil
     ) async throws {
+        let generation = beginShareGeneration()
         // A capture FACTORY, not an instance, because the server respawns the
         // backend to restart capture. Closing over the item is what makes a
         // restart re-target the same window without asking the user again —
@@ -396,57 +414,73 @@ public final class WindowsShareSession: @unchecked Sendable {
             // claim it, exactly as it must not claim `.remoteControl`.
             rendersAnnotations: annotationOverlay != nil
         )
+        // Every callback below carries `generation`: a server this session has
+        // let go of must not paint over the one that replaced it. The stop
+        // that drops it can land inside the `start()` await further down, which
+        // spans tsnet bring-up.
         newServer.onAnnotationReceived = { [weak self] op in
             // Fires on the control-channel thread. The overlay is
             // thread-safe and redraws only when the op changed something,
             // which matters because a pen drag sends one every few
             // milliseconds.
-            self?.lock.withLock { self?.overlay }?.apply(op)
+            guard let self, self.isCurrentShare(generation) else { return }
+            self.lock.withLock { self.overlay }?.apply(op)
         }
         wireSharerDrawing(overlay: annotationOverlay, server: newServer)
         let inkColor = drawing.color
         let name = item.displayName
 
         newServer.onViewersChanged = { [weak self] viewers in
+            guard let self, self.isCurrentShare(generation) else { return }
             let rows = viewers.map {
                 ConnectedViewer(
                     id: $0.id, displayName: $0.hostname ?? $0.tailscaleIP,
                     stableID: $0.stableID,
                     health: $0.health == .good ? nil : "\($0.health)")
             }
-            self?.update {
+            self.update {
                 $0.viewerCount = rows.count
                 $0.viewers = rows
             }
-            self?.noteRoster()
+            self.noteRoster()
         }
         newServer.onPendingViewersChanged = { [weak self] pending in
             // Fires on a network thread; `update` publishes and the app hops.
-            self?.update {
+            guard let self, self.isCurrentShare(generation) else { return }
+            self.update {
                 $0.pendingViewers = pending.map {
                     PendingViewer(
                         id: $0.id, displayName: $0.hostname ?? $0.tailscaleIP,
                         stableID: $0.stableID)
                 }
             }
-            self?.noteRoster()
+            self.noteRoster()
         }
         newServer.onControlRequestsChanged = { [weak self] requests in
-            self?.update { $0.controlRequests = requests }
+            guard let self, self.isCurrentShare(generation) else { return }
+            self.update { $0.controlRequests = requests }
         }
         newServer.onControlGrantChanged = { [weak self] _, grant in
-            self?.update { $0.controlGrantedTo = grant?.hostname ?? grant?.viewerIP }
+            guard let self, self.isCurrentShare(generation) else { return }
+            self.update { $0.controlGrantedTo = grant?.hostname ?? grant?.viewerIP }
         }
+        // Installed HERE, before `start()`, and never reassigned: the server's
+        // callbacks are bare stored vars its receive thread reads with no
+        // lock. `startVoice` publishes into the route once the capture device
+        // is open — see `SharerVoiceRoute` for why the device is not opened
+        // before a node that may still be waiting on a browser login.
+        newServer.onAudioReceived = { [inboundVoice] packet in inboundVoice.receive(packet) }
         newServer.onCaptureStopped = { [weak self] error in
+            guard let self, self.isCurrentShare(generation) else { return }
             // Before the status push: a capture that died must not leave the
             // microphone open, and the status it publishes says `micAvailable
             // = false`, so the two would otherwise disagree.
-            self?.stopVoice()
+            self.stopVoice()
             // And before it for the same reason, more urgently: a capture that
             // died on its own must not leave a click-swallowing window over a
             // desktop that is no longer sharing anything.
-            self?.teardownDrawing()
-            self?.update {
+            self.teardownDrawing()
+            self.update {
                 $0.isSharing = false
                 $0.viewerCount = 0
                 $0.viewers = []
@@ -520,12 +554,28 @@ public final class WindowsShareSession: @unchecked Sendable {
                     existingNode: existingNode, controlListener: controlListener)
             }
         } catch {
-            lock.withLock { server = nil }
-            update {
-                $0.isSharing = false
-                $0.message = ""
+            // Clear only if this session still points at THIS server: a
+            // `stopSharing()` that landed inside the await has already nil'd
+            // it and may have published a newer share, and blanking that one's
+            // status over a failure it had nothing to do with is worse than
+            // saying nothing.
+            lock.withLock { if server === newServer { server = nil } }
+            if isCurrentShare(generation) {
+                update {
+                    $0.isSharing = false
+                    $0.message = ""
+                }
             }
             throw error
+        }
+        // `start()` spans tsnet bring-up — minutes, on an interactive browser
+        // login — so a stop can have landed inside it. The session dropped
+        // `newServer` in that case and nothing else will ever stop it, so stop
+        // it here; and publish nothing, because "Sharing" over an idle session
+        // is a share the person cannot see, cannot stop, and did not ask for.
+        guard isCurrentShare(generation) else {
+            await newServer.stop()
+            return
         }
         startVoice(on: newServer)
 
@@ -533,6 +583,24 @@ public final class WindowsShareSession: @unchecked Sendable {
             $0.isSharing = true
             $0.message = regionNote
         }
+    }
+
+    /// Open a share attempt; everything stamped with an older one is ignored.
+    private func beginShareGeneration() -> UInt64 {
+        lock.withLock {
+            shareGeneration &+= 1
+            return shareGeneration
+        }
+    }
+
+    /// Close the current share attempt — a stop, or a capture that died.
+    private func endShareGeneration() {
+        lock.withLock { shareGeneration &+= 1 }
+    }
+
+    /// Whether `generation` is still the live share attempt.
+    private func isCurrentShare(_ generation: UInt64) -> Bool {
+        lock.withLock { shareGeneration == generation }
     }
 
     /// Turn the approval gate on or off, now and for the next share.
@@ -781,7 +849,11 @@ public final class WindowsShareSession: @unchecked Sendable {
     }
 
     public func stopSharing() async {
-        // FIRST, before anything that can await or fail. A drawing surface
+        // First, and unconditionally: from here on nothing the ending share's
+        // server says reaches this session, including a `beginSharing` still
+        // parked inside `start()`.
+        endShareGeneration()
+        // Then, before anything that can await or fail. A drawing surface
         // outliving its share is a desktop that swallows every click with no
         // share left to explain it, and `await running.stop()` is exactly the
         // kind of step that can take a while or throw on the way past.
@@ -1025,8 +1097,10 @@ public final class WindowsShareSession: @unchecked Sendable {
             }
         }
         // Inbound viewer audio, already vetted by the server's anti-spoof
-        // gate. Fires on the receive thread; the downlink does arithmetic only.
-        server.onAudioReceived = { [weak voice] packet in voice?.receive(packet) }
+        // gate, reaches `voice.receive` from here on. The server's handler was
+        // installed before `start()` and is NOT touched now — see
+        // `SharerVoiceRoute`.
+        inboundVoice.setVoice(voice)
         lock.withLock { self.voice = voice }
         update {
             $0.micAvailable = true
@@ -1035,6 +1109,10 @@ public final class WindowsShareSession: @unchecked Sendable {
     }
 
     private func stopVoice() {
+        // Unroute first: the server may still be delivering, and a packet
+        // handed to a voice that is being torn down is exactly the race
+        // `VoiceDownlink`'s lock exists for. Stop reaching it at all.
+        inboundVoice.setVoice(nil)
         let live = lock.withLock { () -> SharerVoice? in
             let value = voice
             voice = nil
