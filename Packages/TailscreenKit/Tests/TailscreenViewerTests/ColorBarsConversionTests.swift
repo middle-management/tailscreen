@@ -33,8 +33,9 @@ final class ColorBarsConversionTests: XCTestCase {
     private func converted() -> (pixels: [UInt8], width: Int, height: Int) {
         let frame = makeColorBarsFrame()
         var out = [UInt8](repeating: 0, count: frame.width * frame.height * 4)
-        let ok = out.withUnsafeMutableBufferPointer {
-            I420Converter.convert(frame, into: $0.baseAddress!)
+        let ok = out.withUnsafeMutableBufferPointer { buffer -> Bool in
+            guard let base = buffer.baseAddress else { return false }
+            return I420Converter.convert(frame, into: base)
         }
         XCTAssertTrue(ok, "the fixture's planes must satisfy the converter's size guard")
         return (out, frame.width, frame.height)
