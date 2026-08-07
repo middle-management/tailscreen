@@ -61,6 +61,11 @@ public struct TailscreenPeer: Identifiable, Sendable, Equatable {
     }
 }
 
+/// The shared peer-list projection (`PeerListFilter.narrow` / `knownTags`)
+/// applies to this type unchanged — `id`, `isOnline` and `tags` are already
+/// exactly what the filter's axes read, which is why the conformance is empty.
+extension TailscreenPeer: PeerListRow {}
+
 /// Lists Tailscreen installations on the local tailnet by filtering the
 /// IPN peer set by hostname prefix. No TCP/UDP probes — `peer.isOnline`
 /// is sufficient for the menu's active/inactive state because every

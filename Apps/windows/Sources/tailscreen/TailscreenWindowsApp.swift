@@ -792,17 +792,18 @@ final class AppUIState: ObservableObject {
 
     /// `peers` narrowed by `filter` — hide-offline ∧ only-sharing ∧
     /// any-of-selected-tags, with the tri-state sharing input the sweep fills.
+    ///
+    /// The projection is `PeerListFilter.narrow`, shared with the GTK hub and
+    /// the macOS one, so the "no sweep answer ⇒ unknown, never not-sharing"
+    /// rule is stated once rather than three times.
     var filteredPeers: [DiscoveredSharer] {
-        peers.filter {
-            filter.matches(
-                isOnline: $0.isOnline, tags: $0.tags,
-                sharing: PeerSharingState(fetched: shareInfo[$0.id]))
-        }
+        filter.narrow(peers, shareInfo: shareInfo)
     }
 
-    /// Every ACL tag across the RAW list, for the filter menu's tag rows.
-    /// Sorted so the menu does not reshuffle between discovery sweeps.
-    var knownTags: [String] { Array(Set(peers.flatMap(\.tags))).sorted() }
+    /// The tags the filter menu offers: every tag across the RAW list, plus
+    /// any currently selected — see `PeerListFilter.knownTags(in:)` for why
+    /// the second half matters.
+    var knownTags: [String] { filter.knownTags(in: peers) }
 
     /// How many discovered machines the filter is hiding right now — the
     /// footnote under the list, so rows never vanish unexplained.

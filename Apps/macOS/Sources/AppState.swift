@@ -662,20 +662,15 @@ class AppState: ObservableObject {
     /// list projected through `peerFilter` (pure decision, covered by
     /// `PeerListFilterTests` in the protocol package).
     var filteredPeers: [TailscreenPeer] {
-        availablePeers.filter {
-            peerFilter.matches(
-                isOnline: $0.isOnline, tags: $0.tags,
-                sharing: PeerSharingState(fetched: peerShareInfo[$0.id]))
-        }
+        peerFilter.narrow(availablePeers, shareInfo: peerShareInfo)
     }
 
     /// Tags offered by the filter menu: the union of every discovered
     /// peer's tags plus any currently-selected tags — a selected tag whose
     /// peers left the tailnet must stay listed so it can be unselected.
+    /// Shared with both other hubs, which did not have that second half.
     var knownPeerTags: [String] {
-        var union = peerFilter.selectedTags
-        for peer in availablePeers { union.formUnion(peer.tags) }
-        return union.sorted()
+        peerFilter.knownTags(in: availablePeers)
     }
     /// True once any discovery pass has finished (successfully or not).
     /// The menubar devices section shows its loading skeleton until this
