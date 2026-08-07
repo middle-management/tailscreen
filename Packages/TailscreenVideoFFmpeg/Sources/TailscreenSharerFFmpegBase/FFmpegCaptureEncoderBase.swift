@@ -28,17 +28,68 @@ import TailscreenProtocol
 /// for conforming backends, not API for hosts: everything is guarded by
 /// `lock`, and a subclass's capture loop reads `running`/`targetFPS` under it
 /// exactly as the three existing loops do.
+///
+/// **Callback contract: set every callback before `start()`, and do not
+/// mutate one afterwards.** The capture thread reads them on every frame, so a
+/// host that reassigns one mid-share is racing the encode loop — and the
+/// *timing* of the swap is unobservable from the host, which is why this is a
+/// rule rather than a suggestion. The accessors below are guarded, so the
+/// worst case is a torn *decision* rather than a torn closure reference: a
+/// reassignment can still land between the parameter-set emission and the
+/// first access unit that needs it, and a viewer then installs nothing and
+/// sits on black. Every shipped host (the server's `CaptureEncoding` wiring,
+/// and the two backends' own `onTimings`/`onPreviewThumbnail`) wires all of
+/// them inside the capture factory, before `start` is called.
 open class FFmpegCaptureEncoderBase: @unchecked Sendable {
     // MARK: CaptureEncoding callbacks
+    //
+    // Stored behind `lock` rather than as bare vars: they are written by the
+    // host on its own thread and read by the capture thread on every frame.
+    // Computed accessors keep every subclass call site (`onAccessUnit?(…)`)
+    // compiling unchanged — and none of the three invokes one while holding
+    // `lock`, which matters because `NSLock` is not recursive.
 
-    public var onAccessUnit: ((Data, Bool) -> Void)?
-    public var onAudioAccessUnit: ((Data) -> Void)?
-    public var onParameterSets: ((CodecParameterSets) -> Void)?
-    public var onEncoderResolution: ((Int, Int) -> Void)?
-    public var onPreviewImage: ((Data) -> Void)?
-    public var onUnexpectedExit: ((String) -> Void)?
-    public var onUserStopped: (() -> Void)?
-    public var onActivity: (() -> Void)?
+    public var onAccessUnit: ((Data, Bool) -> Void)? {
+        get { lock.withLock { accessUnitSink } }
+        set { lock.withLock { accessUnitSink = newValue } }
+    }
+    public var onAudioAccessUnit: ((Data) -> Void)? {
+        get { lock.withLock { audioAccessUnitSink } }
+        set { lock.withLock { audioAccessUnitSink = newValue } }
+    }
+    public var onParameterSets: ((CodecParameterSets) -> Void)? {
+        get { lock.withLock { parameterSetsSink } }
+        set { lock.withLock { parameterSetsSink = newValue } }
+    }
+    public var onEncoderResolution: ((Int, Int) -> Void)? {
+        get { lock.withLock { encoderResolutionSink } }
+        set { lock.withLock { encoderResolutionSink = newValue } }
+    }
+    public var onPreviewImage: ((Data) -> Void)? {
+        get { lock.withLock { previewImageSink } }
+        set { lock.withLock { previewImageSink = newValue } }
+    }
+    public var onUnexpectedExit: ((String) -> Void)? {
+        get { lock.withLock { unexpectedExitSink } }
+        set { lock.withLock { unexpectedExitSink = newValue } }
+    }
+    public var onUserStopped: (() -> Void)? {
+        get { lock.withLock { userStoppedSink } }
+        set { lock.withLock { userStoppedSink = newValue } }
+    }
+    public var onActivity: (() -> Void)? {
+        get { lock.withLock { activitySink } }
+        set { lock.withLock { activitySink = newValue } }
+    }
+
+    private var accessUnitSink: ((Data, Bool) -> Void)?
+    private var audioAccessUnitSink: ((Data) -> Void)?
+    private var parameterSetsSink: ((CodecParameterSets) -> Void)?
+    private var encoderResolutionSink: ((Int, Int) -> Void)?
+    private var previewImageSink: ((Data) -> Void)?
+    private var unexpectedExitSink: ((String) -> Void)?
+    private var userStoppedSink: (() -> Void)?
+    private var activitySink: (() -> Void)?
 
     // MARK: Errors
 
@@ -261,11 +312,26 @@ open class FFmpegCaptureEncoderBase: @unchecked Sendable {
     /// Spawn the capture loop's thread and record it. The body should be
     /// `{ [weak self] in self?.captureLoop() }` — weak, because the thread
     /// must not keep a stopped backend alive.
+    ///
+    /// **Call it with `running` already true** (all three backends set the
+    /// flag in the same locked block that installs the encoder, then call
+    /// this). The check-and-record is one critical section for two reasons: a
+    /// `stop()` that landed between them used to clear `thread` *before* this
+    /// assigned it, leaving a stopped backend holding a live thread reference
+    /// it would never clear again — and starting the thread before recording
+    /// it meant `stop()` could return having never seen the loop it was
+    /// supposed to wind down. A `stop()` that already won the race leaves the
+    /// thread unstarted, which is what "stopped" should mean.
     public func startCaptureThread(named name: String, _ body: @escaping @Sendable () -> Void) {
         let captureThread = Thread { body() }
         captureThread.name = name
+        let claimed = lock.withLock { () -> Bool in
+            guard running else { return false }
+            thread = captureThread
+            return true
+        }
+        guard claimed else { return }
         captureThread.start()
-        lock.withLock { thread = captureThread }
     }
 
     /// How long `stop()` waits for the capture loop to observe the dropped
@@ -360,15 +426,29 @@ open class FFmpegCaptureEncoderBase: @unchecked Sendable {
     /// tested on Linux CI. Splitting Annex-B stays FFmpeg-side (`NALUnit`),
     /// which the portable tier cannot name.
     public func emitParameterSets(from avcc: Data) {
-        let (already, isHEVC) = lock.withLock { (sentParameterSets, encoder?.codec == .hevc) }
-        guard !already, let handler = onParameterSets else { return }
+        let (already, isHEVC, handler) = lock.withLock {
+            (sentParameterSets, encoder?.codec == .hevc, parameterSetsSink)
+        }
+        guard !already, let handler else { return }
         guard let annexB = NALUnit.avccToAnnexB(avcc) else { return }
         guard
             let sets = ParameterSetExtraction.parameterSets(
                 fromAnnexBNALs: NALUnit.annexBNALs(annexB),
                 codec: isHEVC ? .hevc : .h264)
         else { return }
-        lock.withLock { sentParameterSets = true }
+        // CLAIM the latch, do not merely set it. The read above is a cheap
+        // early-out that two threads can both pass — the portal backend's
+        // rebuild path re-arms `sentParameterSets` while the encode thread is
+        // mid-keyframe — and "once per encoder configuration" is a contract
+        // the server's bitrate anchor reads: emitting twice re-anchors on the
+        // second set and undoes whatever the congestion controller had done.
+        // The parse stays outside the lock; only the flip is atomic.
+        let claimed = lock.withLock { () -> Bool in
+            guard !sentParameterSets else { return false }
+            sentParameterSets = true
+            return true
+        }
+        guard claimed else { return }
         handler(sets)
     }
 }
