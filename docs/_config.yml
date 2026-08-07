@@ -60,7 +60,6 @@ exclude:
   - Gemfile.lock
   - vendor/
   - .jekyll-cache/
-  - superpowers/
 
 permalink: pretty
 

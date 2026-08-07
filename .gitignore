@@ -29,7 +29,7 @@ Package.resolved
 # out. With it committed, restore goes first and resolve is a no-op against
 # the restored checkouts.
 !Apps/windows/Package.resolved
-!Apps/linux-gtk/Package.resolved
+!Apps/linux/Package.resolved
 
 # macOS
 .DS_Store

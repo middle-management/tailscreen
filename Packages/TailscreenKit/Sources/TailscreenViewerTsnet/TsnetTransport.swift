@@ -10,7 +10,7 @@ public struct ViewerConfig: Sendable {
     /// Sharer host to dial — a Tailscale hostname or tailnet IP.
     public var hostname: String
     /// UDP/TCP port the sharer listens on.
-    public var port: UInt16 = 7447
+    public var port: UInt16 = NetworkConfig.tailscreenPort
     /// Tailscale pre-auth key (or nil for interactive/existing login).
     public var authKey: String?
     /// Control server URL (headscale for local dev, else Tailscale's).
@@ -42,7 +42,7 @@ public struct ViewerConfig: Sendable {
 
     public init(
         hostname: String,
-        port: UInt16 = 7447,
+        port: UInt16 = NetworkConfig.tailscreenPort,
         authKey: String? = nil,
         controlURL: String = kDefaultControlURL,
         statePath: String,
@@ -62,6 +62,10 @@ public struct ViewerConfig: Sendable {
 /// A minimal `LogSink` that writes both the Swift wrapper's logs and the Go
 /// backend's logs (`logFileHandle`) to stderr, keeping stdout clean for the
 /// eventual data path.
+///
+/// Deliberately NOT `TailscreenTransport.PrintLogSink` (the package's shared
+/// print sink): that one writes to stdout, and the stderr destination here is
+/// the point — viewer executables reserve stdout for data.
 struct StderrLogger: LogSink {
     var logFileHandle: Int32? { STDERR_FILENO }
     func log(_ message: String) {
@@ -531,6 +535,17 @@ public final class TsnetTransport {
     /// state. This transport is already MainActor-isolated, so the isolation
     /// costs nothing and saves each host a hop that would let the session end
     /// first.
+    ///
+    /// `onEnded` fires once, just before `run` returns, for every ending the
+    /// USER did not ask for — sharer stop, deny/kick, idle timeout, socket
+    /// death — so the host can explain the ending instead of the window
+    /// silently reverting. It does NOT fire when `shouldClose` ended the
+    /// session: the person who closed the window needs no explanation.
+    /// `wasAdmitted` is whether an SSRC had been assigned, which is how a host
+    /// words the one HELLO_DENY byte as "declined" (still at the approval
+    /// placard) vs "disconnected by sharer" (already watching) — the same
+    /// context split the macOS viewer applies. `onDeclined` still fires for a
+    /// deny, before `onEnded`, so existing callers keep working.
     public func run(
         config: ViewerConfig,
         decoder: VideoDecoding,
@@ -543,7 +558,8 @@ public final class TsnetTransport {
         onBackChannelReady: (@Sendable (ViewerBackChannel) -> Void)? = nil,
         onAdmitted: (@Sendable (ScreenShareCaps) -> Void)? = nil,
         onAwaitingApproval: (@Sendable () -> Void)? = nil,
-        onDeclined: (@Sendable () -> Void)? = nil
+        onDeclined: (@Sendable () -> Void)? = nil,
+        onEnded: (@Sendable (ViewerCloseReason, _ wasAdmitted: Bool) -> Void)? = nil
     ) async throws {
         // Bring the node up if a caller skipped `prepare` (the direct-host
         // path); a picker host that already called `prepare` + `discoverPeers` reuses
@@ -682,17 +698,52 @@ public final class TsnetTransport {
         // in a bare `Task { }` and sends from it. That closure is `@Sendable`,
         // so the type must be `Sendable` for shipped code to compile.
         let inbox = DatagramInbox()
+        let receiveFailure = ReceiveFailureFlag()
+        let receiveLogger = logger
         let receiverTask = Task.detached {
+            var tally = TransportEndDecision.ReceiveFailureTally()
             while !Task.isCancelled {
+                let recvStartNs = DispatchTime.now().uptimeNanoseconds
                 do {
                     let (datagram, from) = try await listener.recv(timeout: 250)
+                    tally.consecutiveErrors = 0
                     // Empty is how this wrapper reports "nothing arrived before
                     // the timeout" on some paths; a throw is how it reports it
                     // on others. Neither is an error.
                     guard !datagram.isEmpty else { continue }
                     inbox.push(DatagramInbox.Datagram(payload: datagram, from: from))
                 } catch {
-                    continue
+                    guard !Task.isCancelled else { break }
+                    // `readFailed` covers both the benign poll timeout and a
+                    // dead socket; errno never crosses the bridge but wall time
+                    // does — a genuine timeout only returns after the full poll
+                    // interval, a dead socket fails in microseconds (the same
+                    // classification the macOS receive loop applies).
+                    let elapsedNs = DispatchTime.now().uptimeNanoseconds &- recvStartNs
+                    var benignTimeout = false
+                    if case TailscaleError.readFailed = error {
+                        benignTimeout = !ReceiveLoopPolicy.classifyReadFailedAsError(
+                            elapsedNs: elapsedNs)
+                    }
+                    let nowNs = DispatchTime.now().uptimeNanoseconds
+                    if TransportEndDecision.receiveFailureIsFatal(
+                        &tally, benignTimeout: benignTimeout, nowNs: nowNs)
+                    {
+                        // The loop reads the flag on its next pass and ends the
+                        // session with `.connectionLost`; this task's job is
+                        // over — a socket this sick has nothing left to read.
+                        receiveLogger.log(
+                            "⚠ receive gave up (consecutive=\(tally.consecutiveErrors), "
+                                + "window=\(tally.errorStampsNs.count)): \(error)"
+                        )
+                        receiveFailure.raise()
+                        break
+                    }
+                    if !benignTimeout {
+                        try? await Task.sleep(
+                            nanoseconds: ReceiveLoopPolicy.retryDelayNs(
+                                consecutiveErrors: tally.consecutiveErrors))
+                    }
                 }
             }
         }
@@ -757,9 +808,26 @@ public final class TsnetTransport {
         // already, and a non-zero value names the cap as a suspect instead of
         // leaving it to be re-derived from arrival rates.
         var saturatedPasses = 0
+        // A transport-diagnosed ending (idle timeout / socket death). The
+        // wire-side endings live in `session.closeReason`; these two are ours
+        // to notice, because the session owns no socket and no clock source.
+        var transportEndReason: ViewerCloseReason?
+        // Clock reading of the last datagram accepted from the sharer, for the
+        // idle timeout. Seeded at loop entry so a sharer that never answers at
+        // all still times out instead of freezing the window forever.
+        var lastDatagramNs = DispatchTime.now().uptimeNanoseconds
         while !pipeline.isStopped && !shouldClose() {
             pipeline.tick(nowNs: DispatchTime.now().uptimeNanoseconds)
             let session = pipeline.session
+            // The receive task raised the dead-socket flag: repeated genuine
+            // recv errors, past both `ReceiveLoopPolicy` thresholds. Nothing
+            // more will ever arrive, so end the session rather than tick
+            // against an inbox that can only stay empty.
+            if receiveFailure.isRaised {
+                logger.log("▶ Receive path died — ending the session.")
+                transportEndReason = .connectionLost
+                break
+            }
             if session.isPendingApproval, !loggedPending {
                 logger.log("▶ Waiting for the sharer to approve this viewer…")
                 loggedPending = true
@@ -839,7 +907,22 @@ public final class TsnetTransport {
                     lastOtherSender = datagram.from
                     continue
                 }
+                lastDatagramNs = DispatchTime.now().uptimeNanoseconds
                 pipeline.receive(datagram.payload)
+            }
+            // Idle timeout: a sharer that has gone silent past the threshold is
+            // gone (crashed, or its BYE was lost). Only datagrams accepted from
+            // the sharer feed `lastDatagramNs` — same rule as the macOS loop —
+            // and the wait at the approval prompt is exempt, since a sharer
+            // deliberating over Accept/Deny legitimately sends nothing.
+            if TransportEndDecision.idleTimedOut(
+                nowNs: DispatchTime.now().uptimeNanoseconds,
+                lastDatagramNs: lastDatagramNs,
+                isPendingApproval: session.isPendingApproval)
+            {
+                logger.log("▶ Nothing from the sharer for >idle timeout — assuming it is gone.")
+                transportEndReason = .timedOut
+                break
             }
             // Pacing. `recv`'s timeout used to be what kept this loop from
             // spinning; with the socket on its own task, an empty inbox is the
@@ -853,13 +936,24 @@ public final class TsnetTransport {
                 try? await Task.sleep(for: .milliseconds(Self.idlePollIntervalMs))
             }
         }
+        // Resolve the ending. Wire-side causes come from the session
+        // (`closeReason`: deny/kick, sharer stop), transport-side ones from the
+        // loop above (idle timeout, socket death); a user-initiated close
+        // (`shouldClose`) has neither and fires nothing — the person who
+        // closed the window needs no explanation. `wasAdmitted` is how the
+        // host words the single HELLO_DENY byte: no SSRC yet ⇒ declined at the
+        // gate, SSRC assigned ⇒ kicked mid-watch.
+        let wasAdmitted = pipeline.session.assignedSSRC != nil
         if pipeline.session.wasDenied {
             logger.log("▶ Sharer declined this viewer.")
             onDeclined?()
         } else if pipeline.isStopped {
             logger.log("▶ Sharer ended the session.")
-        } else {
+        } else if transportEndReason == nil {
             logger.log("▶ Viewer window closed.")
+        }
+        if let reason = pipeline.closeReason ?? transportEndReason {
+            onEnded?(reason, wasAdmitted)
         }
         await listener.close()
         // When retaining, `teardown()` is the only thing that takes the node
@@ -871,12 +965,18 @@ public final class TsnetTransport {
         // covers the throwing exit paths).
     }
 
-    /// Surface an interactive-login URL: print it prominently on stderr (so it
+    /// Surface an interactive-login URL: print it prominently on stderr, so it
     /// stands out from the `[tsnet]` log stream — the common case is a headless
-    /// guest where the user copies it to a browser on another machine) and, if
-    /// a desktop session is present, best-effort `xdg-open` it locally. Nothing
-    /// here can throw into the login path — a failed open just leaves the
-    /// printed URL.
+    /// guest where the user copies it to a browser on another machine.
+    ///
+    /// Opening the URL locally is the HOST's job, via the `onLoginURL`
+    /// callback that arrives alongside this banner (the GTK app shows it with
+    /// an explicit open button; the Windows app opens via `cmd /c start`).
+    /// This used to also spawn `xdg-open` behind a `DISPLAY` check — the one
+    /// platform-specific process spawn in the package, a silent no-op on
+    /// Windows, and a second unprompted browser open on a Linux desktop where
+    /// the app was already presenting the URL. Same seam shape as
+    /// `TailscaleAuth.onOpenAuthURL` / `TailscaleIPNWatcher.onBrowseToURL`.
     nonisolated static func surfaceLoginURL(_ url: URL) {
         let line = String(repeating: "─", count: 60)
         let banner = """
@@ -889,14 +989,6 @@ public final class TsnetTransport {
 
             """
         FileHandle.standardError.write(Data(banner.utf8))
-
-        // Only attempt a local open when a display is available; in a headless
-        // guest there's no browser and xdg-open would just error.
-        guard ProcessInfo.processInfo.environment["DISPLAY"] != nil else { return }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["xdg-open", url.absoluteString]
-        try? process.run()
     }
 
     /// Bracket IPv6 literals ("[::1]:7447"); leave IPv4 untouched.

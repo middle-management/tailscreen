@@ -7,9 +7,16 @@ import TailscreenViewerTsnet
 /// main thread) to the sharer over the `ViewerBackChannel`, applying two rules:
 ///
 ///  1. **Gate.** Events are forwarded only while remote control is *granted-
-///     active* (`ViewerUIState.controlState == .active`). Before a grant — or
-///     after a revoke/release — captured input is dropped, so moving the mouse
-///     over the video never leaks input to the sharer.
+///     active* (`ViewerUIState.controlState == .active`) AND no annotation
+///     tool is armed (`activeTool == nil`). Before a grant — or after a
+///     revoke/release — captured input is dropped, so moving the mouse over
+///     the video never leaks input to the sharer. Drawing wins over
+///     controlling: with a pen armed a drag is a stroke, not a click — GTK
+///     fans each event to every attached controller, so without this clause a
+///     controlling viewer who armed the pen would draw on the overlay AND
+///     drag on the sharer's desktop at once. (The Windows viewer's
+///     `forwardsInput` is the same rule; the precedence is load-bearing, see
+///     plans/platform-alignment.md.)
 ///
 ///  2. **Order.** The `ViewerBackChannel` actor preserves order only for calls
 ///     that reach it in order (see its `sendInputEvent` ORDERING CONTRACT). So
@@ -59,7 +66,7 @@ final class InputForwarder {
     /// main thread, so it never races the state machine's writes.
     nonisolated func submit(_ event: InputEvent) {
         MainActor.assumeIsolated {
-            guard ui.controlState == .active else { return }
+            guard ui.controlState == .active, ui.activeTool == nil else { return }
             continuation.yield(event)
         }
     }

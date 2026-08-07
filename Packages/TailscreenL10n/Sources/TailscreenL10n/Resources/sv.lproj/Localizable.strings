@@ -124,8 +124,8 @@
 "Draw" = "Rita";
 "Stop drawing on screen" = "Sluta rita på skärmen";
 "Draw on screen" = "Rita på skärmen";
-"Mute Mic (⌃⌥M)" = "Stäng av mik (⌃⌥M)";
-"Unmute Mic (⌃⌥M)" = "Slå på mik (⌃⌥M)";
+"Mute Mic (%@)" = "Stäng av mik (%@)";
+"Unmute Mic (%@)" = "Slå på mik (%@)";
 "Toggles voice chat with viewers" = "Växlar röstchatt med tittare";
 "Share System Audio" = "Dela systemljud";
 "Mute System Audio" = "Stäng av systemljud";
@@ -161,7 +161,8 @@
 "Connected over Tailscale" = "Ansluten via Tailscale";
 "Mute Mic" = "Stäng av mik";
 "Unmute Mic" = "Slå på mik";
-"Toggle mic (⌃⌥M)" = "Växla mik (⌃⌥M)";
+"Toggle mic (%@)" = "Växla mik (%@)";
+"Toggle mic" = "Växla mik";
 "Toggles voice chat with the sharer" = "Växlar röstchatt med den som delar";
 "Closes the viewer window and ends this session" = "Stänger tittarfönstret och avslutar sessionen";
 
@@ -182,6 +183,12 @@
 "Refresh available screens" = "Uppdatera tillgängliga skärmar";
 "Looking for screens…" = "Söker efter skärmar…";
 "No Tailscreen devices on your tailnet" = "Inga Tailscreen-enheter på ditt tailnet";
+"Screens appear here when their devices are running Tailscreen." = "Skärmar visas här när deras enheter kör Tailscreen.";
+"Get Tailscreen for your other devices" = "Hämta Tailscreen till dina andra enheter";
+"Clear search" = "Rensa sökning";
+"Copied" = "Kopierat";
+"Show Window" = "Visa fönster";
+"Brings the viewer window to the front" = "Tar fram tittarfönstret";
 "Offline" = "Frånkopplad";
 "%@, %@" = "%@, %@";
 "online" = "ansluten";
@@ -223,7 +230,33 @@
 "Automatic" = "Automatisk";
 "Limit bandwidth" = "Begränsa bandbredd";
 "%lld Mbps" = "%lld Mbps";
-"Frame rate and codec changes apply the next time you start sharing." = "Ändringar av bildfrekvens och codec gäller nästa gång du börjar dela.";
+"Frame rate, codec, and encoder quality changes apply the next time you start sharing." = "Ändringar av bildfrekvens, codec och kodningskvalitet gäller nästa gång du börjar dela.";
+"Encoder quality" = "Kodningskvalitet";
+"Color" = "Färg";
+"10-bit color" = "10-bitars färg";
+"Applies the next time you start sharing. HDR needs a display with EDR headroom, and if a viewer can't decode 10-bit video the share falls back to 8-bit for everyone." = "Gäller nästa gång du börjar dela. HDR kräver en skärm med EDR-utrymme, och om en tittare inte kan avkoda 10-bitars video faller delningen tillbaka till 8 bitar för alla.";
+
+/* MARK: - Settings: General / Accounts / Keyboard Shortcuts (SettingsView.swift) */
+"General" = "Allmänt";
+"Launch at login" = "Starta vid inloggning";
+"Launch at login needs the packaged Tailscreen app — a development build running outside an app bundle can't register itself." = "Starta vid inloggning kräver den paketerade Tailscreen-appen — ett utvecklingsbygge som körs utanför ett appaket kan inte registrera sig självt.";
+"Waiting for approval — allow Tailscreen under System Settings → General → Login Items." = "Väntar på godkännande — tillåt Tailscreen under Systeminställningar → Allmänt → Inloggningsobjekt.";
+"Couldn't Update Login Item" = "Kunde inte uppdatera inloggningsobjekt";
+"macOS refused to change Launch at login: %@" = "macOS nekade ändringen av Starta vid inloggning: %@";
+"Accounts" = "Konton";
+"Not signed in yet" = "Inte inloggad än";
+"Active" = "Aktivt";
+"Removing an account deletes its sign-in state from this Mac. To remove the account you're signed in to, switch to another account first." = "Att ta bort ett konto raderar dess inloggningsdata från den här datorn. För att ta bort kontot du är inloggad med, byt först till ett annat konto.";
+"Toggle Microphone" = "Växla mikrofon";
+"Both actions use the same shortcut, so only one of them will fire. Record a different combination for one of them." = "Båda åtgärderna använder samma kortkommando, så bara en av dem kommer att utlösas. Spela in en annan kombination för en av dem.";
+"These shortcuts work system-wide. Click one, then press a new combination that includes at least one of ⌃, ⌥, or ⌘ — Esc cancels recording." = "De här kortkommandona fungerar i hela systemet. Klicka på ett och tryck sedan en ny kombination som innehåller minst en av ⌃, ⌥ eller ⌘ — Esc avbryter inspelningen.";
+"Record a new shortcut for %@" = "Spela in ett nytt kortkommando för %@";
+"Reset" = "Återställ";
+"Reset to Default" = "Återställ till standard";
+"Reset %@ to default" = "Återställ %@ till standard";
+"This shortcut is already in use by another app, so it won't work here. Record a different one." = "Det här kortkommandot används redan av en annan app, så det fungerar inte här. Spela in ett annat.";
+"Record Shortcut" = "Spela in kortkommando";
+"Type shortcut…" = "Tryck kortkommando…";
 "HEVC never falls back to H.264 — viewers that can only decode H.264 won't be able to watch. Choose Automatic to fall back when needed." = "HEVC faller aldrig tillbaka till H.264 — tittare som bara kan avkoda H.264 kommer inte att kunna titta. Välj Automatisk för att falla tillbaka vid behov.";
 "Audio" = "Ljud";
 "Speaker" = "Högtalare";
@@ -278,10 +311,6 @@
 "Sign Out Failed" = "Utloggning misslyckades";
 "Error" = "Fel";
 "Failed to start sharing: %@" = "Misslyckades att starta delning: %@";
-"Can't decode the video" = "Kan inte avkoda videon";
-"This Mac can't decode the %@ video stream from the sharer (it likely lacks %@ hardware decode). Asking the sharer to switch to H.264 — the screen should appear in a moment." = "Den här datorn kan inte avkoda %@-videoströmmen från delaren (den saknar troligen maskinvaruavkodning för %@). Ber delaren att byta till H.264 — skärmen bör visas om en stund.";
-"Video Has Stalled" = "Videon har stannat";
-"Decoding has been failing for several seconds and automatic recovery hasn't helped. Check the connection on both ends, or disconnect and reconnect." = "Avkodningen har misslyckats i flera sekunder och automatisk återställning har inte hjälpt. Kontrollera anslutningen i båda ändar, eller koppla från och anslut igen.";
 "Sharing Stopped" = "Delning stoppad";
 "The connection to your viewers was lost and couldn't be re-established, so the share was stopped. Check the network and start sharing again." = "Anslutningen till dina tittare förlorades och kunde inte återupprättas, så delningen stoppades. Kontrollera nätverket och starta delningen igen.";
 "Screen sharing couldn't continue because the capture source became unavailable. Start sharing again to pick a new source." = "Skärmdelningen kunde inte fortsätta eftersom källan blev otillgänglig. Starta delningen igen för att välja en ny källa.";
@@ -328,7 +357,6 @@
 /* MARK: - Shortcuts overlay (ViewerShortcutsOverlay.swift) */
 "Tools" = "Verktyg";
 "Annotation" = "Anteckning";
-"Remote Control" = "Fjärrstyrning";
 "Window" = "Fönster";
 "Revoke remote control (system-wide)" = "Återkalla fjärrstyrning (hela systemet)";
 "Pinch" = "Nyp";
@@ -347,7 +375,6 @@
 "Show / hide this help" = "Visa / dölj den här hjälpen";
 "Keyboard shortcuts" = "Tangentbordsgenvägar";
 "Close keyboard shortcuts" = "Stäng tangentbordsgenvägar";
-"Click anywhere or press ⇧⌘/ to dismiss." = "Klicka var som helst eller tryck på ⇧⌘/ för att stänga.";
 
 /* MARK: - Viewer toolbar (ViewerToolbar.swift) */
 "Undo" = "Ångra";
@@ -359,7 +386,6 @@
 "Mic" = "Mik";
 "Mute microphone" = "Stäng av mikrofon";
 "Unmute microphone" = "Slå på mikrofon";
-"Toggle microphone (⌃⌥M)" = "Växla mikrofon (⌃⌥M)";
 "Stats" = "Statistik";
 "Toggle stream stats overlay" = "Växla statistiköverlägg";
 "Connection degraded — click for stats" = "Anslutningen är försämrad — klicka för statistik";
@@ -397,7 +423,8 @@
 "Viewer Wants Control" = "Tittare vill styra";
 "%@ is asking to control your Mac." = "%@ vill styra din Mac.";
 "Accessibility Permission Needed" = "Tillgänglighetsbehörighet krävs";
-"To let a viewer control your Mac, allow Tailscreen under System Settings → Privacy & Security → Accessibility, then grant control again." = "För att låta en tittare styra din Mac, tillåt Tailscreen under Systeminställningar → Integritet och säkerhet → Tillgänglighet och bevilja sedan styrning igen.";
+"To let a viewer control your Mac, allow Tailscreen under System Settings → Privacy & Security → Accessibility. Tailscreen will grant control automatically once the permission is enabled." = "För att låta en tittare styra din Mac, tillåt Tailscreen under Systeminställningar → Integritet och säkerhet → Tillgänglighet. Tailscreen beviljar styrning automatiskt så snart behörigheten är aktiverad.";
+"Waiting for Accessibility permission…" = "Väntar på tillgänglighetsbehörighet…";
 "Open Settings" = "Öppna Inställningar";
 "Cancel" = "Avbryt";
 "Remote Control Ended" = "Fjärrstyrning avslutad";
@@ -574,3 +601,58 @@
 "Could not start sharing: %@" = "Kunde inte börja dela: %@";
 "Not listening for share requests: %@" = "Lyssnar inte efter delningsförfrågningar: %@";
 "Remote control isn't available for this share." = "Fjärrstyrning är inte tillgängligt för den här delningen.";
+
+/* MARK: - Viewer window: session states, remote control, cheat sheet (AppState.swift / ViewerToolbar.swift / ViewerSessionOverlays.swift / ViewerShortcutsOverlay.swift) */
+"Session Ended" = "Sessionen avslutad";
+"%@ stopped sharing their screen." = "%@ slutade dela sin skärm.";
+"The connection to %@ went quiet and timed out." = "Anslutningen till %@ tystnade och löpte ut.";
+"The connection to %@ was lost." = "Anslutningen till %@ förlorades.";
+"Reconnect" = "Återanslut";
+"Back to screens" = "Tillbaka till skärmar";
+"Close" = "Stäng";
+"Dismiss notice" = "Stäng meddelandet";
+"Connection Problem" = "Anslutningsproblem";
+"This Mac can't decode the %@ video stream. Asking the sharer to switch to H.264 — the picture should return in a moment." = "Den här datorn kan inte avkoda videoströmmen i %@. Ber delaren att byta till H.264 — bilden bör återkomma om en stund.";
+"Video has stalled — decoding keeps failing and automatic recovery hasn't helped." = "Videon har stannat — avkodningen fortsätter att misslyckas och den automatiska återhämtningen har inte hjälpt.";
+"Waiting for the sharer to accept your connection…" = "Väntar på att delaren ska acceptera din anslutning…";
+"Viewing %@ — controlling" = "Visar %@ — styr";
+"Shared screen" = "Delad skärm";
+"Shared screen from %@" = "Delad skärm från %@";
+"Remote control granted — your input now controls the shared Mac. Use Stop Controlling in the toolbar to release." = "Fjärrstyrning beviljad — dina inmatningar styr nu den delade datorn. Använd Sluta styra i verktygsfältet för att släppa.";
+"Remote control ended" = "Fjärrstyrningen avslutad";
+"Release Remote Control" = "Släpp fjärrstyrning";
+"Enter Full Screen" = "Övergå till helskärmsläge";
+"Exit Full Screen" = "Avsluta helskärmsläge";
+"Request control of the shared Mac" = "Be om att styra den delade datorn";
+"Waiting for the sharer to grant control — click to cancel" = "Väntar på att delaren ska bevilja styrning — klicka för att avbryta";
+"Cancel the pending control request" = "Avbryt den väntande styrningsförfrågan";
+"Stop Controlling" = "Sluta styra";
+"You are controlling the shared Mac — click to stop" = "Du styr den delade datorn — klicka för att sluta";
+"Stop controlling the shared Mac" = "Sluta styra den delade datorn";
+"Mute microphone (%@)" = "Stäng av mikrofon (%@)";
+"Unmute microphone (%@)" = "Slå på mikrofon (%@)";
+"Drawing Color" = "Ritfärg";
+"Drawing color: %@" = "Ritfärg: %@";
+"Red" = "Röd";
+"Blue" = "Blå";
+"Green" = "Grön";
+"Orange" = "Orange";
+"Purple" = "Lila";
+"Teal" = "Blågrön";
+"Pink" = "Rosa";
+"Yellow" = "Gul";
+"Remote control — while viewing" = "Fjärrstyrning — när du tittar";
+"Remote control — while sharing" = "Fjärrstyrning — när du delar";
+"Release remote control" = "Släpp fjärrstyrning";
+"Enter or exit full screen" = "Övergå till eller avsluta helskärmsläge";
+"Click anywhere or press Esc to dismiss." = "Klicka var som helst eller tryck Esc för att stänga.";
+"Press Esc to dismiss." = "Tryck Esc för att stänga.";
+
+/* MARK: - Portable chrome: hotkey notes, controlling indicator (TailscreenHubUI / GTK + WinUI apps) */
+"The mute shortcut (%@) doesn't work on Wayland — use the microphone button here" = "Mikrofongenvägen (%@) fungerar inte på Wayland — använd mikrofonknappen här";
+"The mute shortcut (%@) needs an X display — use the microphone button here" = "Mikrofongenvägen (%@) kräver en X-display — använd mikrofonknappen här";
+"Another app already uses the mute shortcut (%@) — use the microphone button here" = "En annan app använder redan mikrofongenvägen (%@) — använd mikrofonknappen här";
+"The mute shortcut (%@) can't be registered system-wide — use the microphone button here" = "Mikrofongenvägen (%@) kan inte registreras för hela systemet — använd mikrofonknappen här";
+"This build has no system-wide shortcuts — use the microphone button here" = "Det här bygget saknar systemomfattande genvägar — använd mikrofonknappen här";
+"You are controlling %@" = "Du styr %@";
+"You are controlling this screen" = "Du styr den här skärmen";

@@ -17,6 +17,14 @@ jobs:
     # Budget guard: the run is tens of minutes; the runner default of 360
     # minutes on a 10×-billed macOS runner would be an expensive hang.
     timeout-minutes: 60
+    # Same reason as `build.yml`'s build job: SwiftPM on Apple-silicon runners
+    # does not search Homebrew's pkgconfig dir, so OpusKit's `pkgConfig: "opus"`
+    # cannot find opus.pc without this. Set job-wide rather than exported inside
+    # the run step, which is what this workflow used to do — an inline export
+    # naming only the TailscaleKit dir SHADOWS the brew path instead of adding
+    # to it, so installing libopus alone would not have been enough.
+    env:
+      PKG_CONFIG_PATH: ${{ github.workspace }}/Packages/TailscaleKit:/opt/homebrew/lib/pkgconfig
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -45,13 +53,21 @@ jobs:
           cache-dependency-path: Packages/TailscaleKit/upstream/libtailscale/go.sum
       - name: Build libtailscale
         run: make tailscale
+      # The step this workflow never had. OpusKit's COpus systemLibrary resolves
+      # libopus through pkg-config, and the soak target links it transitively —
+      # so without this the job dies in `emit-module` with "'opus.h' file not
+      # found" about 20 seconds in, before a single soak case runs. Nineteen
+      # consecutive nightlies failed that way (last green 2026-07-17), which is
+      # what a red check nobody reads costs: the fuzz-and-impairment tier has not
+      # actually run since the Opus migration landed.
+      - name: Install libopus
+        run: brew install opus
       - name: Run soak tests
         # SoakTests self-skip without TAILSCREEN_SOAK=1, so PR CI and local
         # `make test` never pay for the long run. Tee the console so a red
         # nightly's reproducing seed/config survives as an artifact.
         run: |
           set -o pipefail
-          export PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit"
           cd Apps/macOS
           TAILSCREEN_SOAK=1 swift test --filter SoakTests 2>&1 | tee "$GITHUB_WORKSPACE/soak.log"
       - name: Upload soak log

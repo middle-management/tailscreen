@@ -1,7 +1,7 @@
 import Foundation
 
 /// Persisted flag for the "Allow control requests" toggle. Plain
-/// `UserDefaults` (mirrors `SystemAudioDefaults` / `ViewerApprovalDefaults`)
+/// `UserDefaults` (mirrors `SystemAudioDefaults` / `ViewerApprovalPreference`)
 /// so `AppState`'s stored-property initialiser can read the saved value
 /// without going through `@AppStorage`.
 ///

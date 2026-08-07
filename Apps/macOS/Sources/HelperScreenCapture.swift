@@ -50,6 +50,19 @@ final class HelperScreenCapture: @unchecked Sendable {
     /// these, which process-death detection can't catch.
     var onActivity: (() -> Void)?
 
+    /// Spawn-time color-pipeline opt-ins (`TAILSCREEN_ENABLE_10BIT` /
+    /// `TAILSCREEN_ENABLE_HDR`), pushed by `AppState` from the Settings →
+    /// Color toggles and merged into every helper's environment. A static,
+    /// not a `start` parameter: the server's crash-restart path constructs
+    /// fresh `HelperScreenCapture` instances deep inside TailscreenSharer,
+    /// which knows nothing about macOS settings — this is the parent-side
+    /// counterpart of `qualityEnv`, which originates in that package.
+    /// Locked because it's written on the MainActor and read on whatever
+    /// thread the server spawns helpers from. Merged *before* `qualityEnv`
+    /// so a server-set override (e.g. `TAILSCREEN_FORCE_8BIT` on a viewer's
+    /// PROFILE_NO) keeps the last word.
+    static let colorEnvironment = OSAllocatedUnfairLock<[String: String]>(initialState: [:])
+
     private let queueLabel: String
     private var process: Process?
     private var stdinHandle: FileHandle?
@@ -86,12 +99,14 @@ final class HelperScreenCapture: @unchecked Sendable {
         let proc = Process()
         proc.executableURL = exe
         proc.arguments = ["--capture-helper"]
-        if forceH264 || !qualityEnv.isEmpty {
+        let colorEnv = Self.colorEnvironment.withLock { $0 }
+        if forceH264 || !qualityEnv.isEmpty || !colorEnv.isEmpty {
             // Setting `environment` replaces (doesn't merge with) the child's
             // env, so seed it from ours before adding the overrides — the
             // helper relies on inherited vars (TAILSCREEN_INSTANCE, the TS
             // auth/control-URL keys, TAILSCREEN_HELPER_EXE under xctest, etc.).
             var env = ProcessInfo.processInfo.environment
+            env.merge(colorEnv) { _, override in override }
             env.merge(qualityEnv) { _, override in override }
             if forceH264 {
                 env["TAILSCREEN_FORCE_H264"] = "1"

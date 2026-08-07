@@ -88,6 +88,76 @@ public enum FFmpeg {
         return String(cString: namePtr)
     }
 
+    /// True if this FFmpeg build has `name` as a *decoder*. Distinct from
+    /// `isDecoderAvailable(_:)`, which asks by codec id and therefore always
+    /// finds the software one — this asks for a specific implementation
+    /// (`"h264_qsv"`, `"h264_cuvid"`, …).
+    public static func isDecoderAvailable(named name: String) -> Bool {
+        avcodec_find_decoder_by_name(name) != nil
+    }
+
+    // MARK: - Capability inventory
+
+    /// What a build could plausibly carry, probed by name. Not exhaustive —
+    /// it is the set Tailscreen would ever ask for.
+    ///
+    /// Existence only. An encoder can be compiled in and still refuse to open
+    /// (no driver, no device, unsupported geometry), which is why both sharers
+    /// drive their ladder off `avcodec_open2` failing rather than off this.
+    public enum Capabilities {
+        public static let h264Encoders = [
+            "libx264", "libopenh264",
+            "h264_nvenc", "h264_amf", "h264_qsv", "h264_vaapi",
+            "h264_mf", "h264_videotoolbox", "h264_v4l2m2m",
+        ]
+        public static let hevcEncoders = [
+            "libx265",
+            "hevc_nvenc", "hevc_amf", "hevc_qsv", "hevc_vaapi",
+            "hevc_mf", "hevc_videotoolbox", "hevc_v4l2m2m",
+        ]
+        public static let h264Decoders = ["h264", "h264_qsv", "h264_cuvid", "h264_v4l2m2m"]
+        public static let hevcDecoders = ["hevc", "hevc_qsv", "hevc_cuvid", "hevc_v4l2m2m"]
+    }
+
+    /// Hardware device types this build was compiled with — `"cuda"`,
+    /// `"d3d11va"`, `"vaapi"`, `"videotoolbox"`, … Empty means no
+    /// hardware-accelerated decode is possible with this libavcodec at all,
+    /// whatever the machine underneath has.
+    public static func availableHardwareDeviceTypes() -> [String] {
+        var names: [String] = []
+        var type = AV_HWDEVICE_TYPE_NONE
+        while true {
+            type = av_hwdevice_iterate_types(type)
+            if type == AV_HWDEVICE_TYPE_NONE { break }
+            guard let name = av_hwdevice_get_type_name(type) else { continue }
+            names.append(String(cString: name))
+        }
+        return names
+    }
+
+    /// One multi-line inventory of this build, for a log.
+    ///
+    /// Exists because the question "does our FFmpeg have NVENC / VAAPI / D3D11VA"
+    /// was answerable only by speculation: CI links BtbN's LGPL Windows build
+    /// and distro libavcodec on Linux, and neither documents its enabled set
+    /// where we would see it. Printed by `CapabilityReportTests` in the jobs
+    /// that already run this package's suite on both platforms, so the answer
+    /// is a line in a log we already produce rather than a research task.
+    public static func capabilityReport() -> String {
+        func present(_ names: [String], _ probe: (String) -> Bool) -> String {
+            let found = names.filter(probe)
+            return found.isEmpty ? "(none)" : found.joined(separator: " ")
+        }
+        let hw = availableHardwareDeviceTypes()
+        return """
+            FFMPEG_CAPS h264 encoders: \(present(Capabilities.h264Encoders, isEncoderAvailable))
+            FFMPEG_CAPS hevc encoders: \(present(Capabilities.hevcEncoders, isEncoderAvailable))
+            FFMPEG_CAPS h264 decoders: \(present(Capabilities.h264Decoders, { isDecoderAvailable(named: $0) }))
+            FFMPEG_CAPS hevc decoders: \(present(Capabilities.hevcDecoders, { isDecoderAvailable(named: $0) }))
+            FFMPEG_CAPS hw device types: \(hw.isEmpty ? "(none)" : hw.joined(separator: " "))
+            """
+    }
+
     /// Stateful H.264/HEVC decoder — one instance per stream (it carries
     /// reference frames across access units), driven from a single thread.
     /// Feed it Annex-B access units (`decode(annexB:)`) or Tailscreen's native

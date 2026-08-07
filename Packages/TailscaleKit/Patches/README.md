@@ -28,7 +28,10 @@ make clean
 ## What the patches do
 
 Each patch file is named for what it does; the rationale and any subtlety
-lives in the patch's diff comments. The categories of patches we carry:
+lives in the patch's diff comments. (Numbering note: the series jumps
+008 → 012 — git history shows numbers 009-011 were never used by any
+patch. Gaps are harmless: patches apply in filename order and nothing
+references the numbers.) The categories of patches we carry:
 
 - A `Foundation` import that upstream forgets in some files.
 - Glue `import libtailscale` lines for the C-bridge types in the upstream

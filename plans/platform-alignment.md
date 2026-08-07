@@ -190,12 +190,15 @@ Three rows, all Linux ❌ Windows ❌, and by this plan's definition the most
 serious gap in the matrix — a sharer on Linux or Windows can let someone in and
 then has no way to change their mind.
 
-- **2.1 · Portable access-policy store.** `ViewerAccessPolicyStore` is
-  macOS `UserDefaults`-backed. Make it portable exactly as `AccountProfileStore`
-  was: a pure store plus an injected layout, so Linux CI tests the Windows
-  layout. The *decisions* (`admissionDecision`, `drainDecision`,
-  `connectedDenyList`, `canAcceptPending`) are already portable and tested — only
-  persistence is mac-bound.
+- **2.1 · Portable access-policy store.** ✅ **Done.** The entry types and
+  `ViewerAccessPolicyStore` itself now live in the portable tier
+  (`TailscreenProtocol/ViewerAccessPolicy.swift`); that store stays
+  `UserDefaults`-backed and is macOS's. Persistence for the other two hosts
+  landed as `AccountProfileStore`'s did: `PeerAccessStore`, a JSON-file store
+  with an injected directory, shared by the Linux and Windows sharers and
+  covered by `PeerAccessStoreTests` on Linux CI. The *decisions*
+  (`admissionDecision`, `drainDecision`, `connectedDenyList`,
+  `canAcceptPending`) were already portable and tested.
 - **2.2 + 2.3 · Remembered allow / "Deny & Block", and kick a connected
   viewer.** ✅ **Done**, and together because they are one surface: the sharing
   card's roster, which before this was a list of IP strings. Three pieces, each

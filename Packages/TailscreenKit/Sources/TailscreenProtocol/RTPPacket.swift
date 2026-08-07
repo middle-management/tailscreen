@@ -552,17 +552,24 @@ public struct VideoAccessUnit {
 /// reuse when the consumer has dropped its reference, and a clean fresh
 /// allocation otherwise — never aliasing).
 ///
-/// `@unchecked Sendable`: callers must serialize access. The
-/// screen-share server invokes `packetize` from a single broadcast site
-/// chained behind `broadcastTail`, so there is no concurrent use in
-/// practice.
-public final class H264Packetizer: @unchecked Sendable {
+/// `Sendable`, checked: the packetizer's only cross-call state is the
+/// buffer pool, and `RTPPacketBufferPool` synchronizes itself with a
+/// `Mutex` — everything else (`seq`, the output array) is per-call locals,
+/// with the sequence space owned by the caller. Concurrent `packetize`
+/// calls are therefore memory-safe; at worst an interleaved batch forfeits
+/// buffer reuse (COW allocates fresh). In practice the screen-share server
+/// invokes `packetize` from a single site — `broadcast()`, driven by the
+/// capture backend's one delivery thread — so calls don't actually
+/// overlap; the fan-out serialization that used to be cited here (the
+/// server-side `broadcastTail` send chain) no longer exists, replaced by
+/// per-viewer send chains that serialize sends, not packetization.
+public final class H264Packetizer: Sendable {
     /// Max bytes of RTP *payload* per packet (excludes the 12-byte RTP header).
     /// Tailscale's WireGuard tunnel typically uses MTU 1280; subtract IPv6+UDP
     /// (40+8) and RTP header (12), leaving ~1220. We use 1100 for headroom.
     public static let maxPayloadBytes = 1100
 
-    private var pool = RTPPacketBufferPool()
+    private let pool = RTPPacketBufferPool()
 
     public init() {}
 
@@ -1099,14 +1106,16 @@ public final class H264Depacketizer {
 /// (aggregation packets) and PACI are intentionally unused; the depacketizer
 /// is correspondingly simpler.
 ///
-/// Buffer-pool semantics mirror `H264Packetizer`. Same `@unchecked
-/// Sendable` rationale: callers must serialize access; the screen-share
-/// server only invokes `packetize` from a single broadcast site chained
-/// behind `broadcastTail`.
-public final class H265Packetizer: @unchecked Sendable {
+/// Buffer-pool semantics mirror `H264Packetizer`, and so does the
+/// `Sendable` rationale: the pool is the only cross-call state and it
+/// locks itself (`RTPPacketBufferPool`'s `Mutex`), so concurrent
+/// `packetize` calls are memory-safe and merely forfeit buffer reuse —
+/// there is no `broadcastTail`-style caller-side serialization to lean on
+/// anymore.
+public final class H265Packetizer: Sendable {
     public static let maxPayloadBytes = H264Packetizer.maxPayloadBytes
 
-    private var pool = RTPPacketBufferPool()
+    private let pool = RTPPacketBufferPool()
 
     public init() {}
 
@@ -1491,44 +1500,5 @@ public final class MultiCodecDepacketizer {
     public var skippedGapCount: Int { h264.skippedGapCount + h265.skippedGapCount }
 }
 
-extension Data {
-    fileprivate mutating func appendBE(_ value: UInt16) {
-        append(UInt8((value >> 8) & 0xFF))
-        append(UInt8(value & 0xFF))
-    }
-
-    fileprivate mutating func appendBE(_ value: UInt32) {
-        append(UInt8((value >> 24) & 0xFF))
-        append(UInt8((value >> 16) & 0xFF))
-        append(UInt8((value >> 8) & 0xFF))
-        append(UInt8(value & 0xFF))
-    }
-
-    fileprivate func readBE(_: UInt16.Type, at index: Data.Index) -> UInt16 {
-        let b0 = UInt16(self[index])
-        let b1 = UInt16(self[self.index(index, offsetBy: 1)])
-        return (b0 << 8) | b1
-    }
-
-    fileprivate func readBE(_: UInt32.Type, at index: Data.Index) -> UInt32 {
-        let b0 = UInt32(self[index])
-        let b1 = UInt32(self[self.index(index, offsetBy: 1)])
-        let b2 = UInt32(self[self.index(index, offsetBy: 2)])
-        let b3 = UInt32(self[self.index(index, offsetBy: 3)])
-        return (b0 << 24) | (b1 << 16) | (b2 << 8) | b3
-    }
-
-    fileprivate mutating func appendBE(_ value: UInt64) {
-        for shift in stride(from: 56, through: 0, by: -8) {
-            append(UInt8((value >> UInt64(shift)) & 0xFF))
-        }
-    }
-
-    fileprivate func readBE(_: UInt64.Type, at index: Data.Index) -> UInt64 {
-        var value: UInt64 = 0
-        for offset in 0..<8 {
-            value = (value << 8) | UInt64(self[self.index(index, offsetBy: offset)])
-        }
-        return value
-    }
-}
+// The big-endian `Data` helpers this file used to declare privately live in
+// `DataBigEndian.swift`, shared module-wide.

@@ -102,7 +102,7 @@ void x11cap_size(const x11cap_t *c, int *width, int *height) {
 int x11cap_uses_shm(const x11cap_t *c) { return c ? c->use_shm : 0; }
 
 // Limited-range BT.709, matching the viewer's YUV→RGB shader
-// (Apps/linux-gtk/Sources/CGtkVideo/cgtkvideo.c) exactly: luma 16..235, chroma
+// (Apps/linux/Sources/CGtkVideo/cgtkvideo.c) exactly: luma 16..235, chroma
 // 128±112. Getting the range wrong here doesn't fail loudly — it just washes
 // out or crushes every frame — so the two must be changed together.
 //

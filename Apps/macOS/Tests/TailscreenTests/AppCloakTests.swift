@@ -93,7 +93,7 @@ final class AppCloakTests: XCTestCase {
 
     /// The main toggle defaults **on** for a never-touched install, and
     /// an explicit opt-out sticks across store instances (tri-state read,
-    /// same migration shape as `ViewerApprovalDefaults`).
+    /// same migration shape as `ViewerApprovalPreference`).
     @MainActor
     func testEnabledTriStateDefault() throws {
         let defaults = try makeScratchDefaults()

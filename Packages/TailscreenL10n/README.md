@@ -53,7 +53,7 @@ TAILSCREEN_LANG=sv ./tailscreen
 
 ## Why this isn't `String(localized:bundle:)`
 
-That is Apple Foundation, and it was the reason `docs/porting-plan.md` listed
+That is Apple Foundation, and it was the reason `plans/porting-plan.md` listed
 localization as the one piece of the mac UI with no portable path. Both it and
 `Bundle.localizedString` bottom out in CFBundle's localization negotiation,
 which is a different implementation off Darwin and unverifiable from a Linux CI

@@ -2,6 +2,29 @@ import Foundation
 import TailscreenAudio
 import TailscreenProtocol
 
+/// Why a viewer session is over. The wire-side causes (`sharerStopped`,
+/// `deniedOrKicked`) are set by `ViewerSession` itself from the control bytes;
+/// the transport-side causes (`timedOut`, `connectionLost`) are diagnosed by
+/// whatever owns the socket, since the session owns no clock source and no
+/// socket. One enum for all four so every host maps the same raw values onto
+/// its presentation — the macOS app's former app-local `ViewerPeerCloseReason`
+/// used these exact cases and raw values.
+///
+/// Deny and kick are deliberately ONE case: both arrive as the same HELLO_DENY
+/// byte, and the wire carries no distinction. The split the UI wants ("declined"
+/// at the approval placard vs "disconnected by sharer" mid-watch) is host-side
+/// context — whether an SSRC had been assigned when the byte landed.
+public enum ViewerCloseReason: String, Sendable, Equatable {
+    /// The sharer ended the session (SERVER_BYE / BYE).
+    case sharerStopped
+    /// Nothing arrived for longer than the idle threshold.
+    case timedOut
+    /// The receive path died on repeated socket errors.
+    case connectionLost
+    /// The sharer sent HELLO_DENY — a declined approval, or a mid-session kick.
+    case deniedOrKicked
+}
+
 /// Portable, host-agnostic viewer data-plane core.
 ///
 /// `ViewerSession` is the receive half of a Tailscreen screen share reduced to
@@ -113,6 +136,12 @@ public final class ViewerSession {
     private(set) public var isPendingApproval = false
     /// True if the sharer declined our request (HELLO_DENY).
     private(set) public var wasDenied = false
+    /// Why the session is over, nil while it is live. First cause wins: a
+    /// HELLO_DENY is always chased by a SERVER_BYE (the deny protocol), and the
+    /// trailing bye must not relabel a deny as an ordinary stop. Only the
+    /// wire-side causes are set here; the transport-side ones (`timedOut`,
+    /// `connectionLost`) belong to whoever owns the socket.
+    private(set) public var closeReason: ViewerCloseReason?
 
     /// Latest clock the host handed us (via `tick`), reused by `receiveRTP` so
     /// the NACK scheduler and reorder buffer age gaps in real time without a
@@ -411,8 +440,12 @@ public final class ViewerSession {
         case .helloDenied:
             wasDenied = true
             isStopped = true
+            if closeReason == nil { closeReason = .deniedOrKicked }
         case .serverBye, .bye:
             isStopped = true
+            // First cause wins — the SERVER_BYE that chases a HELLO_DENY must
+            // not relabel the deny as an ordinary sharer stop.
+            if closeReason == nil { closeReason = .sharerStopped }
         case .ping:
             if let uptime = ScreenShareControlMessage.decodePing(data) {
                 lastPingTs = uptime

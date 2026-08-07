@@ -595,8 +595,64 @@ final class ViewerSessionTests: XCTestCase {
             audioSink: nil, onControlToSend: control.send
         )
         XCTAssertFalse(session.isStopped)
+        XCTAssertNil(session.closeReason, "a live session has no close reason")
         session.receiveRTP(ScreenShareControlMessage.encode(.serverBye))
         XCTAssertTrue(session.isStopped)
+        XCTAssertEqual(session.closeReason, .sharerStopped)
+        XCTAssertFalse(session.wasDenied, "an ordinary stop is not a deny")
+    }
+
+    /// HELLO_DENY (0x08) — the sharer declining (or kicking) this viewer. The
+    /// deny protocol is HELLO_DENY followed by SERVER_BYE, and the trailing
+    /// bye must NOT relabel the deny as an ordinary sharer stop: first cause
+    /// wins, or every declined viewer reads "the sharer stopped sharing".
+    func testHelloDenyMarksDeniedAndSurvivesTheTrailingServerBye() {
+        let decoder = StubDecoder()
+        let sink = StubVideoSink()
+        let control = ControlCollector()
+        let session = ViewerSession(
+            caps: fullCaps, decoder: decoder, videoSink: sink,
+            audioSink: nil, onControlToSend: control.send
+        )
+
+        // The deny control byte, constructed exactly as the session parses it
+        // (a bare `[0x08]` — HELLO_DENY carries no payload).
+        session.receiveRTP(ScreenShareControlMessage.encode(.helloDenied))
+        XCTAssertTrue(session.wasDenied)
+        XCTAssertTrue(session.isStopped, "a denied viewer is a stopped viewer")
+        XCTAssertEqual(session.closeReason, .deniedOrKicked)
+
+        // The SERVER_BYE the server chases the deny with.
+        session.receiveRTP(ScreenShareControlMessage.encode(.serverBye))
+        XCTAssertEqual(
+            session.closeReason, .deniedOrKicked,
+            "the trailing SERVER_BYE must not relabel a deny as a sharer stop")
+        XCTAssertTrue(session.wasDenied)
+    }
+
+    /// The legacy flags are untouched by the close-reason addition: a denied
+    /// session still reads exactly as it did to callers of `wasDenied` /
+    /// `isStopped`, and admission state is unaffected by a deny that arrives
+    /// while parked pending.
+    func testHelloDenyAfterPendingLeavesAdmissionStateUnassigned() {
+        let decoder = StubDecoder()
+        let sink = StubVideoSink()
+        let control = ControlCollector()
+        let session = ViewerSession(
+            caps: fullCaps, decoder: decoder, videoSink: sink,
+            audioSink: nil, onControlToSend: control.send
+        )
+
+        session.receiveRTP(ScreenShareControlMessage.encode(.helloPending))
+        XCTAssertTrue(session.isPendingApproval)
+        XCTAssertNil(session.closeReason, "pending is a wait, not an ending")
+
+        session.receiveRTP(ScreenShareControlMessage.encode(.helloDenied))
+        XCTAssertTrue(session.wasDenied)
+        XCTAssertEqual(session.closeReason, .deniedOrKicked)
+        XCTAssertNil(
+            session.assignedSSRC,
+            "a viewer denied at the gate was never admitted — the host words this as declined")
     }
 
     // MARK: - Pre-keyframe gating

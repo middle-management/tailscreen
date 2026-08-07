@@ -69,7 +69,7 @@ The harness greps the merged log for `E2E_MARKER firstFrame width=… height=…
 
 | Env var | Read by | Effect |
 |---------|---------|--------|
-| `TAILSCREEN_OPEN_DOOR=1` | Main process (`ViewerApprovalDefaults.load`) | Force the require-approval gate off regardless of the stored preference. Viewer approval defaults **on**, so the scripted harness and `test-local.sh` set this to keep automated viewers from parking on the approval prompt. Never set in production. |
+| `TAILSCREEN_OPEN_DOOR=1` | Main process (`ViewerApprovalPreference.load`) | Force the require-approval gate off regardless of the stored preference. Viewer approval defaults **on**, so the scripted harness and `test-local.sh` set this to keep automated viewers from parking on the approval prompt. Never set in production. |
 | `TAILSCREEN_AUTOSHARE_DISPLAY=1` | `--picker-helper` subprocess | Skip the interactive picker; emit a synthetic main-display `PickerSelection` and exit. |
 | `TAILSCREEN_AUTOSTART_SHARE=1` | Main process (`AppState.init`) | Once signed in, automatically invoke `presentNativePicker()`. Pair with `TAILSCREEN_AUTOSHARE_DISPLAY=1`. |
 | `TAILSCREEN_AUTOCONNECT_TO=<prefix>` | Main process (`AppState.init`) | Once signed in, discover peers and connect to the first one whose hostname starts with `<prefix>`. |

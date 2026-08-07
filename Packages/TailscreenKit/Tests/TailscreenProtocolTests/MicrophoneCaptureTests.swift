@@ -165,6 +165,25 @@ final class MicrophoneCaptureTests: XCTestCase {
         XCTAssertEqual(framer.pendingSamples, 0)
     }
 
+    /// An exact-boundary push emits the frame and carries nothing — the
+    /// off-by-one that would either hold a completed frame back or carry a
+    /// phantom zero-length remainder. (Moved from the mac-side
+    /// `SystemAudioFramerTests` when that duplicate framer was deleted.)
+    func testFramerExactBoundaryEmitsOneFrameAndCarriesNothing() {
+        var framer = PCMFramer(frameSamples: 960)
+        let frames = framer.push([Float](repeating: 0.5, count: 960))
+        XCTAssertEqual(frames.count, 1)
+        XCTAssertEqual(frames.first?.count, 960)
+        XCTAssertEqual(framer.pendingSamples, 0)
+    }
+
+    /// An empty push emits nothing and buffers nothing.
+    func testFramerEmptyPushDrainsNothing() {
+        var framer = PCMFramer(frameSamples: 960)
+        XCTAssertTrue(framer.push([]).isEmpty)
+        XCTAssertEqual(framer.pendingSamples, 0)
+    }
+
     // MARK: Mute
 
     func testMutedAudioNeverReachesTheEncoder() throws {

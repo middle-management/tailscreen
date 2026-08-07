@@ -294,6 +294,11 @@ final class ViewerStatsOverlayHost {
     let view: NSHostingView<ViewerStatsOverlay>
     private let model: ViewerStatsModel
     private var visibilityCancellable: AnyCancellable?
+    private var contentCancellable: AnyCancellable?
+    /// Parent the overlay is pinned into. Weak so the host never retains
+    /// the viewer's content view.
+    private weak var parent: NSView?
+    private var inset: CGFloat = 12
 
     init(model: ViewerStatsModel) {
         self.model = model
@@ -306,23 +311,56 @@ final class ViewerStatsOverlayHost {
         // toolbar toggle is reflected the next runloop tick. The hosting
         // view stays attached either way — only its visibility flips —
         // which keeps the overlay's @ObservedObject subscription live.
+        // Becoming visible also re-measures: the frame may be stale from
+        // content that changed while hidden.
         self.visibilityCancellable = model.$isVisible
             .receive(on: DispatchQueue.main)
-            .sink { [weak host] isVisible in
-                host?.isHidden = !isVisible
+            .sink { [weak self] isVisible in
+                self?.view.isHidden = !isVisible
+                if isVisible { self?.applyLayout() }
+            }
+        // Re-measure on every stats snapshot. The frame used to be
+        // measured once from `fittingSize` at build time, so the
+        // degraded-warning row clipped when it appeared later. Snapshots
+        // land ~1 Hz and `applyLayout` no-ops on an unchanged frame, so
+        // this stays cheap.
+        self.contentCancellable = model.$stats
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.applyLayout()
             }
     }
 
-    /// Place the overlay in the top-left of `parent`. Caller is expected
-    /// to add `view` as a subview before calling.
+    /// Pin the overlay to the top-left of `parent`, below the unified
+    /// toolbar. Caller is expected to add `view` as a subview before
+    /// calling; the placement then re-runs on every stats snapshot so the
+    /// frame tracks content size changes.
     func layout(in parent: NSView, inset: CGFloat = 12) {
+        self.parent = parent
+        self.inset = inset
+        applyLayout()
+    }
+
+    private func applyLayout() {
+        guard let parent else { return }
         let size = view.fittingSize
-        view.frame = NSRect(
+        // The video lays out in the window's `contentLayoutRect` (the
+        // toolbar-excluded subregion — see `AspectFitHostView.usableRect`);
+        // raw `parent.bounds` spans the full window height with the
+        // unified toolbar floating over its top, which parked the
+        // overlay's first rows underneath the toolbar. Anchor below it.
+        var top = parent.bounds.maxY
+        if let window = parent.window {
+            let usable = window.contentLayoutRect
+            if !usable.isEmpty { top = min(top, usable.maxY) }
+        }
+        let frame = NSRect(
             x: inset,
-            y: parent.bounds.height - size.height - inset,
+            y: top - size.height - inset,
             width: size.width,
             height: size.height
         )
+        if frame != view.frame { view.frame = frame }
         view.autoresizingMask = [.minYMargin, .maxXMargin]
     }
 }

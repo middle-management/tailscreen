@@ -123,8 +123,8 @@
 "Draw" = "Draw";
 "Stop drawing on screen" = "Stop drawing on screen";
 "Draw on screen" = "Draw on screen";
-"Mute Mic (⌃⌥M)" = "Mute Mic (⌃⌥M)";
-"Unmute Mic (⌃⌥M)" = "Unmute Mic (⌃⌥M)";
+"Mute Mic (%@)" = "Mute Mic (%@)";
+"Unmute Mic (%@)" = "Unmute Mic (%@)";
 "Toggles voice chat with viewers" = "Toggles voice chat with viewers";
 "Share System Audio" = "Share System Audio";
 "Mute System Audio" = "Mute System Audio";
@@ -160,7 +160,8 @@
 "Connected over Tailscale" = "Connected over Tailscale";
 "Mute Mic" = "Mute Mic";
 "Unmute Mic" = "Unmute Mic";
-"Toggle mic (⌃⌥M)" = "Toggle mic (⌃⌥M)";
+"Toggle mic (%@)" = "Toggle mic (%@)";
+"Toggle mic" = "Toggle mic";
 "Toggles voice chat with the sharer" = "Toggles voice chat with the sharer";
 "Closes the viewer window and ends this session" = "Closes the viewer window and ends this session";
 
@@ -181,6 +182,12 @@
 "Refresh available screens" = "Refresh available screens";
 "Looking for screens…" = "Looking for screens…";
 "No Tailscreen devices on your tailnet" = "No Tailscreen devices on your tailnet";
+"Screens appear here when their devices are running Tailscreen." = "Screens appear here when their devices are running Tailscreen.";
+"Get Tailscreen for your other devices" = "Get Tailscreen for your other devices";
+"Clear search" = "Clear search";
+"Copied" = "Copied";
+"Show Window" = "Show Window";
+"Brings the viewer window to the front" = "Brings the viewer window to the front";
 "Offline" = "Offline";
 "%@, %@" = "%@, %@";
 "online" = "online";
@@ -222,7 +229,33 @@
 "Automatic" = "Automatic";
 "Limit bandwidth" = "Limit bandwidth";
 "%lld Mbps" = "%lld Mbps";
-"Frame rate and codec changes apply the next time you start sharing." = "Frame rate and codec changes apply the next time you start sharing.";
+"Frame rate, codec, and encoder quality changes apply the next time you start sharing." = "Frame rate, codec, and encoder quality changes apply the next time you start sharing.";
+"Encoder quality" = "Encoder quality";
+"Color" = "Color";
+"10-bit color" = "10-bit color";
+"Applies the next time you start sharing. HDR needs a display with EDR headroom, and if a viewer can't decode 10-bit video the share falls back to 8-bit for everyone." = "Applies the next time you start sharing. HDR needs a display with EDR headroom, and if a viewer can't decode 10-bit video the share falls back to 8-bit for everyone.";
+
+/* MARK: - Settings: General / Accounts / Keyboard Shortcuts (SettingsView.swift) */
+"General" = "General";
+"Launch at login" = "Launch at login";
+"Launch at login needs the packaged Tailscreen app — a development build running outside an app bundle can't register itself." = "Launch at login needs the packaged Tailscreen app — a development build running outside an app bundle can't register itself.";
+"Waiting for approval — allow Tailscreen under System Settings → General → Login Items." = "Waiting for approval — allow Tailscreen under System Settings → General → Login Items.";
+"Couldn't Update Login Item" = "Couldn't Update Login Item";
+"macOS refused to change Launch at login: %@" = "macOS refused to change Launch at login: %@";
+"Accounts" = "Accounts";
+"Not signed in yet" = "Not signed in yet";
+"Active" = "Active";
+"Removing an account deletes its sign-in state from this Mac. To remove the account you're signed in to, switch to another account first." = "Removing an account deletes its sign-in state from this Mac. To remove the account you're signed in to, switch to another account first.";
+"Toggle Microphone" = "Toggle Microphone";
+"Both actions use the same shortcut, so only one of them will fire. Record a different combination for one of them." = "Both actions use the same shortcut, so only one of them will fire. Record a different combination for one of them.";
+"These shortcuts work system-wide. Click one, then press a new combination that includes at least one of ⌃, ⌥, or ⌘ — Esc cancels recording." = "These shortcuts work system-wide. Click one, then press a new combination that includes at least one of ⌃, ⌥, or ⌘ — Esc cancels recording.";
+"Record a new shortcut for %@" = "Record a new shortcut for %@";
+"Reset" = "Reset";
+"Reset to Default" = "Reset to Default";
+"Reset %@ to default" = "Reset %@ to default";
+"This shortcut is already in use by another app, so it won't work here. Record a different one." = "This shortcut is already in use by another app, so it won't work here. Record a different one.";
+"Record Shortcut" = "Record Shortcut";
+"Type shortcut…" = "Type shortcut…";
 "HEVC never falls back to H.264 — viewers that can only decode H.264 won't be able to watch. Choose Automatic to fall back when needed." = "HEVC never falls back to H.264 — viewers that can only decode H.264 won't be able to watch. Choose Automatic to fall back when needed.";
 "Audio" = "Audio";
 "Speaker" = "Speaker";
@@ -276,10 +309,6 @@
 "Sign Out Failed" = "Sign Out Failed";
 "Error" = "Error";
 "Failed to start sharing: %@" = "Failed to start sharing: %@";
-"Can't decode the video" = "Can't decode the video";
-"This Mac can't decode the %@ video stream from the sharer (it likely lacks %@ hardware decode). Asking the sharer to switch to H.264 — the screen should appear in a moment." = "This Mac can't decode the %@ video stream from the sharer (it likely lacks %@ hardware decode). Asking the sharer to switch to H.264 — the screen should appear in a moment.";
-"Video Has Stalled" = "Video Has Stalled";
-"Decoding has been failing for several seconds and automatic recovery hasn't helped. Check the connection on both ends, or disconnect and reconnect." = "Decoding has been failing for several seconds and automatic recovery hasn't helped. Check the connection on both ends, or disconnect and reconnect.";
 "Sharing Stopped" = "Sharing Stopped";
 "The connection to your viewers was lost and couldn't be re-established, so the share was stopped. Check the network and start sharing again." = "The connection to your viewers was lost and couldn't be re-established, so the share was stopped. Check the network and start sharing again.";
 "Screen sharing couldn't continue because the capture source became unavailable. Start sharing again to pick a new source." = "Screen sharing couldn't continue because the capture source became unavailable. Start sharing again to pick a new source.";
@@ -326,7 +355,6 @@
 /* MARK: - Shortcuts overlay (ViewerShortcutsOverlay.swift) */
 "Tools" = "Tools";
 "Annotation" = "Annotation";
-"Remote Control" = "Remote Control";
 "Window" = "Window";
 "Revoke remote control (system-wide)" = "Revoke remote control (system-wide)";
 "Pinch" = "Pinch";
@@ -345,7 +373,6 @@
 "Show / hide this help" = "Show / hide this help";
 "Keyboard shortcuts" = "Keyboard shortcuts";
 "Close keyboard shortcuts" = "Close keyboard shortcuts";
-"Click anywhere or press ⇧⌘/ to dismiss." = "Click anywhere or press ⇧⌘/ to dismiss.";
 
 /* MARK: - Viewer toolbar (ViewerToolbar.swift) */
 "Undo" = "Undo";
@@ -357,7 +384,6 @@
 "Mic" = "Mic";
 "Mute microphone" = "Mute microphone";
 "Unmute microphone" = "Unmute microphone";
-"Toggle microphone (⌃⌥M)" = "Toggle microphone (⌃⌥M)";
 "Stats" = "Stats";
 "Toggle stream stats overlay" = "Toggle stream stats overlay";
 "Connection degraded — click for stats" = "Connection degraded — click for stats";
@@ -395,7 +421,8 @@
 "Viewer Wants Control" = "Viewer Wants Control";
 "%@ is asking to control your Mac." = "%@ is asking to control your Mac.";
 "Accessibility Permission Needed" = "Accessibility Permission Needed";
-"To let a viewer control your Mac, allow Tailscreen under System Settings → Privacy & Security → Accessibility, then grant control again." = "To let a viewer control your Mac, allow Tailscreen under System Settings → Privacy & Security → Accessibility, then grant control again.";
+"To let a viewer control your Mac, allow Tailscreen under System Settings → Privacy & Security → Accessibility. Tailscreen will grant control automatically once the permission is enabled." = "To let a viewer control your Mac, allow Tailscreen under System Settings → Privacy & Security → Accessibility. Tailscreen will grant control automatically once the permission is enabled.";
+"Waiting for Accessibility permission…" = "Waiting for Accessibility permission…";
 "Open Settings" = "Open Settings";
 "Cancel" = "Cancel";
 "Remote Control Ended" = "Remote Control Ended";
@@ -589,3 +616,58 @@
 "Could not start sharing: %@" = "Could not start sharing: %@";
 "Not listening for share requests: %@" = "Not listening for share requests: %@";
 "Remote control isn't available for this share." = "Remote control isn't available for this share.";
+
+/* MARK: - Viewer window: session states, remote control, cheat sheet (AppState.swift / ViewerToolbar.swift / ViewerSessionOverlays.swift / ViewerShortcutsOverlay.swift) */
+"Session Ended" = "Session Ended";
+"%@ stopped sharing their screen." = "%@ stopped sharing their screen.";
+"The connection to %@ went quiet and timed out." = "The connection to %@ went quiet and timed out.";
+"The connection to %@ was lost." = "The connection to %@ was lost.";
+"Reconnect" = "Reconnect";
+"Back to screens" = "Back to screens";
+"Close" = "Close";
+"Dismiss notice" = "Dismiss notice";
+"Connection Problem" = "Connection Problem";
+"This Mac can't decode the %@ video stream. Asking the sharer to switch to H.264 — the picture should return in a moment." = "This Mac can't decode the %@ video stream. Asking the sharer to switch to H.264 — the picture should return in a moment.";
+"Video has stalled — decoding keeps failing and automatic recovery hasn't helped." = "Video has stalled — decoding keeps failing and automatic recovery hasn't helped.";
+"Waiting for the sharer to accept your connection…" = "Waiting for the sharer to accept your connection…";
+"Viewing %@ — controlling" = "Viewing %@ — controlling";
+"Shared screen" = "Shared screen";
+"Shared screen from %@" = "Shared screen from %@";
+"Remote control granted — your input now controls the shared Mac. Use Stop Controlling in the toolbar to release." = "Remote control granted — your input now controls the shared Mac. Use Stop Controlling in the toolbar to release.";
+"Remote control ended" = "Remote control ended";
+"Release Remote Control" = "Release Remote Control";
+"Enter Full Screen" = "Enter Full Screen";
+"Exit Full Screen" = "Exit Full Screen";
+"Request control of the shared Mac" = "Request control of the shared Mac";
+"Waiting for the sharer to grant control — click to cancel" = "Waiting for the sharer to grant control — click to cancel";
+"Cancel the pending control request" = "Cancel the pending control request";
+"Stop Controlling" = "Stop Controlling";
+"You are controlling the shared Mac — click to stop" = "You are controlling the shared Mac — click to stop";
+"Stop controlling the shared Mac" = "Stop controlling the shared Mac";
+"Mute microphone (%@)" = "Mute microphone (%@)";
+"Unmute microphone (%@)" = "Unmute microphone (%@)";
+"Drawing Color" = "Drawing Color";
+"Drawing color: %@" = "Drawing color: %@";
+"Red" = "Red";
+"Blue" = "Blue";
+"Green" = "Green";
+"Orange" = "Orange";
+"Purple" = "Purple";
+"Teal" = "Teal";
+"Pink" = "Pink";
+"Yellow" = "Yellow";
+"Remote control — while viewing" = "Remote control — while viewing";
+"Remote control — while sharing" = "Remote control — while sharing";
+"Release remote control" = "Release remote control";
+"Enter or exit full screen" = "Enter or exit full screen";
+"Click anywhere or press Esc to dismiss." = "Click anywhere or press Esc to dismiss.";
+"Press Esc to dismiss." = "Press Esc to dismiss.";
+
+/* MARK: - Portable chrome: hotkey notes, controlling indicator (TailscreenHubUI / GTK + WinUI apps) */
+"The mute shortcut (%@) doesn't work on Wayland — use the microphone button here" = "The mute shortcut (%@) doesn't work on Wayland — use the microphone button here";
+"The mute shortcut (%@) needs an X display — use the microphone button here" = "The mute shortcut (%@) needs an X display — use the microphone button here";
+"Another app already uses the mute shortcut (%@) — use the microphone button here" = "Another app already uses the mute shortcut (%@) — use the microphone button here";
+"The mute shortcut (%@) can't be registered system-wide — use the microphone button here" = "The mute shortcut (%@) can't be registered system-wide — use the microphone button here";
+"This build has no system-wide shortcuts — use the microphone button here" = "This build has no system-wide shortcuts — use the microphone button here";
+"You are controlling %@" = "You are controlling %@";
+"You are controlling this screen" = "You are controlling this screen";

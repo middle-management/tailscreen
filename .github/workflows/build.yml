@@ -217,25 +217,31 @@ jobs:
           # on Linux, where no Apple framework exists. This is what keeps the
           # portable set portable: an AppKit/os/CoreGraphics/VideoToolbox
           # import sneaking into a package file fails here, not on someone's
-          # future non-macOS port. Cheap (Linux minutes, no Go build — the
-          # transport tier compiles against the patched tailscale.h; only
-          # linking needs the .a, and nothing here links it) and required — a
-          # break is always a real portability regression.
+          # future non-macOS port. Required — a break is always a real
+          # portability regression.
           #
           # The submodule is for TailscaleKit, whose sources are symlinks into
-          # it; `swift test` builds every tier including TailscreenSharer,
-          # which needs only the patched HEADER, so no Go build.
+          # it. The Go build is for Tests/TailscreenSharerTests (the
+          # sharer-tier decision suites): a test target is an executable, and
+          # one that links TailscreenSharer links TailscaleKit — so the test
+          # bundle has to resolve `tailscale_up` and friends even though no
+          # test calls tsnet, exactly the linux-portal situation (see the
+          # ci.md pitfall). The bootstrap action's libtailscale.a cache keeps
+          # this off the hot path: the archive rebuilds only when the
+          # submodule pin or a patch changes.
           #
           # libopus-dev + pkg-config are for the TailscreenAudio target's
-          # OpusKit dependency (opus.pc is on the Linux default search path, so
-          # no PKG_CONFIG_PATH entry is needed for it). `make` used to be in
-          # this set too, purely so the Makefile's patch loop could run; the
-          # bootstrap action inlines that loop, so it is gone.
+          # OpusKit dependency (opus.pc is on the Linux default search path,
+          # so no PKG_CONFIG_PATH entry is needed for it). golang-go / make /
+          # gcc / libc6-dev are the libtailscale build's toolchain, the same
+          # set as linux-tailscalekit (the swift:*-noble images guarantee
+          # clang, not gcc, and cgo wants gcc; the host archive build goes
+          # through make).
           - name: linux-protocol
-            apt: libopus-dev pkg-config
+            apt: golang-go make gcc libc6-dev libopus-dev pkg-config
             submodules: recursive
-            go: none
-            libtailscale: none
+            go: preinstalled
+            libtailscale: host
             cmd: PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" swift test --package-path Packages/TailscreenKit
 
           # Localization gate: the shared string catalog

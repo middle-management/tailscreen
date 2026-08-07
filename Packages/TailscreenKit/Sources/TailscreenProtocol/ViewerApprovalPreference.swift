@@ -1,17 +1,19 @@
 import Foundation
 
 /// The "Require approval for new viewers" preference, as a portable decision
-/// plus the storage the swift-cross-ui apps read it from.
+/// plus the storage all three apps read it from.
 ///
 /// The gate itself lives in `TailscaleScreenShareServer.setRequireApproval`,
 /// which defaults **off** — a server started and never told otherwise admits
 /// whoever reaches port 7447. That default is right for the server (a headless
 /// automation sharer wants open door) and wrong for every app with a person
 /// in front of it, so each host has to assert the safe value. This is the
-/// shared answer to "which value", so the GTK and Windows apps cannot drift
-/// from the macOS posture or from each other.
+/// shared answer to "which value", so the macOS, GTK and Windows apps cannot
+/// drift from each other. (It began as a mirror of the macOS app's
+/// `ViewerApprovalDefaults`; that copy is gone and the mac app now reads this
+/// type.)
 ///
-/// Three rules, mirroring the macOS app's `ViewerApprovalDefaults`:
+/// Three rules:
 ///
 ///   * **Default on.** A desktop app that silently admits anyone who can dial
 ///     the port is a worse default than one extra click.
@@ -27,9 +29,10 @@ import Foundation
 /// a `UserDefaults` suite — the storage half is two lines and the decision
 /// half is the part that can be wrong.
 public enum ViewerApprovalPreference {
-    /// Same key the macOS app persists under. Deliberately identical: it is
-    /// the same preference under the same name, and nothing is gained by
-    /// giving each platform its own spelling of it.
+    /// Same key the macOS app has always persisted under, so existing mac
+    /// installs keep their stored choice: it is the same preference under the
+    /// same name, and nothing is gained by giving each platform its own
+    /// spelling of it.
     public static let defaultsKey = "requireViewerApproval"
     public static let openDoorEnvKey = "TAILSCREEN_OPEN_DOOR"
 

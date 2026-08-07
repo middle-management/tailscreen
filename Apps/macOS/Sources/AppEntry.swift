@@ -32,22 +32,22 @@ enum TailscreenEntry {
             PickerHelperMain.run()
         }
         installMainProcessSignalHandlers()
-        installMainMenuObservers()
+        installLaunchNotificationObservers()
         TailscreenApp.main()
     }
 
-    /// SwiftUI's `MenuBarExtra` scene installs its own minimal mainMenu
-    /// (Tailscreen / View / Window / Help) and re-asserts it across
-    /// scene updates — installing ours from the popover's `.task` lost
-    /// the race. Hooking the `NSApplication.didFinishLaunching` and
-    /// `didBecomeActive` notifications runs `AppMenu.install` AFTER
-    /// SwiftUI's setup, so File / Edit / View / Tools stay in the bar.
+    /// Launch-time AppKit setup that has to run AFTER SwiftUI's own scene
+    /// bring-up. The menu bar needs nothing here anymore — it is declared
+    /// through SwiftUI `Commands` (see `AppCommands`), so the scene
+    /// machinery re-asserting the menu re-asserts *ours*; the hand-built
+    /// `NSMenu` this used to install and defend on every activation is
+    /// gone with the menubar-only era it came from.
     /// `@NSApplicationDelegateAdaptor` would have been tidier, but it
     /// needs `@main` to be on the `App` type itself — and ours is on
     /// `TailscreenEntry` so we can route to the picker / capture
     /// helpers first.
     @MainActor
-    private static func installMainMenuObservers() {
+    private static func installLaunchNotificationObservers() {
         let nc = NotificationCenter.default
         nc.addObserver(
             forName: NSApplication.didFinishLaunchingNotification,
@@ -59,8 +59,6 @@ enum TailscreenEntry {
                 // own launch setup, so a MenuBarExtra-bearing app can't
                 // drift to the `.accessory` default on any launch path.
                 NSApp.setActivationPolicy(.regular)
-                AppMenu.installIfNeeded()
-                AppMenu.reinstall()
                 // Must be set before anything posts, and Apple's guidance is
                 // "before the app finishes launching". Without it every
                 // notification posted while Tailscreen is frontmost is
@@ -72,14 +70,6 @@ enum TailscreenEntry {
                 if AppState.isUIPreview {
                     NSApp.activate(ignoringOtherApps: true)
                 }
-            }
-        }
-        nc.addObserver(
-            forName: NSApplication.didBecomeActiveNotification,
-            object: nil, queue: .main
-        ) { _ in
-            MainActor.assumeIsolated {
-                AppMenu.reinstall()
             }
         }
     }
