@@ -2,10 +2,10 @@
 # diff-coverage.sh — coverage gate on CHANGED lines only.
 #
 # Joins the lcov `DA:` records (executable-line hit counts) against the line
-# ranges this branch changed in Apps/macOS/Sources/*.swift, and fails when the covered
-# fraction of changed executable lines falls below the threshold. Lines that
-# lcov has no DA: record for (comments, declarations, blank) don't count
-# against the gate.
+# ranges this branch changed in the Swift trees listed in PATHSPECS below, and
+# fails when the covered fraction of changed executable lines falls below the
+# threshold. Lines that lcov has no DA: record for (comments, declarations,
+# blank) don't count against the gate.
 #
 # Usage: diff-coverage.sh <lcov-file> [base-ref] [threshold-pct]
 #   lcov-file      lcov export (e.g. `xcrun llvm-cov export -format=lcov …`)
@@ -40,11 +40,48 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 LCOV_FILE="$(cd "$(dirname "$LCOV_FILE")" && pwd)/$(basename "$LCOV_FILE")"
 cd "$REPO_ROOT"
 
-# 1. Changed line ranges: "<file>\t<line>" per added/modified line in
-#    Apps/macOS/Sources/*.swift. -U0 keeps hunks tight; the @@ header's +start,count
-#    names the new-file line range.
+# Which trees the gate can see. Everything outside this list is invisible to
+# it: until 2026-08 the list was the single pathspec `Apps/macOS/Sources/*.swift`,
+# so a PR that only touched Packages/ — where most of the testable code now
+# lives — passed the gate by not being looked at.
+#
+# Widening is safe in a way that is worth stating, because it is the whole
+# reason no per-tree opt-out list is needed: a changed line is only ever
+# counted when lcov has a DA: record for it (step 3's `if (key in hits)`).
+# Files the macOS coverage run does not compile — the two swift-cross-ui apps,
+# the Windows and Linux backend packages — have no records at all, so they add
+# nothing to either side of the ratio rather than counting as uncovered. What
+# the widening actually turns on is the trees that ARE compiled into the macOS
+# test binary and were being graded by nobody: TailscreenKit, TailscreenL10n
+# and friends.
+#
+# Two exclusions that are NOT automatic:
+#   • *.swift only, so every package's C/C++/ObjC shim (Sources/C*/*.c, *.h) is
+#     out by construction — llvm-cov does emit records for C, and a shim is
+#     driven from the platform's own leg rather than from a macOS unit test.
+#   • Packages/TailscaleKit/Sources is a symlink tree into the libtailscale
+#     submodule: upstream code, upstream's tests, not ours to cover.
+# Test sources stay out too (Apps/*/Tests, Packages/*/Tests): llvm-cov happily
+# reports coverage OF the test bundle, and gating "did your new test run?" is
+# noise. CI's llvm-cov export already passes -ignore-filename-regex='Tests/'.
+#
+# NOTE the gate is currently advisory (`continue-on-error: true` on the CI
+# step). When it flips to required, revisit this list first — a tree with no
+# coverage records today is only invisible; the day a Linux coverage leg
+# appears it starts counting.
+PATHSPECS=(
+    'Apps/macOS/Sources/*.swift'
+    'Apps/linux/Sources/*.swift'
+    'Apps/windows/Sources/*.swift'
+    'Packages/*/Sources/*.swift'
+    ':(exclude)Packages/TailscaleKit/Sources/*'
+)
+
+# 1. Changed line ranges: "<file>\t<line>" per added/modified line under
+#    PATHSPECS. -U0 keeps hunks tight; the @@ header's +start,count names the
+#    new-file line range.
 CHANGED_LINES="$(
-    git diff -U0 --no-color "${BASE_REF}...HEAD" -- 'Apps/macOS/Sources/*.swift' 2>/dev/null |
+    git diff -U0 --no-color "${BASE_REF}...HEAD" -- "${PATHSPECS[@]}" 2>/dev/null |
         awk '
             /^\+\+\+ b\// { file = substr($2, 3); next }
             /^@@/ {
@@ -60,7 +97,7 @@ CHANGED_LINES="$(
 )"
 
 if [ -z "$CHANGED_LINES" ]; then
-    echo "diff-coverage: no changed Apps/macOS/Sources/*.swift lines vs ${BASE_REF} — nothing to gate."
+    echo "diff-coverage: no changed Swift source lines vs ${BASE_REF} — nothing to gate."
     exit 0
 fi
 
