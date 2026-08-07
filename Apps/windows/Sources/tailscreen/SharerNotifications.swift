@@ -3,9 +3,10 @@ import WinNotifyKit
 
 import enum TailscreenProtocol.NoticeAction
 import struct TailscreenProtocol.NoticeCandidate
+import protocol TailscreenProtocol.NoticePosting
 import struct TailscreenProtocol.SharerNotice
-import enum TailscreenProtocol.SharerNoticeDecision
 import enum TailscreenProtocol.SharerNoticeKind
+import struct TailscreenProtocol.SharerNoticeReconciler
 import enum TailscreenProtocol.SharerNoticeText
 
 /// Posts the sharer's notifications, and routes their buttons back.
@@ -19,7 +20,7 @@ import enum TailscreenProtocol.SharerNoticeText
 /// whoever tries to connect, with nothing on screen to notice.
 ///
 /// What to post, what to take back, and what it says is
-/// `SharerNoticeDecision` / `SharerNoticeText` in `TailscreenProtocol`;
+/// `SharerNoticeReconciler` / `SharerNoticeText` in `TailscreenProtocol`;
 /// delivery and the toast document are `WinNotifyKit`. What is left here is
 /// bookkeeping.
 ///
@@ -33,16 +34,15 @@ import enum TailscreenProtocol.SharerNoticeText
 /// direction: withdrawing something already gone is a no-op, while forgetting
 /// a live banner would strand it on screen.
 @MainActor
-final class SharerNotifications {
+final class SharerNotifications: NoticePosting {
     /// Nil when `Register()` was refused — no reachable Windows App Runtime,
     /// which is the expected state for an unpackaged zip run today. A normal
     /// state: the hub keeps its in-window prompts and says so on the card.
     private let notifier: WindowsNotifier?
 
-    /// Who has already been notified, per kind, with the name to use if they
-    /// leave. The label is carried because a departure notice needs it after
-    /// the peer is gone from every live list.
-    private var announced: [SharerNoticeKind: [String: String]] = [:]
+    /// The announce/withdraw bookkeeping, shared with the GTK host — this
+    /// type is the `NoticePosting` half it drives.
+    private var reconciler = SharerNoticeReconciler()
     /// Live toasts, so they can be taken back: `SharerNotice.id` → tag.
     private var posted: [String: String] = [:]
 
@@ -78,58 +78,21 @@ final class SharerNotifications {
 
     // MARK: Asks
 
-    /// Reconcile the notifications for one *ask* kind against its live list.
-    ///
-    /// New rows are announced; rows that left have their toast taken back.
-    /// That second half is not tidiness: a toast reading "someone is waiting
-    /// to be let in", with an Accept button, is actively wrong once they have
-    /// been admitted from the window — pressing it then does nothing.
+    /// Reconcile the notifications for one *ask* kind against its live list —
+    /// the shared reconciler's loop, with this type as its delivery.
     func applyAsk(kind: SharerNoticeKind, candidates: [NoticeCandidate]) {
         guard notifier != nil else { return }
-        let known = announced[kind] ?? [:]
-        let gone = SharerNoticeDecision.noticesToWithdraw(
-            candidates: candidates, alreadyNotified: Set(known.keys))
-        for identity in gone { withdraw(kind: kind, identity: identity) }
-
-        let (fresh, remaining) = SharerNoticeDecision.noticesToPost(
-            kind: kind, candidates: candidates, alreadyNotified: Set(known.keys))
-        for notice in fresh { post(notice) }
-        announced[kind] = Dictionary(
-            uniqueKeysWithValues: candidates.filter { remaining.contains($0.identity) }
-                .map { ($0.identity, $0.label) })
+        reconciler.applyAsk(kind: kind, candidates: candidates, poster: self)
     }
 
     // MARK: Reports
 
-    /// Reconcile the joined/left pair against the connected roster.
-    ///
-    /// A matched pair on purpose: a sharer told somebody arrived and never told
-    /// they left has to go and look to find out whether anyone is still
-    /// watching, which is the ask-the-app problem notifications exist to
-    /// remove. Only viewers whose ARRIVAL was announced get a departure —
-    /// which falls out of reconciling against the same set — and nothing is
-    /// posted during teardown, because `stop()` clears the set first.
+    /// Reconcile the joined/left pair against the connected roster — likewise
+    /// the shared reconciler's, including the rule that only viewers whose
+    /// arrival was announced get a departure.
     func applyViewers(_ candidates: [NoticeCandidate]) {
         guard notifier != nil else { return }
-        let known = announced[.viewerJoined] ?? [:]
-        let gone = SharerNoticeDecision.noticesToWithdraw(
-            candidates: candidates, alreadyNotified: Set(known.keys))
-        for identity in gone {
-            // The arrival toast goes; a departure toast replaces it. Leaving
-            // "started watching" on screen after they left is the one thing
-            // this pair exists to prevent.
-            withdraw(kind: .viewerJoined, identity: identity)
-            post(
-                SharerNotice(
-                    kind: .viewerLeft, identity: identity, label: known[identity] ?? identity))
-        }
-
-        let (fresh, remaining) = SharerNoticeDecision.noticesToPost(
-            kind: .viewerJoined, candidates: candidates, alreadyNotified: Set(known.keys))
-        for notice in fresh { post(notice) }
-        announced[.viewerJoined] = Dictionary(
-            uniqueKeysWithValues: candidates.filter { remaining.contains($0.identity) }
-                .map { ($0.identity, $0.label) })
+        reconciler.applyViewers(candidates, poster: self)
     }
 
     // MARK: Activation
@@ -157,7 +120,7 @@ final class SharerNotifications {
         // toast in the Action Center otherwise, where pressing it again would
         // send the same answer about a peer who has already been dealt with.
         withdraw(kind: kind, identity: identity)
-        announced[kind]?.removeValue(forKey: identity)
+        reconciler.forget(kind: kind, identity: identity)
         onAnswer?(kind, identity, action == .approve)
     }
 
@@ -176,12 +139,12 @@ final class SharerNotifications {
         // platform gives no signal for.
         notifier?.withdrawAll()
         posted.removeAll()
-        announced.removeAll()
+        reconciler.reset()
     }
 
-    // MARK: Plumbing
+    // MARK: Delivery (the `NoticePosting` half the reconciler drives)
 
-    private func post(_ notice: SharerNotice) {
+    func post(_ notice: SharerNotice) {
         guard let notifier else { return }
         // Windows renders both lines and always renders buttons, so neither of
         // the two freedesktop capability gaps applies — but the text still
@@ -206,7 +169,7 @@ final class SharerNotifications {
         posted[notice.id] = tag
     }
 
-    private func withdraw(kind: SharerNoticeKind, identity: String) {
+    func withdraw(kind: SharerNoticeKind, identity: String) {
         let key = SharerNotice(kind: kind, identity: identity, label: "").id
         guard let tag = posted.removeValue(forKey: key) else { return }
         notifier?.withdraw(tag)

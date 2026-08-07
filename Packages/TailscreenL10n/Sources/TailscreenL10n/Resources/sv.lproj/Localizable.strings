@@ -562,6 +562,7 @@
 "This desktop would not let the overlay take the keyboard" = "Det här skrivbordet lät inte överlägget ta tangentbordet";
 "Microphone unavailable" = "Mikrofonen är inte tillgänglig";
 "No desktop notifications on this system — approvals appear here only" = "Inga skrivbordsaviseringar på det här systemet — godkännanden visas bara här";
+"This desktop's notifications can't show buttons — answer approvals in this window" = "Skrivbordets aviseringar kan inte visa knappar — svara på godkännanden i det här fönstret";
 "Notifications are off for Tailscreen — approvals appear here only" = "Aviseringar är avstängda för Tailscreen — godkännanden visas bara här";
 
 /* MARK: - Windows app (Apps/windows) ———————————————————————————————————— */

@@ -120,6 +120,18 @@ final class SharerModel: ObservableObject {
         muteHotkeyUnavailability = reason
     }
 
+    /// Whether notifications post but their daemon drops the buttons.
+    ///
+    /// A real state on several minimal daemons, and a quieter failure than no
+    /// notifications at all: the banner appears, worded to say where to
+    /// answer (`SharerNoticeText`'s no-`actions` degradation), but the
+    /// one-click Accept the sharer may be counting on does not exist. The card
+    /// says so — the same reason the Windows card distinguishes "off for this
+    /// app" from "no runtime".
+    var notificationsLackActions: Bool {
+        notifications.isAvailable && !notifications.rendersActions
+    }
+
     /// Why a grant could not be given, when one could not. Nil renders nothing.
     ///
     /// `grantControl` returning false is otherwise completely silent: the
