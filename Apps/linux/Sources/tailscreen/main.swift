@@ -259,9 +259,17 @@ if gSelfTest {
         gUIState.activeTool = .pen
         // One stroke per tool so the overlay + shape geometry are both visible.
         func seed(_ tool: AnnotationTool, _ points: [CGPoint], _ colorIndex: Int) {
-            gAnnotations.apply(.add(Annotation(
-                id: UUID(), tool: tool, points: points,
-                color: Annotation.RGBA.palette[colorIndex], width: 4)))
+            // Dated absurdly far ahead on purpose. `.click` is an EPHEMERAL
+            // stroke (0.8 s — `ReceivedAnnotations.ephemeralLifetimeNs`), and
+            // this canvas exists to be photographed by the screenshot job
+            // seconds after launch; seeded against the real clock the marker
+            // would be swept before the shutter fired.
+            gAnnotations.apply(
+                .add(
+                    Annotation(
+                        id: UUID(), tool: tool, points: points,
+                        color: Annotation.RGBA.palette[colorIndex], width: 4)),
+                nowNs: UInt64.max / 2)
         }
         seed(.pen, [CGPoint(x: 0.08, y: 0.30), CGPoint(x: 0.20, y: 0.55), CGPoint(x: 0.14, y: 0.72)], 0)
         seed(.line, [CGPoint(x: 0.28, y: 0.30), CGPoint(x: 0.40, y: 0.72)], 1)
@@ -519,8 +527,8 @@ if gSelfTest {
                     // discovery kept its `shareInfo` entry, so the same id
                     // returning later showed a stale "Sharing" chip until its
                     // next probe landed.
-                    let onlineIDs = Set(online.map(\.id))
-                    gPicker.shareInfo = gPicker.shareInfo.filter { onlineIDs.contains($0.key) }
+                    gPicker.shareInfo = PeerShareStatusMap.pruned(
+                        gPicker.shareInfo, toPresent: Set(online.map(\.id)))
                     // Label the header with the tailnet these rows belong to
                     // (falling back to the login) — set before `.picking`, so
                     // the placard never flashes the old guidance text.
@@ -543,7 +551,12 @@ if gSelfTest {
                             group.addTask { (sharer.id, await transport.probePeer(ip: sharer.tailscaleIP)) }
                         }
                         for await (id, probe) in group {
-                            gPicker.shareInfo[id] = probe.metadata
+                            // No answer CLEARS the chip rather than keeping the
+                            // last one — see `PeerShareStatusMap`. `probePeer`
+                            // already reports no latency without an answer, so
+                            // the two stay in step.
+                            gPicker.shareInfo = PeerShareStatusMap.recording(
+                                probe.metadata, for: id, in: gPicker.shareInfo)
                             gPicker.latencyMs[id] = probe.latencyMs
                         }
                     }
@@ -567,17 +580,23 @@ if gSelfTest {
                 guard case .picking = gPicker.phase else { return }  // re-check after await
                 gPicker.sharers = peers
                 let online = peers.filter { $0.isOnline }
-                let ids = Set(online.map(\.id))
-                gPicker.shareInfo = gPicker.shareInfo.filter { ids.contains($0.key) }
+                gPicker.shareInfo = PeerShareStatusMap.pruned(
+                    gPicker.shareInfo, toPresent: Set(online.map(\.id)))
                 await withTaskGroup(of: (String, PeerProbe).self) { group in
                     for sharer in online {
                         group.addTask { (sharer.id, await transport.probePeer(ip: sharer.tailscaleIP)) }
                     }
-                    // The quiet refresh keeps a previous answer rather than
-                    // blanking on one failed probe — a peer that briefly does
-                    // not answer should not make the row flicker.
-                    for await (id, probe) in group where probe.metadata != nil {
-                        gPicker.shareInfo[id] = probe.metadata
+                    // Exactly what `discoverAndSweep` does, which it did not
+                    // used to: this pass once KEPT the previous answer when a
+                    // probe came back empty, so the same chip meant different
+                    // things depending on which refresh ran last — and a
+                    // machine that stopped sharing and stopped answering in the
+                    // same window kept reading "Sharing" until it either
+                    // answered again or left the tailnet. A no-answer is
+                    // status-unknown, so it clears; see `PeerShareStatusMap`.
+                    for await (id, probe) in group {
+                        gPicker.shareInfo = PeerShareStatusMap.recording(
+                            probe.metadata, for: id, in: gPicker.shareInfo)
                         gPicker.latencyMs[id] = probe.latencyMs
                     }
                 }
