@@ -95,6 +95,10 @@ jobs:
     env:
       APPIMAGE_ARCH: ${{ inputs.arch == 'arm64' && 'aarch64' || 'x86_64' }}
       PACKAGE_ARCH: ${{ inputs.arch == 'arm64' && 'arm64' || 'x86_64' }}
+      # AppImage assembly tooling, pinned — see the "Install AppImage assembly
+      # tools" step for what each one is and why the third is still floating.
+      APPIMAGETOOL_VERSION: '1.9.1'
+      LINUXDEPLOY_PLUGIN_GTK_REF: '7a3fbc31a9e5075073ff8790f26effbac5f84453'
 
     outputs:
       tarball: ${{ steps.pkg.outputs.tarball }}
@@ -134,6 +138,21 @@ jobs:
         # the arm64 job claimed otherwise and shipped only a tarball; the claim
         # was checked and is false. The gtk plugin is an arch-neutral shell
         # script.
+        #
+        # All three are third-party code fetched at build time and then RUN,
+        # and all three used to come from a moving ref, so a shipped release
+        # was not reproducible from its own commit. Two are now pinned (job
+        # `env:` above):
+        #   • appimagetool → 1.9.1, which is the same commit `continuous`
+        #     resolved to when this was pinned, so no build changed;
+        #   • linuxdeploy-plugin-gtk → the master commit it resolved to at the
+        #     same moment. It is a SHELL SCRIPT executed with the app's staging
+        #     tree in its hands — the single worst thing here to leave on a
+        #     branch name.
+        # linuxdeploy itself is deliberately still `continuous`: unlike
+        # appimagetool, its continuous build is AHEAD of its newest version tag
+        # (1-alpha-20251107-1), so pinning would swap in code CI has never run.
+        # That one wants a release-labelled build to prove it, not a blind edit.
         if: contains(inputs.package, 'appimage')
         run: |
           apt-get install -y --no-install-recommends \
@@ -141,9 +160,9 @@ jobs:
           mkdir -p "$HOME/.local/bin"
           base=https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous
           curl -fsSL "$base/linuxdeploy-${APPIMAGE_ARCH}.AppImage" -o "$HOME/.local/bin/linuxdeploy"
-          curl -fsSL "https://github.com/linuxdeploy/linuxdeploy-plugin-gtk/raw/master/linuxdeploy-plugin-gtk.sh" \
+          curl -fsSL "https://github.com/linuxdeploy/linuxdeploy-plugin-gtk/raw/${LINUXDEPLOY_PLUGIN_GTK_REF}/linuxdeploy-plugin-gtk.sh" \
             -o "$HOME/.local/bin/linuxdeploy-plugin-gtk.sh"
-          curl -fsSL "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-${APPIMAGE_ARCH}.AppImage" \
+          curl -fsSL "https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-${APPIMAGE_ARCH}.AppImage" \
             -o "$HOME/.local/bin/appimagetool"
           chmod +x "$HOME/.local/bin/linuxdeploy" "$HOME/.local/bin/linuxdeploy-plugin-gtk.sh" "$HOME/.local/bin/appimagetool"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
