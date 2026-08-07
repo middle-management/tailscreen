@@ -830,10 +830,18 @@ jobs:
       - name: Typecheck the Windows annotation overlay on Linux
         run: swift build --package-path Packages/WinOverlayKit
 
-      - name: Typecheck the Windows sharer backend on Linux
+      # `swift test`, not `swift build`: this package now carries
+      # `WindowsShareSessionTests`, the Windows share ENGINE's only tests
+      # anywhere. `Apps/windows` has no test target, and everything
+      # Windows-bound the engine touches stubs out off Windows — so this
+      # runner, with no display, no capture item and no node, is where the
+      # share-generation stamp, the held-invite replay, the approval-gate
+      # mirror and the mute latch are asserted rather than merely typechecked.
+      # Testing builds too, so the typecheck this step used to be is kept.
+      - name: Test the Windows sharer backend on Linux
         run: |
           PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" \
-            swift build --package-path Packages/TailscreenSharerWGC
+            swift test --package-path Packages/TailscreenSharerWGC
 
   # Was `linux-app`, which had gone stale in both directions.
   #

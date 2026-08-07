@@ -46,7 +46,8 @@ final class LinuxShareSessionTests: XCTestCase {
         XCTAssertEqual(startRequests, 1, "accept must hand off to the host's share flow")
         // Accept happens before a server exists, so the invitee's IP is held
         // for replay — losing it parks the person just invited at this
-        // machine's own approval gate.
+        // machine's own approval gate. The hold/drain rule itself is
+        // `SharerSessionCore`'s and is pinned there for both hosts.
         XCTAssertEqual(engine.pendingPreApprovedIPs, ["100.64.0.7"])
     }
 
@@ -203,6 +204,30 @@ final class LinuxShareSessionTests: XCTestCase {
         // the same pair, and re-applying it is idempotent.
         engine.applyControlGrant(share: share, generation: 5, displayName: "robert-macbook")
         XCTAssertEqual(grants, ["robert-macbook", "robert-macbook"])
+    }
+
+    // MARK: Voice
+
+    /// The mic control is absent, not present-and-inert, until a device is
+    /// open — and a toggle while there is none publishes nothing at all rather
+    /// than lighting an indicator over a microphone that does not exist.
+    ///
+    /// The latch that decides this is `VoiceLatch`, shared with the Windows
+    /// engine and both viewers; what this pins is the GTK engine's wiring onto
+    /// it, which is the half that used to guard on the voice while publishing
+    /// the flags.
+    @MainActor
+    func testTogglingTheMicWithNoDeviceOpenPublishesNothing() async throws {
+        let engine = makeEngine()
+        var voiceStates: [(Bool, Bool)] = []
+        engine.onVoiceChanged = { available, on in voiceStates.append((available, on)) }
+
+        engine.toggleMic()
+        engine.toggleMic()
+
+        XCTAssertTrue(voiceStates.isEmpty)
+        XCTAssertFalse(engine.micAvailable)
+        XCTAssertFalse(engine.micOn, "an indicator over a device that is not open")
     }
 
     // MARK: Access facade

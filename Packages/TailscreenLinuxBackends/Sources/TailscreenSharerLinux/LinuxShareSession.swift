@@ -183,51 +183,25 @@ public final class LinuxShareSession {
     /// is not a cosmetic difference; it is a desktop nobody can click.
     private var latch = SharerDrawingLatch()
 
-    /// Live voice for the current share. Nil while idle, and nil when the
-    /// device could not be opened — which is what `micAvailable` reports, so
-    /// the control is absent rather than present-and-inert.
-    private var voice: SharerVoice?
+    /// The sharer's voice for this share — the route installed before the
+    /// server starts, the device opened only once it is up, and the mute latch
+    /// `micAvailable` / `micOn` mirror. Shared with the Windows engine, where
+    /// the same triple had the same ordering hazards; see `SharerVoiceSession`.
+    private let voiceSession = SharerVoiceSession()
 
-    /// Where the server hands inbound viewer audio.
+    /// Which share attempt the engine is on, which grant snapshot was last
+    /// applied, and who was invited before there was a server to tell.
     ///
-    /// Long-lived and installed on the server BEFORE `start()`, because the
-    /// server's callbacks are bare stored vars its receive thread reads with
-    /// no lock — see `SharerVoiceRoute`. `startVoice` publishes into this
-    /// rather than reassigning `server.onAudioReceived` mid-share.
-    private let inboundVoice = SharerVoiceRoute()
-
-    /// The generation of the last grant snapshot applied.
-    ///
-    /// The server stamps every `onControlGrantChanged` with a monotonic
-    /// counter precisely because a host like this one hops the callback to its
-    /// UI thread, and a hop can reorder. Applying a stale `nil` last would
-    /// clear a grant that is still live — the sharer would be told nobody is
-    /// controlling their machine while somebody is. `SharerNoticeDecision.isStale`
-    /// owns the comparison; this is the field it compares against. It resets
-    /// at both ends of a share — see `beginShareGeneration` /
-    /// `endShareGeneration` and `clearControlState`.
-    private var lastGrantGeneration: UInt64 = 0
-
-    /// Which share attempt the engine is on.
-    ///
-    /// Every one of the server's callbacks reaches this actor through a
-    /// `Task { @MainActor }` hop, and so does `beginShare`'s own continuation
-    /// after `server.start()` — the actor is released across that await, so a
-    /// stop, or a whole second share, can land in the middle. Each of those
-    /// closures captures the generation it was created under and drops itself
-    /// when it no longer matches, so nothing from a share that has ended can
-    /// publish a roster, a grant or a teardown over a share that has not.
-    ///
-    /// It is also what closes the grant guard's backward hole. `isStale` only
-    /// rejects a generation *below* the high-water mark, and teardown resets
-    /// that mark to zero (it has to: a fresh server starts its own sequence at
-    /// zero). So a snapshot still in flight from the OLD server — generation
-    /// 7, say — was not stale against 0: it was applied, telling the sharer
-    /// somebody was driving a machine they had just stopped sharing, and it
-    /// left the mark at 7, which then discarded the next share's first
-    /// snapshots as stale. A grant that silently never appears, from a stop
-    /// that looked clean.
-    private var shareGeneration: UInt64 = 0
+    /// Held as an actor-isolated value rather than a shared object, which is
+    /// the point of `SharerSessionCore` being a struct: the Windows engine
+    /// holds the same state machine behind a lock, and neither host's isolation
+    /// model leaks into the other's. Every one of the server's callbacks
+    /// reaches this actor through a `Task { @MainActor }` hop, and so does
+    /// `beginShare`'s own continuation after `server.start()` — the actor is
+    /// released across that await, so a stop, or a whole second share, can land
+    /// in the middle. Each closure captures the generation it was created under
+    /// and drops itself when `isCurrentShare` says the engine has moved on.
+    private var core = SharerSessionCore()
 
     /// Remembered allow/deny, and the queue for decisions made before a peer's
     /// identity resolved. Portable and tested on Linux CI — the host only
@@ -251,10 +225,10 @@ public final class LinuxShareSession {
     /// Accepting an ask has to pre-approve the requester, or they arrive at
     /// this machine's own approval gate a second later and get asked to wait —
     /// having just been invited. But accept happens *before* the share starts,
-    /// so there is no server yet: the IP is held here and replayed the moment
-    /// one exists. Internal-get so the package tests can pin the held-IP
+    /// so there is no server yet: the IP is held in `core` and replayed the
+    /// moment one exists. Internal so the package tests can pin the held-IP
     /// contract with no server.
-    private(set) var pendingPreApprovedIPs: Set<String> = []
+    var pendingPreApprovedIPs: Set<String> { core.heldInvites }
 
     /// - Parameters:
     ///   - display: the X display shares run against; nil means `$DISPLAY`.
@@ -273,12 +247,22 @@ public final class LinuxShareSession {
             guard let self else { return }
             // Pre-approve BEFORE starting, because the HELLO can arrive as
             // soon as the share is up — and a peer this machine just invited
-            // must not then be parked at its approval gate. Accept happens
-            // before a server exists, so the IP is also held for replay.
-            self.pendingPreApprovedIPs.insert(sourceKey)
+            // must not then be parked at its approval gate. Accept usually
+            // happens before a server exists, in which case the IP is held for
+            // replay; when one is already running it is told directly and
+            // nothing is remembered, or the next share would admit them too.
+            self.core.noteInvite(sourceKey, hasServer: self.server != nil)
             self.server?.preApproveViewer(ip: sourceKey)
         }
         askToShare.onStartShare = { [weak self] in self?.onStartShareRequested?() }
+        // Both hop: the latch moves from whichever thread opened, closed or
+        // lost the device, and this actor owns the published pair.
+        voiceSession.onStateChanged = { [weak self] available, on in
+            Task { @MainActor in self?.applyVoiceState(available: available, on: on) }
+        }
+        voiceSession.onRemotePCM = { [weak self] pcm in
+            Task { @MainActor in self?.playRemoteVoice?(pcm) }
+        }
         askToShare.onListenerError = { (error: Error) in
             // Worth a line rather than silence: the share still works and
             // this machine simply never hears an ask, which from the other
@@ -385,7 +369,7 @@ public final class LinuxShareSession {
                     health: $0.health == .good ? nil : "\($0.health)")
             }
             Task { @MainActor [weak self] in
-                guard let self, self.shareGeneration == generation else { return }
+                guard let self, self.core.isCurrentShare(generation) else { return }
                 self.applyConnected(rows)
             }
         }
@@ -397,7 +381,7 @@ public final class LinuxShareSession {
                     id: $0.id, label: $0.hostname ?? $0.tailscaleIP, stableID: $0.stableID)
             }
             Task { @MainActor [weak self] in
-                guard let self, self.shareGeneration == generation else { return }
+                guard let self, self.core.isCurrentShare(generation) else { return }
                 self.applyPending(waiting)
             }
         }
@@ -406,7 +390,7 @@ public final class LinuxShareSession {
             // renders `ControlRequestInfo.displayName` directly, the same
             // shape the Windows app passes through.
             Task { @MainActor [weak self] in
-                guard let self, self.shareGeneration == generation else { return }
+                guard let self, self.core.isCurrentShare(generation) else { return }
                 self.onControlRequestsChanged?(requests)
             }
         }
@@ -419,20 +403,19 @@ public final class LinuxShareSession {
         }
         server.onCaptureStopped = { error in
             Task { @MainActor [weak self] in
-                guard let self, self.shareGeneration == generation else { return }
+                guard let self, self.core.isCurrentShare(generation) else { return }
                 self.handleCaptureStopped(error)
             }
         }
         // Installed HERE, before `start()`, and never reassigned: the server's
         // callbacks are bare stored vars its receive thread reads with no
-        // lock. `startVoice` publishes into the route once the capture device
-        // is open — see `SharerVoiceRoute` for why the device is not opened
-        // this early.
-        server.onAudioReceived = { [inboundVoice] packet in inboundVoice.receive(packet) }
+        // lock. `SharerVoiceSession` publishes into the route it hands back
+        // once the capture device is open — see `SharerVoiceRoute` for why the
+        // device is not opened this early.
+        server.onAudioReceived = voiceSession.inboundHandler
         // Anyone whose ask was accepted before this server existed. Replayed
         // BEFORE start, so the gate already knows them when their HELLO lands.
-        for ip in pendingPreApprovedIPs { server.preApproveViewer(ip: ip) }
-        pendingPreApprovedIPs.removeAll()
+        for ip in core.drainInvites() { server.preApproveViewer(ip: ip) }
         self.server = server
 
         // Whatever else was parked is stale now: those askers wanted a share
@@ -460,7 +443,7 @@ public final class LinuxShareSession {
                 // arm an outline over somebody's screen, and open a microphone
                 // for it; and the server this closure holds is one the engine
                 // no longer references, so nothing else would ever stop it.
-                guard self.shareGeneration == generation else {
+                guard self.core.isCurrentShare(generation) else {
                     await server.stop()
                     return
                 }
@@ -475,7 +458,7 @@ public final class LinuxShareSession {
                 // has nothing left to unwind — `stopSharing` did it — and
                 // reporting `.failed` over `.idle` would tell the person their
                 // share broke when they had ended it themselves.
-                guard self.shareGeneration == generation else { return }
+                guard self.core.isCurrentShare(generation) else { return }
                 endShareGeneration()
                 setPhase(.failed("\(error)"))
                 self.server = nil
@@ -487,42 +470,29 @@ public final class LinuxShareSession {
     }
 
     /// Open a share generation: everything stamped with an older one is
-    /// ignored from here on.
-    ///
-    /// The grant high-water mark restarts with it, because a fresh server
-    /// starts its own `onControlGrantChanged` sequence at zero and a mark
-    /// carried over from the last share would discard this one's first
-    /// snapshots as stale. Internal so the engine suite can drive the guards
-    /// with no node and no server behind them.
+    /// ignored from here on. Internal so the engine suite can drive the guards
+    /// with no node and no server behind them; the rules are
+    /// `SharerSessionCore`'s and are pinned there for both hosts.
     @discardableResult
     func beginShareGeneration() -> UInt64 {
-        shareGeneration &+= 1
-        lastGrantGeneration = 0
-        return shareGeneration
+        core.beginShare()
     }
 
     /// Close the current share generation — a stop, a capture death, or a
     /// start that failed. Anything still in flight from the server that just
     /// ended is dropped when it lands.
     func endShareGeneration() {
-        shareGeneration &+= 1
-        lastGrantGeneration = 0
+        core.endShare()
     }
 
     /// Apply one grant snapshot, dropping it when it belongs to a share this
     /// engine has moved on from or when a newer one was already applied.
     ///
-    /// Both guards, not either: `isStale` alone cannot tell a late snapshot
-    /// from a dead server apart from a fresh one, precisely because teardown
-    /// resets the mark it compares against — see `shareGeneration`. Internal
-    /// so the engine suite can pin the pair without a server.
+    /// Both guards, not either — see `SharerSessionCore.shouldApplyGrant`,
+    /// which owns the pair. Internal so the engine suite can pin the wiring
+    /// without a server.
     func applyControlGrant(share: UInt64, generation: UInt64, displayName: String?) {
-        guard share == shareGeneration else { return }
-        guard
-            !SharerNoticeDecision.isStale(
-                generation: generation, lastApplied: lastGrantGeneration)
-        else { return }
-        lastGrantGeneration = generation
+        guard core.shouldApplyGrant(share: share, generation: generation) else { return }
         onControlGrantChanged?(displayName)
     }
 
@@ -732,36 +702,15 @@ public final class LinuxShareSession {
     /// Best-effort: a machine with no capture device shares perfectly well and
     /// simply shows no mic control. The failure is written to stderr for the
     /// same reason the overlay's and the injector's are — the share works, so
-    /// nothing else would ever say why the button is missing.
+    /// nothing else would ever say why the button is missing. The ordering
+    /// inside — route before device, `onStopped` before `start()` — is
+    /// `SharerVoiceSession`'s and is shared with the Windows engine.
     private func startVoice(on server: TailscaleScreenShareServer) {
         guard let microphoneFactory else { return }
         do {
-            let microphone = try microphoneFactory()
-            let voice = try SharerVoice(
-                microphone: microphone, encoder: OpusVoiceEncoder(),
+            try voiceSession.start(
+                microphone: try microphoneFactory(),
                 send: { [weak server] packet in server?.sendAudioRTP(packet) })
-            voice.onRemotePCM = { [weak self] _, pcm in
-                // The SSRC is dropped here: there is one local output device,
-                // and the mix is what a person hears. A sharer UI that wanted
-                // a speaking indicator would keep it.
-                Task { @MainActor in self?.playRemoteVoice?(pcm) }
-            }
-            voice.onStopped = { [weak self] error in
-                guard error != nil else { return }
-                Task { @MainActor in
-                    // Both flags together: a live indicator over a device
-                    // recording nothing is the one wrong answer here.
-                    self?.setVoiceState(available: false, on: false)
-                }
-            }
-            // Inbound viewer audio, already vetted by the server's anti-spoof
-            // gate, reaches `voice.receive` from here on. The server's
-            // handler was installed before `start()` and is NOT touched now —
-            // see `SharerVoiceRoute`.
-            inboundVoice.setVoice(voice)
-            try voice.start()
-            self.voice = voice
-            setVoiceState(available: true, on: false)
         } catch {
             FileHandle.standardError.write(
                 Data("warning: no microphone (\(error)) — viewers will not hear you\n".utf8))
@@ -769,24 +718,20 @@ public final class LinuxShareSession {
     }
 
     private func stopVoice() {
-        // Unroute first: the server may still be delivering, and a packet
-        // handed to a voice that is being torn down is exactly the race
-        // `VoiceDownlink`'s lock exists for. Stop reaching it at all.
-        inboundVoice.setVoice(nil)
-        voice?.stop()
-        voice = nil
-        setVoiceState(available: false, on: false)
+        voiceSession.stop()
     }
 
-    /// Flip the sharer's microphone.
+    /// Flip the sharer's microphone. A no-op with no device open, which is also
+    /// when the GTK share card draws no control.
     public func toggleMic() {
-        guard let voice else { return }
-        let nowOn = voice.isMuted
-        voice.isMuted = !nowOn
-        setVoiceState(available: micAvailable, on: nowOn)
+        voiceSession.toggleMic()
     }
 
-    private func setVoiceState(available: Bool, on: Bool) {
+    /// Mirror one latch transition onto this actor's published pair.
+    ///
+    /// Hopped: the transition can come from the capture thread reporting the
+    /// device gone, and both flags have to move together when it does.
+    private func applyVoiceState(available: Bool, on: Bool) {
         micAvailable = available
         micOn = on
         onVoiceChanged?(available, on)
@@ -940,11 +885,12 @@ public final class LinuxShareSession {
     /// the new share's first snapshots — a grant that silently never appears
     /// in the UI. That reset is also why the mark alone is not enough to
     /// reject a snapshot still in flight from the server that just ended: it
-    /// is not stale against zero. `shareGeneration` is what rejects it.
+    /// is not stale against zero. The share stamp is what rejects it — see
+    /// `SharerSessionCore.shouldApplyGrant`.
     private func clearControlState() {
         onControlRequestsChanged?([])
         onControlGrantChanged?(nil)
-        lastGrantGeneration = 0
+        core.clearGrantHistory()
     }
 
     // MARK: Settings
