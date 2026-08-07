@@ -527,6 +527,12 @@ public final class TsnetTransport {
     ///   - onBackChannelReady: called once the outbound TCP back-channel is
     ///     dialing, handing the host a `ViewerBackChannel` to send annotation
     ///     ops / control requests / input events (nil ⇒ receive-only).
+    ///   - onDecoderResetNeeded / onDecodeFatal: opt-in to the shared
+    ///     decode-failure escalation ladder (see
+    ///     `ViewerSession.onDecoderResetNeeded` / `.onDecodeFatal`): reset the
+    ///     concrete decoder at the ladder's wedged-decoder rung, surface a
+    ///     user-visible session error at its terminal rung. Both nil (the
+    ///     default) keeps the flat decode-failure → PLI behavior.
     /// Run one viewing session to completion.
     ///
     /// `onVoiceReady` is MainActor-isolated, unlike the other callbacks here:
@@ -559,7 +565,9 @@ public final class TsnetTransport {
         onAdmitted: (@Sendable (ScreenShareCaps) -> Void)? = nil,
         onAwaitingApproval: (@Sendable () -> Void)? = nil,
         onDeclined: (@Sendable () -> Void)? = nil,
-        onEnded: (@Sendable (ViewerCloseReason, _ wasAdmitted: Bool) -> Void)? = nil
+        onEnded: (@Sendable (ViewerCloseReason, _ wasAdmitted: Bool) -> Void)? = nil,
+        onDecoderResetNeeded: (@MainActor () -> Void)? = nil,
+        onDecodeFatal: (@MainActor () -> Void)? = nil
     ) async throws {
         // Bring the node up if a caller skipped `prepare` (the direct-host
         // path); a picker host that already called `prepare` + `discoverPeers` reuses
@@ -652,6 +660,20 @@ public final class TsnetTransport {
             audioSink: audioSink,
             onControlToSend: { data in outboundContinuation.yield(data) }
         )
+        // Decode-recovery ladder opt-in. The session fires these synchronously
+        // from `receiveRTP`, which the loop below only ever calls on this
+        // actor — `assumeIsolated` names that contract (a hop would be wrong:
+        // the reset must land before the next access unit is decoded).
+        if let onDecoderResetNeeded {
+            pipeline.session.onDecoderResetNeeded = {
+                MainActor.assumeIsolated { onDecoderResetNeeded() }
+            }
+        }
+        if let onDecodeFatal {
+            pipeline.session.onDecodeFatal = {
+                MainActor.assumeIsolated { onDecodeFatal() }
+            }
+        }
 
         let sendLogger = logger
         let senderTask = Task {

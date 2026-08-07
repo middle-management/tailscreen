@@ -1,21 +1,22 @@
+import TailscreenViewer
 import XCTest
 
-@testable import Tailscreen
-@testable import TailscreenProtocol
-@testable import TailscreenTransport
-
 /// Unit tests for the viewer's consecutive-decode-failure escalation ladder
-/// (`VideoDecoder.decodeRecoveryAction`). Pure function, no VideoToolbox, no
-/// tsnet — the live counter increments on the decoder's serial queue and
-/// resets on the first successful frame. Rungs fire on `>=` thresholds with
-/// a per-episode fired-rung latch, so each rung fires once per failing
-/// episode even when the counting is imperfect and a threshold value gets
-/// skipped. Same pattern as `AdaptiveBitrateTests`.
+/// (`DecodeRecovery.action`). Pure function, no decoder, no tsnet — the live
+/// counters increment on each host's decode path (the mac `VideoDecoder`'s
+/// serial queue, or `ViewerSession` for the FFmpeg-backed hosts) and reset on
+/// the first successful frame. Rungs fire on `>=` thresholds with a
+/// per-episode fired-rung latch, so each rung fires once per failing episode
+/// even when the counting is imperfect and a threshold value gets skipped.
+/// Same pattern as `AdaptiveBitrateTests`. Moved here from the macOS app
+/// target when the ladder went portable; a plain (non-`@testable`) import on
+/// purpose — the decision surface is deliberately public, like the sharer
+/// tier's.
 final class DecodeRecoveryDecisionTests: XCTestCase {
     private func action(
         _ failures: Int, fired: Set<DecodeRecoveryAction> = []
     ) -> DecodeRecoveryAction? {
-        VideoDecoder.decodeRecoveryAction(consecutiveFailures: failures, alreadyFired: fired)
+        DecodeRecovery.action(consecutiveFailures: failures, alreadyFired: fired)
     }
 
     /// Walk a failing episode the way the decoder does: bump the counter by
@@ -36,18 +37,18 @@ final class DecodeRecoveryDecisionTests: XCTestCase {
     }
 
     func testRungsFireAtTheirThresholds() {
-        XCTAssertEqual(action(VideoDecoder.requestKeyframeFailureThreshold), .requestKeyframe)
+        XCTAssertEqual(action(DecodeRecovery.requestKeyframeFailureThreshold), .requestKeyframe)
         XCTAssertEqual(
-            action(VideoDecoder.recreateSessionFailureThreshold, fired: [.requestKeyframe]),
+            action(DecodeRecovery.recreateSessionFailureThreshold, fired: [.requestKeyframe]),
             .recreateSession)
         XCTAssertEqual(
             action(
-                VideoDecoder.signalDegradedFailureThreshold,
+                DecodeRecovery.signalDegradedFailureThreshold,
                 fired: [.requestKeyframe, .recreateSession]),
             .signalDegraded)
         XCTAssertEqual(
             action(
-                VideoDecoder.surfaceErrorFailureThreshold,
+                DecodeRecovery.surfaceErrorFailureThreshold,
                 fired: [.requestKeyframe, .recreateSession, .signalDegraded]),
             .surfaceError)
     }
@@ -56,14 +57,14 @@ final class DecodeRecoveryDecisionTests: XCTestCase {
         // The ladder's timing story (PLI at ~5 frames, alert after ~5-10 s
         // of dead video) depends on these exact values; changing them should
         // be a conscious decision.
-        XCTAssertEqual(VideoDecoder.requestKeyframeFailureThreshold, 5)
-        XCTAssertEqual(VideoDecoder.recreateSessionFailureThreshold, 30)
-        XCTAssertEqual(VideoDecoder.signalDegradedFailureThreshold, 90)
-        XCTAssertEqual(VideoDecoder.surfaceErrorFailureThreshold, 300)
+        XCTAssertEqual(DecodeRecovery.requestKeyframeFailureThreshold, 5)
+        XCTAssertEqual(DecodeRecovery.recreateSessionFailureThreshold, 30)
+        XCTAssertEqual(DecodeRecovery.signalDegradedFailureThreshold, 90)
+        XCTAssertEqual(DecodeRecovery.surfaceErrorFailureThreshold, 300)
     }
 
     func testNoActionBelowTheFirstThreshold() {
-        for failures in 0..<VideoDecoder.requestKeyframeFailureThreshold {
+        for failures in 0..<DecodeRecovery.requestKeyframeFailureThreshold {
             XCTAssertNil(action(failures), "expected no action at \(failures) failures")
         }
     }
@@ -105,7 +106,7 @@ final class DecodeRecoveryDecisionTests: XCTestCase {
         let expected: [DecodeRecoveryAction] = [
             .requestKeyframe, .recreateSession, .signalDegraded, .surfaceError
         ]
-        XCTAssertEqual(runEpisode(step: 1, upTo: VideoDecoder.surfaceErrorFailureThreshold + 100), expected)
+        XCTAssertEqual(runEpisode(step: 1, upTo: DecodeRecovery.surfaceErrorFailureThreshold + 100), expected)
     }
 
     func testPlusTwoSteppedEpisodeStillFiresEachRungOnceInOrder() {
@@ -115,16 +116,16 @@ final class DecodeRecoveryDecisionTests: XCTestCase {
         let expected: [DecodeRecoveryAction] = [
             .requestKeyframe, .recreateSession, .signalDegraded, .surfaceError
         ]
-        XCTAssertEqual(runEpisode(step: 2, upTo: VideoDecoder.surfaceErrorFailureThreshold + 100), expected)
+        XCTAssertEqual(runEpisode(step: 2, upTo: DecodeRecovery.surfaceErrorFailureThreshold + 100), expected)
     }
 
     func testRungsEscalateInSeverityOrder() {
         XCTAssertLessThan(
-            VideoDecoder.requestKeyframeFailureThreshold, VideoDecoder.recreateSessionFailureThreshold)
+            DecodeRecovery.requestKeyframeFailureThreshold, DecodeRecovery.recreateSessionFailureThreshold)
         XCTAssertLessThan(
-            VideoDecoder.recreateSessionFailureThreshold, VideoDecoder.signalDegradedFailureThreshold)
+            DecodeRecovery.recreateSessionFailureThreshold, DecodeRecovery.signalDegradedFailureThreshold)
         XCTAssertLessThan(
-            VideoDecoder.signalDegradedFailureThreshold, VideoDecoder.surfaceErrorFailureThreshold)
+            DecodeRecovery.signalDegradedFailureThreshold, DecodeRecovery.surfaceErrorFailureThreshold)
     }
 
     func testResetEpisodeStartsTheLadderOver() {
@@ -133,6 +134,6 @@ final class DecodeRecoveryDecisionTests: XCTestCase {
         // again with an empty latch set.
         XCTAssertNil(action(0))
         XCTAssertNil(action(1))
-        XCTAssertEqual(action(VideoDecoder.requestKeyframeFailureThreshold), .requestKeyframe)
+        XCTAssertEqual(action(DecodeRecovery.requestKeyframeFailureThreshold), .requestKeyframe)
     }
 }

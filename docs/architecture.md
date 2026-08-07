@@ -142,9 +142,12 @@ wire, so the decoder follows the encoder's choice. The decoded
 
 When decoding starts *failing* (rather than just missing packets), the
 viewer runs an escalation ladder instead of dying quietly: request a
-keyframe (PLI) → recreate the decompression session → surface a
-"connection degraded" badge in the toolbar → raise an actual alert. Each
-rung fires once per episode, and a decoded frame resets the ladder. The
+keyframe (PLI) → recreate the decoder (the decompression session on
+macOS, the libavcodec context on Linux/Windows) → surface a "connection
+degraded" badge in the toolbar (macOS) → raise a user-visible stall
+error. The ladder's policy lives in the shared core, so all three
+viewers escalate identically; each rung fires once per episode, and a
+decoded frame resets the ladder. The
 UDP receive loops on both ends similarly retry with capped backoff
 (250 ms → 5 s) instead of treating the first transient socket error as
 fatal.

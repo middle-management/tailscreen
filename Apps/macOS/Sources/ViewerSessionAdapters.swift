@@ -70,13 +70,19 @@ final class VTVideoDecoderAdapter: VideoDecoding, @unchecked Sendable {
     /// the underlying decoder's serial queue (no `callbackQueue` hop), exactly as
     /// the legacy client wired the raw `VideoDecoder` callbacks. The host uses
     /// them to drive the CODEC_NO (`0x07`) H.264 fallback and the
-    /// `DecodeRecoveryAction` escalation ladder that the session's naive
-    /// `onDecodeFailure → PLI` doesn't cover.
+    /// `DecodeRecoveryAction` escalation ladder, which `VideoDecoder` runs
+    /// internally on mac (the pure policy is the portable `DecodeRecovery`).
     ///
     /// `onCodecUnsupported` carries the codec the decoder couldn't build a
     /// session for (so the host can ask the sharer to switch codecs); because it
     /// takes over the underlying decoder's `onDecodeFailure`, the session's own
     /// `onDecodeFailure` seam is left unused on mac — the ladder owns PLIs.
+    /// That non-wiring is load-bearing: `ViewerSession` can now run the same
+    /// ladder itself for hosts that report per-frame failures through its seam
+    /// (`onDecoderResetNeeded`/`onDecodeFatal`, the Linux/Windows opt-in), so
+    /// the mac client must neither install those callbacks nor start invoking
+    /// the session's `onDecodeFailure` — either would double-ladder one
+    /// failure episode (two counters, two resets, two PLI streams).
     var onCodecUnsupported: ((VideoCodec) -> Void)?
     var onFrameDecodeFailed: (() -> Void)?
     var onRecoveryAction: ((DecodeRecoveryAction) -> Void)?

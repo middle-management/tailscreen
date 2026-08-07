@@ -1290,6 +1290,9 @@ final class AppUIState: ObservableObject {
             }
             let ended = EndedBox()
             var failureMessage: String?
+            // Held here (not inline in the `run` call) so the decode-recovery
+            // ladder's reset rung can reach it.
+            let decoder = FFmpegVideoDecoder()
             do {
                 try await transport.run(
                     config: ViewerConfig(
@@ -1299,7 +1302,7 @@ final class AppUIState: ObservableObject {
                         hostname: peer.tailscaleIP,
                         statePath: stateDirectory()
                     ),
-                    decoder: FFmpegVideoDecoder(),
+                    decoder: decoder,
                     videoSink: sink,
                     audioSink: audio,
                     shouldClose: { [weak self] in self?.stopRequested ?? true },
@@ -1335,6 +1338,18 @@ final class AppUIState: ObservableObject {
                     },
                     onEnded: { reason, wasAdmitted in
                         ended.value = (reason, wasAdmitted)
+                    },
+                    // Decode-recovery ladder opt-in: at the wedged-decoder
+                    // rung drop the lazy libavcodec context so the next AU (a
+                    // fresh keyframe — the session asks for one) rebuilds it.
+                    onDecoderResetNeeded: { decoder.reset() },
+                    onDecodeFatal: { [weak self] in
+                        // Terminal rung: name the stall on the hub's detail
+                        // line — the same surface a decline or session error
+                        // uses — instead of a silently frozen last frame.
+                        self?.detail = L(
+                            "Video has stalled — decoding keeps failing and automatic recovery hasn't helped."
+                        )
                     }
                 )
             } catch {

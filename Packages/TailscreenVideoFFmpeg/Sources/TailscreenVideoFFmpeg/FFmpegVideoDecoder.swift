@@ -14,7 +14,16 @@ import TailscreenViewer
 /// libavcodec needs the codec up front, while `ViewerSession` learns it from
 /// the RTP payload type and forwards it per-AU (`codec:`). A mid-stream codec
 /// change (rare — only a sharer H.264↔HEVC fallback) recreates the decoder.
-public final class FFmpegVideoDecoder: VideoDecoding {
+///
+/// `@unchecked Sendable` (the codebase's owning-the-invariant convention, same
+/// as `GtkVideoSink`): every mutation happens on the one serialization context
+/// the host drives the session on — `decode` per `VideoDecoding`'s threading
+/// contract, and `reset()` from the ladder's reset callback, which the session
+/// fires synchronously inside `decode`'s failure path on that same context.
+/// The annotation exists so a host can hold the decoder in one isolation
+/// domain (both GUI apps: the main actor) while also naming it in the
+/// transport call that installs the reset callback.
+public final class FFmpegVideoDecoder: VideoDecoding, @unchecked Sendable {
     public var onDecodedFrame: ((any DecodedFrame) -> Void)?
     public var onDecodeFailure: (() -> Void)?
 
@@ -54,6 +63,22 @@ public final class FFmpegVideoDecoder: VideoDecoding {
             report(error, codec: codec)
             onDecodeFailure?()
         }
+    }
+
+    /// Drop the lazy libavcodec decoder so the next access unit builds a fresh
+    /// one — the host-side answer to the escalation ladder's wedged-decoder
+    /// rung (`ViewerSession.onDecoderResetNeeded`). An internal reset rather
+    /// than a whole-object recreation on purpose: `ViewerSession` holds this
+    /// object for the session's lifetime, so swapping the instance would need a
+    /// decoder-factory seam nothing else wants, while dropping the context is
+    /// exactly the recreation the mid-stream codec-change path already does
+    /// (the fresh decoder picks its parameter sets back up from the next
+    /// in-band keyframe, which the ladder's PLI requests). `reportedFailures`
+    /// deliberately survives — a rebuilt decoder failing with the SAME message
+    /// is not news, and clearing it would re-log once per reset.
+    public func reset() {
+        decoder = nil
+        currentCodec = nil
     }
 
     /// Name a decode failure on stderr, once per distinct message.

@@ -212,6 +212,19 @@ public final class ViewerUIState: ObservableObject, @unchecked Sendable {
         }
     }
 
+    /// Video decoding has fatally stalled (the portable escalation ladder's
+    /// terminal rung): drop back to the session placard with `message`, so the
+    /// failure is a sentence rather than a silently frozen last frame — the
+    /// video branch wins on `hasVideo`, which is why it must flip too. If
+    /// decoding somehow recovers, the sink's next frame re-announces video and
+    /// the placard clears (the caller unlatches the sink alongside this).
+    public func noteVideoStalled(_ message: String) {
+        DispatchQueue.main.async {
+            self.hasVideo = false
+            self.sessionPhase = .failed(message)
+        }
+    }
+
     /// The capture device went away mid-session — unplugged, or taken.
     ///
     /// Both flags move together: leaving `micOn` true would show a live

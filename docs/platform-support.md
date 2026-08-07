@@ -295,7 +295,9 @@ because none of it touches the OS:
 
 NACK retransmission · XOR FEC · receiver reports · congestion control and the
 fps ladder · adaptive bitrate · per-viewer fairness · reorder/jitter buffering ·
-keyframe request (PLI) · idle sweep · the codec fallback ladder.
+keyframe request (PLI) · idle sweep · the codec fallback ladder · the
+decode-failure escalation ladder (keyframe request → decoder reset → a
+user-visible stall error).
 
 That is the point of the split: a bug fixed in the loss-recovery path is fixed
 everywhere, and the platform code stays down to capture, encode, decode, render,
