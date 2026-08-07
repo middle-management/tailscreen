@@ -189,3 +189,61 @@ final class PeerListFilterTests: XCTestCase {
         }
     }
 }
+
+/// The cache behind the sharing chip: what a metadata sweep's answers do to the
+/// per-peer status map.
+///
+/// Two lines of code in each hub, and every hub had written them slightly
+/// differently — which is exactly the shape of divergence nothing catches,
+/// because both spellings compile, both render a plausible list, and the wrong
+/// one only shows up as an invitation to connect to a share that already ended.
+final class PeerShareStatusMapTests: XCTestCase {
+    private func metadata(isSharing: Bool) -> TailscreenMetadata {
+        TailscreenMetadata(
+            shareName: "Display 1", hostname: "robert-macbook",
+            screenResolution: .init(width: 1920, height: 1080),
+            isSharing: isSharing, timestamp: Date(timeIntervalSince1970: 0))
+    }
+
+    func testAnAnswerIsRecorded() {
+        let map = PeerShareStatusMap.recording(metadata(isSharing: true), for: "a", in: [:])
+        XCTAssertEqual(PeerSharingState(fetched: map["a"]), .sharing)
+    }
+
+    func testANoAnswerClearsAPreviousAnswer() {
+        // THE decision. `nil` is status-unknown — a timeout, an EOF, a legacy
+        // build dropping the unknown byte — and never evidence about what that
+        // machine is doing now. Keeping the last answer is stale-positive by
+        // construction: a peer that stops sharing and stops answering in the
+        // same window keeps saying "Sharing" until it answers again.
+        let seeded = ["a": metadata(isSharing: true)]
+        let map = PeerShareStatusMap.recording(nil, for: "a", in: seeded)
+        XCTAssertNil(map["a"])
+        XCTAssertEqual(PeerSharingState(fetched: map["a"]), .unknown)
+    }
+
+    func testRecordingOnePeerLeavesTheOthersAlone() {
+        let seeded = ["a": metadata(isSharing: true), "b": metadata(isSharing: false)]
+        let map = PeerShareStatusMap.recording(nil, for: "a", in: seeded)
+        XCTAssertEqual(PeerSharingState(fetched: map["b"]), .notSharing)
+    }
+
+    func testPruningDropsPeersNoLongerPresent() {
+        // A departed peer keeping its last answer means the same id returning
+        // later shows a stale chip until its next probe lands.
+        let seeded = ["a": metadata(isSharing: true), "gone": metadata(isSharing: true)]
+        let map = PeerShareStatusMap.pruned(seeded, toPresent: ["a"])
+        XCTAssertEqual(map.keys.sorted(), ["a"])
+    }
+
+    func testPruningToNothingEmptiesTheMap() {
+        let seeded = ["a": metadata(isSharing: true)]
+        XCTAssertTrue(PeerShareStatusMap.pruned(seeded, toPresent: []).isEmpty)
+    }
+
+    func testPruningKeepsEveryPresentPeer() {
+        let seeded = ["a": metadata(isSharing: true), "b": metadata(isSharing: false)]
+        let map = PeerShareStatusMap.pruned(seeded, toPresent: ["a", "b", "c"])
+        XCTAssertEqual(map.keys.sorted(), ["a", "b"])
+    }
+}

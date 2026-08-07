@@ -451,12 +451,24 @@ class AppState: ObservableObject {
     private var pendingPreApprovedIPs: Set<String> = []
 
     /// "Always Allow" / "Deny & Block" intents recorded before the peer's
-    /// StableNodeID resolved, keyed by the pending viewer's `ip:port` id.
+    /// StableNodeID resolved, keyed by the roster row's `ip:port` id.
     /// Applied (persisted under the resolved StableNodeID) the moment a
     /// roster snapshot carries that id's stableID — so the user's decision
-    /// sticks instead of silently degrading to one-time. Cleared per-id on
-    /// application and wholesale on `stopSharing`.
-    private var queuedPolicyIntents: [String: PeerPolicy] = [:]
+    /// sticks instead of silently degrading to one-time.
+    ///
+    /// The **shared** queue (`ViewerRosterDecision.PendingIntents`, the same
+    /// one `SharerAccessCoordinator` holds for the GTK and WinUI hosts) rather
+    /// than the dictionary this used to be. Two behaviours came with it, and
+    /// the second is the reason for the swap: last-write-wins, so a Deny &
+    /// Block after an Always Allow means the second one; and `prune`, which
+    /// forgets an intent whose row has gone — without it a Deny & Block on a
+    /// peer that disconnects before resolving lands on *the next connection
+    /// from that address*, which behind one NAT is a different machine.
+    private var policyIntents = ViewerRosterDecision.PendingIntents()
+
+    /// Set while a roster note is queued behind the current main-actor turn.
+    /// See `scheduleNoteRoster()`.
+    private var rosterNoteScheduled = false
 
     private var server: TailscaleScreenShareServer?
     private var client: TailscaleScreenShareClient?
@@ -1568,9 +1580,18 @@ class AppState: ObservableObject {
                 srv.setShareSystemAudio(shareSystemAudioByDefault)
                 // Carry over any request-to-share pre-approvals so an
                 // accepted requester's HELLO auto-admits on this fresh server.
+                //
+                // CLEARED as they are replayed, which is what the GTK and WinUI
+                // engines do. A pre-approval is a single-use invitation — the
+                // server consumes the IP on the matching HELLO — so holding it
+                // here past the handover means a later server built for the
+                // same share (a re-target, a rebuild) re-invites a peer who has
+                // already been through the gate once, letting them skip it
+                // again on a share they were never asked about.
                 for ip in pendingPreApprovedIPs {
                     srv.preApproveViewer(ip: ip)
                 }
+                pendingPreApprovedIPs.removeAll()
 
                 // Sharer's audio SSRC is fixed at 0. Build the channel up
                 // front so HELLO_ACK assignment for viewers can route
@@ -1702,7 +1723,10 @@ class AppState: ObservableObject {
         notifiedViewerIDs.removeAll()
         notifiedPendingViewerIDs.removeAll()
         pendingPreApprovedIPs.removeAll()
-        queuedPolicyIntents.removeAll()
+        // The rows are gone, and an intent that outlived the share it was made
+        // during would apply to whoever connects to the NEXT one from the same
+        // address — `SharerAccessCoordinator.reset()`'s reasoning, same queue.
+        policyIntents = ViewerRosterDecision.PendingIntents()
         tailscaleIPs = []
 
         // Update metadata
@@ -3818,9 +3842,12 @@ class AppState: ObservableObject {
                         label: $0.hostname ?? $0.tailscaleIP)
                 }
         currentViewers = viewers
-        refreshRememberedDisplayNames(stableIDHostnamePairs: viewers.map { ($0.stableID, $0.hostname) })
-        applyQueuedPolicyIntents(
-            rows: viewers.map { (id: $0.id, stableID: $0.stableID, displayName: $0.hostname ?? $0.tailscaleIP) })
+        // Both rosters, coalesced to the end of the turn — see
+        // `scheduleNoteRoster()`. The roster is re-emitted whenever anything
+        // about it changes, including a StableNodeID resolving, which is
+        // precisely the event a queued Deny & Block is waiting for; noting it
+        // here rather than only on join/leave is what makes the queue drain.
+        scheduleNoteRoster()
         // The shared decision does both halves: it prunes IDs that have left
         // (so a reconnect from the same address is announced again) and posts
         // only the arrivals not already announced.
@@ -3839,9 +3866,7 @@ class AppState: ObservableObject {
     /// the approval gate.
     private func handlePendingViewersChanged(_ pending: [PendingViewerInfo]) {
         pendingViewers = pending
-        refreshRememberedDisplayNames(stableIDHostnamePairs: pending.map { ($0.stableID, $0.hostname) })
-        applyQueuedPolicyIntents(
-            rows: pending.map { (id: $0.id, stableID: $0.stableID, displayName: $0.hostname ?? $0.tailscaleIP) })
+        scheduleNoteRoster()
         let candidates = Self.noticeCandidates(pending)
         let answered = SharerNoticeDecision.noticesToWithdraw(
             candidates: candidates, alreadyNotified: notifiedPendingViewerIDs)
@@ -4220,7 +4245,7 @@ class AppState: ObservableObject {
     /// — the peer is admitted one-time in the meantime.
     func approvePendingViewerAlways(_ id: String) {
         if !persistPendingViewerPolicy(id, policy: .allow) {
-            queuedPolicyIntents[id] = .allow
+            policyIntents.queue(id: id, policy: .allow)
             logger.log("Queued 'always allow' for \(id): StableNodeID unresolved — persist on resolve")
         }
         server?.approveViewer(addr: id)
@@ -4236,7 +4261,7 @@ class AppState: ObservableObject {
         if persistPendingViewerPolicy(id, policy: .deny) {
             server?.denyViewer(addr: id)
         } else {
-            queuedPolicyIntents[id] = .deny
+            policyIntents.queue(id: id, policy: .deny)
             logger.log("Queued 'deny & block' for \(id): StableNodeID unresolved — parked until resolve")
         }
     }
@@ -4252,6 +4277,76 @@ class AppState: ObservableObject {
         }
     }
 
+    /// Both rosters as the shared queue's identity rows: the connected ones
+    /// first, then the ones parked at the gate.
+    ///
+    /// **Both, never one at a time.** A peer moves between the lists on Accept,
+    /// and a snapshot of only one would prune the other's queued intents as
+    /// "gone" at exactly that moment — the rule `.claude/rules/protocol.md`'s
+    /// Deny & Block pitfall spells out, and the shape `LinuxShareSession` and
+    /// `WindowsShareSession` already use.
+    private func rosterIdentities() -> [ViewerRosterDecision.RosterIdentity] {
+        var rows = currentViewers.map {
+            ViewerRosterDecision.RosterIdentity(
+                id: $0.id, stableID: $0.stableID,
+                displayName: $0.hostname ?? $0.tailscaleIP)
+        }
+        rows.append(
+            contentsOf: pendingViewers.map {
+                ViewerRosterDecision.RosterIdentity(
+                    id: $0.id, stableID: $0.stableID,
+                    displayName: $0.hostname ?? $0.tailscaleIP)
+            })
+        return rows
+    }
+
+    /// Queue a roster note for the end of the current main-actor turn, at most
+    /// one per turn.
+    ///
+    /// The one place this host cannot copy the other two verbatim. `Accept`
+    /// makes the server fire `onPendingViewersChanged` (row removed) and then
+    /// `onViewersChanged` (row added), and both arrive here through their own
+    /// `Task { @MainActor }` hop — so for one turn the row is in NEITHER
+    /// published list, and a note taken right then would prune the very intent
+    /// the Accept just queued. macOS is the host where that matters, because
+    /// macOS is the one that puts Always Allow / Deny & Block on the PENDING
+    /// rows; the GTK and WinUI hubs offer them on connected rows only, where
+    /// nothing moves. Coalescing to the end of the turn lets both callbacks
+    /// land first, so the note sees a settled pair of lists.
+    private func scheduleNoteRoster() {
+        guard !rosterNoteScheduled else { return }
+        rosterNoteScheduled = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.rosterNoteScheduled = false
+            self.noteRoster()
+        }
+    }
+
+    /// Persist any queued intent whose StableNodeID has resolved, refresh
+    /// remembered display names, and forget intents whose row has gone.
+    ///
+    /// Persisting fires the remembered-store subscription, which pushes the
+    /// policy to the live server (admitting/expelling as needed).
+    private func noteRoster() {
+        let rows = rosterIdentities()
+        for applied in policyIntents.drain(snapshot: rows) {
+            viewerAccessPolicies.upsert(
+                stableID: applied.stableID, displayName: applied.displayName,
+                policy: applied.policy)
+            logger.log(
+                "Applied queued \(applied.policy) intent for \(applied.id) → \(applied.stableID)")
+        }
+        // Fed the raw HOSTNAMES rather than `RosterIdentity.displayName`,
+        // whose `hostname ?? tailscaleIP` fallback would rewrite a remembered
+        // peer's name to a bare IP for as long as its netmap lookup is
+        // outstanding — the exact thing this refresh exists to undo.
+        var names: [(String?, String?)] = currentViewers.map { ($0.stableID, $0.hostname) }
+        names.append(contentsOf: pendingViewers.map { ($0.stableID, $0.hostname) })
+        refreshRememberedDisplayNames(stableIDHostnamePairs: names)
+        policyIntents.prune(presentIDs: Set(rows.map(\.id)))
+    }
+
     /// Persist a policy under the pending viewer's resolved StableNodeID.
     /// Returns false (nothing persisted) when the row is gone or its
     /// StableNodeID hasn't resolved — the caller then queues the intent.
@@ -4264,39 +4359,6 @@ class AppState: ObservableObject {
             policy: policy
         )
         return true
-    }
-
-    /// Which queued policy intents can now be persisted, given a roster
-    /// snapshot: for each row whose `id` has a queued intent AND a resolved
-    /// StableNodeID, emit `(id, stableID, policy)`. Pure so the
-    /// late-resolution application is unit-testable.
-    nonisolated static func resolvableIntents(
-        intents: [String: PeerPolicy],
-        snapshot: [(id: String, stableID: String?)]
-    ) -> [(id: String, stableID: String, policy: PeerPolicy)] {
-        snapshot.compactMap { row in
-            guard let policy = intents[row.id], let stableID = row.stableID else { return nil }
-            return (id: row.id, stableID: stableID, policy: policy)
-        }
-    }
-
-    /// Apply any queued "Always Allow" / "Deny & Block" intents whose peer's
-    /// StableNodeID just resolved in `rows`. Persisting fires the
-    /// remembered-store subscription, which pushes the policy to the live
-    /// server (admitting/expelling as needed).
-    private func applyQueuedPolicyIntents(rows: [(id: String, stableID: String?, displayName: String)]) {
-        guard !queuedPolicyIntents.isEmpty else { return }
-        let resolvable = Self.resolvableIntents(
-            intents: queuedPolicyIntents,
-            snapshot: rows.map { (id: $0.id, stableID: $0.stableID) })
-        guard !resolvable.isEmpty else { return }
-        let nameByID = Dictionary(rows.map { ($0.id, $0.displayName) }, uniquingKeysWith: { first, _ in first })
-        for item in resolvable {
-            viewerAccessPolicies.upsert(
-                stableID: item.stableID, displayName: nameByID[item.id] ?? item.id, policy: item.policy)
-            queuedPolicyIntents.removeValue(forKey: item.id)
-            logger.log("Applied queued \(item.policy) intent for \(item.id) → \(item.stableID)")
-        }
     }
 
     /// Vibrancy-backed centered placard shown between HELLO_PENDING and

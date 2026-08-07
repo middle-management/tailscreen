@@ -531,6 +531,7 @@
 "Declined" = "Avböjt";
 "No reply" = "Inget svar";
 "Requesting Control…" = "Begär styrning…";
+"Cancel Request" = "Avbryt förfrågan";
 "Release Control" = "Lämna tillbaka styrningen";
 "%@ wants to watch" = "%@ vill titta";
 "Anyone on your tailnet who can reach this machine can watch." = "Vem som helst i ditt tailnet som når den här datorn kan titta.";

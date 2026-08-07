@@ -189,30 +189,13 @@ final class ViewerAccessPolicyTests: XCTestCase {
         XCTAssertTrue(Server.canAcceptPending(currentCount: 2, isExisting: false, cap: 3))
     }
 
-    // MARK: - queued policy intents applied on late StableNodeID resolution
-
-    @MainActor
-    func testResolvableIntentsMatchesOnlyResolvedRowsWithIntent() {
-        let intents: [String: PeerPolicy] = ["1.1.1.1:1": .deny, "2.2.2.2:2": .allow]
-        let snapshot: [(id: String, stableID: String?)] = [
-            ("1.1.1.1:1", "nBLOCKED"),  // intent + resolved → applied
-            ("2.2.2.2:2", nil),  // intent but unresolved → skipped
-            ("3.3.3.3:3", "nOTHER")  // resolved but no intent → skipped
-        ]
-        let resolvable = AppState.resolvableIntents(intents: intents, snapshot: snapshot)
-        XCTAssertEqual(resolvable.count, 1)
-        let item = try? XCTUnwrap(resolvable.first)
-        XCTAssertEqual(item?.id, "1.1.1.1:1")
-        XCTAssertEqual(item?.stableID, "nBLOCKED")
-        XCTAssertEqual(item?.policy, .deny)
-    }
-
-    @MainActor
-    func testResolvableIntentsEmptyWhenNothingQueued() {
-        let resolvable = AppState.resolvableIntents(
-            intents: [:], snapshot: [("1.1.1.1:1", "nX")])
-        XCTAssertTrue(resolvable.isEmpty)
-    }
+    // Queued "Always Allow" / "Deny & Block" intents applied on late
+    // StableNodeID resolution used to live here, against `AppState`'s own
+    // `resolvableIntents`. That copy is gone: `AppState` now holds the SHARED
+    // `ViewerRosterDecision.PendingIntents` the GTK and WinUI hosts hold, so
+    // the rule is pinned once, portably, by `ViewerPendingIntentsTests` in the
+    // package's `TailscreenProtocolTests` — including the two legs macOS never
+    // had, last-write-wins and prune-on-departure.
 
     // MARK: - readFailed classification reuse (awaitShareResponse dead-socket)
 

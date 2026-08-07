@@ -546,6 +546,7 @@
 "Declined" = "Declined";
 "No reply" = "No reply";
 "Requesting Control…" = "Requesting Control…";
+"Cancel Request" = "Cancel Request";
 "Release Control" = "Release Control";
 "%@ wants to watch" = "%@ wants to watch";
 "Anyone on your tailnet who can reach this machine can watch." = "Anyone on your tailnet who can reach this machine can watch.";

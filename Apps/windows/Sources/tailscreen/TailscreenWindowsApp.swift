@@ -22,6 +22,7 @@ import struct TailscreenProtocol.NoticeCandidate
 import struct TailscreenProtocol.PeerListFilter
 import enum TailscreenProtocol.PeerListFilterStore
 import enum TailscreenProtocol.PeerPolicy
+import enum TailscreenProtocol.PeerShareStatusMap
 import enum TailscreenProtocol.PeerSharingState
 import struct TailscreenProtocol.PendingShareRequest
 import struct TailscreenProtocol.QualitySettings
@@ -1190,11 +1191,14 @@ final class AppUIState: ObservableObject {
             do {
                 let found = try await transport.discoverPeers()
                 peers = found
-                // Drop answers for machines that are no longer discovered, so a
-                // stale entry can never keep a departed peer looking like it is
-                // sharing.
-                let ids = Set(found.map(\.id))
-                shareInfo = shareInfo.filter { ids.contains($0.key) }
+                // Drop answers for machines that are no longer discovered — or
+                // that have gone offline, since the sweep below skips those and
+                // their cached answer can therefore only get staler. Without it
+                // a departed or sleeping peer keeps looking like it is sharing.
+                // Pruned to the ONLINE set, which is what the GTK picker does
+                // and what this function's own doc comment already claimed.
+                shareInfo = PeerShareStatusMap.pruned(
+                    shareInfo, toPresent: Set(found.filter(\.isOnline).map(\.id)))
                 isSearching = false
                 await sweepShareStatus(found)
             } catch {
@@ -1229,10 +1233,13 @@ final class AppUIState: ObservableObject {
                 group.addTask { (peer.id, await transport.probePeer(ip: peer.tailscaleIP)) }
             }
             for await (id, probe) in group {
-                shareInfo[id] = probe.metadata
+                // No answer CLEARS the entry — the shared rule, see
+                // `PeerShareStatusMap`.
+                shareInfo = PeerShareStatusMap.recording(probe.metadata, for: id, in: shareInfo)
                 // Only on a completed round trip: a latency recorded for a
                 // probe that never answered would read as a fast link to a
-                // machine that is gone.
+                // machine that is gone. `probePeer` returns nil for both
+                // together, so the two can never disagree.
                 latencyMs[id] = probe.latencyMs
             }
         }

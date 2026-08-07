@@ -108,6 +108,53 @@ public enum PeerSharingState: Sendable, Equatable {
     }
 }
 
+/// Upkeep of the per-peer sharing-status map every hub keeps behind
+/// ``PeerSharingState`` — the cache the metadata sweep fills and the rows'
+/// sharing chip reads.
+///
+/// Two lines of code, and every host had written them slightly differently.
+/// The GTK picker's manual refresh cleared a peer's status on a no-answer while
+/// its 10 s quiet refresh kept the previous one, so the same chip meant
+/// different things depending on which pass had run last — and a machine that
+/// stopped sharing between sweeps kept saying "Sharing" for as long as it also
+/// stopped answering. macOS and the Windows hub already clear.
+///
+/// **A no-answer clears the entry.** `nil` from `TailscreenMetadataClient` is
+/// status-UNKNOWN — a timeout, an EOF, a legacy build dropping the unknown byte
+/// — and the one thing it is not is evidence about what that machine is doing
+/// now. The alternative (keep the last answer) is stale-positive by
+/// construction: the chip's failure mode becomes "invites you to connect to a
+/// share that ended", which is the failure a person acts on, whereas
+/// `.unknown` renders as no chip and hides under the "Only screens being
+/// shared" axis — visibly nothing rather than confidently wrong.
+///
+/// Pure, and in this tier for the same reason `PeerListFilter` is: all three
+/// hubs project the same cache through the same tri-state, and a divergence
+/// here is invisible until somebody dials a screen that is not there.
+public enum PeerShareStatusMap {
+    /// Fold one probe answer in. `fetched == nil` removes the entry.
+    public static func recording(
+        _ fetched: TailscreenMetadata?, for id: String,
+        in statuses: [String: TailscreenMetadata]
+    ) -> [String: TailscreenMetadata] {
+        var next = statuses
+        next[id] = fetched
+        return next
+    }
+
+    /// Drop entries for peers the latest discovery no longer lists.
+    ///
+    /// Without this a peer that leaves the tailnet keeps its last answer, so
+    /// the same id coming back later shows a stale chip until its next probe
+    /// lands — and a peer that never comes back keeps its row's worth of the
+    /// map for the life of the process.
+    public static func pruned(
+        _ statuses: [String: TailscreenMetadata], toPresent ids: Set<String>
+    ) -> [String: TailscreenMetadata] {
+        statuses.filter { ids.contains($0.key) }
+    }
+}
+
 /// Persisted peer-list filter. Mirrors `QualitySettingsStore` — plain
 /// `UserDefaults` so `AppState.init`'s stored-property initialiser can read
 /// the saved value without `@AppStorage`. The `defaults` parameter exists

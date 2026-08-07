@@ -248,6 +248,13 @@ struct WinUIVideoView: WinUIElementRepresentable {
             // The buffer is allocated on first use and reused; a session where
             // nobody draws pays one `isEmpty` check and uploads three planes
             // rather than four.
+            // Ephemeral strokes (`.click` markers) age out on a clock, and this
+            // per-frame composite is the only thing that ticks once the ops stop
+            // arriving — a lone click marker with no traffic behind it would
+            // otherwise sit on the canvas for the whole session. Swept BEFORE
+            // the read so this frame already reflects it; `expire` deliberately
+            // queues no repaint of its own.
+            interaction.annotations.expire()
             let annotations = interaction.annotations.visibleAnnotations
             var overlayPointer: UnsafePointer<UInt8>?
             let overlayBytes = frame.width * frame.height * AnnotationRasterizer.bytesPerPixel

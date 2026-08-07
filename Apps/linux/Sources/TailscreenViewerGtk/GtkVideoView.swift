@@ -142,6 +142,13 @@ public struct GtkVideoView: View {
                 }
                 // Overlay annotation strokes (mapped through the same transform).
                 if let annotations {
+                    // Ephemeral strokes (`.click` markers) age out on a clock,
+                    // and this is the only place that ticks once the ops stop
+                    // arriving — a lone click marker with no traffic behind it
+                    // would otherwise stay on the canvas for the whole share.
+                    // Swept BEFORE the draw so this pass already reflects it;
+                    // `expire` deliberately queues no repaint of its own.
+                    annotations.expire()
                     let data = annotations.renderData(
                         aspect: Double(frame.width) / Double(max(1, frame.height)),
                         renderHeight: Double(frame.height))

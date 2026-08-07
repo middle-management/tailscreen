@@ -39,9 +39,23 @@ public enum AnnotationMode: Sendable, Equatable {
 /// Coordinates are normalized `[0, 1]` in the video frame (origin top-left) —
 /// the same space `Annotation`/`InputEvent` use — so a viewer stroke lands in
 /// the right place on the sharer's screen.
+///
+/// Timing: the two decisions that need a clock — dating an ephemeral stroke and
+/// sweeping the ones that have aged out — read the `nowNs` handed to
+/// ``apply(_:nowNs:)`` / ``endStroke(nowNs:)`` / ``expire(nowNs:)``, with the
+/// process uptime clock as the fallback for a host that threads none. Same
+/// shape as `VoiceDownlink.ingest(_:nowNs:)`, and for the same reason: a
+/// time-based rule nobody can pin to a fixed instant is a rule nobody tests.
 public final class AnnotationStore: @unchecked Sendable {
     private let lock = NSLock()
     private var strokes: [Annotation] = []
+    /// Deadlines for the ephemeral strokes, keyed by annotation id — the same
+    /// bookkeeping ``ReceivedAnnotations`` keeps on the sharer's half, and
+    /// deliberately reading its ``ReceivedAnnotations/ephemeralLifetimeNs(for:)``
+    /// rather than a second table: a click marker that vanished at 0.8 s on the
+    /// sharer's screen and stayed up on the viewer's would be two machines
+    /// disagreeing about one gesture.
+    private var expiries: [UUID: UInt64] = [:]
     private var live: [CGPoint] = []
     /// Tool the in-progress stroke was started with — latched at `beginStroke`
     /// so switching tools mid-drag can't reshape the stroke under way.
@@ -85,6 +99,7 @@ public final class AnnotationStore: @unchecked Sendable {
     public func resetForNewSession() {
         lock.lock()
         strokes.removeAll()
+        expiries.removeAll()
         live = []
         lock.unlock()
         mode = .off
@@ -109,15 +124,95 @@ public final class AnnotationStore: @unchecked Sendable {
     // MARK: Remote ops (from the sharer's relay)
 
     /// Apply an inbound op (safe from any thread). Does not re-emit `onLocalOp`.
-    public func apply(_ op: AnnotationOp) {
+    ///
+    /// **Upsert, not append.** A peer dragging a stroke re-sends the SAME id
+    /// with a longer point list every few milliseconds; appending stacked
+    /// hundreds of copies of one stroke, so the store grew without bound for as
+    /// long as somebody kept drawing and the renderer drew every copy on top of
+    /// itself. Same rule ``ReceivedAnnotations/apply(_:nowNs:)`` documents, and
+    /// the same rule ``visibleAnnotations`` already relied on for the live local
+    /// stroke.
+    ///
+    /// - Parameter nowNs: monotonic clock reading for this op's arrival, used
+    ///   to date ephemeral strokes and to sweep the ones that have aged out.
+    ///   Pass the host's clock where one is already threaded (deterministic,
+    ///   testable); nil reads the process's monotonic uptime clock — the same
+    ///   affordance `VoiceDownlink.ingest(_:nowNs:)` offers.
+    public func apply(_ op: AnnotationOp, nowNs: UInt64? = nil) {
+        let now = nowNs ?? Self.monotonicNowNs()
         lock.lock()
         switch op {
-        case .add(let annotation): strokes.append(annotation)
-        case .undo(let id): strokes.removeAll { $0.id == id }
-        case .clearAll: strokes.removeAll()
+        case .add(let annotation):
+            if let index = strokes.firstIndex(where: { $0.id == annotation.id }) {
+                strokes[index] = annotation
+            } else {
+                strokes.append(annotation)
+            }
+            recordExpiryLocked(for: annotation, nowNs: now)
+        case .undo(let id):
+            strokes.removeAll { $0.id == id }
+            expiries.removeValue(forKey: id)
+        case .clearAll:
+            strokes.removeAll()
+            expiries.removeAll()
         }
+        _ = sweepExpiredLocked(nowNs: now)
         lock.unlock()
         redraw()
+    }
+
+    // MARK: Ephemeral strokes
+
+    /// Drop every stroke past its deadline. Returns whether anything went, so a
+    /// host can skip a repaint it would otherwise queue.
+    ///
+    /// Deliberately does **not** call `redraw()`: both hosts sweep from inside
+    /// their render pass (the GTK GLArea's `render`, the WinUI frame composite),
+    /// where asking for another repaint from within the repaint is at best a
+    /// wasted frame. `apply` sweeps too, so a canvas anyone is still drawing on
+    /// stays swept without a render pass at all.
+    ///
+    /// - Parameter nowNs: monotonic clock reading; nil reads the uptime clock.
+    @discardableResult
+    public func expire(nowNs: UInt64? = nil) -> Bool {
+        let now = nowNs ?? Self.monotonicNowNs()
+        lock.lock()
+        let changed = sweepExpiredLocked(nowNs: now)
+        lock.unlock()
+        return changed
+    }
+
+    /// When the next ephemeral stroke falls due, for a host that would rather
+    /// schedule a repaint than poll. Nil when nothing is ephemeral.
+    public var nextExpiryNs: UInt64? {
+        lock.lock()
+        defer { lock.unlock() }
+        return expiries.values.min()
+    }
+
+    /// Record (or clear) a stroke's deadline. Clearing matters on the upsert
+    /// path: an id re-sent under a permanent tool must not keep a deadline it
+    /// picked up as a click.
+    private func recordExpiryLocked(for annotation: Annotation, nowNs: UInt64) {
+        if let lifetime = ReceivedAnnotations.ephemeralLifetimeNs(for: annotation.tool) {
+            expiries[annotation.id] = nowNs &+ lifetime
+        } else {
+            expiries.removeValue(forKey: annotation.id)
+        }
+    }
+
+    /// Caller must hold `lock`.
+    private func sweepExpiredLocked(nowNs: UInt64) -> Bool {
+        guard !expiries.isEmpty else { return false }
+        let dead = Set(expiries.filter { $0.value <= nowNs }.keys)
+        guard !dead.isEmpty else { return false }
+        strokes.removeAll { dead.contains($0.id) }
+        for id in dead { expiries.removeValue(forKey: id) }
+        return true
+    }
+
+    private static func monotonicNowNs() -> UInt64 {
+        DispatchTime.now().uptimeNanoseconds
     }
 
     // MARK: Local capture (main thread)
@@ -150,7 +245,14 @@ public final class AnnotationStore: @unchecked Sendable {
     /// Commit the in-progress stroke as an `Annotation`, add it locally, and
     /// hand it to `onLocalOp` for relay. A tap (single point) still commits —
     /// that's exactly what the `click` marker is.
-    public func endStroke() {
+    ///
+    /// - Parameter nowNs: monotonic clock reading, so a locally-drawn click
+    ///   marker ages out on the same schedule as one relayed in. macOS's
+    ///   `AnnotationCanvasModel` already expires its own clicks; a viewer whose
+    ///   marker outlived the one it just put on the sharer's screen would be
+    ///   the two halves of one gesture disagreeing.
+    public func endStroke(nowNs: UInt64? = nil) {
+        let now = nowNs ?? Self.monotonicNowNs()
         lock.lock()
         let points = live
         let tool = liveTool
@@ -166,6 +268,8 @@ public final class AnnotationStore: @unchecked Sendable {
             width: Annotation.defaultWidth)
         lock.lock()
         strokes.append(annotation)
+        recordExpiryLocked(for: annotation, nowNs: now)
+        _ = sweepExpiredLocked(nowNs: now)
         lock.unlock()
         onLocalOp?(.add(annotation))
         redraw()
@@ -175,6 +279,7 @@ public final class AnnotationStore: @unchecked Sendable {
     public func undo() {
         lock.lock()
         let removed = strokes.popLast()
+        if let removed { expiries.removeValue(forKey: removed.id) }
         lock.unlock()
         if let removed { onLocalOp?(.undo(removed.id)) }
         redraw()
@@ -184,6 +289,7 @@ public final class AnnotationStore: @unchecked Sendable {
     public func clearAll() {
         lock.lock()
         strokes.removeAll()
+        expiries.removeAll()
         live = []
         lock.unlock()
         onLocalOp?(.clearAll)

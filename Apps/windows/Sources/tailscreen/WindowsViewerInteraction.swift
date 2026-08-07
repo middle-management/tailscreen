@@ -64,10 +64,17 @@ final class WindowsViewerInteraction: ObservableObject {
     @Published private(set) var controlState: ControlState = .idle
 
     /// Label for the shared `RemoteControlBar`'s single button.
+    ///
+    /// The waiting label says what pressing DOES rather than what is happening,
+    /// because this bar is one button with no tooltip behind it: macOS words
+    /// the pending state "Requesting…" and hangs "click to cancel" off the
+    /// toolbar item's tooltip, and swift-cross-ui has nowhere to put that. A
+    /// button that reads "Requesting…" and is also the only way out of
+    /// requesting is a way out nobody finds.
     var controlButtonLabel: String {
         switch controlState {
         case .idle, .revoked: return L("Request Control")
-        case .requested: return L("Requesting…")
+        case .requested: return L("Cancel Request")
         case .active: return L("Release Control")
         }
     }
@@ -209,7 +216,21 @@ final class WindowsViewerInteraction: ObservableObject {
                 Task { @MainActor in self?.annotations.apply(op) }
             },
             onControlGranted: { [weak self] in
-                Task { @MainActor in self?.controlState = .active }
+                Task { @MainActor in
+                    guard let self else { return }
+                    // Only enter control if this viewer is still asking for it.
+                    // Now that a pending request is cancellable, a grant can
+                    // cross the cancel on the wire — and silently forcing
+                    // somebody who withdrew into driving another machine is the
+                    // worst possible way to lose that race. Hand it straight
+                    // back instead, the same answer macOS's `onControlGranted`
+                    // gives.
+                    guard self.controlState == .requested else {
+                        self.send(.releaseControl)
+                        return
+                    }
+                    self.controlState = .active
+                }
             },
             onControlRevoked: { [weak self] reason in
                 Task { @MainActor in self?.controlState = .revoked(reason: reason) }
@@ -218,26 +239,35 @@ final class WindowsViewerInteraction: ObservableObject {
 
     // MARK: Outbound
 
-    /// Toggle remote control: request it, or release it if held.
+    /// Toggle remote control: request it, cancel a pending request, or release
+    /// a held grant.
     ///
-    /// A `.requested` state is NOT re-requestable — pressing the button again
-    /// while waiting would queue a second request the sharer sees as a separate
-    /// prompt.
+    /// A `.requested` state is NOT re-requestable — pressing while waiting
+    /// would queue a second request the sharer sees as a separate prompt — but
+    /// it IS cancellable, which is what the other two hosts do and this one did
+    /// not. Waiting on somebody else's decision with no way to withdraw is a
+    /// state you cannot leave: the request sits on the sharer's screen until
+    /// they answer it, and answering it late drops a viewer who has since
+    /// walked away straight into controlling a machine.
+    ///
+    /// Cancelling is the same `.controlReleased` (0x0A) the release path sends
+    /// — no new wire byte. The sharer's listener treats it as "I'm done", which
+    /// clears a pending request and revokes a live grant alike, so one message
+    /// covers both directions out of the state machine.
     func toggleControl() {
         guard remoteControlAvailable else { return }
         switch controlState {
         case .idle, .revoked:
             controlState = .requested
             send(.requestControl)
-        case .active:
+        case .requested, .active:
             // Optimistic: the sharer's `.controlRevoked` will confirm, but the
             // local gate must close NOW or a stray pointer move between the
             // release and its acknowledgement still reaches the sharer's
-            // desktop.
+            // desktop. From `.requested` it also means a grant that crosses the
+            // cancel on the wire finds the gate already shut.
             controlState = .idle
             send(.releaseControl)
-        case .requested:
-            break
         }
     }
 
