@@ -129,13 +129,10 @@
 "Toggles voice chat with viewers" = "Växlar röstchatt med tittare";
 "Share System Audio" = "Dela systemljud";
 "Mute System Audio" = "Stäng av systemljud";
-"Share system audio" = "Dela systemljud";
-"Mute system audio" = "Stäng av systemljud";
 "Shares your computer's audio with viewers" = "Delar datorns ljud med tittarna";
 "Share system audio when sharing starts" = "Dela systemljud när delning startar";
 "Stop Sharing" = "Sluta dela";
 "Disconnects all viewers and ends the screen share" = "Kopplar från alla tittare och avslutar skärmdelningen";
-"Change Source…" = "Byt källa…";
 "Change what you're sharing" = "Ändra vad du delar";
 "Reopens the picker without disconnecting viewers" = "Öppnar väljaren igen utan att koppla från tittarna";
 "No viewers yet" = "Inga tittare än";
@@ -172,7 +169,6 @@
 "Speaker output device" = "Högtalarutgång";
 
 /* MARK: - Display picker / share section (MenuBarView.swift) */
-"SHARE" = "DELA";
 "Another Tailscreen is sharing" = "En annan Tailscreen delar";
 "Stop the other instance first" = "Stoppa den andra instansen först";
 "Choose what to share…" = "Välj vad du vill dela…";
@@ -373,7 +369,6 @@
 "Toggle microphone (system-wide)" = "Växla mikrofon (systemomfattande)";
 "Disconnect viewer" = "Koppla från tittare";
 "Show / hide this help" = "Visa / dölj den här hjälpen";
-"Keyboard shortcuts" = "Tangentbordsgenvägar";
 "Close keyboard shortcuts" = "Stäng tangentbordsgenvägar";
 
 /* MARK: - Viewer toolbar (ViewerToolbar.swift) */
@@ -435,15 +430,12 @@
 "Grant control to %@" = "Bevilja styrning till %@";
 "%@ is controlling your Mac" = "%@ styr din Mac";
 "Stop" = "Stoppa";
-"Stop remote control" = "Stoppa fjärrstyrning";
 "Immediately revokes the viewer's control of your Mac (⌃⌥.)" = "Återkallar omedelbart tittarens styrning av din Mac (⌃⌥.)";
 "Request Control" = "Begär styrning";
 "Ask the sharer to let you control their Mac" = "Be delaren att låta dig styra deras Mac";
 "The sharer must grant control before your input is injected" = "Delaren måste bevilja styrning innan dina indata skickas";
-"Requesting control…" = "Begär styrning…";
 "Waiting for the sharer to grant control" = "Väntar på att delaren beviljar styrning";
 "You are controlling this Mac" = "Du styr denna Mac";
-"Stop controlling" = "Sluta styra";
 "Stop Remote Control" = "Stoppa fjärrstyrning";
 
 /* Remote control — grant-time whole-Mac scope warning */
@@ -470,7 +462,6 @@
 /* Hub — share card (HubCards.swift) */
 "My screen" = "Min skärm";
 "Share my screen" = "Dela min skärm";
-"Stop sharing" = "Sluta dela";
 "Drawing takes over the screen; Esc gives it back" = "Ritläget tar över skärmen; Esc lämnar tillbaka den";
 "Press Esc to stop drawing" = "Tryck Esc för att sluta rita";
 "Applies to your next share" = "Gäller vid nästa delning";
@@ -486,7 +477,6 @@
 "Signed in" = "Inloggad";
 "Filter ●" = "Filter ●";
 "Filter" = "Filter";
-"Filter by tag" = "Filtrera på tagg";
 
 /* Hub — over-video chrome (HubOverlays.swift) */
 "%lld×%lld · %lld fps" = "%lld×%lld · %lld fps";
@@ -525,7 +515,6 @@
 
 /* Hub — viewer roster + approval prompts (HubViewerRoster.swift / HubStyle.swift) */
 "Allow" = "Tillåt";
-"Always allow" = "Tillåt alltid";
 "Block" = "Blockera";
 "Forget" = "Glöm";
 "Will apply once this peer is identified" = "Börjar gälla när den här enheten har identifierats";
@@ -620,7 +609,6 @@
 "Shared screen" = "Delad skärm";
 "Shared screen from %@" = "Delad skärm från %@";
 "Remote control granted — your input now controls the shared Mac. Use Stop Controlling in the toolbar to release." = "Fjärrstyrning beviljad — dina inmatningar styr nu den delade datorn. Använd Sluta styra i verktygsfältet för att släppa.";
-"Remote control ended" = "Fjärrstyrningen avslutad";
 "Release Remote Control" = "Släpp fjärrstyrning";
 "Enter Full Screen" = "Övergå till helskärmsläge";
 "Exit Full Screen" = "Avsluta helskärmsläge";

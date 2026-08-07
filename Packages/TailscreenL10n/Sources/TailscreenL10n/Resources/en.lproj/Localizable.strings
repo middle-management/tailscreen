@@ -128,13 +128,10 @@
 "Toggles voice chat with viewers" = "Toggles voice chat with viewers";
 "Share System Audio" = "Share System Audio";
 "Mute System Audio" = "Mute System Audio";
-"Share system audio" = "Share system audio";
-"Mute system audio" = "Mute system audio";
 "Shares your computer's audio with viewers" = "Shares your computer's audio with viewers";
 "Share system audio when sharing starts" = "Share system audio when sharing starts";
 "Stop Sharing" = "Stop Sharing";
 "Disconnects all viewers and ends the screen share" = "Disconnects all viewers and ends the screen share";
-"Change Source…" = "Change Source…";
 "Change what you're sharing" = "Change what you're sharing";
 "Reopens the picker without disconnecting viewers" = "Reopens the picker without disconnecting viewers";
 "No viewers yet" = "No viewers yet";
@@ -171,7 +168,6 @@
 "Speaker output device" = "Speaker output device";
 
 /* MARK: - Display picker / share section (MenuBarView.swift) */
-"SHARE" = "SHARE";
 "Another Tailscreen is sharing" = "Another Tailscreen is sharing";
 "Stop the other instance first" = "Stop the other instance first";
 "Choose what to share…" = "Choose what to share…";
@@ -371,7 +367,6 @@
 "Toggle microphone (system-wide)" = "Toggle microphone (system-wide)";
 "Disconnect viewer" = "Disconnect viewer";
 "Show / hide this help" = "Show / hide this help";
-"Keyboard shortcuts" = "Keyboard shortcuts";
 "Close keyboard shortcuts" = "Close keyboard shortcuts";
 
 /* MARK: - Viewer toolbar (ViewerToolbar.swift) */
@@ -433,15 +428,12 @@
 "Grant control to %@" = "Grant control to %@";
 "%@ is controlling your Mac" = "%@ is controlling your Mac";
 "Stop" = "Stop";
-"Stop remote control" = "Stop remote control";
 "Immediately revokes the viewer's control of your Mac (⌃⌥.)" = "Immediately revokes the viewer's control of your Mac (⌃⌥.)";
 "Request Control" = "Request Control";
 "Ask the sharer to let you control their Mac" = "Ask the sharer to let you control their Mac";
 "The sharer must grant control before your input is injected" = "The sharer must grant control before your input is injected";
-"Requesting control…" = "Requesting control…";
 "Waiting for the sharer to grant control" = "Waiting for the sharer to grant control";
 "You are controlling this Mac" = "You are controlling this Mac";
-"Stop controlling" = "Stop controlling";
 "Stop Remote Control" = "Stop Remote Control";
 
 /* Remote control — grant-time whole-Mac scope warning */
@@ -482,7 +474,6 @@
 /* Hub — share card (HubCards.swift) */
 "My screen" = "My screen";
 "Share my screen" = "Share my screen";
-"Stop sharing" = "Stop sharing";
 "Drawing takes over the screen; Esc gives it back" = "Drawing takes over the screen; Esc gives it back";
 "Press Esc to stop drawing" = "Press Esc to stop drawing";
 "Applies to your next share" = "Applies to your next share";
@@ -499,7 +490,6 @@
 /* The bullet marks the filter as active; it is not punctuation to translate. */
 "Filter ●" = "Filter ●";
 "Filter" = "Filter";
-"Filter by tag" = "Filter by tag";
 
 /* Hub — over-video chrome (HubOverlays.swift) */
 "%lld×%lld · %lld fps" = "%lld×%lld · %lld fps";
@@ -540,7 +530,6 @@
 
 /* Hub — viewer roster + approval prompts (HubViewerRoster.swift / HubStyle.swift) */
 "Allow" = "Allow";
-"Always allow" = "Always allow";
 "Block" = "Block";
 "Forget" = "Forget";
 "Will apply once this peer is identified" = "Will apply once this peer is identified";
@@ -635,7 +624,6 @@
 "Shared screen" = "Shared screen";
 "Shared screen from %@" = "Shared screen from %@";
 "Remote control granted — your input now controls the shared Mac. Use Stop Controlling in the toolbar to release." = "Remote control granted — your input now controls the shared Mac. Use Stop Controlling in the toolbar to release.";
-"Remote control ended" = "Remote control ended";
 "Release Remote Control" = "Release Remote Control";
 "Enter Full Screen" = "Enter Full Screen";
 "Exit Full Screen" = "Exit Full Screen";

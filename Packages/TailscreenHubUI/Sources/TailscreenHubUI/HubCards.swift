@@ -154,7 +154,7 @@ public struct ShareCard: View {
         isSharing: Bool,
         canShare: Bool,
         startLabel: String = L("Share my screen"),
-        stopLabel: String = L("Stop sharing"),
+        stopLabel: String = L("Stop Sharing"),
         notes: [String] = [],
         viewers: [HubViewerRow] = [],
         prompts: [HubPrompt] = [],

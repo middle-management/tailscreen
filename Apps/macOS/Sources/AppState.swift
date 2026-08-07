@@ -4096,7 +4096,7 @@ class AppState: ObservableObject {
         viewerHost?.showsControlBorder = false
         refreshViewerWindowTitle()
         if wasControlling {
-            postViewerAccessibilityAnnouncement(L("Remote control ended"))
+            postViewerAccessibilityAnnouncement(L("Remote Control Ended"))
         }
     }
 
@@ -4700,6 +4700,12 @@ private final class AspectFitHostView: NSView {
         return rect.isEmpty ? bounds : rect.intersection(bounds)
     }
 
+    /// The shared `ViewerPointerMapping.fitRect` does the letterboxing (the
+    /// same arithmetic the GTK and WinUI viewers use, and the same rect the
+    /// pointer mapping normalizes against); this only supplies the
+    /// toolbar-excluded pane and re-bases the result onto its origin.
+    /// `videoSize` holds whole pixel counts (it is set from the decoded
+    /// buffer's integer dimensions), so the `Int` conversion is exact.
     private func aspectFitRect() -> CGRect {
         let usable = usableRect()
         guard videoSize.width > 0, videoSize.height > 0,
@@ -4707,24 +4713,9 @@ private final class AspectFitHostView: NSView {
         else {
             return usable
         }
-        let videoAspect = videoSize.width / videoSize.height
-        let viewAspect = usable.width / usable.height
-        if viewAspect > videoAspect {
-            // Wider than video — letterbox left/right.
-            let w = usable.height * videoAspect
-            return CGRect(
-                x: usable.minX + (usable.width - w) / 2,
-                y: usable.minY,
-                width: w,
-                height: usable.height)
-        } else {
-            // Taller than video — letterbox top/bottom.
-            let h = usable.width / videoAspect
-            return CGRect(
-                x: usable.minX,
-                y: usable.minY + (usable.height - h) / 2,
-                width: usable.width,
-                height: h)
-        }
+        return ViewerPointerMapping.fitRect(
+            paneSize: (width: Double(usable.width), height: Double(usable.height)),
+            videoSize: (width: Int(videoSize.width), height: Int(videoSize.height))
+        ).offsetBy(dx: usable.minX, dy: usable.minY)
     }
 }

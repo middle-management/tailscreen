@@ -372,25 +372,13 @@ struct WinUIVideoView: WinUIElementRepresentable {
         ///
         /// `ViewerZoomMath` works against this rather than the whole pane, and
         /// so does the letterbox mapping — they have to agree, or a click lands
-        /// in one place and zooms about another.
+        /// in one place and zooms about another. Which is why the arithmetic
+        /// is `ViewerPointerMapping.fitRect`, the same function `normalize`
+        /// maps pointer positions against.
         private func fitRect(of element: WinUI.Image) -> CGRect {
-            let paneWidth = element.actualWidth
-            let paneHeight = element.actualHeight
-            guard paneWidth > 0, paneHeight > 0, lastVideoWidth > 0, lastVideoHeight > 0 else {
-                return CGRect(x: 0, y: 0, width: paneWidth, height: paneHeight)
-            }
-            let frameAspect = Double(lastVideoWidth) / Double(lastVideoHeight)
-            let paneAspect = paneWidth / paneHeight
-            var width = paneWidth
-            var height = paneHeight
-            if frameAspect > paneAspect {
-                height = paneWidth / frameAspect
-            } else {
-                width = paneHeight * frameAspect
-            }
-            return CGRect(
-                x: (paneWidth - width) / 2, y: (paneHeight - height) / 2,
-                width: width, height: height)
+            ViewerPointerMapping.fitRect(
+                paneSize: (width: element.actualWidth, height: element.actualHeight),
+                videoSize: (width: lastVideoWidth, height: lastVideoHeight))
         }
 
         /// Pointer position as normalized `[0, 1]` over the video content.

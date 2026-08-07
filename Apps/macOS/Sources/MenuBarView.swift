@@ -463,7 +463,7 @@ private struct SharingCard: View {
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .disabled(appState.isChangingSource)
-                .help(L("Change Source…"))
+                .help(L("Change source…"))
                 .accessibilityLabel(L("Change what you're sharing"))
                 .accessibilityHint(L("Reopens the picker without disconnecting viewers"))
 
@@ -508,8 +508,8 @@ private struct SharingCard: View {
                 )
                 .accessibilityLabel(
                     appState.isSystemAudioOn
-                        ? L("Mute system audio")
-                        : L("Share system audio")
+                        ? L("Mute System Audio")
+                        : L("Share System Audio")
                 )
                 .accessibilityHint(L("Shares your computer's audio with viewers"))
 
@@ -898,7 +898,7 @@ struct RemoteControlGranteeBanner: View {
             .tint(.red)
             .controlSize(.mini)
             .fixedSize()
-            .accessibilityLabel(L("Stop remote control"))
+            .accessibilityLabel(L("Stop Remote Control"))
             .accessibilityHint(L("Immediately revokes the viewer's control of your Mac (⌃⌥.)"))
         }
         .padding(.vertical, 6)
@@ -1043,7 +1043,7 @@ private struct RemoteControlViewerButton: View {
             Button {
                 appState.stopViewerControl()
             } label: {
-                Label(L("Requesting control…"), systemImage: "hourglass")
+                Label(L("Requesting Control…"), systemImage: "hourglass")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.bordered)
@@ -1062,7 +1062,7 @@ private struct RemoteControlViewerButton: View {
                 .buttonStyle(.bordered)
                 .controlSize(.mini)
                 .fixedSize()
-                .accessibilityLabel(L("Stop controlling"))
+                .accessibilityLabel(L("Stop Controlling"))
             }
             .padding(.vertical, 4)
             .padding(.horizontal, 8)

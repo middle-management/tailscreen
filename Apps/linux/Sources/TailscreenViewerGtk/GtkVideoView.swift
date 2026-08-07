@@ -451,7 +451,10 @@ public struct GtkVideoView: View {
     /// The aspect-fit rect the video occupies inside the live widget, in
     /// widget-logical coordinates — the exact rect the GL shader letterboxes to
     /// (`sx`/`sy` there × widget size), so zoom anchoring and pan clamping line up
-    /// with what's on screen. Nil when the widget or frame has no size yet.
+    /// with what's on screen. The arithmetic is the shared
+    /// `ViewerPointerMapping.fitRect`, so it also can't disagree with pointer
+    /// mapping about where the bars are. Nil when the widget or frame has no
+    /// size yet.
     private static func fitRect(
         widget: UnsafeMutableRawPointer,
         store: FrameStore
@@ -459,22 +462,12 @@ public struct GtkVideoView: View {
         var w: Int32 = 0
         var h: Int32 = 0
         cgtkvideo_widget_size(widget, &w, &h)
-        let widgetW = CGFloat(w)
-        let widgetH = CGFloat(h)
-        guard widgetW > 0, widgetH > 0,
+        guard w > 0, h > 0,
             let frame = store.current(), frame.width > 0, frame.height > 0
         else { return nil }
-        let frameAspect = CGFloat(frame.width) / CGFloat(frame.height)
-        let viewportAspect = widgetW / widgetH
-        var fitW = widgetW
-        var fitH = widgetH
-        if frameAspect > viewportAspect {
-            fitH = widgetW / frameAspect  // fit to width, letterbox top/bottom
-        } else {
-            fitW = widgetH * frameAspect  // fit to height, pillarbox left/right
-        }
-        return CGRect(
-            x: (widgetW - fitW) / 2, y: (widgetH - fitH) / 2, width: fitW, height: fitH)
+        return ViewerPointerMapping.fitRect(
+            paneSize: (width: Double(w), height: Double(h)),
+            videoSize: (width: frame.width, height: frame.height))
     }
 
     /// Project the current zoom/pan state onto the GL view transform and request a

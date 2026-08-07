@@ -68,6 +68,73 @@ final class ViewerPointerMappingTests: XCTestCase {
                 videoSize: (width: 1920, height: 1080)
             ).x, 0)
     }
+
+    // MARK: - fitRect
+    //
+    // The letterbox rect itself, which the three hosts used to re-derive
+    // (GTK GL view / WinUI image view / macOS AspectFitHostView) and now all
+    // read from here — the values below pin the arithmetic those inline
+    // copies computed, exactly.
+
+    private func assertRect(
+        _ rect: CGRect, x: Double, y: Double, width: Double, height: Double,
+        file: StaticString = #filePath, line: UInt = #line
+    ) {
+        XCTAssertEqual(Double(rect.minX), x, accuracy: 1e-9, file: file, line: line)
+        XCTAssertEqual(Double(rect.minY), y, accuracy: 1e-9, file: file, line: line)
+        XCTAssertEqual(Double(rect.width), width, accuracy: 1e-9, file: file, line: line)
+        XCTAssertEqual(Double(rect.height), height, accuracy: 1e-9, file: file, line: line)
+    }
+
+    func testFitRectLetterboxesWideVideoInTallPane() {
+        // 16:9 video in a 4:3 pane: full width, bars top and bottom.
+        let fit = ViewerPointerMapping.fitRect(
+            paneSize: (width: 640, height: 480), videoSize: (width: 1920, height: 1080))
+        assertRect(fit, x: 0, y: 60, width: 640, height: 360)
+    }
+
+    func testFitRectPillarboxesPortraitVideoInLandscapePane() {
+        // Portrait 3:4 video in a 16:9 pane: full height, bars either side.
+        let fit = ViewerPointerMapping.fitRect(
+            paneSize: (width: 1280, height: 720), videoSize: (width: 1080, height: 1440))
+        assertRect(fit, x: 370, y: 0, width: 540, height: 720)
+    }
+
+    func testFitRectExactAspectFillsThePane() {
+        // Equal aspects take the pillarbox branch and compute the full pane —
+        // no one-pixel sliver from a strict-inequality asymmetry.
+        let fit = ViewerPointerMapping.fitRect(
+            paneSize: (width: 640, height: 360), videoSize: (width: 1920, height: 1080))
+        assertRect(fit, x: 0, y: 0, width: 640, height: 360)
+    }
+
+    func testFitRectDegenerateSizesReturnTheWholePane() {
+        // No video yet: the content rect is the pane, which is the fallback
+        // the WinUI and macOS hosts shipped (GTK guards separately and skips).
+        let noVideo = ViewerPointerMapping.fitRect(
+            paneSize: (width: 640, height: 360), videoSize: (width: 0, height: 1080))
+        assertRect(noVideo, x: 0, y: 0, width: 640, height: 360)
+        // No pane yet: degenerate in, degenerate out, no trap.
+        let noPane = ViewerPointerMapping.fitRect(
+            paneSize: (width: 0, height: 0), videoSize: (width: 1920, height: 1080))
+        assertRect(noPane, x: 0, y: 0, width: 0, height: 0)
+    }
+
+    func testFitRectAgreesWithNormalize() {
+        // The whole point of sharing the function: a pointer at the fit
+        // rect's corners must normalize to exactly (0,0) and (1,1).
+        let pane = (width: 733.0, height: 411.0)
+        let video = (width: 2560, height: 1440)
+        let fit = ViewerPointerMapping.fitRect(paneSize: pane, videoSize: video)
+        let topLeft = ViewerPointerMapping.normalize(
+            point: (x: Double(fit.minX), y: Double(fit.minY)), paneSize: pane, videoSize: video)
+        XCTAssertEqual(topLeft.x, 0, accuracy: 1e-9)
+        XCTAssertEqual(topLeft.y, 0, accuracy: 1e-9)
+        let bottomRight = ViewerPointerMapping.normalize(
+            point: (x: Double(fit.maxX), y: Double(fit.maxY)), paneSize: pane, videoSize: video)
+        XCTAssertEqual(bottomRight.x, 1, accuracy: 1e-9)
+        XCTAssertEqual(bottomRight.y, 1, accuracy: 1e-9)
+    }
 }
 
 final class AnnotationCompositeTests: XCTestCase {

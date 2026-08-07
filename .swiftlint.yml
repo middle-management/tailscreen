@@ -2,8 +2,30 @@ included:
   - Apps/macOS/Sources
   - Apps/macOS/Tests
   - Apps/macOS/Examples
+  - Apps/linux/Sources
+  - Apps/windows/Sources
   - Packages/TailscreenKit/Sources
+  - Packages/TailscreenKit/Tests
   - Packages/TailscreenL10n/Sources
+  - Packages/TailscreenHubUI/Sources
+  - Packages/TailscreenVideoFFmpeg/Sources
+  - Packages/TailscreenLinuxBackends/Sources
+  - Packages/TailscreenSharerWGC/Sources
+  - Packages/TailscreenSharerPortal/Sources
+  - Packages/OpusKit/Sources
+  - Packages/FFmpegKit/Sources
+  - Packages/X11CaptureKit/Sources
+  - Packages/PortalCaptureKit/Sources
+  - Packages/XTestInjectKit/Sources
+  - Packages/X11HotkeyKit/Sources
+  - Packages/ALSAKit/Sources
+  - Packages/GNotifyKit/Sources
+  - Packages/WGCCaptureKit/Sources
+  - Packages/SendInputKit/Sources
+  - Packages/WinOverlayKit/Sources
+  - Packages/WinHotkeyKit/Sources
+  - Packages/WinNotifyKit/Sources
+  - Packages/WASAPIKit/Sources
 
 excluded:
   - .build
