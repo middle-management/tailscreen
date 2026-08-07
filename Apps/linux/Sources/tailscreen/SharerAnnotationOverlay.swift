@@ -1,6 +1,7 @@
 import CGtkOverlay
 import Foundation
 import TailscreenProtocol
+import TailscreenSharerLinux
 
 /// Shows the annotations viewers draw, on the Linux sharer's own screen.
 ///
@@ -240,5 +241,16 @@ final class SharerAnnotationOverlay: @unchecked Sendable {
                     Int32(width), Int32(height))
             }
         }
+    }
+}
+
+/// The engine's seam, satisfied by the real GTK overlay.
+///
+/// The only shim is `apply(_:)` — a protocol requirement cannot be witnessed
+/// by a method with a defaulted extra parameter, so the one-argument form
+/// forwards with the clock the default would have supplied.
+extension SharerAnnotationOverlay: SharerOverlaySurface {
+    func apply(_ op: AnnotationOp) {
+        apply(op, nowNs: DispatchTime.now().uptimeNanoseconds)
     }
 }
