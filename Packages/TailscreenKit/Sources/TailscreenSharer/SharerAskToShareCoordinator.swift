@@ -153,6 +153,15 @@ public final class SharerAskToShareCoordinator {
         let generation: UInt64
     }
 
+    /// What one `ensureListener` decides under the lock: the bring-up to start
+    /// (nil when this node is already bound or starting), and the listener it
+    /// superseded and must stop outside the lock. Named because spelling it
+    /// inline pushes the closure's parameter onto its own line, which is a
+    /// `closure_parameter_position` violation, and the one-line form lands
+    /// within two characters of the 120-column limit swift-format would then
+    /// wrap it back over.
+    private typealias BringUpDecision = (PendingBringUp?, TailscreenControlListener?)
+
     /// Test seam: replaces the reply send, so the answer-on-the-arrival-
     /// connection contract is observable with no tsnet node behind the
     /// listener.
@@ -272,8 +281,7 @@ public final class SharerAskToShareCoordinator {
         }
         configureListener?(fresh)
 
-        let (pending, supersededRunning) = listenerState.withLock {
-            state -> (PendingBringUp?, TailscreenControlListener?) in
+        let (pending, supersededRunning) = listenerState.withLock { state -> BringUpDecision in
             // A bring-up already in flight for this node counts as bound: two
             // ensures for one node must not produce two listeners on 7447.
             if let bound = state.phase.node, bound === node { return (nil, nil) }
