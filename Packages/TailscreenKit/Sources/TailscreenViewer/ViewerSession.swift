@@ -98,7 +98,11 @@ public final class ViewerSession {
     /// Shared with the sharer hosts rather than kept here: a Linux or Windows
     /// sharer needs the identical demux to hear its viewers, and the inline
     /// version this replaced was the reason those hosts could be heard but
-    /// could not hear. Bounded decoder map, which the inline version was not.
+    /// could not hear. Bounded decoder map, which the inline version was not —
+    /// and loss-resilient (Opus-PLC gap concealment, decoder-failure cooldown,
+    /// adaptive jitter target), composed from the same `VoiceReceiveDecisions`
+    /// the macOS `VoiceChannel` pipeline uses; the session threads its `tick`
+    /// clock into `ingest(_:nowNs:)` so those decisions age deterministically.
     private let voiceDownlink = VoiceDownlink()
 
     // MARK: Session state
@@ -569,7 +573,7 @@ public final class ViewerSession {
             return
         }
         guard audioSink != nil else { return }
-        voiceDownlink.ingest(data)
+        voiceDownlink.ingest(data, nowNs: nowNs)
     }
 
     // MARK: - Feedback emission

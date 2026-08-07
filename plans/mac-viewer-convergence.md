@@ -36,10 +36,14 @@ the keepalive task, the idle-disconnect timer, stats-overlay counters, the
 codec (`0x07`) / profile (`0x09`) fallbacks, and the decode-recovery
 escalation ladder (`VideoDecoder.decodeRecoveryAction`).
 
-The macOS **audio** path (`VoiceChannel`) is far richer than the session's
-naive Opus path (per-SSRC jitter buffer, gap concealment, decoder cooldown,
-voice/system demux, dual `AVAudioPlayerNode`s), so `ViewerSession` must **not**
-own audio decode on mac — see seam 3.
+The macOS **audio** path (`VoiceChannel`) is integrated with the host's
+playback in ways the session cannot be (voice/system demux into dual
+`AVAudioPlayerNode`s, the playback-queue pacing its jitter target drives), so
+`ViewerSession` must **not** own audio decode on mac — see seam 3. (The
+resilience half of the old gap has since closed: the portable `VoiceDownlink`
+now composes the same `VoiceReceiveDecisions` — Opus-PLC gap concealment,
+decoder cooldown, adaptive jitter target — so what stays mac-only is the
+AVAudioEngine integration, not the loss handling.)
 
 ## The three seam changes (Phase A)
 

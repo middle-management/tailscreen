@@ -31,7 +31,10 @@ The platform-portable core of Tailscreen, in six targets/tiers:
   pure loss-resilience decision layer (`VoiceReceiveDecisions` — route
   demux, decoder-failure cooldown, wrap-aware gap policy, adaptive jitter
   sizing, concealment cap/fade, stale-SSRC eviction), extracted from the
-  macOS `VoiceChannel` so both endpoints decide identically.
+  macOS `VoiceChannel` so both endpoints decide identically. The portable
+  `VoiceDownlink` composes those decisions (concealing gaps with Opus's
+  native PLC via `OpusVoiceDecoder.conceal()`), so the Linux/Windows
+  receive path degrades under loss the way the mac one does.
   Foundation + OpusKit only, so it
   builds on Linux/Windows too; a future non-macOS client reuses the exact
   codec and supplies its own platform audio I/O (`VoiceChannel` /

@@ -87,4 +87,14 @@ public final class OpusVoiceDecoder {
     public func decode(au: Data) throws -> [Float] {
         OpusPCM.int16ToFloat(try decoder.decode(au))
     }
+
+    /// Synthesize one 20 ms concealment frame via Opus's native packet-loss
+    /// concealment (`opus_decode` with a null packet): the decoder
+    /// extrapolates from its own history, which sounds far closer to the lost
+    /// speech than silence. Call once per missing frame, then decode the next
+    /// real packet normally — the decoder state stays continuous across the
+    /// gap. `VoiceDownlink` drives this on a sequence gap.
+    public func conceal() throws -> [Float] {
+        OpusPCM.int16ToFloat(try decoder.decode(nil, frameSize: .ms20))
+    }
 }
