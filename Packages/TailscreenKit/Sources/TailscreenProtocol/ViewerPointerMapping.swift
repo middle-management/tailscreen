@@ -1,5 +1,9 @@
 import Foundation
 
+#if canImport(CoreGraphics)
+import CoreGraphics
+#endif
+
 /// Where a pointer inside a viewer's video pane lands in the sharer's frame.
 ///
 /// One function, and it is here rather than in a host because **every** viewer
@@ -41,10 +45,44 @@ public enum ViewerPointerMapping {
         paneSize: (width: Double, height: Double),
         videoSize: (width: Int, height: Int)
     ) -> (x: Double, y: Double) {
+        guard paneSize.width > 0, paneSize.height > 0,
+            videoSize.width > 0, videoSize.height > 0
+        else {
+            return (0, 0)
+        }
+        let content = fitRect(paneSize: paneSize, videoSize: videoSize)
+        let nx = (point.x - Double(content.minX)) / Double(content.width)
+        let ny = (point.y - Double(content.minY)) / Double(content.height)
+        return (clampUnit(nx), clampUnit(ny))
+    }
+
+    /// The aspect-fit **content rect** the video occupies inside a pane of
+    /// `paneSize`: centered, bars split evenly, in the pane's own coordinate
+    /// space (origin at the pane's origin — the arithmetic is
+    /// orientation-agnostic, so y-down GTK/WinUI panes and y-up AppKit views
+    /// both read it directly; a host whose pane has a nonzero origin offsets
+    /// the result itself).
+    ///
+    /// This is the rect ``normalize(point:paneSize:videoSize:)`` maps against,
+    /// exposed because every host also needs it *as a rect*: zoom anchoring
+    /// and pan clamping (`ViewerZoomMath`'s `fit:` parameter) and layout of
+    /// the video surface itself must agree with pointer mapping about where
+    /// the bars are, or a click lands in one place and zooms about another.
+    /// Each host used to re-derive it — the GTK GL view, the WinUI image
+    /// view, and macOS's `AspectFitHostView` — three chances for the same
+    /// formula to drift.
+    ///
+    /// Degenerate input (a pane or video dimension ≤ 0) returns the whole
+    /// pane rect: there is nothing to letterbox against, and "the content is
+    /// the pane" is the fallback the hosts already used.
+    public static func fitRect(
+        paneSize: (width: Double, height: Double),
+        videoSize: (width: Int, height: Int)
+    ) -> CGRect {
         let paneWidth = paneSize.width
         let paneHeight = paneSize.height
         guard paneWidth > 0, paneHeight > 0, videoSize.width > 0, videoSize.height > 0 else {
-            return (0, 0)
+            return CGRect(x: 0, y: 0, width: CGFloat(paneWidth), height: CGFloat(paneHeight))
         }
         let paneAspect = paneWidth / paneHeight
         let frameAspect = Double(videoSize.width) / Double(videoSize.height)
@@ -55,11 +93,11 @@ public enum ViewerPointerMapping {
         } else {
             contentWidth = paneHeight * frameAspect  // fit to height; bars left/right
         }
-        let offsetX = (paneWidth - contentWidth) / 2
-        let offsetY = (paneHeight - contentHeight) / 2
-        let nx = (point.x - offsetX) / contentWidth
-        let ny = (point.y - offsetY) / contentHeight
-        return (clampUnit(nx), clampUnit(ny))
+        return CGRect(
+            x: CGFloat((paneWidth - contentWidth) / 2),
+            y: CGFloat((paneHeight - contentHeight) / 2),
+            width: CGFloat(contentWidth),
+            height: CGFloat(contentHeight))
     }
 
     private static func clampUnit(_ value: Double) -> Double {
