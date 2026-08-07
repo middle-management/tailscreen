@@ -10,6 +10,7 @@ import ScreenCaptureKit
 import ServiceManagement
 import SwiftUI
 import TailscaleKit
+import TailscreenViewer
 
 /// Sharing-side lifecycle. `idle` → `starting` (user clicked a
 /// display, SCStream coming up, retry loop running) → `active`
@@ -36,7 +37,7 @@ enum ConnectionState: Equatable {
 /// Why the last viewer session ended, presented in-window (reason text +
 /// Reconnect/Close over the last frame) instead of the window silently
 /// vanishing. The first three arrive on `.tailscreenViewerPeerClosed`
-/// (`ViewerPeerCloseReason`); the deny-flavored two come from
+/// (the shared `ViewerCloseReason`); the deny-flavored two come from
 /// `onDeniedBySharer`, which keeps its explicit alert but now also lands
 /// the window in this state.
 enum ViewerSessionEnding: Equatable {
@@ -878,8 +879,8 @@ class AppState: ObservableObject {
                 queue: .main
             ) { [weak self] note in
                 let reason =
-                    (note.userInfo?[ViewerPeerCloseReason.userInfoKey] as? String)
-                    .flatMap(ViewerPeerCloseReason.init(rawValue:)) ?? .connectionLost
+                    (note.userInfo?[ViewerCloseReason.userInfoKey] as? String)
+                    .flatMap(ViewerCloseReason.init(rawValue:)) ?? .connectionLost
                 Task { @MainActor [weak self] in
                     guard let self = self, self.connectionState == .viewing else { return }
                     await self.endViewerSession(reason: Self.sessionEnding(for: reason))
@@ -2576,11 +2577,16 @@ class AppState: ObservableObject {
     }
 
     /// Map the client's wire-side close reason onto the presentation enum.
-    nonisolated static func sessionEnding(for reason: ViewerPeerCloseReason) -> ViewerSessionEnding {
+    /// `.deniedOrKicked` never rides the notification on macOS (the deny path
+    /// goes through `onDeniedBySharer`, which knows the admission context),
+    /// but the shared enum carries it, so map it defensively to the
+    /// already-admitted wording — the only state this observer accepts.
+    nonisolated static func sessionEnding(for reason: ViewerCloseReason) -> ViewerSessionEnding {
         switch reason {
         case .sharerStopped: return .sharerStopped
         case .timedOut: return .timedOut
         case .connectionLost: return .connectionLost
+        case .deniedOrKicked: return .disconnectedBySharer
         }
     }
 

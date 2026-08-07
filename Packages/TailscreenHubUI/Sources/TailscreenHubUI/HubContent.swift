@@ -34,6 +34,11 @@ public struct PickerContent: View {
     /// What to say when discovery found nothing. Both apps mean the same thing
     /// and neither should have to guess at the wording.
     var emptyMessage = L("No Tailscreen screens found on your tailnet.")
+    /// A way OUT of the empty state, when the host has one — the macOS hub's
+    /// install link. Every machine that could appear in an empty list is one
+    /// that doesn't run Tailscreen yet, so the message alone is a dead end.
+    /// Nil renders the message by itself.
+    var emptyAction: HubAction?
     /// How many discovered screens the host's `PeerListFilter` removed before
     /// handing `screens` over. Purely for the footnote under the list: rows that
     /// vanish with no explanation read as a broken discovery, which is the
@@ -53,6 +58,7 @@ public struct PickerContent: View {
         loginURL: String?,
         autoExpandFirst: Bool = false,
         emptyMessage: String = L("No Tailscreen screens found on your tailnet."),
+        emptyAction: HubAction? = nil,
         hiddenByFilter: Int = 0,
         askingIDs: Set<String> = [],
         askNotes: [String: String] = [:],
@@ -66,6 +72,7 @@ public struct PickerContent: View {
         self.screens = screens
         self.loginURL = loginURL
         self.emptyMessage = emptyMessage
+        self.emptyAction = emptyAction
         self.hiddenByFilter = hiddenByFilter
         self.askingIDs = askingIDs
         self.askNotes = askNotes
@@ -152,10 +159,15 @@ public struct PickerContent: View {
                 .foregroundColor(HubStyle.secondaryText)
                 .padding(8)
         } else if screens.isEmpty {
-            Text(emptyMessage)
-                .font(.callout)
-                .foregroundColor(HubStyle.secondaryText)
-                .padding(8)
+            VStack(alignment: .leading, spacing: 8) {
+                Text(emptyMessage)
+                    .font(.callout)
+                    .foregroundColor(HubStyle.secondaryText)
+                if let emptyAction {
+                    Button(emptyAction.label, action: emptyAction.perform)
+                }
+            }
+            .padding(8)
         } else if visibleScreens.isEmpty {
             Text(L("No screens match your search."))
                 .font(.callout)

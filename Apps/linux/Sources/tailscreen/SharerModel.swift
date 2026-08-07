@@ -17,6 +17,7 @@ import struct TailscreenProtocol.PickerSelection
 import enum TailscreenProtocol.CaptureBackendSelection
 import enum TailscreenProtocol.ThumbnailScaler
 import struct TailscreenProtocol.ControlRequestInfo
+import enum TailscreenProtocol.GlobalHotkeyUnavailability
 import enum TailscreenProtocol.SharerNoticeDecision
 import enum TailscreenProtocol.SharerNoticeKind
 import struct TailscreenProtocol.NoticeCandidate
@@ -154,6 +155,17 @@ final class SharerModel: ObservableObject {
     /// moment worth telling them it will not is the moment they are about to
     /// stop looking. Off a share it is noise about a feature nobody is using.
     var notificationsUnavailable: Bool { !notifications.isAvailable }
+
+    /// Why the system-wide mute chord could not be taken, mirrored from
+    /// `MuteHotkeyController` (see the wiring in `main.swift`) so the share
+    /// card can say so — the controller's own report goes to stderr, which
+    /// reaches nobody mid-share. Nil while the chord is held, or before a
+    /// microphone made holding it worthwhile.
+    @Published private(set) var muteHotkeyUnavailability: GlobalHotkeyUnavailability?
+
+    func setMuteHotkeyUnavailability(_ reason: GlobalHotkeyUnavailability?) {
+        muteHotkeyUnavailability = reason
+    }
 
     /// Why a grant could not be given, when one could not. Nil renders nothing.
     ///

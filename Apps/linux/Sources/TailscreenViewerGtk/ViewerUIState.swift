@@ -2,9 +2,10 @@ import Foundation
 import SwiftCrossUI
 import TailscreenL10n
 
-// Targeted import: all of TailscreenProtocol would collide with SwiftCrossUI's
+// Targeted imports: all of TailscreenProtocol would collide with SwiftCrossUI's
 // own `Published` / `ObservableObject` (both ship reactive shims on Linux, where
-// Combine is absent). Only the tool enum is needed here.
+// Combine is absent). Only the tool enum and the color type are needed here.
+import struct TailscreenProtocol.Annotation
 import enum TailscreenProtocol.AnnotationTool
 
 /// Observable UI state for the viewer chrome (placards, and later the stats
@@ -42,16 +43,37 @@ public final class ViewerUIState: ObservableObject, @unchecked Sendable {
 
     /// Where the current session is in its lifecycle — drives the connection
     /// placard shown over/instead of video (connecting → awaiting approval →
-    /// viewing, or declined / ended / failed).
+    /// viewing, or ended / failed with the reason).
     @Published public var sessionPhase: SessionPhase = .connecting
 
     public enum SessionPhase: Equatable, Sendable {
         case connecting
         case awaitingApproval
         case viewing
-        case declined
-        case ended
+        case ended(EndReason)
         case failed(String)
+    }
+
+    /// Why an ended session ended, already split by admission context (the
+    /// transport's `deniedOrKicked` + `wasAdmitted` becomes `declined` or
+    /// `disconnectedBySharer` at the mapping site). Mirrors the shared
+    /// chrome's `HubSessionEndReason` case for case; two enums because this
+    /// module deliberately imports neither the chrome nor the viewer tier.
+    public enum EndReason: Equatable, Sendable {
+        case sharerStopped
+        case timedOut
+        case connectionLost
+        case declined
+        case disconnectedBySharer
+    }
+
+    /// True from a session's ended/failed placard — the states that render
+    /// over (instead of) the frozen frame even though `hasVideo` is still set.
+    public var sessionIsOver: Bool {
+        switch sessionPhase {
+        case .ended, .failed: return true
+        default: return false
+        }
     }
 
     /// Live video stats for the HUD overlay (viewer-side: fps counted at the
@@ -77,10 +99,15 @@ public final class ViewerUIState: ObservableObject, @unchecked Sendable {
 
     /// Annotation toolbar state (shown only when the sharer advertised
     /// `ScreenShareCaps.annotations`): the armed drawing tool, or nil when
-    /// drawing is off (so drags zoom/pan or drive remote control). The stroke
-    /// COLOR isn't here — like the mac, it's assigned from the local identity
-    /// (`AnnotationStore.color`), not chosen.
+    /// drawing is off (so drags zoom/pan or drive remote control).
     @Published public var activeTool: AnnotationTool?
+
+    /// The color this viewer draws in — a published MIRROR of
+    /// `AnnotationStore.color`, which stays the source of truth the capture
+    /// path reads. Published so the toolbar swatch re-renders when a color is
+    /// picked from its menu; nil until a pick, and the host falls back to the
+    /// store's identity-derived default.
+    @Published public var inkColor: Annotation.RGBA?
 
     public init() {}
 
@@ -99,6 +126,20 @@ public final class ViewerUIState: ObservableObject, @unchecked Sendable {
         DispatchQueue.main.async { self.inSession = active }
     }
 
+    /// True once the user asked to end the current session — the placard's
+    /// Cancel, or the in-session Stop. Polled by the transport's `shouldClose`
+    /// each loop pass (both sides run on the main thread); reset by
+    /// `beginSession`, which is enqueued before the session task starts
+    /// polling, so a stale request can never end the next session at birth.
+    @Published public private(set) var closeRequested = false
+
+    /// Ask the live session to end (safe from any thread). The transport
+    /// notices on its next `shouldClose` poll and unwinds cleanly — this is
+    /// the viewer-side counterpart of the sharer's Stop, not a teardown.
+    public func requestSessionClose() {
+        DispatchQueue.main.async { self.closeRequested = true }
+    }
+
     /// Enter a fresh session: in-session, connecting, no video, control reset.
     public func beginSession() {
         DispatchQueue.main.async {
@@ -106,6 +147,7 @@ public final class ViewerUIState: ObservableObject, @unchecked Sendable {
             self.hasVideo = false
             self.sessionPhase = .connecting
             self.controlState = .idle
+            self.closeRequested = false
         }
     }
 
@@ -119,6 +161,7 @@ public final class ViewerUIState: ObservableObject, @unchecked Sendable {
             self.annotationsAvailable = false
             self.controlState = .idle
             self.sessionPhase = .connecting
+            self.closeRequested = false
             self.micAvailable = false
             self.micOn = false
             self.micFailure = nil

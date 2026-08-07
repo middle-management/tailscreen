@@ -115,3 +115,26 @@ final class DatagramInbox: Sendable {
         }
     }
 }
+
+/// One-way flag the socket-reading task raises when its receive-error budget
+/// is spent (see `TsnetTransport.receiveFailureIsFatal`), read synchronously
+/// by the `@MainActor` run loop on each pass — the same cross-task hand-off
+/// shape as `DatagramInbox`, and a separate object for the same reason the
+/// inbox is not an actor: the loop needs a suspension-free read.
+///
+/// Without this, the detached receiver's `catch { continue }` swallowed a dead
+/// socket forever: the loop kept ticking against an inbox that would never
+/// fill again, and the viewer froze on its last frame with a live-looking UI.
+final class ReceiveFailureFlag: Sendable {
+    private let raised = Mutex(false)
+
+    /// Called from the receive task, once, when the socket is declared dead.
+    func raise() {
+        raised.withLock { $0 = true }
+    }
+
+    /// Polled by the run loop.
+    var isRaised: Bool {
+        raised.withLock { $0 }
+    }
+}

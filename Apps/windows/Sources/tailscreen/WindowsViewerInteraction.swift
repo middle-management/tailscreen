@@ -87,6 +87,10 @@ final class WindowsViewerInteraction: ObservableObject {
     /// viewer uses, and it has to be *somewhere* — a drag cannot be both.
     var forwardsInput: Bool { controlState == .active && activeTool == nil }
 
+    /// True while this viewer holds the grant — drives the shared bar's
+    /// "you are controlling" state line.
+    var isControlling: Bool { controlState == .active }
+
     // MARK: Annotations
 
     /// The armed tool, or nil when drawing is off.
@@ -95,6 +99,21 @@ final class WindowsViewerInteraction: ObservableObject {
     /// The canvas itself — shared with the GTK viewer, and the thing
     /// `WinUIVideoView` rasterizes into each frame.
     let annotations = AnnotationStore()
+
+    /// The color this viewer draws in — a published MIRROR of
+    /// `annotations.color`, which stays the source of truth the stroke path
+    /// reads. Published so the toolbar swatch re-renders when a color is
+    /// picked from its menu; seeded in `init` from the store's
+    /// identity-derived default.
+    @Published private(set) var inkColor: Annotation.RGBA
+
+    /// Pick a drawing color. Sets the canvas — per-stroke color rides the
+    /// annotation wire (`Annotation.color`), so the pick reaches the sharer
+    /// and other viewers with no protocol change — and the mirror above.
+    func selectColor(_ color: Annotation.RGBA) {
+        annotations.color = color
+        inkColor = color
+    }
 
     /// Whether the stats HUD is shown.
 
@@ -134,6 +153,7 @@ final class WindowsViewerInteraction: ObservableObject {
     }
 
     init() {
+        inkColor = annotations.color
         var continuation: AsyncStream<Outbound>.Continuation!
         outbound = AsyncStream(bufferingPolicy: .unbounded) { continuation = $0 }
         outboundContinuation = continuation

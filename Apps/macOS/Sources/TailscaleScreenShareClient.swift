@@ -705,11 +705,11 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
     /// AppState can explain the ending instead of collapsing sharer-stop,
     /// idle timeout, and socket-error storms into one unexplained
     /// disconnect.
-    private func postPeerClosed(_ reason: ViewerPeerCloseReason) {
+    private func postPeerClosed(_ reason: ViewerCloseReason) {
         NotificationCenter.default.post(
             name: .tailscreenViewerPeerClosed,
             object: nil,
-            userInfo: [ViewerPeerCloseReason.userInfoKey: reason.rawValue])
+            userInfo: [ViewerCloseReason.userInfoKey: reason.rawValue])
     }
 
     private func keepaliveLoop() async {
@@ -833,18 +833,15 @@ private struct TSLogger: LogSink {
     func log(_ message: String) { print("[Tailscale] \(message)") }
 }
 
-/// Why the viewer's receive loop declared the session over. Rides
-/// `.tailscreenViewerPeerClosed` as `userInfo[ViewerPeerCloseReason.userInfoKey]`
+/// Why the viewer's receive loop declared the session over is the shared
+/// tier-4 `ViewerCloseReason` (TailscreenViewer) — the former app-local
+/// `ViewerPeerCloseReason` with the same cases and raw values, now portable so
+/// the GTK and WinUI viewers report the same endings. It rides
+/// `.tailscreenViewerPeerClosed` as `userInfo[ViewerCloseReason.userInfoKey]`
 /// (the raw value — Notification userInfo stays property-list-friendly) so
-/// AppState can tell the user *which* ending happened.
-enum ViewerPeerCloseReason: String, Sendable {
-    /// The sharer ended the session (SERVER_BYE / session stopped).
-    case sharerStopped
-    /// Nothing arrived for longer than the idle threshold.
-    case timedOut
-    /// The receive loop died on repeated socket errors.
-    case connectionLost
-
+/// AppState can tell the user *which* ending happened. The key itself is
+/// mac-only plumbing, so it lives here rather than in the portable enum.
+extension ViewerCloseReason {
     /// The `userInfo` key the raw value travels under.
     static let userInfoKey = "reason"
 }
@@ -852,7 +849,7 @@ enum ViewerPeerCloseReason: String, Sendable {
 extension Notification.Name {
     /// Posted from the viewer's receive loop when the session is over —
     /// sharer stop, idle timeout, or a socket-error storm, told apart by
-    /// the `ViewerPeerCloseReason` in `userInfo`. AppState observes this
+    /// the `ViewerCloseReason` in `userInfo`. AppState observes this
     /// and ends the session with an in-window explanation.
     static let tailscreenViewerPeerClosed = Notification.Name("tailscreen.viewer.peerClosed")
 

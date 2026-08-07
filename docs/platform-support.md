@@ -100,12 +100,17 @@ system's own output; viewers on every platform play it back.
 | | macOS | Linux | Windows |
 | :--- | :---: | :---: | :---: |
 | Draw annotations as a viewer | ✅ | ✅ | ✅ |
+| Pick your annotation color | ✅ | ✅ | ✅ |
 | Render viewers' annotations as a sharer | ✅ | ✅ | ✅ |
 | Draw on your own screen as a sharer | ✅ | ✅ | ✅ |
 | Request remote control as a viewer | ✅ | ✅ | ✅ |
+| Visible "you are controlling" indicator | ✅ border + title | ✅ | ✅ |
 | Grant + inject remote control as a sharer | ✅ | ✅ | ✅ |
 | Revoke hotkey / panic key | ✅ | ❌ | ❌ |
 | Zoom + pan the viewer | ✅ | ✅ | ✅ |
+| Told why a session ended, with Reconnect | ✅ | ✅ | ✅ |
+| Detects a vanished sharer (timeout / dead socket) | ✅ | ✅ | ✅ |
+| Cancel while waiting for approval | ✅ | ✅ | ✅ |
 
 **Linux and Windows *were* near mirror images here**, which was an accident of
 the order things were built rather than a design: Linux grew the viewer half
@@ -203,7 +208,8 @@ Two things behind the ✅s are worth knowing:
 | Sharing controls outside the main window | ✅ menubar | ❌ | ❌ |
 | Mute / unmute from outside the window | ✅ | ✅ hotkey | ✅ hotkey |
 | Toggle sharer drawing from outside the window | ✅ | ❌ | ❌ |
-| Global hotkeys (mute, revoke control) | ✅ | ⚠️ mute only | ⚠️ mute only |
+| Global hotkeys (mute, revoke control) | ✅ remappable | ⚠️ mute only | ⚠️ mute only |
+| Told when a hotkey couldn't be registered | ✅ Settings | ✅ share card | ✅ share card |
 
 Linux and Windows share their chrome (`Packages/TailscreenHubUI`), so hub work
 lands on both at once — which is why that block is the most aligned of the five.

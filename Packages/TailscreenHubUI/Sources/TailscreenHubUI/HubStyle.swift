@@ -34,6 +34,11 @@ public enum HubStyle {
     public static let offline = Color(white: 0.5, opacity: 0.55)
     public static let chipFill = Color(red: 0.2, green: 0.7, blue: 0.35, opacity: 0.18)
     public static let chipText = Color(red: 0.13, green: 0.55, blue: 0.27)
+    /// The "you are controlling" state — the same orange the macOS viewer
+    /// frames the video with while a grant is live, as a translucent tint so
+    /// it reads on both light and dark like the sharing chip does.
+    public static let controlActiveFill = Color(red: 1.0, green: 0.62, blue: 0.04, opacity: 0.18)
+    public static let controlActiveText = Color(red: 0.75, green: 0.46, blue: 0.02)
 }
 
 extension View {

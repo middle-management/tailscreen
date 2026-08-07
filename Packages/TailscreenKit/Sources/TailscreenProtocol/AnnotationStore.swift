@@ -56,11 +56,13 @@ public final class AnnotationStore: @unchecked Sendable {
     /// Current drawing mode (main-thread only: the toolbar sets it, capture
     /// reads it).
     public var mode: AnnotationMode = .off
-    /// This participant's stroke color. Assigned once from the local identity —
-    /// exactly like the mac viewer, which sets
-    /// `paletteColor(forIdentity: localIdentity())` rather than offering a
-    /// picker — so each participant always draws in the same color, and the
-    /// same machine keeps its color across reconnects and relaunches.
+    /// This participant's stroke color. SEEDED from the local identity — a
+    /// machine that never touches the color menu draws in the same color
+    /// across reconnects and relaunches — and settable since the toolbars
+    /// grew a picker (the mac viewer's color menu first, now the shared
+    /// chrome's): per-stroke color rides the wire (`Annotation.color`), so a
+    /// picked color reaches the sharer and other viewers with no protocol
+    /// change.
     public var color = Annotation.RGBA.paletteColor(forIdentity: AnnotationStore.localIdentity())
 
     /// Stable per-machine drawing identity, mirroring the mac's
