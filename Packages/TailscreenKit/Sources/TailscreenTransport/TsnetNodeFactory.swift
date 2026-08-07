@@ -118,11 +118,13 @@ public enum TsnetNodeFactory {
     ///     forever).
     ///   - onLoginURL: when non-nil and the spec has no auth key, an IPN-bus
     ///     watcher is subscribed before `up()` and every `BrowseToURL` is
-    ///     handed to this closure. The watcher is torn down when `up()`
-    ///     returns — **and when it throws**, because its `MessageProcessor`
-    ///     keeps running (retaining the node) unless `stopWatching()` cancels
-    ///     it: a leak on the interactive-login path otherwise. With an auth
-    ///     key the subscription is skipped entirely.
+    ///     handed to this closure. The watcher is torn down on **every** exit
+    ///     path — `up()` returning, `up()` throwing, and `startWatching`
+    ///     itself throwing — because its `MessageProcessor` keeps running
+    ///     (retaining the node) unless `stopWatching()` cancels it, and a
+    ///     `startWatching` that threw part-way has already latched
+    ///     `isWatching`. With an auth key the subscription is skipped
+    ///     entirely.
     ///   - stepLogPrefix: when non-nil, each step logs *before* it starts
     ///     under this prefix (e.g. `"prepare"`). Before rather than after
     ///     because the failure this diagnoses is a *hang*, and a line that
@@ -160,26 +162,31 @@ public enum TsnetNodeFactory {
         // with nobody listening and `up()` waits forever) and surface the URL
         // for the user to open. With an auth key this path is skipped
         // entirely.
+        // ONE teardown covering every exit path from here on. `defer` cannot
+        // `await`, so the whole subscribe-then-up sequence runs inside a
+        // do/catch whose catch stops the watcher: it subscribed the IPN bus
+        // before `up()`, and its MessageProcessor keeps running (retaining the
+        // node) unless `stopWatching()` cancels it — a leak on the
+        // interactive-login path. `startWatching` is INSIDE the same block for
+        // the same reason: it latches `isWatching` before it can throw, so a
+        // failed subscribe left the watcher half-armed and untorn-down when
+        // this used to assign `authWatcher` only after it returned.
         var authWatcher: TailscaleIPNWatcher?
-        if let onLoginURL, spec.authKey == nil {
-            step("no auth key — subscribing to the IPN bus for the login URL")
-            let watcher = await TailscaleIPNWatcher()
-            await MainActor.run {
-                watcher.onBrowseToURL = { url in
-                    onLoginURL(url)
-                }
-            }
-            try await watcher.startWatching(node: node)
-            authWatcher = watcher
-            step("IPN bus subscribed — waiting for interactive browser login…")
-        }
-
-        step("calling up() — blocks until login completes")
-        // Stop the auth watcher on failure too: it subscribed the IPN bus
-        // before `up()`, and its MessageProcessor keeps running (retaining
-        // the node) unless `stopWatching()` cancels it — a leak on the
-        // interactive-login path if `up()` throws.
         do {
+            if let onLoginURL, spec.authKey == nil {
+                step("no auth key — subscribing to the IPN bus for the login URL")
+                let watcher = await TailscaleIPNWatcher()
+                await MainActor.run {
+                    watcher.onBrowseToURL = { url in
+                        onLoginURL(url)
+                    }
+                }
+                authWatcher = watcher
+                try await watcher.startWatching(node: node)
+                step("IPN bus subscribed — waiting for interactive browser login…")
+            }
+
+            step("calling up() — blocks until login completes")
             try await up(node, spec: spec, timeout: timeout)
         } catch {
             await authWatcher?.stopWatching()
