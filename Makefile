@@ -60,7 +60,8 @@ test-l10n: ## Build + test the shared localization catalog package
 test-tsan: tailscale ## Run tests under ThreadSanitizer
 	cd Apps/macOS && swift test --sanitize=thread
 
-# SwiftLint over Sources/Tests/Examples. Install once: `brew install swiftlint`.
+# SwiftLint over the trees listed in `.swiftlint.yml`. Install once:
+# `brew install swiftlint` (CI pins the version — see build.yml).
 # Existing violations are frozen in .swiftlint-baseline.json; only NEW
 # warnings/errors fail the run. Refresh baseline via `make lint-baseline`
 # after a real cleanup pass.
@@ -68,9 +69,36 @@ lint: ## Run SwiftLint (baseline-gated; new violations fail)
 	@command -v swiftlint >/dev/null 2>&1 || { echo "swiftlint missing — brew install swiftlint"; exit 1; }
 	@swiftlint lint --baseline .swiftlint-baseline.json --strict --quiet
 
+# The committed baseline is PRETTY-PRINTED, key-sorted and repo-RELATIVE.
+# SwiftLint's own `--write-baseline` gives none of those: it emits one ~56 KB
+# line (so every refresh is a one-line diff nobody can review, and a real
+# regression rides along inside it) recording absolute paths (which suppress
+# nothing on any other machine). Both used to be fixed by hand from a scratch
+# directory; scripts/normalize-lint-baseline.py does it in-target instead, and
+# explains the failure mode of each.
+#
+# python3 rather than jq: python3 is already a build/CI dependency (the Windows
+# regfree-manifest generator, the e2e scripts), jq is not — and relativizing
+# paths needs a script either way.
+#
+# Formatting and ordering are invisible to SwiftLint (it decodes the file as
+# JSON), so normalizing can never change WHICH violations are frozen.
+#
+# SwiftLint's exit code is ignored on purpose: `lint --write-baseline` still
+# reports the violations it just froze, and exits non-zero when any of them is
+# error-severity — which is the normal state of a baseline refresh. The
+# non-empty/parses/relativizes checks in the normalizer are what actually
+# guard this target, and they run against a temp file so a crashed SwiftLint
+# leaves the committed baseline untouched. `make lint` is the gate.
 lint-baseline: ## Regenerate the SwiftLint baseline from current state
 	@command -v swiftlint >/dev/null 2>&1 || { echo "swiftlint missing — brew install swiftlint"; exit 1; }
-	@swiftlint lint --write-baseline .swiftlint-baseline.json --quiet
+	@command -v python3 >/dev/null 2>&1 || { echo "python3 missing — needed to normalize the baseline"; exit 1; }
+	@rm -f .swiftlint-baseline.json.new
+	@swiftlint lint --write-baseline .swiftlint-baseline.json.new --quiet || true
+	@test -s .swiftlint-baseline.json.new || { echo "swiftlint wrote no baseline"; exit 1; }
+	@python3 scripts/normalize-lint-baseline.py \
+		.swiftlint-baseline.json.new .swiftlint-baseline.json "$(CURDIR)"
+	@rm -f .swiftlint-baseline.json.new
 	@echo "Wrote .swiftlint-baseline.json"
 
 # Apple's swift-format ships with the Swift toolchain on macOS (Xcode 16+).
