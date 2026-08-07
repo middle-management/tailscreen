@@ -4096,7 +4096,7 @@ class AppState: ObservableObject {
         viewerHost?.showsControlBorder = false
         refreshViewerWindowTitle()
         if wasControlling {
-            postViewerAccessibilityAnnouncement(L("Remote control ended"))
+            postViewerAccessibilityAnnouncement(L("Remote Control Ended"))
         }
     }
 

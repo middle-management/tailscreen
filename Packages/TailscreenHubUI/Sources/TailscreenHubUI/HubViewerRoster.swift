@@ -39,7 +39,7 @@ public struct HubViewerRowView: View {
                 switch viewer.remembered {
                 case .none:
                     if let allow = viewer.onAlwaysAllow {
-                        Button(L("Always allow"), action: allow)
+                        Button(L("Always Allow"), action: allow)
                     }
                     if let block = viewer.onDenyAndBlock {
                         Button(L("Block"), action: block)

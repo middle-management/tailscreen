@@ -80,7 +80,7 @@ struct HubFilterMenu: View {
                 // both backends — which is the closest this subset gets to
                 // SwiftUI's `Section` header. There is no `Section` in a
                 // swift-cross-ui menu.
-                Text(L("Filter by tag"))
+                Text(L("Filter by Tag"))
                 ForEach(model.tags, id: \.self) { tag in
                     Toggle(PeerListFilter.displayName(forTag: tag), isOn: bindTag(tag))
                 }

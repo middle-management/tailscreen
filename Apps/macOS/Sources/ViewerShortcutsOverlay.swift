@@ -142,7 +142,7 @@ struct ViewerShortcutsOverlay: View {
                 .padding(40)
         }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(L("Keyboard shortcuts"))
+        .accessibilityLabel(L("Keyboard Shortcuts"))
     }
 
     private var card: some View {
