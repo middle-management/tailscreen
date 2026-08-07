@@ -731,6 +731,19 @@ jobs:
             xvfb-run -a --server-args="-screen 0 1280x720x24" \
             swift test --package-path Packages/TailscreenLinuxBackends
 
+      # The shared FFmpeg decoder + the sharer-side encoder scaffolding
+      # (`TailscreenSharerFFmpegBase` — the base class the X11/WGC/portal
+      # capture backends extend): its ladder/budget/anchoring/pacing decision
+      # tests. This job rather than linux-ffmpeg because the package's decoder
+      # target reaches TailscreenViewer → TailscreenAudio → OpusKit, and this
+      # leg already installs libopus; the test bundle itself links no
+      # libtailscale (the base deliberately does not depend on
+      # TailscreenSharer — the backends declare the conformance).
+      - name: Test the shared FFmpeg video package
+        run: |
+          PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" \
+            swift test --package-path Packages/TailscreenVideoFFmpeg
+
       # The WINDOWS sharer's capture backend, typechecked HERE.
       #
       # It cannot run on Linux — WGCCaptureKit stubs every entry point to

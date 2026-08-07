@@ -92,6 +92,10 @@ let package = Package(
             name: "TailscreenSharerLinux",
             dependencies: [
                 .product(name: "FFmpegKit", package: "FFmpegKit"),
+                // The encode-send scaffolding shared with the WGC and portal
+                // backends (FFmpegKit + TailscreenProtocol only — adds no
+                // system library to this link line).
+                .product(name: "TailscreenSharerFFmpegBase", package: "TailscreenVideoFFmpeg"),
                 .product(name: "X11CaptureKit", package: "X11CaptureKit"),
                 .product(name: "XTestInjectKit", package: "XTestInjectKit"),
                 .product(name: "TailscreenSharer", package: "TailscreenKit"),
