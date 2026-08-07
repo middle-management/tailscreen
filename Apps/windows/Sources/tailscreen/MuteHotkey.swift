@@ -2,162 +2,44 @@ import Foundation
 import TailscreenProtocol
 import WinHotkeyKit
 
-/// The mute hotkey — the half of "mute from outside the window" that does not
-/// need a window at all.
+/// The Windows half of the mute hotkey: one call to `RegisterHotKey` through
+/// the shim, and nothing else.
 ///
-/// The Windows sibling of `Apps/linux/Sources/tailscreen/MuteHotkey.swift`, and
-/// deliberately the same shape: it holds the catalog's `toggleMicrophone` chord
-/// system-wide while there is a microphone to mute, drains activations from a
-/// main-actor tick, and flips whichever microphone ``MuteHotkeyRouting`` names.
+/// The controller around it — when to hold, when to let go, what a press
+/// flips, what is said and how often — is `PortableMuteHotkey` in
+/// TailscreenProtocol, shared with the GTK app and tested on Linux CI.
 ///
-/// Two differences, both the platform's. There is no repeat latch —
-/// `MOD_NOREPEAT` rides every registration `WindowsHotkeyMapping` emits, so a
-/// held chord is already one activation. And re-taking the chord means
-/// destroying and recreating the shim's pump thread, which is why the
-/// hold/release decision is only acted on when it *changes* rather than
-/// re-asserted every tick.
+/// Deliberately shorter than its X11 sibling, and both differences are the
+/// platform's. There is no session-type pre-flight (nothing here is XWayland),
+/// and no repeat latch — `MOD_NOREPEAT` rides every registration
+/// `WindowsHotkeyMapping` emits, so a held chord is already one activation.
+/// What is NOT shorter is the cost of re-taking the chord: it destroys and
+/// recreates the shim's pump thread, which is why the controller only acts on
+/// the hold/release decision when it changes.
+struct WindowsMuteHotkeyBinding: GlobalHotkeyBinding {
+    func hold(
+        _ chord: ShortcutChord
+    ) -> Result<any GlobalHotkeyHolding, GlobalHotkeyUnavailability> {
+        WindowsHotkey.hold(chord).map { $0 as any GlobalHotkeyHolding }
+    }
+}
+
+/// The WinUI app's mute-hotkey controller: the shared one, over the Windows
+/// binding.
 @MainActor
-final class MuteHotkeyController {
-    /// Why the hotkey is not available, or nil when it is.
-    ///
-    /// Surfaced rather than swallowed: a mute hotkey that was never registered
-    /// looks exactly like one that works, right up to the moment somebody
-    /// presses it believing they have gone quiet.
-    private(set) var unavailability: GlobalHotkeyUnavailability?
-
-    /// Invoked (on the main actor) whenever `unavailability` changes, so the
-    /// host can mirror it into whatever its views observe. A callback rather
-    /// than making this an `ObservableObject`: this file imports
-    /// TailscreenProtocol wholesale, and adding SwiftCrossUI beside that
-    /// resurrects the `Published` collision the app's targeted imports exist
-    /// to dodge.
-    var onUnavailabilityChange: (@MainActor (GlobalHotkeyUnavailability?) -> Void)?
-
-    /// The chord's platform spelling ("Ctrl+Alt+M"), for UI that names it.
-    var chordDisplay: String { chord.display(.words) }
-
-    /// The chord to advertise on microphone controls, or nil while the hotkey
-    /// is not actually registered — a tooltip naming a chord that does
-    /// nothing would teach someone their mute key works right up to the
-    /// moment it matters.
-    var chordHint: String? {
-        unavailability == nil ? chordDisplay : nil
-    }
-
-    /// Which microphone the chord currently flips, for the UI to say so.
-    private(set) var target: MuteHotkeyTarget?
-
-    private let chord: ShortcutChord
-    private let sharerMicAvailable: @MainActor () -> Bool
-    private let viewerMicAvailable: @MainActor () -> Bool
-    private let toggleSharerMic: @MainActor () -> Void
-    private let toggleViewerMic: @MainActor () -> Void
-
-    /// The last target announced, so a retarget is said once rather than per
-    /// tick. It IS said: starting a share while already watching silently
-    /// changes which microphone the chord flips, and the honest thing is to
-    /// name the new one rather than let the user find out by pressing it.
-    private var announcedTarget: MuteHotkeyTarget?
-    private var hotkey: WindowsHotkey?
-    private var polling = false
-    /// Reported once — the reason does not change while the process runs, and
-    /// a line per tick would be a log nobody reads.
-    private var loggedUnavailability = false
-
-    init?(
-        sharerMicAvailable: @escaping @MainActor () -> Bool,
-        viewerMicAvailable: @escaping @MainActor () -> Bool,
-        toggleSharerMic: @escaping @MainActor () -> Void,
-        toggleViewerMic: @escaping @MainActor () -> Void
-    ) {
-        guard let entry = ShortcutCatalog.entry(for: .toggleMicrophone), entry.isGlobal else {
-            return nil
-        }
-        self.chord = entry.chord
-        self.sharerMicAvailable = sharerMicAvailable
-        self.viewerMicAvailable = viewerMicAvailable
-        self.toggleSharerMic = toggleSharerMic
-        self.toggleViewerMic = toggleViewerMic
-    }
-
-    /// Begin watching. Idempotent.
-    func start() {
-        guard !polling else { return }
-        polling = true
-        Task { @MainActor in
-            while true {
-                tick()
-                try? await Task.sleep(nanoseconds: 50_000_000)
-            }
-        }
-    }
-
-    private func tick() {
-        let sharer = sharerMicAvailable()
-        let viewer = viewerMicAvailable()
-        target = MuteHotkeyRouting.target(
-            sharerMicAvailable: sharer, viewerMicAvailable: viewer)
-
-        if MuteHotkeyRouting.shouldRegister(
-            sharerMicAvailable: sharer, viewerMicAvailable: viewer) {
-            acquire()
-        } else {
-            relinquish()
-        }
-
-        announce(target)
-        guard let hotkey, let target else { return }
-        for _ in 0..<hotkey.drain() {
-            switch target {
-            case .sharer: toggleSharerMic()
-            case .viewer: toggleViewerMic()
-            }
-        }
-    }
-
-    /// Say which microphone the chord points at, when that changes.
-    private func announce(_ target: MuteHotkeyTarget?) {
-        guard hotkey != nil, target != announcedTarget else { return }
-        announcedTarget = target
-        if let target {
-            note("\(chord.display(.words)) now mutes \(target.label)")
-        }
-    }
-
-    private func acquire() {
-        guard hotkey == nil else { return }
-        switch WindowsHotkey.hold(chord) {
-        case .success(let held):
-            hotkey = held
-            setUnavailability(nil)
-            loggedUnavailability = false
-            note("\(chord.display(.words)) holds the microphone toggle")
-        case .failure(let reason):
-            setUnavailability(reason)
-            guard !loggedUnavailability else { return }
-            loggedUnavailability = true
-            note(
-                "warning: \(chord.display(.words)) is unavailable — \(reason.reason); "
-                    + "use the microphone button in the window")
-        }
-    }
-
-    /// Record a transition and tell the host about it — only on change, so a
-    /// failure re-reported every 50 ms tick is one mirror write, not many.
-    private func setUnavailability(_ reason: GlobalHotkeyUnavailability?) {
-        guard reason != unavailability else { return }
-        unavailability = reason
-        onUnavailabilityChange?(reason)
-    }
-
-    private func relinquish() {
-        announcedTarget = nil
-        guard let hotkey else { return }
-        hotkey.release()
-        self.hotkey = nil
-    }
-
-    private func note(_ message: String) {
-        print(message)
-    }
+func makeMuteHotkeyController(
+    sharerMicAvailable: @escaping @MainActor () -> Bool,
+    viewerMicAvailable: @escaping @MainActor () -> Bool,
+    toggleSharerMic: @escaping @MainActor () -> Void,
+    toggleViewerMic: @escaping @MainActor () -> Void
+) -> PortableMuteHotkey? {
+    PortableMuteHotkey(
+        binding: WindowsMuteHotkeyBinding(),
+        sharerMicAvailable: sharerMicAvailable,
+        viewerMicAvailable: viewerMicAvailable,
+        toggleSharerMic: toggleSharerMic,
+        toggleViewerMic: toggleViewerMic,
+        // stdout, which `ConsoleBridge` routes to wherever this build's console
+        // goes.
+        note: { print($0) })
 }

@@ -11,6 +11,7 @@ import TailscreenL10n
 // Targeted imports: pulling all of TailscreenProtocol collides with SwiftCrossUI's
 // own `Published` / `ObservableObject` shims, the same collision the GTK app
 // hits and solves the same way.
+import struct TailscreenAudio.VoiceLatch
 import class TailscreenAudio.VoiceUplink
 import struct TailscreenProtocol.AccountProfileLayout
 import class TailscreenProtocol.AccountProfileStore
@@ -25,6 +26,7 @@ import enum TailscreenProtocol.PeerPolicy
 import enum TailscreenProtocol.PeerShareStatusMap
 import enum TailscreenProtocol.PeerSharingState
 import struct TailscreenProtocol.PendingShareRequest
+import class TailscreenProtocol.PortableMuteHotkey
 import struct TailscreenProtocol.QualitySettings
 import enum TailscreenProtocol.QualitySettingsStore
 import enum TailscreenProtocol.TailscreenInstance
@@ -502,6 +504,11 @@ final class AppUIState: ObservableObject {
     /// Cleared in the session tail — a stale one would leave the microphone
     /// open, and Windows shows that in the tray for everyone to see.
     private var voiceUplink: VoiceUplink?
+    /// The two flags above and every transition allowed to move them. Shared
+    /// with the GTK viewer and both share engines — see `VoiceLatch`, which
+    /// exists because five copies of this had to agree that a released device
+    /// can never be toggled back on the air.
+    private var voiceLatch = VoiceLatch()
     /// Header filter state, persisted through the portable `PeerListFilterStore`
     /// the macOS hub uses — not a new persistence layer. On Windows that is
     /// swift-corelibs-foundation's `UserDefaults`; if the write does not stick
@@ -623,7 +630,7 @@ final class AppUIState: ObservableObject {
         // microphones stay separate (`toggleMic` vs `toggleShareMic`);
         // `MuteHotkeyRouting` picks which one the single chord flips, and the
         // controller holds the chord only while there is one to flip.
-        muteHotkey = MuteHotkeyController(
+        muteHotkey = makeMuteHotkeyController(
             sharerMicAvailable: { [weak self] in self?.sharing.micAvailable ?? false },
             viewerMicAvailable: { [weak self] in self?.micAvailable ?? false },
             toggleSharerMic: { [weak self] in self?.toggleShareMic() },
@@ -689,9 +696,9 @@ final class AppUIState: ObservableObject {
     /// Holds ⌃⌥M system-wide while there is a microphone to mute. Built in
     /// `init` and kept for the process — it decides for itself when to take
     /// and release the chord.
-    private var muteHotkey: MuteHotkeyController?
+    private var muteHotkey: PortableMuteHotkey?
     /// Why the system-wide mute chord could not be taken, mirrored from
-    /// `MuteHotkeyController` so the share card can say so. Nil while the
+    /// `PortableMuteHotkey` so the share card can say so. Nil while the
     /// chord is held, or before a microphone made holding it worthwhile.
     @Published private(set) var hotkeyUnavailability: GlobalHotkeyUnavailability?
     /// The mute chord to advertise on the viewer's mic control, or nil while
@@ -1438,21 +1445,22 @@ final class AppUIState: ObservableObject {
     // MARK: Microphone
 
     private func attachVoice(_ uplink: VoiceUplink) {
-        // The transport hands it over muted; mirror rather than assume.
-        uplink.isMuted = true
+        // The transport hands it over muted; write what the latch says rather
+        // than assuming the two agree.
+        uplink.isMuted = voiceLatch.attach()
         voiceUplink = uplink
-        micAvailable = true
-        micOn = false
+        publishViewerVoice()
         micFailure = nil
         uplink.onStopped = { [weak self] error in
             guard error != nil else { return }
             Task { @MainActor in
-                // Both flags move together: a live indicator over a device that
-                // is recording nothing is the one wrong answer a mute control
-                // can give.
-                self?.micAvailable = false
-                self?.micOn = false
-                self?.micFailure = L("Microphone unavailable")
+                guard let self else { return }
+                // Both flags move together — the latch owns that pairing, so a
+                // live indicator over a device that is recording nothing is not
+                // expressible here.
+                self.voiceLatch.detach()
+                self.publishViewerVoice()
+                self.micFailure = L("Microphone unavailable")
             }
         }
     }
@@ -1460,9 +1468,14 @@ final class AppUIState: ObservableObject {
     private func detachVoice() {
         voiceUplink?.stop()
         voiceUplink = nil
-        micAvailable = false
-        micOn = false
+        voiceLatch.detach()
+        publishViewerVoice()
         micFailure = nil
+    }
+
+    private func publishViewerVoice() {
+        micAvailable = voiceLatch.isAvailable
+        micOn = voiceLatch.isOn
     }
 
     /// Flip the SHARER's microphone. Distinct from `toggleMic`, which is the
@@ -1485,10 +1498,9 @@ final class AppUIState: ObservableObject {
     }
 
     func toggleMic() {
-        guard let voiceUplink else { return }
-        let nowOn = voiceUplink.isMuted
-        voiceUplink.isMuted = !nowOn
-        micOn = nowOn
+        guard case .setMuted(let muted) = voiceLatch.toggle() else { return }
+        voiceUplink?.isMuted = muted
+        publishViewerVoice()
     }
 
     // MARK: Accounts
