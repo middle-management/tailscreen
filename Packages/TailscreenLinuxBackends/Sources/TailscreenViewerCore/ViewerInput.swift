@@ -88,8 +88,16 @@ public enum ViewerInputMapping {
     /// True for HID usages that are modifier keys (0xE0–0xE7). Modifier keys are
     /// **not** sent as standalone key events — their held state rides every
     /// event's `modifiers` field — so the coordinator drops them.
+    ///
+    /// Answered from the shared `KeyModifiers.heldModifier(forHIDUsage:)`
+    /// table rather than a range of its own: the WinUI viewer needs the same
+    /// usages, spelled there as an exhaustive switch, and one table in two
+    /// spellings is one edit away from disagreeing about a key. Caps Lock
+    /// (0x39) is deliberately not one of them here — GDK reports it in the
+    /// event's own modifier mask, so this viewer forwards the key and lets
+    /// `keyModifiers(fromGdkState:)` carry the latched state.
     public static func isModifierUsage(_ usage: UInt16) -> Bool {
-        (0xE0...0xE7).contains(usage)
+        KeyModifiers.heldModifier(forHIDUsage: usage) != nil
     }
 
     /// evdev keycode → USB HID usage. Standard US-keyboard subset (letters,

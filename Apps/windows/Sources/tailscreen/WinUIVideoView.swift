@@ -607,26 +607,13 @@ struct WinUIVideoView: WinUIElementRepresentable {
         /// the key WAS a modifier, so the caller can drop it rather than
         /// forwarding it — their held state rides every event's `modifiers`
         /// field, which is what keeps a mid-stream join stateless.
+        ///
+        /// The usage table and the Caps-Lock-is-a-toggle rule are
+        /// `KeyModifiers.trackHIDKeyEvent`, shared with the GTK viewer's
+        /// `ViewerInputMapping.isModifierUsage` — which reads the same table
+        /// rather than its own range of it.
         private func trackModifier(usage: UInt16, down: Bool) -> Bool {
-            let flag: KeyModifiers
-            switch usage {
-            case 0xE1, 0xE5: flag = .shift
-            case 0xE0, 0xE4: flag = .control
-            case 0xE2, 0xE6: flag = .alt
-            case 0xE3, 0xE7: flag = .meta
-            case 0x39:
-                // Caps Lock is a TOGGLE, not a held key: its down-event means
-                // the state flipped, and there is no up-event to clear it.
-                if down { trackedModifiers.formSymmetricDifference(.capsLock) }
-                return true
-            default: return false
-            }
-            if down {
-                trackedModifiers.insert(flag)
-            } else {
-                trackedModifiers.remove(flag)
-            }
-            return true
+            trackedModifiers.trackHIDKeyEvent(usage: usage, down: down)
         }
 
         /// Forget every held modifier. Wired to focus loss — see

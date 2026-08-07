@@ -130,6 +130,11 @@ public struct DiscoveredSharer: Sendable, Identifiable, Equatable {
     }
 }
 
+/// The shared peer-list projection (`PeerListFilter.narrow` / `knownTags`)
+/// applies to this type unchanged, so both swift-cross-ui hubs derive their
+/// filtered list and their tag menu from the same code macOS does.
+extension DiscoveredSharer: PeerListRow {}
+
 /// What one lazy peer probe found: the peer's share status, and how long the
 /// round trip took.
 ///

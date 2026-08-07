@@ -7,6 +7,7 @@ import TailscreenL10n
 // Combine is absent). Only the tool enum and the color type are needed here.
 import struct TailscreenProtocol.Annotation
 import enum TailscreenProtocol.AnnotationTool
+import enum TailscreenProtocol.ViewerSessionEndReason
 
 /// Observable UI state for the viewer chrome (placards, and later the stats
 /// overlay). Updated from the transport/sink; the swift-cross-ui view tree
@@ -56,16 +57,14 @@ public final class ViewerUIState: ObservableObject, @unchecked Sendable {
 
     /// Why an ended session ended, already split by admission context (the
     /// transport's `deniedOrKicked` + `wasAdmitted` becomes `declined` or
-    /// `disconnectedBySharer` at the mapping site). Mirrors the shared
-    /// chrome's `HubSessionEndReason` case for case; two enums because this
-    /// module deliberately imports neither the chrome nor the viewer tier.
-    public enum EndReason: Equatable, Sendable {
-        case sharerStopped
-        case timedOut
-        case connectionLost
-        case declined
-        case disconnectedBySharer
-    }
+    /// `disconnectedBySharer` at the mapping site).
+    ///
+    /// The shared `ViewerSessionEndReason` — the same list the chrome's
+    /// `HubSessionEndReason` now names. It used to be a third hand-kept copy
+    /// here, on the argument that this module imports neither the chrome nor
+    /// the viewer tier; putting the list in the dependency-free tier honours
+    /// that and still leaves exactly one set of endings.
+    public typealias EndReason = ViewerSessionEndReason
 
     /// True from a session's ended/failed placard — the states that render
     /// over (instead of) the frozen frame even though `hasVideo` is still set.

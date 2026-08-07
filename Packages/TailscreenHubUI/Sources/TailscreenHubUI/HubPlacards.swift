@@ -1,6 +1,8 @@
 import SwiftCrossUI
 import TailscreenL10n
 
+import enum TailscreenProtocol.ViewerSessionEndReason
+
 /// Where a viewing session is, for the placard shown before video arrives.
 ///
 /// A chrome-side enum rather than either app's session state: the placard needs
@@ -18,22 +20,13 @@ public enum HubSessionPhase: Equatable, Sendable {
 /// `ViewerCloseReason`, with the deny byte already split by admission context
 /// (declined at the gate vs kicked mid-watch), which is the host's call.
 ///
-/// HubUI-local on purpose: this package deliberately depends on no viewer
-/// tier, and five sentences do not justify growing that edge. The host maps
-/// its transport's reason onto this, the same two-enum split as
-/// `HubSessionPhase` itself.
-public enum HubSessionEndReason: Equatable, Sendable {
-    /// The sharer ended the session (SERVER_BYE).
-    case sharerStopped
-    /// Nothing arrived for longer than the idle threshold.
-    case timedOut
-    /// The receive path died on repeated socket errors.
-    case connectionLost
-    /// HELLO_DENY while still at the approval placard — never admitted.
-    case declined
-    /// HELLO_DENY while already watching — a mid-session kick.
-    case disconnectedBySharer
-}
+/// The list itself now lives in the dependency-free tier as
+/// `ViewerSessionEndReason`, so the chrome, the GTK app's `ViewerUIState` and
+/// the macOS viewer share ONE set of endings instead of three copies that had
+/// to be kept in step by hand. This package still depends on no viewer tier —
+/// `TailscreenProtocol` is the edge it already had — and the name stays
+/// because it is what every call site in the chrome reads as.
+public typealias HubSessionEndReason = ViewerSessionEndReason
 
 /// Centered placard for the session lifecycle before or around video —
 /// connecting, awaiting the sharer's approval, or ended/failed with the reason.

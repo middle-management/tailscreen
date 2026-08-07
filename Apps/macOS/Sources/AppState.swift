@@ -40,13 +40,13 @@ enum ConnectionState: Equatable {
 /// (the shared `ViewerCloseReason`); the deny-flavored two come from
 /// `onDeniedBySharer`, which keeps its explicit alert but now also lands
 /// the window in this state.
-enum ViewerSessionEnding: Equatable {
-    case sharerStopped
-    case timedOut
-    case connectionLost
-    case disconnectedBySharer
-    case declined
-}
+///
+/// The shared `ViewerSessionEndReason` (TailscreenProtocol), which is where
+/// this list moved once the GTK app's `ViewerUIState`, the hub chrome's
+/// `HubSessionEndReason` and this enum turned out to be three hand-kept copies
+/// of the same five endings. The name stays because every call site in this
+/// app reads as `ViewerSessionEnding`.
+typealias ViewerSessionEnding = ViewerSessionEndReason
 
 @MainActor
 class AppState: ObservableObject {
@@ -662,20 +662,15 @@ class AppState: ObservableObject {
     /// list projected through `peerFilter` (pure decision, covered by
     /// `PeerListFilterTests` in the protocol package).
     var filteredPeers: [TailscreenPeer] {
-        availablePeers.filter {
-            peerFilter.matches(
-                isOnline: $0.isOnline, tags: $0.tags,
-                sharing: PeerSharingState(fetched: peerShareInfo[$0.id]))
-        }
+        peerFilter.narrow(availablePeers, shareInfo: peerShareInfo)
     }
 
     /// Tags offered by the filter menu: the union of every discovered
     /// peer's tags plus any currently-selected tags — a selected tag whose
     /// peers left the tailnet must stay listed so it can be unselected.
+    /// Shared with both other hubs, which did not have that second half.
     var knownPeerTags: [String] {
-        var union = peerFilter.selectedTags
-        for peer in availablePeers { union.formUnion(peer.tags) }
-        return union.sorted()
+        peerFilter.knownTags(in: availablePeers)
     }
     /// True once any discovery pass has finished (successfully or not).
     /// The menubar devices section shows its loading skeleton until this
@@ -2651,18 +2646,17 @@ class AppState: ObservableObject {
         }
     }
 
-    /// Map the client's wire-side close reason onto the presentation enum.
-    /// `.deniedOrKicked` never rides the notification on macOS (the deny path
-    /// goes through `onDeniedBySharer`, which knows the admission context),
-    /// but the shared enum carries it, so map it defensively to the
-    /// already-admitted wording — the only state this observer accepts.
+    /// Map the client's wire-side close reason onto the presentation enum,
+    /// through the shared `resolve` all three platforms use.
+    ///
+    /// `wasAdmitted: true` is not a shrug: `.deniedOrKicked` never rides this
+    /// notification on macOS (the deny path goes through `onDeniedBySharer`,
+    /// which knows the real admission context and passes it), but the shared
+    /// close reason carries the case, and the only state THIS observer accepts
+    /// is an already-admitted session — so the already-admitted wording is the
+    /// correct defensive answer rather than a guess.
     nonisolated static func sessionEnding(for reason: ViewerCloseReason) -> ViewerSessionEnding {
-        switch reason {
-        case .sharerStopped: return .sharerStopped
-        case .timedOut: return .timedOut
-        case .connectionLost: return .connectionLost
-        case .deniedOrKicked: return .disconnectedBySharer
-        }
+        ViewerSessionEndReason.resolve(reason, wasAdmitted: true)
     }
 
     /// Localized title + message for the ended pane (and the VoiceOver

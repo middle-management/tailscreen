@@ -24,6 +24,61 @@ public struct KeyModifiers: OptionSet, Codable, Sendable, Hashable {
     /// Every bit the protocol defines. Injectors translate exactly these and
     /// ignore unknown bits, so the wire value needs no separate masking step.
     public static let allKnown: KeyModifiers = [.shift, .control, .alt, .meta, .capsLock]
+
+    /// Caps Lock's HID keyboard-page usage. Named because it is the one key
+    /// here that is a TOGGLE rather than a held modifier — see
+    /// ``trackHIDKeyEvent(usage:down:)``.
+    public static let capsLockHIDUsage: UInt16 = 0x39
+
+    /// The held modifier a USB HID keyboard-page usage names, or nil if the
+    /// usage is an ordinary key.
+    ///
+    /// The eight modifier usages are 0xE0–0xE7, left and right of each pair.
+    /// The wire vocabulary has no left/right distinction on purpose: it names
+    /// the modifier's ROLE, and the sharer reconstructs whichever native key
+    /// its own platform wants.
+    ///
+    /// Shared because "these usages are the modifiers" had been written twice
+    /// in two different shapes — a range check in the GTK viewer's
+    /// `ViewerInputMapping.isModifierUsage`, an exhaustive switch in the WinUI
+    /// view's modifier tracker — and two spellings of one table is one edit
+    /// away from disagreeing about a key.
+    public static func heldModifier(forHIDUsage usage: UInt16) -> KeyModifiers? {
+        switch usage {
+        case 0xE1, 0xE5: return .shift
+        case 0xE0, 0xE4: return .control
+        case 0xE2, 0xE6: return .alt
+        case 0xE3, 0xE7: return .meta
+        default: return nil
+        }
+    }
+
+    /// Fold a key event into a tracked modifier set, for a host whose pointer
+    /// and key events carry no modifier snapshot of their own and must
+    /// maintain one.
+    ///
+    /// - Returns: true when the usage WAS a modifier, so the caller can drop
+    ///   the event rather than forwarding it — held modifier state rides every
+    ///   event's `modifiers` field, which is what keeps a mid-stream join
+    ///   stateless.
+    ///
+    /// Caps Lock is the case worth reading twice: it is a toggle, so its
+    /// down-event means the state FLIPPED and there is no up-event to clear
+    /// it. Treating it as a held key latches a phantom Caps Lock forever,
+    /// which silently upper-cases everything typed on somebody else's machine.
+    public mutating func trackHIDKeyEvent(usage: UInt16, down: Bool) -> Bool {
+        if usage == Self.capsLockHIDUsage {
+            if down { formSymmetricDifference(.capsLock) }
+            return true
+        }
+        guard let flag = Self.heldModifier(forHIDUsage: usage) else { return false }
+        if down {
+            insert(flag)
+        } else {
+            remove(flag)
+        }
+        return true
+    }
 }
 
 /// One viewer→sharer input event in the opt-in remote-control path. Rides

@@ -86,6 +86,58 @@ public struct PeerListFilter: Codable, Sendable, Equatable {
     }
 }
 
+/// A peer as the LIST needs to see it: an identity to look the metadata
+/// sweep's answer up by, plus the two netmap facts the filter's axes read.
+///
+/// Three hosts hold three different peer types over one filter — macOS's
+/// `TailscreenPeer`, and `DiscoveredSharer` in both swift-cross-ui apps — and
+/// each had written the projection out by hand. This is the seam that lets it
+/// be written once; the conformances are empty extensions in the tiers that
+/// own those types.
+public protocol PeerListRow {
+    /// The key the sweep's `shareInfo` dictionary is populated under.
+    var id: String { get }
+    var isOnline: Bool { get }
+    /// Tailscale ACL tags, empty for an untagged node — which is a filterable
+    /// state (`includeUntagged`), not an absence of data.
+    var tags: [String] { get }
+}
+
+extension PeerListFilter {
+    /// The rows this filter admits, in the input's order.
+    ///
+    /// `shareInfo` is the metadata sweep's answers keyed by row id, and the
+    /// tri-state projection of a MISSING entry is the whole reason this is one
+    /// function rather than three: an unanswered peer is `.unknown`, never
+    /// "not sharing", and a host that wrote `shareInfo[id]?.isSharing == true`
+    /// instead would quietly claim a fact the wire never carried.
+    public func narrow<Row: PeerListRow>(
+        _ rows: [Row], shareInfo: [String: TailscreenMetadata] = [:]
+    ) -> [Row] {
+        rows.filter {
+            matches(
+                isOnline: $0.isOnline, tags: $0.tags,
+                sharing: PeerSharingState(fetched: shareInfo[$0.id]))
+        }
+    }
+
+    /// The tags a filter menu should offer: every tag across the RAW list,
+    /// plus any tag currently selected. Sorted, so the menu does not reshuffle
+    /// between discovery sweeps.
+    ///
+    /// The union with `selectedTags` is the load-bearing half. Derive the menu
+    /// from the present peers alone and a selected tag whose last peer goes
+    /// offline loses its row — which leaves the filter hiding everything with
+    /// no control left to switch it back off. macOS had this rule and the two
+    /// swift-cross-ui apps did not; collapsing the three copies keeps the one
+    /// that cannot strand its user.
+    public func knownTags<Row: PeerListRow>(in rows: [Row]) -> [String] {
+        var union = selectedTags
+        for row in rows { union.formUnion(row.tags) }
+        return union.sorted()
+    }
+}
+
 /// A peer's sharing state as known to the viewer — the input to the
 /// filter's `onlySharing` axis. Deliberately an enum, not `Bool?`: the
 /// unknown case is load-bearing (a legacy peer or unanswered dial must

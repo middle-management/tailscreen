@@ -39,46 +39,20 @@ public enum TailscreenMetadataClient {
                 try await conn.connect()
             }
             try await conn.send(ScreenShareMessage.metadataRequest.encode())
-            return await awaitMetadataResponse(on: conn, timeout: timeout)
+            // Drain frames until a `.metadataResponse` arrives, the peer
+            // closes, or `timeout` elapses; anything else on the wire is
+            // ignored. The loop — including the dead-socket-vs-poll-timeout
+            // classification — is `FramedResponseDrain`, shared with
+            // `TailscreenRequestToShareClient`. A 1 s poll: the whole wait is
+            // seconds, so a longer interval would round the timeout up.
+            return await FramedResponseDrain.awaitResponse(
+                on: conn, timeout: timeout, pollMilliseconds: 1_000
+            ) { message in
+                guard case .metadataResponse(let metadata) = message else { return nil }
+                return metadata
+            }
         } catch {
             return nil
         }
-    }
-
-    /// Drain frames until a `.metadataResponse` arrives, the peer closes
-    /// the connection, or `timeout` elapses; anything else on the wire is
-    /// ignored. Same dead-socket-vs-poll-timeout classification as
-    /// `TailscreenMetadataService.awaitShareResponse`.
-    private static func awaitMetadataResponse(
-        on conn: OutgoingConnection, timeout: TimeInterval
-    ) async -> TailscreenMetadata? {
-        var parser = ScreenShareMessageParser()
-        let deadlineNs =
-            DispatchTime.now().uptimeNanoseconds &+ UInt64(timeout * 1_000_000_000)
-        while DispatchTime.now().uptimeNanoseconds < deadlineNs {
-            let recvStartNs = DispatchTime.now().uptimeNanoseconds
-            do {
-                let chunk = try await conn.receive(maximumLength: 16 * 1024, timeout: 1_000)
-                if chunk.isEmpty { return nil }  // EOF — peer closed unanswered
-                parser.append(chunk)
-                while let message = parser.next() {
-                    if case .metadataResponse(let metadata) = message {
-                        return metadata
-                    }
-                }
-                if parser.isCorrupt { return nil }
-            } catch TailscaleError.readFailed {
-                // Near-instant readFailed is a dead socket; a full-interval
-                // one is just the poll timeout — keep waiting.
-                let elapsedNs = DispatchTime.now().uptimeNanoseconds &- recvStartNs
-                if ReceiveLoopPolicy.classifyReadFailedAsError(elapsedNs: elapsedNs) {
-                    return nil
-                }
-                continue
-            } catch {
-                return nil
-            }
-        }
-        return nil
     }
 }
