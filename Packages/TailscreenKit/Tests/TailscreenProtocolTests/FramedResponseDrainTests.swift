@@ -12,6 +12,15 @@ import XCTest
 /// produces anything but nil. The clock and the read are injected, so this
 /// needs no socket and runs on Linux CI.
 final class FramedResponseDrainTests: XCTestCase {
+    /// What a matched `.shareResponse` means, as a two-case value rather than a
+    /// `Bool?`. The drain already spends nil on "not the frame I am waiting
+    /// for", so a decline must not share a spelling with it — which is exactly
+    /// what `testDeclinedShareResponseIsAnAnswerNotAMiss` exists to catch.
+    private enum Answer: Equatable {
+        case accepted
+        case declined
+    }
+
     /// A scripted sequence of read outcomes plus a clock that advances one
     /// "tick" per read, so a deadline is reached deterministically rather than
     /// by sleeping.
@@ -155,15 +164,15 @@ final class FramedResponseDrainTests: XCTestCase {
     /// than treating the falsy payload as "keep looking".
     func testDeclinedShareResponseIsAnAnswerNotAMiss() async {
         let wire = Wire([.bytes(ScreenShareMessage.shareResponse(accepted: false).encode())])
-        let accepted = await FramedResponseDrain.awaitResponse(
+        let answer = await FramedResponseDrain.awaitResponse(
             deadlineNs: 10_000_000_000,
             now: { wire.nowNs },
             read: { wire.read() },
-            match: { message -> Bool? in
+            match: { message -> Answer? in
                 guard case .shareResponse(let accepted) = message else { return nil }
-                return accepted
+                return accepted ? .accepted : .declined
             })
-        XCTAssertEqual(accepted, false)
+        XCTAssertEqual(answer, .declined)
         XCTAssertEqual(wire.reads, 1)
     }
 }

@@ -81,13 +81,16 @@ public enum TailscreenRequestToShareClient {
         // Every failure mode arrives as nil and becomes `.noAnswer`, which is
         // the case that exists so a timeout, an EOF and a legacy peer are not
         // told apart in a UI that could not act on the difference.
-        let accepted = await FramedResponseDrain.awaitResponse(
+        // The closure yields the OUTCOME rather than the wire's bool, so the
+        // drain's "no match yet" nil and a decline stay different things — a
+        // `Bool?` here would have been a tri-state where two of the three
+        // states mean "no".
+        let outcome = await FramedResponseDrain.awaitResponse(
             on: conn, timeout: responseTimeout, pollMilliseconds: 5_000
-        ) { message -> Bool? in
+        ) { message -> ShareRequestOutcome? in
             guard case .shareResponse(let accepted) = message else { return nil }
-            return accepted
+            return accepted ? .accepted : .declined
         }
-        guard let accepted else { return .noAnswer }
-        return accepted ? .accepted : .declined
+        return outcome ?? .noAnswer
     }
 }
