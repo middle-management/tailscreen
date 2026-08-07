@@ -1,4 +1,4 @@
-.PHONY: help build run clean release install tailscale test test-protocol test-tsan test-l10n lint lint-baseline format format-check e2e-up e2e-down test-e2e test-e2e-local test-e2e-harness icon
+.PHONY: help build run clean release install tailscale test test-protocol test-tsan test-l10n lint lint-baseline format format-check print-format-paths-all e2e-up e2e-down test-e2e test-e2e-local test-e2e-harness icon
 
 # Default target: print a one-line summary of every target. Targets are
 # self-documented via the `## description` suffix on each rule.
@@ -109,9 +109,48 @@ lint-baseline: ## Regenerate the SwiftLint baseline from current state
 # under the gate. The app's executable target (Apps/linux/Sources/tailscreen)
 # and the Linux backends (Packages/TailscreenLinuxBackends/Sources) are NOT yet
 # covered: they still carry pre-existing swift-format violations. Fold each in
-# here once its tree is clean.
+# here once its tree is clean — FORMAT_PATHS_ALL below is the full list this
+# is converging on, and says how to get there.
 FORMAT_PATHS := Apps/macOS/Sources Apps/macOS/Tests Packages/TailscreenKit/Sources \
 	Packages/TailscreenL10n/Sources Apps/linux/Sources/TailscreenViewerGtk
+
+# The TARGET STATE for FORMAT_PATHS: every tree in the repo that carries Swift
+# we own. NOT yet wired into `format` / `format-check` — the sweep that makes
+# it pass is a separate commit (a repo-wide reformat conflicts with anything
+# in flight, so it lands on its own). To do the sweep:
+#
+#     make format FORMAT_PATHS="$(make -s print-format-paths-all)"
+#
+# …review, commit, then make the switch permanent here (FORMAT_PATHS gets
+# FORMAT_PATHS_ALL's value) and drop `continue-on-error: true` from the
+# `format` job in .github/workflows/build.yml, which is what turns the check
+# from advisory into required.
+#
+# What is deliberately NOT in the list:
+#   • C/C++/ObjC shims (Packages/*/Sources/C*/**.c,.h and friends) — excluded
+#     by construction, not by name: swift-format only touches *.swift, so
+#     listing a Sources tree that also holds a shim target is safe.
+#   • Packages/TailscaleKit/Sources — Sources/TailscaleKit is a SYMLINK into
+#     the libtailscale submodule. Formatting it would rewrite upstream
+#     BSD-licensed files through the symlink and make the patch series in
+#     Packages/TailscaleKit/Patches/ stop applying. (Its sibling
+#     Sources/CGoRuntimeInit is ours but is C-only, so the whole tree can go.
+#     Packages/TailscaleKit/Tests is ours and stays in.)
+#   • Package.swift manifests — they sit at package roots, not under any
+#     Sources/ tree, so --recursive never reaches them; 25 manifests of churn
+#     for no reviewer benefit.
+#   • Anything generated — there is none in-tree today (checked: no
+#     "DO NOT EDIT" Swift file exists), so no exclusion is needed. If a
+#     generator ever lands, exclude its output here.
+#
+# Packages are picked up by wildcard so a new package is covered the day it
+# lands rather than the day someone remembers this variable.
+FORMAT_PATHS_ALL := Apps/macOS/Sources Apps/macOS/Tests \
+	Apps/linux/Sources Apps/windows/Sources \
+	$(filter-out Packages/TailscaleKit/Sources, $(wildcard Packages/*/Sources Packages/*/Tests))
+
+print-format-paths-all: ## Print FORMAT_PATHS_ALL (the target-state format tree list)
+	@echo '$(FORMAT_PATHS_ALL)'
 
 format: ## Run swift-format in-place over the app package
 	@command -v swift-format >/dev/null 2>&1 || { echo "swift-format missing — install Xcode 16+ or run 'brew install swift-format'"; exit 1; }
