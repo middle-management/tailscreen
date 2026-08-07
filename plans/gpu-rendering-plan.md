@@ -57,43 +57,116 @@ A C (or C++) target mirroring `CGtkVideo`'s interface as closely as the API
 allows:
 
 ```
-winvideo_init(void *swapChainPanelNative)   // bind to the panel
+winvideo_init(void)                         // D3D11 device + shader
+winvideo_bind_source(void *surfaceImageSourceNative)
 winvideo_draw_yuv(w, h, y, u, v)            // 3 textures + YUV→RGB shader
 winvideo_draw_annotations(...)              // second pass, same transform
 winvideo_clear()                            // black, no frame yet
-winvideo_resize(w, h)                       // swap-chain buffers
+winvideo_set_view(zoom, pan_x, pan_y)       // mirrors cgtkvideo_set_view
+winvideo_reset(void)                        // drop device objects, re-init next draw
 ```
 
 Deliberately the same function-per-concern split, so the two platforms can be
 read side by side and a bug fixed in one is findable in the other.
 
-Contents: `ID3D11Device` + swap chain via `IDXGIFactory2::CreateSwapChainForComposition`,
+Contents: a BGRA-capable `ID3D11Device` (which `SurfaceImageSource` requires),
 three `R8_UNORM` textures (one per plane), a pixel shader doing BT.709 limited-range
-YUV→RGB, and the same letterbox/zoom/pan maths the GL shader already has —
+YUV→RGB rendered into the `IDXGISurface` that
+`ISurfaceImageSourceNative::BeginDraw` returns, and the same letterbox/zoom/pan maths the GL shader already has —
 **ported, not reinvented**, since `ViewerZoomMath` is already portable and tested
 and the GL version is the working reference.
 
-### Step 2 — `WinUIVideoView` swaps its element
+### Step 2 — `WinUIVideoView` swaps its image SOURCE, not its element
 
-`WinUIElementRepresentable` already lets any `FrameworkElement` be hosted; today
-it hosts `WinUI.Image`, and it would host `WinUI.SwapChainPanel` instead. The
-polling, the `generation` bump, the zoom/annotation/remote-control wiring and the
-`FrameStore` read all stay. `I420Converter` and the `WriteableBitmap` go.
+**Corrected after checking the dependency.** This step originally said to host
+`WinUI.SwapChainPanel` instead of `WinUI.Image`. That is not available:
+**swift-winui 0.2.1 has no `SwapChainPanel` binding at all** — zero occurrences
+across `Sources/WinUI/` — while `WinUI.Image` is bound
+(`Microsoft.UI.Xaml.Controls.swift:6122`). `WinUIElementRepresentable` needs a
+Swift-typed `WinUIElementType`, so a panel we cannot name in Swift cannot be
+hosted, and the C++ side cannot supply one either.
 
-The file's own comment promises this is a one-file change. This step is where
-that promise gets tested.
+Generating the missing binding is possible in principle — swift-winui is
+generated from WinMD — but that is upstream work on a third-party dependency,
+which is a poor thing to put underneath a rendering change.
+
+**What is available, and is bound:** `SurfaceImageSource` (and
+`VirtualSurfaceImageSource`, and `WriteableBitmap`, and `SoftwareBitmapSource`).
+`microsoft.ui.xaml.media.dxinterop.h` — the header declaring
+`ISwapChainPanelNative` *and* `ISurfaceImageSourceNative` — ships inside the
+dependency at `Sources/CWinAppSDK/nuget/include/`, so the native interfaces are
+reachable from a C/C++ target.
+
+So the element stays `WinUI.Image` and the **source** changes:
+`WriteableBitmap` → `SurfaceImageSource`, whose `ISurfaceImageSourceNative`
+hands us an `IDXGISurface` from `BeginDraw`, which the D3D11 device from step 1
+renders the YUV→RGB pass into before `EndDraw`.
+
+Everything the plan wanted survives: three plane textures, a BT.709 shader, no
+CPU colour conversion, no CPU upload of a converted frame. The representable, the
+polling, the `generation` bump and the zoom/annotation/remote-control wiring are
+all untouched — this is a smaller change than the original step, not a bigger one.
+
+**The honest trade-off:** `SurfaceImageSource` is composed by XAML rather than
+presented as an independent swap chain, so it gives up the last hop of a
+`SwapChainPanel`'s efficiency. That hop is not where the cost is — the cost is
+~7 MP of CPU colour conversion plus a full-frame CPU→GPU upload per frame, and
+both of those go away either way. If profiling later shows XAML composition is
+the remaining bottleneck, the answer is to get a `SwapChainPanel` binding
+upstream, with a measurement in hand to justify it.
 
 ### Step 3 — the failure mode the current path does not have
 
-`WriteableBitmap` cannot lose its device. A swap chain can, and must handle it:
-`DXGI_ERROR_DEVICE_REMOVED` / `DEVICE_RESET` means tearing down and rebuilding
-device, swap chain and textures, then redrawing from `FrameStore.current()`.
+`WriteableBitmap` cannot lose its device. A D3D11 device can, and must handle it:
+`BeginDraw` returns `DXGI_ERROR_DEVICE_REMOVED` / `DEVICE_RESET`, which means
+rebuilding the device, the `SurfaceImageSource` binding and the textures, then
+redrawing from `FrameStore.current()`.
 
 This is the main genuinely new risk in the plan, and it is why the step exists
 separately rather than being folded into step 1. A viewer that goes black on a
 driver update and stays black is worse than one that is merely slow.
 
-### Step 4 — prove it, in CI, without a GPU
+### Step 4 — prove it, in CI, without a GPU — **DONE**
+
+Landed as `winvideo-selftest`, an executable target beside `tsnet-probe` (a CI
+diagnostic, not a shipped app), plus a `Build the render self-test` /
+`Render self-test (WARP)` step pair in `app-windows.yml`. It links `CWinVideo`
+and no WinUI, so it needs no window, no desktop session and no package identity;
+`winvideo_init`'s existing HARDWARE→WARP fallback means a GPU-less runner
+exercises the real shader with nothing to configure. Exit codes carry the
+diagnosis: 0 pass, 3 wrong pixels, 2 no D3D11 device at all (a runner-image
+regression, not ours).
+
+`makeColorBarsFrame()` moved from `Apps/linux/Sources/TailscreenViewerGtk/` into
+the portable `TailscreenViewer` tier so both platforms assert against one frame
+— the same trip `FrameRateCounter` made when Windows needed it.
+
+**Two corrections found while implementing, both of which would have made this
+step lie.**
+
+First, the Windows check's expectations were wrong, and wrong in the direction
+that fails a *correct* render: it expected the four bars at
+{235,235,235}/{16,16,16}/{235,16,16}/{16,16,235} within ±24. ColorBars' third bar
+is Y=128,U=128,V=255 — not saturated red but a mid-luma maximum-Cr colour, which
+BT.709 puts at rgb(255,63,130), 47 away on green; the fourth lands at
+rgb(130,103,255). Wired up as written, CI would have gone red and the obvious
+"fix" would have been to bend the shader to match a bad constant. It now asserts
+the same *relative predicates* `cgtkvideo_selftest_check` uses (`white > 200`,
+`black < 60`, `r > 180 ∧ r > b + 60`, `b > 180 ∧ b > r + 60`), which is what
+"reuse ColorBars" actually has to mean. The GL side's letterbox assertion is
+deliberately NOT carried over: this shader does no geometry, so there is no
+letterbox to find.
+
+Second, the check now also renders an **overlay** pass, because the version that
+only checked the video bars would have passed both real defects this work
+shipped — the overlay texture declared `R8G8B8A8` while `AnnotationRasterizer`
+writes b,g,r,a, and the composite multiplying by alpha twice on premultiplied
+data. Neither is a build error; both are wrong pictures. One half-transparent
+premultiplied red patch over the black bar catches both: correct gives r=128,
+double-multiplied alpha gives 64 (fails `r > 100`), swapped channels puts the 128
+in blue (fails `r > b + 60`).
+
+### The original sketch of step 4
 
 The `--ui-preview-video` mode and the existing screenshot jobs already exist for
 this. Add a Windows screenshot of the video surface showing a known synthetic
@@ -129,8 +202,8 @@ Steps 1 and 4 can proceed in parallel with the encode/decode work in
   surface straight to it. Doing it before there is a GPU renderer would mean
   pulling the frame back to the CPU, which is the point made in
   `gpu-media-support.md`.
-- **It does not use `SwapChainPanel` for the annotation overlay's hit-testing or
-  the remote-control pointer mapping.** Those go through `ViewerZoomMath` and
+- **It does not change the annotation overlay's hit-testing or the
+  remote-control pointer mapping.** Those go through `ViewerZoomMath` and
   `WindowsPointerMapping` on normalized coordinates and are renderer-independent
   by construction — but the mapping must be re-verified once the transform moves
   into a shader, because a letterbox computed in two places is a classic way for

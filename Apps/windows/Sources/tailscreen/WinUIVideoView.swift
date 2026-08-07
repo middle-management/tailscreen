@@ -8,9 +8,6 @@ import struct TailscreenProtocol.KeyModifiers
 import enum TailscreenProtocol.ViewerPointerMapping
 import enum TailscreenProtocol.ViewerZoomMath
 import enum TailscreenProtocol.WindowsKeyCodeMapping
-// Moved down to the portable tier when the SHARER's preview thumbnail needed
-// the same maths: this blit is one of its two callers now, not its owner.
-import enum TailscreenProtocol.I420Converter
 import class TailscreenViewer.FrameStore
 
 // This is the app's ONLY genuinely Windows-bound file, and the `#else` at the
@@ -30,22 +27,41 @@ import class TailscreenViewer.FrameStore
 // pointer, hand over four numbers.
 #if os(Windows)
 
+// Inside the guard on purpose: `CWinVideo` is a `.when(platforms: [.windows])`
+// dependency, so on Linux the module does not exist and a top-of-file import
+// breaks the `linux-app` typecheck that exists to catch exactly this.
+import CWinVideo
+
 import WinUI
 // `WinUIElementRepresentable` lives in the BACKEND module, not in SwiftCrossUI
 // and not in WinUI — it is the seam between the two, so neither re-exports it.
 import WinUIBackend
 import WindowsFoundation
 
-/// The video surface: a WinUI `Image` fed from a `WriteableBitmap`, polling the
+/// The video surface: a WinUI `Image` fed from a GPU-rendered `SurfaceImageSource`, polling the
 /// portable `FrameStore` for the latest decoded frame.
 ///
-/// `Image` + `WriteableBitmap` rather than `SwapChainPanel` + D3D11 on purpose.
-/// It is the slow answer and the correct one: it makes "pixels on screen" a
-/// small debuggable increment, it has no device-lost failure mode to handle,
-/// and it can be verified by reading the bitmap back. Because the hand-off is
-/// `FrameStore` — which is portable and already used by the GTK renderer — a
-/// later `SwapChainPanel` implementation replaces this file without touching
-/// the decoder, the session, or the transport.
+/// `Image` + `SurfaceImageSource`, with the YUV->RGB conversion on the GPU in
+/// `CWinVideo`. This replaced `Image` + `WriteableBitmap` + `I420Converter`,
+/// which converted ~7 MP on the CPU and uploaded a full BGRA frame per frame on
+/// the UI thread — the only CPU colour-conversion left in the project once the
+/// GTK viewer moved to a GL shader.
+///
+/// `SurfaceImageSource` rather than `SwapChainPanel`: swift-winui has no
+/// `SwapChainPanel` binding, and `WinUIElementRepresentable` needs a
+/// Swift-typed element. `SurfaceImageSource` is bound, and its
+/// `ISurfaceImageSourceNative` (from the dependency's bundled
+/// microsoft.ui.xaml.media.dxinterop.h) hands D3D11 a surface to render into —
+/// so the element stays an `Image` and only its *source* changed. See
+/// plans/gpu-rendering-plan.md for the trade-off that buys.
+///
+/// Two things deliberately stayed on the paths that were already free. Zoom is
+/// still a `CompositeTransform` on the element, because the compositor applies
+/// it for nothing; putting it in the shader would duplicate working GPU work.
+/// And annotations are still rasterized by the portable `AnnotationRasterizer`,
+/// into a reusable RGBA overlay the shader composites in the same pass — so they
+/// remain part of the picture and keep scaling with the video, which is the
+/// property the old draw-into-the-bitmap approach had and was worth keeping.
 ///
 /// `WinUIElementRepresentable` is swift-cross-ui's `NSViewRepresentable`
 /// analogue: any `FrameworkElement` can be hosted, and `Image` is one.
@@ -98,14 +114,23 @@ struct WinUIVideoView: WinUIElementRepresentable {
         proposal.replacingUnspecifiedDimensions(by: ViewSize(640, 360))
     }
 
-    /// Owns the bitmap across updates. Recreating a `WriteableBitmap` per frame
-    /// would allocate a full-resolution surface 60 times a second; it is rebuilt
-    /// only when the video size actually changes.
+    /// Owns the image source across updates. Recreating a `SurfaceImageSource`
+    /// per frame would allocate a full-resolution surface 60 times a second; it
+    /// is rebuilt only when the video size actually changes.
     @MainActor
     final class Coordinator {
-        private var bitmap: WriteableBitmap?
-        private var bitmapWidth = 0
-        private var bitmapHeight = 0
+        private var source: SurfaceImageSource?
+        private var sourceWidth = 0
+        private var sourceHeight = 0
+        /// Set once `winvideo_init` has succeeded. When it never does — no D3D11
+        /// device at all — `draw` gives up rather than falling back: a silent CPU
+        /// path would hide exactly the failure this replaced, and the log line
+        /// `CWinVideo` prints is the diagnosis.
+        private var gpuReady = false
+        /// Reusable RGBA overlay for annotations, allocated only when somebody
+        /// draws. A session with an empty canvas uploads three planes; the fourth
+        /// texture costs nothing until there is something in it.
+        private var overlay: [UInt8] = []
         /// The element's last laid-out size, for the letterbox and zoom math.
         /// Read from the element on each event rather than cached across them:
         /// the pane resizes with the window.
@@ -140,48 +165,125 @@ struct WinUIVideoView: WinUIElementRepresentable {
             lastVideoWidth = frame.width
             lastVideoHeight = frame.height
 
-            if bitmap == nil || bitmapWidth != frame.width || bitmapHeight != frame.height {
-                let fresh = WriteableBitmap(Int32(frame.width), Int32(frame.height))
-                bitmap = fresh
-                bitmapWidth = frame.width
-                bitmapHeight = frame.height
+            if !gpuReady {
+                gpuReady = winvideo_init() != 0
+                guard gpuReady else { return }
+            }
+            // Device-lost recovery. `WriteableBitmap` could not lose its device;
+            // a D3D11 one can, on a driver update or a GPU reset, and a viewer
+            // that goes black and stays black is worse than a slow one. Rebuild
+            // from scratch and let the next frame land.
+            if winvideo_device_lost() != 0 {
+                // The plan's rollback for this step is "keep the rebuild path
+                // behind a log line so it is visible in the wild", and it is the
+                // whole reason this branch is auditable at all: the three C sites
+                // that detect the loss already log their HRESULT, but nothing
+                // said whether recovery was ever ATTEMPTED. A viewer that
+                // recovers silently and one that is wedged look identical in a
+                // log otherwise, and this path is too hard to trigger on purpose
+                // to leave that ambiguous.
+                //
+                // Fires once per loss episode, not once per frame: `winvideo_reset`
+                // clears the flag, so the next frame takes the init path instead.
+                print("[winvideo] device lost — rebuilding the D3D11 device")
+                winvideo_reset()
+                gpuReady = false
+                source = nil
+                sourceWidth = 0
+                sourceHeight = 0
+                return
+            }
+
+            if source == nil || sourceWidth != frame.width || sourceHeight != frame.height {
+                // `isOpaque: true` is the third argument on purpose. The shader
+                // writes alpha 1.0 over the whole surface, so declaring it lets
+                // XAML skip blending the video against what is behind it — and
+                // it makes the shader's "the source is created opaque" comment
+                // true rather than aspirational, which is what the two-argument
+                // initializer left it as.
+                let fresh = SurfaceImageSource(
+                    Int32(frame.width), Int32(frame.height), true)
+                // The QueryInterface for `ISurfaceImageSourceNative` happens in
+                // C++, so no IID is spelled in Swift; all this side owes is a
+                // valid `IUnknown*` for the WinRT object.
+                //
+                // Getting to it is two hops, and the shape is not guessable —
+                // a swift-winui class projection is a `WinRTClass`, which
+                // WRAPS its COM pointer in `_inner` rather than inheriting
+                // `IUnknown`, so `pUnk` does not exist on the class itself.
+                // `thisPtr` is the public bridge (`IWinRTObject`), and it is
+                // an `IInspectable`, which does carry `pUnk` — the same
+                // `pUnk.borrow` handoff `NotificationActivation` makes to
+                // `CWinNotify`. Do NOT reach for the projection's own
+                // `queryInterface`: on `WinRTClass` it is
+                // `@_spi(WinRTImplements)`, so calling it would drag an SPI
+                // import into the app for no gain.
+                //
+                // `withExtendedLifetime` because `thisPtr` hands back a fresh
+                // reference: the pointer must outlive the call, and the C++
+                // side takes its own reference on the interface it queries
+                // before returning.
+                let inspectable = fresh.thisPtr
+                let bound = withExtendedLifetime(inspectable) {
+                    winvideo_bind_source(
+                        UnsafeMutableRawPointer(inspectable.pUnk.borrow),
+                        Int32(frame.width), Int32(frame.height))
+                }
+                guard bound != 0 else { return }
+                source = fresh
+                sourceWidth = frame.width
+                sourceHeight = frame.height
                 element.source = fresh
             }
-            guard let bitmap else { return }
+            guard source != nil else { return }
 
-            // `IBuffer` refines `IBufferByteAccess` in the WinRT bindings, so the
-            // backing store is reachable without hand-rolled COM interop. The
-            // pointer is valid only while the buffer is alive, hence the tight
-            // scope here.
-            guard let buffer = bitmap.pixelBuffer,
-                let bytes = try? buffer.buffer
-            else { return }
-
-            guard I420Converter.convert(frame, into: bytes) else { return }
-
-            // Annotations are drawn STRAIGHT INTO THE DECODED FRAME rather than
-            // onto a second surface.
+            // Annotations still go through the portable `AnnotationRasterizer`
+            // — the same tested code the old bitmap path used — but into a
+            // dedicated RGBA overlay the shader composites over the video in the
+            // same pass, instead of into the converted frame. Same visible
+            // result and the same property worth keeping (strokes are part of
+            // the picture, so they scale with the element's transform), without
+            // needing a CPU BGRA frame to draw into.
             //
-            // The alternative — a XAML canvas or a D2D device over the Image —
-            // is a large amount of platform for something `AnnotationRasterizer`
-            // already does, and it would need its own zoom transform kept in
-            // sync with the video's. Compositing here makes the strokes part of
-            // the picture, so they zoom and letterbox with it for free, which is
-            // exactly the behaviour annotations anchored to video content should
-            // have. The cost is redrawing them per frame; the rasterizer is
-            // bounded by each stroke's bounding box, and a session with nobody
-            // drawing pays a single `isEmpty` check.
+            // The buffer is allocated on first use and reused; a session where
+            // nobody draws pays one `isEmpty` check and uploads three planes
+            // rather than four.
             let annotations = interaction.annotations.visibleAnnotations
+            var overlayPointer: UnsafePointer<UInt8>?
+            let overlayBytes = frame.width * frame.height * AnnotationRasterizer.bytesPerPixel
             if !annotations.isEmpty {
-                AnnotationRasterizer.draw(
-                    annotations,
-                    into: AnnotationRasterizer.Surface(
-                        bgra: bytes,
-                        stride: frame.width * AnnotationRasterizer.bytesPerPixel,
-                        width: frame.width,
-                        height: frame.height))
+                if overlay.count != overlayBytes {
+                    overlay = [UInt8](repeating: 0, count: overlayBytes)
+                } else {
+                    // Cleared rather than reallocated: a stroke that was undone
+                    // must not persist as a ghost from the previous frame.
+                    for i in overlay.indices { overlay[i] = 0 }
+                }
+                overlay.withUnsafeMutableBufferPointer { buf in
+                    guard let base = buf.baseAddress else { return }
+                    AnnotationRasterizer.draw(
+                        annotations,
+                        into: AnnotationRasterizer.Surface(
+                            bgra: base,
+                            stride: frame.width * AnnotationRasterizer.bytesPerPixel,
+                            width: frame.width,
+                            height: frame.height))
+                }
             }
-            try? bitmap.invalidate()
+
+            frame.yPlane.withUnsafeBufferPointer { yBuf in
+                frame.uPlane.withUnsafeBufferPointer { uBuf in
+                    frame.vPlane.withUnsafeBufferPointer { vBuf in
+                        overlay.withUnsafeBufferPointer { oBuf in
+                            overlayPointer = annotations.isEmpty ? nil : oBuf.baseAddress
+                            _ = winvideo_draw_yuv(
+                                Int32(frame.width), Int32(frame.height),
+                                yBuf.baseAddress, uBuf.baseAddress, vBuf.baseAddress,
+                                overlayPointer)
+                        }
+                    }
+                }
+            }
 
             applyZoom(to: element, interaction: interaction)
         }
@@ -191,7 +293,7 @@ struct WinUIVideoView: WinUIElementRepresentable {
         /// A `RenderTransform` rather than cropping the source: it is composited
         /// by the same pass that already draws the Image, so zooming costs
         /// nothing per frame, and it scales the annotations with the video
-        /// because they are in the bitmap.
+        /// because the shader composites them into the same surface.
         private func applyZoom(to element: WinUI.Image, interaction: WindowsViewerInteraction) {
             let state = interaction.zoomState
             let transform = CompositeTransform()

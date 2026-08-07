@@ -23,8 +23,9 @@ import PackageDescription
 let package = Package(
     name: "tailscreen-windows",
     products: [
-        // See the target comment: this is a diagnostic, not a shipped app.
-        .executable(name: "tsnet-probe", targets: ["tsnet-probe"])
+        // See the target comments: both are diagnostics, not shipped apps.
+        .executable(name: "tsnet-probe", targets: ["tsnet-probe"]),
+        .executable(name: "winvideo-selftest", targets: ["winvideo-selftest"]),
     ],
     dependencies: [
         .package(
@@ -66,6 +67,25 @@ let package = Package(
         .package(path: "../../Packages/TailscreenL10n"),
     ],
     targets: [
+        // D3D11 YUV->RGB for the video surface — the sibling of the GTK app's
+        // `CGtkVideo`, and the reason `WinUIVideoView` no longer converts colour
+        // on the CPU. C++ because D3D11 is COM; the header is `extern "C"` so
+        // Swift imports it as a plain C module.
+        //
+        // The Windows SDK libraries are named here rather than assumed: a
+        // `systemLibrary` target would need a module map for headers that are
+        // already on the SDK include path, and `d3dcompiler` is a link-time
+        // dependency the runtime DLL satisfies (it ships with the staged
+        // self-contained runtime). `microsoft.ui.xaml.media.dxinterop.h` comes
+        // from the swift-winui dependency's bundled nuget headers.
+        .target(
+            name: "CWinVideo",
+            linkerSettings: [
+                .linkedLibrary("d3d11", .when(platforms: [.windows])),
+                .linkedLibrary("dxgi", .when(platforms: [.windows])),
+                .linkedLibrary("d3dcompiler", .when(platforms: [.windows])),
+            ]
+        ),
         .executableTarget(
             name: "tailscreen",
             dependencies: [
@@ -92,6 +112,7 @@ let package = Package(
                 .product(
                     name: "WinUI", package: "swift-winui",
                     condition: .when(platforms: [.windows])),
+                .target(name: "CWinVideo", condition: .when(platforms: [.windows])),
                 .product(name: "TailscreenProtocol", package: "TailscreenKit"),
                 // libavcodec behind the portable VideoDecoding seam — the same
                 // decoder the Linux viewer uses, which is why it is a shared
@@ -165,6 +186,20 @@ let package = Package(
             ],
             linkerSettings: [
                 .unsafeFlags(["-L", "../../Packages/TailscaleKit/lib"])
+            ]
+        ),
+        // The headless render self-test: ColorBars through CWinVideo's D3D11
+        // shader, pixels read back, no XAML involved. Its own executable for the
+        // same reason `tsnet-probe` is — a CI diagnostic, not a shipped app —
+        // and specifically so it carries NO WinUI, which is what lets it run on
+        // a runner with no desktop session and no package identity.
+        //
+        // No libtailscale `-L`: unlike the probe, this touches no transport.
+        .executableTarget(
+            name: "winvideo-selftest",
+            dependencies: [
+                .product(name: "TailscreenViewer", package: "TailscreenKit"),
+                .target(name: "CWinVideo", condition: .when(platforms: [.windows])),
             ]
         )
     ]
