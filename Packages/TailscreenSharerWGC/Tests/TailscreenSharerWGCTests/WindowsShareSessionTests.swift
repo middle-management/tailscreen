@@ -74,9 +74,42 @@ final class WindowsShareSessionTests: XCTestCase {
     // MARK: Approval gate
 
     /// The server's own gate defaults OFF — right for a headless automation
-    /// sharer, wrong for a desktop app — so this wrapper has to fail closed and
-    /// say so in the status the switch reads back from.
-    func testApprovalGateDefaultsClosedAndMirrorsIntoTheStatus() {
+    /// sharer, wrong for a desktop app — so this wrapper has to fail closed
+    /// **before anybody configures it**.
+    ///
+    /// Asserted separately from the mirroring below because the two fail
+    /// differently and only this one is silent. The app pushes
+    /// `ViewerApprovalPreference.load()` at startup, so in normal operation
+    /// this default is only the value during the window before that runs — but
+    /// it is also the safety net if a future path forgets to push, and a wrong
+    /// answer here does not break anything visible: the share works perfectly
+    /// and admits strangers with no prompt.
+    ///
+    /// Found by mutation: flipping both `requireApproval = true` declarations
+    /// in the engine to `false` left all ten tests in this file green,
+    /// including the mirroring one that carried "DefaultsClosed" in its name
+    /// without ever reading the default.
+    func testApprovalIsRequiredBeforeAnybodyConfiguresIt() {
+        let session = makeSession()
+        let published = StatusLog()
+        session.onStatus = { published.append($0) }
+
+        // Force a publish without changing the gate, so the assertion reads
+        // the engine's own starting value rather than one this test set.
+        session.preApproveViewer(ip: "100.64.0.7")
+        session.setRequireApproval(true)
+
+        XCTAssertEqual(
+            published.last?.requireApproval, true,
+            "a session nobody has configured must already require approval")
+        XCTAssertTrue(
+            WindowsShareSession.Status().requireApproval,
+            "the published status must start closed too — the UI switch reads back from it")
+    }
+
+    /// The gate is mirrored into the status so the UI's switch reads back from
+    /// the thing it controls rather than from a second copy that can drift.
+    func testApprovalGateMirrorsIntoTheStatus() {
         let session = makeSession()
         let published = StatusLog()
         session.onStatus = { published.append($0) }
