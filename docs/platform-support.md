@@ -247,8 +247,9 @@ actually deliver:
   button rather than a stale one. Needs the bundled app: `make run` output has
   no bundle id, and posts nothing at all.
 - **Linux** posts over `org.freedesktop.Notifications`. A daemon that can't
-  render buttons is asked first, and the wording changes to say where to answer
-  instead.
+  render buttons is asked first, the wording changes to say where to answer
+  instead, and the share card says so too — the same "degrades and says so"
+  rule the Windows zip build follows.
 - **Windows** posts the same set through the Windows App SDK — but only when
   the app can register with the notification platform, which today means the
   **MSIX**. The zip ships a self-contained runtime that deliberately omits the

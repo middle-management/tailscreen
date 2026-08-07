@@ -64,7 +64,11 @@ The platform-portable core of Tailscreen, in six targets/tiers:
   `CGEvent` injector, and a Linux sharer plugs in X11/portal capture +
   libavcodec. `CaptureEncoding` is deliberately shaped like
   `CaptureHelperWire`'s `OutType`/`InType` — the seam already existed as an
-  IPC wire and simply hadn't been named as a portability boundary. Depends
+  IPC wire and simply hadn't been named as a portability boundary. Also
+  here: `SharerAskToShareCoordinator`, the sharer's ask-to-share flow (the
+  long-lived idempotent-per-node control listener, the `ShareRequestInbox`,
+  and the answer sequencing: reply on the arrival connection; accept =>
+  pre-approve, then start) shared by all three hosts. Depends
   on `TailscreenProtocol` + `TailscreenTransport` + `TailscaleKit`.
 - **`TailscreenViewerTsnet`** — the `@MainActor` tsnet-backed viewer
   transport (`TsnetTransport` + `ViewerBackChannel`) the Linux and Windows
@@ -95,11 +99,13 @@ that roadmap.
   synthesizes those as public). Test-only seams stay `internal`: the package
   suites use `@testable import TailscreenProtocol` /
   `@testable import TailscreenAudio` / `@testable import TailscreenViewer`.
-  The sharer tier needs no `@testable`: its extracted decision functions
-  (`nextAdaptiveBitrate`, `fecSweepDecision`, `admissionDecision`, …) are
-  `public` — they're the reusable part of the data plane, and a second host
-  implementation is exactly who would want them — so `TailscreenSharerTests`
-  imports the module plainly. `TailscreenTransport` has no package tests;
+  The sharer tier's decision surface needs no `@testable`: its extracted
+  decision functions (`nextAdaptiveBitrate`, `fecSweepDecision`,
+  `admissionDecision`, …) are `public` — they're the reusable part of the
+  data plane, and a second host implementation is exactly who would want
+  them — so most of `TailscreenSharerTests` imports the module plainly (the
+  exception is `SharerAskToShareCoordinatorTests`, which uses `@testable`
+  for the coordinator's internal reply-send seam). `TailscreenTransport` has no package tests;
   the macOS app's suite exercises it through the app's dependency.
 - `Tests/TailscreenProtocolTests` began as a shallow smoke suite and now
   also holds the **migrated pure suites** — the loss-recovery/RTP/wire/util
@@ -114,7 +120,8 @@ that roadmap.
   `PerViewerFairnessDecisionTests`, `HelperRestartDecisionTests`,
   `ViewerLifecycleDecisionTests`) — they consume the deliberately-public
   decision surface through a plain `import TailscreenSharer`, no `@testable`,
-  and run on the same job. A suite belongs in the package iff it imports no
+  and run on the same job — plus `SharerAskToShareCoordinatorTests` (which
+  does use `@testable`, for the coordinator's internal reply-send seam). A suite belongs in the package iff it imports no
   Apple framework and references only package types; anything that mixes in a
   mac symbol (an Apple-framework import, an
   `AppState`/`VideoDecoder`/`VoiceChannel` decision, or a shared helper with a

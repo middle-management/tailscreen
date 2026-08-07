@@ -2,10 +2,11 @@ import Foundation
 import GNotifyKit
 
 import enum TailscreenProtocol.SharerNoticeKind
-import enum TailscreenProtocol.SharerNoticeDecision
 import enum TailscreenProtocol.SharerNoticeText
+import protocol TailscreenProtocol.NoticePosting
 import struct TailscreenProtocol.NoticeCandidate
 import struct TailscreenProtocol.SharerNotice
+import struct TailscreenProtocol.SharerNoticeReconciler
 
 /// Posts the sharer's notifications, and routes their buttons back.
 ///
@@ -16,26 +17,26 @@ import struct TailscreenProtocol.SharerNotice
 /// defaults on: a sharer who is not looking silently strands whoever tries to
 /// connect, with nothing on screen to notice.
 ///
-/// Deliberately thin. Which notices to post, which to take back, and what they
-/// say is `SharerNoticeDecision` / `SharerNoticeText` in `TailscreenProtocol`,
-/// tested on Linux CI; delivery is `GNotifyKit`, gated against a real daemon.
-/// What is left here is bookkeeping: which daemon id belongs to which peer.
+/// Deliberately thin — a backend adapter. Which notices to post, which to take
+/// back, and what they say is `SharerNoticeReconciler` / `SharerNoticeText` in
+/// `TailscreenProtocol`, tested on Linux CI; delivery is `GNotifyKit`, gated
+/// against a real daemon. What is left here is bookkeeping: which daemon id
+/// belongs to which peer.
 ///
 /// `@MainActor` because `DesktopNotifier` must be built on the thread whose
 /// `GMainContext` is iterated — GDBus captures that at subscribe time, and a
 /// notifier built anywhere else posts perfectly and reports no button press
 /// ever. In this app that thread is GTK's main thread.
 @MainActor
-final class SharerNotifications {
+final class SharerNotifications: NoticePosting {
     /// Nil when there is no session bus or no notification daemon — a headless
     /// box, a minimal session, a container. A normal state: the hub keeps its
     /// in-window prompts and nothing is said.
     private let notifier: DesktopNotifier?
 
-    /// Who has already been notified, per kind, with the name to use if they
-    /// leave. The label is carried because a departure notice needs it after
-    /// the peer is gone from every live list.
-    private var announced: [SharerNoticeKind: [String: String]] = [:]
+    /// The announce/withdraw bookkeeping, shared with the Windows host — this
+    /// type is the `NoticePosting` half it drives.
+    private var reconciler = SharerNoticeReconciler()
     /// Live banners, so they can be taken back: `SharerNotice.id` → daemon id.
     private var posted: [String: UInt32] = [:]
     /// The reverse, for routing a button press: daemon id → what it was about.
@@ -86,63 +87,29 @@ final class SharerNotifications {
     var isAvailable: Bool { notifier != nil }
 
     /// Whether the daemon can render buttons. False is a real state on several
-    /// minimal daemons, and the notice text changes to say where to answer.
+    /// minimal daemons; the notice text changes to say where to answer, and
+    /// the share card says so too (`SharerModel.notificationsLackActions`) —
+    /// a banner stating a decision with no way to make it reads as broken
+    /// otherwise.
     var rendersActions: Bool { notifier?.supportsActions ?? false }
 
     // MARK: Asks
 
-    /// Reconcile the notifications for one *ask* kind against its live list.
-    ///
-    /// New rows are announced; rows that left have their banner taken back.
-    /// That second half is not tidiness: a banner reading "someone is waiting
-    /// to be let in", with an Accept button, is actively wrong once they have
-    /// been admitted from the window — pressing it then does nothing.
+    /// Reconcile the notifications for one *ask* kind against its live list —
+    /// the shared reconciler's loop, with this type as its delivery.
     func applyAsk(kind: SharerNoticeKind, candidates: [NoticeCandidate]) {
         guard notifier != nil else { return }
-        let known = announced[kind] ?? [:]
-        let gone = SharerNoticeDecision.noticesToWithdraw(
-            candidates: candidates, alreadyNotified: Set(known.keys))
-        for identity in gone { withdraw(kind: kind, identity: identity) }
-
-        let (fresh, remaining) = SharerNoticeDecision.noticesToPost(
-            kind: kind, candidates: candidates, alreadyNotified: Set(known.keys))
-        for notice in fresh { post(notice) }
-        announced[kind] = Dictionary(
-            uniqueKeysWithValues: candidates.filter { remaining.contains($0.identity) }
-                .map { ($0.identity, $0.label) })
+        reconciler.applyAsk(kind: kind, candidates: candidates, poster: self)
     }
 
     // MARK: Reports
 
-    /// Reconcile the joined/left pair against the connected roster.
-    ///
-    /// A matched pair on purpose: a sharer told somebody arrived and never told
-    /// they left has to go and look to find out whether anyone is still
-    /// watching, which is the ask-the-app problem notifications exist to
-    /// remove. Only viewers whose ARRIVAL was announced get a departure —
-    /// which falls out of reconciling against the same set — and nothing is
-    /// posted during teardown, because `stop()` clears the set first.
+    /// Reconcile the joined/left pair against the connected roster — likewise
+    /// the shared reconciler's, including the rule that only viewers whose
+    /// arrival was announced get a departure.
     func applyViewers(_ candidates: [NoticeCandidate]) {
         guard notifier != nil else { return }
-        let known = announced[.viewerJoined] ?? [:]
-        let gone = SharerNoticeDecision.noticesToWithdraw(
-            candidates: candidates, alreadyNotified: Set(known.keys))
-        for identity in gone {
-            // The arrival banner goes; a departure banner replaces it. Leaving
-            // "started watching" on screen after they left is the one thing
-            // this pair exists to prevent.
-            withdraw(kind: .viewerJoined, identity: identity)
-            post(
-                SharerNotice(
-                    kind: .viewerLeft, identity: identity, label: known[identity] ?? identity))
-        }
-
-        let (fresh, remaining) = SharerNoticeDecision.noticesToPost(
-            kind: .viewerJoined, candidates: candidates, alreadyNotified: Set(known.keys))
-        for notice in fresh { post(notice) }
-        announced[.viewerJoined] = Dictionary(
-            uniqueKeysWithValues: candidates.filter { remaining.contains($0.identity) }
-                .map { ($0.identity, $0.label) })
+        reconciler.applyViewers(candidates, poster: self)
     }
 
     // MARK: Teardown
@@ -158,12 +125,12 @@ final class SharerNotifications {
         for id in posted.values { notifier?.withdraw(id) }
         posted.removeAll()
         routes.removeAll()
-        announced.removeAll()
+        reconciler.reset()
     }
 
-    // MARK: Plumbing
+    // MARK: Delivery (the `NoticePosting` half the reconciler drives)
 
-    private func post(_ notice: SharerNotice) {
+    func post(_ notice: SharerNotice) {
         guard let notifier else { return }
         let text = SharerNoticeText.render(
             notice, rendersBody: notifier.supportsBody, rendersActions: notifier.supportsActions)
@@ -186,7 +153,7 @@ final class SharerNotifications {
         routes[id] = (notice.kind, notice.identity)
     }
 
-    private func withdraw(kind: SharerNoticeKind, identity: String) {
+    func withdraw(kind: SharerNoticeKind, identity: String) {
         let key = SharerNotice(kind: kind, identity: identity, label: "").id
         guard let id = posted.removeValue(forKey: key) else { return }
         routes.removeValue(forKey: id)

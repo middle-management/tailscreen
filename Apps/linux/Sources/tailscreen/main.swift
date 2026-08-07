@@ -814,10 +814,21 @@ struct ViewerApp: App {
                 if let controlNote = sharer.controlNote { notes.append(controlNote) }
                 // Said only while sharing, and only when true: the person this
                 // would have reached is the one who has stopped looking at
-                // this window, so they should be told before they do.
+                // this window, so they should be told before they do. Two
+                // distinct silences with two different fixes, exactly as the
+                // Windows card splits "no runtime" from "off for this app":
+                // no daemon at all, or a daemon that renders the banner but
+                // silently drops its buttons (the freedesktop `actions`
+                // capability), leaving an ask worded to say where to answer
+                // — with nothing here saying so, that reads as broken.
                 if sharer.phase == .sharing && sharer.notificationsUnavailable {
                     notes.append(
                         L("No desktop notifications on this system — approvals appear here only"))
+                } else if sharer.phase == .sharing && sharer.notificationsLackActions {
+                    notes.append(
+                        L(
+                            "This desktop's notifications can't show buttons — answer approvals in this window"
+                        ))
                 }
                 // The mute chord's failure, said beside the microphone it
                 // would have muted: the press that discovers it is the one

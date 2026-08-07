@@ -26,13 +26,11 @@ import enum TailscreenProtocol.PeerSharingState
 import struct TailscreenProtocol.PendingShareRequest
 import struct TailscreenProtocol.QualitySettings
 import enum TailscreenProtocol.QualitySettingsStore
-import enum TailscreenProtocol.ScreenShareMessage
-import struct TailscreenProtocol.ShareRequestInbox
 import enum TailscreenProtocol.TailscreenInstance
 import struct TailscreenProtocol.TailscreenMetadata
 import enum TailscreenProtocol.ViewerApprovalPreference
+import class TailscreenSharer.SharerAskToShareCoordinator
 import class TailscreenSharerWGC.WindowsShareSession
-import class TailscreenTransport.TailscreenControlListener
 import class TailscreenVideoFFmpeg.FFmpegVideoDecoder
 import class TailscreenViewer.FrameStore
 import class TailscreenViewer.ThreadedAudioSink
@@ -581,6 +579,28 @@ final class AppUIState: ObservableObject {
         NotificationActivation.observe { [weak self] press in
             self?.notifications.answer(activationID: press.id, action: press.action)
         }
+        // The ask-to-share flow: the listener lifecycle, the inbox and the
+        // answer sequencing are the shared coordinator's; these closures are
+        // the parts that are this host's.
+        askToShare.onRequestsChanged = { [weak self] requests in
+            guard let self else { return }
+            self.shareRequests = requests
+            // Reconciled on every change, which is also what takes the toast
+            // back when the ask was answered from the window instead.
+            self.applyShareRequestNotifications()
+        }
+        askToShare.onPreApproveViewer = { [weak self] sourceKey in
+            // Before the picker, so the invitee is known to the gate by the
+            // time the share is up and their HELLO lands.
+            self?.shareSession.preApproveViewer(ip: sourceKey)
+        }
+        askToShare.onStartShare = { [weak self] in self?.startSharing() }
+        askToShare.onListenerError = { [weak self] (error: Error) in
+            // Surfaced rather than swallowed: sharing still works and this
+            // machine simply never hears an ask, which from the other end
+            // looks exactly like nobody being home.
+            self?.detail = L("Not listening for share requests: \(error)")
+        }
         // The sharer's own voice. Both ends are WASAPI and both live in this
         // target, so they are handed over as closures — `WindowsShareSession`
         // deliberately carries no Windows-only code, which is what lets Linux
@@ -692,29 +712,18 @@ final class AppUIState: ObservableObject {
     /// that never shares never touches the output endpoint.
     private let sharerVoiceOut = ThreadedAudioSink(wrapping: WASAPIAudioSink())
 
-    /// Peers asking this machine to share, coalesced and bounded by the
-    /// portable `ShareRequestInbox` — the same type the GTK app uses, so the
-    /// two cannot disagree about the cap or the dedupe key.
+    /// Peers asking this machine to share — the coordinator's inbox, mirrored
+    /// so the card re-renders.
     @Published private(set) var shareRequests: [PendingShareRequest] = []
-    private var inbox = ShareRequestInbox()
 
-    /// This app's OWN control listener, alive for as long as the node is.
-    ///
-    /// Not the one a share creates. `TailscaleScreenShareServer` builds a
-    /// listener when none is supplied, but only for the share's lifetime — and
-    /// a request to share arrives exactly when this machine is NOT sharing.
-    /// Without a long-lived one the port answers nothing while idle, and every
-    /// ask reads to the asker as "no answer", indistinguishable from a peer
-    /// that is away.
-    private var controlListener: TailscreenControlListener?
-    /// The node the listener was started against, held only for identity.
-    ///
-    /// `AnyObject` rather than `TailscaleNode` on purpose: this file keeps
-    /// TailscaleKit out of the app target (see `beginSharing`'s note about
-    /// `kDefaultControlURL`), and identity comparison is the entire use — a
-    /// profile switch brings a different node up, and the listener has to
-    /// follow it rather than stay bound to one that is going away.
-    private var listenerNode: AnyObject?
+    /// The whole ask-to-share flow — the long-lived idempotent-per-node
+    /// control listener, the coalesced/bounded inbox, and the answer
+    /// sequencing (reply on the arrival connection; accept ⇒ pre-approve,
+    /// then start) — written once in `TailscreenSharer` and shared with the
+    /// GTK engine and macOS. Wired in `init`; what stays here is this host's
+    /// chrome: the `@Published` mirror, the toast reconcile, and where a
+    /// listener failure is said.
+    private let askToShare = SharerAskToShareCoordinator()
 
     /// Screens with an outstanding "please share" ask, by `DiscoveredSharer.id`.
     @Published private(set) var asking: Set<String> = []
@@ -1636,7 +1645,7 @@ final class AppUIState: ObservableObject {
                     // The app's long-lived listener, so the share does not bind
                     // a second one to port 7447 and `onRequestToShare` keeps
                     // pointing at this model.
-                    controlListener: controlListener
+                    controlListener: askToShare.controlListener
                 )
             } catch {
                 self.detail = L("Could not start sharing: \(error)")
@@ -1654,77 +1663,19 @@ final class AppUIState: ObservableObject {
     ///
     /// Idempotent per node, and safe to call on every discovery — which is how
     /// it is called, because there is no single observable "the node is ready"
-    /// moment here. A listener already bound to this node is left alone.
+    /// moment here. A listener already bound to this node is left alone. The
+    /// lifecycle itself is the shared coordinator's.
     func ensureControlListener() {
         guard let node = transport.sharedNode else { return }
-        if controlListener != nil, listenerNode === node { return }
-        if let previous = controlListener { Task { await previous.stop() } }
-
-        let listener = TailscreenControlListener()
-        listener.onRequestToShare = { [weak self] hostname, connectionID, sourceAddr in
-            // Fires on the listener's own thread; the inbox and its published
-            // projection are main-actor state.
-            Task { @MainActor [weak self] in
-                self?.noteShareRequest(
-                    from: hostname, sourceAddr: sourceAddr, connectionID: connectionID)
-            }
-        }
-        controlListener = listener
-        listenerNode = node
-        Task { [weak self] in
-            do {
-                try await listener.start(node: node)
-            } catch {
-                // Surfaced rather than swallowed: sharing still works and this
-                // machine simply never hears an ask, which from the other end
-                // looks exactly like nobody being home.
-                await MainActor.run { [weak self] in
-                    self?.detail = L("Not listening for share requests: \(error)")
-                }
-            }
-        }
-    }
-
-    /// Matches the requester's own wait (`TailscreenRequestToShareClient`'s
-    /// 120 s default). A row that outlives it is a button that does nothing.
-    private static let shareRequestTTLNs: UInt64 = 120 * 1_000_000_000
-
-    private func noteShareRequest(from hostname: String, sourceAddr: String?, connectionID: UUID) {
-        let nowNs = DispatchTime.now().uptimeNanoseconds
-        // Expire first, so a row the asker has already given up on cannot hold
-        // a slot against a live one.
-        _ = inbox.pruneExpired(nowNs: nowNs, ttlNs: Self.shareRequestTTLNs)
-        guard
-            inbox.record(
-                fromHostname: hostname, sourceAddr: sourceAddr,
-                connectionID: connectionID, nowNs: nowNs)
-        else { return }
-        shareRequests = inbox.requests
-        applyShareRequestNotifications()
+        askToShare.ensureListener(node: node)
     }
 
     /// Answer an ask: reply on its own connection, and on accept invite the
-    /// asker past the approval gate and open the capture picker.
+    /// asker past the approval gate and open the capture picker — the
+    /// coordinator's sequencing; the invite and the picker land in the
+    /// closures `init` wired.
     func answerShareRequest(id: UUID, accept: Bool) {
-        guard let request = inbox.remove(id: id) else { return }
-        shareRequests = inbox.requests
-        // Reconciled after the row is gone, which is what takes the toast back
-        // when the ask was answered from the window instead.
-        applyShareRequestNotifications()
-
-        if let connectionID = request.connectionID, let listener = controlListener {
-            Task {
-                // Best effort. The asker may already have given up and closed,
-                // in which case their side has settled on `.noAnswer` and
-                // there is nothing here worth reporting.
-                await listener.send(.shareResponse(accepted: accept), to: connectionID)
-            }
-        }
-        guard accept else { return }
-        // Before the picker, so the invitee is known to the gate by the time
-        // the share is up and their HELLO lands.
-        shareSession.preApproveViewer(ip: request.sourceKey)
-        startSharing()
+        askToShare.answer(id: id, accept: accept)
     }
 
     /// Ask a machine to start sharing.

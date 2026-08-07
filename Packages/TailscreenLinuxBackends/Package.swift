@@ -79,9 +79,15 @@ let package = Package(
             ]
         ),
         // The Linux SHARER backend: X11 capture + libavcodec encode behind the
-        // portable `CaptureEncoding` seam. No tsnet — the portable
-        // TailscaleScreenShareServer owns the transport; this only makes
-        // pixels.
+        // portable `CaptureEncoding` seam, plus `LinuxShareSession` — the
+        // GTK app's share engine, here for the same reason WindowsShareSession
+        // lives in TailscreenSharerWGC: no UI toolkit, so Linux CI builds and
+        // tests it headless. The engine drives the portable
+        // TailscaleScreenShareServer and owns the idle control listener, which
+        // is why this target now sees TailscreenTransport, TailscreenAudio
+        // (sharer voice) and TailscaleKit (the node handed in by the app —
+        // header-only to compile; the archive is a link-time input for
+        // executables and test bundles, exactly as for TailscreenViewerTsnet).
         .target(
             name: "TailscreenSharerLinux",
             dependencies: [
@@ -90,6 +96,9 @@ let package = Package(
                 .product(name: "XTestInjectKit", package: "XTestInjectKit"),
                 .product(name: "TailscreenSharer", package: "TailscreenKit"),
                 .product(name: "TailscreenProtocol", package: "TailscreenKit"),
+                .product(name: "TailscreenTransport", package: "TailscreenKit"),
+                .product(name: "TailscreenAudio", package: "TailscreenKit"),
+                .product(name: "TailscaleKit", package: "TailscaleKit"),
             ],
             path: "Sources/TailscreenSharerLinux"
         ),
