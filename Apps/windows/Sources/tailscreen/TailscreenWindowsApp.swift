@@ -30,6 +30,7 @@ import enum TailscreenProtocol.QualitySettingsStore
 import enum TailscreenProtocol.TailscreenInstance
 import struct TailscreenProtocol.TailscreenMetadata
 import enum TailscreenProtocol.ViewerApprovalPreference
+import enum TailscreenProtocol.ViewerSessionEndReason
 import class TailscreenSharer.SharerAskToShareCoordinator
 import class TailscreenSharerWGC.WindowsShareSession
 import class TailscreenVideoFFmpeg.FFmpegVideoDecoder
@@ -1384,7 +1385,13 @@ final class AppUIState: ObservableObject {
                 // reason — never a silent snap back to the hub. The deny byte
                 // is worded by admission context, the same split the macOS
                 // viewer applies.
-                sessionPhase = .ended(Self.endReason(end.reason, wasAdmitted: end.wasAdmitted))
+                // The deny byte is worded by admission context — the shared
+                // `resolve` is the one place that split is applied, so this
+                // app, the GTK one and macOS cannot tell the same ending
+                // different stories.
+                sessionPhase = .ended(
+                    ViewerSessionEndReason.resolve(
+                        end.reason, wasAdmitted: end.wasAdmitted))
             } else if let failureMessage {
                 // The session threw (dial/bring-up failure): same placard
                 // shape, with the error as the sentence.
@@ -1394,20 +1401,6 @@ final class AppUIState: ObservableObject {
                 watching = nil
                 sessionPhase = nil
             }
-        }
-    }
-
-    /// The transport's close reason as the placard's, with the one deny byte
-    /// split by whether an SSRC had been assigned when it landed: declined at
-    /// the approval gate vs disconnected (kicked) mid-watch.
-    nonisolated static func endReason(
-        _ reason: ViewerCloseReason, wasAdmitted: Bool
-    ) -> HubSessionEndReason {
-        switch reason {
-        case .sharerStopped: return .sharerStopped
-        case .timedOut: return .timedOut
-        case .connectionLost: return .connectionLost
-        case .deniedOrKicked: return wasAdmitted ? .disconnectedBySharer : .declined
         }
     }
 
