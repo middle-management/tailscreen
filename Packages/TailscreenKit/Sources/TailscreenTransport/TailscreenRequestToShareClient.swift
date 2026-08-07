@@ -67,48 +67,27 @@ public enum TailscreenRequestToShareClient {
         }
         try await conn.send(
             ScreenShareMessage.requestToShare(fromHostname: hostname).encode())
-        return await awaitShareResponse(on: conn, timeout: responseTimeout)
-    }
-
-    /// Drain frames until a `.shareResponse` arrives, the peer closes, or the
-    /// deadline passes. Anything else on the wire is ignored, which is what
-    /// makes this forward compatible with frames added later.
-    private static func awaitShareResponse(
-        on conn: OutgoingConnection, timeout: TimeInterval
-    ) async -> ShareRequestOutcome {
-        var parser = ScreenShareMessageParser()
-        let deadlineNs =
-            DispatchTime.now().uptimeNanoseconds &+ UInt64(timeout * 1_000_000_000)
-        while DispatchTime.now().uptimeNanoseconds < deadlineNs {
-            let recvStartNs = DispatchTime.now().uptimeNanoseconds
-            do {
-                // A 5 s poll, not 1 s: the wait here is two MINUTES — long
-                // enough for somebody to walk back to their desk — and a
-                // one-second interval just wakes 120 times to learn nothing.
-                // Still far above the 200 ms dead-socket threshold below.
-                let chunk = try await conn.receive(maximumLength: 16 * 1024, timeout: 5_000)
-                if chunk.isEmpty { return .noAnswer }  // EOF — peer closed unanswered
-                parser.append(chunk)
-                while let message = parser.next() {
-                    if case .shareResponse(let accepted) = message {
-                        return accepted ? .accepted : .declined
-                    }
-                }
-                if parser.isCorrupt { return .noAnswer }
-            } catch TailscaleError.readFailed {
-                // A near-instant `readFailed` is a dead socket; one that took
-                // the full poll interval is just the interval expiring. Telling
-                // them apart is what stops this loop hot-spinning for two
-                // minutes against a closed connection.
-                let elapsedNs = DispatchTime.now().uptimeNanoseconds &- recvStartNs
-                if ReceiveLoopPolicy.classifyReadFailedAsError(elapsedNs: elapsedNs) {
-                    return .noAnswer
-                }
-                continue
-            } catch {
-                return .noAnswer
-            }
+        // Drain frames until a `.shareResponse` arrives, the peer closes, or
+        // the deadline passes. Anything else on the wire is ignored, which is
+        // what makes this forward compatible with frames added later; the loop
+        // itself is `FramedResponseDrain`, shared with
+        // `TailscreenMetadataClient`.
+        //
+        // A 5 s poll, not 1 s: the wait here is two MINUTES — long enough for
+        // somebody to walk back to their desk — and a one-second interval just
+        // wakes 120 times to learn nothing. Still far above the 200 ms
+        // dead-socket threshold the drain classifies against.
+        //
+        // Every failure mode arrives as nil and becomes `.noAnswer`, which is
+        // the case that exists so a timeout, an EOF and a legacy peer are not
+        // told apart in a UI that could not act on the difference.
+        let accepted = await FramedResponseDrain.awaitResponse(
+            on: conn, timeout: responseTimeout, pollMilliseconds: 5_000
+        ) { message -> Bool? in
+            guard case .shareResponse(let accepted) = message else { return nil }
+            return accepted
         }
-        return .noAnswer
+        guard let accepted else { return .noAnswer }
+        return accepted ? .accepted : .declined
     }
 }
