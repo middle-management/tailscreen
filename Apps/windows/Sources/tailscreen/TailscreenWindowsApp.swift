@@ -35,6 +35,7 @@ import class TailscreenSharer.SharerAskToShareCoordinator
 import class TailscreenSharerWGC.WindowsShareSession
 import class TailscreenVideoFFmpeg.FFmpegVideoDecoder
 import class TailscreenViewer.FrameStore
+import class TailscreenViewer.FrameStoreVideoSink
 import class TailscreenViewer.ThreadedAudioSink
 import enum TailscreenViewer.ViewerCloseReason
 import struct TailscreenViewerTsnet.DiscoveredSharer
@@ -1274,7 +1275,12 @@ final class AppUIState: ObservableObject {
 
         sessionTask = Task { [weak self] in
             guard let self else { return }
-            let sink = WindowsVideoSink(
+            // The portable sink, shared with the GTK viewer: it parks the frame
+            // in the store and counts fps, and this app supplies only what
+            // wakes ITS renderer — swift-cross-ui calls `updateWinUIElement`
+            // when observable state changes, where GTK has `g_idle_add` inside
+            // its C shim.
+            let sink = FrameStoreVideoSink(
                 store: frameStore,
                 onFrame: { [weak self] in
                     Task { @MainActor in self?.frameGeneration &+= 1 }

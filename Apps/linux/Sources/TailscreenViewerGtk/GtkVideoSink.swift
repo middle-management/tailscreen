@@ -1,52 +1,44 @@
 import Foundation
 import TailscreenViewer
 
-/// `VideoSink` that stashes the latest frame into a `FrameStore` for the
-/// `GtkVideoView` to draw. The portable seam is codec-agnostic
-/// (`any DecodedFrame`); this GL sink only understands CPU I420, so a
-/// non-`DecodedVideoFrame` is dropped (it can't arise — the paired
-/// `FFmpegVideoDecoder` only emits that type).
+/// The GTK viewer's `VideoSink`: the portable `FrameStoreVideoSink` wired to
+/// this app's `ViewerUIState`.
+///
+/// Everything that used to be here — the `DecodedVideoFrame` guard, the
+/// first-frame latch, the ~1 s fps window — moved to the portable sink when
+/// the Windows viewer turned out to need the identical thing. What is left is
+/// the part that is genuinely GTK's: which UI state the two callbacks poke.
+///
+/// The type survives rather than the call site constructing the portable sink
+/// directly because `resetForNewSession` and the `uiState:` initializer are
+/// what the app's session loop reads as.
 public final class GtkVideoSink: VideoSink, @unchecked Sendable {
-    private let store: FrameStore
-    private let uiState: ViewerUIState?
-    // Touched only on `present`, which the session drives serially.
-    private var announcedVideo = false
-    // fps accounting over a ~1 s window (present is called serially). The
-    // arithmetic moved to the portable tier when the Windows viewer needed the
-    // identical thing — and gained tests, which caught that the old `0`
-    // window-start sentinel is a legitimate timestamp.
-    private var frameRate = FrameRateCounter()
+    private let sink: FrameStoreVideoSink
 
     public init(store: FrameStore, uiState: ViewerUIState? = nil) {
-        self.store = store
-        self.uiState = uiState
+        sink = FrameStoreVideoSink(
+            store: store,
+            // Hides the connecting placard and moves the session to viewing.
+            onFirstFrame: {
+                uiState?.markVideoFlowing()
+                uiState?.post(sessionPhase: .viewing)
+            },
+            onStats: { width, height, fps in
+                uiState?.post(fps: fps, width: width, height: height)
+            })
+        // No `onFrame`: the repaint is requested inside `FrameStore.set`, and
+        // CGtkVideo marshals it onto the GTK main thread with `g_idle_add`, so
+        // `present` stays safe to call from any thread.
     }
 
     /// Reset the first-frame latch + fps window so a REUSED sink re-announces
     /// video on the next session (the sink outlives a single viewing session).
     /// Call on the session-driving context before a new `run`.
     public func resetForNewSession() {
-        announcedVideo = false
-        frameRate.reset()
+        sink.resetForNewSession()
     }
 
     public func present(_ frame: any DecodedFrame) {
-        guard let frame = frame as? DecodedVideoFrame else { return }
-        // `set` stores the frame (lock-guarded) and requests a GLArea repaint.
-        // The repaint is marshalled onto the GTK main thread inside CGtkVideo
-        // (g_idle_add), so `present` is safe to call from any thread — it does
-        // not itself touch GTK. The transport currently drives it on the main
-        // actor, but this does not depend on that.
-        store.set(frame)
-        if !announcedVideo {
-            announcedVideo = true
-            uiState?.markVideoFlowing()  // hides the connecting placard
-            uiState?.post(sessionPhase: .viewing)
-        }
-        // fps HUD: publish only when a window closes, which is what keeps this
-        // off the per-frame path.
-        if let fps = frameRate.record(nowNs: DispatchTime.now().uptimeNanoseconds) {
-            uiState?.post(fps: fps, width: frame.width, height: frame.height)
-        }
+        sink.present(frame)
     }
 }
