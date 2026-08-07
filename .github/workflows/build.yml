@@ -23,6 +23,31 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# ---------------------------------------------------------------------------
+# Pinned lint/format tool versions — THE ONE PLACE either is named.
+#
+# Both are pinned because both are style checks that grade code we did not
+# change: a SwiftLint release that adds an opt-in-by-default rule, retunes an
+# existing one, or changes a violation's reason string turns EVERY open PR red
+# on a morning nobody touched the repo — and `lint` is a required check, so
+# that is the whole merge queue. The baseline can't absorb it either: it is
+# refreshed by hand (`make lint-baseline`), so a new rule is a new violation,
+# not a frozen one.
+#
+# Bumping is a one-line change here. When bumping SWIFTLINT_VERSION, run
+# `make lint-baseline` in the same commit — a version bump and a baseline
+# refresh belong together, and the baseline diff is reviewable now that it is
+# pretty-printed.
+#
+# The versions below are the ones Homebrew shipped when the pin landed
+# (2026-08), i.e. this pin froze CI where it already was rather than moving it.
+# ---------------------------------------------------------------------------
+env:
+  # https://github.com/realm/SwiftLint/releases
+  SWIFTLINT_VERSION: '0.65.0'
+  # https://github.com/swiftlang/swift-format/tags (603.x tracks Swift 6.3)
+  SWIFT_FORMAT_VERSION: '603.0.0'
+
 jobs:
   build:
     runs-on: macos-latest
@@ -1196,18 +1221,54 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
-      - name: Install SwiftLint
-        run: brew install swiftlint
+      - name: Install SwiftLint (pinned)
+        # PINNED — see the SWIFTLINT_VERSION comment at the top of this file.
+        # This deliberately does NOT use Homebrew: homebrew-core carries no
+        # versioned `swiftlint@X.Y.Z` formula, and `brew install <homebrew-core
+        # commit URL>` is refused outright ("Installation from a GitHub commit
+        # URL is unsupported"), so brew can only ever install "latest". Each
+        # SwiftLint release publishes its own prebuilt universal macOS binary
+        # as portable_swiftlint.zip, which is both reproducible and a
+        # one-line bump.
+        run: |
+          set -euo pipefail
+          url="https://github.com/realm/SwiftLint/releases/download/${SWIFTLINT_VERSION}/portable_swiftlint.zip"
+          curl -fsSL "$url" -o "$RUNNER_TEMP/swiftlint.zip"
+          unzip -q -o "$RUNNER_TEMP/swiftlint.zip" -d "$RUNNER_TEMP/swiftlint"
+          chmod +x "$RUNNER_TEMP/swiftlint/swiftlint"
+          echo "$RUNNER_TEMP/swiftlint" >> "$GITHUB_PATH"
+      - name: Verify the pinned SwiftLint is the one on PATH
+        # Assert rather than log: a pin that silently isn't in effect (a stale
+        # brew swiftlint earlier on PATH, a redirected download) is exactly the
+        # failure this whole step exists to prevent, and it would otherwise
+        # only show up as a mystery violation.
+        run: |
+          set -euo pipefail
+          got="$(swiftlint version)"
+          if [ "$got" != "$SWIFTLINT_VERSION" ]; then
+            echo "::error::SwiftLint version mismatch: expected ${SWIFTLINT_VERSION}, got ${got} (from $(command -v swiftlint))"
+            exit 1
+          fi
+          echo "SwiftLint ${got} from $(command -v swiftlint)"
       - name: Run SwiftLint (baseline-gated)
         run: make lint
 
   format:
-    # Apple's swift-format is published as a Homebrew core formula and
-    # provides the `swift-format` binary that `make format-check` invokes.
-    # The macos-latest runner image doesn't ship it on PATH (the Xcode
-    # toolchain on the hosted runners doesn't expose `swift-format`
-    # directly — `swift-format --version` exits 127), so we install it
-    # explicitly via brew.
+    # `make format-check` needs a `swift-format` binary. The macos-latest
+    # runner image doesn't ship one on PATH (the Xcode toolchain on the hosted
+    # runners doesn't expose `swift-format` directly — `swift-format
+    # --version` exits 127), so the job provides it.
+    #
+    # It is BUILT FROM A PINNED TAG rather than `brew install swift-format`,
+    # for the same reason SwiftLint is pinned (see SWIFT_FORMAT_VERSION at the
+    # top of this file) plus one more: swift-format's whole job is to rewrite
+    # source, so a release that changes one line-breaking heuristic reformats
+    # files nobody touched. There is no prebuilt release artifact for it — the
+    # swiftlang/swift-format releases are source tags — so the pin is a
+    # shallow clone of the tag plus `swift build -c release`. That is minutes
+    # of swift-syntax compile, which is why the built binary is cached under
+    # its version: only a version bump (or a 7-day-idle cache eviction) pays
+    # it, and the timeout below is sized for the cold path.
     #
     # Currently informational (continue-on-error: true) because the
     # config was tuned without a local swift-format run — we want the
@@ -1215,13 +1276,37 @@ jobs:
     # config and the existing style, then we flip this to required.
     # TODO: drop `continue-on-error` once the check is observed to pass.
     runs-on: macos-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
     continue-on-error: true
     steps:
       - uses: actions/checkout@v7
-      - name: Install swift-format
-        run: brew install swift-format
+      - name: Restore the pinned swift-format
+        id: swift-format-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.local/bin/swift-format
+          # runner.arch is in the key on purpose — the sibling caches in this
+          # repo have shipped an arch-mismatched restore before.
+          key: swift-format-${{ env.SWIFT_FORMAT_VERSION }}-${{ runner.os }}-${{ runner.arch }}
+      - name: Build the pinned swift-format
+        if: steps.swift-format-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          src="$RUNNER_TEMP/swift-format-src"
+          git clone --depth 1 --branch "$SWIFT_FORMAT_VERSION" \
+            https://github.com/swiftlang/swift-format "$src"
+          swift build -c release --package-path "$src" --product swift-format
+          mkdir -p "$HOME/.local/bin"
+          cp "$src/.build/release/swift-format" "$HOME/.local/bin/swift-format"
+      - name: Put swift-format on PATH
+        run: |
+          set -euo pipefail
+          chmod +x "$HOME/.local/bin/swift-format"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Verify swift-format is available
+        # Logged, not asserted: the tag we cloned IS the pin, and the version
+        # string a source build reports is the swift-syntax one, which has not
+        # always matched the tag.
         run: swift-format --version
       - name: Run swift-format check
         # `make format-check` runs `swift-format lint --strict` against
