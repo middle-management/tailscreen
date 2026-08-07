@@ -2,43 +2,12 @@ import Foundation
 import TailscaleKit
 import UserNotifications
 
-/// Persisted flag for the "Require approval for new viewers" toggle.
-/// Plain `UserDefaults` so non-SwiftUI call sites (`AppState.init`'s
-/// stored-property initialiser) can read the saved value without going
-/// through `@AppStorage`, which is `@MainActor`-bound and awkward to
-/// reference from a property default.
-///
-/// The gate defaults **on**: a tri-state read (`object(forKey:)`) tells a
-/// never-touched install (`nil` → `true`) apart from an explicit opt-out
-/// (stored `false`). Users who ever flipped the toggle have a stored Bool
-/// (AppState's `didSet` persists every change) and keep their choice — the
-/// migration is free.
-///
-/// `TAILSCREEN_OPEN_DOOR=1` forces the gate off regardless of the stored
-/// value. It exists for the scripted local E2E harness and `test-local.sh`,
-/// whose automated viewers would otherwise park on the approval prompt with
-/// nobody around to click Accept. Never set it in production.
-enum ViewerApprovalDefaults {
-    static let key = "requireViewerApproval"
-    static let openDoorEnvKey = "TAILSCREEN_OPEN_DOOR"
-
-    static func load(
-        defaults: UserDefaults = .standard,
-        environment: [String: String] = ProcessInfo.processInfo.environment
-    ) -> Bool {
-        if environment[openDoorEnvKey] == "1" {
-            return false
-        }
-        guard let stored = defaults.object(forKey: key) as? Bool else {
-            return true
-        }
-        return stored
-    }
-
-    static func save(_ value: Bool, defaults: UserDefaults = .standard) {
-        defaults.set(value, forKey: key)
-    }
-}
+// The "Require approval for new viewers" preference used to live here as
+// `ViewerApprovalDefaults`. It is now the portable
+// `ViewerApprovalPreference` (TailscreenProtocol) — same UserDefaults key,
+// same tri-state migration, same `TAILSCREEN_OPEN_DOOR=1` override — shared
+// with the GTK and Windows apps so the three hosts cannot drift on the
+// admission default.
 
 /// Per-file logger, following the convention the other mac sources use —
 /// `LogSink` comes from TailscaleKit but each file declares its own private

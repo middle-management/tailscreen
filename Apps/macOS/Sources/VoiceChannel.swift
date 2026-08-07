@@ -738,7 +738,10 @@ final class VoiceChannel: @unchecked Sendable {
 /// serializes — `@unchecked Sendable` is sound under that contract.
 private final class TapBuffer: @unchecked Sendable {
     private let channel: VoiceChannel
-    private var accumulator: [Float] = []
+    /// The portable 960-sample framer from TailscreenAudio (same one
+    /// `SystemAudioTap` and `MicrophonePipeline` use), replacing an inline
+    /// accumulate-and-drain copy.
+    private var framer = PCMFramer(frameSamples: VoiceChannel.samplesPerFrame)
     private var converter: AVAudioConverter?
     private let targetFormat: AVAudioFormat
     private var sourceSampleRate: Double = 0
@@ -888,11 +891,7 @@ private final class TapBuffer: @unchecked Sendable {
     }
 
     private func appendAndDrain(_ samples: [Float]) {
-        let frameSize = VoiceChannel.samplesPerFrame
-        accumulator.append(contentsOf: samples)
-        while accumulator.count >= frameSize {
-            let frame = Array(accumulator.prefix(frameSize))
-            accumulator.removeFirst(frameSize)
+        for frame in framer.push(samples) {
             channel.processOutboundFrame(frame)
         }
     }

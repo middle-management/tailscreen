@@ -2,33 +2,6 @@ import AudioToolbox
 import CoreMedia
 import Foundation
 
-/// Pure 960-sample framer for system-audio PCM. Accumulates inbound Float
-/// samples and drains complete 960-sample frames (one Opus 20 ms frame's
-/// worth), carrying the remainder to the next call. Mirrors
-/// `TapBuffer.appendAndDrain` semantics but as a value type so CI can exercise
-/// the framing without any CoreMedia buffers.
-struct SystemAudioFramer {
-    /// Samples per Opus 20 ms frame at 48 kHz.
-    static let frameSize = OpusVoiceEncoder.frameSamples
-
-    private var accumulator: [Float] = []
-
-    /// Append `samples` and return every complete 960-sample frame that can
-    /// now be drained, in order. The tail shorter than a full frame is kept.
-    mutating func append(_ samples: [Float]) -> [[Float]] {
-        accumulator.append(contentsOf: samples)
-        var frames: [[Float]] = []
-        while accumulator.count >= Self.frameSize {
-            frames.append(Array(accumulator.prefix(Self.frameSize)))
-            accumulator.removeFirst(Self.frameSize)
-        }
-        return frames
-    }
-
-    /// Samples buffered but not yet drained into a full frame.
-    var pendingCount: Int { accumulator.count }
-}
-
 /// Helper-side system-audio pipeline: an audio `CMSampleBuffer` from
 /// ScreenCaptureKit → mono `[Float]` → 960-sample framing → `OpusVoiceEncoder`
 /// (in `.audio` music mode) → encoded-AU callback. Deliberately imports no
@@ -41,7 +14,10 @@ struct SystemAudioFramer {
 /// captured into the audio-output closure.
 final class SystemAudioTap: @unchecked Sendable {
     private let encoder: OpusVoiceEncoder
-    private var framer = SystemAudioFramer()
+    /// The portable 960-sample (20 ms Opus) framer from TailscreenAudio —
+    /// the same accumulate-and-drain both voice paths use, pinned by the
+    /// package's `MicrophoneCaptureTests`.
+    private var framer = PCMFramer(frameSamples: OpusVoiceEncoder.frameSamples)
     private let onEncodedAU: (Data) -> Void
 
     init(onEncodedAU: @escaping (Data) -> Void) throws {
@@ -58,7 +34,7 @@ final class SystemAudioTap: @unchecked Sendable {
     func handle(_ sampleBuffer: CMSampleBuffer) {
         let samples = Self.extractMonoFloat(sampleBuffer)
         guard !samples.isEmpty else { return }
-        for frame in framer.append(samples) {
+        for frame in framer.push(samples) {
             do {
                 if let au = try encoder.encode(pcm: frame) {
                     onEncodedAU(au)

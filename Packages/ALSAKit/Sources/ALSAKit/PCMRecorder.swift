@@ -172,8 +172,8 @@ extension ALSA {
         ///
         /// The result can be **shorter** than `frames` (a signal can cut a read
         /// short, and a recovered stream restarts empty), so a caller that needs
-        /// fixed 20 ms frames should reframe — `SystemAudioFramer` in
-        /// TailscreenKit already does exactly that.
+        /// fixed 20 ms frames should reframe — `PCMFramer` in TailscreenKit's
+        /// TailscreenAudio already does exactly that.
         ///
         /// - Returns: mono Float32 samples in `[-1, 1]`, one per captured frame.
         public func read(frames: Int) throws -> [Float] {

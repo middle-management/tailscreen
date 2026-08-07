@@ -149,7 +149,7 @@ public enum FECCodec {
         }
 
         let base = solved.startIndex
-        let recoveredLen = (Int(solved[base]) << 8) | Int(solved[base + 1])
+        let recoveredLen = Int(solved.readBE(UInt16.self, at: base))
         guard recoveredLen >= RTPHeader.size,
             recoveredLen - RTPHeader.size <= solved.count - payloadOffsetInBody
         else { return nil }
@@ -157,13 +157,9 @@ public enum FECCodec {
         var packet = Data(capacity: recoveredLen)
         packet.append(0x80)  // V=2, P=0, X=0, CC=0 — constant across our packetizers
         packet.append(solved[base + 2])  // marker | payload type
-        packet.append(UInt8((missingSeq >> 8) & 0xFF))
-        packet.append(UInt8(missingSeq & 0xFF))
+        packet.appendBE(missingSeq)
         packet.append(contentsOf: solved[(base + 3)..<(base + 7)])  // timestamp
-        packet.append(UInt8((ssrc >> 24) & 0xFF))
-        packet.append(UInt8((ssrc >> 16) & 0xFF))
-        packet.append(UInt8((ssrc >> 8) & 0xFF))
-        packet.append(UInt8(ssrc & 0xFF))
+        packet.appendBE(ssrc)
         let payloadLen = recoveredLen - RTPHeader.size
         if payloadLen > 0 {
             let payloadStart = solved.index(base, offsetBy: payloadOffsetInBody)

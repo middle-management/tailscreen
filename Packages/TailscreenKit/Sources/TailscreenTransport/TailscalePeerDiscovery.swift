@@ -71,7 +71,7 @@ public class TailscalePeerDiscovery: ObservableObject {
     @Published public var availablePeers: [TailscreenPeer] = []
     @Published public var isDiscovering = false
 
-    private let logger: TSLogger
+    private let logger: PrintLogSink
     private var ipnWatcher: TailscaleIPNWatcher?
     private var monitoringStartInFlight = false
 
@@ -90,7 +90,7 @@ public class TailscalePeerDiscovery: ObservableObject {
     private var watcherPeers: [String: TailscreenPeer] = [:]
 
     public init() {
-        self.logger = TSLogger()
+        self.logger = PrintLogSink(prefix: "Discovery")
     }
 
     /// Seed the peer list from a one-shot `backendStatus()` so the UI has
@@ -360,15 +360,5 @@ public final class ResumeBox<T>: @unchecked Sendable {
         cont = nil
         lock.unlock()
         c?.resume(throwing: error)
-    }
-}
-
-// MARK: - Logger Implementation
-
-private struct TSLogger: LogSink {
-    public var logFileHandle: Int32?
-
-    public func log(_ message: String) {
-        print("[Discovery] \(message)")
     }
 }

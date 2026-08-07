@@ -1500,44 +1500,5 @@ public final class MultiCodecDepacketizer {
     public var skippedGapCount: Int { h264.skippedGapCount + h265.skippedGapCount }
 }
 
-extension Data {
-    fileprivate mutating func appendBE(_ value: UInt16) {
-        append(UInt8((value >> 8) & 0xFF))
-        append(UInt8(value & 0xFF))
-    }
-
-    fileprivate mutating func appendBE(_ value: UInt32) {
-        append(UInt8((value >> 24) & 0xFF))
-        append(UInt8((value >> 16) & 0xFF))
-        append(UInt8((value >> 8) & 0xFF))
-        append(UInt8(value & 0xFF))
-    }
-
-    fileprivate func readBE(_: UInt16.Type, at index: Data.Index) -> UInt16 {
-        let b0 = UInt16(self[index])
-        let b1 = UInt16(self[self.index(index, offsetBy: 1)])
-        return (b0 << 8) | b1
-    }
-
-    fileprivate func readBE(_: UInt32.Type, at index: Data.Index) -> UInt32 {
-        let b0 = UInt32(self[index])
-        let b1 = UInt32(self[self.index(index, offsetBy: 1)])
-        let b2 = UInt32(self[self.index(index, offsetBy: 2)])
-        let b3 = UInt32(self[self.index(index, offsetBy: 3)])
-        return (b0 << 24) | (b1 << 16) | (b2 << 8) | b3
-    }
-
-    fileprivate mutating func appendBE(_ value: UInt64) {
-        for shift in stride(from: 56, through: 0, by: -8) {
-            append(UInt8((value >> UInt64(shift)) & 0xFF))
-        }
-    }
-
-    fileprivate func readBE(_: UInt64.Type, at index: Data.Index) -> UInt64 {
-        var value: UInt64 = 0
-        for offset in 0..<8 {
-            value = (value << 8) | UInt64(self[self.index(index, offsetBy: offset)])
-        }
-        return value
-    }
-}
+// The big-endian `Data` helpers this file used to declare privately live in
+// `DataBigEndian.swift`, shared module-wide.

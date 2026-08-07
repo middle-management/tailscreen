@@ -131,7 +131,7 @@ public enum ScreenShareMessage {
     private static func frame(type: MessageType, payload: Data) -> Data {
         var out = Data(capacity: headerSize + payload.count)
         out.append(type.rawValue)
-        out.appendBigEndian(UInt32(payload.count))
+        out.appendBE(UInt32(payload.count))
         out.append(payload)
         return out
     }
@@ -161,7 +161,7 @@ public struct ScreenShareMessageParser {
 
         let rawType = buffer[buffer.startIndex]
         let lengthStart = buffer.index(buffer.startIndex, offsetBy: 1)
-        let length = Int(buffer.readBigEndian(UInt32.self, at: lengthStart))
+        let length = Int(buffer.readBE(UInt32.self, at: lengthStart))
         // Reject an oversized frame at header-parse time — BEFORE buffering
         // its payload — so a bogus 4 GiB length can't grow the buffer.
         guard length <= ScreenShareMessage.maxPayloadLength else {
@@ -305,19 +305,5 @@ public struct RequestToSharePayload: Codable, Sendable {
     public let fromHostname: String
 }
 
-extension Data {
-    fileprivate mutating func appendBigEndian(_ value: UInt32) {
-        append(UInt8((value >> 24) & 0xFF))
-        append(UInt8((value >> 16) & 0xFF))
-        append(UInt8((value >> 8) & 0xFF))
-        append(UInt8(value & 0xFF))
-    }
-
-    fileprivate func readBigEndian(_: UInt32.Type, at index: Data.Index) -> UInt32 {
-        let b0 = UInt32(self[index])
-        let b1 = UInt32(self[self.index(index, offsetBy: 1)])
-        let b2 = UInt32(self[self.index(index, offsetBy: 2)])
-        let b3 = UInt32(self[self.index(index, offsetBy: 3)])
-        return (b0 << 24) | (b1 << 16) | (b2 << 8) | b3
-    }
-}
+// `appendBE`/`readBE` live in `DataBigEndian.swift`, shared module-wide
+// (this file's copies were spelled `appendBigEndian`/`readBigEndian`).

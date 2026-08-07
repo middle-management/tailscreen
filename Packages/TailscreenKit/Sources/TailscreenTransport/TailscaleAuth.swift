@@ -24,7 +24,7 @@ public class TailscaleAuth: ObservableObject {
     public init() {}
 
     private var localAPIClient: LocalAPIClient?
-    private let logger = TSLogger()
+    private let logger = PrintLogSink(prefix: "Auth")
 
     /// Checks authentication status and fetches user profile
     public func checkAuthStatus(node: TailscaleNode) async {
@@ -234,15 +234,5 @@ public enum TailscaleAuthError: Error, LocalizedError {
         case .authTimeout:
             return "Authentication timed out. Please try again."
         }
-    }
-}
-
-// MARK: - Logger Implementation
-
-private struct TSLogger: LogSink {
-    var logFileHandle: Int32?
-
-    func log(_ message: String) {
-        print("[Auth] \(message)")
     }
 }

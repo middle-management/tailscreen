@@ -58,7 +58,7 @@ public enum TailscreenRequestToShareClient {
                 tailscale: tailscaleHandle,
                 to: target,
                 proto: .tcp,
-                logger: TSLogger()
+                logger: PrintLogSink(prefix: "RequestToShare")
             )
         }
         defer { Task { await conn.close() } }
@@ -111,9 +111,4 @@ public enum TailscreenRequestToShareClient {
         }
         return .noAnswer
     }
-}
-
-private struct TSLogger: LogSink {
-    var logFileHandle: Int32?
-    func log(_ message: String) { print("[RequestToShare] \(message)") }
 }

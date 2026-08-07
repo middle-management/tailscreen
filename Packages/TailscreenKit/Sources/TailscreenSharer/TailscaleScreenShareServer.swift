@@ -193,7 +193,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         }
     }
 
-    private let logger: TSLogger
+    private let logger: PrintLogSink
 
     /// Wall-clock anchor used to derive the 90 kHz RTP timestamp. Stays
     /// fixed for the lifetime of the server so the timestamp space is
@@ -844,7 +844,7 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         self.captureFactory.withLock { $0 = captureFactory }
         self.remoteControlInjector = inputInjector
         self.rendersAnnotations = rendersAnnotations
-        self.logger = TSLogger()
+        self.logger = PrintLogSink(prefix: "Tailscale", dropListeningNoise: true)
         self.rtpTimestampOriginNs = DispatchTime.now().uptimeNanoseconds
     }
 
@@ -4114,6 +4114,11 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// Overwrites bytes 2-3 (sequence) and 8-11 (SSRC) of an RTP packet.
     /// Avoids re-encoding the whole header per viewer. Internal (not
     /// private) so the per-viewer rewrite is unit testable.
+    ///
+    /// The big-endian byte stores are open-coded on purpose: this is an
+    /// in-place overwrite at fixed offsets, not an append, and
+    /// TailscreenProtocol's internal `appendBE`/`readBE` helpers neither fit
+    /// that shape nor cross the module boundary.
     public static func rewriteRTPHeader(_ packet: inout Data, sequence: UInt16, ssrc: UInt32) {
         packet[2] = UInt8((sequence >> 8) & 0xFF)
         packet[3] = UInt8(sequence & 0xFF)
@@ -4385,13 +4390,5 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// Sibling of `broadcastForTesting` for the audio side.
     func broadcastSystemAudioForTesting(au: Data) {
         broadcastSystemAudio(au: au)
-    }
-}
-
-private struct TSLogger: LogSink {
-    var logFileHandle: Int32?
-    func log(_ message: String) {
-        if message.hasPrefix("Listening for ") { return }
-        print("[Tailscale] \(message)")
     }
 }

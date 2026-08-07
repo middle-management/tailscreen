@@ -1,7 +1,7 @@
 import Foundation
 
 /// Persisted flag for the "Share system audio when sharing starts" toggle.
-/// Plain `UserDefaults` (mirrors `ViewerApprovalDefaults`) so `AppState`'s
+/// Plain `UserDefaults` (mirrors `ViewerApprovalPreference`) so `AppState`'s
 /// stored-property initialiser can read the saved value without going through
 /// `@AppStorage`, which is `@MainActor`-bound and awkward from a property
 /// default.

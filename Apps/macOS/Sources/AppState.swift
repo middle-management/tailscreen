@@ -208,14 +208,15 @@ class AppState: ObservableObject {
     /// explicit Accept/Deny before they see video. Persisted to
     /// UserDefaults under `requireViewerApproval`. Defaults **on** for
     /// installs that never touched the toggle (tri-state migration in
-    /// `ViewerApprovalDefaults.load`); an explicit opt-out sticks, and
+    /// `ViewerApprovalPreference.load`, the portable preference all three
+    /// apps share); an explicit opt-out sticks, and
     /// `TAILSCREEN_OPEN_DOOR=1` forces it off for the scripted harnesses.
     /// SwiftUI views bind to this via `appState.requireViewerApproval`;
     /// the setter syncs the live server too so the toggle takes effect
     /// mid-share.
-    @Published var requireViewerApproval: Bool = ViewerApprovalDefaults.load() {
+    @Published var requireViewerApproval: Bool = ViewerApprovalPreference.load() {
         didSet {
-            ViewerApprovalDefaults.save(requireViewerApproval)
+            ViewerApprovalPreference.save(requireViewerApproval)
             server?.setRequireApproval(requireViewerApproval)
         }
     }
@@ -4334,7 +4335,7 @@ class AppState: ObservableObject {
 }
 
 /// Persistence for the Settings → Color capture opt-ins. Mirrors
-/// `ViewerApprovalDefaults` — plain `UserDefaults` so `AppState.init`'s
+/// `ViewerApprovalPreference` — plain `UserDefaults` so `AppState.init`'s
 /// stored-property initialisers can read the saved value without
 /// `@AppStorage`. Tri-state on purpose: a never-touched install (no stored
 /// object) seeds from the pre-Settings env-var escape hatches

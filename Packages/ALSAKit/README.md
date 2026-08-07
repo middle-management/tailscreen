@@ -75,7 +75,8 @@ second resampler hidden behind libasound would only ever run on non-48 kHz
 machines. Period is asked for in time — 20 ms, exactly one Opus frame — over a
 100 ms ring. `read` recovers from an *overrun* (also `-EPIPE`) once and retries,
 mirroring `write`, and can return short, so a caller needing fixed frames should
-reframe (`SystemAudioFramer`). `stop()` is `snd_pcm_drop` plus a re-prepare;
+reframe (`PCMFramer` in TailscreenKit's TailscreenAudio).
+`stop()` is `snd_pcm_drop` plus a re-prepare;
 it's the counterpart of `drain()` and its opposite on purpose — trailing output
 must be heard, trailing input recorded after the user stopped talking must not
 be sent.

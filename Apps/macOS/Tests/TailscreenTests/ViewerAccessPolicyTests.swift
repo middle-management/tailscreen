@@ -6,11 +6,12 @@ import XCTest
 @testable import TailscreenTransport
 
 /// Unit tests for the viewer-consent machinery that runs without tsnet:
-/// the persistent per-peer allow/deny store (`ViewerAccessPolicyStore`),
+/// the persistent per-peer allow/deny store (`ViewerAccessPolicyStore`) and
 /// the pure admission gate extracted from the server
 /// (`admissionDecision` / `drainDecision` — same pattern as
-/// `ViewerLifecycleDecisionTests`), and the tri-state default migration in
-/// `ViewerApprovalDefaults.load`.
+/// `ViewerLifecycleDecisionTests`). The tri-state default migration lives in
+/// the portable `ViewerApprovalPreference`, covered by the package's
+/// `ViewerApprovalPreferenceTests`.
 final class ViewerAccessPolicyTests: XCTestCase {
 
     /// Scratch `UserDefaults` suite, wiped on teardown so runs don't
@@ -224,37 +225,4 @@ final class ViewerAccessPolicyTests: XCTestCase {
         XCTAssertFalse(ReceiveLoopPolicy.classifyReadFailedAsError(elapsedNs: 5_000_000_000))  // 5 s → timeout
     }
 
-    // MARK: - ViewerApprovalDefaults tri-state migration
-
-    func testApprovalDefaultsUnsetMeansOn() throws {
-        let defaults = try makeScratchDefaults()
-        XCTAssertTrue(ViewerApprovalDefaults.load(defaults: defaults, environment: [:]))
-    }
-
-    func testApprovalDefaultsStoredFalseSticks() throws {
-        // A user who explicitly opted out before (or after) the default
-        // flip keeps their open-door choice.
-        let defaults = try makeScratchDefaults()
-        ViewerApprovalDefaults.save(false, defaults: defaults)
-        XCTAssertFalse(ViewerApprovalDefaults.load(defaults: defaults, environment: [:]))
-    }
-
-    func testApprovalDefaultsStoredTrueSticks() throws {
-        let defaults = try makeScratchDefaults()
-        ViewerApprovalDefaults.save(true, defaults: defaults)
-        XCTAssertTrue(ViewerApprovalDefaults.load(defaults: defaults, environment: [:]))
-    }
-
-    func testApprovalDefaultsOpenDoorEnvOverridesEverything() throws {
-        let defaults = try makeScratchDefaults()
-        ViewerApprovalDefaults.save(true, defaults: defaults)
-        let env = [ViewerApprovalDefaults.openDoorEnvKey: "1"]
-        XCTAssertFalse(ViewerApprovalDefaults.load(defaults: defaults, environment: env))
-    }
-
-    func testApprovalDefaultsOpenDoorEnvMustBeExactlyOne() throws {
-        let defaults = try makeScratchDefaults()
-        let env = [ViewerApprovalDefaults.openDoorEnvKey: "0"]
-        XCTAssertTrue(ViewerApprovalDefaults.load(defaults: defaults, environment: env))
-    }
 }
