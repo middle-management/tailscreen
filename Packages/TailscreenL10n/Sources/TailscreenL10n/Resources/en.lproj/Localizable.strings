@@ -24,9 +24,6 @@
 /* MARK: - Menu bar (AppMenu.swift) */
 "About Tailscreen" = "About Tailscreen";
 "Settings…" = "Settings…";
-"Hide Tailscreen" = "Hide Tailscreen";
-"Hide Others" = "Hide Others";
-"Show All" = "Show All";
 "Quit Tailscreen" = "Quit Tailscreen";
 "Disconnect" = "Disconnect";
 "Microphone" = "Microphone";
@@ -37,9 +34,7 @@
 "Zoom to 200%" = "Zoom to 200%";
 "Zoom In" = "Zoom In";
 "Zoom Out" = "Zoom Out";
-"Minimize" = "Minimize";
 "Zoom" = "Zoom";
-"Bring All to Front" = "Bring All to Front";
 "Keyboard Shortcuts" = "Keyboard Shortcuts";
 
 /* MARK: - About panel (AppMenu.swift) */
@@ -55,10 +50,7 @@
 "Opens Tailscale sign-in in your browser" = "Opens Tailscale sign-in in your browser";
 
 /* MARK: - Main window hub (MainWindowView.swift) */
-"Viewer approvals and sharing controls live in the menu bar icon." = "Viewer approvals and sharing controls live in the menu bar icon.";
 "Mic, system audio, and drawing controls live in the menu bar icon." = "Mic, system audio, and drawing controls live in the menu bar icon.";
-"Share your screen" = "Share your screen";
-"Pick a display, window, or app to share with your tailnet." = "Pick a display, window, or app to share with your tailnet.";
 "Screens" = "Screens";
 "Search screens" = "Search screens";
 "Account" = "Account";
@@ -82,7 +74,6 @@
 
 /* MARK: - Account profiles (MainWindowView.swift / AppState.swift) */
 "Add Account…" = "Add Account…";
-"Switch to This Account" = "Switch to This Account";
 "Remove Account…" = "Remove Account…";
 "New account" = "New account";
 "Finish Your Session First" = "Finish Your Session First";
@@ -135,7 +126,6 @@
 "Change what you're sharing" = "Change what you're sharing";
 "Reopens the picker without disconnecting viewers" = "Reopens the picker without disconnecting viewers";
 "No viewers yet" = "No viewers yet";
-"%lld watching: %@" = "%lld watching: %@";
 "Connection healthy" = "Connection healthy";
 "Connection degraded — packet loss" = "Connection degraded — packet loss";
 "Limited to keyframes — poor connection" = "Limited to keyframes — poor connection";
@@ -173,7 +163,6 @@
 "Choose what to share…" = "Choose what to share…";
 
 /* MARK: - Devices section (MenuBarView.swift) */
-"AVAILABLE SCREENS" = "AVAILABLE SCREENS";
 "Refresh screens" = "Refresh screens";
 "Refresh available screens" = "Refresh available screens";
 "Looking for screens…" = "Looking for screens…";
@@ -190,13 +179,9 @@
 "offline" = "offline";
 "Connects to view this device's screen" = "Connects to view this device's screen";
 "Ask %@ to share their screen" = "Ask %@ to share their screen";
-"Request %@ to share" = "Request %@ to share";
 
 /* MARK: - Identity footer (MenuBarView.swift) */
 "Sign out" = "Sign out";
-"End your Tailscale session" = "End your Tailscale session";
-"Sign out of Tailscale" = "Sign out of Tailscale";
-"Sign out of Tailscale, signed in as %@" = "Sign out of Tailscale, signed in as %@";
 
 /* MARK: - Settings window (SettingsView.swift) */
 "Viewers" = "Viewers";
@@ -501,11 +486,8 @@
 
 /* Hub — session placards (HubPlacards.swift) */
 "Waiting for approval" = "Waiting for approval";
-"The sharer declined your request" = "The sharer declined your request";
-"The share has ended" = "The share has ended";
 "Connection failed" = "Connection failed";
 "The sharer needs to accept you as a viewer." = "The sharer needs to accept you as a viewer.";
-"Returning to the screen list…" = "Returning to the screen list…";
 
 /* Hub — quality menu (HubQuality.swift) */
 "Save bandwidth" = "Save bandwidth";
@@ -587,7 +569,6 @@
 "Could not start Tailscale" = "Could not start Tailscale";
 "Discovery failed: %@" = "Discovery failed: %@";
 "Waiting for %@ to approve…" = "Waiting for %@ to approve…";
-"The sharer declined." = "The sharer declined.";
 "Session ended: %@" = "Session ended: %@";
 "Switching account…" = "Switching account…";
 "Could not open a browser — copy the URL above. (%@)" = "Could not open a browser — copy the URL above. (%@)";
@@ -626,8 +607,6 @@
 "Shared screen from %@" = "Shared screen from %@";
 "Remote control granted — your input now controls the shared Mac. Use Stop Controlling in the toolbar to release." = "Remote control granted — your input now controls the shared Mac. Use Stop Controlling in the toolbar to release.";
 "Release Remote Control" = "Release Remote Control";
-"Enter Full Screen" = "Enter Full Screen";
-"Exit Full Screen" = "Exit Full Screen";
 "Request control of the shared Mac" = "Request control of the shared Mac";
 "Waiting for the sharer to grant control — click to cancel" = "Waiting for the sharer to grant control — click to cancel";
 "Cancel the pending control request" = "Cancel the pending control request";
