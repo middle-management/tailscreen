@@ -1,7 +1,6 @@
 included:
   - Apps/macOS/Sources
   - Apps/macOS/Tests
-  - Apps/macOS/Examples
   - Apps/linux/Sources
   - Apps/windows/Sources
   - Packages/TailscreenKit/Sources
@@ -28,11 +27,12 @@ included:
   - Packages/WASAPIKit/Sources
 
 excluded:
+  # Build-time only — absent in a clean checkout, so it looks as dead as the
+  # entries removed below. It is not: keep it.
   - .build
+  # Upstream libtailscale (submodule) and the symlink tree into it.
   - Packages/TailscaleKit/upstream
   - Packages/TailscaleKit/Sources
-  - Apps/macOS/Sources/ScreenShareClient.swift
-  - Apps/macOS/Sources/ScreenShareServer.swift
 
 # Bug-class rules first; style rules opt-in only when they catch real risk.
 disabled_rules:
