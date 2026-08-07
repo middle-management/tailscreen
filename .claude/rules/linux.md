@@ -1,7 +1,7 @@
 ---
 paths:
   - "Apps/linux/**"
-  - "Packages/{TailscreenLinuxBackends,X11CaptureKit,PortalCaptureKit,XTestInjectKit,ALSAKit}/**"
+  - "Packages/{TailscreenLinuxBackends,X11CaptureKit,PortalCaptureKit,TailscreenSharerPortal,XTestInjectKit,X11HotkeyKit,GNotifyKit,ALSAKit}/**"
 ---
 
 # Linux app and backends

@@ -28,6 +28,13 @@ static const char *VS =
 "  gl_Position = vec4(p*uXform.xy + uXform.zw, 0.0, 1.0);\n"  // letterbox/zoom/pan
 "}\n";
 
+// Limited-range BT.709 YUV->RGB: luma 16..235, chroma 128±112. One of five
+// implementations of these constants in this repo — the canonical list is the
+// doc comment on BGRAToI420 (Packages/TailscreenKit/Sources/TailscreenProtocol/
+// BGRAToI420.swift). What catches a disagreement HERE is
+// `tailscreen --overlay-self-test` rendering the shared makeColorBarsFrame()
+// under Xvfb; CWinVideo's HLSL twin has its own WARP gate against the same
+// frame, so the two disagreeing shows up as one passing and the other failing.
 static const char *FS =
 "#version 300 es\n"
 "precision highp float;\n"

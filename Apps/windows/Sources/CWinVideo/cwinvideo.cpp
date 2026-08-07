@@ -88,9 +88,13 @@ VSOut vs_main(uint vid : SV_VertexID) {
 }
 
 float4 ps_main(VSOut i) : SV_TARGET {
-    // Limited range: Y is 16..235, chroma 16..240 about 128. Same constants as
-    // the GL shader and as I420Converter — if these three ever disagree the
-    // WARP self-test against ColorBars is what says so.
+    // Limited range: Y is 16..235, chroma 16..240 about 128. One of five
+    // implementations of these constants in this repo — the canonical list is
+    // the doc comment on BGRAToI420 (Packages/TailscreenKit/Sources/
+    // TailscreenProtocol/BGRAToI420.swift). What catches a disagreement HERE is
+    // winvideo-selftest rendering ColorBars under WARP; the GL shader has its
+    // own gate, so a mismatch between the two shows up as one passing and the
+    // other failing against the same frame, never as a single test.
     float y = (texY.Sample(samp, i.uv) * 255.0 - 16.0) / 219.0;
     float u = (texU.Sample(samp, i.uv) * 255.0 - 128.0) / 224.0;
     float v = (texV.Sample(samp, i.uv) * 255.0 - 128.0) / 224.0;

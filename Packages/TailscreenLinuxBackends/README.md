@@ -9,9 +9,11 @@ through AVAudioEngine, and captures with ScreenCaptureKit, these backends are:
 | Role      | Backend                          | Seam it satisfies |
 |-----------|----------------------------------|-------------------|
 | Decode    | `FFmpegKit` (libavcodec)         | `VideoDecoding`   |
-| Audio     | `ALSAKit` (libasound)            | `AudioSink`       |
+| Audio out | `ALSAKit` (libasound)            | `AudioSink`       |
+| Audio in  | `ALSAKit` (libasound)            | `BlockingPCMSource` |
 | Transport | `TailscaleKit` (tsnet UDP)       | `receiveRTP` / `onControlToSend` / `tick` |
 | **Capture + encode** | `X11CaptureKit` + `FFmpegKit` | **`CaptureEncoding`** |
+| Input injection | `XTestInjectKit` (XTEST)   | `InputInjecting`  |
 
 The concrete video **render** surface is *not* here — the runnable viewer is
 the native GTK desktop app in **[`Apps/linux`](../../Apps/linux)**, which owns a
@@ -30,30 +32,46 @@ and ships control bytes out.
 Packages/TailscreenLinuxBackends/
 ├── Package.swift
 ├── Sources/
-│   ├── TailscreenViewerCore/       # library — CI-testable, NO tsnet
-│   │   ├── Adapters.swift          #   FFmpeg → VideoDecoding, ALSA → AudioSink
-│   │   └── ThreadedAudioSink.swift #   off-thread ALSA writes (used by the GTK viewer)
-│   │                               # (the FFmpeg decoder moved to
-│   │                               #  Packages/TailscreenVideoFFmpeg — Windows needs
-│   │                               #  it without ALSA/X11 — and is @_exported from
-│   │                               #  Adapters.swift, so call sites are unchanged)
-│   │                               # (ViewerPipeline — the decoder+sink assembler —
-│   │                               #  lives in TailscreenKit's TailscreenViewer target;
-│   │                               #  it was Foundation-only and needn't drag in libav*)
-│                               # (the tsnet transport moved to TailscreenKit's
-│                               #  TailscreenViewerTsnet target — the Windows app
-│                               #  needs it and nothing in it was Linux-specific)
-│   ├── TailscreenTestSharer/       # executable — synthetic sharer for local
-│   │                               #   end-to-end runs (captures nothing)
-│   ├── TailscreenSharerLinux/      # library — the real SHARER capture backend
-│   │   └── X11CaptureEncoder.swift #   X11 capture + libavcodec → CaptureEncoding
-│   ├── tailscreen-sharer-linux/    # executable — the real headless SHARER
-│   └── tailscreen-viewer-probe/    # executable — headless viewer (asserts frames)
+│   ├── TailscreenViewerCore/        # library — CI-testable, NO tsnet
+│   │   ├── Adapters.swift           #   FFmpeg → VideoDecoding, ALSA → AudioSink
+│   │   ├── ALSAMicrophone.swift     #   ALSA in → BlockingPCMSource (the mic)
+│   │   ├── ThreadedAudioSink.swift  #   off-thread ALSA writes (used by the GTK viewer)
+│   │   └── ViewerInput.swift        #   GTK pointer/key events → wire InputEvent
+│   │                                # (the FFmpeg decoder moved to
+│   │                                #  Packages/TailscreenVideoFFmpeg — Windows needs
+│   │                                #  it without ALSA/X11 — and is @_exported from
+│   │                                #  Adapters.swift, so call sites are unchanged)
+│   │                                # (ViewerPipeline — the decoder+sink assembler —
+│   │                                #  lives in TailscreenKit's TailscreenViewer target;
+│   │                                #  it was Foundation-only and needn't drag in libav*)
+│   │                                # (the tsnet transport moved to TailscreenKit's
+│   │                                #  TailscreenViewerTsnet target — the Windows app
+│   │                                #  needs it and nothing in it was Linux-specific)
+│   ├── TailscreenTestSharer/        # executable — synthetic sharer for local
+│   │                                #   end-to-end runs (captures nothing)
+│   ├── TailscreenSharerLinux/       # library — the SHARER engine + its backends
+│   │   ├── LinuxShareSession.swift  #   the GTK app's share ENGINE (see below)
+│   │   ├── SharerOverlaySurface.swift #  seam the GTK overlay reaches the engine through
+│   │   ├── X11CaptureEncoder.swift  #   X11 capture + libavcodec → CaptureEncoding
+│   │   └── X11InputInjecting.swift  #   XTEST → InputInjecting
+│   ├── tailscreen-sharer-linux/     # executable — the real headless SHARER
+│   └── tailscreen-viewer-probe/     # executable — headless viewer (asserts frames)
 ├── Tests/TailscreenViewerCoreTests/
-│   └── PipelineIntegrationTests.swift  # real H.264 → RTP → decode → sink
+│   ├── NodeIdentityTests.swift          # node label / state-dir derivation
+│   ├── PipelineIntegrationTests.swift   # real H.264 → RTP → decode → sink
+│   └── ViewerInputMappingTests.swift    # GTK event → wire InputEvent
 └── Tests/TailscreenSharerLinuxTests/
-    └── CaptureEncoderTests.swift       # real capture → encode → decode (Xvfb)
+    ├── CaptureEncoderTests.swift        # real capture → encode → decode (Xvfb)
+    └── LinuxShareSessionTests.swift     # the share engine, headless (no tsnet)
 ```
+
+`LinuxShareSession` is the GTK app's share engine — server lifecycle, access
+control, the drawing latch, voice, and the idle control listener + ask-to-share
+inbox — and the Linux twin of `TailscreenSharerWGC.WindowsShareSession`. It
+lives here rather than in `Apps/linux` so Linux CI can test it headless. The
+app's `SharerModel` is the thin observable façade over it. One deliberate
+difference from Windows: the engine is `@MainActor` rather than lock-guarded,
+which is what keeps the grant-generation `isStale` guard meaningful.
 
 The package is split so the decode→audio pipeline is provable in CI without the
 tsnet/Go dependency: `TailscreenViewerCore` depends only on the A/V backends and
@@ -93,9 +111,9 @@ constraint as every tsnet path in this repo, so it can't run in CI.
 
 ## `TailscreenTestSharer` — synthetic sharer for end-to-end runs
 
-The real sharer is macOS-only (ScreenCaptureKit), which used to make the Linux
-viewer end-to-end-untestable: everything past "the node comes up" was only
-compile-gated. `TailscreenTestSharer` stands in for it — a second tsnet node
+This predates the Linux sharer: when the only real sharer was macOS's
+(ScreenCaptureKit), everything past "the node comes up" on this side was only
+compile-gated. `TailscreenTestSharer` stands in for one — a second tsnet node
 speaking the **sharer half** of the wire protocol, so the whole viewer path runs
 on one Linux box. It serves **real H.264** (libavcodec, a moving test pattern),
 so the viewer's FFmpeg decode and GL render do genuine work.
@@ -138,9 +156,10 @@ behaviour is the only reason capture is isolated there, and Linux has no
 equivalent coupling (`plans/porting-plan.md` #10), so capture runs in-process
 and `stop()` genuinely stops it.
 
-Current limits, deliberately explicit: display shares only (window/app
-selections are *refused*, not silently widened to the whole screen), X11 only,
-no system-audio capture, no `onPreviewImage` (the sharer's preview goes up as
+Current limits of **this** backend, deliberately explicit: display shares only
+(window/app selections are *refused*, not silently widened to the whole screen
+— sharing one window is the portal's job, `Packages/TailscreenSharerPortal`),
+X11 only, no system-audio capture, no `onPreviewImage` (the sharer's preview goes up as
 raw pixels through `onPreviewThumbnail` instead — that seam carries *encoded*
 bytes for the mac helper's sake, and there is no process boundary here to pay
 for), software encoders only
@@ -186,13 +205,20 @@ cd Apps/linux && swift run tailscreen 100.64.0.1 \
     --state-dir /tmp/viewer-state
 ```
 
-## Not here yet
+## Not here
 
-- **Mic capture** — the viewer plays sharer/system audio (ALSA out); an ALSA
-  *input* path for the mic is future work.
-- **The ScreenCast portal** — the production Wayland capture path, behind the
-  same `CaptureEncoding` seam. See `Packages/X11CaptureKit/README.md` for why
-  X11 came first (CI can run it; the portal never can).
-- **Windows** — the backends are cross-platform (FFmpeg/tsnet everywhere; audio
-  would swap ALSA for WASAPI, render for a D3D swapchain — see
-  `plans/viewer-windows-plan.md`), but only Linux is wired/tested so far.
+- **The ScreenCast portal** — the Wayland-capable capture path lives in
+  `Packages/PortalCaptureKit` (the shim) and `Packages/TailscreenSharerPortal`
+  (its `CaptureEncoding` backend), separate packages so consuming the X11
+  sharer — or running viewer-only — doesn't put libdbus and libpipewire on the
+  link line. `Apps/linux` picks between the two at share time via
+  `CaptureBackendSelection`. See `Packages/X11CaptureKit/README.md` for why X11
+  came first (CI can run it; the portal never can).
+- **The Windows backends** — `WGCCaptureKit` / `TailscreenSharerWGC` /
+  `WASAPIKit` / `SendInputKit` and friends, each its own package for the same
+  reason. The shared halves (FFmpeg decode, the tsnet transport, the portable
+  cores) are consumed from `Packages/TailscreenKit` and
+  `Packages/TailscreenVideoFFmpeg` by both platforms.
+
+Mic capture *is* here: `ALSAMicrophone.swift` adapts ALSA input to the portable
+`BlockingPCMSource` seam, the counterpart of `WASAPIKit`'s recorder.
