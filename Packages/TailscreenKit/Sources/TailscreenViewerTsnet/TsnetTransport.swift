@@ -319,21 +319,23 @@ public final class TsnetTransport {
         tailnetName = brought.tailnet
     }
 
-    /// The bring-up itself: state dir, node, optional IPN-bus login watcher,
-    /// `up()`, and the identity lookup.
+    /// The bring-up itself: `TsnetNodeFactory.bringUp` (state dir, node,
+    /// optional IPN-bus login watcher with leak-safe teardown, `up()`) plus
+    /// this transport's identity lookup.
     ///
-    /// `nonisolated` so it does not inherit `@MainActor` — see `prepare`. Each
-    /// step logs before it starts rather than after it finishes, because the
-    /// failure this was written for is a *hang*, and a log line that only
-    /// prints on success tells you nothing about where a hang is.
+    /// `nonisolated` so it does not inherit `@MainActor` — see `prepare`. The
+    /// factory logs each step before it starts (`stepLogPrefix: "prepare"`),
+    /// because the failure this was written for is a *hang*, and a log line
+    /// that only prints on success tells you nothing about where a hang is.
+    ///
+    /// `up()` is deliberately `.unbounded` even when an auth key is present —
+    /// this transport has always left it unbounded, unlike the sharer and the
+    /// macOS app, which bound the auth-keyed path to 60 s.
     private nonisolated static func bringUpNode(
         config: ViewerConfig,
         onLoginURL: (@Sendable (URL) -> Void)?
     ) async throws -> (node: TailscaleNode, identity: String?, tailnet: String?) {
         let logger = StderrLogger()
-        logger.log("prepare: creating state dir \(config.statePath)")
-        try? FileManager.default.createDirectory(
-            atPath: config.statePath, withIntermediateDirectories: true)
 
         // Node identity follows the role. A viewer-only node is ephemeral and
         // named with `viewerHostnamePrefix`, which peer discovery excludes, so
@@ -344,62 +346,29 @@ public final class TsnetTransport {
         // which is wrong for something a peer may reconnect to.
         let nodeID = Self.nodeIdentity(for: config.nodeRole, uniqueSuffix: UUID().uuidString)
         let hostName = nodeID.hostName
-        let ephemeral = nodeID.ephemeral
-        // First call into the Go c-archive, so this is also where the Go
-        // runtime initialises.
-        logger.log("prepare: creating tsnet node \(hostName) (ephemeral=\(ephemeral))")
-        let node = try TailscaleNode(
-            config: Configuration(
+        let node = try await TsnetNodeFactory.bringUp(
+            spec: TsnetNodeFactory.Spec(
                 hostName: hostName,
-                path: config.statePath,
+                ephemeral: nodeID.ephemeral,
+                statePath: config.statePath,
                 authKey: config.authKey,
-                controlURL: config.controlURL,
-                ephemeral: ephemeral
-            ),
-            logger: logger
-        )
-        // Interactive login (no auth key): tsnet's `up()` blocks until the
-        // backend reaches Running, which on a fresh device means waiting for a
-        // browser login. tsnet emits that login URL as a BrowseToURL notify on
-        // the IPN bus — subscribe BEFORE `up()` (else the notify fires with
-        // nobody listening and `up()` waits forever) and surface the URL for
-        // the user to open. With an auth key this path is skipped entirely.
-        var authWatcher: TailscaleIPNWatcher?
-        if config.authKey == nil {
-            logger.log("prepare: no auth key — subscribing to the IPN bus for the login URL")
-            let watcher = await TailscaleIPNWatcher()
-            await MainActor.run {
-                watcher.onBrowseToURL = { url in
-                    // ALWAYS log it, then hand it to the host.
-                    //
-                    // The host's callback is a GUI update, and a GUI update is
-                    // exactly what is unavailable when the app has stopped
-                    // answering — which is the state this URL is needed to get
-                    // out of, since `up()` will not return until someone visits
-                    // it. A line on stderr is readable from the console the user
-                    // launched from even then, so a frozen window becomes an
-                    // inconvenience rather than a dead end.
-                    Self.surfaceLoginURL(url)
-                    onLoginURL?(url)
-                }
-            }
-            try await watcher.startWatching(node: node)
-            authWatcher = watcher
-            logger.log("prepare: IPN bus subscribed — waiting for interactive browser login…")
-        }
-
-        logger.log("prepare: calling up() — blocks until login completes")
-        // Stop the auth watcher on failure too: it subscribed the IPN bus
-        // before `up()`, and its MessageProcessor keeps running (retaining the
-        // node) unless `stopWatching()` cancels it — a leak on the interactive-
-        // login path if `up()` throws.
-        do {
-            try await node.up()
-        } catch {
-            await authWatcher?.stopWatching()
-            throw error
-        }
-        await authWatcher?.stopWatching()
+                controlURL: config.controlURL),
+            logger: logger,
+            timeout: .unbounded,
+            onLoginURL: { url in
+                // ALWAYS log it, then hand it to the host.
+                //
+                // The host's callback is a GUI update, and a GUI update is
+                // exactly what is unavailable when the app has stopped
+                // answering — which is the state this URL is needed to get
+                // out of, since `up()` will not return until someone visits
+                // it. A line on stderr is readable from the console the user
+                // launched from even then, so a frozen window becomes an
+                // inconvenience rather than a dead end.
+                Self.surfaceLoginURL(url)
+                onLoginURL?(url)
+            },
+            stepLogPrefix: "prepare")
 
         logger.log("prepare: up() returned — reading addresses")
         let ips = try await node.addrs()

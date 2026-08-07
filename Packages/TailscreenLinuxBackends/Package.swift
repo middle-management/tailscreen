@@ -71,6 +71,8 @@ let package = Package(
             dependencies: [
                 .product(name: "CFFmpeg", package: "FFmpegKit"),
                 .product(name: "TailscreenProtocol", package: "TailscreenKit"),
+                // TsnetNodeFactory, the shared node bring-up.
+                .product(name: "TailscreenTransport", package: "TailscreenKit"),
                 .product(name: "TailscaleKit", package: "TailscaleKit"),
             ],
             path: "Sources/TailscreenTestSharer",
