@@ -207,24 +207,14 @@ public final class LinuxShareSession {
     /// about somebody is not a property of the session they decided it in.
     private let access: SharerAccessCoordinator
 
-    /// The app's OWN control listener, alive for as long as the node is —
-    /// not the one the share creates.
-    ///
-    /// This distinction is the whole feature. `TailscaleScreenShareServer`
-    /// builds a listener when none is supplied, but only for the share's
-    /// lifetime, and a request to share arrives precisely when this machine is
-    /// NOT sharing. With no long-lived listener the port answers nothing while
-    /// idle and every ask reads to the asker as "no answer" — indistinguishable
-    /// from a peer that is away.
-    private var controlListener: TailscreenControlListener?
-    /// The node the listener was started against, so a profile switch (which
-    /// brings a different node up) restarts it rather than leaving it bound to
-    /// a node that is going away.
-    private var listenerNode: TailscaleNode?
-
-    /// Peers asking this machine to share, coalesced and bounded by the
-    /// portable `ShareRequestInbox`.
-    private var inbox = ShareRequestInbox()
+    /// The whole ask-to-share flow — the long-lived idempotent-per-node
+    /// listener, the inbox, and the answer sequencing (reply on the arrival
+    /// connection; accept ⇒ pre-approve, then start) — written once in
+    /// `TailscreenSharer` and shared with the Windows and macOS hosts. Wired
+    /// in `init`; what stays here is only what is this host's: holding the
+    /// invited IP for the next server, and the stderr note when the listener
+    /// cannot start.
+    private let askToShare = SharerAskToShareCoordinator()
 
     /// IPs accepted before there was a server to tell.
     ///
@@ -245,6 +235,27 @@ public final class LinuxShareSession {
         self.display = display
         self.access = SharerAccessCoordinator(
             store: accessStore ?? PeerAccessStore(directory: AccountProfileLayout.xdg().root))
+
+        askToShare.onRequestsChanged = { [weak self] requests in
+            self?.onShareRequestsChanged?(requests)
+        }
+        askToShare.onPreApproveViewer = { [weak self] sourceKey in
+            guard let self else { return }
+            // Pre-approve BEFORE starting, because the HELLO can arrive as
+            // soon as the share is up — and a peer this machine just invited
+            // must not then be parked at its approval gate. Accept happens
+            // before a server exists, so the IP is also held for replay.
+            self.pendingPreApprovedIPs.insert(sourceKey)
+            self.server?.preApproveViewer(ip: sourceKey)
+        }
+        askToShare.onStartShare = { [weak self] in self?.onStartShareRequested?() }
+        askToShare.onListenerError = { (error: Error) in
+            // Worth a line rather than silence: the share still works and
+            // this machine simply never hears an ask, which from the other
+            // end is indistinguishable from nobody being home.
+            FileHandle.standardError.write(
+                Data("warning: could not listen for share requests: \(error)\n".utf8))
+        }
     }
 
     // MARK: Share lifecycle
@@ -390,7 +401,7 @@ public final class LinuxShareSession {
                     // create a second one competing for port 7447 — and so
                     // `onRequestToShare` keeps pointing here rather than being
                     // rebound to the share's own.
-                    controlListener: controlListener
+                    controlListener: askToShare.controlListener
                 )
                 setPhase(.sharing)
                 // Only once the share is genuinely up: an indicator that
@@ -708,92 +719,31 @@ public final class LinuxShareSession {
     /// Idempotent per node and safe to call on every node change — which is
     /// how it is called, because there is no single moment when "the node is
     /// ready" that this engine observes. A listener already bound to the same
-    /// node is left alone.
+    /// node is left alone. The lifecycle itself is the shared coordinator's.
     public func ensureControlListener() {
         guard let node = nodeProvider?() else { return }
-        if controlListener != nil, listenerNode === node { return }
-        let previous = controlListener
-        if let previous { Task { await previous.stop() } }
-
-        let listener = TailscreenControlListener()
-        listener.onRequestToShare = { [weak self] hostname, connectionID, sourceAddr in
-            // Fires on the listener's own thread; the inbox and its published
-            // projection are main-actor state.
-            Task { @MainActor [weak self] in
-                self?.noteShareRequest(
-                    from: hostname, sourceAddr: sourceAddr, connectionID: connectionID)
-            }
-        }
-        controlListener = listener
-        listenerNode = node
-        Task {
-            do {
-                try await listener.start(node: node)
-            } catch {
-                // Worth a line rather than silence: the share still works and
-                // this machine simply never hears an ask, which from the other
-                // end is indistinguishable from nobody being home.
-                FileHandle.standardError.write(
-                    Data("warning: could not listen for share requests: \(error)\n".utf8))
-            }
-        }
+        askToShare.ensureListener(node: node)
     }
 
+    /// Test seam onto the coordinator's inbox, so the engine suite can drive
+    /// an ask without a listener.
     func noteShareRequest(from hostname: String, sourceAddr: String?, connectionID: UUID) {
-        let nowNs = DispatchTime.now().uptimeNanoseconds
-        // Expire first, so a two-minute-old row that the asker has already
-        // given up on cannot occupy a slot against a live one.
-        _ = inbox.pruneExpired(nowNs: nowNs, ttlNs: Self.shareRequestTTLNs)
-        guard
-            inbox.record(
-                fromHostname: hostname, sourceAddr: sourceAddr,
-                connectionID: connectionID, nowNs: nowNs)
-        else { return }
-        publishShareRequests()
+        askToShare.noteRequest(
+            from: hostname, sourceAddr: sourceAddr, connectionID: connectionID)
     }
-
-    /// Push the inbox to the host — card and notifications together, because
-    /// the two must not drift: an ask that expires from the inbox but keeps
-    /// its banner is an invitation whose Share button answers a connection
-    /// that has already gone.
-    private func publishShareRequests() {
-        onShareRequestsChanged?(inbox.requests)
-    }
-
-    /// Matches the requester's own wait (`TailscreenRequestToShareClient`'s
-    /// 120 s default). A row that outlives it is a button that does nothing.
-    static let shareRequestTTLNs: UInt64 = 120 * 1_000_000_000
 
     /// Answer an ask: reply on its own connection, and on accept pre-approve
-    /// the asker and have the host start sharing.
+    /// the asker and have the host start sharing (the coordinator's contract;
+    /// the pre-approve half lands in this engine's `onPreApproveViewer`
+    /// wiring).
     public func answerShareRequest(id: UUID, accept: Bool) {
-        guard let request = inbox.remove(id: id) else { return }
-        publishShareRequests()
-
-        if let connectionID = request.connectionID, let listener = controlListener {
-            Task {
-                // Best effort: the asker may have given up and closed. Sending
-                // into a dead connection is not an error worth surfacing —
-                // their side already settled on `.noAnswer`.
-                await listener.send(.shareResponse(accepted: accept), to: connectionID)
-            }
-        }
-        guard accept else { return }
-
-        // Pre-approve BEFORE starting, because the HELLO can arrive as soon as
-        // the share is up — and a peer this machine just invited must not then
-        // be parked at its approval gate.
-        pendingPreApprovedIPs.insert(request.sourceKey)
-        server?.preApproveViewer(ip: request.sourceKey)
-        onStartShareRequested?()
+        askToShare.answer(id: id, accept: accept)
     }
 
     /// Forget every parked ask — the share started by another route, or the
     /// node went away.
     public func clearShareRequests() {
-        guard !inbox.requests.isEmpty else { return }
-        inbox.removeAll()
-        publishShareRequests()
+        askToShare.clearRequests()
     }
 
     // MARK: Access control

@@ -95,7 +95,7 @@ struct TailscreenApp: App {
         let state = MenubarIconState.from(
             sharing: appState.sharingState,
             connection: appState.connectionState,
-            hasPendingRequests: !appState.metadataService.pendingRequests.isEmpty,
+            hasPendingRequests: !appState.pendingShareRequests.isEmpty,
             hasControlRequests: !appState.controlRequests.isEmpty,
             hasWaitingViewers: !appState.pendingViewers.isEmpty
         )

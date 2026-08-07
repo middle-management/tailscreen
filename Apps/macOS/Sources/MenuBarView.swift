@@ -183,7 +183,7 @@ struct PendingRequestsBanner: View {
     @EnvironmentObject var appState: AppState
 
     var body: some View {
-        let requests = appState.metadataService.pendingRequests
+        let requests = appState.pendingShareRequests
         // Suppress while the user is already sharing or viewing — the
         // Share button would be disabled and the banner would read as
         // "X wants you to share" while a share is on-screen, which is

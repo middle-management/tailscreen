@@ -124,6 +124,9 @@ let package = Package(
                 // in TailscreenKit precisely so consuming it here doesn't also
                 // drag in FFmpeg, ALSA and X11.
                 .product(name: "TailscreenViewerTsnet", package: "TailscreenKit"),
+                // The ask-to-share coordinator (listener lifecycle + inbox +
+                // answer sequencing), shared with the GTK engine and macOS.
+                .product(name: "TailscreenSharer", package: "TailscreenKit"),
                 // WASAPI behind the portable `AudioSink` seam — what ALSAKit is
                 // to the Linux viewer. No system package to install: WASAPI is
                 // part of Windows.

@@ -423,18 +423,27 @@ class AppState: ObservableObject {
     private var notifiedPendingViewerIDs: Set<String> = []
 
     /// Request-to-share source keys already announced. Keyed by the same
-    /// spoof-resistant `PendingRequest.sourceKey` the banner list coalesces
-    /// on, so a peer retrying while its first ask is still on screen replaces
-    /// one row and mints no second banner. Not cleared on `stopSharing`:
-    /// these arrive while the machine is *idle* and have nothing to do with a
-    /// share's lifetime — they prune themselves when the request is answered.
+    /// spoof-resistant `PendingShareRequest.sourceKey` the banner list
+    /// coalesces on, so a peer retrying while its first ask is still on screen
+    /// replaces one row and mints no second banner. Not cleared on
+    /// `stopSharing`: these arrive while the machine is *idle* and have
+    /// nothing to do with a share's lifetime — they prune themselves when the
+    /// request is answered.
     private var notifiedShareRequestKeys: Set<String> = []
 
-    /// Source `ip:port` per inbound request-to-share connection UUID, so
-    /// accepting a request can one-time pre-approve the requester's IP.
-    /// Populated in `handleIncomingRequestToShare`, consumed/cleared in
-    /// `respondToShareRequest`.
-    private var requestSourceAddrs: [UUID: String] = [:]
+    /// The whole ask-to-share flow — the long-lived idempotent-per-node
+    /// control listener, the coalesced/bounded inbox, and the answer
+    /// sequencing (reply on the arrival connection; accept ⇒ pre-approve,
+    /// then start) — written once in `TailscreenSharer` and shared with the
+    /// GTK engine and the Windows app. Wired in `init`; what stays here is
+    /// this host's: the `@Published` mirror, the notification reconcile, the
+    /// metadata handler riding the same listener, and the picker flow accept
+    /// drops into.
+    private let askToShare = SharerAskToShareCoordinator()
+
+    /// The coordinator's inbox, mirrored for the banner rows, the Dock badge
+    /// and the notification-press router.
+    @Published private(set) var pendingShareRequests: [PendingShareRequest] = []
 
     /// Requester IPs the sharer accepted (via request-to-share) but hasn't
     /// pushed to a live server yet — applied to `server.preApproveViewer`
@@ -453,11 +462,6 @@ class AppState: ObservableObject {
     private var client: TailscaleScreenShareClient?
     private var node: TailscaleNode?
     private var tailscaleIPs: [String] = []
-    /// Long-lived TCP/7447 listener that demultiplexes the framed control
-    /// protocol. Bound once after `node.up()` and kept alive across share
-    /// start/stop cycles so peer-initiated request-to-share messages
-    /// arrive whether or not we're sharing. Torn down on sign-out.
-    private var controlListener: TailscreenControlListener?
     private var sharerOverlay: SharerOverlayWindow?
     /// Border drawn around the captured region for the whole share. Unlike
     /// `sharerOverlay` this is NOT lazy — its entire job is to be present
@@ -759,12 +763,52 @@ class AppState: ObservableObject {
 
         // `@Published var metadataService` only fires when the *reference*
         // changes, not when its inner `@Published` properties (notably
-        // `pendingRequests`) mutate. Mirror its `objectWillChange` through
-        // ours so the request-to-share banner repaints when a new request
-        // lands.
+        // `currentMetadata`) mutate. Mirror its `objectWillChange` through
+        // ours so anything reading the live metadata repaints with it.
         metadataService.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }.store(in: &cancellables)
+
+        // The ask-to-share flow: the listener lifecycle, the inbox and the
+        // answer sequencing are the shared coordinator's; these closures are
+        // the parts that are this host's.
+        askToShare.onRequestReceived = { [weak self] hostname in
+            self?.logger.log("Incoming request-to-share from \(hostname)")
+        }
+        askToShare.onRequestsChanged = { [weak self] requests in
+            guard let self else { return }
+            self.pendingShareRequests = requests
+            // On every change — arrival AND answer — because both edit the
+            // list, and the notice for a request answered in the app has to
+            // come down with it.
+            self.refreshShareRequestNotices()
+        }
+        askToShare.onPreApproveViewer = { [weak self] sourceKey in
+            guard let self else { return }
+            // The sharer just consented to this named peer, so pre-approve
+            // its imminent HELLO — otherwise it would park behind the
+            // approval gate for a second, redundant consent. Apply to a live
+            // server now and remember it for the server the picker is about
+            // to spin up.
+            self.pendingPreApprovedIPs.insert(sourceKey)
+            self.server?.preApproveViewer(ip: sourceKey)
+        }
+        askToShare.onStartShare = { [weak self] in
+            Task { await self?.presentNativePicker() }
+        }
+        askToShare.configureListener = { [weak self] listener in
+            // Answer peer metadata queries (the sharing-status filter's fetch
+            // half) on the same connection they arrived on. Exposes nothing
+            // the tailnet can't already see (hostname is in the netmap) plus
+            // the share state any admitted viewer would learn by connecting.
+            listener.onMetadataRequest = { [weak self, weak listener] connectionID in
+                Task { @MainActor [weak self, weak listener] in
+                    guard let self, let listener else { return }
+                    let metadata = self.metadataService.wireMetadata()
+                    Task { await listener.send(.metadataResponse(metadata), to: connectionID) }
+                }
+            }
+        }
 
         // Mirror the remembered-viewers store to the UI on every change,
         // including cosmetic display-name refreshes.
@@ -1551,7 +1595,7 @@ class AppState: ObservableObject {
                         filterData: effectiveFilterData,
                         quality: qualitySettings,
                         existingNode: sharedNode,
-                        controlListener: controlListener
+                        controlListener: askToShare.controlListener
                     )
                 } catch {
                     // Tear down anything `start` brought up before throwing —
@@ -3156,64 +3200,30 @@ class AppState: ObservableObject {
     }
 
     /// Start (and keep) the long-lived TCP/7447 control listener bound to
-    /// the local tsnet node. The `onRequestToShare` handler routes
-    /// incoming prompts into `TailscreenMetadataService.pendingRequests`
-    /// and fires a `UNUserNotificationCenter` toast so the user notices
-    /// while the menubar popover is closed.
+    /// the local tsnet node — the shared coordinator's lifecycle, with the
+    /// arrival, notification and answer routing wired in `init`. Awaited so
+    /// a bind failure still fails node bring-up, exactly as before.
     private func ensureControlListener(node: TailscaleNode) async throws {
-        if controlListener != nil { return }
-        let l = TailscreenControlListener()
-        l.onRequestToShare = { [weak self] fromHostname, connectionID, peerAddress in
-            Task { @MainActor [weak self] in
-                self?.handleIncomingRequestToShare(
-                    from: fromHostname, sourceAddr: peerAddress, connectionID: connectionID)
-            }
-        }
-        // Answer peer metadata queries (the sharing-status filter's fetch
-        // half) on the same connection they arrived on. Exposes nothing
-        // the tailnet can't already see (hostname is in the netmap) plus
-        // the share state any admitted viewer would learn by connecting.
-        l.onMetadataRequest = { [weak self, weak l] connectionID in
-            Task { @MainActor [weak self, weak l] in
-                guard let self, let l else { return }
-                let metadata = self.metadataService.wireMetadata()
-                Task { await l.send(.metadataResponse(metadata), to: connectionID) }
-            }
-        }
-        try await l.start(node: node)
-        controlListener = l
+        guard try await askToShare.ensureListenerStarted(node: node) else { return }
         logger.log("Control listener bound on TCP/\(NetworkConfig.tailscreenPort)")
-    }
-
-    private func handleIncomingRequestToShare(
-        from hostname: String, sourceAddr: String?, connectionID: UUID
-    ) {
-        logger.log("Incoming request-to-share from \(hostname)")
-        metadataService.handleRequestToShare(
-            from: hostname, sourceAddr: sourceAddr, connectionID: connectionID)
-        // Stash the requester's source IP so accepting the request can
-        // one-time pre-approve their imminent HELLO (fix: double-consent).
-        if let sourceAddr {
-            requestSourceAddrs[connectionID] = sourceAddr
-        }
-        refreshShareRequestNotices()
     }
 
     /// Post and withdraw request-to-share notices to match the live banner
     /// rows — the fourth call site onto the one shared decision.
     ///
-    /// Identity is `PendingRequest.sourceKey`, which is exactly the key
-    /// `handleRequestToShare` already coalesces the banner list on: the
+    /// Identity is `PendingShareRequest.sourceKey`, which is exactly the key
+    /// the coordinator's inbox already coalesces the banner list on: the
     /// requester's source IP, never the wire-claimed hostname an attacker can
     /// vary at will. Keying the notices the same way means a peer retrying
     /// while its first ask is still on screen replaces one row and mints no
     /// second banner, and the forget-on-leave prune re-announces a genuinely
     /// fresh ask after the last one was answered.
     ///
-    /// Called on arrival and on answer, because both edit the list — the
-    /// notice for a request answered in the app has to come down with it.
+    /// Called from the coordinator's `onRequestsChanged` — on arrival and on
+    /// answer, because both edit the list, and the notice for a request
+    /// answered in the app has to come down with it.
     private func refreshShareRequestNotices() {
-        let candidates = metadataService.pendingRequests.map {
+        let candidates = pendingShareRequests.map {
             NoticeCandidate(identity: $0.sourceKey, label: $0.fromHostname)
         }
         let answered = SharerNoticeDecision.noticesToWithdraw(
@@ -3226,39 +3236,14 @@ class AppState: ObservableObject {
         post(decision.post)
     }
 
-    /// Answer an incoming request-to-share banner. Sends the accept /
-    /// decline response back on the TCP connection the request arrived on
-    /// (best-effort — the requester may have timed out and closed it, and
-    /// `TailscreenControlListener.send` silently no-ops on a dead
-    /// connection), clears the banner row, and on accept drops into the
-    /// normal picker flow.
-    func respondToShareRequest(_ request: TailscreenMetadataService.PendingRequest, accepted: Bool) {
-        metadataService.clearRequest(request)
-        if let connectionID = request.connectionID, let listener = controlListener {
-            Task {
-                await listener.send(.shareResponse(accepted: accepted), to: connectionID)
-            }
-        }
-        if accepted {
-            // The sharer just consented to this named peer, so pre-approve
-            // its imminent HELLO — otherwise it would park behind the
-            // approval gate for a second, redundant consent. Apply to a live
-            // server now and remember it for the server the picker is about
-            // to spin up.
-            if let connectionID = request.connectionID, let addr = requestSourceAddrs[connectionID] {
-                let ip = TailscreenMetadataService.sourceKey(from: addr)
-                pendingPreApprovedIPs.insert(ip)
-                server?.preApproveViewer(ip: ip)
-            }
-            Task { await presentNativePicker() }
-        }
-        if let connectionID = request.connectionID {
-            requestSourceAddrs.removeValue(forKey: connectionID)
-        }
-        // The row is gone; its banner must go with it. Also re-arms the notice
-        // for this source key, so a peer that asks again after being declined
-        // is announced again.
-        refreshShareRequestNotices()
+    /// Answer an incoming request-to-share banner — the coordinator's
+    /// sequencing: the accept/decline response rides the TCP connection the
+    /// request arrived on (best-effort — the requester may have timed out and
+    /// closed it), the row and its notice come down via `onRequestsChanged`,
+    /// and on accept the pre-approval and the picker flow land in the
+    /// closures `init` wired.
+    func respondToShareRequest(_ request: PendingShareRequest, accepted: Bool) {
+        askToShare.answer(id: request.id, accept: accepted)
     }
 
     /// Spin up an IPN-bus watcher whose only job is to open the
@@ -3311,8 +3296,7 @@ class AppState: ObservableObject {
             // Reset Tailscale state
             await server?.stop()
             server = nil
-            await controlListener?.stop()
-            controlListener = nil
+            await askToShare.stopListener()
             try? await node?.close()
             node = nil
             authIPNWatcher?.stopWatching()
@@ -3362,8 +3346,7 @@ class AppState: ObservableObject {
     private func teardownNodeKeepingLogin() async {
         await server?.stop()
         server = nil
-        await controlListener?.stop()
-        controlListener = nil
+        await askToShare.stopListener()
         try? await node?.close()
         node = nil
         authIPNWatcher?.stopWatching()
@@ -4110,7 +4093,7 @@ class AppState: ObservableObject {
         case .controlRequested:
             handleControlNoticeAction(viewerIP: identity, action: action)
         case .requestToShare:
-            let live = metadataService.pendingRequests.first { $0.sourceKey == identity }
+            let live = pendingShareRequests.first { $0.sourceKey == identity }
             guard let request = live else {
                 logger.log("Notification \(action.rawValue) for \(identity): request already gone")
                 return
