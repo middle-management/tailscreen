@@ -461,6 +461,13 @@ class AppState: ObservableObject {
     private var server: TailscaleScreenShareServer?
     private var client: TailscaleScreenShareClient?
     private var node: TailscaleNode?
+    /// Where `node`'s bring-up got to, tracked so `getOrCreateNode` can tell
+    /// a node whose `up()` is still blocking (a concurrent caller during the
+    /// interactive browser login — hand it back) from one whose `up()` threw
+    /// after the node was stored (dead — rebuild) and from one that reached
+    /// Running and may have died since (ask the backend).
+    private enum NodeBringUpState { case notUp, upInFlight, up }
+    private var nodeBringUpState: NodeBringUpState = .notUp
     private var tailscaleIPs: [String] = []
     private var sharerOverlay: SharerOverlayWindow?
     /// Border drawn around the captured region for the whole share. Unlike
@@ -3123,10 +3130,44 @@ class AppState: ObservableObject {
     }
 
     private func getOrCreateNode() async throws -> TailscaleNode {
-        // If node exists and is running, return it
+        // If the node exists AND is running, return it. "Running" is read
+        // from the backend itself (LocalAPI `backendStatus`), not assumed
+        // from existence — a node whose `up()` threw after the assignment
+        // below, or whose backend died since (key expiry, engine stop),
+        // used to be handed back here as a permanently dead node.
         if let node = self.node {
-            // TODO: We should check the status of the node
-            return node
+            switch nodeBringUpState {
+            case .upInFlight:
+                // A concurrent caller while `up()` is still blocking —
+                // typically the interactive browser login. Hand back the
+                // same node rather than racing a second bring-up; a status
+                // read here would report NeedsLogin and wrongly tear down
+                // the node mid-login.
+                return node
+            case .up:
+                let state = try? await withTimeout(seconds: 3) {
+                    try await LocalAPIClient(localNode: node, logger: nil)
+                        .backendStatus().BackendState
+                }
+                // "Starting" is tolerated: a live backend can pass through
+                // it transiently, and tearing it down for that would churn
+                // a healthy node. Everything else — Stopped, NeedsLogin, an
+                // unreachable backend — is a node that cannot serve, so
+                // rebuild. The on-disk state survives, so a still-valid
+                // login comes back without a browser prompt.
+                if state == "Running" || state == "Starting" {
+                    return node
+                }
+                logger.log(
+                    "getOrCreateNode: cached node reports \(state ?? "unreachable") — recreating")
+            case .notUp:
+                // `up()` threw after the node was stored: dead on arrival.
+                logger.log("getOrCreateNode: cached node never came up — recreating")
+            }
+            // Tear down the dead node and everything hanging off it (the
+            // control listener, the auth watcher, discovery) so the fresh
+            // node below re-wires all of it instead of half of it.
+            await teardownNodeKeepingLogin()
         }
 
         // One tsnet node per process, used for sign-in *and* for the
@@ -3150,16 +3191,17 @@ class AppState: ObservableObject {
         // browser login every relaunch — fine for CI but painful in daily
         // use.
         let baseHostname = Host.current().localizedName ?? "mac"
-        let config = Configuration(
-            hostName: "\(TailscreenInstance.serverHostnamePrefix)\(baseHostname)\(TailscreenInstance.hostnameSuffix)",
-            path: statePath,
+        let spec = TsnetNodeFactory.Spec(
+            hostName:
+                "\(TailscreenInstance.serverHostnamePrefix)\(baseHostname)\(TailscreenInstance.hostnameSuffix)",
+            ephemeral: false,
+            statePath: statePath,
             authKey: TailscreenInstance.authKey,
-            controlURL: TailscreenInstance.controlURLOverride ?? kDefaultControlURL,
-            ephemeral: false
-        )
+            controlURL: TailscreenInstance.controlURLOverride ?? kDefaultControlURL)
 
-        let node = try TailscaleNode(config: config, logger: SimpleLogger())
+        let node = try TsnetNodeFactory.makeNode(spec: spec, logger: SimpleLogger())
         self.node = node
+        nodeBringUpState = .upInFlight
 
         // Subscribe to the IPN bus *before* calling `up()`. tsnet's
         // `tailscale_up` blocks until the backend reaches Running, which on
@@ -3184,11 +3226,16 @@ class AppState: ObservableObject {
         // interactive path (no key) is intentionally left unbounded: up()
         // legitimately blocks until the user finishes the browser login, which
         // can take minutes.
-        if TailscreenInstance.authKey != nil {
-            try await withTimeout(seconds: 60) { try await node.up() }
-        } else {
-            try await node.up()
+        do {
+            try await TsnetNodeFactory.up(node, spec: spec, timeout: .boundedWhenAuthKeyed(seconds: 60))
+        } catch {
+            // Leave the node stored (matching the long-standing behaviour)
+            // but marked never-came-up, so the next call rebuilds instead of
+            // handing the dead node back.
+            nodeBringUpState = .notUp
+            throw error
         }
+        nodeBringUpState = .up
 
         // Bind the shared TCP/7447 control listener once the node is up.
         // Idempotent (`start` no-ops on repeat); it has to live across

@@ -39,6 +39,7 @@ let package = Package(
         .package(path: "../WGCCaptureKit"),
         .package(path: "../FFmpegKit"),
         .package(path: "../TailscreenKit"),
+        .package(path: "../TailscreenVideoFFmpeg"),
         .package(path: "../SendInputKit"),
         .package(path: "../TailscaleKit"),
         .package(path: "../WinOverlayKit"),
@@ -49,6 +50,10 @@ let package = Package(
             dependencies: [
                 .product(name: "WGCCaptureKit", package: "WGCCaptureKit"),
                 .product(name: "FFmpegKit", package: "FFmpegKit"),
+                // The encode-send scaffolding shared with the X11 and portal
+                // backends (FFmpegKit + TailscreenProtocol only — adds no
+                // system library to this link line, and no WinUI).
+                .product(name: "TailscreenSharerFFmpegBase", package: "TailscreenVideoFFmpeg"),
                 .product(name: "TailscreenProtocol", package: "TailscreenKit"),
                 // The sharer's voice: `SharerVoice` (uplink at the reserved
                 // sharer SSRC + downlink for the viewers). Portable, so it

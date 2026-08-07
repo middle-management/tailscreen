@@ -1,6 +1,7 @@
 import Foundation
 import TailscaleKit
 import TailscreenProtocol
+import TailscreenTransport
 
 // tailscreen-test-sharer — a synthetic Tailscreen *sharer* for Linux.
 //
@@ -120,24 +121,24 @@ actor KeyframeRequest {
 @main
 enum TestSharer {
     static func main() async {
-        try? FileManager.default.createDirectory(atPath: config.statePath, withIntermediateDirectories: true)
-
         // A LONG-LIVED sharer identity: discovery lists peers whose hostname
         // starts with `tailscreen-` but NOT `tailscreen-client-`, so this must
         // avoid the client/viewer prefixes to show up as a connectable screen.
         let hostName = "\(TailscreenInstance.serverHostnamePrefix)test-sharer-\(UUID().uuidString.prefix(6))"
+        // Ephemeral + unbounded up(), as this tool has always run: a test
+        // node should vanish when it exits, and there is no timeout because
+        // an interactive login against a local headscale may be the operator.
+        let spec = TsnetNodeFactory.Spec(
+            hostName: hostName,
+            ephemeral: true,
+            statePath: config.statePath,
+            authKey: config.authKey,
+            controlURL: config.controlURL)
         let node: TailscaleNode
         do {
-            node = try TailscaleNode(
-                config: Configuration(
-                    hostName: hostName,
-                    path: config.statePath,
-                    authKey: config.authKey,
-                    controlURL: config.controlURL,
-                    ephemeral: true),
-                logger: logger)
+            node = try TsnetNodeFactory.makeNode(spec: spec, logger: logger)
             note("bringing up node \(hostName)…")
-            try await node.up()
+            try await TsnetNodeFactory.up(node, spec: spec, timeout: .unbounded)
         } catch {
             fail("node bring-up failed: \(error)")
         }

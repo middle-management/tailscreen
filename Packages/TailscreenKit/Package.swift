@@ -13,7 +13,8 @@ import PackageDescription
 // them and are not part of the tier contract):
 //   - TailscreenProtocol: wire protocol + pure decision logic. NO Apple
 //     frameworks, NO dependencies — Foundation/Synchronization only.
-//   - TailscreenTransport: tsnet-facing peer discovery + IPN-bus watcher.
+//   - TailscreenTransport: tsnet-facing peer discovery + IPN-bus watcher +
+//     the shared node bring-up (TsnetNodeFactory).
 //     Depends on TailscaleKit (and thus on the checked-out submodule with
 //     patches applied — `make -C ../TailscaleKit apply-patches`);
 //     compiling it needs only the patched header, not the built

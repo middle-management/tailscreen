@@ -2,6 +2,7 @@ import FFmpegKit
 import Foundation
 import TailscreenProtocol
 import TailscreenSharer
+import TailscreenSharerFFmpegBase
 import X11CaptureKit
 
 /// A Linux `CaptureEncoding` backend: X11 root-window capture into a
@@ -10,7 +11,10 @@ import X11CaptureKit
 /// This is the Linux counterpart of macOS's `HelperScreenCapture`. Everything
 /// above it — viewer admission, RTP fan-out, NACK/FEC, congestion control —
 /// is the portable `TailscaleScreenShareServer`, unchanged; this supplies only
-/// pixels and honours the three congestion levers.
+/// pixels and honours the three congestion levers. The encode-send
+/// scaffolding all three FFmpeg backends share (callbacks, encoder ladder,
+/// stop sequence, levers, pacing) is `FFmpegCaptureEncoderBase`; this file is
+/// the capture loop and the X11 specifics.
 ///
 /// **Scope, stated plainly.** Root-window capture on X11 only:
 /// - Per-window and per-application shares are not implemented — those need
@@ -31,18 +35,7 @@ import X11CaptureKit
 /// process death is the only way to release `replayd`'s slot. Linux has no
 /// such coupling (plans/porting-plan.md #10), so capture runs in-process and
 /// `stop()` genuinely stops it.
-public final class X11CaptureEncoder: CaptureEncoding, @unchecked Sendable {
-    // MARK: CaptureEncoding callbacks
-
-    public var onAccessUnit: ((Data, Bool) -> Void)?
-    public var onAudioAccessUnit: ((Data) -> Void)?
-    public var onParameterSets: ((CodecParameterSets) -> Void)?
-    public var onEncoderResolution: ((Int, Int) -> Void)?
-    public var onPreviewImage: ((Data) -> Void)?
-    public var onUnexpectedExit: ((String) -> Void)?
-    public var onUserStopped: (() -> Void)?
-    public var onActivity: (() -> Void)?
-
+public final class X11CaptureEncoder: FFmpegCaptureEncoderBase, CaptureEncoding, @unchecked Sendable {
     // MARK: Preview
 
     /// The sharer's own "this is what they can see" thumbnail, at most once a
@@ -58,59 +51,13 @@ public final class X11CaptureEncoder: CaptureEncoding, @unchecked Sendable {
     /// Fires on the capture thread.
     public var onPreviewThumbnail: ((ThumbnailScaler.Thumbnail) -> Void)?
 
-    public enum StartError: Error, CustomStringConvertible {
-        case unsupportedSelection(String)
-        case malformedSelection
-        case captureUnavailable(String)
-        case encoderUnavailable(String)
-
-        public var description: String {
-            switch self {
-            case .unsupportedSelection(let k):
-                return "this backend captures a whole X display; \(k) shares need the ScreenCast portal"
-            case .malformedSelection: return "could not decode the picker selection"
-            case .captureUnavailable(let m): return "X11 capture unavailable: \(m)"
-            case .encoderUnavailable(let m): return "no usable video encoder: \(m)"
-            }
-        }
-    }
-
-    /// Encoders tried in order until one opens successfully.
-    ///
-    /// **Software only, deliberately.** `h264_vaapi` / `h264_nvenc` are
-    /// present in most distro libavcodec builds — `avcodec_find_encoder_by_name`
-    /// finds them — but they consume *hardware* frames: using one means
-    /// creating an `AVHWFramesContext` and uploading each captured frame to
-    /// GPU memory, which this backend's software-plane path doesn't do. Listing
-    /// them here would pick an encoder that then fails at `avcodec_open2` on
-    /// any machine without the matching device. Hardware encode is worth having
-    /// (it's most of the CPU cost of a share) but it's a separate piece of
-    /// work, not a name in a list.
-    public static let defaultH264Encoders = ["libx264", "libopenh264"]
-    public static let defaultHEVCEncoders = ["libx265"]
-
-    private let lock = NSLock()
     private var capture: X11ScreenCapture?
-    private var encoder: FFmpeg.VideoEncoder?
-    private var thread: Thread?
-    private var running = false
-    /// Target capture rate. Retuned live by `setFrameInterval` — the fps
-    /// ladder's second congestion lever.
-    private var targetFPS = 30
-    private var sentParameterSets = false
     private let display: String?
 
     /// - Parameter display: X display to capture, or nil for `$DISPLAY`.
     public init(display: String? = nil) {
         self.display = display
-    }
-
-    deinit {
-        // Synchronous teardown only — no Task capturing self after deinit has
-        // begun (the same rule the mac side follows).
-        lock.lock()
-        running = false
-        lock.unlock()
+        super.init()
     }
 
     // MARK: Lifecycle
@@ -120,124 +67,59 @@ public final class X11CaptureEncoder: CaptureEncoding, @unchecked Sendable {
             throw StartError.malformedSelection
         }
         guard selection.kind == .display else {
-            throw StartError.unsupportedSelection("\(selection.kind)")
+            throw StartError.unsupportedSelection(
+                "this backend captures a whole X display; \(selection.kind) shares need the ScreenCast portal"
+            )
         }
 
-        let fps = qualityEnv[QualitySettings.fpsCapEnvKey].flatMap(Int.init) ?? 30
-        let wantHEVC =
-            !forceH264 && qualityEnv[QualitySettings.codecPrefEnvKey] == VideoCodec.hevc.rawValue
+        let settings = EncodeSettings(forceH264: forceH264, qualityEnv: qualityEnv)
 
         let cap: X11ScreenCapture
         do {
             cap = try X11ScreenCapture(display: display)
         } catch {
-            throw StartError.captureUnavailable("\(error)")
+            throw StartError.captureUnavailable("X11 capture unavailable: \(error)")
         }
 
-        // Anchor the bitrate the same way the mac helper does — the shared
-        // formula in EncoderTuning — so both platforms start a share at the
-        // same budget for the same pixels, and the congestion controller
-        // inherits a comparable baseline.
-        let codec: VideoCodec = wantHEVC ? .hevc : .h264
-        let formulaBitrate = EncoderTuning.computeBitrate(
-            width: cap.captureWidth, height: cap.captureHeight, fps: fps,
-            bitsPerPixel: EncoderTuning.defaultBitsPerPixel(for: codec))
-        let ceiling = qualityEnv[QualitySettings.maxBitrateEnvKey].flatMap(Int.init)
-        let bitrate = min(formulaBitrate, ceiling ?? formulaBitrate)
-
-        // Try each candidate until one actually opens. Presence and usability
-        // are different questions — an encoder can be compiled in and still
-        // refuse to open — so the ladder is driven by `avcodec_open2` failing,
-        // the same shape as the mac encoder's `sessionAttempts` fallback.
-        let names = wantHEVC ? Self.defaultHEVCEncoders : Self.defaultH264Encoders
-        var enc: FFmpeg.VideoEncoder?
-        var attempts: [String] = []
-        for name in names where FFmpeg.isEncoderAvailable(name) {
-            do {
-                enc = try FFmpeg.VideoEncoder(
-                    codec: wantHEVC ? .hevc : .h264,
-                    width: cap.captureWidth, height: cap.captureHeight,
-                    fps: fps, bitrate: bitrate, encoderName: name)
-                break
-            } catch {
-                attempts.append("\(name): \(error)")
-            }
-        }
-        guard let enc else {
-            let detail =
-                attempts.isEmpty
-                ? "none of \(names) present in this libavcodec build" : attempts.joined(separator: "; ")
-            throw StartError.encoderUnavailable(detail)
-        }
+        let bitrate = Self.anchoredBitrate(
+            width: cap.captureWidth, height: cap.captureHeight, fps: settings.fps,
+            wantHEVC: settings.wantHEVC, ceiling: settings.bitrateCeiling)
+        let enc = try Self.openSoftwareEncoder(
+            wantHEVC: settings.wantHEVC,
+            width: cap.captureWidth, height: cap.captureHeight,
+            fps: settings.fps, bitrate: bitrate)
 
         lock.lock()
         capture = cap
         encoder = enc
-        targetFPS = fps
+        targetFPS = settings.fps
         sentParameterSets = false
         running = true
         lock.unlock()
 
         onEncoderResolution?(enc.width, enc.height)
 
-        let t = Thread { [weak self] in self?.captureLoop() }
-        t.name = "X11CaptureEncoder"
-        t.start()
-        lock.lock()
-        thread = t
-        lock.unlock()
+        startCaptureThread(named: "X11CaptureEncoder") { [weak self] in self?.captureLoop() }
     }
 
-    public func stop() async {
-        // `withLock` rather than lock()/unlock(): the bare calls are
-        // unavailable from an async context (nothing stops the task suspending
-        // while holding it and resuming on another thread).
-        let wasRunning = lock.withLock {
-            let was = running
-            running = false
-            return was
-        }
-        guard wasRunning else { return }
-        // Let the loop observe the flag and exit; it holds no lock while
-        // sleeping, so one frame interval plus slack is enough.
-        try? await Task.sleep(for: .milliseconds(200))
-        lock.withLock {
-            capture = nil
-            encoder = nil
-            thread = nil
-        }
+    /// The loop holds no lock while sleeping, so one frame interval plus
+    /// slack is enough.
+    override public var stopSettleMilliseconds: Int { 200 }
+
+    override public func releaseCaptureResourcesLocked() {
+        capture = nil
     }
 
     // MARK: Congestion levers
 
-    public func requestKeyframe() {
+    /// Forwarded straight to the encoder: X11 grabbing always produces a
+    /// frame per pass, so there is never a keyframe owed with nothing to
+    /// encode it from (the case the base's pending latch exists for).
+    override public func requestKeyframe() {
         lock.lock()
         let e = encoder
         lock.unlock()
         e?.requestKeyframe()
-    }
-
-    public func setBitrate(_ bps: Int) {
-        lock.lock()
-        let e = encoder
-        lock.unlock()
-        e?.setBitrate(bps)
-    }
-
-    /// No system-audio capture in this backend, so the emission latch has
-    /// nothing to gate. Implemented as an explicit no-op rather than omitted,
-    /// so the server's post-restart re-send is harmless.
-    public func setAudioEnabled(_ on: Bool) {}
-
-    /// Retune the capture rate. Only the *pacing* changes — the encoder keeps
-    /// its original time base, which is fine because RTP timestamps come from
-    /// the server's own clock, not from encoder PTS. Recreating the encoder to
-    /// match would drop the stream mid-share for no benefit.
-    public func setFrameInterval(_ fps: Int) {
-        guard fps > 0 else { return }
-        lock.lock()
-        targetFPS = fps
-        lock.unlock()
     }
 
     // MARK: Capture loop
@@ -255,7 +137,7 @@ public final class X11CaptureEncoder: CaptureEncoding, @unchecked Sendable {
         // GOP backstop fires has nothing to decode otherwise.
         enc.requestKeyframe()
 
-        var consecutiveFailures = 0
+        var budget = SourceGoneBudget()
         // Preview scratch, allocated once rather than per thumbnail: this is a
         // full-frame BGRA buffer (33 MB at 4 K), and churning one of those
         // through the allocator once a second for the life of a share is a
@@ -273,7 +155,7 @@ public final class X11CaptureEncoder: CaptureEncoding, @unchecked Sendable {
             do {
                 try cap.grab(into: &planes)
                 let aus = try enc.encode(yPlane: planes.y, uPlane: planes.u, vPlane: planes.v)
-                consecutiveFailures = 0
+                budget.noteSuccess()
                 // Proof of life for the server's hung-backend watchdog. Fired
                 // per frame because this backend has no separate heartbeat —
                 // and deliberately fired even when the encoder emitted nothing,
@@ -295,24 +177,17 @@ public final class X11CaptureEncoder: CaptureEncoding, @unchecked Sendable {
                     publishPreview(planes: planes, scratch: &previewScratch, to: sink)
                 }
             } catch {
-                consecutiveFailures += 1
-                // A transient grab failure (the screen resized under us) is
-                // worth retrying; a persistent one means the display is gone
-                // and the share should tear down rather than spin.
-                if consecutiveFailures >= 30 {
+                if let reason = budget.noteFailure(subject: "X11 capture", error: error) {
                     lock.lock()
                     running = false
                     lock.unlock()
-                    onUnexpectedExit?("source-gone: X11 capture failed \(consecutiveFailures)x: \(error)")
+                    onUnexpectedExit?(reason)
                     return
                 }
             }
 
             let elapsed = DispatchTime.now().uptimeNanoseconds &- frameStart
-            let interval = UInt64(1_000_000_000 / max(1, fps))
-            if elapsed < interval {
-                Thread.sleep(forTimeInterval: Double(interval - elapsed) / 1_000_000_000)
-            }
+            Self.paceFrame(elapsedNs: elapsed, fps: fps)
         }
     }
 
@@ -352,38 +227,5 @@ public final class X11CaptureEncoder: CaptureEncoding, @unchecked Sendable {
         }
         guard let thumbnail else { return }
         sink(thumbnail)
-    }
-
-    /// Pull SPS/PPS (or VPS/SPS/PPS) out of a keyframe access unit and hand
-    /// them up once per encoder configuration.
-    ///
-    /// The parameter sets stay in-band on every keyframe regardless — that's
-    /// what lets a viewer join mid-stream. This callback exists because the
-    /// server caches the codec from it, and because the *ordering* contract
-    /// (`onParameterSets` before `onEncoderResolution`) drives its
-    /// adaptive-bitrate anchor.
-    private func emitParameterSets(from avcc: Data) {
-        lock.lock()
-        let already = sentParameterSets
-        let isHEVC = encoder?.codec == .hevc
-        lock.unlock()
-        guard !already, let handler = onParameterSets else { return }
-        guard let annexB = NALUnit.avccToAnnexB(avcc) else { return }
-
-        // The NAL-type masks differ between the codecs and getting them
-        // crossed fails silently — viewers install nothing and sit on black
-        // while this side looks perfect — so the table lives in
-        // `ParameterSetExtraction`, shared with the Windows backend and
-        // tested on Linux CI. Splitting Annex-B stays here: that half is
-        // FFmpeg's, which the portable tier cannot name.
-        guard
-            let sets = ParameterSetExtraction.parameterSets(
-                fromAnnexBNALs: NALUnit.annexBNALs(annexB),
-                codec: isHEVC ? .hevc : .h264)
-        else { return }
-        lock.lock()
-        sentParameterSets = true
-        lock.unlock()
-        handler(sets)
     }
 }

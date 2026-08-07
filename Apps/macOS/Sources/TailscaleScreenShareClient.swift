@@ -385,23 +385,24 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
                         "Tailscreen/tailscale-client\(TailscreenInstance.stateSuffix)"
                     ).path
                 }()
-            try? FileManager.default.createDirectory(atPath: statePath, withIntermediateDirectories: true)
-
             logger.log("Starting Tailscale client…")
 
+            // Ephemeral with an undiscoverable client-prefixed hostname (a
+            // transient viewer, not a screen anyone should pick), and up()
+            // deliberately unbounded — this path has never bounded the
+            // auth-keyed case the way the server and AppState do.
             let clientHostname = "\(TailscreenInstance.clientHostnamePrefix)\(UUID().uuidString.prefix(8))"
-            let config = Configuration(
+            let spec = TsnetNodeFactory.Spec(
                 hostName: clientHostname,
-                path: statePath,
+                ephemeral: true,
+                statePath: statePath,
                 authKey: authKey,
-                controlURL: controlURL,
-                ephemeral: true
-            )
+                controlURL: controlURL)
 
-            let newNode = try TailscaleNode(config: config, logger: logger)
+            let newNode = try TsnetNodeFactory.makeNode(spec: spec, logger: logger)
             self.node = newNode
             self.ownsNode = true
-            try await newNode.up()
+            try await TsnetNodeFactory.up(newNode, spec: spec, timeout: .unbounded)
             node = newNode
         }
 

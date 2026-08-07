@@ -11,7 +11,10 @@ The platform-portable core of Tailscreen, in six targets/tiers:
   no dependencies** — Foundation (+ the stdlib `Synchronization` module)
   only.
 - **`TailscreenTransport`** — the tsnet-facing layer
-  (`TailscalePeerDiscovery`, `TailscaleIPNWatcher`). Depends on
+  (`TailscalePeerDiscovery`, `TailscaleIPNWatcher`, `TailscaleAuth`, and
+  `TsnetNodeFactory` — the one node bring-up every site goes through, with
+  explicit knobs for ephemerality, the `up()` timeout policy, and the
+  interactive login-URL subscription). Depends on
   `TailscreenProtocol` and on `TailscaleKit` (the patched wrapper, which
   itself builds on Linux — see `Packages/TailscaleKit/Patches/022`).
   *Compiling* it needs only the checked-out submodule with patches applied

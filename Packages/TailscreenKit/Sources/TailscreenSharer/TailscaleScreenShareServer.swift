@@ -897,35 +897,34 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
                     return appSupport.appendingPathComponent("Tailscreen/tailscale\(TailscreenInstance.stateSuffix)")
                         .path
                 }()
-            try? FileManager.default.createDirectory(atPath: statePath, withIntermediateDirectories: true)
-
             logger.log("Starting Tailscale server…")
 
-            let config = Configuration(
-                hostName: hostname,
-                path: statePath,
-                authKey: authKey,
-                controlURL: controlURL,
-                ephemeral: true
-            )
-
-            let newNode = try TailscaleNode(config: config, logger: logger)
-            lifecycle.withLock { lc in
-                lc.node = newNode
-                lc.ownsNode = true
-            }
-            if let ready = nodeReadyBeforeUp {
-                await ready(newNode)
-            }
-            // Bound up() when an auth key is present (no human in the loop, so
-            // it should reach Running quickly); leave it unbounded otherwise so
-            // an interactive browser login isn't cut off. See the matching note
-            // in AppState.getOrCreateNode.
-            if authKey != nil {
-                try await withTimeout(seconds: 60) { try await newNode.up() }
-            } else {
-                try await newNode.up()
-            }
+            // Ephemeral on purpose: a server-owned node exists only for the
+            // share (the apps pass `existingNode` for a durable identity).
+            // `up()` is bounded only when an auth key is present (no human in
+            // the loop, so it should reach Running quickly) and unbounded
+            // otherwise so an interactive browser login isn't cut off — see
+            // the matching note in AppState.getOrCreateNode. The
+            // `nodeReadyBeforeUp` hook rides the factory's `beforeUp` window:
+            // after the node exists, before `up()` can block on a login.
+            let newNode = try await TsnetNodeFactory.bringUp(
+                spec: TsnetNodeFactory.Spec(
+                    hostName: hostname,
+                    ephemeral: true,
+                    statePath: statePath,
+                    authKey: authKey,
+                    controlURL: controlURL),
+                logger: logger,
+                timeout: .boundedWhenAuthKeyed(seconds: 60),
+                beforeUp: { newNode in
+                    self.lifecycle.withLock { lc in
+                        lc.node = newNode
+                        lc.ownsNode = true
+                    }
+                    if let ready = self.nodeReadyBeforeUp {
+                        await ready(newNode)
+                    }
+                })
             node = newNode
         }
 

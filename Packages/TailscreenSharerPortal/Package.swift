@@ -26,6 +26,7 @@ let package = Package(
         .package(path: "../PortalCaptureKit"),
         .package(path: "../FFmpegKit"),
         .package(path: "../TailscreenKit"),
+        .package(path: "../TailscreenVideoFFmpeg"),
     ],
     targets: [
         .target(
@@ -37,6 +38,10 @@ let package = Package(
                 // arm/rebuild decisions it runs on.
                 .product(name: "TailscreenSharer", package: "TailscreenKit"),
                 .product(name: "TailscreenProtocol", package: "TailscreenKit"),
+                // The encode-send scaffolding shared with the X11 and WGC
+                // backends (FFmpegKit + TailscreenProtocol only — adds no
+                // system library to this link line).
+                .product(name: "TailscreenSharerFFmpegBase", package: "TailscreenVideoFFmpeg"),
             ],
             path: "Sources/TailscreenSharerPortal"
         ),

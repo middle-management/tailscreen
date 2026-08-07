@@ -3,6 +3,7 @@ import Foundation
 import PortalCaptureKit
 import TailscreenProtocol
 import TailscreenSharer
+import TailscreenSharerFFmpegBase
 
 /// A Linux `CaptureEncoding` backend built on the ScreenCast portal: PipeWire
 /// frames into a libavcodec encoder, producing the AVCC access units the
@@ -11,7 +12,9 @@ import TailscreenSharer
 /// The third sibling of macOS's `HelperScreenCapture`, Linux's
 /// `X11CaptureEncoder` and Windows' `WGCCaptureEncoder`. Everything above it —
 /// admission, RTP fan-out, NACK/FEC, congestion control — is the portable
-/// `TailscaleScreenShareServer`, unchanged.
+/// `TailscaleScreenShareServer`, unchanged; the scaffolding all three FFmpeg
+/// backends share is `FFmpegCaptureEncoderBase`, and this file is the
+/// PipeWire push model, the hand-off, and the resize/rebuild path.
 ///
 /// **What it adds over `X11CaptureEncoder`** is everything the X11 path
 /// structurally cannot do: native Wayland surfaces, a single window, a single
@@ -51,18 +54,14 @@ import TailscreenSharer
 /// - Multiple streams. The portal can hand back several; this takes the one it
 ///   was constructed with. Sharing two monitors as one share is a separate
 ///   piece of work, not a flag.
-public final class PortalCaptureEncoder: CaptureEncoding, @unchecked Sendable {
-    // MARK: CaptureEncoding callbacks
-
-    public var onAccessUnit: ((Data, Bool) -> Void)?
-    public var onAudioAccessUnit: ((Data) -> Void)?
-    public var onParameterSets: ((CodecParameterSets) -> Void)?
-    public var onEncoderResolution: ((Int, Int) -> Void)?
-    public var onPreviewImage: ((Data) -> Void)?
-    public var onUnexpectedExit: ((String) -> Void)?
-    public var onUserStopped: (() -> Void)?
-    public var onActivity: (() -> Void)?
-
+///
+/// One encoder note beyond the shared ladder's software-only rationale: there
+/// is a real hardware opportunity here that the X11 path does not have. A
+/// PipeWire stream can carry DMA-BUF frames that are already on the GPU, so a
+/// future hardware path could skip the download entirely — separate work, and
+/// it starts with the `SPA_PARAM_BUFFERS_dataType` constraint this package
+/// currently sets to exclude exactly those buffers.
+public final class PortalCaptureEncoder: FFmpegCaptureEncoderBase, CaptureEncoding, @unchecked Sendable {
     // MARK: Preview
 
     /// The sharer's own "this is what they can see" thumbnail, at most once a
@@ -80,37 +79,6 @@ public final class PortalCaptureEncoder: CaptureEncoding, @unchecked Sendable {
     /// on every frame and costs more.
     public var onPreviewThumbnail: ((ThumbnailScaler.Thumbnail) -> Void)?
 
-    public enum StartError: Error, CustomStringConvertible {
-        case malformedSelection
-        case captureUnavailable(String)
-        case encoderUnavailable(String)
-
-        public var description: String {
-            switch self {
-            case .malformedSelection: return "could not decode the picker selection"
-            case .captureUnavailable(let message):
-                return "the ScreenCast portal stream would not open: \(message)"
-            case .encoderUnavailable(let message): return "no usable video encoder: \(message)"
-            }
-        }
-    }
-
-    /// Encoders tried in order until one opens.
-    ///
-    /// Software only, for the same reason as the other two backends: the
-    /// hardware encoders libavcodec advertises consume *hardware* frames, which
-    /// means an `AVHWFramesContext` and a per-frame upload this software-plane
-    /// path does not do — so naming one here picks an encoder that then fails
-    /// `avcodec_open2` on any machine without the matching device.
-    ///
-    /// There is a real opportunity here that the X11 path does not have: a
-    /// PipeWire stream can carry DMA-BUF frames that are already on the GPU, so
-    /// a future hardware path could skip the download entirely. That is
-    /// separate work, and it starts with the `SPA_PARAM_BUFFERS_dataType`
-    /// constraint this package currently sets to exclude exactly those buffers.
-    public static let defaultH264Encoders = ["libx264", "libopenh264"]
-    public static let defaultHEVCEncoders = ["libx265"]
-
     /// Opens a fresh PipeWire descriptor on the host's already-consented
     /// session. Called once per `start`, including after a restart — which is
     /// why it is a closure and not a value: `PortalStream` takes ownership of
@@ -121,14 +89,7 @@ public final class PortalCaptureEncoder: CaptureEncoding, @unchecked Sendable {
     private let openFileDescriptor: @Sendable () throws -> Int32
     private let nodeID: UInt32
 
-    private let lock = NSLock()
     private var stream: PortalStream?
-    private var encoder: FFmpeg.VideoEncoder?
-    private var thread: Thread?
-    private var running = false
-    private var targetFPS = 30
-    private var sentParameterSets = false
-    private var keyframePending = false
 
     /// The double-buffered hand-off from PipeWire's thread to the encode
     /// thread. Its own type because it is the only real concurrency here and
@@ -164,13 +125,7 @@ public final class PortalCaptureEncoder: CaptureEncoding, @unchecked Sendable {
     public init(nodeID: UInt32, openFileDescriptor: @escaping @Sendable () throws -> Int32) {
         self.nodeID = nodeID
         self.openFileDescriptor = openFileDescriptor
-    }
-
-    deinit {
-        // Synchronous only — no Task capturing self after deinit has begun.
-        lock.lock()
-        running = false
-        lock.unlock()
+        super.init()
     }
 
     // MARK: Lifecycle
@@ -182,15 +137,13 @@ public final class PortalCaptureEncoder: CaptureEncoding, @unchecked Sendable {
             throw StartError.malformedSelection
         }
 
-        let fps = qualityEnv[QualitySettings.fpsCapEnvKey].flatMap(Int.init) ?? 30
-        let hevc =
-            !forceH264 && qualityEnv[QualitySettings.codecPrefEnvKey] == VideoCodec.hevc.rawValue
+        let settings = EncodeSettings(forceH264: forceH264, qualityEnv: qualityEnv)
 
         lock.lock()
-        targetFPS = fps
-        sessionFPS = fps
-        wantHEVC = hevc
-        bitrateCeiling = qualityEnv[QualitySettings.maxBitrateEnvKey].flatMap(Int.init)
+        targetFPS = settings.fps
+        sessionFPS = settings.fps
+        wantHEVC = settings.wantHEVC
+        bitrateCeiling = settings.bitrateCeiling
         currentBitrate = nil
         sentParameterSets = false
         // A viewer that connects before the GOP backstop fires has nothing to
@@ -212,7 +165,8 @@ public final class PortalCaptureEncoder: CaptureEncoding, @unchecked Sendable {
             fileDescriptor = try openFileDescriptor()
         } catch {
             lock.withLock { running = false }
-            throw StartError.captureUnavailable("\(error)")
+            throw StartError.captureUnavailable(
+                "the ScreenCast portal stream would not open: \(error)")
         }
 
         let opened: PortalStream
@@ -223,7 +177,8 @@ public final class PortalCaptureEncoder: CaptureEncoding, @unchecked Sendable {
                 onState: { [weak self] state in self?.handle(state) })
         } catch {
             lock.withLock { running = false }
-            throw StartError.captureUnavailable("\(error)")
+            throw StartError.captureUnavailable(
+                "the ScreenCast portal stream would not open: \(error)")
         }
 
         lock.lock()
@@ -236,43 +191,23 @@ public final class PortalCaptureEncoder: CaptureEncoding, @unchecked Sendable {
         // `PortalSession.Stream`). So the first frame builds it, through the
         // same rebuild path a later resize uses, and `onEncoderResolution`
         // fires from there rather than from `start`.
-        let captureThread = Thread { [weak self] in self?.captureLoop() }
-        captureThread.name = "PortalCaptureEncoder"
-        captureThread.start()
-        lock.lock()
-        thread = captureThread
-        lock.unlock()
+        startCaptureThread(named: "PortalCaptureEncoder") { [weak self] in self?.captureLoop() }
     }
 
-    public func stop() async {
-        // `withLock` rather than lock()/unlock(): the bare calls are
-        // unavailable from an async context, since nothing stops the task
-        // suspending while holding it and resuming on another thread.
-        let wasRunning = lock.withLock {
-            let was = running
-            running = false
-            return was
-        }
-        guard wasRunning else { return }
-        // Release the stream first. Its deinit stops PipeWire's thread before
-        // returning, which is what guarantees no frame callback is in flight
-        // by the time the buffers go away.
+    /// Release the stream first. Its deinit stops PipeWire's thread before
+    /// returning, which is what guarantees no frame callback is in flight by
+    /// the time the buffers go away.
+    override public func willStopBeforeSettle() {
         lock.withLock { stream = nil }
-        try? await Task.sleep(for: .milliseconds(300))
-        lock.withLock {
-            encoder = nil
-            thread = nil
-            handoff = nil
-        }
+    }
+
+    override public func releaseCaptureResourcesLocked() {
+        handoff = nil
     }
 
     // MARK: Congestion levers
 
-    public func requestKeyframe() {
-        lock.withLock { keyframePending = true }
-    }
-
-    public func setBitrate(_ bps: Int) {
+    override public func setBitrate(_ bps: Int) {
         let encoder = lock.withLock { () -> FFmpeg.VideoEncoder? in
             // Remembered so a rebuild picks up where the controller left off
             // rather than resetting to the formula figure — on this backend a
@@ -282,19 +217,6 @@ public final class PortalCaptureEncoder: CaptureEncoding, @unchecked Sendable {
             return self.encoder
         }
         encoder?.setBitrate(bps)
-    }
-
-    /// No system-audio capture here, so the emission latch has nothing to
-    /// gate. An explicit no-op rather than an omission, so the server's
-    /// re-send after every backend restart is harmless.
-    public func setAudioEnabled(_ on: Bool) {}
-
-    /// Retune the capture rate. Only the *pacing* changes: the encoder keeps
-    /// its time base, which is fine because RTP timestamps come from the
-    /// server's clock rather than encoder PTS.
-    public func setFrameInterval(_ fps: Int) {
-        guard fps > 0 else { return }
-        lock.withLock { targetFPS = fps }
     }
 
     // MARK: PipeWire callbacks
@@ -428,11 +350,7 @@ public final class PortalCaptureEncoder: CaptureEncoding, @unchecked Sendable {
                 rebuild(width: request.width, height: request.height)
             }
 
-            let owedKeyframe = lock.withLock { () -> Bool in
-                let owed = keyframePending
-                keyframePending = false
-                return owed
-            }
+            let owedKeyframe = takeOwedKeyframe()
             let (handoff, encoder) = lock.withLock { (self.handoff, self.encoder) }
             // Publish a completed frame, if PipeWire finished one and is not
             // in the middle of the next.
@@ -469,10 +387,7 @@ public final class PortalCaptureEncoder: CaptureEncoding, @unchecked Sendable {
             }
 
             let elapsed = DispatchTime.now().uptimeNanoseconds &- frameStart
-            let interval = UInt64(1_000_000_000 / max(1, fps))
-            if elapsed < interval {
-                Thread.sleep(forTimeInterval: Double(interval - elapsed) / 1_000_000_000)
-            }
+            Self.paceFrame(elapsedNs: elapsed, fps: fps)
         }
     }
 
@@ -488,40 +403,23 @@ public final class PortalCaptureEncoder: CaptureEncoding, @unchecked Sendable {
             (wantHEVC, sessionFPS, bitrateCeiling, currentBitrate)
         }
 
-        let codec: VideoCodec = hevc ? .hevc : .h264
-        let formulaBitrate = EncoderTuning.computeBitrate(
-            width: width, height: height, fps: fps,
-            bitsPerPixel: EncoderTuning.defaultBitsPerPixel(for: codec))
         // The controller's current figure wins if it has one: this backend
         // rebuilds whenever a shared window is resized, and re-anchoring to the
         // formula each time would undo every cut the congestion controller had
         // made on a link that has not changed.
-        let anchored = previousBitrate ?? min(formulaBitrate, ceiling ?? formulaBitrate)
+        let anchored =
+            previousBitrate
+            ?? Self.anchoredBitrate(
+                width: width, height: height, fps: fps, wantHEVC: hevc, ceiling: ceiling)
         let bitrate = min(anchored, ceiling ?? anchored)
 
-        let names = hevc ? Self.defaultHEVCEncoders : Self.defaultH264Encoders
-        var opened: FFmpeg.VideoEncoder?
-        var attempts: [String] = []
-        for name in names where FFmpeg.isEncoderAvailable(name) {
-            do {
-                // `hevc ? .hevc : .h264` rather than the `codec` above: that
-                // one is TailscreenProtocol's `VideoCodec`, which the bitrate
-                // formula takes, and this one is FFmpegKit's own enum.
-                opened = try FFmpeg.VideoEncoder(
-                    codec: hevc ? .hevc : .h264, width: width, height: height,
-                    fps: fps, bitrate: bitrate, encoderName: name)
-                break
-            } catch {
-                attempts.append("\(name): \(error)")
-            }
-        }
-        guard let opened else {
-            let detail =
-                attempts.isEmpty
-                ? "none of \(names) present in this libavcodec build"
-                : attempts.joined(separator: "; ")
+        let opened: FFmpeg.VideoEncoder
+        do {
+            opened = try Self.openSoftwareEncoder(
+                wantHEVC: hevc, width: width, height: height, fps: fps, bitrate: bitrate)
+        } catch {
             lock.withLock { running = false }
-            onUnexpectedExit?("permanent: \(StartError.encoderUnavailable(detail))")
+            onUnexpectedExit?("permanent: \(error)")
             return
         }
 
@@ -540,24 +438,5 @@ public final class PortalCaptureEncoder: CaptureEncoding, @unchecked Sendable {
             lastRebuildNs = DispatchTime.now().uptimeNanoseconds
         }
         onEncoderResolution?(width, height)
-    }
-
-    /// Hand the codec parameter sets up once per encoder configuration.
-    ///
-    /// They stay in-band on every keyframe regardless — that is what lets a
-    /// viewer join mid-stream. This callback exists because the server caches
-    /// the codec from it, and because the ordering contract (`onParameterSets`
-    /// before `onEncoderResolution`) drives its adaptive-bitrate anchor.
-    private func emitParameterSets(from avcc: Data) {
-        let (already, isHEVC) = lock.withLock { (sentParameterSets, encoder?.codec == .hevc) }
-        guard !already, let handler = onParameterSets else { return }
-        guard let annexB = NALUnit.avccToAnnexB(avcc) else { return }
-        guard
-            let sets = ParameterSetExtraction.parameterSets(
-                fromAnnexBNALs: NALUnit.annexBNALs(annexB),
-                codec: isHEVC ? .hevc : .h264)
-        else { return }
-        lock.withLock { sentParameterSets = true }
-        handler(sets)
     }
 }
