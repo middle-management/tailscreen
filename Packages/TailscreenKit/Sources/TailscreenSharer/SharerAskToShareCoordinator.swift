@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import TailscaleKit
 import TailscreenProtocol
 import TailscreenTransport
@@ -74,23 +75,93 @@ public final class SharerAskToShareCoordinator {
     /// — so the share does not create a second one competing for port 7447,
     /// and so `onRequestToShare` keeps pointing here rather than being rebound
     /// to the share's own.
-    public var controlListener: TailscreenControlListener? { listener }
+    ///
+    /// Hands out a listener that is still **starting** as readily as a running
+    /// one, and that is deliberate: `server.start(controlListener:)` never
+    /// starts what it is given, but it *does* create and bind its own when
+    /// handed nil — which on port 7447 is the exact contention this whole type
+    /// exists to prevent. A listener mid-bring-up is the right answer; nil
+    /// during the bring-up window is the wrong one.
+    public var controlListener: TailscreenControlListener? {
+        listenerState.withLock { $0.phase.listener }
+    }
 
     /// Matches the requester's own wait (`TailscreenRequestToShareClient`'s
     /// 120 s default). A row that outlives it is a button that does nothing.
     public static let requestTTLNs: UInt64 = 120 * 1_000_000_000
 
     private var inbox = ShareRequestInbox()
-    private var listener: TailscreenControlListener?
-    /// The node the listener was started against, so a profile switch (which
-    /// brings a different node up) restarts it rather than leaving it bound to
-    /// a node that is going away.
-    private var listenerNode: TailscaleNode?
+
+    /// Where the long-lived listener is in its life.
+    ///
+    /// Three phases rather than the `(listener, listenerNode)` pair this used
+    /// to be, because that pair had no way to say **"created, not bound
+    /// yet"** — and every race lived in exactly that gap. `listener` was
+    /// assigned before `start(node:)` ran, so a bring-up for a different node
+    /// arriving in the window stopped a listener that had not started (a
+    /// no-op, since `stop()` only clears `isRunning` and `start()` sets it
+    /// again), and the abandoned listener went on to bind port 7447 with
+    /// nothing tracking it — two listeners contending, one of them
+    /// unreachable. `stopListener()` lost the same race for the same reason.
+    /// And a `start` that *threw* left the pair populated, so every later
+    /// `ensure` short-circuited on "already bound to this node" and this
+    /// machine never heard an ask again.
+    private enum Phase {
+        case idle
+        /// Created and being started against `node`. Already handed out by
+        /// `controlListener` — see the note there.
+        case starting(TailscreenControlListener, node: TailscaleNode?)
+        case running(TailscreenControlListener, node: TailscaleNode?)
+
+        var listener: TailscreenControlListener? {
+            switch self {
+            case .idle: return nil
+            case .starting(let listener, _), .running(let listener, _): return listener
+            }
+        }
+
+        var node: TailscaleNode? {
+            switch self {
+            case .idle: return nil
+            case .starting(_, let node), .running(_, let node): return node
+            }
+        }
+    }
+
+    private struct ListenerState {
+        var phase: Phase = .idle
+        /// Stamped on every bring-up and bumped by every teardown, so a start
+        /// that is still in flight can tell whether it is still the current
+        /// one when it finally returns. The node reference alone cannot
+        /// answer that: a supersede back to the *same* node is legitimate.
+        var generation: UInt64 = 0
+    }
+
+    /// The listener's whole lifecycle behind one lock, in the style of
+    /// `TailscaleScreenShareServer`'s `Mutex<Lifecycle>`: every transition is
+    /// a single take-and-clear, so a supersede can never be split into a read
+    /// and a write with an `await` in between (which is what a `@MainActor`
+    /// alone does not stop — the actor releases across every suspension).
+    private let listenerState = Mutex(ListenerState())
+
+    /// A bring-up this coordinator has committed to. Handed back by
+    /// `beginBringUp` so the caller can start the listener and report the
+    /// outcome under the generation it was stamped with.
+    private struct PendingBringUp {
+        let listener: TailscreenControlListener
+        let node: TailscaleNode?
+        let generation: UInt64
+    }
 
     /// Test seam: replaces the reply send, so the answer-on-the-arrival-
     /// connection contract is observable with no tsnet node behind the
     /// listener.
     var sendResponseForTesting: ((_ accepted: Bool, _ connectionID: UUID) -> Void)?
+
+    /// Test seam: replaces `TailscreenControlListener.stop()` on the teardown
+    /// and supersede paths, so *when* a superseded listener is stopped is
+    /// observable with no tsnet node.
+    var stopListenerForTesting: ((TailscreenControlListener) async -> Void)?
 
     public init() {}
 
@@ -104,46 +175,94 @@ public final class SharerAskToShareCoordinator {
     /// to the same node is left alone. Start failures go to
     /// `onListenerError`.
     public func ensureListener(node: TailscaleNode) {
-        guard let new = prepareListener(node: node) else { return }
-        Task {
-            do {
-                try await new.start(node: node)
-            } catch {
-                onListenerError?(error)
-            }
-        }
+        bringUp(node: node) { listener in try await listener.start(node: node) }
     }
 
     /// The awaited variant, for a host that binds the listener as part of node
     /// bring-up and wants the failure to propagate (macOS).
     ///
     /// - Returns: whether a listener was newly started — false when one was
-    ///   already bound to this node, so the caller can log the bind exactly
-    ///   once.
+    ///   already bound to (or being bound to) this node, so the caller can log
+    ///   the bind exactly once.
     @discardableResult
     public func ensureListenerStarted(node: TailscaleNode) async throws -> Bool {
-        guard let new = prepareListener(node: node) else { return false }
-        try await new.start(node: node)
-        return true
+        try await bringUpAwaiting(node: node) { listener in try await listener.start(node: node) }
     }
 
     /// Stop and drop the listener — sign-out, or the node going away.
+    ///
+    /// Take-and-clear plus a generation bump, in one locked step. The bump is
+    /// what reaches a bring-up that is still in flight: `stop()` on a listener
+    /// whose `start()` has not returned does nothing at all (it clears
+    /// `isRunning`, which `start()` then sets on its way to binding), so the
+    /// only way to tear one of those down is to let its own completion see
+    /// that it was superseded — which `finishBringUp` does.
     public func stopListener() async {
-        let previous = listener
-        listener = nil
-        listenerNode = nil
-        await previous?.stop()
+        let previous = listenerState.withLock { state -> TailscreenControlListener? in
+            let live: TailscreenControlListener?
+            if case .running(let listener, _) = state.phase { live = listener } else { live = nil }
+            state.generation &+= 1
+            state.phase = .idle
+            return live
+        }
+        if let previous { await stop(previous) }
     }
 
-    /// Create and wire the next listener, or nil when the current one is
-    /// already bound to `node`. A previous listener bound to a different node
-    /// is stopped on its way out.
-    private func prepareListener(node: TailscaleNode) -> TailscreenControlListener? {
-        if listener != nil, listenerNode === node { return nil }
-        if let previous = listener { Task { await previous.stop() } }
+    /// Fire-and-forget bring-up: claim the state, then start off the actor.
+    ///
+    /// `start` is a parameter rather than a call to
+    /// `TailscreenControlListener.start(node:)` so the package tests can drive
+    /// this state machine — a `TailscaleNode` cannot be constructed without
+    /// standing a real tsnet node up.
+    private func bringUp(
+        node: TailscaleNode?,
+        start: @escaping (TailscreenControlListener) async throws -> Void
+    ) {
+        guard let pending = beginBringUp(node: node) else { return }
+        Task {
+            do {
+                try await start(pending.listener)
+                finishBringUp(pending, failed: false)
+            } catch {
+                finishBringUp(pending, failed: true)
+                onListenerError?(error)
+            }
+        }
+    }
 
-        let new = TailscreenControlListener()
-        new.onRequestToShare = { [weak self] hostname, connectionID, sourceAddr in
+    /// The awaited shape of `bringUp`, whose failure the caller propagates
+    /// rather than routing to `onListenerError`.
+    private func bringUpAwaiting(
+        node: TailscaleNode?,
+        start: (TailscreenControlListener) async throws -> Void
+    ) async throws -> Bool {
+        guard let pending = beginBringUp(node: node) else { return false }
+        do {
+            try await start(pending.listener)
+        } catch {
+            finishBringUp(pending, failed: true)
+            throw error
+        }
+        finishBringUp(pending, failed: false)
+        return true
+    }
+
+    /// Test seam onto `bringUp` with no tsnet node: `node` is nil, which never
+    /// matches a later bring-up's node, so every call supersedes — the shape
+    /// the leak cases need.
+    func ensureListenerForTesting(
+        start: @escaping (TailscreenControlListener) async throws -> Void
+    ) {
+        bringUp(node: nil, start: start)
+    }
+
+    /// Claim the bring-up, or nil when one is already in flight or bound for
+    /// `node`.
+    private func beginBringUp(node: TailscaleNode?) -> PendingBringUp? {
+        // Built before the lock: construction is cheap, but `configureListener`
+        // is the host's code and must not run under it.
+        let fresh = TailscreenControlListener()
+        fresh.onRequestToShare = { [weak self] hostname, connectionID, sourceAddr in
             // Fires on the listener's own thread; the inbox and its published
             // projection are main-actor state.
             Task { @MainActor [weak self] in
@@ -151,10 +270,65 @@ public final class SharerAskToShareCoordinator {
                     from: hostname, sourceAddr: sourceAddr, connectionID: connectionID)
             }
         }
-        configureListener?(new)
-        listener = new
-        listenerNode = node
-        return new
+        configureListener?(fresh)
+
+        let (pending, supersededRunning) = listenerState.withLock {
+            state -> (PendingBringUp?, TailscreenControlListener?) in
+            // A bring-up already in flight for this node counts as bound: two
+            // ensures for one node must not produce two listeners on 7447.
+            if let bound = state.phase.node, bound === node { return (nil, nil) }
+            var running: TailscreenControlListener?
+            if case .running(let live, _) = state.phase { running = live }
+            // A `.starting` listener is deliberately NOT collected here — see
+            // `stopListener`. The generation bump is what tears it down, from
+            // its own completion, once it has actually bound something.
+            state.generation &+= 1
+            state.phase = .starting(fresh, node: node)
+            return (
+                PendingBringUp(listener: fresh, node: node, generation: state.generation),
+                running
+            )
+        }
+        guard let pending else { return nil }
+        if let supersededRunning { Task { await self.stop(supersededRunning) } }
+        return pending
+    }
+
+    /// Record how a bring-up ended, or tear it down if it was superseded while
+    /// it was still starting.
+    private func finishBringUp(_ pending: PendingBringUp, failed: Bool) {
+        let superseded = listenerState.withLock { state -> Bool in
+            guard state.generation == pending.generation else { return true }
+            // A start that threw bound nothing, so go back to idle rather than
+            // parking a dead listener in the state: leaving it there is what
+            // made every later `ensure` short-circuit on "already bound" and
+            // this machine never hear an ask again, with no way back short of
+            // a restart.
+            state.phase =
+                failed ? .idle : .running(pending.listener, node: pending.node)
+            return false
+        }
+        guard superseded else { return }
+        Task { await self.stop(pending.listener) }
+    }
+
+    private func stop(_ listener: TailscreenControlListener) async {
+        if let stopListenerForTesting {
+            await stopListenerForTesting(listener)
+        } else {
+            await listener.stop()
+        }
+    }
+
+    /// Test seam: the bring-up phase as a word.
+    var listenerPhaseForTesting: String {
+        listenerState.withLock { state in
+            switch state.phase {
+            case .idle: return "idle"
+            case .starting: return "starting"
+            case .running: return "running"
+            }
+        }
     }
 
     // MARK: Inbox
@@ -187,7 +361,7 @@ public final class SharerAskToShareCoordinator {
         if let connectionID = request.connectionID {
             if let sendResponseForTesting {
                 sendResponseForTesting(accept, connectionID)
-            } else if let listener {
+            } else if let listener = controlListener {
                 Task {
                     // Best effort: the asker may have given up and closed.
                     // Sending into a dead connection is not an error worth

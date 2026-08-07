@@ -157,7 +157,12 @@ let package = Package(
         ),
         .testTarget(
             name: "TailscreenSharerTests",
-            dependencies: ["TailscreenSharer", "TailscreenProtocol"],
+            // TailscreenTransport is named explicitly — it already arrives
+            // transitively through TailscreenSharer — so
+            // `SharerAskToShareCoordinatorTests` can spell
+            // `TailscreenControlListener`, the type its listener-lifecycle
+            // seams hand back.
+            dependencies: ["TailscreenSharer", "TailscreenProtocol", "TailscreenTransport"],
             path: "Tests/TailscreenSharerTests"
         )
     ]
