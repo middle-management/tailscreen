@@ -19,7 +19,7 @@ public enum Opus {
     /// only accepts these exact frame sizes; 20 ms (960) is the default voice
     /// frame and what the AAC path's ~21 ms AU cadence maps onto most cleanly.
     public enum FrameSize: Int32, Sendable, CaseIterable {
-        case ms2_5 = 120
+        case ms2Point5 = 120
         case ms5 = 240
         case ms10 = 480
         case ms20 = 960

@@ -6,29 +6,28 @@ import TailscreenSharer
 import TailscreenSharerLinux
 import X11CaptureKit
 
+import class PortalCaptureKit.PortalSession
+import protocol TailscreenAudio.MicrophoneCapturing
+import class TailscreenProtocol.AnnotationStore
+import enum TailscreenProtocol.AnnotationTool
+import enum TailscreenProtocol.CaptureBackendSelection
+import struct TailscreenProtocol.ControlRequestInfo
+import enum TailscreenProtocol.GlobalHotkeyUnavailability
+import struct TailscreenProtocol.NoticeCandidate
+import enum TailscreenProtocol.PeerPolicy
+import struct TailscreenProtocol.PendingShareRequest
 // Targeted imports: pulling in all of TailscreenProtocol collides with
 // SwiftCrossUI's own `Published` / `ObservableObject` shims on Linux.
 import struct TailscreenProtocol.PickerSelection
-import enum TailscreenProtocol.CaptureBackendSelection
-import enum TailscreenProtocol.ThumbnailScaler
-import struct TailscreenProtocol.ControlRequestInfo
-import enum TailscreenProtocol.GlobalHotkeyUnavailability
-import enum TailscreenProtocol.SharerNoticeKind
-import struct TailscreenProtocol.NoticeCandidate
-import enum TailscreenProtocol.TailscreenInstance
-import protocol TailscreenSharer.CaptureEncoding
-import class TailscreenSharerPortal.PortalCaptureEncoder
-import class PortalCaptureKit.PortalSession
-
 import struct TailscreenProtocol.QualitySettings
 import enum TailscreenProtocol.QualitySettingsStore
-import struct TailscreenProtocol.PendingShareRequest
-import enum TailscreenProtocol.ViewerApprovalPreference
-import enum TailscreenProtocol.PeerPolicy
-import class TailscreenProtocol.AnnotationStore
-import enum TailscreenProtocol.AnnotationTool
 import enum TailscreenProtocol.SharerDrawingRefusal
-import protocol TailscreenAudio.MicrophoneCapturing
+import enum TailscreenProtocol.SharerNoticeKind
+import enum TailscreenProtocol.TailscreenInstance
+import enum TailscreenProtocol.ThumbnailScaler
+import enum TailscreenProtocol.ViewerApprovalPreference
+import protocol TailscreenSharer.CaptureEncoding
+import class TailscreenSharerPortal.PortalCaptureEncoder
 
 /// The engine's row types, under the names this app has always used them by.
 typealias ConnectedViewer = LinuxShareSession.ConnectedViewer

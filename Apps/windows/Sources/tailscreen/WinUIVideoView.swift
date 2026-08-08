@@ -393,7 +393,9 @@ struct WinUIVideoView: WinUIElementRepresentable {
         /// Takes loose `Double`s rather than a `Point` because WinRT's
         /// `Point` carries `Float`s and every caller has already had to widen
         /// them — `CGPoint` and `ViewerPointerMapping` both speak `Double`.
-        private func normalized(x: Double, y: Double, in element: WinUI.Image) -> (
+        private func normalized(
+            x: Double, y: Double, in element: WinUI.Image
+        ) -> (
             x: Double, y: Double
         ) {
             ViewerPointerMapping.normalize(
@@ -424,7 +426,9 @@ struct WinUIVideoView: WinUIElementRepresentable {
             let isHorizontalWheel: Bool
         }
 
-        private static func sample(_ args: PointerRoutedEventArgs, _ element: WinUI.Image)
+        private static func sample(
+            _ args: PointerRoutedEventArgs, _ element: WinUI.Image
+        )
             -> PointerSample?
         {
             guard let point = try? args.getCurrentPoint(element) else { return nil }

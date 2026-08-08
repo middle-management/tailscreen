@@ -1,7 +1,7 @@
 import Foundation
 
 #if os(Windows)
-    import WinSDK
+import WinSDK
 #endif
 
 /// Route the process's stdout/stderr somewhere a human can read.
@@ -35,31 +35,31 @@ import Foundation
 enum ConsoleBridge {
     static func attachOrRedirect() {
         #if os(Windows)
-            // ATTACH_PARENT_PROCESS. AttachConsole comes through the WinSDK
-            // overlay as a plain Swift `Bool` on this toolchain — a first
-            // attempt wrote `.boolValue` defensively and the compiler answered
-            // "value of type 'Bool' has no member 'boolValue'".
-            if AttachConsole(DWORD(bitPattern: -1)) {
-                _ = freopen("CONOUT$", "w", stdout)
-                _ = freopen("CONOUT$", "w", stderr)
-                return
-            }
-            let base =
-                ProcessInfo.processInfo.environment["LOCALAPPDATA"]
-                ?? NSTemporaryDirectory()
-            let dir = URL(fileURLWithPath: base)
-                .appendingPathComponent("Tailscreen")
-                .appendingPathComponent("logs")
-            try? FileManager.default.createDirectory(
-                at: dir, withIntermediateDirectories: true)
-            let log = dir.appendingPathComponent("tailscreen.log").path
-            try? FileManager.default.removeItem(atPath: log)
-            _ = freopen(log, "a", stdout)
-            _ = freopen(log, "a", stderr)
-            // Unbuffered: a crash must not eat the lines that explain it.
-            setvbuf(stdout, nil, _IONBF, 0)
-            setvbuf(stderr, nil, _IONBF, 0)
-            print("tailscreen \(Date()) — no console attached, logging here")
+        // ATTACH_PARENT_PROCESS. AttachConsole comes through the WinSDK
+        // overlay as a plain Swift `Bool` on this toolchain — a first
+        // attempt wrote `.boolValue` defensively and the compiler answered
+        // "value of type 'Bool' has no member 'boolValue'".
+        if AttachConsole(DWORD(bitPattern: -1)) {
+            _ = freopen("CONOUT$", "w", stdout)
+            _ = freopen("CONOUT$", "w", stderr)
+            return
+        }
+        let base =
+            ProcessInfo.processInfo.environment["LOCALAPPDATA"]
+            ?? NSTemporaryDirectory()
+        let dir = URL(fileURLWithPath: base)
+            .appendingPathComponent("Tailscreen")
+            .appendingPathComponent("logs")
+        try? FileManager.default.createDirectory(
+            at: dir, withIntermediateDirectories: true)
+        let log = dir.appendingPathComponent("tailscreen.log").path
+        try? FileManager.default.removeItem(atPath: log)
+        _ = freopen(log, "a", stdout)
+        _ = freopen(log, "a", stderr)
+        // Unbuffered: a crash must not eat the lines that explain it.
+        setvbuf(stdout, nil, _IONBF, 0)
+        setvbuf(stderr, nil, _IONBF, 0)
+        print("tailscreen \(Date()) — no console attached, logging here")
         #endif
     }
 }

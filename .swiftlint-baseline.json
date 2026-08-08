@@ -20,7 +20,7 @@
       "location": {
         "character": 30,
         "file": "Apps/linux/Sources/TailscreenViewerGtk/GtkVideoView.swift",
-        "line": 183
+        "line": 190
       },
       "reason": "Force casts should be avoided",
       "ruleDescription": "Force casts should be avoided",
@@ -65,7 +65,7 @@
       "location": {
         "character": 1,
         "file": "Apps/linux/Sources/tailscreen/SharerModel.swift",
-        "line": 19
+        "line": 29
       },
       "reason": "Imports should be unique",
       "ruleDescription": "Imports should be unique",
@@ -80,7 +80,7 @@
       "location": {
         "character": 24,
         "file": "Apps/linux/Sources/tailscreen/SharerModel.swift",
-        "line": 268
+        "line": 267
       },
       "reason": "Using ternary to call Void functions should be avoided",
       "ruleDescription": "Using ternary to call Void functions should be avoided",
@@ -90,87 +90,12 @@
     }
   },
   {
-    "text": "        {",
-    "violation": {
-      "location": {
-        "character": 9,
-        "file": "Apps/linux/Sources/tailscreen/SharerModel.swift",
-        "line": 392
-      },
-      "reason": "Opening braces should be preceded by a single space and on the same line as the declaration",
-      "ruleDescription": "The correct positioning of braces that introduce a block of code or member list is highly controversial. No matter which style is preferred, consistency is key. Apart from different tastes, the positioning of braces can also have a significant impact on the readability of the code, especially for visually impaired developers. This rule ensures that braces are preceded by a single space and on the same line as the declaration. Comments between the declaration and the opening brace are respected. Check out the `contrasted_opening_brace` rule for a different style.",
-      "ruleIdentifier": "opening_brace",
-      "ruleName": "Opening Brace Spacing",
-      "severity": "warning"
-    }
-  },
-  {
-    "text": "        {",
-    "violation": {
-      "location": {
-        "character": 9,
-        "file": "Apps/linux/Sources/tailscreen/SharerModel.swift",
-        "line": 460
-      },
-      "reason": "Opening braces should be preceded by a single space and on the same line as the declaration",
-      "ruleDescription": "The correct positioning of braces that introduce a block of code or member list is highly controversial. No matter which style is preferred, consistency is key. Apart from different tastes, the positioning of braces can also have a significant impact on the readability of the code, especially for visually impaired developers. This rule ensures that braces are preceded by a single space and on the same line as the declaration. Comments between the declaration and the opening brace are respected. Check out the `contrasted_opening_brace` rule for a different style.",
-      "ruleIdentifier": "opening_brace",
-      "ruleName": "Opening Brace Spacing",
-      "severity": "warning"
-    }
-  },
-  {
-    "text": "        {",
-    "violation": {
-      "location": {
-        "character": 9,
-        "file": "Apps/linux/Sources/tailscreen/SharerModel.swift",
-        "line": 493
-      },
-      "reason": "Opening braces should be preceded by a single space and on the same line as the declaration",
-      "ruleDescription": "The correct positioning of braces that introduce a block of code or member list is highly controversial. No matter which style is preferred, consistency is key. Apart from different tastes, the positioning of braces can also have a significant impact on the readability of the code, especially for visually impaired developers. This rule ensures that braces are preceded by a single space and on the same line as the declaration. Comments between the declaration and the opening brace are respected. Check out the `contrasted_opening_brace` rule for a different style.",
-      "ruleIdentifier": "opening_brace",
-      "ruleName": "Opening Brace Spacing",
-      "severity": "warning"
-    }
-  },
-  {
-    "text": "            tags: [\"tag:media\"]),",
-    "violation": {
-      "location": {
-        "character": 33,
-        "file": "Apps/linux/Sources/tailscreen/main.swift",
-        "line": 226
-      },
-      "reason": "Collection literals should not have trailing commas",
-      "ruleDescription": "Trailing commas in arrays and dictionaries should be avoided/enforced.",
-      "ruleIdentifier": "trailing_comma",
-      "ruleName": "Trailing Comma",
-      "severity": "warning"
-    }
-  },
-  {
-    "text": "            isSharing: true, timestamp: Date(), videoCodec: .hevc),",
-    "violation": {
-      "location": {
-        "character": 67,
-        "file": "Apps/linux/Sources/tailscreen/main.swift",
-        "line": 236
-      },
-      "reason": "Collection literals should not have trailing commas",
-      "ruleDescription": "Trailing commas in arrays and dictionaries should be avoided/enforced.",
-      "ruleIdentifier": "trailing_comma",
-      "ruleName": "Trailing Comma",
-      "severity": "warning"
-    }
-  },
-  {
     "text": "    /// The window's content: the headless render self-test surface, live video",
     "violation": {
       "location": {
         "character": 5,
         "file": "Apps/linux/Sources/tailscreen/main.swift",
-        "line": 745
+        "line": 766
       },
       "reason": "A doc comment should be attached to a declaration",
       "ruleDescription": "A doc comment should be attached to a declaration",
@@ -180,137 +105,17 @@
     }
   },
   {
-    "text": "        {",
-    "violation": {
-      "location": {
-        "character": 9,
-        "file": "Apps/macOS/Sources/AnnotationOverlayHostView.swift",
-        "line": 60
-      },
-      "reason": "Opening braces should be preceded by a single space and on the same line as the declaration",
-      "ruleDescription": "The correct positioning of braces that introduce a block of code or member list is highly controversial. No matter which style is preferred, consistency is key. Apart from different tastes, the positioning of braces can also have a significant impact on the readability of the code, especially for visually impaired developers. This rule ensures that braces are preceded by a single space and on the same line as the declaration. Comments between the declaration and the opening brace are respected. Check out the `contrasted_opening_brace` rule for a different style.",
-      "ruleIdentifier": "opening_brace",
-      "ruleName": "Opening Brace Spacing",
-      "severity": "warning"
-    }
-  },
-  {
     "text": "    private var viewerWindowDelegate: ViewerWindowDelegate?",
     "violation": {
       "location": {
         "character": 13,
         "file": "Apps/macOS/Sources/AppState.swift",
-        "line": 2134
+        "line": 2153
       },
       "reason": "Delegates should be weak to avoid reference cycles",
       "ruleDescription": "Delegates should be weak to avoid reference cycles",
       "ruleIdentifier": "weak_delegate",
       "ruleName": "Weak Delegate",
-      "severity": "warning"
-    }
-  },
-  {
-    "text": "            {",
-    "violation": {
-      "location": {
-        "character": 13,
-        "file": "Apps/macOS/Sources/AppState.swift",
-        "line": 2624
-      },
-      "reason": "Opening braces should be preceded by a single space and on the same line as the declaration",
-      "ruleDescription": "The correct positioning of braces that introduce a block of code or member list is highly controversial. No matter which style is preferred, consistency is key. Apart from different tastes, the positioning of braces can also have a significant impact on the readability of the code, especially for visually impaired developers. This rule ensures that braces are preceded by a single space and on the same line as the declaration. Comments between the declaration and the opening brace are respected. Check out the `contrasted_opening_brace` rule for a different style.",
-      "ruleIdentifier": "opening_brace",
-      "ruleName": "Opening Brace Spacing",
-      "severity": "warning"
-    }
-  },
-  {
-    "text": "        {",
-    "violation": {
-      "location": {
-        "character": 9,
-        "file": "Apps/macOS/Sources/AppState.swift",
-        "line": 3880
-      },
-      "reason": "Opening braces should be preceded by a single space and on the same line as the declaration",
-      "ruleDescription": "The correct positioning of braces that introduce a block of code or member list is highly controversial. No matter which style is preferred, consistency is key. Apart from different tastes, the positioning of braces can also have a significant impact on the readability of the code, especially for visually impaired developers. This rule ensures that braces are preceded by a single space and on the same line as the declaration. Comments between the declaration and the opening brace are respected. Check out the `contrasted_opening_brace` rule for a different style.",
-      "ruleIdentifier": "opening_brace",
-      "ruleName": "Opening Brace Spacing",
-      "severity": "warning"
-    }
-  },
-  {
-    "text": "            {",
-    "violation": {
-      "location": {
-        "character": 13,
-        "file": "Apps/macOS/Sources/AppState.swift",
-        "line": 3936
-      },
-      "reason": "Opening braces should be preceded by a single space and on the same line as the declaration",
-      "ruleDescription": "The correct positioning of braces that introduce a block of code or member list is highly controversial. No matter which style is preferred, consistency is key. Apart from different tastes, the positioning of braces can also have a significant impact on the readability of the code, especially for visually impaired developers. This rule ensures that braces are preceded by a single space and on the same line as the declaration. Comments between the declaration and the opening brace are respected. Check out the `contrasted_opening_brace` rule for a different style.",
-      "ruleIdentifier": "opening_brace",
-      "ruleName": "Opening Brace Spacing",
-      "severity": "warning"
-    }
-  },
-  {
-    "text": "        {",
-    "violation": {
-      "location": {
-        "character": 9,
-        "file": "Apps/macOS/Sources/MainWindowView.swift",
-        "line": 823
-      },
-      "reason": "Opening braces should be preceded by a single space and on the same line as the declaration",
-      "ruleDescription": "The correct positioning of braces that introduce a block of code or member list is highly controversial. No matter which style is preferred, consistency is key. Apart from different tastes, the positioning of braces can also have a significant impact on the readability of the code, especially for visually impaired developers. This rule ensures that braces are preceded by a single space and on the same line as the declaration. Comments between the declaration and the opening brace are respected. Check out the `contrasted_opening_brace` rule for a different style.",
-      "ruleIdentifier": "opening_brace",
-      "ruleName": "Opening Brace Spacing",
-      "severity": "warning"
-    }
-  },
-  {
-    "text": "        {",
-    "violation": {
-      "location": {
-        "character": 9,
-        "file": "Apps/macOS/Sources/MenuBarView.swift",
-        "line": 349
-      },
-      "reason": "Opening braces should be preceded by a single space and on the same line as the declaration",
-      "ruleDescription": "The correct positioning of braces that introduce a block of code or member list is highly controversial. No matter which style is preferred, consistency is key. Apart from different tastes, the positioning of braces can also have a significant impact on the readability of the code, especially for visually impaired developers. This rule ensures that braces are preceded by a single space and on the same line as the declaration. Comments between the declaration and the opening brace are respected. Check out the `contrasted_opening_brace` rule for a different style.",
-      "ruleIdentifier": "opening_brace",
-      "ruleName": "Opening Brace Spacing",
-      "severity": "warning"
-    }
-  },
-  {
-    "text": "        {",
-    "violation": {
-      "location": {
-        "character": 9,
-        "file": "Apps/macOS/Sources/MetalViewerRenderer.swift",
-        "line": 523
-      },
-      "reason": "Opening braces should be preceded by a single space and on the same line as the declaration",
-      "ruleDescription": "The correct positioning of braces that introduce a block of code or member list is highly controversial. No matter which style is preferred, consistency is key. Apart from different tastes, the positioning of braces can also have a significant impact on the readability of the code, especially for visually impaired developers. This rule ensures that braces are preceded by a single space and on the same line as the declaration. Comments between the declaration and the opening brace are respected. Check out the `contrasted_opening_brace` rule for a different style.",
-      "ruleIdentifier": "opening_brace",
-      "ruleName": "Opening Brace Spacing",
-      "severity": "warning"
-    }
-  },
-  {
-    "text": "        {",
-    "violation": {
-      "location": {
-        "character": 9,
-        "file": "Apps/macOS/Sources/RemoteControlInputView.swift",
-        "line": 160
-      },
-      "reason": "Opening braces should be preceded by a single space and on the same line as the declaration",
-      "ruleDescription": "The correct positioning of braces that introduce a block of code or member list is highly controversial. No matter which style is preferred, consistency is key. Apart from different tastes, the positioning of braces can also have a significant impact on the readability of the code, especially for visually impaired developers. This rule ensures that braces are preceded by a single space and on the same line as the declaration. Comments between the declaration and the opening brace are respected. Check out the `contrasted_opening_brace` rule for a different style.",
-      "ruleIdentifier": "opening_brace",
-      "ruleName": "Opening Brace Spacing",
       "severity": "warning"
     }
   },
@@ -390,66 +195,6 @@
     }
   },
   {
-    "text": "        {",
-    "violation": {
-      "location": {
-        "character": 9,
-        "file": "Apps/macOS/Sources/VideoEncoder.swift",
-        "line": 457
-      },
-      "reason": "Opening braces should be preceded by a single space and on the same line as the declaration",
-      "ruleDescription": "The correct positioning of braces that introduce a block of code or member list is highly controversial. No matter which style is preferred, consistency is key. Apart from different tastes, the positioning of braces can also have a significant impact on the readability of the code, especially for visually impaired developers. This rule ensures that braces are preceded by a single space and on the same line as the declaration. Comments between the declaration and the opening brace are respected. Check out the `contrasted_opening_brace` rule for a different style.",
-      "ruleIdentifier": "opening_brace",
-      "ruleName": "Opening Brace Spacing",
-      "severity": "warning"
-    }
-  },
-  {
-    "text": "        {",
-    "violation": {
-      "location": {
-        "character": 9,
-        "file": "Apps/macOS/Sources/VoiceChannel.swift",
-        "line": 567
-      },
-      "reason": "Opening braces should be preceded by a single space and on the same line as the declaration",
-      "ruleDescription": "The correct positioning of braces that introduce a block of code or member list is highly controversial. No matter which style is preferred, consistency is key. Apart from different tastes, the positioning of braces can also have a significant impact on the readability of the code, especially for visually impaired developers. This rule ensures that braces are preceded by a single space and on the same line as the declaration. Comments between the declaration and the opening brace are respected. Check out the `contrasted_opening_brace` rule for a different style.",
-      "ruleIdentifier": "opening_brace",
-      "ruleName": "Opening Brace Spacing",
-      "severity": "warning"
-    }
-  },
-  {
-    "text": "        {",
-    "violation": {
-      "location": {
-        "character": 9,
-        "file": "Apps/macOS/Sources/VoiceChannel.swift",
-        "line": 578
-      },
-      "reason": "Opening braces should be preceded by a single space and on the same line as the declaration",
-      "ruleDescription": "The correct positioning of braces that introduce a block of code or member list is highly controversial. No matter which style is preferred, consistency is key. Apart from different tastes, the positioning of braces can also have a significant impact on the readability of the code, especially for visually impaired developers. This rule ensures that braces are preceded by a single space and on the same line as the declaration. Comments between the declaration and the opening brace are respected. Check out the `contrasted_opening_brace` rule for a different style.",
-      "ruleIdentifier": "opening_brace",
-      "ruleName": "Opening Brace Spacing",
-      "severity": "warning"
-    }
-  },
-  {
-    "text": "    {",
-    "violation": {
-      "location": {
-        "character": 5,
-        "file": "Apps/macOS/Tests/TailscreenTests/VideoCodecTests.swift",
-        "line": 172
-      },
-      "reason": "Opening braces should be preceded by a single space and on the same line as the declaration",
-      "ruleDescription": "The correct positioning of braces that introduce a block of code or member list is highly controversial. No matter which style is preferred, consistency is key. Apart from different tastes, the positioning of braces can also have a significant impact on the readability of the code, especially for visually impaired developers. This rule ensures that braces are preceded by a single space and on the same line as the declaration. Comments between the declaration and the opening brace are respected. Check out the `contrasted_opening_brace` rule for a different style.",
-      "ruleIdentifier": "opening_brace",
-      "ruleName": "Opening Brace Spacing",
-      "severity": "warning"
-    }
-  },
-  {
     "text": "        let base = CVPixelBufferGetBaseAddress(buf)!",
     "violation": {
       "location": {
@@ -465,27 +210,12 @@
     }
   },
   {
-    "text": "        {",
-    "violation": {
-      "location": {
-        "character": 9,
-        "file": "Apps/windows/Sources/tailscreen/WinUIVideoView.swift",
-        "line": 422
-      },
-      "reason": "Opening braces should be preceded by a single space and on the same line as the declaration",
-      "ruleDescription": "The correct positioning of braces that introduce a block of code or member list is highly controversial. No matter which style is preferred, consistency is key. Apart from different tastes, the positioning of braces can also have a significant impact on the readability of the code, especially for visually impaired developers. This rule ensures that braces are preceded by a single space and on the same line as the declaration. Comments between the declaration and the opening brace are respected. Check out the `contrasted_opening_brace` rule for a different style.",
-      "ruleIdentifier": "opening_brace",
-      "ruleName": "Opening Brace Spacing",
-      "severity": "warning"
-    }
-  },
-  {
     "text": "    /// Whether the stats HUD is shown.",
     "violation": {
       "location": {
         "character": 5,
         "file": "Apps/windows/Sources/tailscreen/WindowsViewerInteraction.swift",
-        "line": 118
+        "line": 125
       },
       "reason": "A doc comment should be attached to a declaration",
       "ruleDescription": "A doc comment should be attached to a declaration",
@@ -500,42 +230,12 @@
       "location": {
         "character": 27,
         "file": "Apps/windows/Sources/tailscreen/WindowsViewerInteraction.swift",
-        "line": 157
+        "line": 164
       },
       "reason": "Implicitly unwrapped optionals should be avoided when possible",
       "ruleDescription": "Implicitly unwrapped optionals should be avoided when possible",
       "ruleIdentifier": "implicitly_unwrapped_optional",
       "ruleName": "Implicitly Unwrapped Optional",
-      "severity": "warning"
-    }
-  },
-  {
-    "text": "            \"h264_mf\", \"h264_videotoolbox\", \"h264_v4l2m2m\",",
-    "violation": {
-      "location": {
-        "character": 59,
-        "file": "Packages/FFmpegKit/Sources/FFmpegKit/FFmpegKit.swift",
-        "line": 111
-      },
-      "reason": "Collection literals should not have trailing commas",
-      "ruleDescription": "Trailing commas in arrays and dictionaries should be avoided/enforced.",
-      "ruleIdentifier": "trailing_comma",
-      "ruleName": "Trailing Comma",
-      "severity": "warning"
-    }
-  },
-  {
-    "text": "            \"hevc_mf\", \"hevc_videotoolbox\", \"hevc_v4l2m2m\",",
-    "violation": {
-      "location": {
-        "character": 59,
-        "file": "Packages/FFmpegKit/Sources/FFmpegKit/FFmpegKit.swift",
-        "line": 116
-      },
-      "reason": "Collection literals should not have trailing commas",
-      "ruleDescription": "Trailing commas in arrays and dictionaries should be avoided/enforced.",
-      "ruleIdentifier": "trailing_comma",
-      "ruleName": "Trailing Comma",
       "severity": "warning"
     }
   },
@@ -555,21 +255,6 @@
     }
   },
   {
-    "text": "            DesktopNotifier.Action(key: \"deny\", label: \"Deny\"),",
-    "violation": {
-      "location": {
-        "character": 63,
-        "file": "Packages/GNotifyKit/Sources/gnotify-probe/main.swift",
-        "line": 133
-      },
-      "reason": "Collection literals should not have trailing commas",
-      "ruleDescription": "Trailing commas in arrays and dictionaries should be avoided/enforced.",
-      "ruleIdentifier": "trailing_comma",
-      "ruleName": "Trailing Comma",
-      "severity": "warning"
-    }
-  },
-  {
     "text": "print(\"gnotify-probe: action round trip OK (id=\\(actionable) key=\\(invoked!.key))\")",
     "violation": {
       "location": {
@@ -582,96 +267,6 @@
       "ruleIdentifier": "force_unwrapping",
       "ruleName": "Force Unwrapping",
       "severity": "error"
-    }
-  },
-  {
-    "text": "    {",
-    "violation": {
-      "location": {
-        "character": 5,
-        "file": "Packages/PortalCaptureKit/Sources/portal-probe/PipeWireChecks.swift",
-        "line": 72
-      },
-      "reason": "Opening braces should be preceded by a single space and on the same line as the declaration",
-      "ruleDescription": "The correct positioning of braces that introduce a block of code or member list is highly controversial. No matter which style is preferred, consistency is key. Apart from different tastes, the positioning of braces can also have a significant impact on the readability of the code, especially for visually impaired developers. This rule ensures that braces are preceded by a single space and on the same line as the declaration. Comments between the declaration and the opening brace are respected. Check out the `contrasted_opening_brace` rule for a different style.",
-      "ruleIdentifier": "opening_brace",
-      "ruleName": "Opening Brace Spacing",
-      "severity": "warning"
-    }
-  },
-  {
-    "text": "    (\"top-left\", 0.0, 0.0), (\"centre\", 0.5, 0.5), (\"bottom-right\", 1.0, 1.0),",
-    "violation": {
-      "location": {
-        "character": 77,
-        "file": "Packages/SendInputKit/Sources/sendinput-probe/main.swift",
-        "line": 38
-      },
-      "reason": "Collection literals should not have trailing commas",
-      "ruleDescription": "Trailing commas in arrays and dictionaries should be avoided/enforced.",
-      "ruleIdentifier": "trailing_comma",
-      "ruleName": "Trailing Comma",
-      "severity": "warning"
-    }
-  },
-  {
-    "text": "",
-    "violation": {
-      "location": {
-        "character": 1,
-        "file": "Packages/TailscreenHubUI/Sources/TailscreenHubUI/HubCards.swift",
-        "line": 327
-      },
-      "reason": "Limit vertical whitespace to a single empty line; currently 2",
-      "ruleDescription": "Limit vertical whitespace to a single empty line",
-      "ruleIdentifier": "vertical_whitespace",
-      "ruleName": "Vertical Whitespace",
-      "severity": "warning"
-    }
-  },
-  {
-    "text": "",
-    "violation": {
-      "location": {
-        "character": 1,
-        "file": "Packages/TailscreenHubUI/Sources/TailscreenHubUI/HubCards.swift",
-        "line": 376
-      },
-      "reason": "Limit vertical whitespace to a single empty line; currently 2",
-      "ruleDescription": "Limit vertical whitespace to a single empty line",
-      "ruleIdentifier": "vertical_whitespace",
-      "ruleName": "Vertical Whitespace",
-      "severity": "warning"
-    }
-  },
-  {
-    "text": "        (.rectangle, \"▭\", L(\"Rect\")), (.oval, \"◯\", L(\"Oval\")), (.click, \"◎\", L(\"Click\")),",
-    "violation": {
-      "location": {
-        "character": 89,
-        "file": "Packages/TailscreenHubUI/Sources/TailscreenHubUI/HubOverlays.swift",
-        "line": 30
-      },
-      "reason": "Collection literals should not have trailing commas",
-      "ruleDescription": "Trailing commas in arrays and dictionaries should be avoided/enforced.",
-      "ruleIdentifier": "trailing_comma",
-      "ruleName": "Trailing Comma",
-      "severity": "warning"
-    }
-  },
-  {
-    "text": "        L(\"Purple\"), L(\"Teal\"), L(\"Pink\"), L(\"Yellow\"),",
-    "violation": {
-      "location": {
-        "character": 55,
-        "file": "Packages/TailscreenHubUI/Sources/TailscreenHubUI/HubOverlays.swift",
-        "line": 38
-      },
-      "reason": "Collection literals should not have trailing commas",
-      "ruleDescription": "Trailing commas in arrays and dictionaries should be avoided/enforced.",
-      "ruleIdentifier": "trailing_comma",
-      "ruleName": "Trailing Comma",
-      "severity": "warning"
     }
   },
   {
@@ -690,51 +285,6 @@
     }
   },
   {
-    "text": "            {",
-    "violation": {
-      "location": {
-        "character": 13,
-        "file": "Packages/TailscreenKit/Sources/TailscreenSharer/TailscaleScreenShareServer.swift",
-        "line": 1823
-      },
-      "reason": "Opening braces should be preceded by a single space and on the same line as the declaration",
-      "ruleDescription": "The correct positioning of braces that introduce a block of code or member list is highly controversial. No matter which style is preferred, consistency is key. Apart from different tastes, the positioning of braces can also have a significant impact on the readability of the code, especially for visually impaired developers. This rule ensures that braces are preceded by a single space and on the same line as the declaration. Comments between the declaration and the opening brace are respected. Check out the `contrasted_opening_brace` rule for a different style.",
-      "ruleIdentifier": "opening_brace",
-      "ruleName": "Opening Brace Spacing",
-      "severity": "warning"
-    }
-  },
-  {
-    "text": "                    {",
-    "violation": {
-      "location": {
-        "character": 21,
-        "file": "Packages/TailscreenKit/Sources/TailscreenViewerTsnet/TsnetTransport.swift",
-        "line": 722
-      },
-      "reason": "Opening braces should be preceded by a single space and on the same line as the declaration",
-      "ruleDescription": "The correct positioning of braces that introduce a block of code or member list is highly controversial. No matter which style is preferred, consistency is key. Apart from different tastes, the positioning of braces can also have a significant impact on the readability of the code, especially for visually impaired developers. This rule ensures that braces are preceded by a single space and on the same line as the declaration. Comments between the declaration and the opening brace are respected. Check out the `contrasted_opening_brace` rule for a different style.",
-      "ruleIdentifier": "opening_brace",
-      "ruleName": "Opening Brace Spacing",
-      "severity": "warning"
-    }
-  },
-  {
-    "text": "            {",
-    "violation": {
-      "location": {
-        "character": 13,
-        "file": "Packages/TailscreenKit/Sources/TailscreenViewerTsnet/TsnetTransport.swift",
-        "line": 913
-      },
-      "reason": "Opening braces should be preceded by a single space and on the same line as the declaration",
-      "ruleDescription": "The correct positioning of braces that introduce a block of code or member list is highly controversial. No matter which style is preferred, consistency is key. Apart from different tastes, the positioning of braces can also have a significant impact on the readability of the code, especially for visually impaired developers. This rule ensures that braces are preceded by a single space and on the same line as the declaration. Comments between the declaration and the opening brace are respected. Check out the `contrasted_opening_brace` rule for a different style.",
-      "ruleIdentifier": "opening_brace",
-      "ruleName": "Opening Brace Spacing",
-      "severity": "warning"
-    }
-  },
-  {
     "text": "    private var scratch: URL!",
     "violation": {
       "location": {
@@ -746,21 +296,6 @@
       "ruleDescription": "Implicitly unwrapped optionals should be avoided when possible",
       "ruleIdentifier": "implicitly_unwrapped_optional",
       "ruleName": "Implicitly Unwrapped Optional",
-      "severity": "warning"
-    }
-  },
-  {
-    "text": "            \"XDG_CONFIG_HOME\": \"/x/config\", \"HOME\": \"/home/robert\",",
-    "violation": {
-      "location": {
-        "character": 67,
-        "file": "Packages/TailscreenKit/Tests/TailscreenProtocolTests/AccountProfileStoreTests.swift",
-        "line": 201
-      },
-      "reason": "Collection literals should not have trailing commas",
-      "ruleDescription": "Trailing commas in arrays and dictionaries should be avoided/enforced.",
-      "ruleIdentifier": "trailing_comma",
-      "ruleName": "Trailing Comma",
       "severity": "warning"
     }
   },
@@ -915,21 +450,6 @@
     }
   },
   {
-    "text": "            stroke(tool: .line, points: path, color: blue, width: 20),",
-    "violation": {
-      "location": {
-        "character": 70,
-        "file": "Packages/TailscreenKit/Tests/TailscreenProtocolTests/AnnotationRenderingTests.swift",
-        "line": 166
-      },
-      "reason": "Collection literals should not have trailing commas",
-      "ruleDescription": "Trailing commas in arrays and dictionaries should be avoided/enforced.",
-      "ruleIdentifier": "trailing_comma",
-      "ruleName": "Trailing Comma",
-      "severity": "warning"
-    }
-  },
-  {
     "text": "                into: $0.baseAddress!)",
     "violation": {
       "location": {
@@ -1002,126 +522,6 @@
       "ruleIdentifier": "force_unwrapping",
       "ruleName": "Force Unwrapping",
       "severity": "error"
-    }
-  },
-  {
-    "text": "    {",
-    "violation": {
-      "location": {
-        "character": 5,
-        "file": "Packages/TailscreenKit/Tests/TailscreenProtocolTests/SharerAccessCoordinatorTests.swift",
-        "line": 45
-      },
-      "reason": "Opening braces should be preceded by a single space and on the same line as the declaration",
-      "ruleDescription": "The correct positioning of braces that introduce a block of code or member list is highly controversial. No matter which style is preferred, consistency is key. Apart from different tastes, the positioning of braces can also have a significant impact on the readability of the code, especially for visually impaired developers. This rule ensures that braces are preceded by a single space and on the same line as the declaration. Comments between the declaration and the opening brace are respected. Check out the `contrasted_opening_brace` rule for a different style.",
-      "ruleIdentifier": "opening_brace",
-      "ruleName": "Opening Brace Spacing",
-      "severity": "warning"
-    }
-  },
-  {
-    "text": "                \"post:\\(SharerNoticeKind.viewerLeft.rawValue):100.64.0.7:9000:living-room-tv\",",
-    "violation": {
-      "location": {
-        "character": 94,
-        "file": "Packages/TailscreenKit/Tests/TailscreenProtocolTests/SharerNoticeReconcilerTests.swift",
-        "line": 114
-      },
-      "reason": "Collection literals should not have trailing commas",
-      "ruleDescription": "Trailing commas in arrays and dictionaries should be avoided/enforced.",
-      "ruleIdentifier": "trailing_comma",
-      "ruleName": "Trailing Comma",
-      "severity": "warning"
-    }
-  },
-  {
-    "text": "                NoticeCandidate(identity: \"b:2\", label: \"b\"),",
-    "violation": {
-      "location": {
-        "character": 61,
-        "file": "Packages/TailscreenKit/Tests/TailscreenProtocolTests/SharerNoticeReconcilerTests.swift",
-        "line": 136
-      },
-      "reason": "Collection literals should not have trailing commas",
-      "ruleDescription": "Trailing commas in arrays and dictionaries should be avoided/enforced.",
-      "ruleIdentifier": "trailing_comma",
-      "ruleName": "Trailing Comma",
-      "severity": "warning"
-    }
-  },
-  {
-    "text": "            \"a:b:c:d\",",
-    "violation": {
-      "location": {
-        "character": 22,
-        "file": "Packages/TailscreenKit/Tests/TailscreenProtocolTests/SharerNoticeTests.swift",
-        "line": 256
-      },
-      "reason": "Collection literals should not have trailing commas",
-      "ruleDescription": "Trailing commas in arrays and dictionaries should be avoided/enforced.",
-      "ruleIdentifier": "trailing_comma",
-      "ruleName": "Trailing Comma",
-      "severity": "warning"
-    }
-  },
-  {
-    "text": "                NoticeCandidate(identity: \"b\", label: \"b\"),",
-    "violation": {
-      "location": {
-        "character": 59,
-        "file": "Packages/TailscreenKit/Tests/TailscreenProtocolTests/SharerNoticeTextTests.swift",
-        "line": 158
-      },
-      "reason": "Collection literals should not have trailing commas",
-      "ruleDescription": "Trailing commas in arrays and dictionaries should be avoided/enforced.",
-      "ruleIdentifier": "trailing_comma",
-      "ruleName": "Trailing Comma",
-      "severity": "warning"
-    }
-  },
-  {
-    "text": "    {",
-    "violation": {
-      "location": {
-        "character": 5,
-        "file": "Packages/TailscreenKit/Tests/TailscreenProtocolTests/ViewerRosterDecisionTests.swift",
-        "line": 45
-      },
-      "reason": "Opening braces should be preceded by a single space and on the same line as the declaration",
-      "ruleDescription": "The correct positioning of braces that introduce a block of code or member list is highly controversial. No matter which style is preferred, consistency is key. Apart from different tastes, the positioning of braces can also have a significant impact on the readability of the code, especially for visually impaired developers. This rule ensures that braces are preceded by a single space and on the same line as the declaration. Comments between the declaration and the opening brace are respected. Check out the `contrasted_opening_brace` rule for a different style.",
-      "ruleIdentifier": "opening_brace",
-      "ruleName": "Opening Brace Spacing",
-      "severity": "warning"
-    }
-  },
-  {
-    "text": "    {",
-    "violation": {
-      "location": {
-        "character": 5,
-        "file": "Packages/TailscreenKit/Tests/TailscreenProtocolTests/ViewerRosterDecisionTests.swift",
-        "line": 134
-      },
-      "reason": "Opening braces should be preceded by a single space and on the same line as the declaration",
-      "ruleDescription": "The correct positioning of braces that introduce a block of code or member list is highly controversial. No matter which style is preferred, consistency is key. Apart from different tastes, the positioning of braces can also have a significant impact on the readability of the code, especially for visually impaired developers. This rule ensures that braces are preceded by a single space and on the same line as the declaration. Comments between the declaration and the opening brace are respected. Check out the `contrasted_opening_brace` rule for a different style.",
-      "ruleIdentifier": "opening_brace",
-      "ruleName": "Opening Brace Spacing",
-      "severity": "warning"
-    }
-  },
-  {
-    "text": "            WindowsPointerMapping.ScreenRect(x: 3840, y: 0, width: 1920, height: 1080),",
-    "violation": {
-      "location": {
-        "character": 87,
-        "file": "Packages/TailscreenKit/Tests/TailscreenProtocolTests/WindowsCaptureRegionTests.swift",
-        "line": 48
-      },
-      "reason": "Collection literals should not have trailing commas",
-      "ruleDescription": "Trailing commas in arrays and dictionaries should be avoided/enforced.",
-      "ruleIdentifier": "trailing_comma",
-      "ruleName": "Trailing Comma",
-      "severity": "warning"
     }
   },
   {
@@ -1295,7 +695,7 @@
       "location": {
         "character": 70,
         "file": "Packages/TailscreenKit/Tests/TailscreenViewerTests/ViewerSessionTests.swift",
-        "line": 565
+        "line": 566
       },
       "reason": "Force tries should be avoided",
       "ruleDescription": "Force tries should be avoided",
@@ -1310,7 +710,7 @@
       "location": {
         "character": 38,
         "file": "Packages/TailscreenLinuxBackends/Sources/TailscreenSharerLinux/LinuxShareSession.swift",
-        "line": 281
+        "line": 296
       },
       "reason": "Coalescing operator with right-hand side nil is redundant",
       "ruleDescription": "Coalescing operator with right-hand side nil is redundant",
@@ -1320,42 +720,12 @@
     }
   },
   {
-    "text": "                {",
-    "violation": {
-      "location": {
-        "character": 17,
-        "file": "Packages/TailscreenLinuxBackends/Sources/TailscreenSharerLinux/X11CaptureEncoder.swift",
-        "line": 175
-      },
-      "reason": "Opening braces should be preceded by a single space and on the same line as the declaration",
-      "ruleDescription": "The correct positioning of braces that introduce a block of code or member list is highly controversial. No matter which style is preferred, consistency is key. Apart from different tastes, the positioning of braces can also have a significant impact on the readability of the code, especially for visually impaired developers. This rule ensures that braces are preceded by a single space and on the same line as the declaration. Comments between the declaration and the opening brace are respected. Check out the `contrasted_opening_brace` rule for a different style.",
-      "ruleIdentifier": "opening_brace",
-      "ruleName": "Opening Brace Spacing",
-      "severity": "warning"
-    }
-  },
-  {
-    "text": "            {",
-    "violation": {
-      "location": {
-        "character": 13,
-        "file": "Packages/TailscreenLinuxBackends/Sources/TailscreenTestSharer/H264TestEncoder.swift",
-        "line": 134
-      },
-      "reason": "Opening braces should be preceded by a single space and on the same line as the declaration",
-      "ruleDescription": "The correct positioning of braces that introduce a block of code or member list is highly controversial. No matter which style is preferred, consistency is key. Apart from different tastes, the positioning of braces can also have a significant impact on the readability of the code, especially for visually impaired developers. This rule ensures that braces are preceded by a single space and on the same line as the declaration. Comments between the declaration and the opening brace are respected. Check out the `contrasted_opening_brace` rule for a different style.",
-      "ruleIdentifier": "opening_brace",
-      "ruleName": "Opening Brace Spacing",
-      "severity": "warning"
-    }
-  },
-  {
     "text": "            ? \"\\(ips.ip4!):\\(NetworkConfig.tailscreenPort)\"",
     "violation": {
       "location": {
         "character": 25,
         "file": "Packages/TailscreenLinuxBackends/Sources/TailscreenTestSharer/TestSharer.swift",
-        "line": 155
+        "line": 156
       },
       "reason": "Force unwrapping should be avoided",
       "ruleDescription": "Force unwrapping should be avoided",
@@ -1370,7 +740,7 @@
       "location": {
         "character": 26,
         "file": "Packages/TailscreenLinuxBackends/Sources/TailscreenTestSharer/TestSharer.swift",
-        "line": 156
+        "line": 157
       },
       "reason": "Force unwrapping should be avoided",
       "ruleDescription": "Force unwrapping should be avoided",
@@ -1385,7 +755,7 @@
       "location": {
         "character": 67,
         "file": "Packages/TailscreenLinuxBackends/Sources/TailscreenTestSharer/TestSharer.swift",
-        "line": 178
+        "line": 179
       },
       "reason": "Force unwrapping should be avoided",
       "ruleDescription": "Force unwrapping should be avoided",
@@ -1410,36 +780,6 @@
     }
   },
   {
-    "text": "        127: 0x65,  // Compose / Menu",
-    "violation": {
-      "location": {
-        "character": 18,
-        "file": "Packages/TailscreenLinuxBackends/Sources/TailscreenViewerCore/ViewerInput.swift",
-        "line": 138
-      },
-      "reason": "Collection literals should not have trailing commas",
-      "ruleDescription": "Trailing commas in arrays and dictionaries should be avoided/enforced.",
-      "ruleIdentifier": "trailing_comma",
-      "ruleName": "Trailing Comma",
-      "severity": "warning"
-    }
-  },
-  {
-    "text": "                    {",
-    "violation": {
-      "location": {
-        "character": 21,
-        "file": "Packages/TailscreenSharerPortal/Sources/TailscreenSharerPortal/PortalCaptureEncoder.swift",
-        "line": 376
-      },
-      "reason": "Opening braces should be preceded by a single space and on the same line as the declaration",
-      "ruleDescription": "The correct positioning of braces that introduce a block of code or member list is highly controversial. No matter which style is preferred, consistency is key. Apart from different tastes, the positioning of braces can also have a significant impact on the readability of the code, especially for visually impaired developers. This rule ensures that braces are preceded by a single space and on the same line as the declaration. Comments between the declaration and the opening brace are respected. Check out the `contrasted_opening_brace` rule for a different style.",
-      "ruleIdentifier": "opening_brace",
-      "ruleName": "Opening Brace Spacing",
-      "severity": "warning"
-    }
-  },
-  {
     "text": "                    frame -> Bool in",
     "violation": {
       "location": {
@@ -1455,47 +795,17 @@
     }
   },
   {
-    "text": "                    {",
-    "violation": {
-      "location": {
-        "character": 21,
-        "file": "Packages/TailscreenSharerWGC/Sources/TailscreenSharerWGC/WGCCaptureEncoder.swift",
-        "line": 260
-      },
-      "reason": "Opening braces should be preceded by a single space and on the same line as the declaration",
-      "ruleDescription": "The correct positioning of braces that introduce a block of code or member list is highly controversial. No matter which style is preferred, consistency is key. Apart from different tastes, the positioning of braces can also have a significant impact on the readability of the code, especially for visually impaired developers. This rule ensures that braces are preceded by a single space and on the same line as the declaration. Comments between the declaration and the opening brace are respected. Check out the `contrasted_opening_brace` rule for a different style.",
-      "ruleIdentifier": "opening_brace",
-      "ruleName": "Opening Brace Spacing",
-      "severity": "warning"
-    }
-  },
-  {
     "text": "    /// Turn the approval gate on or off, now and for the next share.",
     "violation": {
       "location": {
         "character": 5,
         "file": "Packages/TailscreenSharerWGC/Sources/TailscreenSharerWGC/WindowsShareSession.swift",
-        "line": 538
+        "line": 632
       },
       "reason": "A doc comment should be attached to a declaration",
       "ruleDescription": "A doc comment should be attached to a declaration",
       "ruleIdentifier": "orphaned_doc_comment",
       "ruleName": "Orphaned Doc Comment",
-      "severity": "warning"
-    }
-  },
-  {
-    "text": "        {",
-    "violation": {
-      "location": {
-        "character": 9,
-        "file": "Packages/TailscreenSharerWGC/Sources/TailscreenSharerWGC/WindowsShareSession.swift",
-        "line": 893
-      },
-      "reason": "Opening braces should be preceded by a single space and on the same line as the declaration",
-      "ruleDescription": "The correct positioning of braces that introduce a block of code or member list is highly controversial. No matter which style is preferred, consistency is key. Apart from different tastes, the positioning of braces can also have a significant impact on the readability of the code, especially for visually impaired developers. This rule ensures that braces are preceded by a single space and on the same line as the declaration. Comments between the declaration and the opening brace are respected. Check out the `contrasted_opening_brace` rule for a different style.",
-      "ruleIdentifier": "opening_brace",
-      "ruleName": "Opening Brace Spacing",
       "severity": "warning"
     }
   },

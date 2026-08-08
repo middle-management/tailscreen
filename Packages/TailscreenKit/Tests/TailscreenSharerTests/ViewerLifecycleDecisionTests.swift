@@ -1,7 +1,6 @@
-import XCTest
-
 import TailscreenProtocol
 import TailscreenSharer
+import XCTest
 
 /// Unit tests for the pure viewer-lifecycle decisions extracted from
 /// `TailscaleScreenShareServer` — the audio-relay SSRC anti-spoof gate, the

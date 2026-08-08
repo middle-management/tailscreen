@@ -111,7 +111,7 @@ final class SharerNoticeReconcilerTests: XCTestCase {
             Array(poster.events.dropFirst()),
             [
                 "withdraw:\(SharerNoticeKind.viewerJoined.rawValue):100.64.0.7:9000",
-                "post:\(SharerNoticeKind.viewerLeft.rawValue):100.64.0.7:9000:living-room-tv",
+                "post:\(SharerNoticeKind.viewerLeft.rawValue):100.64.0.7:9000:living-room-tv"
             ])
     }
 
@@ -133,7 +133,7 @@ final class SharerNoticeReconcilerTests: XCTestCase {
         reconciler.applyViewers(
             [
                 NoticeCandidate(identity: "a:1", label: "a"),
-                NoticeCandidate(identity: "b:2", label: "b"),
+                NoticeCandidate(identity: "b:2", label: "b")
             ], poster: poster)
         let before = poster.events.count
 

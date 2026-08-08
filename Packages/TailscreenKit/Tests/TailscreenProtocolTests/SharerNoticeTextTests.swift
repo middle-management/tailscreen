@@ -155,7 +155,7 @@ final class SharerNoticeTextTests: XCTestCase {
         let withdraw = SharerNoticeDecision.noticesToWithdraw(
             candidates: [
                 NoticeCandidate(identity: "a", label: "a"),
-                NoticeCandidate(identity: "b", label: "b"),
+                NoticeCandidate(identity: "b", label: "b")
             ],
             alreadyNotified: ["a", "b"])
         XCTAssertTrue(withdraw.isEmpty)

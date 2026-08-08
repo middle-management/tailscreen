@@ -1308,14 +1308,19 @@ jobs:
     # its version: only a version bump (or a 7-day-idle cache eviction) pays
     # it, and the timeout below is sized for the cold path.
     #
-    # Currently informational (continue-on-error: true) because the
-    # config was tuned without a local swift-format run — we want the
-    # first CI run on this branch to surface any drift between the
-    # config and the existing style, then we flip this to required.
-    # TODO: drop `continue-on-error` once the check is observed to pass.
+    # REQUIRED as of the repo-wide sweep. It was informational for as long as
+    # the config had only ever been applied to five of the ~43 trees, so
+    # turning it on would have failed every PR for reasons predating the PR.
+    # The sweep formatted all of them and fixed the three `--strict`
+    # violations swift-format cannot fix itself, so a clean run is the
+    # baseline now rather than an aspiration.
+    #
+    # If this starts failing everywhere at once, suspect SWIFT_FORMAT_VERSION
+    # at the top of this file before suspecting the diff: swift-format's whole
+    # job is rewriting source, so a release that retunes one line-breaking
+    # heuristic reformats files nobody touched. That is why it is pinned.
     runs-on: macos-latest
     timeout-minutes: 30
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v7
       - name: Restore the pinned swift-format

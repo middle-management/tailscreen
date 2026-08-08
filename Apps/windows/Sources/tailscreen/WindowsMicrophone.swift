@@ -1,10 +1,10 @@
 import Foundation
 import WASAPIKit
 
-import protocol TailscreenAudio.BlockingPCMSource
-import protocol TailscreenAudio.MicrophoneCapturing
 import struct TailscreenAudio.AudioInputFormat
+import protocol TailscreenAudio.BlockingPCMSource
 import struct TailscreenAudio.CapturedPCM
+import protocol TailscreenAudio.MicrophoneCapturing
 import class TailscreenAudio.ThreadedMicrophone
 
 /// `WASAPI.Recorder` behind the portable `BlockingPCMSource` seam — the Windows

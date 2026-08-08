@@ -145,9 +145,11 @@ final class LinuxShareSessionTests: XCTestCase {
     @MainActor
     func testChangeSourceWithoutAServerReportsFalse() async throws {
         let engine = makeEngine()
-        let changed = try await engine.changeSource(filterData: Data(), captureFactory: {
-            fatalError("no share is running — the factory must never be invoked")
-        })
+        let changed = try await engine.changeSource(
+            filterData: Data(),
+            captureFactory: {
+                fatalError("no share is running — the factory must never be invoked")
+            })
         XCTAssertFalse(changed)
     }
 

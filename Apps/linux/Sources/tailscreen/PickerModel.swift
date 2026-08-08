@@ -19,9 +19,9 @@ import struct TailscreenProtocol.TailscreenMetadata
 @MainActor
 final class PickerModel: ObservableObject {
     enum Phase: Equatable {
-        case startingNode      // bringing the tsnet node up (maybe awaiting login)
-        case discovering       // listing sharers
-        case picking           // showing the list, waiting for a choice
+        case startingNode  // bringing the tsnet node up (maybe awaiting login)
+        case discovering  // listing sharers
+        case picking  // showing the list, waiting for a choice
         case connecting(String)  // dialing the chosen sharer (by hostname, for display)
     }
 

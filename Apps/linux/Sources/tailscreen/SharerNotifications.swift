@@ -1,12 +1,12 @@
 import Foundation
 import GNotifyKit
 
-import enum TailscreenProtocol.SharerNoticeKind
-import enum TailscreenProtocol.SharerNoticeText
-import protocol TailscreenProtocol.NoticePosting
 import struct TailscreenProtocol.NoticeCandidate
+import protocol TailscreenProtocol.NoticePosting
 import struct TailscreenProtocol.SharerNotice
+import enum TailscreenProtocol.SharerNoticeKind
 import struct TailscreenProtocol.SharerNoticeReconciler
+import enum TailscreenProtocol.SharerNoticeText
 
 /// Posts the sharer's notifications, and routes their buttons back.
 ///

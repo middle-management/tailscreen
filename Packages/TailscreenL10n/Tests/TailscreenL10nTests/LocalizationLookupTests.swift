@@ -31,13 +31,13 @@ final class LocalizationLookupTests: XCTestCase {
         try FileManager.default.createDirectory(
             at: directory.appendingPathComponent("sv.lproj"), withIntermediateDirectories: true)
         try """
-            "Refresh" = "Uppdatera";
-            "%lld watching" = "%lld tittar";
-            "%@ wants to watch" = "%@ vill titta";
-            """
-            .write(
-                to: directory.appendingPathComponent("sv.lproj/Localizable.strings"),
-                atomically: true, encoding: .utf8)
+        "Refresh" = "Uppdatera";
+        "%lld watching" = "%lld tittar";
+        "%@ wants to watch" = "%@ vill titta";
+        """
+        .write(
+            to: directory.appendingPathComponent("sv.lproj/Localizable.strings"),
+            atomically: true, encoding: .utf8)
         #endif
     }
 

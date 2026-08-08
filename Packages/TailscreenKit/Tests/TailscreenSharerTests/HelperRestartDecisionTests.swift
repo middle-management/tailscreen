@@ -1,6 +1,5 @@
-import XCTest
-
 import TailscreenSharer
+import XCTest
 
 /// Unit tests for the pure helper-restart decisions extracted from
 /// `TailscaleScreenShareServer.onUnexpectedExit` and the idle-sweep watchdog:

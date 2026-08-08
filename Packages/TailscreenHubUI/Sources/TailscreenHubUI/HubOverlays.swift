@@ -27,7 +27,7 @@ public struct AnnotationToolbar: View {
     /// Glyphs: pencil, diagonal, arrow, rectangle, ellipse, target.
     public static let tools: [(tool: AnnotationTool, glyph: String, name: String)] = [
         (.pen, "✎", L("Pen")), (.line, "╱", L("Line")), (.arrow, "↗", L("Arrow")),
-        (.rectangle, "▭", L("Rect")), (.oval, "◯", L("Oval")), (.click, "◎", L("Click")),
+        (.rectangle, "▭", L("Rect")), (.oval, "◯", L("Oval")), (.click, "◎", L("Click"))
     ]
 
     /// Localized names for `Annotation.RGBA.palette`, index-aligned with it —
@@ -35,7 +35,7 @@ public struct AnnotationToolbar: View {
     /// a color is called the same thing on every platform.
     public static let paletteColorNames: [String] = [
         L("Red"), L("Blue"), L("Green"), L("Orange"),
-        L("Purple"), L("Teal"), L("Pink"), L("Yellow"),
+        L("Purple"), L("Teal"), L("Pink"), L("Yellow")
     ]
 
     /// The palette with its spoken names, zipped so a palette edit that
@@ -103,9 +103,11 @@ public struct AnnotationToolbar: View {
             // label is a String — the current color cannot ride the label the
             // way the macOS item's swatch icon does.
             Circle()
-                .fill(Color(
-                    red: inkColor.r, green: inkColor.g, blue: inkColor.b,
-                    opacity: inkColor.a))
+                .fill(
+                    Color(
+                        red: inkColor.r, green: inkColor.g, blue: inkColor.b,
+                        opacity: inkColor.a)
+                )
                 .frame(width: 16, height: 16)
             if let onSelectColor {
                 Menu(L("Color")) {

@@ -1,5 +1,4 @@
 import Foundation
-
 import WASAPIKit
 
 // Exists so that CI links the WASAPI shim, not so that anyone runs it.

@@ -151,7 +151,8 @@ enum TestSharer {
         note("serving \(config.width)x\(config.height) @ \(config.fps)fps; waiting for viewers…")
 
         let roster = ViewerRoster()
-        let bindAddr = ips.ip4 != nil
+        let bindAddr =
+            ips.ip4 != nil
             ? "\(ips.ip4!):\(NetworkConfig.tailscreenPort)"
             : "[\(ips.ip6!)]:\(NetworkConfig.tailscreenPort)"
 

@@ -36,6 +36,15 @@ excluded:
 
 # Bug-class rules first; style rules opt-in only when they catch real risk.
 disabled_rules:
+  # swift-format owns brace placement, and since the repo-wide sweep it owns it
+  # over every tree and as a REQUIRED check. It wraps a multi-line `if`/`guard`
+  # condition with the brace on its own line, which is exactly what this rule
+  # objects to — so leaving it on makes the two tools fight over the same
+  # bytes, with the rewriter winning and the linter reporting. That is not a
+  # style question anybody can settle by editing: `make format` puts it back.
+  # 28 of the baseline's 102 entries were this rule complaining about
+  # swift-format's output before the sweep even widened.
+  - opening_brace
   - line_length
   - file_length
   - type_body_length

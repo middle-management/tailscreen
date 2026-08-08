@@ -93,10 +93,12 @@ enum OverlayInputSelfTest {
 
         // Map, so the window exists to be armed. Arming a never-shown window
         // would fail for a reason that says nothing about the feature.
-        overlay.apply(.add(Annotation(
-            id: UUID(), tool: .line,
-            points: [CGPoint(x: 0.1, y: 0.1), CGPoint(x: 0.2, y: 0.2)],
-            color: Annotation.RGBA(r: 1, g: 0, b: 0, a: 1), width: 8)))
+        overlay.apply(
+            .add(
+                Annotation(
+                    id: UUID(), tool: .line,
+                    points: [CGPoint(x: 0.1, y: 0.1), CGPoint(x: 0.2, y: 0.2)],
+                    color: Annotation.RGBA(r: 1, g: 0, b: 0, a: 1), width: 8)))
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
             guard overlay.setInteractive(true) else {
@@ -116,17 +118,20 @@ enum OverlayInputSelfTest {
     }
 
     private static func inject(injector: XTestInjector) {
-        injector.apply(.mouseDown(
-            x: dragStart.x, y: dragStart.y, button: .left, modifiers: []))
+        injector.apply(
+            .mouseDown(
+                x: dragStart.x, y: dragStart.y, button: .left, modifiers: []))
         // A midpoint as well as the end: GtkGestureDrag reports offsets from
         // the press, and a mapping that forgot to add the start back would
         // still land the *end* somewhere plausible while every intermediate
         // point collapsed toward the origin.
-        injector.apply(.mouseMove(
-            x: (dragStart.x + dragEnd.x) / 2, y: (dragStart.y + dragEnd.y) / 2))
+        injector.apply(
+            .mouseMove(
+                x: (dragStart.x + dragEnd.x) / 2, y: (dragStart.y + dragEnd.y) / 2))
         injector.apply(.mouseMove(x: dragEnd.x, y: dragEnd.y))
-        injector.apply(.mouseUp(
-            x: dragEnd.x, y: dragEnd.y, button: .left, modifiers: []))
+        injector.apply(
+            .mouseUp(
+                x: dragEnd.x, y: dragEnd.y, button: .left, modifiers: []))
         injector.apply(.keyDown(key: escapeHID, modifiers: []))
         injector.apply(.keyUp(key: escapeHID, modifiers: []))
     }
