@@ -1,6 +1,6 @@
 name: Linux app
 
-# ONE definition of "build the GTK app in the swift:6.3-noble container, prove
+# ONE definition of "build the GTK app in the swift:6.3-jammy container, prove
 # it renders, and package it".
 #
 # build.yml's `linux-app-arm64` and release.yml's `linux-arm64` were
@@ -83,14 +83,14 @@ on:
 
 jobs:
   build:
-    # GitHub's free arm64 runner for public repos, with the SAME swift:6.3-noble
+    # GitHub's free arm64 runner for public repos, with the SAME swift:6.3-jammy
     # container as every other Linux job: the library/swift image is multi-arch
     # (amd64 + arm64, verified on Docker Hub), so the apt package set and job
     # shape stay identical across architectures and there is no
     # swift.org-tarball toolchain install to maintain.
     runs-on: ${{ inputs.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     timeout-minutes: 40
-    container: swift:6.3-noble
+    container: swift:6.3-jammy
 
     env:
       APPIMAGE_ARCH: ${{ inputs.arch == 'arm64' && 'aarch64' || 'x86_64' }}
@@ -197,10 +197,10 @@ jobs:
         with:
           path: Apps/linux/.build
           key: >-
-            linux-app-build-swift6.3-noble-${{ runner.os }}-${{ runner.arch
+            linux-app-build-swift6.3-jammy-${{ runner.os }}-${{ runner.arch
             }}-${{ inputs.configuration }}-${{ hashFiles('Apps/linux/Package.resolved') }}
           restore-keys: |
-            linux-app-build-swift6.3-noble-${{ runner.os }}-${{ runner.arch }}-${{ inputs.configuration }}-
+            linux-app-build-swift6.3-jammy-${{ runner.os }}-${{ runner.arch }}-${{ inputs.configuration }}-
 
       - name: Build the app
         # PKG_CONFIG_PATH resolves libtailscale.pc for the tsnet transport;
@@ -211,6 +211,59 @@ jobs:
           PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" \
             swift build -c ${{ inputs.configuration }} \
             --package-path Apps/linux --product tailscreen
+
+      - name: glibc floor
+        # THE PORTABILITY GATE, and the reason this job builds in jammy rather
+        # than the newest image available.
+        #
+        # An AppImage deliberately does NOT bundle glibc — it has to match the
+        # host's loader — so every glibc symbol the build binds to becomes a
+        # hard requirement on whoever runs it. Built in noble, v0.10.0-rc.1
+        # required GLIBC_2.38 and would not start on Debian 12 (2.36), Ubuntu
+        # 22.04 LTS (2.35) or RHEL 9 (2.34): the release note said
+        # "self-contained, no install step" and the app died in the loader.
+        #
+        # What made it un-catchable is how little it takes. The app's own floor
+        # came down to ONE symbol — `fmod@GLIBC_2.38` — with everything else it
+        # calls topping out at 2.34. Nothing in the source says "2.38"; the
+        # number is a property of the image the compiler ran in, so it can rise
+        # from a base-image bump that looks like routine maintenance. Hence a
+        # number asserted here rather than a convention nobody can see.
+        #
+        # Raising MAX_GLIBC is a deliberate act that drops distros. Check
+        # docs/install.md's table in the same commit.
+        env:
+          MAX_GLIBC: '2.35'
+        run: |
+          # POSIX sh, not bash: this job runs in a container where the default
+          # shell resolves to `sh -e`, so `set -o pipefail` is an "Illegal
+          # option" and the step dies before it checks anything.
+          set -eu
+          bin="Apps/linux/.build/${{ inputs.configuration }}/tailscreen"
+          if [ ! -f "$bin" ]; then
+            echo "::error::no binary at $bin to check"
+            exit 1
+          fi
+          need="$(readelf -V "$bin" \
+                  | grep -oE 'GLIBC_[0-9]+\.[0-9]+' \
+                  | sed 's/GLIBC_//' | sort -uV | tail -1)"
+          # Assert the reading rather than the pipeline's exit status, which is
+          # `tail`'s and therefore 0 even when readelf found nothing. Without
+          # this an empty $need compares equal to the ceiling and the gate
+          # PASSES — silence reading as success, on the one step whose whole
+          # job is to notice something.
+          if [ -z "$need" ]; then
+            echo "::error::no GLIBC_ version symbols found in $bin"
+            exit 1
+          fi
+          echo "highest glibc symbol required: $need (ceiling $MAX_GLIBC)"
+          # sort -V puts the larger last; if that is not the ceiling, we exceeded it.
+          if [ "$(printf '%s\n%s\n' "$need" "$MAX_GLIBC" | sort -V | tail -1)" != "$MAX_GLIBC" ]; then
+            echo "::error::binary requires glibc $need, above the $MAX_GLIBC ceiling."
+            echo "Symbols forcing it:"
+            readelf --dyn-syms -W "$bin" | grep "GLIBC_$need" | awk '{print "  " $8}' | sort -u
+            exit 1
+          fi
 
       - name: Headless render self-test (Xvfb + software GL)
         # Renders a 4-bar YUV frame through GtkVideoView, reads the pixels back,
@@ -370,6 +423,40 @@ jobs:
             exit 1
           fi
           cp -R "$L10N_SRC" "$STAGE/$(basename "$L10N_SRC")"
+
+          # THE SWIFT RUNTIME RIDES ALONG, and without it the tarball does not
+          # start on ANY machine. The binary's RUNPATH is
+          # `/usr/lib/swift/linux:$ORIGIN`: the first entry exists only where
+          # somebody installed a Swift toolchain, and no distro packages one,
+          # so a tarball with no .so beside the binary resolves libswiftCore
+          # nowhere. v0.10.0-rc.1 shipped exactly that — nine files, none of
+          # them a library — and its README listed GTK and FFmpeg as the
+          # runtime dependencies without mentioning Swift at all.
+          #
+          # `$ORIGIN` is already in the RUNPATH, so copying them beside the
+          # binary is the whole fix; nothing needs patching. GTK, FFmpeg and
+          # ALSA are deliberately NOT copied — distros ship those, and the
+          # AppImage is the answer for anyone who would rather not install
+          # them.
+          SWIFT_RT=/usr/lib/swift/linux
+          if [ ! -d "$SWIFT_RT" ]; then
+            echo "::error::no Swift runtime at $SWIFT_RT to stage"
+            exit 1
+          fi
+          cp -P "$SWIFT_RT"/*.so* "$STAGE/"
+          # Assert rather than trust the glob: a silently empty copy is the
+          # failure this step exists to prevent, and it looks identical to a
+          # working one until somebody unpacks it on a machine without Swift.
+          for lib in libswiftCore.so libFoundation.so libdispatch.so \
+                     libBlocksRuntime.so libswift_Concurrency.so; do
+            if [ ! -e "$STAGE/$lib" ]; then
+              echo "::error::$lib missing from the staged tarball"
+              ls -la "$STAGE" || true
+              exit 1
+            fi
+          done
+          echo "staged $(ls "$STAGE"/*.so* | wc -l) Swift runtime libraries"
+
           cat > "$STAGE/README.txt" <<EOF
           Tailscreen for Linux (${PACKAGE_ARCH})
           ============================
@@ -377,13 +464,22 @@ jobs:
           Run:  ./tailscreen            (picker mode)
                 ./tailscreen <host>     (dial a sharer directly)
 
-          Keep the *_TailscreenL10n.bundle folder beside the binary — it
-          carries the translations, and the app falls back to English without
-          it. Force a language with TAILSCREEN_LANG=sv.
+          Keep EVERYTHING in this folder together. The *.so files are the
+          Swift runtime, which no distro packages — the binary looks for them
+          beside itself, so moving it out on its own will not start. The
+          *_TailscreenL10n.resources folder carries the translations, and the
+          app falls back to English without it. Force a language with
+          TAILSCREEN_LANG=sv.
 
-          Runtime dependencies (Ubuntu 24.04 package names):
-            libgtk-4-1 libepoxy0 libavcodec60 libavutil58 libasound2t64
+          Runtime dependencies you must have installed (Ubuntu 22.04 package
+          names — this build is made on 22.04):
+            libgtk-4-1 libepoxy0 libavcodec58 libavutil56 libasound2
             libopus0 mesa/OpenGL drivers
+
+          Those are matched by SONAME, so a much newer distro may carry a
+          different generation of FFmpeg (libavcodec60 and up) and not
+          satisfy this build. The AppImage carries its own copies and does
+          not care — prefer it unless you cannot use FUSE.
 
           Sign in happens in your browser on first run (tsnet interactive
           login), or export TAILSCREEN_TS_AUTHKEY. See the repository's
@@ -403,7 +499,7 @@ jobs:
 
       # Uploaded on EVERY trigger: for a per-push or PR build it is the
       # deliverable, for a release build it is the hand-off to the caller's
-      # upload job — `gh` is not installed in swift:6.3-noble, so the release
+      # upload job — `gh` is not installed in swift:6.3-jammy, so the release
       # upload cannot happen here.
       - name: Upload build artifact
         if: inputs.package != 'none'
@@ -444,5 +540,5 @@ jobs:
             Apps/linux/.build
             !Apps/linux/.build/**/${{ inputs.configuration }}/tailscreen
           key: >-
-            linux-app-build-swift6.3-noble-${{ runner.os }}-${{ runner.arch
+            linux-app-build-swift6.3-jammy-${{ runner.os }}-${{ runner.arch
             }}-${{ inputs.configuration }}-${{ hashFiles('Apps/linux/Package.resolved') }}

@@ -67,12 +67,30 @@ attached to the same GitHub release as the Mac app:
   ./Tailscreen-<version>-x86_64.AppImage
   ```
 
-- **arm64 tarball** (`Tailscreen-<version>-linux-arm64.tar.gz`) — the same
-  app as a plain tarball for machines without FUSE. Unpack it and run the
-  bundled `tailscreen` binary; it needs the distro's GTK4 and GL libraries
-  installed.
+- **tarball** (`Tailscreen-<version>-linux-<arch>.tar.gz`) — the same app as
+  a plain tarball, for machines without FUSE. Unpack it and run `tailscreen`
+  from inside the folder. It carries the Swift runtime beside the binary
+  (no distro packages that), but it does **not** carry GTK4, FFmpeg, ALSA or
+  the GL drivers — install those from your distro, and see the bundled
+  `README.txt` for the package names.
 
-Two things to know:
+**Which distros the AppImage runs on.** It bundles its libraries but *not*
+glibc — glibc has to match your kernel's loader, so it can never be bundled.
+The build therefore sets a floor:
+
+| Your distro | glibc | AppImage |
+| :--- | :--- | :---: |
+| Ubuntu 22.04 LTS and newer | 2.35+ | ✅ |
+| Debian 12 bookworm and newer | 2.36+ | ✅ |
+| Fedora 36 and newer | 2.35+ | ✅ |
+| RHEL / Rocky / Alma 9 | 2.34 | ❌ |
+| Anything older | < 2.35 | ❌ |
+
+If it fails with `version 'GLIBC_2.xx' not found`, your distro is below the
+floor — there is no workaround short of building from source, because the
+error comes from the dynamic loader before any of our code runs.
+
+Two more things to know:
 
 - **AppImages need FUSE** to self-mount. Desktop distros generally have it;
   minimal containers often don't. If it fails with a `libfuse.so.2` error,
