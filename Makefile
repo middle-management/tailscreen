@@ -1,4 +1,4 @@
-.PHONY: help build run clean release install tailscale test test-protocol test-tsan test-l10n lint lint-baseline format format-check print-format-paths-all e2e-up e2e-down test-e2e test-e2e-local test-e2e-harness icon
+.PHONY: help build run clean release install tailscale test test-protocol test-tsan test-l10n lint lint-baseline format format-check print-format-paths-all e2e-up e2e-down test-e2e test-e2e-local test-e2e-harness icon icon-windows
 
 # Default target: print a one-line summary of every target. Targets are
 # self-documented via the `## description` suffix on each rule.
@@ -235,3 +235,18 @@ icon: ## Regenerate Tailscreen.icns + in-app PDFs from docs/assets/{app-icon,log
 	@rsvg-convert -f pdf Apps/macOS/Sources/Resources/MenubarViewing.svg -o Apps/macOS/Sources/Resources/MenubarViewing.pdf
 	@rsvg-convert -f pdf docs/assets/logo.svg -o Apps/macOS/Sources/Resources/WelcomeIcon.pdf
 	@echo "Wrote Apps/macOS/Sources/Resources/{MenubarIcon,MenubarSharing,MenubarViewing,WelcomeIcon}.pdf"
+
+# Regenerate the Windows MSIX logo assets from the same source SVG. Sizes are
+# the ones AppxManifest.xml names (scale-100 only — the manifest references the
+# bare filenames). The wide tile is the square icon centered on a transparent
+# 310x150 page rather than a stretch: rsvg-convert's -w/-h would distort it.
+WIN_ASSETS := Apps/windows/packaging/Assets
+
+icon-windows: ## Regenerate the Windows MSIX logo PNGs from docs/assets/app-icon.svg
+	@command -v rsvg-convert >/dev/null 2>&1 || { echo "rsvg-convert missing — brew install librsvg / apt install librsvg2-bin"; exit 1; }
+	@rsvg-convert -w 44  -h 44  "$(ICON_SRC)" -o "$(WIN_ASSETS)/Square44x44Logo.png"
+	@rsvg-convert -w 50  -h 50  "$(ICON_SRC)" -o "$(WIN_ASSETS)/StoreLogo.png"
+	@rsvg-convert -w 150 -h 150 "$(ICON_SRC)" -o "$(WIN_ASSETS)/Square150x150Logo.png"
+	@rsvg-convert -w 310 -h 310 "$(ICON_SRC)" -o "$(WIN_ASSETS)/Square310x310Logo.png"
+	@rsvg-convert -w 150 -h 150 --page-width 310 --page-height 150 --left 80 "$(ICON_SRC)" -o "$(WIN_ASSETS)/Wide310x150Logo.png"
+	@echo "Wrote $(WIN_ASSETS)/{Square44x44Logo,StoreLogo,Square150x150Logo,Square310x310Logo,Wide310x150Logo}.png"
