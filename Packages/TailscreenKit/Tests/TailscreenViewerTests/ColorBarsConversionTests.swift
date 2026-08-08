@@ -1,8 +1,8 @@
 import XCTest
 
-@testable import TailscreenViewer
-
 import enum TailscreenProtocol.I420Converter
+
+@testable import TailscreenViewer
 
 /// `makeColorBarsFrame()` put through `I420Converter` — the CPU reference the
 /// two GPU render self-tests are compared against.

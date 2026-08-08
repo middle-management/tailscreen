@@ -37,7 +37,7 @@ final class CaseVariantKeyTests: XCTestCase {
         // mid-sentence grammar, not styling drift.
         [
             "Could not change the shared source: %@",
-            "could not change the shared source: %@",
+            "could not change the shared source: %@"
         ],
         // Standalone status badge vs the lowercase interpolated into the
         // "%@, %@" accessibility sentence — different grammatical positions,
@@ -47,7 +47,7 @@ final class CaseVariantKeyTests: XCTestCase {
         // Empty-state punctuation is a per-surface convention: the mac hub's
         // empty states carry no terminal period ("No other running apps"),
         // the shared hub's all do ("No screens match your search.").
-        ["No screens match your filters", "No screens match your filters."],
+        ["No screens match your filters", "No screens match your filters."]
     ]
 
     private var baseCatalogURL: URL {

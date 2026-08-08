@@ -52,7 +52,7 @@ final class ViewerSessionTests: XCTestCase {
             pending.append(frame)  // not delivered yet — async backend
         }
         func flush() {
-            pending.forEach { onDecodedFrame?($0) }
+            for frame in pending { onDecodedFrame?(frame) }
             pending.removeAll()
         }
     }
@@ -228,8 +228,9 @@ final class ViewerSessionTests: XCTestCase {
         let nals = AVCCParser.nalUnits(from: makeAVCC(byteCount: 200, marker: 0x41))
         var packets: [Data] = []
         for i in 0..<8 {
-            packets.append(contentsOf: packetizer.packetize(
-                nals: nals, timestamp: UInt32(9000 + i * 3000), ssrc: 42, startSequence: UInt16(i)))
+            packets.append(
+                contentsOf: packetizer.packetize(
+                    nals: nals, timestamp: UInt32(9000 + i * 3000), ssrc: 42, startSequence: UInt16(i)))
         }
         for (i, packet) in packets.enumerated() where i != 2 {
             session.receiveRTP(packet)
@@ -673,7 +674,8 @@ final class ViewerSessionTests: XCTestCase {
             let p = AVCCParser.nalUnits(from: makeAVCC(byteCount: 200, marker: 0x41))
             for pkt in packetizer.packetize(
                 nals: p, timestamp: UInt32(9000 + i * 3000), ssrc: 42,
-                startSequence: UInt16(i)) {
+                startSequence: UInt16(i))
+            {
                 session.receiveRTP(pkt)
             }
         }

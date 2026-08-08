@@ -29,7 +29,7 @@ final class LocalizationCatalogTests: XCTestCase {
         "Apps/macOS/Sources",
         "Apps/linux/Sources",
         "Apps/windows/Sources",
-        "Packages/TailscreenHubUI/Sources",
+        "Packages/TailscreenHubUI/Sources"
     ]
 
     private static let catalogRoot =

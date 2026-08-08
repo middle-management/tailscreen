@@ -4,14 +4,14 @@ import SwiftCrossUI
 import TailscreenHubUI
 import TailscreenL10n
 import TailscreenProtocol
-
-// Targeted: the mic seam only. A blanket `import TailscreenAudio` would pull
-// OpusKit's re-exports into this file for two type names.
-import protocol TailscreenAudio.MicrophoneCapturing
 import TailscreenViewer
 import TailscreenViewerCore
 import TailscreenViewerGtk
 import TailscreenViewerTsnet
+
+// Targeted: the mic seam only. A blanket `import TailscreenAudio` would pull
+// OpusKit's re-exports into this file for two type names.
+import protocol TailscreenAudio.MicrophoneCapturing
 
 // tailscreen — native GTK desktop viewer.
 //
@@ -223,7 +223,7 @@ if gSelfTest {
             tags: ["tag:studio"]),
         DiscoveredSharer(
             id: "3", hostname: "living-room-tv", tailscaleIP: "100.64.0.44", isOnline: false,
-            tags: ["tag:media"]),
+            tags: ["tag:media"])
     ]
     // The preview is a screenshot surface, not a returning user: show the whole
     // seeded list (including the offline row) regardless of what this machine
@@ -233,7 +233,7 @@ if gSelfTest {
         "1": TailscreenMetadata(
             shareName: "robert's Screen", hostname: "robert-macbook",
             screenResolution: .init(width: 1920, height: 1080),
-            isSharing: true, timestamp: Date(), videoCodec: .hevc),
+            isSharing: true, timestamp: Date(), videoCodec: .hevc)
     ]
     // Show the account menu in the preview (no-op actions).
     gSwitchProfile = { _ in }
@@ -655,9 +655,11 @@ if gSelfTest {
                     config.nodeRole = .shareCapable(name: localShareName())
                 }
                 do {
-                    try await transport.prepare(config: config, onLoginURL: { url in
-                        Task { @MainActor in gPicker.loginURL = url.absoluteString }
-                    })
+                    try await transport.prepare(
+                        config: config,
+                        onLoginURL: { url in
+                            Task { @MainActor in gPicker.loginURL = url.absoluteString }
+                        })
                     gPicker.loginURL = nil
                     // Label the account by its resolved login once known.
                     if let identity = transport.accountIdentity {
@@ -853,7 +855,8 @@ struct ViewerApp: App {
                 // would have muted: the press that discovers it is the one
                 // made believing this side had gone quiet.
                 if sharer.micAvailable, let hotkey = gMuteHotkey,
-                    let reason = sharer.muteHotkeyUnavailability {
+                    let reason = sharer.muteHotkeyUnavailability
+                {
                     notes.append(
                         MuteHotkeyNote.text(
                             chord: hotkey.chordDisplay, unavailability: reason))

@@ -77,7 +77,8 @@ final class FramedResponseDrainTests: XCTestCase {
     /// A frame this caller is not waiting for is skipped, not fatal — the
     /// property that lets new message types ship without breaking old peers.
     func testUnrelatedFramesAreIgnoredRatherThanFatal() async {
-        let noise = ScreenShareMessage.controlRequest.encode()
+        let noise =
+            ScreenShareMessage.controlRequest.encode()
             + ScreenShareMessage.controlReleased.encode()
         let wire = Wire([
             .bytes(noise),

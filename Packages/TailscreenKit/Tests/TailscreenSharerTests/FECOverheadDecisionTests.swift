@@ -1,7 +1,6 @@
-import XCTest
-
 import TailscreenProtocol
 import TailscreenSharer
+import XCTest
 
 /// Pure-decision tests for the adaptive-FEC arm of the congestion sweep
 /// (`fecSweepDecision` + its helpers): the strictly PER-VIEWER RTT ∧ loss

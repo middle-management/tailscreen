@@ -243,11 +243,14 @@ public struct ShareCard: View {
                         // click-through-no-longer overlay, so the way back has
                         // to be on screen BEFORE it is needed — once armed,
                         // this window is behind the overlay and unreadable.
-                        Text(drawing.note ?? (drawing.activeTool == nil
-                            ? L("Drawing takes over the screen; Esc gives it back")
-                            : L("Press Esc to stop drawing")))
-                            .font(.caption)
-                            .foregroundColor(HubStyle.secondaryText)
+                        Text(
+                            drawing.note
+                                ?? (drawing.activeTool == nil
+                                    ? L("Drawing takes over the screen; Esc gives it back")
+                                    : L("Press Esc to stop drawing"))
+                        )
+                        .font(.caption)
+                        .foregroundColor(HubStyle.secondaryText)
                     }
                 }
                 ForEach(prompts, id: \.id) { prompt in
@@ -324,7 +327,6 @@ public struct ShareCard: View {
     }
 }
 
-
 /// A thumbnail of the frame viewers are currently receiving.
 ///
 /// Raw packed RGBA rather than an encoded image, because the two hosts that
@@ -372,7 +374,6 @@ public struct HubMicrophone: Sendable {
         self.toggle = toggle
     }
 }
-
 
 /// The sharer's own drawing tools, as the share card needs them.
 ///

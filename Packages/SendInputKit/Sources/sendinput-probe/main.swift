@@ -35,7 +35,7 @@ print(
 let region = desktop
 
 for (label, nx, ny) in [
-    ("top-left", 0.0, 0.0), ("centre", 0.5, 0.5), ("bottom-right", 1.0, 1.0),
+    ("top-left", 0.0, 0.0), ("centre", 0.5, 0.5), ("bottom-right", 1.0, 1.0)
 ] {
     let point = WindowsPointerMapping.absolutePoint(
         normalizedX: nx, normalizedY: ny, in: region, virtualDesktop: desktop)

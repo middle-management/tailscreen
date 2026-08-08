@@ -101,7 +101,9 @@ final class AnnotationRenderingTests: XCTestCase {
         return buffer
     }
 
-    private func pixel(_ buffer: [UInt8], x: Int, y: Int, width: Int = 400) -> (
+    private func pixel(
+        _ buffer: [UInt8], x: Int, y: Int, width: Int = 400
+    ) -> (
         b: UInt8, g: UInt8, r: UInt8, a: UInt8
     ) {
         let index = (y * width + x) * 4
@@ -163,7 +165,7 @@ final class AnnotationRenderingTests: XCTestCase {
         let path: [CGPoint] = [.init(x: 0.1, y: 0.5), .init(x: 0.9, y: 0.5)]
         let buffer = rasterize([
             stroke(tool: .line, points: path, color: red, width: 20),
-            stroke(tool: .line, points: path, color: blue, width: 20),
+            stroke(tool: .line, points: path, color: blue, width: 20)
         ])
         let onLine = pixel(buffer, x: 200, y: 200)
         XCTAssertGreaterThan(onLine.b, 200)

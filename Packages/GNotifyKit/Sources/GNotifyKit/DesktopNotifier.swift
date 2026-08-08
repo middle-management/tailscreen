@@ -177,7 +177,7 @@ public final class DesktopNotifier: @unchecked Sendable {
     ) -> T {
         guard !strings.isEmpty else { return body(nil) }
         let owned = strings.compactMap { strdup($0) }
-        defer { owned.forEach { free($0) } }
+        defer { for pointer in owned { free(pointer) } }
         // A strdup that returned nil would silently shorten the array and pair
         // a key with the wrong label, so a partial copy is no copy at all.
         guard owned.count == strings.count else { return body(nil) }

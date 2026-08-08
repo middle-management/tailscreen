@@ -65,8 +65,8 @@ public enum ALSA {
                 SND_PCM_ACCESS_RW_INTERLEAVED,
                 channels,
                 sampleRate,
-                1,       // soft_resample: let ALSA resample if the HW can't do this rate
-                50_000   // latency target in µs (50 ms)
+                1,  // soft_resample: let ALSA resample if the HW can't do this rate
+                50_000  // latency target in µs (50 ms)
             )
             guard paramResult == 0 else {
                 snd_pcm_close(handle)

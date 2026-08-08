@@ -151,7 +151,8 @@ public struct SharerRow: View {
         .frame(maxWidth: .infinity)
         .background(
             RoundedRectangle(cornerRadius: HubStyle.rowRadius)
-                .fill(isExpanded ? HubStyle.rowFillSelected : HubStyle.rowFill))
+                .fill(isExpanded ? HubStyle.rowFillSelected : HubStyle.rowFill)
+        )
         .onTapGesture { onTap() }
     }
 }

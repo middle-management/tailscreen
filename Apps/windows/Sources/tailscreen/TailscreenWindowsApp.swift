@@ -1106,7 +1106,8 @@ final class AppUIState: ObservableObject {
         // muted: the press that discovers it is the one made believing this
         // side had gone quiet.
         if sharing.micAvailable, let hotkey = muteHotkey,
-            let reason = hotkeyUnavailability {
+            let reason = hotkeyUnavailability
+        {
             notes.append(
                 MuteHotkeyNote.text(chord: hotkey.chordDisplay, unavailability: reason))
         }

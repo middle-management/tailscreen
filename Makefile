@@ -111,8 +111,6 @@ lint-baseline: ## Regenerate the SwiftLint baseline from current state
 # covered: they still carry pre-existing swift-format violations. Fold each in
 # here once its tree is clean — FORMAT_PATHS_ALL below is the full list this
 # is converging on, and says how to get there.
-FORMAT_PATHS := Apps/macOS/Sources Apps/macOS/Tests Packages/TailscreenKit/Sources \
-	Packages/TailscreenL10n/Sources Apps/linux/Sources/TailscreenViewerGtk
 
 # The TARGET STATE for FORMAT_PATHS: every tree in the repo that carries Swift
 # we own. NOT yet wired into `format` / `format-check` — the sweep that makes
@@ -148,6 +146,16 @@ FORMAT_PATHS := Apps/macOS/Sources Apps/macOS/Tests Packages/TailscreenKit/Sourc
 FORMAT_PATHS_ALL := Apps/macOS/Sources Apps/macOS/Tests \
 	Apps/linux/Sources Apps/windows/Sources \
 	$(filter-out Packages/TailscaleKit/Sources, $(wildcard Packages/*/Sources Packages/*/Tests))
+
+# Every tree swift-format owns. Was five trees for as long as the check was
+# advisory; the sweep that made the rest conform is what let it become the
+# default — and the required check. FORMAT_PATHS_ALL above is the definition;
+# this alias is what `format` and `format-check` actually read, kept so a
+# future carve-out has somewhere to go that is not the definition itself.
+# `:=` is immediate expansion, so this line MUST stay BELOW the definition
+# above. Placed before it, it expands to the empty string and `format-check`
+# passes by checking nothing at all.
+FORMAT_PATHS := $(FORMAT_PATHS_ALL)
 
 print-format-paths-all: ## Print FORMAT_PATHS_ALL (the target-state format tree list)
 	@echo '$(FORMAT_PATHS_ALL)'

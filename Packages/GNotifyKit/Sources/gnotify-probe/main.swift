@@ -130,7 +130,7 @@ guard
             // "default" first: most daemons treat that key as the one a plain
             // activation invokes, which is what `dunstctl action` presses.
             DesktopNotifier.Action(key: "default", label: "Accept"),
-            DesktopNotifier.Action(key: "deny", label: "Deny"),
+            DesktopNotifier.Action(key: "deny", label: "Deny")
         ],
         urgency: .critical,
         expiresAutomatically: false)

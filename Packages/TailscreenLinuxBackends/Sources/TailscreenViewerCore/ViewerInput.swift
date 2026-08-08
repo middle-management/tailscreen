@@ -143,6 +143,6 @@ public enum ViewerInputMapping {
         110: 0x49, 111: 0x4C,  // Insert Delete
         119: 0x48,  // Pause
         125: 0xE3, 126: 0xE7,  // LeftMeta RightMeta (Super)
-        127: 0x65,  // Compose / Menu
+        127: 0x65  // Compose / Menu
     ]
 }

@@ -21,7 +21,10 @@ final class ViewerInputMappingTests: XCTestCase {
     func testNormalizeLetterboxTopBottom() {
         // 16:9 video in a 1:1 widget → fit to width, letterbox top+bottom.
         // Content height = 200 * 9/16 = 112.5, offsetY = (200-112.5)/2 = 43.75.
-        let w = 200.0, h = 200.0, vw = 1600, vh = 900
+        let w = 200.0
+        let h = 200.0
+        let vw = 1600
+        let vh = 900
         // Top-left of the content rect maps to (0,0).
         let tl = ViewerInputMapping.normalizePointer(px: 0, py: 43.75, widgetW: w, widgetH: h, videoW: vw, videoH: vh)
         XCTAssertEqual(tl.x, 0.0, accuracy: 1e-6)
@@ -45,7 +48,10 @@ final class ViewerInputMappingTests: XCTestCase {
     func testNormalizeLetterboxLeftRight() {
         // Tall video in a wide widget → fit to height, letterbox left+right.
         // 9:16 video in 2:1 widget: content width = 200 * (9/16... ) via height.
-        let w = 400.0, h = 200.0, vw = 900, vh = 1600
+        let w = 400.0
+        let h = 200.0
+        let vw = 900
+        let vh = 1600
         let frameAspect = Double(vw) / Double(vh)  // 0.5625
         let contentW = h * frameAspect  // 112.5
         let offsetX = (w - contentW) / 2  // 143.75

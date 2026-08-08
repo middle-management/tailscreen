@@ -27,7 +27,9 @@ public final class WindowsHotkey {
     /// FALSE with `ERROR_HOTKEY_ALREADY_REGISTERED` when another application
     /// holds the combo, and a wrapper that ignored the return value would
     /// advertise a shortcut that can never fire.
-    public static func hold(_ chord: ShortcutChord) -> Result<
+    public static func hold(
+        _ chord: ShortcutChord
+    ) -> Result<
         WindowsHotkey, GlobalHotkeyUnavailability
     > {
         guard isSupported else { return .failure(.unsupportedPlatform) }

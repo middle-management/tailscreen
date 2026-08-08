@@ -198,7 +198,7 @@ final class AccountProfileStoreTests: XCTestCase {
 
     func testXDGLayoutPrefersXDGConfigHomeThenHome() {
         let xdg = AccountProfileLayout.xdg(environment: [
-            "XDG_CONFIG_HOME": "/x/config", "HOME": "/home/robert",
+            "XDG_CONFIG_HOME": "/x/config", "HOME": "/home/robert"
         ])
         XCTAssertEqual(xdg.root, "/x/config/tailscreen")
         XCTAssertNil(xdg.seedStatePath, "this host never kept state outside the registry root")

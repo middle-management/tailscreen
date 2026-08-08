@@ -253,7 +253,7 @@ final class SharerNoticeTests: XCTestCase {
             "100.64.0.1:51820",
             "fd7a:115c:a1e0::1234:5678",
             "[fd7a:115c:a1e0::1234:5678]:7447",
-            "a:b:c:d",
+            "a:b:c:d"
         ]
         for identity in identities {
             let notice = SharerNotice(kind: .viewerPending, identity: identity, label: "wisp")

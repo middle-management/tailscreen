@@ -108,12 +108,12 @@ public enum FFmpeg {
         public static let h264Encoders = [
             "libx264", "libopenh264",
             "h264_nvenc", "h264_amf", "h264_qsv", "h264_vaapi",
-            "h264_mf", "h264_videotoolbox", "h264_v4l2m2m",
+            "h264_mf", "h264_videotoolbox", "h264_v4l2m2m"
         ]
         public static let hevcEncoders = [
             "libx265",
             "hevc_nvenc", "hevc_amf", "hevc_qsv", "hevc_vaapi",
-            "hevc_mf", "hevc_videotoolbox", "hevc_v4l2m2m",
+            "hevc_mf", "hevc_videotoolbox", "hevc_v4l2m2m"
         ]
         public static let h264Decoders = ["h264", "h264_qsv", "h264_cuvid", "h264_v4l2m2m"]
         public static let hevcDecoders = ["hevc", "hevc_qsv", "hevc_cuvid", "hevc_v4l2m2m"]
