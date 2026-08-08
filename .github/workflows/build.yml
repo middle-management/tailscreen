@@ -866,7 +866,7 @@ jobs:
     # Audio + swift-cross-ui, and the render path is gated headlessly.
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    container: swift:6.3-noble
+    container: swift:6.3-jammy
     steps:
       - uses: actions/checkout@v7
         with:
@@ -946,10 +946,10 @@ jobs:
         with:
           path: Apps/linux/.build
           key: >-
-            linux-app-build-swift6.3-noble-${{ runner.os }}-${{ runner.arch
+            linux-app-build-swift6.3-jammy-${{ runner.os }}-${{ runner.arch
             }}-debug-${{ hashFiles('Apps/linux/Package.resolved') }}
           restore-keys: |
-            linux-app-build-swift6.3-noble-${{ runner.os }}-${{ runner.arch }}-debug-
+            linux-app-build-swift6.3-jammy-${{ runner.os }}-${{ runner.arch }}-debug-
 
       # A SECOND cache for the Windows app's Linux typecheck, because it is a
       # second full swift-cross-ui compile. Its key prefix is distinct from
@@ -962,10 +962,10 @@ jobs:
         with:
           path: Apps/windows/.build
           key: >-
-            linux-typecheck-windows-app-swift6.3-noble-${{ runner.os }}-${{
+            linux-typecheck-windows-app-swift6.3-jammy-${{ runner.os }}-${{
             runner.arch }}-${{ hashFiles('Apps/windows/Package.resolved') }}
           restore-keys: |
-            linux-typecheck-windows-app-swift6.3-noble-${{ runner.os }}-${{ runner.arch }}-
+            linux-typecheck-windows-app-swift6.3-jammy-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Build the Linux app
         # PKG_CONFIG_PATH resolves libtailscale.pc for the tsnet transport.
@@ -1205,7 +1205,7 @@ jobs:
             Apps/linux/.build
             !Apps/linux/.build/**/debug/tailscreen
           key: >-
-            linux-app-build-swift6.3-noble-${{ runner.os }}-${{ runner.arch
+            linux-app-build-swift6.3-jammy-${{ runner.os }}-${{ runner.arch
             }}-debug-${{ hashFiles('Apps/linux/Package.resolved') }}
 
       - name: Save the Windows app's Linux typecheck directory
@@ -1218,11 +1218,11 @@ jobs:
             Apps/windows/.build
             !Apps/windows/.build/**/debug/tailscreen
           key: >-
-            linux-typecheck-windows-app-swift6.3-noble-${{ runner.os }}-${{
+            linux-typecheck-windows-app-swift6.3-jammy-${{ runner.os }}-${{
             runner.arch }}-${{ hashFiles('Apps/windows/Package.resolved') }}
 
   # The native Linux app on arm64 — GitHub's free arm64 runner for public
-  # repos (ubuntu-24.04-arm) in the SAME swift:6.3-noble container as every
+  # repos (ubuntu-24.04-arm) in the SAME swift:6.3-jammy container as every
   # other Linux job. Three deliberate differences from the x64
   # `linux-app` leg:
   #   • builds -c release, not debug — one build does triple duty: the arm64
