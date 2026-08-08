@@ -104,7 +104,11 @@ jobs:
       tag: ${{ steps.version.outputs.tag }}
       version: ${{ steps.version.outputs.version }}
       msix_version: ${{ steps.version.outputs.msix_version }}
+      msix_identity: ${{ steps.version.outputs.msix_identity }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
+      - uses: actions/checkout@v7
+
       - name: Resolve version
         id: version
         shell: bash
@@ -116,39 +120,16 @@ jobs:
             # obviously not a release build.
             *)                 tag="pr-${{ github.event.pull_request.number }}" ;;
           esac
-          version="${tag#v}"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-
-          # The MSIX Identity Version must be four-part x.y.z.0 — Windows
-          # reserves the fourth field for the Store, and make-msix.ps1 hard-fails
-          # on anything else. Derive it from the tag: take the leading numeric
-          # components (a pre-release suffix like v1.2.3-rc1 is dropped — MSIX
-          # versions have no pre-release concept), pad a two-part tag with .0,
-          # and fall back to 0.0.1.0 for anything non-numeric (PR builds' pr-N,
-          # oddly-shaped tags) so a packaging build never dies on version syntax.
+          # The derivation lives in a script rather than here, because it is
+          # the kind of logic whose only feedback used to be publishing a
+          # release — and it shipped a bug that way (a candidate and its
+          # release deriving the same MSIX Identity Version, so Windows refused
+          # the release as an upgrade). scripts/test-release-version.sh is the
+          # gate, and it runs on every push.
           #
-          # CONSEQUENCE FOR PRE-RELEASES, since dropping the suffix is not free:
-          # v1.3.0-rc1 and v1.3.0 both yield 1.3.0.0, so the RC's MSIX and the
-          # final one are the SAME Identity Version. Windows keys upgrades on
-          # that, so a machine that installed the RC may refuse the real release
-          # as an upgrade. The zip is unaffected (no identity, no upgrade
-          # logic), which is another reason it is the artifact to point people
-          # at while the MSIX is self-signed. If pre-release MSIXes ever need to
-          # upgrade cleanly, the fourth field is the place — Windows reserves it
-          # for the Store, but this project does not ship there.
-          #
-          # Computed unconditionally even though only Windows reads it: one
-          # derivation with an unused output beats a second version job.
-          if [[ "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
-            msix_version="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}.0"
-          elif [[ "$version" =~ ^([0-9]+)\.([0-9]+) ]]; then
-            msix_version="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.0.0"
-          else
-            msix_version="0.0.1.0"
-          fi
-          echo "msix_version=$msix_version" >> "$GITHUB_OUTPUT"
-          echo "tag=$tag version=$version msix_version=$msix_version"
+          # Computed unconditionally even though only Windows reads the MSIX
+          # fields: one derivation with unused outputs beats a second job.
+          ./scripts/release-version.sh "$tag" | tee -a "$GITHUB_OUTPUT"
 
   # Remove the trigger label as soon as the run starts, so re-adding it kicks
   # off a fresh build against the latest PR head.
@@ -352,6 +333,7 @@ jobs:
       ref: ${{ github.event_name == 'pull_request' && github.ref || needs.version.outputs.tag }}
       version: ${{ needs.version.outputs.version }}
       msix_version: ${{ needs.version.outputs.msix_version }}
+      msix_identity: ${{ needs.version.outputs.msix_identity }}
       tag: ${{ needs.version.outputs.tag }}
       # Every one of these is a deliberate release policy, not an omission: a
       # shipped build skips the per-push diagnostics (probes, app-load,

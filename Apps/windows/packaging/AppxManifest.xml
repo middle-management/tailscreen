@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
   MSIX manifest for the Windows app. Templated: make-msix.ps1 substitutes the
-  @TOKENS@ below, because two of them cannot be hardcoded.
+  @TOKENS@ below, because none of them can be hardcoded.
 
   @PUBLISHER@ must match the signing certificate's Subject BYTE FOR BYTE. This
   is the single most common MSIX failure and it does not fail helpfully — the
@@ -10,10 +10,24 @@
   manifest's Publisher from the cert it is about to sign with, rather than both
   of them being independently-maintained literals that agree until they don't.
 
-  @VERSION@ must be a four-part a.b.c.d with the LAST part 0 — Windows reserves
-  the revision field for the Store. A three-part version is a manifest schema
-  error; a non-zero fourth part is accepted by MakeAppx and rejected on Store
-  submission, which is the worse of the two failures.
+  @IDENTITY_NAME@ is Tailscreen.Tailscreen for a release and
+  Tailscreen.TailscreenRC for a pre-release or a PR packaging build. Two
+  identities have NO upgrade relationship, which is the point: MSIX has no
+  pre-release concept, the version fields are unsigned, and a release ends in
+  `.0` — so a candidate for X.Y.Z can never sort below the release it precedes,
+  and numbering candidates .1/.2 only inverts it into the release being refused
+  as a downgrade. Giving the candidate its own identity removes the ordering
+  question rather than answering it, and lets a tester hold both at once.
+  scripts/release-version.sh derives it; scripts/test-release-version.sh is the
+  gate.
+
+  @VERSION@ must be a four-part a.b.c.d. For the RELEASE identity the last part
+  must be 0 — Windows reserves the revision field for the Store, and a non-zero
+  one is accepted by MakeAppx and rejected on Store submission, which is the
+  worse of the two failures. The candidate identity is never Store-submitted,
+  so it spends that field on the candidate number, which is what makes rc.1 →
+  rc.2 a real in-place upgrade and keeps that path exercised. A three-part
+  version is a manifest schema error either way.
 
   EntryPoint is Windows.FullTrustApplication: this is a Win32 desktop app
   brought into a package, not a UWP app, so there is no activatable class to
@@ -27,7 +41,7 @@
   IgnorableNamespaces="uap rescap">
 
   <Identity
-    Name="Tailscreen.Tailscreen"
+    Name="@IDENTITY_NAME@"
     Publisher="@PUBLISHER@"
     Version="@VERSION@"
     ProcessorArchitecture="@ARCH@" />

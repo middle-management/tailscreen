@@ -7,16 +7,23 @@
 # release.yml currently produces will be REJECTED — SignPath (or an
 # equivalent trusted code-signing cert) must replace the self-sign first.
 #
-# The MSIX Identity's Name ("Tailscreen.Tailscreen", packaging/windows/
-# AppxManifest.xml) is deliberately the same string as the PackageIdentifier
-# below, and the Identity's Publisher must be the production certificate's
-# Subject — winget cross-checks the manifest against the package it downloads.
+# The MSIX Identity's Name ("Tailscreen.Tailscreen", Apps/windows/packaging/
+# AppxManifest.xml, where it is the @IDENTITY_NAME@ token) is deliberately the
+# same string as the PackageIdentifier below, and the Identity's Publisher must
+# be the production certificate's Subject — winget cross-checks the manifest
+# against the package it downloads.
+#
+# ONLY A RELEASE CARRIES THAT NAME. A pre-release or PR packaging build is
+# packed as Tailscreen.TailscreenRC so it installs alongside somebody's real
+# install rather than colliding with it, which also means a candidate's MSIX
+# can never be submitted here — its identity would not match this file. That
+# is the intended outcome, not an obstacle: winget ships releases.
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
 PackageIdentifier: Tailscreen.Tailscreen
 PackageVersion: "@VERSION@"
 Platform:
   - Windows.Desktop
-# The MSIX package format floor (packaging/windows/AppxManifest.xml's
+# The MSIX package format floor (Apps/windows/packaging/AppxManifest.xml's
 # TargetDeviceFamily); the app's real floor is higher (WinUI 3).
 MinimumOSVersion: 10.0.17763.0
 InstallerType: msix

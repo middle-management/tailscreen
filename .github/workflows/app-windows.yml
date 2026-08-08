@@ -126,10 +126,29 @@ on:
         type: boolean
         default: false
       msix_version:
-        description: Four-part x.y.z.0 Identity Version. Windows reserves the fourth field.
+        description: >-
+          Four-part Identity Version. The release identity reserves the fourth
+          field for the Store and must end in 0; the pre-release identity spends
+          it on the candidate number. Derived by scripts/release-version.sh.
         required: false
         type: string
         default: '0.0.1.0'
+      msix_identity:
+        description: >-
+          Package Identity Name. Tailscreen.Tailscreen for a release,
+          Tailscreen.TailscreenRC for a candidate or a PR packaging build, so
+          the two install side by side instead of colliding on upgrade.
+        required: false
+        type: string
+        # DEFAULTS TO THE PRE-RELEASE IDENTITY, so the release identity has to
+        # be asked for. Only release.yml asks, and it asks with a value that
+        # came out of a tested derivation. Every other caller — windows-build's
+        # per-push run, a dispatch, a label build — is a packaging REHEARSAL,
+        # and a rehearsal must not land on the identity somebody's real install
+        # uses. Defaulting the other way put the whole per-push matrix on it.
+        # Same shape as the capability bits: withhold, and let the one caller
+        # that has grounds opt in.
+        default: 'Tailscreen.TailscreenRC'
       msix_artifact_name:
         required: false
         type: string
@@ -1179,6 +1198,7 @@ jobs:
           # source is a quoting hazard, not a value.
           MSIX_OUT: ${{ inputs.version != '' && format('out/Tailscreen-{0}-windows-{1}.msix', inputs.version, inputs.arch) || 'out/Tailscreen.msix' }}
           MSIX_VERSION: ${{ inputs.msix_version }}
+          MSIX_IDENTITY: ${{ inputs.msix_identity }}
         run: |
           $extra = @{}
           if ($env:MSIX_PFX_B64) {
@@ -1188,9 +1208,11 @@ jobs:
             if ($env:MSIX_PFX_PASSWORD) { $extra.PfxPassword = $env:MSIX_PFX_PASSWORD }
             Write-Host "signing with the repo's stable dev certificate"
           }
+          Write-Host "identity: $env:MSIX_IDENTITY  version: $env:MSIX_VERSION"
           ./scripts/windows/make-msix.ps1 `
             -StageDir dist `
             -OutFile $env:MSIX_OUT `
+            -IdentityName $env:MSIX_IDENTITY `
             -Version $env:MSIX_VERSION @extra
 
       # The actual finding. Install → activate by AUMID → does it stay up.
@@ -1200,12 +1222,17 @@ jobs:
         shell: pwsh
         env:
           MSIX_PFX_PASSWORD: ${{ secrets.TAILSCREEN_MSIX_PFX_PASSWORD }}
+          # Must be the SAME identity make-msix.ps1 packed: the lookup after
+          # install is by name, so a drift between the two reads as a broken
+          # package on one that installed fine.
+          MSIX_IDENTITY: ${{ inputs.msix_identity }}
         run: |
           $extra = @{}
           if ($env:MSIX_PFX_PASSWORD) { $extra.PfxPassword = $env:MSIX_PFX_PASSWORD }
           ./scripts/windows/verify-msix.ps1 `
             -MsixPath $env:MSIX_PATH `
-            -PfxPath $env:MSIX_PFX @extra
+            -PfxPath $env:MSIX_PFX `
+            -PackageName $env:MSIX_IDENTITY @extra
 
       # Uploaded whether or not the launch succeeded: an MSIX that installs but
       # dies is exactly the artifact worth inspecting by hand, and a green-only

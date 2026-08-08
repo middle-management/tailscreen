@@ -21,7 +21,18 @@
   Path of the .msix to write.
 
 .PARAMETER Version
-  Four-part version. The fourth part must be 0 (Windows reserves it).
+  Four-part version. For the RELEASE identity the fourth part must be 0
+  (Windows reserves it for the Store). A pre-release identity is never
+  Store-submitted, so it may carry the candidate number there.
+
+.PARAMETER IdentityName
+  Package Identity Name. DEFAULTS TO THE PRE-RELEASE IDENTITY: a package that
+  installs alongside a release is the safe thing to produce by accident, and
+  one that silently replaces somebody's real install is not. Pass
+  Tailscreen.Tailscreen deliberately when the package IS the release — which
+  in practice only release.yml does, from a tested derivation. See
+  scripts/release-version.sh for why this is an identity split rather than a
+  version scheme.
 
 .PARAMETER Subject
   Certificate subject, which also becomes the manifest's Publisher.
@@ -38,6 +49,7 @@ param(
   [Parameter(Mandatory = $true)][string]$StageDir,
   [Parameter(Mandatory = $true)][string]$OutFile,
   [string]$Version = '0.0.1.0',
+  [string]$IdentityName = 'Tailscreen.TailscreenRC',
   [string]$Subject = 'CN=Tailscreen CI, O=Tailscreen, C=SE',
   [string]$PfxPath,
   [string]$PfxPassword = 'tailscreen-ci'
@@ -53,10 +65,27 @@ if (-not (Test-Path $StageDir)) { throw "stage dir not found: $StageDir" }
 $exe = Join-Path $StageDir 'tailscreen.exe'
 if (-not (Test-Path $exe)) { throw "no tailscreen.exe in $StageDir" }
 
+# An Identity Name is a restricted string; a typo here fails at Add-AppxPackage
+# with a schema error rather than here, where the message names the value.
+if ($IdentityName -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{2,49}$') {
+  throw "IdentityName is not a valid package name (got '$IdentityName')"
+}
+
+# Four-part always; MakeAppx rejects a three-part version with a schema error
+# that names a generated file rather than this one.
+if ($Version -notmatch '^\d+\.\d+\.\d+\.\d+$') {
+  throw "Version must be four-part a.b.c.d (got '$Version')"
+}
+
 # Windows reserves the revision field for the Store. MakeAppx accepts a non-zero
-# one and Store submission rejects it, so fail here where the message is useful.
-if ($Version -notmatch '^\d+\.\d+\.\d+\.0$') {
-  throw "Version must be four-part with a trailing 0 (got '$Version')"
+# one and Store submission rejects it, so fail here where the message is useful
+# — but only for the identity a submission would ever carry. A pre-release
+# package is never submitted, and it SPENDS that field on the candidate number,
+# which is what makes installing rc.2 over rc.1 a real upgrade rather than a
+# same-version refusal. Enforcing the zero there would delete the one thing the
+# separate identity was arranged to keep.
+if ($IdentityName -eq 'Tailscreen.Tailscreen' -and $Version -notmatch '\.0$') {
+  throw "the release identity reserves the fourth field for the Store; it must be 0 (got '$Version')"
 }
 
 # ---------------------------------------------------------------------------
@@ -170,6 +199,7 @@ Write-Host "package architecture (from the exe's PE header): $arch"
 
 $manifest = Get-Content (Join-Path $pkgSrc 'AppxManifest.xml') -Raw
 $manifest = $manifest.Replace('@PUBLISHER@', [System.Security.SecurityElement]::Escape($publisher))
+$manifest = $manifest.Replace('@IDENTITY_NAME@', $IdentityName)
 $manifest = $manifest.Replace('@VERSION@', $Version)
 $manifest = $manifest.Replace('@ARCH@', $arch)
 $manifestPath = Join-Path $layout 'AppxManifest.xml'

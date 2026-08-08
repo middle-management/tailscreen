@@ -126,6 +126,24 @@ Or without a terminal: double-click the `.cer` → **Install Certificate…** �
 Browse → **Trusted People** → Finish. Then double-click the `.msix` and
 click Install.
 
+### Pre-release MSIX packages install alongside, not over
+
+A release candidate's MSIX carries a different package identity
+(`Tailscreen.TailscreenRC`) from a release's (`Tailscreen.Tailscreen`), so
+installing one does **not** replace a Tailscreen you already have — both
+appear in the Start menu and Installed apps, and each uninstalls on its own.
+
+That is deliberate. MSIX has no notion of a pre-release, so a candidate and
+the release it precedes would otherwise claim the same identity and version,
+and Windows — which decides upgrades on exactly that — could refuse the real
+release on a machine that had tried the candidate. Separate identities mean
+the question never arises.
+
+Two practical consequences. Running both at once is not a supported
+configuration: they are the same app, and two copies will contend for the
+same port. And a candidate does not upgrade into the release — when the real
+version ships, uninstall the RC and install the release normally.
+
 What you're agreeing to, spelled out: the certificate goes into the
 machine's **Trusted People** store — not a root authority — which tells
 Windows to accept packages signed with exactly that certificate and
