@@ -235,11 +235,27 @@ jobs:
         env:
           MAX_GLIBC: '2.35'
         run: |
-          set -euo pipefail
+          # POSIX sh, not bash: this job runs in a container where the default
+          # shell resolves to `sh -e`, so `set -o pipefail` is an "Illegal
+          # option" and the step dies before it checks anything.
+          set -eu
           bin="Apps/linux/.build/${{ inputs.configuration }}/tailscreen"
+          if [ ! -f "$bin" ]; then
+            echo "::error::no binary at $bin to check"
+            exit 1
+          fi
           need="$(readelf -V "$bin" \
                   | grep -oE 'GLIBC_[0-9]+\.[0-9]+' \
                   | sed 's/GLIBC_//' | sort -uV | tail -1)"
+          # Assert the reading rather than the pipeline's exit status, which is
+          # `tail`'s and therefore 0 even when readelf found nothing. Without
+          # this an empty $need compares equal to the ceiling and the gate
+          # PASSES — silence reading as success, on the one step whose whole
+          # job is to notice something.
+          if [ -z "$need" ]; then
+            echo "::error::no GLIBC_ version symbols found in $bin"
+            exit 1
+          fi
           echo "highest glibc symbol required: $need (ceiling $MAX_GLIBC)"
           # sort -V puts the larger last; if that is not the ceiling, we exceeded it.
           if [ "$(printf '%s\n%s\n' "$need" "$MAX_GLIBC" | sort -V | tail -1)" != "$MAX_GLIBC" ]; then
