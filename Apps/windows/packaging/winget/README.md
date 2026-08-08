@@ -18,7 +18,7 @@ files intentionally fail winget's schema validation (`InstallerSha256` expects
 ## What a submission requires
 
 1. **A published GitHub Release carrying both MSIX assets.** The
-   `Release (Windows)` workflow (`.github/workflows/release-windows.yml`)
+   `Release` workflow (`.github/workflows/release.yml`)
    uploads `Tailscreen-<version>-windows-{x64,arm64}.msix` plus per-arch
    checksum files on every published release — those are the `InstallerUrl` /
    `InstallerSha256` inputs.

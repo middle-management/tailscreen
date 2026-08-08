@@ -46,8 +46,30 @@ jobs:
 
       - name: Resolve the latest release tag
         id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          tag=$(git tag -l 'v*' --sort=-v:refname | head -1)
+          # PRE-RELEASES MUST NOT TAKE THE ROOT. The root channel is what
+          # tailscreen.dev serves, so it has to track the latest STABLE
+          # release; /next already carries what main says.
+          #
+          # Ask the API first: `releases/latest` excludes pre-releases by
+          # definition, which a tag sort cannot do — a tag knows nothing about
+          # the flag somebody ticked when publishing it.
+          tag=$(gh release view --json tagName --jq .tagName 2>/dev/null || true)
+
+          # Fall back to a tag sort when the API is unavailable (a fork with no
+          # token, a rate limit) — but pass `versionsort.suffix=-rc`, because
+          # git's DEFAULT version sort ranks v1.3.0-rc1 ABOVE v1.3.0. Without
+          # it, publishing one release candidate pins the public site to that
+          # RC forever: the final release sorts BELOW its own candidate and
+          # never wins the root back.
+          if [ -z "$tag" ]; then
+            tag=$(git -c versionsort.suffix=-rc -c versionsort.suffix=-beta \
+                      -c versionsort.suffix=-alpha \
+                      tag -l 'v*' --sort=-v:refname | head -1)
+            echo "note: API gave no release; fell back to the tag sort"
+          fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           if [ -n "$tag" ] && git cat-file -e "$tag:docs/_config.yml" 2>/dev/null; then
             echo "has_site=true" >> "$GITHUB_OUTPUT"

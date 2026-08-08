@@ -128,6 +128,16 @@ jobs:
           # and fall back to 0.0.1.0 for anything non-numeric (PR builds' pr-N,
           # oddly-shaped tags) so a packaging build never dies on version syntax.
           #
+          # CONSEQUENCE FOR PRE-RELEASES, since dropping the suffix is not free:
+          # v1.3.0-rc1 and v1.3.0 both yield 1.3.0.0, so the RC's MSIX and the
+          # final one are the SAME Identity Version. Windows keys upgrades on
+          # that, so a machine that installed the RC may refuse the real release
+          # as an upgrade. The zip is unaffected (no identity, no upgrade
+          # logic), which is another reason it is the artifact to point people
+          # at while the MSIX is self-signed. If pre-release MSIXes ever need to
+          # upgrade cleanly, the fourth field is the place — Windows reserves it
+          # for the Store, but this project does not ship there.
+          #
           # Computed unconditionally even though only Windows reads it: one
           # derivation with an unused output beats a second version job.
           if [[ "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then

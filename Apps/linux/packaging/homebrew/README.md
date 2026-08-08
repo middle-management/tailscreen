@@ -55,7 +55,7 @@ arch conditional inside the cask's `on_linux` block.
 
 ## Bumping the version
 
-The release workflow (`.github/workflows/release-linux.yml`) prints the artifact
+The release workflow (`.github/workflows/release.yml`) prints the artifact
 name and its **SHA-256** in the run summary — exactly the two fields the cask
 needs. In practice the tap's own scripts do it:
 
