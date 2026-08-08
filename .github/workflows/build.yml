@@ -1376,6 +1376,18 @@ jobs:
       - uses: actions/checkout@v7
       - name: Derivation table
         run: ./scripts/test-release-version.sh
+      # The other half of the release plumbing nothing else can reach: the job
+      # graph and the upload calls, which only ever execute on a published
+      # release. v0.10.0-rc.1 shipped two bugs there — a macOS job silently
+      # skipped by a pull_request-only `needs`, and a `gh release upload` in
+      # the one job that never checks out the repo. Neither is observable
+      # before the release that hits them; both are decidable from the YAML.
+      - name: Release workflow wiring
+        run: |
+          set -euo pipefail
+          python3 -c 'import yaml' 2>/dev/null \
+            || pip install --quiet --disable-pip-version-check pyyaml
+          ./scripts/test-release-wiring.py
 
   test-tsan:
     # Thread Sanitizer build. Catches lock/continuation races that
