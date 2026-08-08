@@ -46,8 +46,31 @@ jobs:
 
       - name: Resolve the latest release tag
         id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          tag=$(git tag -l 'v*' --sort=-v:refname | head -1)
+          # PRE-RELEASES MUST NOT TAKE THE ROOT. The root channel is what
+          # tailscreen.dev serves, so it has to track the latest STABLE
+          # release; /next already carries what main says.
+          #
+          # Ask the API first: `releases/latest` excludes pre-releases by
+          # definition, which a tag sort cannot do — a tag knows nothing about
+          # the flag somebody ticked when publishing it.
+          tag=$(gh release view --json tagName --jq .tagName 2>/dev/null || true)
+
+          # Fall back to a tag sort when the API is unavailable (a fork with no
+          # token, a rate limit). DISCARD pre-release tags rather than merely
+          # ranking them below their own stable version: `versionsort.suffix`
+          # would sort v0.10.0-rc.1 under v0.10.0, but for the whole window an
+          # RC exists for — after it is tagged, before the release it precedes
+          # — there IS no v0.10.0, and the candidate still outranks v0.9.1 and
+          # takes the root. SemVer makes this easy: a hyphen after the version
+          # is the pre-release marker, so dropping every tag carrying one needs
+          # no suffix list to keep in sync with what we happen to name them.
+          if [ -z "$tag" ]; then
+            tag=$(git tag -l 'v*' --sort=-v:refname | grep -v -- '-' | head -1)
+            echo "note: API gave no release; fell back to the tag sort"
+          fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           if [ -n "$tag" ] && git cat-file -e "$tag:docs/_config.yml" 2>/dev/null; then
             echo "has_site=true" >> "$GITHUB_OUTPUT"

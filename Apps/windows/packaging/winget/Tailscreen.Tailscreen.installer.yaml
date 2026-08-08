@@ -4,7 +4,7 @@
 # InstallerType msix means winget validates the package's SIGNATURE at
 # submission and install time: the MSIX must be signed with a certificate
 # chaining to a root trusted on the user's machine. The self-signed MSIX that
-# release-windows.yml currently produces will be REJECTED — SignPath (or an
+# release.yml currently produces will be REJECTED — SignPath (or an
 # equivalent trusted code-signing cert) must replace the self-sign first.
 #
 # The MSIX Identity's Name ("Tailscreen.Tailscreen", packaging/windows/

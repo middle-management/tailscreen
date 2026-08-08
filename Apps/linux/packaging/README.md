@@ -29,7 +29,7 @@ same as the macOS and Windows apps. Config (profiles + node state) lives in
 
 ## Honest status
 
-**AppImage: verified.** `release-linux.yml` built one end to end on a GitHub
+**AppImage: verified.** The release workflow built one end to end on a GitHub
 runner — Go c-archive, Swift 6 toolchain, GTK4 deps, `linuxdeploy` + its GTK
 plugin, `appimagetool` — producing a ~99 MB `Tailscreen-<version>-x86_64.AppImage`
 in about 11 minutes. What that proves is that the artifact *builds and bundles*;
@@ -46,7 +46,7 @@ the `linux-app` CI job (see `.github/workflows/build.yml`), which is the
 same `swift build` the packaging wrappers drive.
 
 Packaging deliberately **does not gate merges** — it can't run in the normal CI
-container. `.github/workflows/release-linux.yml` runs it instead on three
+container. `.github/workflows/release.yml` runs it instead on three
 triggers: a published release (the real thing), `workflow_dispatch` against an
 existing tag, and a pull request labelled **`build-linux-package`**, which
 builds the AppImage and attaches it to the run as an artifact without uploading
