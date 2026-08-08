@@ -25,12 +25,25 @@
 
 .PARAMETER PfxPassword
   Password for the pfx.
+
+.PARAMETER PackageName
+  The package's Identity Name, which must match what make-msix.ps1 was given —
+  so its default tracks that script's, the pre-release identity, and a release
+  verification passes Tailscreen.Tailscreen the same way the pack step does.
+  A mismatch does not fail where you would look for
+  it: the install SUCCEEDS, and the run then dies one line later reading a
+  property off the null Get-AppxPackage result — an error about the lookup, on
+  a package that installed perfectly. The cleanup is worse, because it is
+  -ErrorAction SilentlyContinue by design: it matches nothing and quietly
+  leaves the package and the trusted cert on the machine. Hence a parameter,
+  rather than a literal that agrees with the manifest until it doesn't.
 #>
 [CmdletBinding()]
 param(
   [Parameter(Mandatory = $true)][string]$MsixPath,
   [Parameter(Mandatory = $true)][string]$PfxPath,
-  [string]$PfxPassword = 'tailscreen-ci'
+  [string]$PfxPassword = 'tailscreen-ci',
+  [string]$PackageName = 'Tailscreen.TailscreenRC'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -39,7 +52,7 @@ Set-StrictMode -Version Latest
 if (-not (Test-Path $MsixPath)) { throw "msix not found: $MsixPath" }
 if (-not (Test-Path $PfxPath)) { throw "pfx not found: $PfxPath" }
 
-$packageName = 'Tailscreen.Tailscreen'
+$packageName = $PackageName
 $appId = 'Tailscreen'
 $imported = $null
 $installed = $false

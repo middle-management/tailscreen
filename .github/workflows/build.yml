@@ -1356,6 +1356,27 @@ jobs:
         # Sources/ and Tests/ using the repo's `.swift-format` config.
         run: make format-check
 
+  release-version:
+    # The MSIX identity/version derivation, which used to live inline in
+    # release.yml where its ONLY feedback was publishing a release. It shipped
+    # a bug that way: a candidate and the release it precedes derived the same
+    # MSIX Identity Version, so Windows refused the real release as an upgrade
+    # on any machine that had installed the candidate. Nothing could have
+    # caught that except installing both.
+    #
+    # Now it is scripts/release-version.sh and this runs its table of
+    # orderings on every push — seconds on the cheapest runner, no toolchain,
+    # no checkout cost worth mentioning. It gates the ORDERINGS rather than the
+    # strings: a release never shares an identity with its candidates,
+    # candidates ascend within their own, and a release outranks the version
+    # before it. Each of those was checked to fail against a deliberate break.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Derivation table
+        run: ./scripts/test-release-version.sh
+
   test-tsan:
     # Thread Sanitizer build. Catches lock/continuation races that
     # strict-concurrency lets through. TSan flags a handful of known-OK
