@@ -46,7 +46,7 @@ let gAnnoForwarder = AnnotationForwarder()
 let gSharer = SharerModel()
 // The system-wide mute hotkey. Built only on the live audio path — see the
 // comment where it is assigned.
-var gMuteHotkey: MuteHotkeyController?
+var gMuteHotkey: PortableMuteHotkey?
 // Account-menu actions, wired in picker mode (nil elsewhere → menu hidden).
 var gSwitchProfile: (@MainActor @Sendable (String) -> Void)?
 var gAddAccount: (@MainActor @Sendable () -> Void)?
@@ -351,7 +351,7 @@ if gSelfTest {
     // `MuteHotkeyRouting` picks which one the single chord flips, and the
     // controller holds the grab only while there is one to flip.
     if wantAudio {
-        gMuteHotkey = MuteHotkeyController(
+        gMuteHotkey = makeMuteHotkeyController(
             sharerMicAvailable: { gSharer.micAvailable },
             viewerMicAvailable: { gUIState.micAvailable },
             toggleSharerMic: { gSharer.toggleMic() },
@@ -402,10 +402,10 @@ if gSelfTest {
                     audioSink: audioSink, shouldClose: { gUIState.closeRequested },
                     backChannelHandlers: backChannelHandlers,
                     microphone: microphone,
-                    onVoiceReady: { uplink in
-                        gVoice.attach(uplink)
-                        gUIState.setMicAvailable(true)
-                    },
+                    // `attach` publishes availability itself, off the latch —
+                    // a second `setMicAvailable(true)` here would be the UI
+                    // asserting a capability the latch had not granted.
+                    onVoiceReady: { uplink in gVoice.attach(uplink) },
                     onBackChannelReady: { channel in
                         gControls.attach(channel)
                         gInput.attach(channel)

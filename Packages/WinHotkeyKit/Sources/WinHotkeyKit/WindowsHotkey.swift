@@ -74,3 +74,9 @@ public final class WindowsHotkey {
         return Int(ts_winhotkey_take(handle))
     }
 }
+
+/// `drain()` and `release()` were already exactly the shape the portable
+/// controller wants — the conformance only names that. Declared here rather
+/// than in the app so neither swift-cross-ui host needs a `@retroactive`
+/// conformance of an imported type to an imported protocol.
+extension WindowsHotkey: GlobalHotkeyHolding {}

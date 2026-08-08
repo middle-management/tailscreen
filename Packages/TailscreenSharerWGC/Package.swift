@@ -73,6 +73,24 @@ let package = Package(
                 .product(name: "WinOverlayKit", package: "WinOverlayKit"),
             ],
             path: "Sources/TailscreenSharerWGC"
+        ),
+        // The Windows share ENGINE's suite, and the reason it can exist at all
+        // is the reason the target above has no WinUI: everything Windows-bound
+        // it touches stubs out off Windows, so `WindowsShareSession` can be
+        // constructed, driven and asserted on a Linux runner with no display,
+        // no capture item and no node. Before this the engine had no tests of
+        // any kind — `Apps/windows` has no test target, and the Windows-side
+        // logic was covered only by Linux CI typechecking it.
+        //
+        // Runs on the `linux-viewer` job, beside the package it belongs to.
+        .testTarget(
+            name: "TailscreenSharerWGCTests",
+            dependencies: [
+                "TailscreenSharerWGC",
+                .product(name: "TailscreenProtocol", package: "TailscreenKit"),
+                .product(name: "TailscreenAudio", package: "TailscreenKit"),
+            ],
+            path: "Tests/TailscreenSharerWGCTests"
         )
     ]
 )

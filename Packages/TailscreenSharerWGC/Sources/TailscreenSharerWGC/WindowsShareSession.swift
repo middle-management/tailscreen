@@ -196,7 +196,25 @@ public final class WindowsShareSession: @unchecked Sendable {
     /// Plays a viewer's decoded voice on the local output device.
     public var playRemoteVoice: (@Sendable ([Float]) -> Void)?
 
-    public init() {}
+    /// - Parameter accessStore: injectable for tests, exactly as the GTK
+    ///   engine's is. The default is `%LOCALAPPDATA%\Tailscreen` — the same
+    ///   root the account registry uses, one place a user's Tailscreen state
+    ///   lives — which off Windows resolves under the home directory, so a
+    ///   suite that took the default would write into whoever ran it.
+    public init(accessStore: PeerAccessStore? = nil) {
+        self.injectedAccessStore = accessStore
+        // Both flags move together, always — the latch owns that pairing, and
+        // this session only mirrors it into the published status. Fires on
+        // whichever thread opened, closed or lost the device; `update` takes
+        // `lock` for itself and publishes outside it, so no hop is needed here.
+        voiceSession.onStateChanged = { [weak self] available, on in
+            self?.update {
+                $0.micAvailable = available
+                $0.micOn = on
+            }
+        }
+        voiceSession.onRemotePCM = { [weak self] pcm in self?.playRemoteVoice?(pcm) }
+    }
 
     /// One-time process setup. **Call at startup, before any window exists.**
     ///
@@ -230,16 +248,14 @@ public final class WindowsShareSession: @unchecked Sendable {
     /// The item the live share is capturing. Held so a source change can be
     /// told apart from a restart, and so teardown releases it.
     private var liveItem: WGC.CaptureItem?
-    /// Live voice for the current share. Guarded by `lock`, like `server`.
-    private var voice: SharerVoice?
-    /// Where the server hands inbound viewer audio.
-    ///
-    /// Long-lived and installed on each server BEFORE `start()`, because the
-    /// server's callbacks are bare stored vars its receive thread reads with
-    /// no lock — see `SharerVoiceRoute`. `startVoice` publishes into this
-    /// rather than reassigning `server.onAudioReceived` on a running share.
-    private let inboundVoice = SharerVoiceRoute()
-    /// Which share attempt this session is on.
+    /// The sharer's voice for this share — the route installed on each server
+    /// BEFORE `start()`, the device opened only once the share is up, and the
+    /// mute latch `micAvailable` / `micOn` mirror. Owns its own lock, so it is
+    /// deliberately NOT guarded by `lock`; shared with the GTK engine, where
+    /// the same triple had the same ordering hazards. See `SharerVoiceSession`.
+    private let voiceSession = SharerVoiceSession()
+    /// Which share attempt this session is on, which grant snapshot was last
+    /// applied, and who was invited before there was a server to tell.
     ///
     /// `beginSharing` releases nothing while it awaits `newServer.start()` —
     /// that await spans tsnet bring-up, which on an interactive login is
@@ -247,8 +263,19 @@ public final class WindowsShareSession: @unchecked Sendable {
     /// callback and the post-await tail carry the generation they were made
     /// under and drop themselves when it no longer matches, so a server the
     /// session has let go of cannot publish status for a share nobody is
-    /// running. Guarded by `lock`.
-    private var shareGeneration: UInt64 = 0
+    /// running.
+    ///
+    /// A value type held behind `lock`, which is the whole point of
+    /// `SharerSessionCore` being a struct: the GTK engine holds the same state
+    /// machine as an actor-isolated property, and neither host's isolation
+    /// model leaks into the other's. Guarded by `lock`.
+    private var core = SharerSessionCore()
+
+    /// IPs invited before there was a server to tell. Internal so the package
+    /// suite can pin the held-IP contract with no server, exactly as
+    /// `LinuxShareSessionTests` pins the GTK engine's.
+    var pendingPreApprovedIPs: Set<String> { lock.withLock { core.heldInvites } }
+
     private var status = Status()
     /// The gate to apply to the next share, and to the running one.
     ///
@@ -259,8 +286,6 @@ public final class WindowsShareSession: @unchecked Sendable {
     /// desktop app that forgets to say otherwise — so this wrapper's job is to
     /// make forgetting fail closed.
     private var requireApproval = true
-    /// IPs invited before there was a server to tell. Guarded by `lock`.
-    private var pendingPreApprovedIPs: Set<String> = []
 
     // MARK: Sharer drawing — state
     //
@@ -466,10 +491,11 @@ public final class WindowsShareSession: @unchecked Sendable {
         }
         // Installed HERE, before `start()`, and never reassigned: the server's
         // callbacks are bare stored vars its receive thread reads with no
-        // lock. `startVoice` publishes into the route once the capture device
-        // is open — see `SharerVoiceRoute` for why the device is not opened
-        // before a node that may still be waiting on a browser login.
-        newServer.onAudioReceived = { [inboundVoice] packet in inboundVoice.receive(packet) }
+        // lock. `SharerVoiceSession` publishes into the route it hands back
+        // once the capture device is open — see `SharerVoiceRoute` for why the
+        // device is not opened before a node that may still be waiting on a
+        // browser login.
+        newServer.onAudioReceived = voiceSession.inboundHandler
         newServer.onCaptureStopped = { [weak self] error in
             guard let self, self.isCurrentShare(generation) else { return }
             // Before the status push: a capture that died must not leave the
@@ -503,9 +529,7 @@ public final class WindowsShareSession: @unchecked Sendable {
         // the share is open door.
         let (gate, invited) = lock.withLock { () -> (Bool, Set<String>) in
             server = newServer
-            let invited = pendingPreApprovedIPs
-            pendingPreApprovedIPs.removeAll()
-            return (requireApproval, invited)
+            return (requireApproval, core.drainInvites())
         }
         newServer.setRequireApproval(gate)
         // Anyone whose ask this machine accepted before the server existed.
@@ -586,21 +610,23 @@ public final class WindowsShareSession: @unchecked Sendable {
     }
 
     /// Open a share attempt; everything stamped with an older one is ignored.
-    private func beginShareGeneration() -> UInt64 {
-        lock.withLock {
-            shareGeneration &+= 1
-            return shareGeneration
-        }
+    /// The rules are `SharerSessionCore`'s and are pinned there for both hosts;
+    /// what is this session's is only that they are taken under `lock`.
+    ///
+    /// Internal, not private, so `WindowsShareSessionTests` can drive the
+    /// stamp with no node and no capture item behind it.
+    func beginShareGeneration() -> UInt64 {
+        lock.withLock { core.beginShare() }
     }
 
     /// Close the current share attempt — a stop, or a capture that died.
-    private func endShareGeneration() {
-        lock.withLock { shareGeneration &+= 1 }
+    func endShareGeneration() {
+        lock.withLock { core.endShare() }
     }
 
     /// Whether `generation` is still the live share attempt.
-    private func isCurrentShare(_ generation: UInt64) -> Bool {
-        lock.withLock { shareGeneration == generation }
+    func isCurrentShare(_ generation: UInt64) -> Bool {
+        lock.withLock { core.isCurrentShare(generation) }
     }
 
     /// Turn the approval gate on or off, now and for the next share.
@@ -616,9 +642,12 @@ public final class WindowsShareSession: @unchecked Sendable {
     ///
     /// Built lazily against `%LOCALAPPDATA%\Tailscreen`, the same root the
     /// account registry uses — one place a user's Tailscreen state lives.
+    private let injectedAccessStore: PeerAccessStore?
+
     private lazy var access: SharerAccessCoordinator = {
         let coordinator = SharerAccessCoordinator(
-            store: PeerAccessStore(directory: AccountProfileLayout.windowsLocalAppData().root))
+            store: injectedAccessStore
+                ?? PeerAccessStore(directory: AccountProfileLayout.windowsLocalAppData().root))
         coordinator.onPoliciesChanged = { [weak self] policies in
             self?.lock.withLock { self?.server }?.setAccessPolicies(policies)
             // Re-publish: a block on somebody already watching expels them, so
@@ -705,7 +734,7 @@ public final class WindowsShareSession: @unchecked Sendable {
     /// silently unblock them.
     public func preApproveViewer(ip: String) {
         let server: TailscaleScreenShareServer? = lock.withLock {
-            if self.server == nil { pendingPreApprovedIPs.insert(ip) }
+            core.noteInvite(ip, hasServer: self.server != nil)
             return self.server
         }
         server?.preApproveViewer(ip: ip)
@@ -1073,60 +1102,28 @@ public final class WindowsShareSession: @unchecked Sendable {
     /// no capture device shares perfectly well and simply shows no mic
     /// control. The failure goes into the status message rather than being
     /// thrown, because a share that is otherwise working must not be torn down
-    /// over audio.
+    /// over audio. The ordering inside — route before device, `onStopped`
+    /// before `start()` — is `SharerVoiceSession`'s and is shared with the GTK
+    /// engine.
     private func startVoice(on server: TailscaleScreenShareServer) {
         guard let microphoneFactory else { return }
-        let voice: SharerVoice
         do {
-            voice = try SharerVoice(
-                microphone: try microphoneFactory(), encoder: OpusVoiceEncoder(),
+            try voiceSession.start(
+                microphone: try microphoneFactory(),
                 send: { [weak server] packet in server?.sendAudioRTP(packet) })
-            try voice.start()
         } catch {
             update { $0.message = "Sharing (no microphone: \(error))" }
-            return
-        }
-        voice.onRemotePCM = { [weak self] _, pcm in self?.playRemoteVoice?(pcm) }
-        voice.onStopped = { [weak self] error in
-            guard error != nil else { return }
-            // Both flags together: a live indicator over a device recording
-            // nothing is the one wrong answer a mute control can give.
-            self?.update {
-                $0.micAvailable = false
-                $0.micOn = false
-            }
-        }
-        // Inbound viewer audio, already vetted by the server's anti-spoof
-        // gate, reaches `voice.receive` from here on. The server's handler was
-        // installed before `start()` and is NOT touched now — see
-        // `SharerVoiceRoute`.
-        inboundVoice.setVoice(voice)
-        lock.withLock { self.voice = voice }
-        update {
-            $0.micAvailable = true
-            $0.micOn = false
         }
     }
 
-    private func stopVoice() {
-        // Unroute first: the server may still be delivering, and a packet
-        // handed to a voice that is being torn down is exactly the race
-        // `VoiceDownlink`'s lock exists for. Stop reaching it at all.
-        inboundVoice.setVoice(nil)
-        let live = lock.withLock { () -> SharerVoice? in
-            let value = voice
-            voice = nil
-            return value
-        }
-        live?.stop()
+    func stopVoice() {
+        voiceSession.stop()
     }
 
-    /// Flip the sharer's microphone.
+    /// Flip the sharer's microphone. A no-op with no device open, which is also
+    /// when the share card draws no control.
     public func toggleMic() {
-        guard let voice = lock.withLock({ self.voice }) else { return }
-        let nowOn = voice.isMuted
-        voice.isMuted = !nowOn
-        update { $0.micOn = nowOn }
+        voiceSession.toggleMic()
     }
 
     /// Where the picked target sits on screen, or why that is unknowable.
