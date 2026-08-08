@@ -169,6 +169,30 @@ runs:
     # archive built from DIFFERENT sources, and unlike a SwiftPM .build there is
     # no per-target dependency tracking to notice — the link would simply
     # succeed against the wrong code. A miss here costs one Go build.
+    #
+    # THE CONTAINER IMAGE IS PART OF THE KEY, and leaving it out cost a
+    # release. `runner.os` is "Linux" for both swift:6.3-noble and
+    # swift:6.3-jammy, so when the shipped app moved to jammy, PR CI restored a
+    # NOBLE-built archive into a jammy container, skipped the Go build with it,
+    # and went green across 23 checks. The release build passes cache: false by
+    # policy — a shipped artifact is compiled on the runner that ships it — so
+    # it actually ran the Go build and died on jammy's Go 1.18, which cannot
+    # parse a `go 1.25.5` directive. The cache had been hiding an
+    # incompatibility that only the artifact-producing path could reach: the
+    # exact shape of the arch-mismatched restore this file already warns about,
+    # one axis over.
+    - name: Identify the build base
+      id: base
+      shell: bash
+      run: |
+        set -eu
+        if [ -r /etc/os-release ]; then
+          . /etc/os-release
+          echo "id=${ID:-linux}-${VERSION_ID:-0}" >> "$GITHUB_OUTPUT"
+        else
+          echo "id=${RUNNER_OS}" >> "$GITHUB_OUTPUT"
+        fi
+
     - name: Restore libtailscale.a
       id: libtailscale-cache
       if: inputs.libtailscale != 'none' && inputs.cache == 'true'
@@ -177,7 +201,7 @@ runs:
         path: |
           Packages/TailscaleKit/upstream/libtailscale/libtailscale.a
           Packages/TailscaleKit/upstream/libtailscale/libtailscale.h
-        key: libtailscale-${{ runner.os }}-${{ runner.arch }}-${{ inputs.libtailscale }}-${{ inputs.go }}-${{ steps.rev.outputs.sha }}-${{ hashFiles('Packages/TailscaleKit/Patches/*') }}
+        key: libtailscale-${{ runner.os }}-${{ runner.arch }}-${{ steps.base.outputs.id }}-${{ inputs.libtailscale }}-${{ inputs.go }}-${{ steps.rev.outputs.sha }}-${{ hashFiles('Packages/TailscaleKit/Patches/*') }}
 
     # tar preserves mtimes, so a restored archive is OLDER than the
     # .patches-applied marker written moments ago — and
@@ -425,7 +449,7 @@ runs:
         path: |
           Packages/TailscaleKit/upstream/libtailscale/libtailscale.a
           Packages/TailscaleKit/upstream/libtailscale/libtailscale.h
-        key: libtailscale-${{ runner.os }}-${{ runner.arch }}-${{ inputs.libtailscale }}-${{ inputs.go }}-${{ steps.rev.outputs.sha }}-${{ hashFiles('Packages/TailscaleKit/Patches/*') }}
+        key: libtailscale-${{ runner.os }}-${{ runner.arch }}-${{ steps.base.outputs.id }}-${{ inputs.libtailscale }}-${{ inputs.go }}-${{ steps.rev.outputs.sha }}-${{ hashFiles('Packages/TailscaleKit/Patches/*') }}
 
     # MSVC wants tailscale.lib — Modules/libtailscale/module.modulemap says
     # `link "tailscale"`, so the Swift driver emits -ltailscale and on Windows
