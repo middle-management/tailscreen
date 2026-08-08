@@ -104,11 +104,14 @@ call.
   canvas and one mapping instead of two that drift.
 
   Three decisions worth carrying forward:
-  - **Annotations are composited into the decoded frame**, not onto a second
-    surface. `AnnotationRasterizer.draw` (the no-clear half of `render`) writes
-    straight into the BGRA the `WriteableBitmap` shows, so strokes zoom and
-    letterbox with the video for free. A XAML canvas or a D2D device would have
-    been a lot of platform plus a second transform to keep in sync.
+  - **Annotations share the video's transform**, rather than living on a second
+    surface with a second transform to keep in sync — a XAML canvas or a D2D
+    device would have been a lot of platform for that. As written here it was
+    literal compositing: `AnnotationRasterizer.draw` (the no-clear half of
+    `render`) wrote straight into the BGRA a `WriteableBitmap` showed. The GPU
+    render path since replaced that with a separate RGBA overlay texture
+    `CWinVideo`'s shader composites in the SAME pass, which preserves the
+    property that mattered — strokes zoom and letterbox with the video for free.
   - **Drawing wins over controlling.** With a tool armed a drag is a stroke, not
     a click. A drag cannot be both, so the precedence has to live somewhere;
     it is one property (`forwardsInput`) rather than scattered through the
@@ -696,7 +699,7 @@ evidence, not a task nobody got to.
 | Hardware encode off macOS | VAAPI/NVENC/Media Foundation are real work for a *performance* win, not a capability gap. Revisit when software encode is the measured bottleneck, not before. |
 | HDR / 10-bit / wide gamut off macOS | Capability-gated and off by default even on macOS. Colour rides the SPS in-band, so adding it later needs no wire change — which is exactly why it can wait. |
 | A menubar/tray item on Linux and Windows | Already decided against in `plans/sharer-surfaces.md`: notifications + a capture outline cover the ground, and stock GNOME won't draw a StatusNotifierItem without a shell extension. |
-| Localized strings off macOS | No demand yet. `ShortcutCatalog` and `SharerNotice` already carry English source text hosts can localize, so the seam exists when it's wanted. |
+| ~~Localized strings off macOS~~ | **Reversed — this shipped.** `Packages/TailscreenL10n` is now the one catalog all three apps and TailscreenHubUI read through `L(_:)`, and `linux-l10n` gates the GTK and WinUI apps' strings on every PR. See `.claude/rules/localization.md`. |
 | Wayland *before* the portal | Not a separate task — 3.3 is the answer to it. |
 
 ## Order, and why

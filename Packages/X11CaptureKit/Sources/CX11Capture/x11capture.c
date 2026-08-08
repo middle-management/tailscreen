@@ -101,10 +101,12 @@ void x11cap_size(const x11cap_t *c, int *width, int *height) {
 
 int x11cap_uses_shm(const x11cap_t *c) { return c ? c->use_shm : 0; }
 
-// Limited-range BT.709, matching the viewer's YUV→RGB shader
-// (Apps/linux/Sources/CGtkVideo/cgtkvideo.c) exactly: luma 16..235, chroma
-// 128±112. Getting the range wrong here doesn't fail loudly — it just washes
-// out or crushes every frame — so the two must be changed together.
+// Limited-range BT.709: luma 16..235, chroma 128±112. These constants are
+// shared with FOUR other implementations, not one — the canonical list is the
+// doc comment on BGRAToI420 (Packages/TailscreenKit/Sources/TailscreenProtocol/
+// BGRAToI420.swift), which is also this function's direct Swift twin. Getting
+// the range wrong here doesn't fail loudly — it just washes out or crushes
+// every frame — so read that list before changing a coefficient.
 //
 // Fixed point at 1/16384. Y_full uses the BT.709 luma weights (0.2126,
 // 0.7152, 0.0722); the scale to studio swing and the chroma normalisation

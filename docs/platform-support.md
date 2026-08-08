@@ -300,6 +300,13 @@ keyframe request (PLI) · idle sweep · the codec fallback ladder · the
 decode-failure escalation ladder (keyframe request → decoder reset → a
 user-visible stall error).
 
+Voice has its own resilience layer, and it is portable on the same terms:
+Opus packet-loss concealment across short sequence gaps (capped, and faded at
+both boundaries so a long gap doesn't drone), a per-speaker adaptive jitter
+buffer sized from RFC 3550 jitter, a cooldown on a decoder that starts failing
+rather than hammering it, and a sweep that retires speakers who have gone quiet.
+All three platforms run the same decisions.
+
 That is the point of the split: a bug fixed in the loss-recovery path is fixed
 everywhere, and the platform code stays down to capture, encode, decode, render,
 audio I/O and input injection.

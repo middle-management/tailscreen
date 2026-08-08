@@ -205,11 +205,18 @@ a real display, and a genuinely bad network to exercise.
 
 ## Audio
 
-`VoiceChannel` handles both directions of voice (Opus, mono, 48 kHz)
-plus playback of the sharer's **system audio**. Voice is bidirectional
-with viewer-to-viewer relay through the sharer. The receive side runs an
-adaptive jitter buffer, conceals short sequence gaps instead of glitching,
-and puts a failing decoder on a cooldown rather than hammering it.
+Voice runs in both directions (Opus, mono, 48 kHz) alongside playback of
+the sharer's **system audio**, and is bidirectional with viewer-to-viewer
+relay through the sharer. The receive side runs an adaptive jitter buffer,
+conceals short sequence gaps instead of glitching, and puts a failing
+decoder on a cooldown rather than hammering it.
+
+None of that resilience is macOS's. The decisions — the gap policy, the
+concealment cap and its fades, the jitter sizing, the cooldown, the
+stale-speaker sweep — live in the portable core as `VoiceReceiveDecisions`,
+which macOS's `VoiceChannel` and the portable `VoiceDownlink` both compose,
+so a fix lands on all three platforms at once. Each host supplies only its
+own microphone and speaker.
 
 The codec is Opus — libopus wrapped by the local `OpusKit` — which
 replaced the original AudioToolbox AAC-LC path. Royalty-free and

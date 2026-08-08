@@ -91,6 +91,59 @@ final class LocalizationCatalogTests: XCTestCase {
                 + missing.joined(separator: "\n"))
     }
 
+    /// The inverse of `testEveryLCallSiteKeyExistsInCatalog`: every key the base
+    /// catalog carries must be reachable from some `L("…")` call site.
+    ///
+    /// The forward direction is the one that breaks a build; this one is the one
+    /// that wastes translator time. An orphan is a string somebody reworded or
+    /// deleted in code without touching the catalog — so it stays in `en.lproj`
+    /// forever, gets sent out for translation, comes back in every language, and
+    /// is never rendered. Nothing anywhere complains, which is why it accumulates.
+    ///
+    /// Failing rather than warning is deliberate: the fix is a one-line delete
+    /// and the check only ever fires on a commit that just orphaned something,
+    /// when the person holding the context is still there.
+    func testEveryCatalogKeyHasACallSite() throws {
+        let base = catalogURL("en")
+        guard FileManager.default.fileExists(atPath: base.path) else {
+            throw XCTSkip("source tree not available (tests running outside the repo)")
+        }
+        let catalog = StringsFile.parse(text: try String(contentsOf: base, encoding: .utf8))
+        XCTAssertFalse(catalog.isEmpty, "catalog parsed to zero keys — parser broken?")
+
+        var reachable: Set<String> = []
+        for tree in Self.sourceTrees {
+            let root = repoRoot.appendingPathComponent(tree)
+            for file in try Self.swiftFiles(under: root) {
+                let text = Self.stripLineComments(try String(contentsOf: file, encoding: .utf8))
+                reachable.formUnion(Self.scanLKeys(text))
+            }
+        }
+        XCTAssertGreaterThan(
+            reachable.count, 300, "suspiciously few distinct L() keys — scanner broken?")
+
+        // A call site's key is normalized (interpolations become %@/%lld), so
+        // the catalog side has to be compared in the same form — the exact
+        // correspondence the runtime lookup makes.
+        let orphans =
+            catalog.keys
+            .filter { !reachable.contains(LocalizationFormat.normalizeSpecifiers($0)) }
+            .filter { !Self.keysWithoutASwiftCallSite.contains($0) }
+            .sorted()
+
+        XCTAssertTrue(
+            orphans.isEmpty,
+            "en.lproj/Localizable.strings carries keys no L(\"…\") call site can reach. "
+                + "Delete them (and the same key from every <lang>.lproj), or add the key to "
+                + "`keysWithoutASwiftCallSite` with a reason if it is reached some other way:\n"
+                + orphans.joined(separator: "\n"))
+    }
+
+    /// Catalog keys that legitimately have no `L("…")` call site in any scanned
+    /// tree. Each needs a reason: the point of the list is that it stays short
+    /// enough to read, not that it absorbs whatever the test finds.
+    static let keysWithoutASwiftCallSite: Set<String> = []
+
     /// A translation may lag the base catalog — a missing key falls back to
     /// English by design — but it may not contain keys the base does not, and
     /// it may not disagree with the base about how many values a string takes.

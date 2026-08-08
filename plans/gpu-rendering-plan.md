@@ -1,5 +1,19 @@
 # Plan: full GPU rendering on Windows and Linux
 
+> **Status: DONE.** All four steps landed. `Apps/windows/Sources/CWinVideo`
+> exists, `WinUIVideoView` feeds a `SurfaceImageSource` from its D3D11 YUV→RGB
+> shader (not the `WriteableBitmap` + `I420Converter` path this plan was written
+> against), annotations composite in the same pass as an RGBA overlay, and
+> `winvideo-selftest` gates the shader on both arches with no GPU and no desktop.
+> One deviation from the sketch below: the image source is `SurfaceImageSource`
+> rather than `SwapChainPanel`, because swift-winui projects no Swift-typed
+> `SwapChainPanel` element — see `WinUIVideoView`'s header for that reasoning and
+> for the device-lost recovery a `WriteableBitmap` never needed.
+>
+> Kept for the rationale: why the seams made this tractable, and what the CI gate
+> can and cannot prove. **The tenses below are as-written and describe the
+> pre-GPU state.**
+
 Follows `gpu-media-support.md`, which established the pipeline state and closed
 the FFmpeg capability question. This is the render half only — colour conversion
 and present. Encode and decode acceleration are tracked there.

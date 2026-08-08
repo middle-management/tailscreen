@@ -13,9 +13,6 @@
 /* MARK: - Menu bar (AppMenu.swift) */
 "About Tailscreen" = "Om Tailscreen";
 "Settings…" = "Inställningar…";
-"Hide Tailscreen" = "Göm Tailscreen";
-"Hide Others" = "Göm andra";
-"Show All" = "Visa alla";
 "Quit Tailscreen" = "Avsluta Tailscreen";
 "Disconnect" = "Koppla från";
 "Microphone" = "Mikrofon";
@@ -26,9 +23,7 @@
 "Zoom to 200%" = "Zooma till 200 %";
 "Zoom In" = "Zooma in";
 "Zoom Out" = "Zooma ut";
-"Minimize" = "Minimera";
 "Zoom" = "Zooma";
-"Bring All to Front" = "Lägg alla överst";
 "Keyboard Shortcuts" = "Tangentbordsgenvägar";
 
 /* MARK: - About panel (AppMenu.swift) */
@@ -44,10 +39,7 @@
 "Opens Tailscale sign-in in your browser" = "Öppnar Tailscale-inloggning i din webbläsare";
 
 /* MARK: - Main window hub (MainWindowView.swift) */
-"Viewer approvals and sharing controls live in the menu bar icon." = "Tittargodkännanden och delningskontroller finns i menyradsikonen.";
 "Mic, system audio, and drawing controls live in the menu bar icon." = "Kontroller för mikrofon, systemljud och ritning finns i menyradsikonen.";
-"Share your screen" = "Dela din skärm";
-"Pick a display, window, or app to share with your tailnet." = "Välj en skärm, ett fönster eller en app att dela med ditt tailnet.";
 "Screens" = "Skärmar";
 "Search screens" = "Sök skärmar";
 "Account" = "Konto";
@@ -71,7 +63,6 @@
 
 /* MARK: - Account profiles (MainWindowView.swift / AppState.swift) */
 "Add Account…" = "Lägg till konto…";
-"Switch to This Account" = "Byt till det här kontot";
 "Remove Account…" = "Ta bort konto…";
 "New account" = "Nytt konto";
 "Finish Your Session First" = "Avsluta din session först";
@@ -136,7 +127,6 @@
 "Change what you're sharing" = "Ändra vad du delar";
 "Reopens the picker without disconnecting viewers" = "Öppnar väljaren igen utan att koppla från tittarna";
 "No viewers yet" = "Inga tittare än";
-"%lld watching: %@" = "%lld tittar: %@";
 "Connection healthy" = "Anslutningen är stabil";
 "Connection degraded — packet loss" = "Anslutningen är försämrad — paketförlust";
 "Limited to keyframes — poor connection" = "Begränsad till nyckelbildrutor — dålig anslutning";
@@ -174,7 +164,6 @@
 "Choose what to share…" = "Välj vad du vill dela…";
 
 /* MARK: - Devices section (MenuBarView.swift) */
-"AVAILABLE SCREENS" = "TILLGÄNGLIGA SKÄRMAR";
 "Refresh screens" = "Uppdatera skärmar";
 "Refresh available screens" = "Uppdatera tillgängliga skärmar";
 "Looking for screens…" = "Söker efter skärmar…";
@@ -191,13 +180,9 @@
 "offline" = "frånkopplad";
 "Connects to view this device's screen" = "Anslut för att visa den här enhetens skärm";
 "Ask %@ to share their screen" = "Be %@ att dela sin skärm";
-"Request %@ to share" = "Begär att %@ delar";
 
 /* MARK: - Identity footer (MenuBarView.swift) */
 "Sign out" = "Logga ut";
-"End your Tailscale session" = "Avsluta din Tailscale-session";
-"Sign out of Tailscale" = "Logga ut från Tailscale";
-"Sign out of Tailscale, signed in as %@" = "Logga ut från Tailscale, inloggad som %@";
 
 /* MARK: - Settings window (SettingsView.swift) */
 "Viewers" = "Tittare";
@@ -486,11 +471,8 @@
 
 /* Hub — session placards (HubPlacards.swift) */
 "Waiting for approval" = "Väntar på godkännande";
-"The sharer declined your request" = "Den som delar avböjde din förfrågan";
-"The share has ended" = "Delningen har avslutats";
 "Connection failed" = "Anslutningen misslyckades";
 "The sharer needs to accept you as a viewer." = "Den som delar måste släppa in dig som tittare.";
-"Returning to the screen list…" = "Återgår till skärmlistan…";
 
 /* Hub — quality menu (HubQuality.swift) */
 "Save bandwidth" = "Spara bandbredd";
@@ -572,7 +554,6 @@
 "Could not start Tailscale" = "Kunde inte starta Tailscale";
 "Discovery failed: %@" = "Sökningen misslyckades: %@";
 "Waiting for %@ to approve…" = "Väntar på att %@ ska godkänna…";
-"The sharer declined." = "Den som delar avböjde.";
 "Session ended: %@" = "Sessionen avslutades: %@";
 "Switching account…" = "Byter konto…";
 "Could not open a browser — copy the URL above. (%@)" = "Kunde inte öppna en webbläsare — kopiera adressen ovan. (%@)";
@@ -611,8 +592,6 @@
 "Shared screen from %@" = "Delad skärm från %@";
 "Remote control granted — your input now controls the shared Mac. Use Stop Controlling in the toolbar to release." = "Fjärrstyrning beviljad — dina inmatningar styr nu den delade datorn. Använd Sluta styra i verktygsfältet för att släppa.";
 "Release Remote Control" = "Släpp fjärrstyrning";
-"Enter Full Screen" = "Övergå till helskärmsläge";
-"Exit Full Screen" = "Avsluta helskärmsläge";
 "Request control of the shared Mac" = "Be om att styra den delade datorn";
 "Waiting for the sharer to grant control — click to cancel" = "Väntar på att delaren ska bevilja styrning — klicka för att avbryta";
 "Cancel the pending control request" = "Avbryt den väntande styrningsförfrågan";

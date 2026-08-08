@@ -73,22 +73,6 @@ struct StderrLogger: LogSink {
     }
 }
 
-/// tsnet-backed transport for the portable viewer. It mirrors the macOS
-/// client's connect path (`TailscaleScreenShareClient.connect`): bring up an
-/// ephemeral `TailscaleNode`, bind a `PacketListener` on this node's tailnet
-/// IP, ship the pipeline's outbound control bytes over UDP, and pump inbound
-/// datagrams into `ViewerSession.receiveRTP` while ticking its clock.
-///
-/// **This is the one piece that can't run in CI** — a live tsnet node needs a
-/// real tailnet/DERP path (the repo's documented local-only constraint). It's
-/// compile-gated by the `linux-viewer` CI job; a live run is manual/local.
-/// All the *logic* it drives lives in the CI-tested `ViewerSession` core.
-///
-/// MainActor-isolated: the GTK viewer services this transport loop on its main
-/// thread (swift-cross-ui ticks `RunLoop.main`), and pinning to the main actor
-/// makes the `recv`/`send`/`tick` loop and every sink call run on one executor,
-/// matching the non-`Sendable` contract of
-/// `ViewerSession`.
 /// A Tailscreen sharer discovered on the tailnet — the picker's row model.
 /// A deliberately small value type (not `TailscreenPeer`) so the GTK app
 /// depends only on `TailscreenViewerTsnet`, not the whole transport package.
@@ -156,6 +140,23 @@ public struct PeerProbe: Sendable {
     }
 }
 
+/// tsnet-backed transport for the portable viewer. It mirrors the macOS
+/// client's connect path (`TailscaleScreenShareClient.connect`): bring up an
+/// ephemeral `TailscaleNode`, bind a `PacketListener` on this node's tailnet
+/// IP, ship the pipeline's outbound control bytes over UDP, and pump inbound
+/// datagrams into `ViewerSession.receiveRTP` while ticking its clock.
+///
+/// **This is the one piece that can't run in CI** — a live tsnet node needs a
+/// real tailnet/DERP path (the repo's documented local-only constraint). It's
+/// compile-gated by the `linux-viewer` CI job; a live run is manual/local.
+/// All the *logic* it drives lives in the CI-tested `ViewerSession` core.
+///
+/// MainActor-isolated: the GTK and WinUI viewers service this transport loop on
+/// their main thread (swift-cross-ui ticks `RunLoop.main`), and pinning to the
+/// main actor makes the `recv`/`send`/`tick` loop and every sink call run on one
+/// executor, matching the non-`Sendable` contract of `ViewerSession`. The socket
+/// read is deliberately NOT on that actor — see `DatagramInbox` and the
+/// `Task.detached` below, which is load-bearing and easy to undo by accident.
 @MainActor
 public final class TsnetTransport {
     private let logger = StderrLogger()

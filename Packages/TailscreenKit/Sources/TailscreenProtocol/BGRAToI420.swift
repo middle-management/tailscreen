@@ -17,16 +17,32 @@ import Foundation
 /// keeps this and its round-trip test inside that gate, next to the other pure
 /// shared logic there (`AnnotationGeometry`, `ViewerZoomMath`).
 ///
-/// **The constants are shared with two other implementations and must stay so.**
-/// `CX11Capture`'s `x11cap_bgra_to_i420` does this in C for the Linux sharer,
-/// and `CGtkVideo`'s shader inverts it for the GTK viewer. Getting the range
-/// wrong does not fail loudly — it washes out or crushes every frame — so the
-/// range is pinned here by a test that round-trips through `I420Converter`,
-/// which is the check neither converter can perform alone. The C version
-/// predates this one and is not yet folded into it; adopting this from
-/// `X11CaptureEncoder` would remove the duplication, and is queued rather than
-/// done here because rewriting a working capture path is not what a Windows
-/// stage should touch.
+/// **This doc comment is the canonical list of who shares these constants.**
+/// The other four implementations point back here rather than at each other,
+/// because they did point at each other and each named a different subset.
+/// Limited-range BT.709 — luma 16..235, chroma 128±112 — is implemented five
+/// times in this repo, twice forward and three times inverse:
+///
+/// | Direction | Where | Language | Serves |
+/// |---|---|---|---|
+/// | BGRA → I420 | **this file** | Swift | the WGC and portal capture backends |
+/// | BGRA → I420 | `CX11Capture`'s `x11cap_bgra_to_i420` | C | the X11 capture backend |
+/// | I420 → RGB | `CGtkVideo`'s shader | GLSL | the GTK viewer |
+/// | I420 → RGB | `CWinVideo`'s `ps_main` | HLSL | the WinUI viewer |
+/// | I420 → BGRA | `I420Converter` | Swift | the CPU blit + the X11 sharer's preview |
+///
+/// Getting the range wrong does not fail loudly — it washes out or crushes
+/// every frame — so each is pinned rather than trusted. This one round-trips
+/// through `I420Converter`, which is the check neither converter can perform
+/// alone; the two shaders are gated against the shared `makeColorBarsFrame()`
+/// by `tailscreen --overlay-self-test` (GL, under Xvfb) and `winvideo-selftest`
+/// (HLSL, under WARP), which is why that frame lives in `TailscreenViewer` and
+/// not beside either renderer.
+///
+/// The C forward converter predates this one and is not folded into it;
+/// adopting this from `X11CaptureEncoder` would remove that duplication, and is
+/// queued rather than done because rewriting a working capture path was not
+/// what the Windows stage that added this should touch.
 public enum BGRAToI420 {
     // Fixed point at 1/16384, matching CX11Capture exactly. Y_full uses the
     // BT.709 luma weights (0.2126, 0.7152, 0.0722); the scale to studio swing

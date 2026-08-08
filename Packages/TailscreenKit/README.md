@@ -54,8 +54,8 @@ The platform-portable core of Tailscreen, in six targets/tiers:
   polls from its UI thread). It owns no socket, thread, or timer, and no
   concrete codec/renderer/audio backend — the Linux viewer plugs FFmpeg
   decode, GL render, and ALSA output in behind the protocols; the Windows
-  viewer will plug in D3D and WASAPI. Depends on `TailscreenProtocol` +
-  `TailscreenAudio` only.
+  viewer plugs in the same FFmpeg decode with D3D11 render and WASAPI
+  output. Depends on `TailscreenProtocol` + `TailscreenAudio` only.
 - **`TailscreenSharer`** — the host-agnostic *sharer* data plane:
   `TailscaleScreenShareServer` — viewer admission and the access-policy
   gate, RTP fan-out, NACK/retransmit/FEC, the congestion + per-viewer
