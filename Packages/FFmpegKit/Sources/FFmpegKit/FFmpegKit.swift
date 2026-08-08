@@ -344,8 +344,17 @@ public enum FFmpeg {
             guard width > 0, height > 0, fps > 0 else {
                 throw DecodeError(message: "invalid encoder geometry \(width)x\(height)@\(fps)")
             }
-            let enc: UnsafePointer<AVCodec>? =
-                encoderName.flatMap { avcodec_find_encoder_by_name($0) } ?? avcodec_find_encoder(codec.avID)
+            // NO EXPLICIT POINTER TYPE HERE. FFmpeg 5.0 made the codec lookups
+            // return `const AVCodec *`; 4.x returns a mutable one, so Swift
+            // imports this as UnsafePointer on one and UnsafeMutablePointer on
+            // the other, and naming either breaks the build on the other. Every
+            // other lookup in this file already infers (`guard let c = …`) and
+            // is portable by accident; this was the one annotated site, and it
+            // is what stopped the app compiling against the FFmpeg in Ubuntu
+            // 22.04. Inference is the fix: `avcodec_alloc_context3` takes a
+            // const pointer on both, and Swift converts mutable→const at the
+            // call.
+            let enc = encoderName.flatMap { avcodec_find_encoder_by_name($0) } ?? avcodec_find_encoder(codec.avID)
             guard let enc else {
                 throw DecodeError(message: "no encoder for \(codec)\(encoderName.map { " (\($0))" } ?? "")")
             }
