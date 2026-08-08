@@ -178,7 +178,15 @@ jobs:
   # ---------------------------------------------------------------------------
   macos:
     name: macOS
-    needs: [version, unlabel]
+    # `version` ONLY — deliberately not `unlabel`, which is what the linux and
+    # windows jobs already do. `unlabel` is pull_request-only, and GitHub
+    # propagates SKIPPED through `needs` unless the dependent job's `if` uses a
+    # status function, so listing it here skipped the macOS build on every
+    # published release: no failure, no annotation, just a release with no .app.
+    # v0.10.0-rc.1 shipped that way. Nothing was gained by waiting either —
+    # `unlabel` takes seconds, runs in parallel, and its own step is
+    # continue-on-error, so it was never a precondition for building.
+    needs: version
     if: >-
       github.event_name != 'pull_request' ||
       github.event.label.name == 'build:notarized'
@@ -301,11 +309,20 @@ jobs:
       - name: Upload to the release
         env:
           GH_TOKEN: ${{ github.token }}
+        # --repo is REQUIRED here and nowhere else in this repo: `gh` resolves
+        # owner/repo from the git remote, and this is the only job that calls
+        # it without checking the repository out (it exists solely to move a
+        # downloaded artifact, so a checkout would be ~all of its runtime).
+        # Without it `gh` exits with "fatal: not a git repository" BEFORE
+        # uploading — after the 25-minute build that produced the artifact.
+        # scripts/test-release-wiring.py fails on a `gh release upload` that
+        # has neither a checkout nor this flag.
         run: |
           gh release upload "${{ needs.version.outputs.tag }}" \
             "Tailscreen-${{ needs.version.outputs.version }}-linux-${{ matrix.package_arch }}.tar.gz" \
             "Tailscreen-${{ needs.version.outputs.version }}-${{ matrix.appimage_arch }}.AppImage" \
-            "checksums-linux-${{ matrix.package_arch }}.txt" --clobber
+            "checksums-linux-${{ matrix.package_arch }}.txt" \
+            --repo "${{ github.repository }}" --clobber
 
   # ---------------------------------------------------------------------------
   # Windows — a zip and a self-signed MSIX per architecture.
