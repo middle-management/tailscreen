@@ -75,11 +75,14 @@ capturing it — so that feature has no Windows counterpart under either API.
 
 ## `wgc-probe`
 
-Exists first to make the **linker** run: a SwiftPM library target is compiled
+Existed first to make the **linker** run: a SwiftPM library target is compiled
 but never linked, which is how WASAPIKit's GUID mistake passed its own CI step
 and surfaced eleven minutes later in the app. This shim has more unresolved
 symbols than any other here — four import libraries plus every activation
-factory — so the check is worth more.
+factory. CI no longer builds it for that: the Windows app links WGCCaptureKit
+itself, so `Build the app` resolves the same symbols, and once the build cache
+put that step under two minutes a separate build stopped buying enough to
+justify its own.
 
 Also worth running on a desktop: it shows the picker, then prints the chosen
 target's name, size and a green-channel spread over a sparse grid. A real

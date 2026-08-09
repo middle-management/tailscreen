@@ -159,8 +159,12 @@ above survived its own CI step and surfaced eleven minutes later in the app.
 Building this product runs the linker against a target small enough that any
 error in it is ours.
 
-CI builds it and does not run it: its Windows runners have no audio endpoint, so
-a legitimate "no device" failure would be indistinguishable from a broken build.
+CI no longer builds it, and the linker gate did not go with it: the Windows app
+links WASAPIKit itself, so `Build the app` runs the same linker over the same
+shim. The dedicated step only reported it sooner, which stopped being worth two
+minutes a run once the build cache put the app build under two minutes. CI never
+ran this probe anyway — its Windows runners have no audio endpoint, so a
+legitimate "no device" failure would be indistinguishable from a broken build.
 On a real desktop it is a useful one-liner — it prints both endpoints' negotiated
 mix formats, which is the input `MonoPCMConverter` has to match, and then records
 for three seconds and reports the **peak amplitude**. Peak rather than a frame

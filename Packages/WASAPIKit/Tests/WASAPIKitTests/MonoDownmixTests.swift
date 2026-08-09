@@ -11,8 +11,8 @@ import XCTest
 /// split here is the same one `MonoPCMConverter` and `I420Converter` were pulled
 /// out for — the sample-shuffling that every platform needs and no platform can
 /// test sits outside `#if os(Windows)`, and the COM lifetime that genuinely
-/// requires Windows is left to the `wasapi-probe` link check and a human at a
-/// desk.
+/// requires Windows is left to the link — the Windows app links this package,
+/// so its build resolves these symbols — and a human at a desk.
 final class MonoDownmixTests: XCTestCase {
     // MARK: - Downmix
 

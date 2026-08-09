@@ -74,9 +74,11 @@ on:
         default: true
       run_probes:
         description: >-
-          Build the WASAPIKit / WGCCaptureKit / SendInputKit probe EXECUTABLES
-          before the app, so the LINKER runs on them in seconds rather than
-          eleven minutes into the app build.
+          Build and RUN the WinHotkeyKit / WinNotifyKit probes — the only
+          automated proof that RegisterHotKey and AppNotificationManager
+          .Register() accept what this repo hands them. Link-only probes used
+          to live here too; the app links those packages itself, so they went
+          when the build cache made `Build the app` fast enough to be the gate.
         required: false
         type: boolean
         default: false
@@ -294,6 +296,52 @@ jobs:
       # which is its classification, not a fact — an SSL handshake that fails
       # against github.com is exactly the kind of thing that succeeds seconds
       # later. Retrying here rather than arguing with vcpkg's taxonomy.
+
+      # The vcpkg port BUILDS OPUS FROM SOURCE, ~70 s of every run for a C
+      # library whose version never moves under us. Cache the installed tree
+      # instead — same shape as the WinAppSDK nupkg cache further down: fixed
+      # content, key names the version, never needs invalidating by hand.
+      #
+      # The key carries the vcpkg CHECKOUT the runner image ships, because that
+      # commit IS the port tree: an image whose vcpkg moved gets a fresh build
+      # rather than silently linking an opus the current ports would not
+      # produce. Keying on the triplet alone would pin the first opus this repo
+      # ever built, forever, invisibly.
+      #
+      # Small enough (single-digit MB) that the main-only save policy the
+      # `.build` caches follow would be noise here — this one saves from every
+      # ref, and the whole rotating set still costs less than one generation of
+      # the app cache.
+      - name: Identify the vcpkg port tree
+        id: vcpkg-ports
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="${VCPKG_INSTALLATION_ROOT:-}"
+          [ -n "$root" ] || { echo "VCPKG_INSTALLATION_ROOT is unset — the runner image changed" >&2; exit 1; }
+          # Falls back to the image version if vcpkg ever ships as something
+          # other than a git checkout: a coarser key (it moves whenever the
+          # image does), never a wrong one.
+          rev=$(git -C "$root" rev-parse HEAD 2>/dev/null || echo "image-${ImageVersion:-unknown}")
+          # installed/ as a whole, not just the triplet dir: vcpkg's status
+          # database lives in installed/vcpkg/, and without it a restored tree
+          # is invisible to `vcpkg install`, which would rebuild anyway.
+          echo "VCPKG_INSTALLED_DIR=$root/installed" >> "$GITHUB_ENV"
+          echo "rev=$rev" >> "$GITHUB_OUTPUT"
+          echo "vcpkg at $root, ports $rev"
+
+      - name: Cache the vcpkg opus build
+        if: inputs.use_cache
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.VCPKG_INSTALLED_DIR }}
+          key: vcpkg-opus-${{ env.VCPKG_TRIPLET }}-${{ steps.vcpkg-ports.outputs.rev }}
+
+      # Still RUN on a cache hit, and that is deliberate rather than sloppy:
+      # with the status database restored, `vcpkg install` reports the package
+      # already installed and returns in seconds, so the step keeps proving the
+      # headers and libraries this build is about to link are actually there —
+      # a restored-but-truncated archive fails here instead of at link time.
       - name: Install libopus (vcpkg, ${{ env.VCPKG_TRIPLET }})
         shell: bash
         run: |
@@ -314,7 +362,7 @@ jobs:
           ls -la "$root/lib/"
 
       # ---------------------------------------------------------------------
-      # Only PROBE steps survive here, and that is a deliberate cut.
+      # Almost nothing survives here, across two deliberate cuts.
       #
       # This job used to build nine packages before the app: TailscreenProtocol,
       # WASAPIKit, WGCCaptureKit, SendInputKit, WinOverlayKit, TailscreenHubUI,
@@ -341,47 +389,39 @@ jobs:
       # So localization moved to the runner where it costs three minutes instead
       # of the one where it cost thirteen.
       #
-      # The three that remain build PROBE EXECUTABLES, and that is the whole
-      # reason they are not redundant: a SwiftPM library target is compiled but
-      # never LINKED, so Linux typechecking cannot catch a missing import
-      # library — the failure mode that once let WASAPIKit's four undefined GUID
-      # symbols pass their own step and surface eleven minutes later in the app.
-      # Linking is Windows-only, it is what these probes force, and together
-      # they cost 112s.
+      # Only the two probes that RUN survive here, and losing the other three
+      # is what the cache fix bought.
+      #
+      # WASAPIKit, WGCCaptureKit and SendInputKit were built — never run — for
+      # one reason: a SwiftPM library target is compiled but never LINKED, so
+      # Linux typechecking cannot catch a missing import library, and that is
+      # the failure mode which once let WASAPIKit's four undefined GUID symbols
+      # pass their own step and surface ELEVEN MINUTES later in the app. The
+      # linker is the gate; building the probe executable is what runs it.
+      #
+      # The app links all three itself, so those three steps never caught
+      # anything the app build would miss — only sooner. That was worth 112 s
+      # while "sooner" meant eleven minutes. It no longer does: with the build
+      # cache restoring (#257, #258), `Build the app` is UNDER TWO MINUTES, so
+      # the three were paying ~2 min on every run to move a failure ~3 min
+      # earlier — and only on the runs where such a failure exists AND the
+      # cache is cold. Two rare events multiplied, billed every push.
+      #
+      # What is genuinely lost, stated plainly: nothing on Windows compiles
+      # those three probe EXECUTABLES any more (the Linux legs' `swift test`
+      # builds test targets, not executable products), so a probe whose own
+      # main.swift rots is now found by the next person who runs it. They are
+      # hand diagnostics; the libraries they wrap stay linked by the app.
       #
       # If you add a package to the app's graph, do NOT add a build step here.
-      # Add it to the Linux typecheck job instead, and add a probe here only if
-      # it links something new.
+      # Add it to the Linux typecheck job instead. Add a step here only for
+      # something the app CANNOT gate — i.e. a probe that must RUN, like the
+      # two below.
       #
       # `run_probes: false` on a release build: they answer a per-push question
       # and a release's gate is that the per-push workflow was green on the
       # commit being tagged.
       # ---------------------------------------------------------------------
-
-      # WASAPIKit before the app, not with it. It is a few hundred lines of COM
-      # against SDK headers that nothing off Windows can compile, so a mistake
-      # in it should surface in seconds here rather than eleven minutes into the
-      # app build. No system package: WASAPI ships with Windows. It is not
-      # EXECUTED: this runner has no audio endpoint, so "no device" would fail a
-      # healthy build.
-      - name: WASAPIKit
-        if: inputs.run_probes
-        run: swift build --package-path Packages/WASAPIKit --product wasapi-probe
-
-      # Same reasoning as WASAPIKit, more so: this is raw WinRT ABI against four
-      # import libraries, built early and via its PROBE so the LINKER runs here
-      # in seconds rather than eleven minutes into the app build.
-      - name: WGCCaptureKit
-        if: inputs.run_probes
-        run: swift build --package-path Packages/WGCCaptureKit --product wgc-probe
-
-      # Remote control: Win32 SendInput behind the portable `InputInjecting`
-      # seam. Via its PROBE, so the LINKER runs. Built, not RUN, unlike
-      # wasapi-probe — wasapi-probe's failure mode on a runner is silence; this
-      # one moves a real cursor, and it takes `--inject` before it will.
-      - name: SendInputKit
-        if: inputs.run_probes
-        run: swift build --package-path Packages/SendInputKit --product sendinput-probe
 
       # The system-wide mute chord: RegisterHotKey plus the pump thread that
       # receives its WM_HOTKEY. Via its PROBE for the usual reason (a library
