@@ -10,10 +10,13 @@ import TailscreenL10n
 /// Linux and Windows there is only the hub window, so this is that surface;
 /// keeping the row public means a second one costs nothing.
 ///
-/// The layout puts the label first and the destructive control last, with the
-/// remember-decisions between them. A ✕ adjacent to the name would be the
-/// easiest thing to hit by accident, and it is the only control here whose
-/// effect the person on the other end notices immediately.
+/// Two lines on its own row card: the person first (presence dot + full name
+/// + connection health), their controls beneath, destructive control last.
+/// One line was tried and the name lost: three buttons ate the width and the
+/// hostname — the fact the sharer is actually looking for — truncated to a
+/// few characters at the hub's default size. A ✕ adjacent to the name would
+/// also be the easiest thing to hit by accident, and Disconnect is the only
+/// control here whose effect the person on the other end notices immediately.
 public struct HubViewerRowView: View {
     let viewer: HubViewerRow
 
@@ -22,17 +25,29 @@ public struct HubViewerRowView: View {
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
-                Text("• \(viewer.label)")
-                    .font(.caption)
+                // Coloured by the LINK, not by presence. A row only exists
+                // here while someone is connected, so a dot that always said
+                // "connected" carried no information — and went green beside
+                // a viewer whose picture was falling apart.
+                Circle()
+                    .fill(viewer.health.dotColor)
+                    .frame(width: 8, height: 8)
+                Text(viewer.label)
+                    .fontWeight(.bold)
                     .lineLimit(1)
-                if let detail = viewer.detail {
-                    Text(detail)
-                        .font(.caption)
-                        .foregroundColor(HubStyle.secondaryText)
-                }
                 Spacer()
+            }
+            // Spelled out, never colour alone — and only when there is
+            // something to say, so the one struggling viewer stands out
+            // instead of every row carrying a line.
+            if let note = viewer.health.note {
+                Text(note)
+                    .font(.caption)
+                    .foregroundColor(HubStyle.secondaryText)
+            }
+            HStack(spacing: 6) {
                 // Only ever ONE remember-affordance per state, not two greyed
                 // ones: with a standing decision the useful action is to undo
                 // it, and with none the useful actions are to make one.
@@ -57,6 +72,7 @@ public struct HubViewerRowView: View {
                     // another machine.
                     Button(L("Disconnect"), action: kick)
                 }
+                Spacer()
             }
             if let status = statusLine {
                 Text(status)
@@ -64,6 +80,9 @@ public struct HubViewerRowView: View {
                     .foregroundColor(HubStyle.secondaryText)
             }
         }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: HubStyle.rowRadius).fill(HubStyle.rowFill))
     }
 
     /// The standing decision, or the fact that one is waiting to be recorded.

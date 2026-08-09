@@ -457,7 +457,6 @@
 "Open in Browser" = "Open in Browser";
 
 /* Hub — share card (HubCards.swift) */
-"My screen" = "My screen";
 "Share my screen" = "Share my screen";
 "Drawing takes over the screen; Esc gives it back" = "Drawing takes over the screen; Esc gives it back";
 "Press Esc to stop drawing" = "Press Esc to stop drawing";
@@ -522,7 +521,6 @@
 /* Picker + session status (PickerModel.swift / main.swift) */
 "Starting Tailscale…" = "Starting Tailscale…";
 "Waiting for login…" = "Waiting for login…";
-"Tailscreen viewer" = "Tailscreen viewer";
 "Viewer" = "Viewer";
 "Accepted — they're choosing what to share" = "Accepted — they're choosing what to share";
 "Declined" = "Declined";
@@ -538,8 +536,8 @@
 /* Sharer status + failures (SharerModel.swift / VoiceControls.swift) */
 "Not sharing" = "Not sharing";
 "%lld waiting for approval" = "%lld waiting for approval";
-"Sharing — nobody watching yet" = "Sharing — nobody watching yet";
-"Sharing to %lld" = "Sharing to %lld";
+"Nobody watching yet" = "Nobody watching yet";
+"Your drawing colour" = "Your drawing colour";
 "Share failed: %@" = "Share failed: %@";
 "this session cannot share a single window" = "this session cannot share a single window";
 "could not change the shared source: %@" = "could not change the shared source: %@";

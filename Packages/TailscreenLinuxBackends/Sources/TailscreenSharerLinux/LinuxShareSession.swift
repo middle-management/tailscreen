@@ -56,9 +56,13 @@ public final class LinuxShareSession {
         public let id: String
         public let label: String
         public let stableID: String?
-        public let health: String?
+        /// The link's state, straight off the server. Passed as the ENUM
+        /// rather than a rendered string: this package has no string catalog,
+        /// so interpolating it here put an untranslated lowercase `degraded`
+        /// beside somebody's hostname in the UI. The host words it.
+        public let health: ViewerHealth
 
-        public init(id: String, label: String, stableID: String?, health: String?) {
+        public init(id: String, label: String, stableID: String?, health: ViewerHealth) {
             self.id = id
             self.label = label
             self.stableID = stableID
@@ -366,7 +370,7 @@ public final class LinuxShareSession {
             let rows = infos.map {
                 ConnectedViewer(
                     id: $0.id, label: $0.hostname ?? $0.tailscaleIP, stableID: $0.stableID,
-                    health: $0.health == .good ? nil : "\($0.health)")
+                    health: $0.health)
             }
             Task { @MainActor [weak self] in
                 guard let self, self.core.isCurrentShare(generation) else { return }

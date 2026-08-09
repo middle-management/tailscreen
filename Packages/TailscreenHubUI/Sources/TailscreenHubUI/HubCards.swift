@@ -79,7 +79,6 @@ public struct HubLoginCard: View {
 /// card that can render the prompts but not the gate is a card where the gate
 /// can only be off.
 public struct ShareCard: View {
-    let title: String
     let statusLine: String
     let isSharing: Bool
     let canShare: Bool
@@ -143,14 +142,20 @@ public struct ShareCard: View {
     /// even the Stop button — because if it shows the wrong thing, stopping is
     /// what the next click is for.
     let preview: HubPreview?
+    /// The nuance under the headline — "Nobody watching yet", "1 waiting for
+    /// approval". Separate from `statusLine` because the headline says the
+    /// STATE and this says what is true about it right now, which is the
+    /// macOS card's split (headline + resolution beneath). Nil renders
+    /// nothing rather than an empty line.
+    let statusDetail: String?
     let onStart: @MainActor @Sendable () -> Void
     let onStop: @MainActor @Sendable () -> Void
     let onAccept: @MainActor @Sendable (String) -> Void
     let onDecline: @MainActor @Sendable (String) -> Void
 
     public init(
-        title: String = L("My screen"),
         statusLine: String,
+        statusDetail: String? = nil,
         isSharing: Bool,
         canShare: Bool,
         startLabel: String = L("Share my screen"),
@@ -171,7 +176,6 @@ public struct ShareCard: View {
         onAccept: @escaping @MainActor @Sendable (String) -> Void = { _ in },
         onDecline: @escaping @MainActor @Sendable (String) -> Void = { _ in }
     ) {
-        self.title = title
         self.statusLine = statusLine
         self.isSharing = isSharing
         self.canShare = canShare
@@ -188,142 +192,285 @@ public struct ShareCard: View {
         self.secondaryStart = secondaryStart
         self.changeSource = changeSource
         self.preview = preview
+        self.statusDetail = statusDetail
         self.onStart = onStart
         self.onStop = onStop
         self.onAccept = onAccept
         self.onDecline = onDecline
     }
 
+    /// No section heading above the card, matching the macOS hub window: its
+    /// share section opens straight on the dot and the headline, and only the
+    /// peer list below carries a big "Screens" title. A heading here read as a
+    /// second one stacked on the card's own — "My screen" over "Sharing your
+    /// screen" — which is a label for something that has already said what it
+    /// is.
     public var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(title)
-                .font(.title2)
-                .fontWeight(.bold)
-            VStack(alignment: .leading, spacing: 8) {
+            statusRow
+            previewMat
+            actionsRow
+            if let extraAction {
+                Button(extraAction.label, action: extraAction.perform)
+            }
+            drawingCluster
+            peopleCluster
+            settingsCluster
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        // Green while live — the macOS sharer card's identity, and the
+        // strongest at-a-glance answer to "is my screen going out".
+        .hubCard(
+            fill: isSharing ? HubStyle.sharingCardFill : HubStyle.cardFill,
+            stroke: isSharing ? HubStyle.sharingCardStroke : HubStyle.cardStroke)
+    }
+
+    /// The macOS card's header: a live dot, the state as a headline, the
+    /// viewer count as a pill, and the nuance underneath.
+    ///
+    /// The count is a pill rather than words in the status line because it is
+    /// the one number a sharer re-reads mid-share, and because it belongs to
+    /// the *people* half of the card — the roster below spells out who they
+    /// are. Nothing here relies on colour alone: the dot has a headline
+    /// beside it and the pill has a number in it.
+    private var statusRow: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 7) {
+                if isSharing {
+                    Circle()
+                        .fill(HubStyle.online)
+                        .frame(width: 9, height: 9)
+                }
                 Text(statusLine)
-                    .font(.callout)
+                    .font(.headline)
                     .foregroundColor(isSharing ? HubStyle.chipText : HubStyle.secondaryText)
-                if let preview, let image = preview.image {
-                    Image(image)
-                }
-                if canShare {
-                    if isSharing {
-                        Button(stopLabel, action: onStop)
-                        if let changeSource {
-                            Button(changeSource.label, action: changeSource.perform)
-                        }
-                    } else {
-                        Button(startLabel, action: onStart)
-                        // Only while idle: mid-share this would start a second
-                        // one, and the card has a Stop button in that state
-                        // precisely because there is already something to stop.
-                        if let secondaryStart {
-                            Button(secondaryStart.label, action: secondaryStart.perform)
-                        }
-                    }
-                }
-                if let extraAction {
-                    Button(extraAction.label, action: extraAction.perform)
-                }
-                if let microphone {
-                    MicrophoneButton(
-                        isOn: microphone.isOn, onToggle: microphone.toggle)
-                }
-                if let drawing {
-                    VStack(alignment: .leading, spacing: 2) {
-                        AnnotationToolbar(
-                            activeTool: drawing.activeTool,
-                            inkColor: drawing.inkColor,
-                            showsStats: false,
-                            onSelectTool: drawing.selectTool,
-                            onUndo: drawing.undo,
-                            onClear: drawing.clear)
-                        // The caption is load-bearing rather than decorative:
-                        // arming a tool hands the whole screen to a
-                        // click-through-no-longer overlay, so the way back has
-                        // to be on screen BEFORE it is needed — once armed,
-                        // this window is behind the overlay and unreadable.
-                        Text(
-                            drawing.note
-                                ?? (drawing.activeTool == nil
-                                    ? L("Drawing takes over the screen; Esc gives it back")
-                                    : L("Press Esc to stop drawing"))
-                        )
+                if isSharing && !viewers.isEmpty {
+                    Text("\(viewers.count)")
                         .font(.caption)
-                        .foregroundColor(HubStyle.secondaryText)
+                        .fontWeight(.bold)
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 1)
+                        .background(Capsule().fill(HubStyle.countPillFill))
+                }
+                Spacer()
+            }
+            if let statusDetail {
+                Text(statusDetail)
+                    .font(.caption)
+                    .foregroundColor(HubStyle.secondaryText)
+            }
+        }
+    }
+
+    /// The preview on a dark rounded mat, at its own aspect ratio, with the
+    /// macOS card's "Capturing…" placeholder holding the space until the
+    /// first thumbnail lands.
+    ///
+    /// `fittedSize` (the scaler's own fit) rather than a fixed frame: the
+    /// capture can be any shape — a portrait monitor, one narrow window — and
+    /// stretching it to a 16:10 box would show viewers something the wire
+    /// does not carry. It also never scales up, so a thumbnail from an older
+    /// host renders at its natural size instead of as a blur.
+    @ViewBuilder private var previewMat: some View {
+        if let preview, let image = preview.image,
+            let fitted = ThumbnailScaler.fittedSize(
+                width: preview.width, height: preview.height,
+                longestEdge: ThumbnailScaler.defaultLongestEdge)
+        {
+            // Rounded like the macOS card's `clipShape(RoundedRectangle)`,
+            // and with nothing behind it: a mat around the image reads as a
+            // bevel, and the capture is opaque so there is nothing to bed it
+            // on. Both backends implement `cornerRadius` natively.
+            Image(image)
+                .resizable()
+                .frame(width: Double(fitted.width), height: Double(fitted.height))
+                .cornerRadius(Int(HubStyle.rowRadius))
+        } else if isSharing {
+            // Sharing with nothing to show yet. A placeholder rather than
+            // nothing, so the card does not visibly jump when the first
+            // thumbnail arrives a moment later — and so a backend that never
+            // produces one says why it looks empty.
+            Text(L("Capturing…"))
+                .font(.caption)
+                .foregroundColor(HubStyle.secondaryText)
+                .padding(.vertical, 26)
+                .frame(maxWidth: .infinity)
+                .background(
+                    RoundedRectangle(cornerRadius: HubStyle.rowRadius).fill(HubStyle.previewWell))
+        }
+    }
+
+    /// The share's controls on one row: change source / microphone / Stop
+    /// while sharing, the one or two ways to start while idle. A row rather
+    /// than a stack because these are peers of one decision — what is on the
+    /// wire — and a column of lone buttons read as unrelated features.
+    ///
+    /// Stop goes LAST, as it does on the macOS card: it is the one control
+    /// here whose press is felt immediately by everyone watching, so it does
+    /// not sit where a hand aiming for the microphone lands.
+    @ViewBuilder private var actionsRow: some View {
+        if canShare {
+            HStack(spacing: 8) {
+                if isSharing {
+                    if let changeSource {
+                        Button(changeSource.label, action: changeSource.perform)
+                    }
+                    if let microphone {
+                        MicrophoneButton(
+                            isOn: microphone.isOn, floating: false,
+                            onToggle: microphone.toggle)
+                    }
+                    Button(stopLabel, action: onStop)
+                } else {
+                    Button(startLabel, action: onStart)
+                    // Only while idle: mid-share this would start a second
+                    // one, and the card has a Stop button in that state
+                    // precisely because there is already something to stop.
+                    if let secondaryStart {
+                        Button(secondaryStart.label, action: secondaryStart.perform)
                     }
                 }
-                ForEach(prompts, id: \.id) { prompt in
-                    HStack(spacing: 8) {
-                        Text(prompt.message)
-                            .font(.caption)
-                        Spacer()
+                Spacer()
+            }
+        }
+    }
+
+    /// The drawing tools on a subtle sub-panel, their caption beneath. The
+    /// panel exists so ten glyph buttons across two rows read as one control
+    /// group rather than scattered card content.
+    @ViewBuilder private var drawingCluster: some View {
+        if let drawing {
+            VStack(alignment: .leading, spacing: 6) {
+                // `.twoRows`: a single row of these buttons is wider than the
+                // hub window, and a card child wider than the window makes
+                // swift-cross-ui clip every label in the card — see
+                // `AnnotationToolbar.Arrangement`.
+                AnnotationToolbar(
+                    activeTool: drawing.activeTool,
+                    inkColor: drawing.inkColor,
+                    arrangement: .twoRows,
+                    showsStats: false,
+                    onSelectTool: drawing.selectTool,
+                    onUndo: drawing.undo,
+                    onClear: drawing.clear
+                )
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: HubStyle.rowRadius).fill(HubStyle.barFill))
+                // The caption is load-bearing rather than decorative:
+                // arming a tool hands the whole screen to a
+                // click-through-no-longer overlay, so the way back has
+                // to be on screen BEFORE it is needed — once armed,
+                // this window is behind the overlay and unreadable.
+                Text(
+                    drawing.note
+                        ?? (drawing.activeTool == nil
+                            ? L("Drawing takes over the screen; Esc gives it back")
+                            : L("Press Esc to stop drawing"))
+                )
+                .font(.caption)
+                .foregroundColor(HubStyle.secondaryText)
+            }
+        }
+    }
+
+    /// The people: viewers waiting at the gate (or asking for control, or
+    /// asking this machine to share) first, then everyone watching. Behind a
+    /// divider because these rows are about *others* where everything above
+    /// is about this machine — and each on its own row card, two lines, so
+    /// the name is never crowded out by its own buttons.
+    @ViewBuilder private var peopleCluster: some View {
+        if !prompts.isEmpty || !viewers.isEmpty {
+            Divider()
+            ForEach(prompts, id: \.id) { prompt in
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(prompt.message)
+                        .font(.callout)
+                        .fontWeight(.bold)
+                    HStack(spacing: 6) {
                         Button(prompt.acceptLabel) { onAccept(prompt.id) }
                         Button(prompt.declineLabel) { onDecline(prompt.id) }
+                        Spacer()
                     }
                 }
-                ForEach(viewers, id: \.id) { viewer in
-                    HubViewerRowView(viewer: viewer)
-                }
-                ForEach(Array(notes.enumerated()), id: \.offset) { note in
-                    Text(note.element)
-                        .font(.caption)
-                        .foregroundColor(HubStyle.secondaryText)
-                }
-                ForEach(Array(settings.enumerated()), id: \.offset) { setting in
-                    VStack(alignment: .leading, spacing: 2) {
-                        // The value and the setter are separate on the way in
-                        // (see `HubToggle`) and are stitched back together
-                        // here, because `Toggle` speaks only `Binding`. The
-                        // getter closes over the value this render was built
-                        // with, so the switch tracks the host's state rather
-                        // than a copy of it that could drift.
-                        Toggle(
-                            setting.element.label,
-                            isOn: Binding(
-                                get: { setting.element.isOn },
-                                set: { setting.element.set($0) })
-                        )
-                        // SwiftCrossUI defaults `toggleStyle` to `.button`,
-                        // which draws a *button* that happens to be accented
-                        // while on. On a settings row that is two mistakes:
-                        // it invites a press as if it were an action, and its
-                        // state is carried by a colour a glance can miss. A
-                        // switch says "setting", and says which way it is set
-                        // — which for the approval gate is the whole point.
-                        .toggleStyle(.switch)
-                        if let caption = setting.element.caption {
-                            Text(caption)
-                                .font(.caption)
-                                .foregroundColor(HubStyle.secondaryText)
-                        }
-                    }
-                }
-                if let quality {
-                    VStack(alignment: .leading, spacing: 2) {
-                        HubQualityMenu(model: quality)
-                        // The caption is where the honesty lives. These knobs
-                        // are read when a share STARTS — the capture backend
-                        // takes them at construction on both hosts — so a
-                        // change made mid-share does nothing until the next
-                        // one. Saying so beats a menu that appears to work and
-                        // silently doesn't. (macOS re-pushes through its
-                        // helper-restart path; neither of these hosts has one.)
-                        Text(
-                            quality.isSharing
-                                ? L("Applies to your next share")
-                                : (quality.settings.preset.hubCaption ?? L("Custom settings"))
-                        )
-                        .font(.caption)
-                        .foregroundColor(HubStyle.secondaryText)
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                // Amber, like the macOS pending-viewer list: this is the one
+                // row in the card that is waiting on an answer, and it must
+                // not look like the rows that are merely reporting.
+                .background(
+                    RoundedRectangle(cornerRadius: HubStyle.rowRadius)
+                        .fill(HubStyle.attentionFill))
+            }
+            ForEach(viewers, id: \.id) { viewer in
+                HubViewerRowView(viewer: viewer)
+            }
+        }
+    }
+
+    /// Notes, the approval gate, and quality — the standing configuration,
+    /// behind a divider so it reads as the card's footer rather than more
+    /// controls for the live share.
+    @ViewBuilder private var settingsCluster: some View {
+        if !notes.isEmpty || !settings.isEmpty || quality != nil {
+            Divider()
+            ForEach(Array(notes.enumerated()), id: \.offset) { note in
+                Text(note.element)
+                    .font(.caption)
+                    .foregroundColor(HubStyle.secondaryText)
+            }
+            ForEach(Array(settings.enumerated()), id: \.offset) { setting in
+                VStack(alignment: .leading, spacing: 2) {
+                    // The value and the setter are separate on the way in
+                    // (see `HubToggle`) and are stitched back together
+                    // here, because `Toggle` speaks only `Binding`. The
+                    // getter closes over the value this render was built
+                    // with, so the switch tracks the host's state rather
+                    // than a copy of it that could drift.
+                    Toggle(
+                        setting.element.label,
+                        isOn: Binding(
+                            get: { setting.element.isOn },
+                            set: { setting.element.set($0) })
+                    )
+                    // SwiftCrossUI defaults `toggleStyle` to `.button`,
+                    // which draws a *button* that happens to be accented
+                    // while on. On a settings row that is two mistakes:
+                    // it invites a press as if it were an action, and its
+                    // state is carried by a colour a glance can miss. A
+                    // switch says "setting", and says which way it is set
+                    // — which for the approval gate is the whole point.
+                    .toggleStyle(.switch)
+                    if let caption = setting.element.caption {
+                        Text(caption)
+                            .font(.caption)
+                            .foregroundColor(HubStyle.secondaryText)
                     }
                 }
             }
-            .padding(12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 10).fill(HubStyle.cardFill))
+            if let quality {
+                VStack(alignment: .leading, spacing: 2) {
+                    HubQualityMenu(model: quality)
+                    // The caption is where the honesty lives. These knobs
+                    // are read when a share STARTS — the capture backend
+                    // takes them at construction on both hosts — so a
+                    // change made mid-share does nothing until the next
+                    // one. Saying so beats a menu that appears to work and
+                    // silently doesn't. (macOS re-pushes through its
+                    // helper-restart path; neither of these hosts has one.)
+                    Text(
+                        quality.isSharing
+                            ? L("Applies to your next share")
+                            : (quality.settings.preset.hubCaption ?? L("Custom settings"))
+                    )
+                    .font(.caption)
+                    .foregroundColor(HubStyle.secondaryText)
+                }
+            }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

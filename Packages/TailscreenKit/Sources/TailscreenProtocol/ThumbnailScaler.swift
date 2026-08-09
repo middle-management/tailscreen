@@ -39,10 +39,12 @@ public enum ThumbnailScaler {
 
     /// The longest edge a preview is scaled to fit within.
     ///
-    /// Small on purpose: this is a thumbnail beside a status line, it is
-    /// produced repeatedly for the life of a share, and every pixel is one the
-    /// capture thread pays for.
-    public static let defaultLongestEdge = 240
+    /// Small on purpose: this is a thumbnail in a card, it is produced
+    /// repeatedly for the life of a share, and every pixel is one the capture
+    /// thread pays for. 360 rather than 240 because the share card now shows
+    /// it at up to that size (`ShareCard`'s preview mat fits it into a 360
+    /// box), and an upscaled box-average reads as a focus problem.
+    public static let defaultLongestEdge = 360
 
     /// Fit `width`x`height` inside a `longestEdge` box, preserving aspect.
     ///

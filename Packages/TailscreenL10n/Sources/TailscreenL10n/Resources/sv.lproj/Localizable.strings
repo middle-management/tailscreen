@@ -445,7 +445,6 @@
 "Open in Browser" = "Öppna i webbläsaren";
 
 /* Hub — share card (HubCards.swift) */
-"My screen" = "Min skärm";
 "Share my screen" = "Dela min skärm";
 "Drawing takes over the screen; Esc gives it back" = "Ritläget tar över skärmen; Esc lämnar tillbaka den";
 "Press Esc to stop drawing" = "Tryck Esc för att sluta rita";
@@ -507,7 +506,6 @@
 /* Picker + session status (PickerModel.swift / main.swift) */
 "Starting Tailscale…" = "Startar Tailscale…";
 "Waiting for login…" = "Väntar på inloggning…";
-"Tailscreen viewer" = "Tailscreen-tittare";
 "Viewer" = "Tittare";
 "Accepted — they're choosing what to share" = "Accepterat — de väljer vad som ska delas";
 "Declined" = "Avböjt";
@@ -523,8 +521,8 @@
 /* Sharer status + failures (SharerModel.swift / VoiceControls.swift) */
 "Not sharing" = "Delar inte";
 "%lld waiting for approval" = "%lld väntar på godkännande";
-"Sharing — nobody watching yet" = "Delar — ingen tittar ännu";
-"Sharing to %lld" = "Delar till %lld";
+"Nobody watching yet" = "Ingen tittar ännu";
+"Your drawing colour" = "Din ritfärg";
 "Share failed: %@" = "Delningen misslyckades: %@";
 "this session cannot share a single window" = "den här sessionen kan inte dela ett enskilt fönster";
 "could not change the shared source: %@" = "kunde inte byta delad källa: %@";
