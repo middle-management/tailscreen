@@ -459,17 +459,60 @@ jobs:
       # local package bumping its OWN remote dependency moves a pin, and a moved
       # pin is a new key. Path dependencies never appear in it, which is the
       # whole point — editing our own packages is free.
+      # The path list here is IDENTICAL to the save step's, exclusions
+      # included, and that is load-bearing: actions/cache hashes the path
+      # list into the entry's VERSION, and a restore only matches entries of
+      # its own version. With the exclusions on the save alone, every save
+      # landed in a version no restore ever computed — restores reported
+      # "Cache not found" for a key whose save then failed with "Unable to
+      # reserve cache … another job may be creating this cache", the two
+      # halves of the same entry neither could see as the other's. That
+      # combination in one job's log is the fingerprint of this bug; do not
+      # let the two path lists drift apart again.
       - name: Restore the app's build directory
         id: app-build-cache
         if: inputs.use_cache
         uses: actions/cache/restore@v6
         with:
-          path: Apps/windows/.build
+          path: |
+            Apps/windows/.build
+            !Apps/windows/.build/**/release/tailscreen.exe
+            !Apps/windows/.build/**/release/tsnet-probe.exe
           key: >-
             windows-app-build-${{ inputs.arch }}-${{ inputs.swift_version }}-${{
             runner.os }}-${{ hashFiles('Apps/windows/Package.resolved') }}
           restore-keys: |
             windows-app-build-${{ inputs.arch }}-${{ inputs.swift_version }}-${{ runner.os }}-
+
+      # Say which of the three cache outcomes this run drew, because the bad
+      # one is SILENT: a total miss just makes `Build the app` take ~23 minutes
+      # instead of ~3, every check stays green, and the only evidence is a log
+      # line nobody opens. That is exactly how the Aug 2026 eviction churn ran
+      # for days unnoticed (every push of every branch was saving generations
+      # until least-recently-used eviction deleted the main caches within
+      # minutes of each save — see the save step). A warning here puts the
+      # verdict on the run's summary page instead. Expected exactly once on
+      # main after a lockfile or toolchain change seeds the new key; RECURRING
+      # warnings on main mean the caches are being evicted again and the
+      # repo's Actions cache page is worth a look.
+      #
+      # `cache-matched-key` distinguishes the fallback restore from the total
+      # miss: it names whatever key actually restored, exact or prefix, and is
+      # empty only when nothing did.
+      - name: Report the cache verdict
+        if: inputs.use_cache
+        shell: bash
+        env:
+          EXACT: ${{ steps.app-build-cache.outputs.cache-hit }}
+          MATCHED: ${{ steps.app-build-cache.outputs.cache-matched-key }}
+        run: |
+          if [ -z "$MATCHED" ]; then
+            echo "::warning::windows-app-build cache: total miss — not even the restore-keys prefix matched, so this run pays the full ~23-minute dependency compile. Once after a lockfile/toolchain change is expected; recurring misses on main mean eviction is back (see the save step's comment)."
+          elif [ "$EXACT" != "true" ]; then
+            echo "prefix-fallback restore from $MATCHED — targets whose pins moved recompile incrementally"
+          else
+            echo "exact cache hit: $MATCHED"
+          fi
 
       # Now a no-op on the happy path when the cache hit: the restored .build
       # carries the checkouts and the pins already match. Kept as its own step
@@ -696,8 +739,11 @@ jobs:
       # every build regardless, and ~200 MB less per generation is real
       # eviction-pressure relief on the repo's shared 10 GB cache budget — an
       # overnight eviction of this very cache is why a morning's first build ran
-      # cold. (Exclusions apply at save; restore extracts whatever the archive
-      # holds, so the two path specs need not match.)
+      # cold. The SAME exclusions appear on the restore step, and must: the
+      # path list is hashed into the cache entry's version, and an entry saved
+      # under one path list is invisible to a restore using another. This file
+      # used to claim the opposite ("the two path specs need not match") and
+      # that claim was this repo's zero-hit cache in one sentence.
       #
       # SAVED ONLY FROM MAIN, and that is budget policy, not caution. A cache
       # saved by a branch run is scoped to that branch: main and every sibling
