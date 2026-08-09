@@ -121,7 +121,9 @@ jobs:
         # and those are COMPILE-time headers as well as runtime libraries —
         # without them the C shim fails at `pipewire/pipewire.h`, long before
         # anything gets as far as linking.
-        # All multi-arch in noble.
+        # All multi-arch in jammy. `golang-go` is still installed for the
+        # `make` toolchain around it, but the Go that BUILDS libtailscale comes
+        # from setup-go — jammy's apt Go is 1.18 and cannot parse the go.mod.
         run: |
           apt-get update && apt-get install -y --no-install-recommends \
             libgtk-4-dev gir1.2-gtk-4.0 libgirepository1.0-dev libepoxy-dev \
@@ -174,7 +176,16 @@ jobs:
         # setup-go's tool cache doesn't apply inside a container.
         uses: ./.github/actions/bootstrap
         with:
-          go: preinstalled
+          # setup-go, NOT the container's apt Go, and this is the one place
+          # that differs from the sibling container legs. jammy ships Go 1.18,
+          # which cannot even PARSE libtailscale's `go 1.25.5` directive — the
+          # three-component form arrived in 1.21, along with the automatic
+          # toolchain download that lets noble's 1.22 build it at all. Debian
+          # 12's 1.19 fails the same way, so this is not a jammy quirk to dodge
+          # by picking another base: any base old enough to give a usable glibc
+          # floor is too old for this go.mod. setup-go reads the version out of
+          # go.mod and installs exactly it.
+          go: setup-go
           libtailscale: host
           cache: ${{ inputs.use_cache }}
 

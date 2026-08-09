@@ -899,7 +899,16 @@ jobs:
       - name: Build libtailscale (patched) on Linux
         uses: ./.github/actions/bootstrap
         with:
-          go: preinstalled
+          # setup-go, NOT the container's apt Go, and this is the one place
+          # that differs from the sibling container legs. jammy ships Go 1.18,
+          # which cannot even PARSE libtailscale's `go 1.25.5` directive — the
+          # three-component form arrived in 1.21, along with the automatic
+          # toolchain download that lets noble's 1.22 build it at all. Debian
+          # 12's 1.19 fails the same way, so this is not a jammy quirk to dodge
+          # by picking another base: any base old enough to give a usable glibc
+          # floor is too old for this go.mod. setup-go reads the version out of
+          # go.mod and installs exactly it.
+          go: setup-go
           libtailscale: host
 
       # ---------------------------------------------------------------------
