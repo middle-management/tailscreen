@@ -507,7 +507,6 @@
 /* Picker + session status (PickerModel.swift / main.swift) */
 "Starting Tailscale…" = "Startar Tailscale…";
 "Waiting for login…" = "Väntar på inloggning…";
-"Tailscreen viewer" = "Tailscreen-tittare";
 "Viewer" = "Tittare";
 "Accepted — they're choosing what to share" = "Accepterat — de väljer vad som ska delas";
 "Declined" = "Avböjt";

@@ -522,7 +522,6 @@
 /* Picker + session status (PickerModel.swift / main.swift) */
 "Starting Tailscale…" = "Starting Tailscale…";
 "Waiting for login…" = "Waiting for login…";
-"Tailscreen viewer" = "Tailscreen viewer";
 "Viewer" = "Viewer";
 "Accepted — they're choosing what to share" = "Accepted — they're choosing what to share";
 "Declined" = "Declined";

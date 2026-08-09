@@ -288,6 +288,14 @@ if gSelfTest {
     // runs interleaved with the GTK loop (swift-cross-ui ticks RunLoop.main),
     // so `present` — and thus the GLArea repaint — happens on the main thread.
     let (baseConfig, host, wantAudio, explicitStateDir) = parseConfig()
+    // Picker mode is decided by the command line (no host argument), so decide
+    // it HERE, before anything reads it. It used to be set where the picker
+    // block starts — below `transport.retainsNodeAcrossSessions = gPickerMode`,
+    // which therefore always read false: the first viewing session's teardown
+    // took the sharer's borrowed node down with it, so "Share my screen" then
+    // failed with "Tailscale isn't up yet" while the peer list sat silently
+    // stale (quietRefresh swallows discovery failures by design).
+    gPickerMode = host == nil
     let sink = GtkVideoSink(store: gStore, uiState: gUIState)
     let transport = TsnetTransport()
     // Audio out: an ALSA sink fronted by a background thread so its blocking
@@ -472,10 +480,10 @@ if gSelfTest {
         // Direct connect — a host was named on the command line.
         startSession(host: host, displayName: host)
     } else {
-        // Picker mode: bring the node up, discover sharers, and let the user
-        // choose. Dialing the chosen sharer's tailnet IP (not its hostname)
-        // also sidesteps the `from == dest` hostname-match limitation.
-        gPickerMode = true
+        // Picker mode (gPickerMode, set above): bring the node up, discover
+        // sharers, and let the user choose. Dialing the chosen sharer's tailnet
+        // IP (not its hostname) also sidesteps the `from == dest`
+        // hostname-match limitation.
         gPicker.onSelect = { sharer in
             startSession(host: sharer.tailscaleIP, displayName: sharer.hostname)
         }
@@ -755,7 +763,10 @@ struct ViewerApp: App {
     }
 
     var body: some Scene {
-        WindowGroup(L("Tailscreen viewer")) {
+        // Plain "Tailscreen", matching the Windows app: this window is the hub
+        // (sharer + viewer), not just a viewer, and brand nouns stay
+        // unlocalized (see .claude/rules/localization.md).
+        WindowGroup("Tailscreen") {
             rootView
         }
         // Opens hub-narrow (the picker is a single column, like the mac hub);
