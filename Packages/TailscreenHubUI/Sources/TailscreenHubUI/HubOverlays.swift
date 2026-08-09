@@ -18,6 +18,28 @@ import TailscreenProtocol
 ///     rectangle / oval / pointer icons, so half the tool group would have
 ///     fallen back anyway, and nothing equivalent exists on Windows. These
 ///     glyphs render from the system font on both.
+///
+///     They do not match each other especially well, and that is inherent:
+///     the six come from four Unicode blocks (box-drawing `╱`, geometric
+///     shapes `▭ ◯`, dingbats `✎ ✕`, arrows `↗ ↶`), drawn at different
+///     weights and optical sizes by their designers. Two ways out were
+///     costed and both are currently worse:
+///       - SVG assets: swift-cross-ui's `Image` decodes png/jpg/webp or raw
+///         RGBA only. There is no SVG decoder in the graph.
+///       - Vector icons drawn natively: entirely possible — the public
+///         `Shape`/`Path` API has béziers, arcs and stroke caps/joins, and
+///         both backends render it. But `Button` takes a `String` label and
+///         nothing else ("a temporary solution until arbitrary labels are
+///         supported", says its own doc), there are no button styles to
+///         make one transparent, and an overlaid shape swallows clicks on
+///         WinUI (see `hubCard`). So an icon tool would have to be a bare
+///         `Shape` + `onTapGesture` — and GTK's tap target is a
+///         `GestureClick` controller on the child widget, which is not
+///         focusable. That trades every tool button's keyboard and
+///         screen-reader access for looks, on a toolbar whose armed state
+///         takes over the screen and whose way out is a keypress.
+///     Revisit when swift-cross-ui supports arbitrary button labels; the
+///     icons become free then, with nothing given up.
 ///   • The armed tool is bracketed rather than highlighted: swift-cross-ui has
 ///     no segmented control, so radio selection has to be spelled in the label.
 ///   • The color picker is a `Menu` of named rows with the current color
