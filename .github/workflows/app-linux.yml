@@ -626,12 +626,25 @@ jobs:
             done < "checksums-linux-${PACKAGE_ARCH}.txt"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # SwiftPM 6.3 rewrites the committed 6.1-format lockfile during the
+      # build (format churn, same pins). The cache key hashes it, the save
+      # evaluates hashFiles AFTER the rewrite and the restore evaluated it
+      # BEFORE, so without the discard the two keys disagree and the cache
+      # silently does nothing — see the linux-app job in build.yml.
+      - name: Keep the cache key consistent with the committed lockfile
+        if: ${{ !cancelled() && inputs.use_cache }}
+        run: git checkout -- Apps/linux/Package.resolved
+
       # Last, so a failed self-test or a failed staging step still banks the
       # compile. The product binary is excluded — relinked every build, and a
       # smaller archive survives the repo's shared 10 GB cache budget longer.
+      # Saved only from main — a branch save is scoped to its branch and can
+      # warm nothing else, while it spends the shared budget that keeps the
+      # main caches alive; full rationale at the save step in app-windows.yml.
       - name: Save the app's build directory
         if: >-
           ${{ !cancelled() && inputs.use_cache
+          && github.ref == 'refs/heads/main'
           && steps.gtk-build-cache.outcome == 'success'
           && steps.gtk-build-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v6

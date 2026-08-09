@@ -698,9 +698,29 @@ jobs:
       # overnight eviction of this very cache is why a morning's first build ran
       # cold. (Exclusions apply at save; restore extracts whatever the archive
       # holds, so the two path specs need not match.)
+      #
+      # SAVED ONLY FROM MAIN, and that is budget policy, not caution. A cache
+      # saved by a branch run is scoped to that branch: main and every sibling
+      # branch are forbidden from restoring it, so the only thing it can ever
+      # warm is a later push of the same branch — while the ~600 MB it costs
+      # comes out of the SHARED 10 GB budget. Measured 2026-08-09: with every
+      # push of every active branch saving its own generations (this job's two
+      # arches plus the three Linux .build caches, ~2.8 GB per push), the
+      # budget sat permanently over-full and least-recently-used eviction
+      # deleted the main-scoped caches — the ones every branch's restore falls
+      # back to — within minutes of each save. Net effect: zero restore hits
+      # anywhere, and every run repaid the full ~23-minute dependency compile
+      # this cache exists to absorb. Main-only saves keep the rotating set to
+      # one generation per arch, which fits; branch runs restore main's cache
+      # through restore-keys and skip saving. The one case that now pays: a
+      # branch that moves a pin recompiles the moved targets on each of its
+      # pushes until it merges — an incremental rebuild off main's cache, and
+      # strictly cheaper than what save-everywhere was actually buying, which
+      # the logs show was nothing.
       - name: Save the app's build directory
         if: >-
           ${{ !cancelled() && inputs.use_cache
+          && github.ref == 'refs/heads/main'
           && steps.app-build-cache.outcome == 'success'
           && steps.app-build-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v6

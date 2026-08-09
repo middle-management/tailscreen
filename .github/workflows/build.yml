@@ -1204,9 +1204,29 @@ jobs:
       # repo's shared 10 GB cache budget longer. (Exclusions apply at save;
       # restore extracts whatever the archive holds, so the two path specs need
       # not match.)
+      #
+      # SwiftPM 6.3 rewrites the committed 6.1-format lockfiles during the
+      # builds above — format/originHash churn, same pins, the same rewrite
+      # app-windows.yml's resolve step discards. Both cache keys hash these
+      # files, the save steps evaluate hashFiles AFTER the rewrite, and the
+      # restore steps evaluated it BEFORE — so without the discard every save
+      # lands on a key no restore ever computes, and the cache silently does
+      # nothing while looking healthy (run 31297064304 restored
+      # `…debug-b50c2c…` and saved `…debug-efb24da…`). `!cancelled()` because
+      # the saves it protects run under the same condition.
+      - name: Keep the cache keys consistent with the committed lockfiles
+        if: ${{ !cancelled() }}
+        run: git checkout -- Apps/linux/Package.resolved Apps/windows/Package.resolved
+
+      # Saved only from main: a branch save is scoped to its branch and can
+      # warm nothing else, while its ~500 MB generation spends the shared
+      # budget and evicts the main caches every branch's restore falls back
+      # to. Measured consequence and full rationale: the save step in
+      # app-windows.yml.
       - name: Save the GTK app's build directory
         if: >-
-          ${{ !cancelled() && steps.gtk-build-cache.outcome == 'success'
+          ${{ !cancelled() && github.ref == 'refs/heads/main'
+          && steps.gtk-build-cache.outcome == 'success'
           && steps.gtk-build-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v6
         with:
@@ -1219,7 +1239,8 @@ jobs:
 
       - name: Save the Windows app's Linux typecheck directory
         if: >-
-          ${{ !cancelled() && steps.winapp-typecheck-cache.outcome == 'success'
+          ${{ !cancelled() && github.ref == 'refs/heads/main'
+          && steps.winapp-typecheck-cache.outcome == 'success'
           && steps.winapp-typecheck-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v6
         with:
