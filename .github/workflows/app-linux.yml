@@ -95,6 +95,11 @@ jobs:
     env:
       APPIMAGE_ARCH: ${{ inputs.arch == 'arm64' && 'aarch64' || 'x86_64' }}
       PACKAGE_ARCH: ${{ inputs.arch == 'arm64' && 'arm64' || 'x86_64' }}
+      # The glibc ceiling, in ONE place because two steps enforce it: the
+      # build-tree check on our own binary, and the packaged-artifact check on
+      # everything we actually ship. Raising it drops distros — see
+      # docs/install.md's table, and change both in the same commit.
+      MAX_GLIBC: '2.35'
       # AppImage assembly tooling, pinned — see the "Install AppImage assembly
       # tools" step for what each one is and why the third is still floating.
       APPIMAGETOOL_VERSION: '1.9.1'
@@ -242,9 +247,9 @@ jobs:
         # number asserted here rather than a convention nobody can see.
         #
         # Raising MAX_GLIBC is a deliberate act that drops distros. Check
-        # docs/install.md's table in the same commit.
-        env:
-          MAX_GLIBC: '2.35'
+        # docs/install.md's table in the same commit. It is job-level env,
+        # because "Verify the packaged artifacts" enforces the same number
+        # against what actually ships.
         run: |
           # POSIX sh, not bash: this job runs in a container where the default
           # shell resolves to `sh -e`, so `set -o pipefail` is an "Illegal
@@ -512,6 +517,90 @@ jobs:
       # deliverable, for a release build it is the hand-off to the caller's
       # upload job — `gh` is not installed in swift:6.3-jammy, so the release
       # upload cannot happen here.
+      - name: Verify the packaged artifacts
+        # THE CHECK THAT WOULD HAVE CAUGHT v0.10.0-rc.1, and it is deliberately
+        # about the SHIPPED FILES rather than the build tree.
+        #
+        # The "glibc floor" step above reads our own binary. What actually
+        # stopped that AppImage starting was its BUNDLED libraries — libgtk-4,
+        # libswiftCore, libavutil, libpango — each independently wanting
+        # GLIBC_2.38 because linuxdeploy copied them out of the build image. A
+        # gate on our binary alone passes that release happily. And the tarball
+        # failed for a different reason again: it carried no libraries at all,
+        # against a RUNPATH that looks beside the binary for the Swift runtime.
+        #
+        # Neither is visible anywhere upstream of packaging, so this unpacks
+        # what is about to be uploaded and looks inside it.
+        # --appimage-extract needs no FUSE, which is why this runs in a
+        # container at all.
+        if: inputs.package != 'none'
+        env:
+          TARBALL: ${{ steps.pkg.outputs.tarball }}
+          APPIMAGE: ${{ steps.pkg.outputs.appimage }}
+        run: |
+          set -eu
+          work="$(mktemp -d)"
+          fail=0
+
+          # Highest glibc any ELF under $2 asks for, asserted against the
+          # ceiling. Fails when it finds NOTHING, too: an empty scan and a
+          # clean scan are the same silence otherwise, and this step exists
+          # because silence already shipped once.
+          scan() {
+            label="$1"; dir="$2"
+            find "$dir" -type f > "$work/files.txt"
+            : > "$work/vers.txt"
+            while IFS= read -r f; do
+              readelf -V "$f" 2>/dev/null \
+                | grep -oE 'GLIBC_[0-9]+\.[0-9]+' >> "$work/vers.txt" || true
+            done < "$work/files.txt"
+            top="$(sed 's/GLIBC_//' "$work/vers.txt" | sort -uV | tail -1)"
+            if [ -z "$top" ]; then
+              echo "::error::$label: no ELF with GLIBC_ symbols — nothing was checked"
+              return 1
+            fi
+            echo "$label: $(wc -l < "$work/files.txt") files, highest glibc $top (ceiling $MAX_GLIBC)"
+            if [ "$(printf '%s\n%s\n' "$top" "$MAX_GLIBC" | sort -V | tail -1)" != "$MAX_GLIBC" ]; then
+              echo "::error::$label needs glibc $top, above the $MAX_GLIBC ceiling"
+              echo "the files asking for it:"
+              while IFS= read -r f; do
+                if readelf -V "$f" 2>/dev/null | grep -q "GLIBC_$top"; then
+                  echo "  $(basename "$f")"
+                fi
+              done < "$work/files.txt"
+              return 1
+            fi
+          }
+
+          # --- the tarball ----------------------------------------------------
+          tar xzf "$TARBALL" -C "$work"
+          root="$work/tailscreen-linux-${PACKAGE_ARCH}"
+          for lib in libswiftCore.so libFoundation.so libdispatch.so \
+                     libBlocksRuntime.so libswift_Concurrency.so; do
+            if [ ! -e "$root/$lib" ]; then
+              echo "::error::tarball does not carry $lib — no distro ships the"
+              echo "Swift runtime, so this would start on no ordinary machine"
+              fail=1
+            fi
+          done
+          scan "tarball" "$root" || fail=1
+
+          # --- the AppImage ---------------------------------------------------
+          # Only built when the caller asked for one; the per-push arm64 gate
+          # packages a tarball only, so this half runs on the release build and
+          # on a `build-linux-package` label build.
+          if [ -n "${APPIMAGE:-}" ] && [ -f "$APPIMAGE" ]; then
+            chmod +x "$APPIMAGE"
+            ai="$(cd "$(dirname "$APPIMAGE")" && pwd)/$(basename "$APPIMAGE")"
+            ( cd "$work" && "$ai" --appimage-extract > /dev/null )
+            scan "AppImage" "$work/squashfs-root" || fail=1
+          else
+            echo "no AppImage in this build — the release build packages one"
+          fi
+
+          [ "$fail" -eq 0 ] || exit 1
+          echo "packaged artifacts verified"
+
       - name: Upload build artifact
         if: inputs.package != 'none'
         uses: actions/upload-artifact@v7
