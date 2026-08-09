@@ -537,8 +537,7 @@
 /* Sharer status + failures (SharerModel.swift / VoiceControls.swift) */
 "Not sharing" = "Not sharing";
 "%lld waiting for approval" = "%lld waiting for approval";
-"Sharing — nobody watching yet" = "Sharing — nobody watching yet";
-"Sharing to %lld" = "Sharing to %lld";
+"Nobody watching yet" = "Nobody watching yet";
 "Share failed: %@" = "Share failed: %@";
 "this session cannot share a single window" = "this session cannot share a single window";
 "could not change the shared source: %@" = "could not change the shared source: %@";

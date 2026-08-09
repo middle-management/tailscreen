@@ -288,7 +288,7 @@ if gSelfTest {
     if gArgs.contains("--ui-preview-sharing") {
         // A 16:10 gradient stand-in at the scaler's real output size, so the
         // card lays out against exactly what a live capture hands it.
-        let (width, height) = (240, 150)
+        let (width, height) = (360, 225)
         var rgba = [UInt8](repeating: 255, count: width * height * 4)
         for y in 0..<height {
             for x in 0..<width {
@@ -304,6 +304,12 @@ if gSelfTest {
                 ConnectedViewer(
                     id: "100.64.0.12:52411", label: "robert-macbook",
                     stableID: "stable-1", health: nil)
+            ],
+            // One viewer parked at the gate, so the approval prompt — the
+            // highest-stakes row this card renders — is in the screenshot.
+            pending: [
+                PendingViewer(
+                    id: "100.64.0.31:41822", label: "studio-imac", stableID: nil)
             ],
             micAvailable: true)
     }
@@ -863,6 +869,7 @@ struct ViewerApp: App {
         guard gPickerMode else { return nil }
         return ShareCard(
             statusLine: sharer.statusLine,
+            statusDetail: sharer.statusDetail,
             isSharing: sharer.phase == .sharing,
             canShare: sharer.canShare,
             notes: {

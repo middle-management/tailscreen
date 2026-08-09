@@ -2,10 +2,14 @@ import SwiftCrossUI
 import TailscreenL10n
 import TailscreenProtocol
 
-/// Annotation toolbar pinned to the TOP of a viewer window, mirroring the macOS
-/// viewer's `NSToolbar`: a radio-selected tool group in the same order — pen,
-/// line, arrow, rect, oval, click — then Undo, Clear and a Stats toggle. Shown
-/// only when the sharer advertised `ScreenShareCaps.annotations`.
+/// Annotation toolbar, mirroring the macOS viewer's `NSToolbar`: a
+/// radio-selected tool group in the same order — pen, line, arrow, rect, oval,
+/// click — then Undo, Clear and a Stats toggle. Shown only when the sharer
+/// advertised `ScreenShareCaps.annotations`.
+///
+/// Two callers, two shapes (see `Arrangement`): pinned across the top of a
+/// viewer window, and stacked inside the sharer's share card, where the window
+/// is far narrower than a video.
 ///
 /// Differences from the macOS toolbar, and why:
 ///   • Unicode geometric glyphs instead of SF Symbols (Apple-only). GTK's own
@@ -288,7 +292,8 @@ public struct RemoteControlBar: View {
     }
 }
 
-/// The microphone control over live video: talk, or don't.
+/// The microphone control: talk, or don't. Over live video as a floating pill
+/// for the viewer, and plain inside the sharer's card (see `floating`).
 ///
 /// **Absent, not disabled, when there is no microphone.** A host builds this
 /// only when it actually opened a capture device, the same capability-not-
@@ -311,15 +316,25 @@ public struct MicrophoneButton: View {
     /// parenthetical. Nil hides the hint rather than advertising a chord
     /// that does nothing.
     let chordHint: String?
+    /// Whether to draw the floating-pill chrome (padding + hubCard).
+    ///
+    /// True for the over-video control this button was born as, where it
+    /// needs its own surface to be readable over arbitrary frames. The share
+    /// card passes false: there it sits in a row of plain buttons on a card
+    /// that already has a background, and a pill-in-card reads as a second
+    /// card rather than a control.
+    let floating: Bool
     let onToggle: @MainActor @Sendable () -> Void
 
     public init(
         isOn: Bool, failureNote: String? = nil, chordHint: String? = nil,
+        floating: Bool = true,
         onToggle: @escaping @MainActor @Sendable () -> Void
     ) {
         self.isOn = isOn
         self.failureNote = failureNote
         self.chordHint = chordHint
+        self.floating = floating
         self.onToggle = onToggle
     }
 
@@ -334,6 +349,17 @@ public struct MicrophoneButton: View {
     }
 
     public var body: some View {
+        if floating {
+            content
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .hubCard(radius: 10)
+        } else {
+            content
+        }
+    }
+
+    private var content: some View {
         HStack(spacing: 8) {
             // Bracketed when live, matching the annotation toolbar's active
             // state: swift-cross-ui's Button takes a String label, so "which of
@@ -347,9 +373,6 @@ public struct MicrophoneButton: View {
                     .lineLimit(1)
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .hubCard(radius: 10)
     }
 }
 

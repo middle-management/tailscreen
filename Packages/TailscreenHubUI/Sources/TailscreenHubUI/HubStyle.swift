@@ -34,6 +34,24 @@ public enum HubStyle {
     public static let offline = Color(white: 0.5, opacity: 0.55)
     public static let chipFill = Color(red: 0.2, green: 0.7, blue: 0.35, opacity: 0.18)
     public static let chipText = Color(red: 0.13, green: 0.55, blue: 0.27)
+    /// The share card's fill while a share is LIVE — the macOS sharer card's
+    /// `Color.green.opacity(0.12)`, in this package's green.
+    ///
+    /// The card changing colour is the strongest "your screen is going out"
+    /// signal either hub has, and it is deliberately the same hue as the
+    /// sharing chip in the screen list: one green means one thing everywhere.
+    /// Never the only carrier of that state — the dot, the headline and the
+    /// viewer pill all say it too, per this repo's colour-alone rule.
+    public static let sharingCardFill = Color(red: 0.2, green: 0.7, blue: 0.35, opacity: 0.12)
+    public static let sharingCardStroke = Color(red: 0.2, green: 0.7, blue: 0.35, opacity: 0.30)
+    /// The viewer-count pill: solid green behind white, like the macOS card's
+    /// `Capsule().fill(Color.green)`. Opaque on purpose — it is a count, read
+    /// at a glance, and a translucent badge over a translucent card is mush.
+    public static let countPillFill = Color(red: 0.16, green: 0.62, blue: 0.30)
+    /// The bed the "Capturing…" placeholder sits on while a share has started
+    /// but no thumbnail has arrived — the macOS card's dimmed preview well.
+    /// The live preview needs no mat: it is opaque and rounds itself.
+    public static let previewWell = Color(white: 0.5, opacity: 0.14)
     /// The "you are controlling" state — the same orange the macOS viewer
     /// frames the video with while a grant is live, as a translucent tint so
     /// it reads on both light and dark like the sharing chip does.
@@ -57,10 +75,18 @@ extension View {
     /// Content is padded well off the card edge, so drawing the stroke under
     /// it instead is visually identical.
     public func hubCard(radius: Double = HubStyle.cardRadius) -> some View {
+        hubCard(radius: radius, fill: HubStyle.cardFill, stroke: HubStyle.cardStroke)
+    }
+
+    /// `hubCard` with an explicit palette — for the share card, which tints
+    /// itself green while a share is live (see `HubStyle.sharingCardFill`).
+    public func hubCard(radius: Double = HubStyle.cardRadius, fill: Color, stroke: Color)
+        -> some View
+    {
         self
             .background {
-                RoundedRectangle(cornerRadius: radius).fill(HubStyle.cardFill)
-                RoundedRectangle(cornerRadius: radius).stroke(HubStyle.cardStroke)
+                RoundedRectangle(cornerRadius: radius).fill(fill)
+                RoundedRectangle(cornerRadius: radius).stroke(stroke)
             }
     }
 }

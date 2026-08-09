@@ -431,18 +431,32 @@ final class SharerModel: ObservableObject {
     /// not become Wayland halfway through.
     private let captureEnvironment: CaptureBackendSelection.Environment
 
+    /// The card's headline: what this machine is DOING. The viewer count used
+    /// to live here ("Sharing to 2") and is now the card's own pill, beside
+    /// this line — the same split the macOS sharer card makes, and the reason
+    /// this string is a constant while sharing rather than a sentence that
+    /// rewrites itself every time somebody joins.
     var statusLine: String {
         switch phase {
         case .idle: return unavailableReason ?? L("Not sharing")
         case .starting: return L("Starting share…")
-        case .sharing:
-            if !pendingViewers.isEmpty {
-                return L("\(pendingViewers.count) waiting for approval")
-            }
-            return viewers.isEmpty
-                ? L("Sharing — nobody watching yet") : L("Sharing to \(viewers.count)")
+        case .sharing: return L("Sharing your screen")
         case .failed(let why): return L("Share failed: \(why)")
         }
+    }
+
+    /// The line under the headline: what is true about the share right now.
+    ///
+    /// Only ever one thing, and the more urgent one wins — somebody parked at
+    /// the approval gate is stuck on a placard with nothing on screen, which
+    /// outranks the fact that nobody has joined yet. Nil while idle: the
+    /// headline already says everything there is to say.
+    var statusDetail: String? {
+        guard phase == .sharing else { return nil }
+        if !pendingViewers.isEmpty {
+            return L("\(pendingViewers.count) waiting for approval")
+        }
+        return viewers.isEmpty ? L("Nobody watching yet") : nil
     }
 
     /// Seed the sharing-state chrome for `--ui-preview-sharing` — fake data,
@@ -452,11 +466,13 @@ final class SharerModel: ObservableObject {
     func seedForUIPreview(
         preview thumbnail: ThumbnailScaler.Thumbnail?,
         viewers rows: [ConnectedViewer],
+        pending: [PendingViewer],
         micAvailable mic: Bool
     ) {
         phase = .sharing
         preview = thumbnail
         viewers = rows
+        pendingViewers = pending
         micAvailable = mic
     }
 
