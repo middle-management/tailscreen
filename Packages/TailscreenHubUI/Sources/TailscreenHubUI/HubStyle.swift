@@ -90,9 +90,11 @@ extension View {
 
     /// `hubCard` with an explicit palette — for the share card, which tints
     /// itself green while a share is live (see `HubStyle.sharingCardFill`).
-    public func hubCard(radius: Double = HubStyle.cardRadius, fill: Color, stroke: Color)
-        -> some View
-    {
+    public func hubCard(
+        radius: Double = HubStyle.cardRadius,
+        fill: Color,
+        stroke: Color
+    ) -> some View {
         self
             .background {
                 RoundedRectangle(cornerRadius: radius).fill(fill)

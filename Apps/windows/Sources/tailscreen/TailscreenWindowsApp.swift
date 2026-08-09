@@ -34,9 +34,9 @@ import struct TailscreenProtocol.TailscreenMetadata
 import enum TailscreenProtocol.ViewerApprovalPreference
 import enum TailscreenProtocol.ViewerSessionEndReason
 import class TailscreenSharer.SharerAskToShareCoordinator
-import class TailscreenSharerWGC.WindowsShareSession
 // Targeted, like its neighbours: one enum, to word a viewer's link state.
 import enum TailscreenSharer.ViewerHealth
+import class TailscreenSharerWGC.WindowsShareSession
 import class TailscreenVideoFFmpeg.FFmpegVideoDecoder
 import class TailscreenViewer.FrameStore
 import class TailscreenViewer.FrameStoreVideoSink

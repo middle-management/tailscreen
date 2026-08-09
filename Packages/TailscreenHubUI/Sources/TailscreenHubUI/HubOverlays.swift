@@ -203,7 +203,8 @@ public struct AnnotationToolbar: View {
                         .padding(.horizontal, 10)
                         .padding(.vertical, 7)
                         .background(
-                            RoundedRectangle(cornerRadius: 6).fill(HubStyle.rowFill))
+                            RoundedRectangle(cornerRadius: 6).fill(HubStyle.rowFill)
+                        )
                         .help(L("Your drawing colour"))
                     colorMenu
                     Button("↶", action: onUndo)
