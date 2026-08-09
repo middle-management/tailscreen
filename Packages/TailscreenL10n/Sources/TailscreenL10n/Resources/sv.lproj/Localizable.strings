@@ -445,7 +445,6 @@
 "Open in Browser" = "Öppna i webbläsaren";
 
 /* Hub — share card (HubCards.swift) */
-"My screen" = "Min skärm";
 "Share my screen" = "Dela min skärm";
 "Drawing takes over the screen; Esc gives it back" = "Ritläget tar över skärmen; Esc lämnar tillbaka den";
 "Press Esc to stop drawing" = "Tryck Esc för att sluta rita";

@@ -79,7 +79,6 @@ public struct HubLoginCard: View {
 /// card that can render the prompts but not the gate is a card where the gate
 /// can only be off.
 public struct ShareCard: View {
-    let title: String
     let statusLine: String
     let isSharing: Bool
     let canShare: Bool
@@ -155,7 +154,6 @@ public struct ShareCard: View {
     let onDecline: @MainActor @Sendable (String) -> Void
 
     public init(
-        title: String = L("My screen"),
         statusLine: String,
         statusDetail: String? = nil,
         isSharing: Bool,
@@ -178,7 +176,6 @@ public struct ShareCard: View {
         onAccept: @escaping @MainActor @Sendable (String) -> Void = { _ in },
         onDecline: @escaping @MainActor @Sendable (String) -> Void = { _ in }
     ) {
-        self.title = title
         self.statusLine = statusLine
         self.isSharing = isSharing
         self.canShare = canShare
@@ -202,31 +199,31 @@ public struct ShareCard: View {
         self.onDecline = onDecline
     }
 
+    /// No section heading above the card, matching the macOS hub window: its
+    /// share section opens straight on the dot and the headline, and only the
+    /// peer list below carries a big "Screens" title. A heading here read as a
+    /// second one stacked on the card's own — "My screen" over "Sharing your
+    /// screen" — which is a label for something that has already said what it
+    /// is.
     public var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(title)
-                .font(.title2)
-                .fontWeight(.bold)
-            VStack(alignment: .leading, spacing: 10) {
-                statusRow
-                previewMat
-                actionsRow
-                if let extraAction {
-                    Button(extraAction.label, action: extraAction.perform)
-                }
-                drawingCluster
-                peopleCluster
-                settingsCluster
+            statusRow
+            previewMat
+            actionsRow
+            if let extraAction {
+                Button(extraAction.label, action: extraAction.perform)
             }
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            // Green while live — the macOS sharer card's identity, and the
-            // strongest at-a-glance answer to "is my screen going out".
-            .hubCard(
-                fill: isSharing ? HubStyle.sharingCardFill : HubStyle.cardFill,
-                stroke: isSharing ? HubStyle.sharingCardStroke : HubStyle.cardStroke)
+            drawingCluster
+            peopleCluster
+            settingsCluster
         }
+        .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
+        // Green while live — the macOS sharer card's identity, and the
+        // strongest at-a-glance answer to "is my screen going out".
+        .hubCard(
+            fill: isSharing ? HubStyle.sharingCardFill : HubStyle.cardFill,
+            stroke: isSharing ? HubStyle.sharingCardStroke : HubStyle.cardStroke)
     }
 
     /// The macOS card's header: a live dot, the state as a headline, the
