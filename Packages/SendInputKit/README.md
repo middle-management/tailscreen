@@ -88,8 +88,9 @@ virtual desktop is injectable (`virtualDesktopProvider`) for the same reason —
 read from `GetSystemMetrics` it would be whatever monitors the test machine
 happens to have, on Windows runners too.
 
-`sendinput-probe` is a link check that doubles as a manual test. It prints the
-virtual desktop and the absolute coordinates a corner click would produce, and
-injects **nothing** unless passed `--inject`. It is built in CI and deliberately
-not run: unlike `wasapi-probe`, whose failure mode is silence, this one moves a
-real cursor.
+`sendinput-probe` is a manual test that used to double as CI's link check. It
+prints the virtual desktop and the absolute coordinates a corner click would
+produce, and injects **nothing** unless passed `--inject`. CI no longer builds
+it — the Windows app links SendInputKit itself, so `Build the app` is the link
+gate — and CI never ran it: unlike `wasapi-probe`, whose failure mode is
+silence, this one moves a real cursor.

@@ -121,10 +121,10 @@ jobs:
     uses: ./.github/workflows/app-windows.yml
     with:
       arch: x64
-      # The probes build EXECUTABLES so the linker runs on WASAPIKit,
-      # WGCCaptureKit and SendInputKit in seconds rather than eleven minutes
-      # into the app build — see app-windows.yml. x64 only: they are a
-      # per-push diagnostic and the runners are identical in what they link.
+      # The two probes that RUN: RegisterHotKey and AppNotificationManager
+      # .Register(), which nothing else anywhere exercises — see
+      # app-windows.yml. x64 only: they are a per-push diagnostic and the
+      # runners are identical in what they link.
       run_probes: true
       # FATAL on a genuinely stale lockfile. x64 only because this is the leg
       # whose cache the whole repo depends on; the arm64 leg discards the same
