@@ -949,11 +949,18 @@ jobs:
       # --scratch-path: Apps/windows and Apps/linux resolve different
       # build plans from the same dependencies, so sharing would thrash.
       # ---------------------------------------------------------------------
+      # The path lists on these restores are IDENTICAL to their saves',
+      # exclusions included: the path list is hashed into the cache entry's
+      # VERSION, and an entry saved under one list is invisible to a restore
+      # using another — see the restore step in app-windows.yml for the
+      # fingerprint this bug leaves in the logs.
       - name: Restore the GTK app's build directory
         id: gtk-build-cache
         uses: actions/cache/restore@v6
         with:
-          path: Apps/linux/.build
+          path: |
+            Apps/linux/.build
+            !Apps/linux/.build/**/debug/tailscreen
           key: >-
             linux-app-build-swift6.3-jammy-${{ runner.os }}-${{ runner.arch
             }}-debug-${{ hashFiles('Apps/linux/Package.resolved') }}
@@ -969,7 +976,9 @@ jobs:
         id: winapp-typecheck-cache
         uses: actions/cache/restore@v6
         with:
-          path: Apps/windows/.build
+          path: |
+            Apps/windows/.build
+            !Apps/windows/.build/**/debug/tailscreen
           key: >-
             linux-typecheck-windows-app-swift6.3-jammy-${{ runner.os }}-${{
             runner.arch }}-${{ hashFiles('Apps/windows/Package.resolved') }}
@@ -1201,9 +1210,9 @@ jobs:
       # the typecheck or the self-test — the compile is the expensive part and
       # it already happened. The product binaries are excluded: they are
       # relinked on every build regardless, and a smaller archive survives the
-      # repo's shared 10 GB cache budget longer. (Exclusions apply at save;
-      # restore extracts whatever the archive holds, so the two path specs need
-      # not match.)
+      # repo's shared 10 GB cache budget longer. The exclusions appear on the
+      # restore steps too, and must — the path list is part of the cache
+      # entry's version (see the restore steps above).
       #
       # SwiftPM 6.3 rewrites the committed 6.1-format lockfiles during the
       # builds above — format/originHash churn, same pins, the same rewrite

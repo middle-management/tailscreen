@@ -459,12 +459,25 @@ jobs:
       # local package bumping its OWN remote dependency moves a pin, and a moved
       # pin is a new key. Path dependencies never appear in it, which is the
       # whole point — editing our own packages is free.
+      # The path list here is IDENTICAL to the save step's, exclusions
+      # included, and that is load-bearing: actions/cache hashes the path
+      # list into the entry's VERSION, and a restore only matches entries of
+      # its own version. With the exclusions on the save alone, every save
+      # landed in a version no restore ever computed — restores reported
+      # "Cache not found" for a key whose save then failed with "Unable to
+      # reserve cache … another job may be creating this cache", the two
+      # halves of the same entry neither could see as the other's. That
+      # combination in one job's log is the fingerprint of this bug; do not
+      # let the two path lists drift apart again.
       - name: Restore the app's build directory
         id: app-build-cache
         if: inputs.use_cache
         uses: actions/cache/restore@v6
         with:
-          path: Apps/windows/.build
+          path: |
+            Apps/windows/.build
+            !Apps/windows/.build/**/release/tailscreen.exe
+            !Apps/windows/.build/**/release/tsnet-probe.exe
           key: >-
             windows-app-build-${{ inputs.arch }}-${{ inputs.swift_version }}-${{
             runner.os }}-${{ hashFiles('Apps/windows/Package.resolved') }}
@@ -726,8 +739,11 @@ jobs:
       # every build regardless, and ~200 MB less per generation is real
       # eviction-pressure relief on the repo's shared 10 GB cache budget — an
       # overnight eviction of this very cache is why a morning's first build ran
-      # cold. (Exclusions apply at save; restore extracts whatever the archive
-      # holds, so the two path specs need not match.)
+      # cold. The SAME exclusions appear on the restore step, and must: the
+      # path list is hashed into the cache entry's version, and an entry saved
+      # under one path list is invisible to a restore using another. This file
+      # used to claim the opposite ("the two path specs need not match") and
+      # that claim was this repo's zero-hit cache in one sentence.
       #
       # SAVED ONLY FROM MAIN, and that is budget policy, not caution. A cache
       # saved by a branch run is scoped to that branch: main and every sibling

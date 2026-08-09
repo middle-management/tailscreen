@@ -206,12 +206,18 @@ jobs:
       # runner.arch AND the configuration are in the key. Either alone would
       # separate today's two callers; both are there because a shared key
       # across architectures is a bug this repo has already shipped once.
+      # The path list matches the save step's, exclusion included: the path
+      # list is hashed into the cache entry's VERSION, and an entry saved
+      # under one list is invisible to a restore using another — see the
+      # restore step in app-windows.yml for the log fingerprint.
       - name: Restore the app's build directory
         id: gtk-build-cache
         if: inputs.use_cache
         uses: actions/cache/restore@v6
         with:
-          path: Apps/linux/.build
+          path: |
+            Apps/linux/.build
+            !Apps/linux/.build/**/${{ inputs.configuration }}/tailscreen
           key: >-
             linux-app-build-swift6.3-jammy-${{ runner.os }}-${{ runner.arch
             }}-${{ inputs.configuration }}-${{ hashFiles('Apps/linux/Package.resolved') }}
