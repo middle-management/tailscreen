@@ -389,6 +389,7 @@ public struct ShareCard: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(prompt.message)
                         .font(.callout)
+                        .fontWeight(.bold)
                     HStack(spacing: 6) {
                         Button(prompt.acceptLabel) { onAccept(prompt.id) }
                         Button(prompt.declineLabel) { onDecline(prompt.id) }
@@ -397,8 +398,12 @@ public struct ShareCard: View {
                 }
                 .padding(10)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                // Amber, like the macOS pending-viewer list: this is the one
+                // row in the card that is waiting on an answer, and it must
+                // not look like the rows that are merely reporting.
                 .background(
-                    RoundedRectangle(cornerRadius: HubStyle.rowRadius).fill(HubStyle.rowFill))
+                    RoundedRectangle(cornerRadius: HubStyle.rowRadius)
+                        .fill(HubStyle.attentionFill))
             }
             ForEach(viewers, id: \.id) { viewer in
                 HubViewerRowView(viewer: viewer)

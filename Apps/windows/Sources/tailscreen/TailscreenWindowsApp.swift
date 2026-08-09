@@ -35,6 +35,8 @@ import enum TailscreenProtocol.ViewerApprovalPreference
 import enum TailscreenProtocol.ViewerSessionEndReason
 import class TailscreenSharer.SharerAskToShareCoordinator
 import class TailscreenSharerWGC.WindowsShareSession
+// Targeted, like its neighbours: one enum, to word a viewer's link state.
+import enum TailscreenSharer.ViewerHealth
 import class TailscreenVideoFFmpeg.FFmpegVideoDecoder
 import class TailscreenViewer.FrameStore
 import class TailscreenViewer.FrameStoreVideoSink
@@ -429,6 +431,20 @@ struct SignInPane: View {
         .frame(maxWidth: HubStyle.contentMaxWidth)
         .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+    }
+}
+
+/// The server's viewer health as the chrome's — case for case, so
+/// TailscreenHubUI can draw the roster without importing the sharer tier
+/// (the same import-direction rule the session-phase enums follow). The GTK
+/// app carries the twin of this; three lines duplicated is the price of that
+/// boundary, and the WORDING — the part that would actually drift — is
+/// written once, in `HubViewerHealth.note`.
+private func hubHealth(_ health: ViewerHealth) -> HubViewerHealth {
+    switch health {
+    case .good: return .good
+    case .degraded: return .degraded
+    case .throttled: return .throttled
     }
 }
 
@@ -846,7 +862,7 @@ final class AppUIState: ObservableObject {
                 return HubViewerRow(
                     id: viewer.id,
                     label: viewer.displayName,
-                    detail: viewer.health,
+                    health: hubHealth(viewer.health),
                     remembered: remembered.map { $0 == .allow ? .allowed : .blocked } ?? .none,
                     rememberIsDeferred: shareSession.isDeferred(rowID: viewer.id),
                     onKick: { [weak self] in self?.shareSession.disconnectViewer(viewer.id) },

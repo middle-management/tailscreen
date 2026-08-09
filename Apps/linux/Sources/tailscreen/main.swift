@@ -12,6 +12,8 @@ import TailscreenViewerTsnet
 // Targeted: the mic seam only. A blanket `import TailscreenAudio` would pull
 // OpusKit's re-exports into this file for two type names.
 import protocol TailscreenAudio.MicrophoneCapturing
+// Targeted for the same reason: one enum, to word a viewer's link state.
+import enum TailscreenSharer.ViewerHealth
 
 // tailscreen — native GTK desktop viewer.
 //
@@ -300,10 +302,16 @@ if gSelfTest {
         }
         gSharer.seedForUIPreview(
             preview: ThumbnailScaler.Thumbnail(width: width, height: height, rgba: rgba),
+            // Two rows, one healthy and one not, so the screenshot carries
+            // both dot colours and the health sentence that must always
+            // accompany them.
             viewers: [
                 ConnectedViewer(
                     id: "100.64.0.12:52411", label: "robert-macbook",
-                    stableID: "stable-1", health: nil)
+                    stableID: "stable-1", health: .good),
+                ConnectedViewer(
+                    id: "100.64.0.44:39120", label: "living-room-tv",
+                    stableID: "stable-2", health: .degraded)
             ],
             // One viewer parked at the gate, so the approval prompt — the
             // highest-stakes row this card renders — is in the screenshot.
@@ -848,6 +856,20 @@ struct ViewerApp: App {
         }
     }
 
+    /// The server's viewer health as the chrome's — case for case, for the
+    /// same import-direction reason as `hubPhase`: TailscreenHubUI draws the
+    /// roster without importing the sharer tier. The Windows app carries the
+    /// twin of this function; three lines duplicated is the price of that
+    /// boundary, and the WORDING (the part that would actually drift) is
+    /// written once, in `HubViewerHealth.note`.
+    private static func hubHealth(_ health: ViewerHealth) -> HubViewerHealth {
+        switch health {
+        case .good: return .good
+        case .degraded: return .degraded
+        case .throttled: return .throttled
+        }
+    }
+
     /// Reconnect for the ended/failed placard — absent (nil) when nothing was
     /// ever dialed, e.g. the `--ui-preview` chrome shots.
     private var placardReconnect: (@MainActor @Sendable () -> Void)? {
@@ -914,7 +936,7 @@ struct ViewerApp: App {
                 return HubViewerRow(
                     id: viewer.id,
                     label: viewer.label,
-                    detail: viewer.health,
+                    health: Self.hubHealth(viewer.health),
                     remembered: remembered.map { $0 == .allow ? .allowed : .blocked } ?? .none,
                     rememberIsDeferred: gSharer.isDeferred(rowID: viewer.id),
                     onKick: { gSharer.disconnect(viewer.id) },

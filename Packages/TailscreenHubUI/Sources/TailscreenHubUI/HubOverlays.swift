@@ -171,7 +171,18 @@ public struct AnnotationToolbar: View {
                     Spacer()
                 }
                 HStack(spacing: 6) {
+                    // Chipped, unlike the single-row bar's bare dot: there the
+                    // swatch sits against a "Color" menu that gives it a
+                    // reason to be round and small. Here the sharer's ink is
+                    // fixed, so the swatch is on its own — and a lone dot
+                    // beside two buttons reads as a stray mark rather than
+                    // "this is the colour you draw in".
                     colorSwatch
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 7)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6).fill(HubStyle.rowFill))
+                        .help(L("Your drawing colour"))
                     colorMenu
                     Button("↶", action: onUndo)
                     Button("✕", action: onClear)

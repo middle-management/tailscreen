@@ -143,11 +143,15 @@ public final class WindowsShareSession: @unchecked Sendable {
         public let id: String
         public let displayName: String
         public let stableID: String?
-        /// Connection health, when it is worth showing. Nil for a healthy
-        /// viewer: a chip on every row makes the one that matters invisible.
-        public let health: String?
+        /// The link's state, straight off the server. Passed as the ENUM
+        /// rather than a rendered string: this package has no string catalog,
+        /// so interpolating it here put an untranslated lowercase `degraded`
+        /// beside somebody's hostname in the UI. The host words it, and says
+        /// nothing at all for a healthy viewer — a note on every row makes
+        /// the one that matters invisible.
+        public let health: ViewerHealth
 
-        public init(id: String, displayName: String, stableID: String?, health: String?) {
+        public init(id: String, displayName: String, stableID: String?, health: ViewerHealth) {
             self.id = id
             self.displayName = displayName
             self.stableID = stableID
@@ -461,7 +465,7 @@ public final class WindowsShareSession: @unchecked Sendable {
                 ConnectedViewer(
                     id: $0.id, displayName: $0.hostname ?? $0.tailscaleIP,
                     stableID: $0.stableID,
-                    health: $0.health == .good ? nil : "\($0.health)")
+                    health: $0.health)
             }
             self.update {
                 $0.viewerCount = rows.count

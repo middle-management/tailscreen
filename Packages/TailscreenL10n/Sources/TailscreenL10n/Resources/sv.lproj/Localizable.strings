@@ -522,6 +522,7 @@
 "Not sharing" = "Delar inte";
 "%lld waiting for approval" = "%lld väntar på godkännande";
 "Nobody watching yet" = "Ingen tittar ännu";
+"Your drawing colour" = "Din ritfärg";
 "Share failed: %@" = "Delningen misslyckades: %@";
 "this session cannot share a single window" = "den här sessionen kan inte dela ett enskilt fönster";
 "could not change the shared source: %@" = "kunde inte byta delad källa: %@";

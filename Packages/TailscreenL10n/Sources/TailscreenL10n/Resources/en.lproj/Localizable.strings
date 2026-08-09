@@ -537,6 +537,7 @@
 "Not sharing" = "Not sharing";
 "%lld waiting for approval" = "%lld waiting for approval";
 "Nobody watching yet" = "Nobody watching yet";
+"Your drawing colour" = "Your drawing colour";
 "Share failed: %@" = "Share failed: %@";
 "this session cannot share a single window" = "this session cannot share a single window";
 "could not change the shared source: %@" = "could not change the shared source: %@";

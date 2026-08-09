@@ -27,20 +27,25 @@ public struct HubViewerRowView: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
-                // Green like the screen list's presence dot, and honestly so:
-                // a row exists here only while this person is connected.
+                // Coloured by the LINK, not by presence. A row only exists
+                // here while someone is connected, so a dot that always said
+                // "connected" carried no information — and went green beside
+                // a viewer whose picture was falling apart.
                 Circle()
-                    .fill(HubStyle.online)
+                    .fill(viewer.health.dotColor)
                     .frame(width: 8, height: 8)
                 Text(viewer.label)
                     .fontWeight(.bold)
                     .lineLimit(1)
-                if let detail = viewer.detail {
-                    Text(detail)
-                        .font(.caption)
-                        .foregroundColor(HubStyle.secondaryText)
-                }
                 Spacer()
+            }
+            // Spelled out, never colour alone — and only when there is
+            // something to say, so the one struggling viewer stands out
+            // instead of every row carrying a line.
+            if let note = viewer.health.note {
+                Text(note)
+                    .font(.caption)
+                    .foregroundColor(HubStyle.secondaryText)
             }
             HStack(spacing: 6) {
                 // Only ever ONE remember-affordance per state, not two greyed

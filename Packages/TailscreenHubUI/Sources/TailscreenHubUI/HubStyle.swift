@@ -52,6 +52,16 @@ public enum HubStyle {
     /// but no thumbnail has arrived — the macOS card's dimmed preview well.
     /// The live preview needs no mat: it is opaque and rounds itself.
     public static let previewWell = Color(white: 0.5, opacity: 0.14)
+    /// A row that is WAITING ON YOU — the macOS pending-viewer list's
+    /// `Color.orange.opacity(0.12)`. Its whole job is to not look like the
+    /// rows that need nothing: a viewer parked at the gate is stuck on a
+    /// placard with nothing on screen, and an approval that reads like a
+    /// status line is one nobody answers.
+    public static let attentionFill = Color(red: 0.95, green: 0.6, blue: 0.1, opacity: 0.14)
+    /// Viewer-health dots, matching the macOS roster: green / yellow / orange.
+    /// Never alone — the row spells the health out beside them.
+    public static let healthDegraded = Color(red: 0.9, green: 0.72, blue: 0.1)
+    public static let healthThrottled = Color(red: 0.95, green: 0.55, blue: 0.1)
     /// The "you are controlling" state — the same orange the macOS viewer
     /// frames the video with while a grant is live, as a translucent tint so
     /// it reads on both light and dark like the sharing chip does.
@@ -169,9 +179,18 @@ public struct HubViewerRow: Identifiable, Sendable {
     public let id: String
     /// Hostname once the netmap lookup lands, the IP until then.
     public let label: String
-    /// Connection health, as a short word. Nil hides the chip rather than
-    /// rendering an empty one.
-    public let detail: String?
+    /// How this viewer's connection is doing. The row derives BOTH its dot
+    /// colour and the sentence beside it from this, so the two cannot
+    /// disagree — and so the wording is written (and translated) once for
+    /// both hosts.
+    ///
+    /// A chrome-owned enum rather than the server's `ViewerHealth`, and a
+    /// plain word rather than the host's pre-rendered string: this package
+    /// must not import the sharer tier to draw a dot (the same
+    /// import-direction rule `hubPhase` follows), and both hosts used to
+    /// interpolate the raw enum — so a degraded viewer read as a lowercase
+    /// `degraded` beside their hostname, in English, on every platform.
+    public let health: HubViewerHealth
     /// What is remembered about this peer right now, so the row can show the
     /// standing decision instead of offering to make it again.
     public let remembered: HubViewerMemory
@@ -185,7 +204,7 @@ public struct HubViewerRow: Identifiable, Sendable {
     public init(
         id: String,
         label: String,
-        detail: String? = nil,
+        health: HubViewerHealth = .good,
         remembered: HubViewerMemory = .none,
         rememberIsDeferred: Bool = false,
         onKick: (@MainActor @Sendable () -> Void)? = nil,
@@ -195,13 +214,48 @@ public struct HubViewerRow: Identifiable, Sendable {
     ) {
         self.id = id
         self.label = label
-        self.detail = detail
+        self.health = health
         self.remembered = remembered
         self.rememberIsDeferred = rememberIsDeferred
         self.onKick = onKick
         self.onAlwaysAllow = onAlwaysAllow
         self.onDenyAndBlock = onDenyAndBlock
         self.onForget = onForget
+    }
+}
+
+/// How a connected viewer's link is doing, as the chrome needs it — the
+/// server's `ViewerHealth` case for case, mapped by each host for the same
+/// import-direction reason `hubPhase` exists.
+///
+/// The wording matches the macOS roster's, and reuses its catalog keys, so a
+/// degraded viewer is described identically on all three platforms.
+public enum HubViewerHealth: Sendable, Equatable {
+    /// No meaningful loss. The row says nothing — a healthy viewer needs no
+    /// sentence, and one for every row would bury the one that matters.
+    case good
+    /// Over the loss threshold, but still getting full frames.
+    case degraded
+    /// Keyframe-only: this viewer's link is isolating the session.
+    case throttled
+
+    /// The sentence beside the dot, or nil when there is nothing to say.
+    /// Non-nil for everything but `.good`, which is what keeps the dot from
+    /// being the only carrier of a problem.
+    public var note: String? {
+        switch self {
+        case .good: return nil
+        case .degraded: return L("Connection degraded — packet loss")
+        case .throttled: return L("Limited to keyframes — poor connection")
+        }
+    }
+
+    var dotColor: Color {
+        switch self {
+        case .good: return HubStyle.online
+        case .degraded: return HubStyle.healthDegraded
+        case .throttled: return HubStyle.healthThrottled
+        }
     }
 }
 
