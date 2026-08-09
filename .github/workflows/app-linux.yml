@@ -376,6 +376,10 @@ jobs:
           }
           shoot linux-hub.png --ui-preview
           shoot linux-session.png --ui-preview --ui-preview-video
+          # The share card mid-share (preview thumbnail, drawing toolbar,
+          # viewer row) — the state whose clipped layout shipped unseen
+          # because nothing screenshotted it.
+          shoot linux-sharing.png --ui-preview --ui-preview-sharing
           ls -la screenshots/
 
       - name: Upload screenshots

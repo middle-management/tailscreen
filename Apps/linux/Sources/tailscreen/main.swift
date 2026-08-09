@@ -282,6 +282,31 @@ if gSelfTest {
         gUIState.inSession = true
         gUIState.sessionPhase = .awaitingApproval
     }
+    // The share card mid-share: preview thumbnail, drawing toolbar, a viewer
+    // row with its remember/kick actions. The one hub state the screenshot job
+    // never covered — which is how its clipped layout shipped unseen.
+    if gArgs.contains("--ui-preview-sharing") {
+        // A 16:10 gradient stand-in at the scaler's real output size, so the
+        // card lays out against exactly what a live capture hands it.
+        let (width, height) = (240, 150)
+        var rgba = [UInt8](repeating: 255, count: width * height * 4)
+        for y in 0..<height {
+            for x in 0..<width {
+                let base = (y * width + x) * 4
+                rgba[base] = UInt8(80 + (120 * x) / width)
+                rgba[base + 1] = UInt8(90 + (100 * y) / height)
+                rgba[base + 2] = 180
+            }
+        }
+        gSharer.seedForUIPreview(
+            preview: ThumbnailScaler.Thumbnail(width: width, height: height, rgba: rgba),
+            viewers: [
+                ConnectedViewer(
+                    id: "100.64.0.12:52411", label: "robert-macbook",
+                    stableID: "stable-1", health: nil)
+            ],
+            micAvailable: true)
+    }
 } else {
     // Live path: reuse the tsnet transport, driving decoded frames into the
     // shared store. The transport is @MainActor; started as a Task here, it

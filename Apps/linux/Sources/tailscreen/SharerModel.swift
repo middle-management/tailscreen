@@ -445,6 +445,21 @@ final class SharerModel: ObservableObject {
         }
     }
 
+    /// Seed the sharing-state chrome for `--ui-preview-sharing` — fake data,
+    /// no engine, no capture. Lives here because the interesting fields are
+    /// deliberately `private(set)`: the preview mode is the one caller allowed
+    /// to write them without the engine behind it.
+    func seedForUIPreview(
+        preview thumbnail: ThumbnailScaler.Thumbnail?,
+        viewers rows: [ConnectedViewer],
+        micAvailable mic: Bool
+    ) {
+        phase = .sharing
+        preview = thumbnail
+        viewers = rows
+        micAvailable = mic
+    }
+
     /// Begin sharing this host's screen.
     ///
     /// Which backend that means is `CaptureBackendSelection`'s answer, not this

@@ -44,11 +44,29 @@ public struct AnnotationToolbar: View {
         zip(paletteColorNames, Annotation.RGBA.palette).map { (name: $0.0, color: $0.1) }
     }
 
+    /// How the controls are laid out.
+    ///
+    /// `.singleRow` is the over-video bar this toolbar was born as: one
+    /// full-width strip at a fixed height, viable because a video window is
+    /// as wide as the video. `.twoRows` exists for the share card, whose
+    /// window is hub-narrow (460 pt by default): a single row of ten buttons
+    /// is wider than that window, and a child wider than the window does not
+    /// merely clip — swift-cross-ui's GTK layout squeezes every *other* label
+    /// in the card to make room, so the whole card renders with its text cut
+    /// off at the left. Tools on the first row, color/undo/clear on the
+    /// second, and the row hugs its content instead of claiming the bar
+    /// height.
+    public enum Arrangement: Sendable {
+        case singleRow
+        case twoRows
+    }
+
     /// The armed tool, or nil when drawing is off (pointer drags then zoom/pan
     /// or drive remote control).
     let activeTool: AnnotationTool?
     /// This viewer's assigned stroke color (identity-derived, not chosen).
     let inkColor: Annotation.RGBA
+    let arrangement: Arrangement
     let statsShown: Bool
     /// Whether to offer the stats toggle at all.
     ///
@@ -67,6 +85,7 @@ public struct AnnotationToolbar: View {
     public init(
         activeTool: AnnotationTool?,
         inkColor: Annotation.RGBA,
+        arrangement: Arrangement = .singleRow,
         statsShown: Bool = false,
         showsStats: Bool = true,
         onSelectTool: @escaping @MainActor @Sendable (AnnotationTool) -> Void,
@@ -77,6 +96,7 @@ public struct AnnotationToolbar: View {
     ) {
         self.activeTool = activeTool
         self.inkColor = inkColor
+        self.arrangement = arrangement
         self.statsShown = statsShown
         self.showsStats = showsStats
         self.onSelectTool = onSelectTool
@@ -86,68 +106,106 @@ public struct AnnotationToolbar: View {
         self.onToggleStats = onToggleStats
     }
 
-    public var body: some View {
-        HStack(spacing: 6) {
-            ForEach(Array(Self.tools.enumerated()), id: \.offset) { item in
-                let isActive = activeTool == item.element.tool
-                Button(isActive ? "[\(item.element.glyph)]" : " \(item.element.glyph) ") {
-                    onSelectTool(item.element.tool)
-                }
-                // The name the mac toolbar shows as a label; here it is the
-                // hover answer to six otherwise-unlabelled marks.
-                .help(item.element.name)
+    /// The radio-selected tool group, shared by both arrangements.
+    private var toolButtons: some View {
+        ForEach(Array(Self.tools.enumerated()), id: \.offset) { item in
+            let isActive = activeTool == item.element.tool
+            Button(isActive ? "[\(item.element.glyph)]" : " \(item.element.glyph) ") {
+                onSelectTool(item.element.tool)
             }
-            Divider()
-            // The swatch says which color this viewer draws in; the menu
-            // beside it changes it. Split in two because a swift-cross-ui menu
-            // label is a String — the current color cannot ride the label the
-            // way the macOS item's swatch icon does.
-            Circle()
-                .fill(
-                    Color(
-                        red: inkColor.r, green: inkColor.g, blue: inkColor.b,
-                        opacity: inkColor.a)
-                )
-                .frame(width: 16, height: 16)
-            if let onSelectColor {
-                Menu(L("Color")) {
-                    // Checked rows over `Toggle`, the proven mapping the
-                    // header's filter menu uses (GTK: stateful GSimpleAction,
-                    // WinUI: ToggleMenuFlyoutItem). Re-picking the current
-                    // color is ignored rather than treated as "no color" —
-                    // the palette is a radio group, not a bank of switches.
-                    ForEach(Array(Self.paletteRows.enumerated()), id: \.offset) { row in
-                        Toggle(
-                            row.element.name,
-                            isOn: Binding(
-                                get: { row.element.color == inkColor },
-                                set: { isOn in
-                                    if isOn { onSelectColor(row.element.color) }
-                                }))
-                    }
-                }
-            }
-            Divider()
-            Button("↶", action: onUndo)
-            Button("✕", action: onClear)
-            if showsStats {
-                // Worded, not a glyph, and behind a divider. As `▤` at the end
-                // of a row of drawing glyphs it read as a seventh drawing tool
-                // and was reported as a missing feature by someone looking
-                // straight at it. The no-annotations fallback in the Windows
-                // app has always spelled it out; these now match.
-                Divider()
-                Button(statsShown ? L("Hide stats") : L("Stats"), action: onToggleStats)
-            }
-            Spacer()
+            // The name the mac toolbar shows as a label; here it is the
+            // hover answer to six otherwise-unlabelled marks.
+            .help(item.element.name)
         }
-        .padding(.horizontal, 12)
-        // Fixed height so the row hugs its buttons; without it the enclosing
-        // VStack hands the toolbar an equal share of the window and squeezes
-        // the video.
-        .frame(height: Double(HubStyle.toolbarHeight))
-        .frame(maxWidth: .infinity)
-        .background(HubStyle.barFill)
+    }
+
+    /// The swatch says which color this viewer draws in; the menu beside it
+    /// changes it. Split in two because a swift-cross-ui menu label is a
+    /// String — the current color cannot ride the label the way the macOS
+    /// item's swatch icon does.
+    private var colorSwatch: some View {
+        Circle()
+            .fill(
+                Color(
+                    red: inkColor.r, green: inkColor.g, blue: inkColor.b,
+                    opacity: inkColor.a)
+            )
+            .frame(width: 16, height: 16)
+    }
+
+    @ViewBuilder private var colorMenu: some View {
+        if let onSelectColor {
+            Menu(L("Color")) {
+                // Checked rows over `Toggle`, the proven mapping the
+                // header's filter menu uses (GTK: stateful GSimpleAction,
+                // WinUI: ToggleMenuFlyoutItem). Re-picking the current
+                // color is ignored rather than treated as "no color" —
+                // the palette is a radio group, not a bank of switches.
+                ForEach(Array(Self.paletteRows.enumerated()), id: \.offset) { row in
+                    Toggle(
+                        row.element.name,
+                        isOn: Binding(
+                            get: { row.element.color == inkColor },
+                            set: { isOn in
+                                if isOn { onSelectColor(row.element.color) }
+                            }))
+                }
+            }
+        }
+    }
+
+    public var body: some View {
+        if arrangement == .twoRows {
+            // The share card's block: tools on one row, color/undo/clear on
+            // the next, hugging content. No bar background or fixed height —
+            // inside a card these sit like any other control cluster, and the
+            // whole point of the split is that neither row outgrows a
+            // hub-narrow window.
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    toolButtons
+                    Spacer()
+                }
+                HStack(spacing: 6) {
+                    colorSwatch
+                    colorMenu
+                    Button("↶", action: onUndo)
+                    Button("✕", action: onClear)
+                    if showsStats {
+                        Button(statsShown ? L("Hide stats") : L("Stats"), action: onToggleStats)
+                    }
+                    Spacer()
+                }
+            }
+        } else {
+            HStack(spacing: 6) {
+                toolButtons
+                Divider()
+                colorSwatch
+                colorMenu
+                Divider()
+                Button("↶", action: onUndo)
+                Button("✕", action: onClear)
+                if showsStats {
+                    // Worded, not a glyph, and behind a divider. As `▤` at the
+                    // end of a row of drawing glyphs it read as a seventh
+                    // drawing tool and was reported as a missing feature by
+                    // someone looking straight at it. The no-annotations
+                    // fallback in the Windows app has always spelled it out;
+                    // these now match.
+                    Divider()
+                    Button(statsShown ? L("Hide stats") : L("Stats"), action: onToggleStats)
+                }
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            // Fixed height so the row hugs its buttons; without it the
+            // enclosing VStack hands the toolbar an equal share of the window
+            // and squeezes the video.
+            .frame(height: Double(HubStyle.toolbarHeight))
+            .frame(maxWidth: .infinity)
+            .background(HubStyle.barFill)
+        }
     }
 }
 

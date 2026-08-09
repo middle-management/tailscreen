@@ -231,9 +231,14 @@ public struct ShareCard: View {
                 }
                 if let drawing {
                     VStack(alignment: .leading, spacing: 2) {
+                        // `.twoRows`: a single row of these buttons is wider
+                        // than the hub window, and a card child wider than the
+                        // window makes swift-cross-ui clip every label in the
+                        // card — see `AnnotationToolbar.Arrangement`.
                         AnnotationToolbar(
                             activeTool: drawing.activeTool,
                             inkColor: drawing.inkColor,
+                            arrangement: .twoRows,
                             showsStats: false,
                             onSelectTool: drawing.selectTool,
                             onUndo: drawing.undo,
