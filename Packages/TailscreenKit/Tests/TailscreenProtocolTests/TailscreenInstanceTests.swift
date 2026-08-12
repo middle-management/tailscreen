@@ -40,6 +40,50 @@ final class TailscreenInstanceTests: XCTestCase {
         XCTAssertFalse(TailscreenInstance.isTailscreenServerHostname("TAILSCREEN-wisp"))
     }
 
+    // MARK: - displayName
+
+    func testDisplayNameStripsTheServerPrefix() {
+        XCTAssertEqual(TailscreenInstance.displayName(fromHostname: "tailscreen-wisp"), "wisp")
+        XCTAssertEqual(
+            TailscreenInstance.displayName(fromHostname: "tailscreen-fredriks-macbook-pro"),
+            "fredriks-macbook-pro")
+    }
+
+    func testDisplayNameKeepsTheInstanceSuffix() {
+        // `TAILSCREEN_INSTANCE=2` is the ONLY thing telling two local test
+        // instances apart in a list — stripping it would merge them visually.
+        XCTAssertEqual(TailscreenInstance.displayName(fromHostname: "tailscreen-wisp-2"), "wisp-2")
+    }
+
+    func testDisplayNameStripsTheClientAndViewerPrefixes() {
+        // Longest-prefix-first: the viewer prefix is built on the client
+        // prefix, so a naive server-prefix-only strip would leave "client-…".
+        XCTAssertEqual(
+            TailscreenInstance.displayName(fromHostname: "tailscreen-client-1a2b3c4d"), "1a2b3c4d")
+        XCTAssertEqual(
+            TailscreenInstance.displayName(fromHostname: "tailscreen-client-viewer-1a2b3c4d"),
+            "1a2b3c4d")
+    }
+
+    func testDisplayNameLeavesUnprefixedNamesAlone() {
+        // A direct-connect target typed by hand, or a row seeded by
+        // `--ui-preview`, is already a bare name.
+        XCTAssertEqual(TailscreenInstance.displayName(fromHostname: "wisp"), "wisp")
+        XCTAssertEqual(TailscreenInstance.displayName(fromHostname: "100.64.0.7"), "100.64.0.7")
+        // Case-sensitive like the discovery filter it mirrors: everything we
+        // register is lowercase, and a name the user chose stays theirs.
+        XCTAssertEqual(
+            TailscreenInstance.displayName(fromHostname: "Tailscreen-wisp"), "Tailscreen-wisp")
+    }
+
+    func testDisplayNameOfAPrefixOnlyHostnameFallsBackToItself() {
+        // An empty row is worse than a redundant one.
+        XCTAssertEqual(TailscreenInstance.displayName(fromHostname: "tailscreen-"), "tailscreen-")
+        XCTAssertEqual(
+            TailscreenInstance.displayName(fromHostname: "tailscreen-client-"), "tailscreen-client-")
+        XCTAssertEqual(TailscreenInstance.displayName(fromHostname: ""), "")
+    }
+
     // MARK: - nodeLabel
 
     func testNodeLabelLowercasesAndMapsPunctuation() {

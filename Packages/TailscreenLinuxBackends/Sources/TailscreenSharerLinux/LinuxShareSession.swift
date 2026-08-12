@@ -369,7 +369,7 @@ public final class LinuxShareSession {
             // remember/forget actions key on it.
             let rows = infos.map {
                 ConnectedViewer(
-                    id: $0.id, label: $0.hostname ?? $0.tailscaleIP, stableID: $0.stableID,
+                    id: $0.id, label: $0.displayName, stableID: $0.stableID,
                     health: $0.health)
             }
             Task { @MainActor [weak self] in
@@ -382,7 +382,7 @@ public final class LinuxShareSession {
             // `PendingViewer`. Fires off the main actor; hop.
             let waiting = pending.map {
                 PendingViewer(
-                    id: $0.id, label: $0.hostname ?? $0.tailscaleIP, stableID: $0.stableID)
+                    id: $0.id, label: $0.displayName, stableID: $0.stableID)
             }
             Task { @MainActor [weak self] in
                 guard let self, self.core.isCurrentShare(generation) else { return }

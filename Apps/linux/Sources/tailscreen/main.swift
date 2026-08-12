@@ -524,7 +524,7 @@ if gSelfTest {
         // IP (not its hostname) also sidesteps the `from == dest`
         // hostname-match limitation.
         gPicker.onSelect = { sharer in
-            startSession(host: sharer.tailscaleIP, displayName: sharer.hostname)
+            startSession(host: sharer.tailscaleIP, displayName: sharer.displayName)
         }
         // Ask a machine to start sharing. The task parks for up to two minutes
         // on the far side, so nothing here awaits it inline — the row shows

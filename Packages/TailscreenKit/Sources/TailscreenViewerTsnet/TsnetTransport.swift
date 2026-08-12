@@ -101,6 +101,13 @@ public struct DiscoveredSharer: Sendable, Identifiable, Equatable {
     /// fields rather than letting a tick blank them.
     public let route: PeerRoute
 
+    /// Row label: `hostname` minus the `tailscreen-` marker every
+    /// installation registers under. Same split as `TailscreenPeer.displayName`
+    /// — `hostname` stays the raw value the hub searches and dials on.
+    public var displayName: String {
+        TailscreenInstance.displayName(fromHostname: hostname)
+    }
+
     public init(
         id: String, hostname: String, tailscaleIP: String, isOnline: Bool,
         tags: [String] = [], route: PeerRoute = .unknown

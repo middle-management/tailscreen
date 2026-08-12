@@ -2543,7 +2543,7 @@ class AppState: ObservableObject {
     }
 
     func connectToPeer(_ peer: TailscreenPeer) async {
-        await connect(to: peer.tailscaleIP, displayName: peer.hostname)
+        await connect(to: peer.tailscaleIP, displayName: peer.displayName)
     }
 
     func disconnect() async {
@@ -3540,7 +3540,13 @@ class AppState: ObservableObject {
         }
         await discoverPeers()
         for attempt in 0..<30 {
-            if let peer = availablePeers.first(where: { $0.hostname.hasPrefix(prefix) }) {
+            // Matched against BOTH spellings: the rows now render without the
+            // `tailscreen-` marker, so a prefix copied off the screen ("wisp")
+            // has to work as well as the raw hostname the harnesses pass.
+            let match = availablePeers.first {
+                $0.hostname.hasPrefix(prefix) || $0.displayName.hasPrefix(prefix)
+            }
+            if let peer = match {
                 logger.log(
                     "TAILSCREEN_AUTOCONNECT_TO=\(prefix) → connecting to \(peer.hostname) @ \(peer.tailscaleIP)"
                 )
@@ -3570,23 +3576,23 @@ class AppState: ObservableObject {
             case .accepted:
                 showAlertMessage(
                     title: L("Request Accepted"),
-                    message: L("\(peer.hostname) accepted your request and is choosing what to share.")
+                    message: L("\(peer.displayName) accepted your request and is choosing what to share.")
                 )
             case .declined:
                 showAlertMessage(
                     title: L("Request Declined"),
-                    message: L("\(peer.hostname) declined your request to share their screen.")
+                    message: L("\(peer.displayName) declined your request to share their screen.")
                 )
             case .noAnswer:
                 showAlertMessage(
                     title: L("No Response"),
                     message: L(
-                        "\(peer.hostname) hasn't responded to your request. They may be away or running an older Tailscreen."
+                        "\(peer.displayName) hasn't responded to your request. They may be away or running an older Tailscreen."
                     )
                 )
             }
         } catch {
-            presentError(.requestToShareFailed(peer: peer.hostname, underlying: error))
+            presentError(.requestToShareFailed(peer: peer.displayName, underlying: error))
         }
     }
 
@@ -3789,13 +3795,13 @@ class AppState: ObservableObject {
     /// projection below, and the reason `SharerNoticeDecision` takes an opaque
     /// string instead of picking a key for its callers.
     nonisolated static func noticeCandidates(_ viewers: [ViewerInfo]) -> [NoticeCandidate] {
-        viewers.map { NoticeCandidate(identity: $0.id, label: $0.hostname ?? $0.tailscaleIP) }
+        viewers.map { NoticeCandidate(identity: $0.id, label: $0.displayName) }
     }
 
     /// Project the approval gate onto notice candidates — same `"ip:port"` key
     /// and same reasoning as the roster.
     nonisolated static func noticeCandidates(_ pending: [PendingViewerInfo]) -> [NoticeCandidate] {
-        pending.map { NoticeCandidate(identity: $0.id, label: $0.hostname ?? $0.tailscaleIP) }
+        pending.map { NoticeCandidate(identity: $0.id, label: $0.displayName) }
     }
 
     /// Project live control requests onto notice candidates.
@@ -3833,7 +3839,7 @@ class AppState: ObservableObject {
                 .map {
                     SharerNotice(
                         kind: .viewerLeft, identity: $0.id,
-                        label: $0.hostname ?? $0.tailscaleIP)
+                        label: $0.displayName)
                 }
         currentViewers = viewers
         // Both rosters, coalesced to the end of the turn — see
@@ -4267,7 +4273,9 @@ class AppState: ObservableObject {
     private func refreshRememberedDisplayNames(stableIDHostnamePairs: [(String?, String?)]) {
         for (stableID, hostname) in stableIDHostnamePairs {
             guard let stableID, let hostname else { continue }
-            viewerAccessPolicies.refreshDisplayName(stableID: stableID, displayName: hostname)
+            viewerAccessPolicies.refreshDisplayName(
+                stableID: stableID,
+                displayName: TailscreenInstance.displayName(fromHostname: hostname))
         }
     }
 
@@ -4283,13 +4291,13 @@ class AppState: ObservableObject {
         var rows = currentViewers.map {
             ViewerRosterDecision.RosterIdentity(
                 id: $0.id, stableID: $0.stableID,
-                displayName: $0.hostname ?? $0.tailscaleIP)
+                displayName: $0.displayName)
         }
         rows.append(
             contentsOf: pendingViewers.map {
                 ViewerRosterDecision.RosterIdentity(
                     id: $0.id, stableID: $0.stableID,
-                    displayName: $0.hostname ?? $0.tailscaleIP)
+                    displayName: $0.displayName)
             })
         return rows
     }
@@ -4349,7 +4357,7 @@ class AppState: ObservableObject {
         guard let stableID = viewer.stableID else { return false }
         viewerAccessPolicies.upsert(
             stableID: stableID,
-            displayName: viewer.hostname ?? viewer.tailscaleIP,
+            displayName: viewer.displayName,
             policy: policy
         )
         return true

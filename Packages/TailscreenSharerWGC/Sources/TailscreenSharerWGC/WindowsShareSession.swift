@@ -463,7 +463,7 @@ public final class WindowsShareSession: @unchecked Sendable {
             guard let self, self.isCurrentShare(generation) else { return }
             let rows = viewers.map {
                 ConnectedViewer(
-                    id: $0.id, displayName: $0.hostname ?? $0.tailscaleIP,
+                    id: $0.id, displayName: $0.displayName,
                     stableID: $0.stableID,
                     health: $0.health)
             }
@@ -479,7 +479,7 @@ public final class WindowsShareSession: @unchecked Sendable {
             self.update {
                 $0.pendingViewers = pending.map {
                     PendingViewer(
-                        id: $0.id, displayName: $0.hostname ?? $0.tailscaleIP,
+                        id: $0.id, displayName: $0.displayName,
                         stableID: $0.stableID)
                 }
             }
@@ -491,7 +491,7 @@ public final class WindowsShareSession: @unchecked Sendable {
         }
         newServer.onControlGrantChanged = { [weak self] _, grant in
             guard let self, self.isCurrentShare(generation) else { return }
-            self.update { $0.controlGrantedTo = grant?.hostname ?? grant?.viewerIP }
+            self.update { $0.controlGrantedTo = grant?.displayName }
         }
         // Installed HERE, before `start()`, and never reassigned: the server's
         // callbacks are bare stored vars its receive thread reads with no

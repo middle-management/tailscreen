@@ -150,7 +150,7 @@ final class PickerModel: ObservableObject {
 
     func select(_ sharer: DiscoveredSharer) {
         guard case .picking = phase else { return }
-        phase = .connecting(sharer.hostname)
+        phase = .connecting(sharer.displayName)
         onSelect?(sharer)
     }
 

@@ -1191,7 +1191,7 @@ private struct PeerMenuRow: View {
 
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(spacing: 6) {
-                            Text(peer.hostname)
+                            Text(peer.displayName)
                                 .font(.body.weight(.medium))
                                 .lineLimit(1)
                                 .truncationMode(.middle)
@@ -1224,7 +1224,7 @@ private struct PeerMenuRow: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(L("\(peer.hostname), \(peer.isOnline ? L("online") : L("offline"))"))
+            .accessibilityLabel(L("\(peer.displayName), \(peer.isOnline ? L("online") : L("offline"))"))
             .accessibilityHint(
                 canConnect
                     ? L("Connects to view this device's screen")
@@ -1337,7 +1337,7 @@ private struct PeerDetailView: View {
                     .buttonStyle(.bordered)
                     .controlSize(.small)
                     .disabled(!canConnect)
-                    .help(L("Ask \(peer.hostname) to share their screen"))
+                    .help(L("Ask \(peer.displayName) to share their screen"))
                 }
             }
 
