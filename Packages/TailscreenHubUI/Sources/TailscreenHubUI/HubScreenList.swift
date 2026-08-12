@@ -42,6 +42,16 @@ public struct HubScreen: Identifiable, Sendable {
     /// it twice in one row costs a line and adds nothing.
     public var statusLine: String { isOnline ? L("Online") : L("Offline") }
 
+    /// The row's title: `hostname` without the `tailscreen-` marker every
+    /// installation registers under, for the same reason the Tags row drops
+    /// `tag:` — every row carries it and none of them are distinguished by it,
+    /// so it only pushes the distinguishing part out of a truncated row. The
+    /// detail pane's Host line keeps the real hostname, which is the one place
+    /// it is a fact rather than a decoration.
+    public var displayName: String {
+        TailscreenInstance.displayName(fromHostname: hostname)
+    }
+
     public init(
         id: String, hostname: String, tailscaleIP: String, isOnline: Bool,
         sharingName: String? = nil, sharingCaption: String? = nil,
@@ -98,7 +108,10 @@ public struct HubScreen: Identifiable, Sendable {
 /// screen-reader users reach — the same reason the macOS peer rows use
 /// always-visible controls instead of hover affordances.
 public struct SharerRow: View {
-    let hostname: String
+    /// The machine's name as shown — `HubScreen.displayName`, i.e. the
+    /// hostname minus the `tailscreen-` marker. Not the hostname itself: the
+    /// raw one is a fact for the detail pane, not a row title.
+    let name: String
     let subtitle: String
     let isOnline: Bool
     let isExpanded: Bool
@@ -106,10 +119,10 @@ public struct SharerRow: View {
     let onTap: () -> Void
 
     public init(
-        hostname: String, subtitle: String, isOnline: Bool, isExpanded: Bool,
+        name: String, subtitle: String, isOnline: Bool, isExpanded: Bool,
         sharingName: String?, onTap: @escaping () -> Void
     ) {
-        self.hostname = hostname
+        self.name = name
         self.subtitle = subtitle
         self.isOnline = isOnline
         self.isExpanded = isExpanded
@@ -124,7 +137,7 @@ public struct SharerRow: View {
                 .frame(width: 9, height: 9)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
-                    Text(hostname)
+                    Text(name)
                         .fontWeight(.medium)
                         .lineLimit(1)
                     if let sharingName {

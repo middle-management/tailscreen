@@ -62,6 +62,31 @@ public enum TailscreenInstance {
     /// pins the `clientHostnamePrefix`-prefix invariant this relies on.)
     public static let viewerHostnamePrefix = clientHostnamePrefix + "viewer-"
 
+    /// The name to SHOW for a Tailscreen node: its hostname with the wire-level
+    /// prefix removed.
+    ///
+    /// Every node registers as `tailscreen-<machine>` (viewers as
+    /// `tailscreen-client-…`) because peer discovery identifies Tailscreen
+    /// installations by that prefix — it is a protocol marker, not part of
+    /// anybody's name. Rendered in a list it is the one span of characters
+    /// every row shares, so it carries no information and pushes the part that
+    /// does out of a truncated row. Strip it at the point of display only:
+    /// discovery, dialling and the policy store keep working on the real
+    /// hostname.
+    ///
+    /// The `TAILSCREEN_INSTANCE` suffix deliberately survives — `-1`/`-2` is
+    /// the only thing telling two local test instances apart. A hostname that
+    /// is nothing *but* a prefix falls back to itself, since an empty row is
+    /// worse than a redundant one.
+    public static func displayName(fromHostname hostname: String) -> String {
+        // Longest first: the viewer prefix is built on the client prefix, which
+        // is built on the server prefix.
+        let prefixes = [viewerHostnamePrefix, clientHostnamePrefix, serverHostnamePrefix]
+        guard let prefix = prefixes.first(where: { hostname.hasPrefix($0) }) else { return hostname }
+        let stripped = hostname.dropFirst(prefix.count)
+        return stripped.isEmpty ? hostname : String(stripped)
+    }
+
     /// True when `hostname` looks like a long-lived Tailscreen instance —
     /// i.e. an installation that can host or accept shares, not a
     /// transient viewer node.

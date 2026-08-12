@@ -55,6 +55,15 @@ public struct ViewerInfo: Sendable, Identifiable, Hashable {
     /// any other wire-supplied claim.
     public var stableID: String?
     public let connectedAt: Date
+
+    /// What a viewer row says: the resolved hostname minus the `tailscreen-`
+    /// marker, falling back to the tailnet IP while the netmap lookup is
+    /// outstanding. One property rather than `hostname ?? tailscaleIP` at each
+    /// of the ~dozen call sites across the three hosts, which is how the
+    /// prefix survived in some of them.
+    public var displayName: String {
+        hostname.map { TailscreenInstance.displayName(fromHostname: $0) } ?? tailscaleIP
+    }
 }
 
 /// A viewer that sent HELLO while `requireApproval` was on and is waiting
@@ -72,6 +81,12 @@ public struct PendingViewerInfo: Sendable, Identifiable, Hashable {
     /// decision under the spoof-resistant key.
     public var stableID: String?
     public let arrivedAt: Date
+
+    /// See `ViewerInfo.displayName` — the approval prompt names a peer the
+    /// same way the roster does.
+    public var displayName: String {
+        hostname.map { TailscreenInstance.displayName(fromHostname: $0) } ?? tailscaleIP
+    }
 }
 
 /// `@unchecked Sendable`: every mutable field lives behind a

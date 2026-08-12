@@ -638,7 +638,7 @@ struct ViewersList: View {
                             .frame(width: 8, height: 8)
                             .help(Self.tooltip(for: viewer.health))
                             .accessibilityHidden(true)
-                        Text(viewer.hostname ?? viewer.tailscaleIP)
+                        Text(viewer.displayName)
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
@@ -657,7 +657,7 @@ struct ViewersList: View {
                         }
                         .buttonStyle(.plain)
                         .help(L("Disconnect this viewer"))
-                        .accessibilityLabel(L("Disconnect \(viewer.hostname ?? viewer.tailscaleIP)"))
+                        .accessibilityLabel(L("Disconnect \(viewer.displayName)"))
                     }
                 }
             }
@@ -667,7 +667,7 @@ struct ViewersList: View {
     /// "wisp, connection degraded — packet loss" — one spoken string, so
     /// the health dot's meaning survives without color or a mouse.
     private func healthLabel(for viewer: ViewerInfo) -> String {
-        let name = viewer.hostname ?? viewer.tailscaleIP
+        let name = viewer.displayName
         return L("\(name), \(Self.tooltip(for: viewer.health))")
     }
 
@@ -753,7 +753,7 @@ struct PendingViewersList: View {
                     Image(systemName: "person.crop.circle.badge.questionmark")
                         .font(.subheadline)
                         .foregroundStyle(.orange)
-                    Text(viewer.hostname ?? viewer.tailscaleIP)
+                    Text(viewer.displayName)
                         .font(.subheadline.weight(.medium))
                         .lineLimit(1)
                         .truncationMode(.middle)
@@ -773,7 +773,7 @@ struct PendingViewersList: View {
                     .buttonStyle(.bordered)
                     .controlSize(.mini)
                     .fixedSize()
-                    .accessibilityLabel(L("Deny \(viewer.hostname ?? viewer.tailscaleIP)"))
+                    .accessibilityLabel(L("Deny \(viewer.displayName)"))
                     Menu {
                         // Enabled even before the StableNodeID resolves: the
                         // intent is queued and persisted the moment it lands.
@@ -789,7 +789,7 @@ struct PendingViewersList: View {
                     .buttonStyle(.borderedProminent)
                     .controlSize(.mini)
                     .fixedSize()
-                    .accessibilityLabel(L("Accept \(viewer.hostname ?? viewer.tailscaleIP)"))
+                    .accessibilityLabel(L("Accept \(viewer.displayName)"))
                 }
             }
         }

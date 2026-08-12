@@ -165,7 +165,13 @@ public struct ControlGrantInfo: Sendable, Equatable {
         self.hostname = hostname
     }
 
-    public var displayName: String { hostname ?? viewerIP }
+    /// Label for the sharer's UI: the resolved hostname minus the
+    /// `tailscreen-` marker every node registers under
+    /// (`TailscreenInstance.displayName(fromHostname:)`), or the tailnet IP
+    /// while the netmap lookup is still outstanding.
+    public var displayName: String {
+        hostname.map { TailscreenInstance.displayName(fromHostname: $0) } ?? viewerIP
+    }
 }
 
 /// Viewer-side remote-control mode, surfaced to the viewer UI.
@@ -194,5 +200,11 @@ public struct ControlRequestInfo: Sendable, Identifiable, Hashable {
         self.arrivedAt = arrivedAt
     }
 
-    public var displayName: String { hostname ?? viewerIP }
+    /// Label for the sharer's UI: the resolved hostname minus the
+    /// `tailscreen-` marker every node registers under
+    /// (`TailscreenInstance.displayName(fromHostname:)`), or the tailnet IP
+    /// while the netmap lookup is still outstanding.
+    public var displayName: String {
+        hostname.map { TailscreenInstance.displayName(fromHostname: $0) } ?? viewerIP
+    }
 }

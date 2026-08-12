@@ -1291,10 +1291,10 @@ final class AppUIState: ObservableObject {
     func connect(to peer: DiscoveredSharer) {
         guard phase == .ready, sessionTask == nil else { return }
         stopRequested = false
-        watching = peer.hostname
+        watching = peer.displayName
         sessionPhase = .connecting
         lastPeerID = peer.id
-        status = L("Connecting to \(peer.hostname)…")
+        status = L("Connecting to \(peer.displayName)…")
         detail = ""
 
         sessionTask = Task { [weak self] in
@@ -1368,7 +1368,7 @@ final class AppUIState: ObservableObject {
                             // session that ended immediately — a stale
                             // `.viewing` must not clobber the ended placard.
                             guard let self, self.sessionTask != nil else { return }
-                            self.status = L("Watching \(peer.hostname)")
+                            self.status = L("Watching \(peer.displayName)")
                             self.sessionPhase = .viewing
                             // Drawing and Request Control appear only if the
                             // sharer said it can serve them. Withheld bits mean
@@ -1380,7 +1380,7 @@ final class AppUIState: ObservableObject {
                         Task { @MainActor in
                             // Same stale-hop guard as `onAdmitted`.
                             guard let self, self.sessionTask != nil else { return }
-                            self.status = L("Waiting for \(peer.hostname) to approve…")
+                            self.status = L("Waiting for \(peer.displayName) to approve…")
                             self.sessionPhase = .awaitingApproval
                         }
                     },

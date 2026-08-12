@@ -127,10 +127,16 @@ codec fallback, a stall) additionally appear as a banner at the top of
 the window instead of a modal alert; the stall banner carries its own
 Reconnect.
 
+Rows are labelled by machine name. Every Tailscreen install joins your
+tailnet as `tailscreen-<machine>` — that prefix is how peers recognise each
+other, so the list drops it and shows just the machine. In the Tailscale
+admin console the same device still appears with its full name.
+
 Want a look before you connect? Expand a row with its chevron: you get the
 live share's resolution and codec, the peer's MagicDNS name and IP (both
-copyable), and a Route line showing the current Tailscale path — direct or
-DERP-relayed — with a rough latency estimate.
+copyable, and the MagicDNS name is where the full `tailscreen-…` hostname
+still shows), and a Route line showing the current Tailscale path — direct
+or DERP-relayed — with a rough latency estimate.
 
 ## Approving viewers
 

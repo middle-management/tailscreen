@@ -40,6 +40,15 @@ public struct TailscreenPeer: Identifiable, Sendable, Equatable {
     /// and carried across watcher merges. Nil = not yet known.
     public var stableID: String?
 
+    /// What the UI puts on the row: `hostname` without the `tailscreen-`
+    /// marker every installation registers under (see
+    /// `TailscreenInstance.displayName(fromHostname:)`). `hostname` itself
+    /// stays raw — it is what search, the detail pane's DNS line and the
+    /// autoconnect prefix match still work on.
+    public var displayName: String {
+        TailscreenInstance.displayName(fromHostname: hostname)
+    }
+
     public init(
         id: String, hostname: String, dnsName: String, tailscaleIP: String,
         isOnline: Bool, tags: [String] = [], metadata: TailscreenMetadata? = nil,

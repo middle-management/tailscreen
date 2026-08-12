@@ -177,7 +177,7 @@ public struct PickerContent: View {
             VStack(spacing: 6) {
                 ForEach(visibleScreens, id: \.id) { screen in
                     SharerRow(
-                        hostname: screen.hostname,
+                        name: screen.displayName,
                         subtitle: screen.statusLine,
                         isOnline: screen.isOnline,
                         isExpanded: expandedID == screen.id,
