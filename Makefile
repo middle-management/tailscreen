@@ -209,7 +209,9 @@ test-e2e-harness: tailscale build ## End-to-end (LOCAL): two-instance scripted h
 # librsvg (`brew install librsvg`) and the system iconutil.
 # app-icon.svg is the Dock/Finder artwork (logo glyph on a rounded-rect
 # tile, standard Big Sur icon grid); logo.svg stays the bare glyph used
-# by the README, docs, and in-app PDFs.
+# by the README, docs, and in-app PDFs. The tile outline is Apple's
+# continuous corner, not an `rx` rounded rect — regenerate that path with
+# scripts/squircle.py if the tile geometry ever changes.
 ICON_SRC := docs/assets/app-icon.svg
 ICON_OUT := Apps/macOS/Resources/Tailscreen.icns
 ICONSET  := Apps/macOS/Resources/Tailscreen.iconset
