@@ -246,9 +246,11 @@ WIN_ASSETS := Apps/windows/packaging/Assets
 
 icon-windows: ## Regenerate the Windows MSIX logo PNGs from docs/assets/app-icon.svg
 	@command -v rsvg-convert >/dev/null 2>&1 || { echo "rsvg-convert missing — brew install librsvg / apt install librsvg2-bin"; exit 1; }
-	@rsvg-convert -w 44  -h 44  "$(ICON_SRC)" -o "$(WIN_ASSETS)/Square44x44Logo.png"
-	@rsvg-convert -w 50  -h 50  "$(ICON_SRC)" -o "$(WIN_ASSETS)/StoreLogo.png"
-	@rsvg-convert -w 150 -h 150 "$(ICON_SRC)" -o "$(WIN_ASSETS)/Square150x150Logo.png"
-	@rsvg-convert -w 310 -h 310 "$(ICON_SRC)" -o "$(WIN_ASSETS)/Square310x310Logo.png"
-	@rsvg-convert -w 150 -h 150 --page-width 310 --page-height 150 --left 80 "$(ICON_SRC)" -o "$(WIN_ASSETS)/Wide310x150Logo.png"
+	@# Piped through icon-noshadow.sh: the SVG carries the macOS template's
+	@# baked drop shadow, which does not belong on a flat Windows tile.
+	@scripts/icon-noshadow.sh "$(ICON_SRC)" | rsvg-convert -w 44  -h 44  -o "$(WIN_ASSETS)/Square44x44Logo.png"
+	@scripts/icon-noshadow.sh "$(ICON_SRC)" | rsvg-convert -w 50  -h 50  -o "$(WIN_ASSETS)/StoreLogo.png"
+	@scripts/icon-noshadow.sh "$(ICON_SRC)" | rsvg-convert -w 150 -h 150 -o "$(WIN_ASSETS)/Square150x150Logo.png"
+	@scripts/icon-noshadow.sh "$(ICON_SRC)" | rsvg-convert -w 310 -h 310 -o "$(WIN_ASSETS)/Square310x310Logo.png"
+	@scripts/icon-noshadow.sh "$(ICON_SRC)" | rsvg-convert -w 150 -h 150 --page-width 310 --page-height 150 --left 80 -o "$(WIN_ASSETS)/Wide310x150Logo.png"
 	@echo "Wrote $(WIN_ASSETS)/{Square44x44Logo,StoreLogo,Square150x150Logo,Square310x310Logo,Wide310x150Logo}.png"

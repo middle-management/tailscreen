@@ -23,6 +23,22 @@
 <stop offset="0" stop-color="#2B2B2B"/>
 <stop offset="1" stop-color="#101010"/>
 </linearGradient>
+<!--
+  Apple's icon template bakes a drop shadow into the artwork - the Dock does
+  not add one - and it is part of what makes an icon sit level with its
+  neighbours. This is what the 100px margin is FOR, so keep the shadow inside
+  it: at these values it reaches ~40px below the tile, comfortably clear of
+  the canvas edge. Apple does not publish the template's exact offset/blur/
+  opacity, so these are chosen to sit within that margin and stay subtle on a
+  near-black tile, not measured from Apple's file - a designer with the
+  template can dial them in.
+
+  macOS only. scripts/icon-noshadow.sh strips this for the Windows tiles and
+  the Linux hicolor icon, where a baked Mac shadow does not belong.
+-->
+<filter id="tileShadow" filterUnits="userSpaceOnUse" x="0" y="0" width="1024" height="1024">
+<feDropShadow dx="0" dy="10" stdDeviation="10" flood-color="#000000" flood-opacity="0.25"/>
+</filter>
 </defs>
 <!--
   The tile outline is Apple's continuously-cornered rounded rect, NOT an
@@ -32,7 +48,7 @@
   constants in units of the 185.4 corner radius, reaching 1.528665r (283.4px)
   along each edge. Regenerate with scripts/squircle.py rather than by hand.
 -->
-<path d="M 100 383.414 C 100 301.807 100 261.003 113.889 217.079 C 131.344 169.122 169.122 131.344 217.079 113.889 C 261.003 100 301.807 100 383.414 100 L 640.586 100 C 722.193 100 762.997 100 806.921 113.889 C 854.878 131.344 892.656 169.122 910.111 217.079 C 924 261.003 924 301.807 924 383.414 L 924 640.586 C 924 722.193 924 762.997 910.111 806.921 C 892.656 854.878 854.878 892.656 806.921 910.111 C 762.997 924 722.193 924 640.586 924 L 383.414 924 C 301.807 924 261.003 924 217.079 910.111 C 169.122 892.656 131.344 854.878 113.889 806.921 C 100 762.997 100 722.193 100 640.586 Z" fill="url(#bg)"/>
+<path filter="url(#tileShadow)" d="M 100 383.414 C 100 301.807 100 261.003 113.889 217.079 C 131.344 169.122 169.122 131.344 217.079 113.889 C 261.003 100 301.807 100 383.414 100 L 640.586 100 C 722.193 100 762.997 100 806.921 113.889 C 854.878 131.344 892.656 169.122 910.111 217.079 C 924 261.003 924 301.807 924 383.414 L 924 640.586 C 924 722.193 924 762.997 910.111 806.921 C 892.656 854.878 854.878 892.656 806.921 910.111 C 762.997 924 722.193 924 640.586 924 L 383.414 924 C 301.807 924 261.003 924 217.079 910.111 C 169.122 892.656 131.344 854.878 113.889 806.921 C 100 762.997 100 722.193 100 640.586 Z" fill="url(#bg)"/>
 <g transform="translate(-51.75 -16.15) scale(1.1)">
 <path fill="#FFFFFF" d="
 M767.297852,436.000061 

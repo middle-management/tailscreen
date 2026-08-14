@@ -113,7 +113,9 @@ if [ -f "$PREBUILT_ICON" ]; then
   install -Dm644 "$PREBUILT_ICON" "$ICON_DEST"
 elif command -v rsvg-convert >/dev/null 2>&1 && [ -f docs/assets/app-icon.svg ]; then
   echo "    rendering icon from docs/assets/app-icon.svg"
-  rsvg-convert -w 256 -h 256 docs/assets/app-icon.svg -o "$ICON_DEST"
+  # Through icon-noshadow.sh: the SVG bakes in the macOS template's drop
+  # shadow, which has no business in a hicolor theme icon.
+  scripts/icon-noshadow.sh docs/assets/app-icon.svg | rsvg-convert -w 256 -h 256 -o "$ICON_DEST"
 else
   echo "    WARNING: no icon available — writing a 1x1 placeholder (see README)."
   # Minimal valid 1x1 transparent PNG.
