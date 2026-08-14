@@ -1,12 +1,21 @@
 // Tailscreen dark color scheme.
 // Inherits just-the-docs' dark scheme, then swaps in the Tailscreen indigo
 // accent and deeper, less blue-grey surfaces. Keep in step with tailscreen.scss.
+//
+// Pure ASCII only, and mirror any new variable with a !default in
+// custom/custom.scss - see the header of tailscreen.scss for why.
 
 @import "./color_schemes/dark";
 
 // Accent
 $link-color: #8b93f8; // indigo-300/400, readable on the dark surfaces below
 $btn-primary-color: #6366f1;
+
+// Homepage icon chips - see the note in tailscreen.scss. Inverted here, and
+// the chip carries slightly more alpha than the light scheme because a wash
+// this faint disappears against the near-black surfaces below.
+$icon-chip-color: #e5e7eb;
+$icon-chip-background: rgba(#e5e7eb, 0.09);
 
 // Text
 $body-heading-color: #f3f4f6;

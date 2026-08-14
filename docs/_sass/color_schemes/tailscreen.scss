@@ -1,10 +1,23 @@
 // Tailscreen light color scheme.
 // Layers a refined indigo accent and softer neutrals over just-the-docs'
 // default light palette. Keep in step with tailscreen-dark.scss.
+//
+// Keep this file pure ASCII - the Sass converter parses it as US-ASCII and
+// rejects multibyte characters (an em dash in a comment fails the build).
+// Any variable added here also needs a !default fallback in
+// custom/custom.scss, which compiles against the theme's stock schemes too.
 
 // Accent
 $link-color: #4f46e5; // indigo-600
 $btn-primary-color: #4f46e5;
+
+// Homepage icon chips (spotlights + feature grid). Deliberately NOT the
+// accent: these sit on the same page as the app icon, which is white-on-grey,
+// and an indigo chip beside it reads as a second, unrelated icon family. Grey
+// keeps the accent meaning "this is a link or a button" rather than
+// "this is decorative".
+$icon-chip-color: #111827; // matches $body-heading-color
+$icon-chip-background: rgba(#111827, 0.06);
 
 // Text
 $body-heading-color: #111827; // near-black slate

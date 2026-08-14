@@ -21,7 +21,16 @@
   });
 </script>
 {% endif %}
-<link rel="icon" type="image/svg+xml" href="{{ '/assets/favicon.svg' | relative_url }}">
+{%- comment -%}
+  The tab icon is the app-icon tile itself, not a bare glyph, so the browser
+  tab matches the Dock icon — and a tile carries further at 16px than an
+  outline mark does. Pointed straight at app-icon.svg rather than a copy:
+  the glyph path is already duplicated across four files by hand, and a
+  fifth that silently drifts from the Dock icon is the one we would not
+  notice. mask-icon stays on favicon.svg because Safari's pinned-tab icon is
+  a silhouette — handing it the tile would pin a solid black square.
+{%- endcomment -%}
+<link rel="icon" type="image/svg+xml" href="{{ '/assets/app-icon.svg' | relative_url }}">
 <link rel="mask-icon" href="{{ '/assets/favicon.svg' | relative_url }}" color="#000000">
 <meta name="theme-color" content="#0f1117" media="(prefers-color-scheme: dark)">
 <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">

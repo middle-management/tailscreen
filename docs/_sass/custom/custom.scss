@@ -7,6 +7,20 @@
 // (Ruby Sass) parses it as US-ASCII and rejects multibyte characters.
 
 // ---------------------------------------------------------------------------
+// Fallbacks
+// ---------------------------------------------------------------------------
+
+// just-the-docs compiles this file against its OWN stock schemes as well as
+// ours (assets/css/just-the-docs-{light,dark}.scss ship with the theme), and
+// those do not define our variables. Anything we add to
+// _sass/color_schemes/tailscreen*.scss therefore needs a !default here or the
+// stock schemes fail to compile - which is a hard build error, not a
+// degraded page. Derive from a variable every scheme defines so the fallback
+// tracks light and dark on its own.
+$icon-chip-color: $body-heading-color !default;
+$icon-chip-background: rgba($body-heading-color, 0.07) !default;
+
+// ---------------------------------------------------------------------------
 // Typography
 // ---------------------------------------------------------------------------
 
@@ -553,8 +567,13 @@ body {
   align-items: center;
   padding: 0.14rem 0.32rem;
   border-radius: 5px;
-  background-color: rgba($link-color, 0.16);
-  color: $link-color;
+  // Monochrome for a second reason on top of the one in the scheme file:
+  // this chip depicts OUR menubar item, and the real one is a template
+  // image, so an indigo mock misrepresents what the app actually looks like.
+  // Heavier than the homepage chips because it has to read as "highlighted"
+  // against $sidebar-color rather than against the page.
+  background-color: rgba($icon-chip-color, 0.12);
+  color: $icon-chip-color;
 }
 
 .ts-mock-mb-time {
@@ -808,8 +827,8 @@ body {
   width: 2.6rem;
   height: 2.6rem;
   border-radius: 10px;
-  background-color: rgba($link-color, 0.12);
-  color: $link-color;
+  background-color: $icon-chip-background;
+  color: $icon-chip-color;
 
   svg {
     width: 1.3rem;
@@ -855,8 +874,8 @@ body {
   height: 2rem;
   margin-bottom: 0.65rem;
   border-radius: 8px;
-  background-color: rgba($link-color, 0.1);
-  color: $link-color;
+  background-color: $icon-chip-background;
+  color: $icon-chip-color;
 
   svg {
     width: 1.05rem;

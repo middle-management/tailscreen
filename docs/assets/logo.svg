@@ -6,6 +6,15 @@
 		path { fill: #FFFFFF; }
 	}
 </style>
+<!--
+  The 31px nudge optically centres the mark in the viewBox. The stand hangs
+  below the screen like a descender, so the box-centred position lands the
+  screen - the part the eye reads as the object - 47px high, and the glyph's
+  own box already sat 15.5px high on top of that. This is half way between
+  box-centred and screen-centred, the same rule (and the same reason) as the
+  app icon's offset in app-icon.svg. Do not "fix" it to a symmetric box.
+-->
+<g transform="translate(0 31)">
 <path opacity="1.000000" stroke="none"
 	d="
 M767.297852,436.000061 
@@ -64,4 +73,5 @@ M767.297852,436.000061
 	C744.341980,280.713989 767.131958,303.565552 767.253601,330.017029 
 	C767.415222,365.177368 767.296143,400.338959 767.297852,436.000061 
 z"/>
+</g>
 </svg>
