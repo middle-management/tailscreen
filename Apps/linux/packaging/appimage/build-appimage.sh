@@ -102,9 +102,9 @@ Keywords=screen;share;remote;tailscale;viewer;sharing;
 StartupNotify=true
 EOF
 
-# Icon. Prefer a real PNG if one has been added under packaging/icons/; otherwise
-# render one from the project SVG; otherwise fall back to a 1x1 placeholder so the
-# AppImage still assembles (a real icon is a documented follow-up — see README).
+# Icon. Prefer the prebuilt PNG under packaging/icons/ (regenerate with
+# `make icon-linux`); otherwise render one from the project SVG; otherwise fall
+# back to a 1x1 placeholder so the AppImage still assembles (see README).
 install -d "$APPDIR/usr/share/icons/hicolor/256x256/apps"
 ICON_DEST="$APPDIR/usr/share/icons/hicolor/256x256/apps/$ICON_NAME.png"
 PREBUILT_ICON="Apps/linux/packaging/icons/$APP_ID.png"

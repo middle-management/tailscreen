@@ -129,26 +129,20 @@ Apps/linux/packaging/appimage/build-appimage.sh
 The script self-checks for `swift`, `go`, `make`, `cc`, `pkg-config`, and
 `linuxdeploy` and fails early with the missing tool named.
 
-## Icon (follow-up)
+## Icon
 
-Both recipes reference an app icon but **no raster icon ships yet** — this is a
-documented follow-up:
-
-- The macOS app's icon lives at `Apps/macOS/Resources/Tailscreen.icns`, and the
-  source artwork is `docs/assets/app-icon.svg` (the same SVG the top-level
-  `make icon` target renders the `.icns` from).
-- The **AppImage** script renders a 256×256 PNG from `docs/assets/app-icon.svg`
-  at build time if `rsvg-convert` (librsvg) is installed; otherwise it writes a
-  1×1 placeholder so the build still completes.
-- The **Flatpak** manifest installs
-  `Apps/linux/packaging/icons/dev.tailscreen.Tailscreen.png` **if present** and
-  skips it otherwise.
-
-To finish this properly, add a real
-`Apps/linux/packaging/icons/dev.tailscreen.Tailscreen.png` (256×256, ideally plus
-128/64 sizes) generated from `docs/assets/app-icon.svg`, e.g.:
+A prebuilt 256×256 PNG ships at
+`Apps/linux/packaging/icons/dev.tailscreen.Tailscreen.png`, rendered from
+`docs/assets/app-icon.svg` (the same source the top-level `make icon` target
+renders the macOS `.icns` from; the SVG itself is emitted by
+`scripts/gen-marks.py` — see `make icon-svgs`). Regenerate it with:
 
 ```bash
-rsvg-convert -w 256 -h 256 docs/assets/app-icon.svg \
-  -o Apps/linux/packaging/icons/dev.tailscreen.Tailscreen.png
+make icon-linux
 ```
+
+- The **AppImage** script prefers this prebuilt PNG; without it, it renders
+  one at build time if `rsvg-convert` (librsvg) is installed, and otherwise
+  writes a 1×1 placeholder so the build still completes.
+- The **Flatpak** manifest installs the prebuilt PNG (the conditional install
+  is kept so a tree without it still builds).

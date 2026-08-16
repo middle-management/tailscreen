@@ -205,22 +205,33 @@ test-e2e-local: tailscale build ## End-to-end (LOCAL): screen-share XCTest under
 test-e2e-harness: tailscale build ## End-to-end (LOCAL): two-instance scripted harness
 	@./scripts/test-e2e-local.sh
 
-# Regenerate the macOS .icns app icon from the source SVG. Requires
-# librsvg (`brew install librsvg`) and the system iconutil.
-# app-icon.svg is the Dock/Finder artwork (logo glyph on a rounded-rect
-# tile, standard Big Sur icon grid); logo.svg stays the bare glyph used
-# by the README, docs, and in-app PDFs. The tile outline is Apple's
-# continuous corner, not an `rx` rounded rect — regenerate that path with
-# scripts/squircle.py if the tile geometry ever changes.
-ICON_SRC := docs/assets/app-icon.svg
+# Brand artwork. scripts/gen-marks.py is the single source of truth for the
+# mark's geometry — `make icon-svgs` re-emits every brand SVG from it, and the
+# targets below rasterize those SVGs per platform (librsvg: `brew install
+# librsvg` / `apt install librsvg2-bin`; the .icns also needs the system
+# iconutil). app-icon.svg is the Dock/Finder artwork (outline mark on the
+# squircle tile); the 16/32-pt .icns slots render from app-icon-small.svg
+# instead — the solid cut, because outline strokes go sub-pixel there. The
+# tile outline is Apple's continuous corner, not an `rx` rounded rect —
+# regenerate that path with scripts/squircle.py if the tile geometry changes.
+ICON_SRC       := docs/assets/app-icon.svg
+ICON_SMALL_SRC := docs/assets/app-icon-small.svg
 ICON_OUT := Apps/macOS/Resources/Tailscreen.icns
 ICONSET  := Apps/macOS/Resources/Tailscreen.iconset
 
-icon: ## Regenerate Tailscreen.icns + in-app PDFs from docs/assets/{app-icon,logo}.svg
+icon-svgs: ## Re-emit every brand SVG from scripts/gen-marks.py
+	@python3 scripts/gen-marks.py
+
+icon: ## Regenerate Tailscreen.icns + in-app PDFs from docs/assets/{app-icon,app-icon-small,logo}.svg
 	@command -v rsvg-convert >/dev/null 2>&1 || { echo "rsvg-convert missing — brew install librsvg"; exit 1; }
 	@command -v iconutil >/dev/null 2>&1 || { echo "iconutil missing — install Xcode command line tools"; exit 1; }
 	@rm -rf "$(ICONSET)" && mkdir -p "$(ICONSET)"
-	@for sz in 16 32 128 256 512; do \
+	@for sz in 16 32; do \
+		rsvg-convert -w $$sz -h $$sz "$(ICON_SMALL_SRC)" -o "$(ICONSET)/icon_$${sz}x$${sz}.png"; \
+		dbl=$$((sz * 2)); \
+		rsvg-convert -w $$dbl -h $$dbl "$(ICON_SMALL_SRC)" -o "$(ICONSET)/icon_$${sz}x$${sz}@2x.png"; \
+	done
+	@for sz in 128 256 512; do \
 		rsvg-convert -w $$sz -h $$sz "$(ICON_SRC)" -o "$(ICONSET)/icon_$${sz}x$${sz}.png"; \
 		dbl=$$((sz * 2)); \
 		rsvg-convert -w $$dbl -h $$dbl "$(ICON_SRC)" -o "$(ICONSET)/icon_$${sz}x$${sz}@2x.png"; \
@@ -229,26 +240,36 @@ icon: ## Regenerate Tailscreen.icns + in-app PDFs from docs/assets/{app-icon,log
 	@rm -rf "$(ICONSET)"
 	@echo "Wrote $(ICON_OUT)"
 	@echo "Regenerating in-app PDFs…"
-	@# Menubar PDFs are state-specific brand variants (idle TV outline,
-	@# filled screen for sharing, outline + play triangle for viewing).
-	@# WelcomeIcon uses the full with-stand artwork.
+	@# Menubar PDFs are state-specific brand variants (idle mark, filled
+	@# screen for sharing, play triangle for viewing). WelcomeIcon is the
+	@# outline mark itself (logo.svg).
 	@rsvg-convert -f pdf Apps/macOS/Sources/Resources/MenubarIcon.svg    -o Apps/macOS/Sources/Resources/MenubarIcon.pdf
 	@rsvg-convert -f pdf Apps/macOS/Sources/Resources/MenubarSharing.svg -o Apps/macOS/Sources/Resources/MenubarSharing.pdf
 	@rsvg-convert -f pdf Apps/macOS/Sources/Resources/MenubarViewing.svg -o Apps/macOS/Sources/Resources/MenubarViewing.pdf
 	@rsvg-convert -f pdf docs/assets/logo.svg -o Apps/macOS/Sources/Resources/WelcomeIcon.pdf
 	@echo "Wrote Apps/macOS/Sources/Resources/{MenubarIcon,MenubarSharing,MenubarViewing,WelcomeIcon}.pdf"
 
-# Regenerate the Windows MSIX logo assets from the same source SVG. Sizes are
-# the ones AppxManifest.xml names (scale-100 only — the manifest references the
-# bare filenames). The wide tile is the square icon centered on a transparent
-# 310x150 page rather than a stretch: rsvg-convert's -w/-h would distort it.
+# Regenerate the Windows MSIX logo assets. Sizes are the ones AppxManifest.xml
+# names (scale-100 only — the manifest references the bare filenames). The
+# Start-tile PNGs (150/310/wide) are the bare white mark on transparency:
+# Windows plates tiles with the manifest's BackgroundColor, so a baked-in
+# plate would double-plate. The app-list/taskbar assets (44/Store) keep a
+# plate — they render on arbitrary backgrounds, where a white-on-transparent
+# glyph would vanish.
 WIN_ASSETS := Apps/windows/packaging/Assets
+WIN_SRC    := Apps/windows/packaging/assets-src
 
-icon-windows: ## Regenerate the Windows MSIX logo PNGs from docs/assets/app-icon.svg
+icon-windows: ## Regenerate the Windows MSIX logo PNGs from Apps/windows/packaging/assets-src/
 	@command -v rsvg-convert >/dev/null 2>&1 || { echo "rsvg-convert missing — brew install librsvg / apt install librsvg2-bin"; exit 1; }
-	@rsvg-convert -w 44  -h 44  "$(ICON_SRC)" -o "$(WIN_ASSETS)/Square44x44Logo.png"
-	@rsvg-convert -w 50  -h 50  "$(ICON_SRC)" -o "$(WIN_ASSETS)/StoreLogo.png"
-	@rsvg-convert -w 150 -h 150 "$(ICON_SRC)" -o "$(WIN_ASSETS)/Square150x150Logo.png"
-	@rsvg-convert -w 310 -h 310 "$(ICON_SRC)" -o "$(WIN_ASSETS)/Square310x310Logo.png"
-	@rsvg-convert -w 150 -h 150 --page-width 310 --page-height 150 --left 80 "$(ICON_SRC)" -o "$(WIN_ASSETS)/Wide310x150Logo.png"
+	@rsvg-convert -w 44  -h 44  "$(WIN_SRC)/app-plate.svg"       -o "$(WIN_ASSETS)/Square44x44Logo.png"
+	@rsvg-convert -w 50  -h 50  "$(WIN_SRC)/app-plate.svg"       -o "$(WIN_ASSETS)/StoreLogo.png"
+	@rsvg-convert -w 150 -h 150 "$(WIN_SRC)/tile-glyph.svg"      -o "$(WIN_ASSETS)/Square150x150Logo.png"
+	@rsvg-convert -w 310 -h 310 "$(WIN_SRC)/tile-glyph.svg"      -o "$(WIN_ASSETS)/Square310x310Logo.png"
+	@rsvg-convert -w 310 -h 150 "$(WIN_SRC)/tile-glyph-wide.svg" -o "$(WIN_ASSETS)/Wide310x150Logo.png"
 	@echo "Wrote $(WIN_ASSETS)/{Square44x44Logo,StoreLogo,Square150x150Logo,Square310x310Logo,Wide310x150Logo}.png"
+
+icon-linux: ## Regenerate the Linux hicolor icon PNG from docs/assets/app-icon.svg
+	@command -v rsvg-convert >/dev/null 2>&1 || { echo "rsvg-convert missing — apt install librsvg2-bin / brew install librsvg"; exit 1; }
+	@mkdir -p Apps/linux/packaging/icons
+	@rsvg-convert -w 256 -h 256 "$(ICON_SRC)" -o "Apps/linux/packaging/icons/dev.tailscreen.Tailscreen.png"
+	@echo "Wrote Apps/linux/packaging/icons/dev.tailscreen.Tailscreen.png"

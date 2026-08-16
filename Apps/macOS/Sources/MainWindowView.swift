@@ -387,7 +387,7 @@ private struct ProfileSwitchingPane: View {
 private struct WelcomePane: View {
     @EnvironmentObject var appState: AppState
 
-    /// The brand artwork (display + stand variant) loaded from the
+    /// The brand artwork (the outline mark) loaded from the
     /// SwiftPM resource bundle. Cached at type level so we don't decode
     /// the PDF on every re-render. Marked template (like the menubar
     /// icons) so the view's `.foregroundStyle(.secondary)` actually

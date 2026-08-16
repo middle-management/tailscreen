@@ -182,8 +182,10 @@ body {
     background-image: none;
 
     img {
+      // The mark's viewBox is tight-cropped and non-square (1024x800);
+      // height follows the aspect ratio, a fixed square box would stretch it.
       width: 26px;
-      height: 26px;
+      height: auto;
     }
   }
 

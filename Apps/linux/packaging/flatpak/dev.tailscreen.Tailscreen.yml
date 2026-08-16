@@ -60,10 +60,10 @@ modules:
       #    Linux subgraph (DefaultBackend -> GtkBackend) and never tries the
       #    Windows-only WinUI backend.
       - swift build -c release --package-path Apps/linux --product tailscreen
-      # 3. Install the binary + desktop entry + AppStream metadata. The icon is
-      #    a placeholder: a real PNG rendered from docs/assets/app-icon.svg is a
-      #    follow-up (see README). If present it is installed; otherwise the
-      #    install is skipped so the build does not fail on the missing asset.
+      # 3. Install the binary + desktop entry + AppStream metadata. The icon
+      #    ships prebuilt at packaging/icons/ (regenerate with `make
+      #    icon-linux`); the conditional install is kept so a tree without it
+      #    still builds.
       - install -Dm755 Apps/linux/.build/release/tailscreen
         /app/bin/tailscreen
       # The string catalog, beside the binary: LocalizationCatalog searches the
