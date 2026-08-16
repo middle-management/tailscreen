@@ -11,10 +11,13 @@ no pip dependencies.
 The mark
 --------
 A monitor: a screen drawn as one stroked rounded rect (the bezel) with
-a Tailscale-nodding "tail" floating inside it, sweeping the screen's
-diagonal from a round head at the lower left to a taper at the upper
-right, standing on a T-stand (neck + foot). Three cuts exist, shedding
-detail as the rendered size drops:
+a Tailscale-nodding "tail" floating inside it — an S-curved,
+uniform-width, round-capped stroke rising from the lower left and
+curling over at the tip like a cat's tail — standing on a T-stand
+(neck + foot). The tail is deliberately a *stroke*, not a filled
+taper: a thick-to-sharp taper reads as a brush stroke, while uniform
+width, round ends and the over-curl are what read as a tail. Three
+cuts exist, shedding detail as the rendered size drops:
 
 - **Full cut** (`full_mark`): bezel + tail + stand. The primary mark —
   docs/README logo, the Dock-icon glyph, Windows Start tiles, the
@@ -28,8 +31,8 @@ detail as the rendered size drops:
   a shorter, fatter tail knocked out of it. Small-size artwork — the
   favicon (browser tabs render at 16px, where strokes go sub-pixel),
   the 16/32-point .icns slots, and the Windows 44px/Store plate. The
-  fatter tail exists because the outline tail's taper and thin
-  mid-section vanish below ~24px.
+  knockout keeps the S-sweep but drops the curl and fattens the
+  channel — a hook that small closes up below ~24px.
 
 Menubar variants share the compact cut's bezel so the three states
 (idle / sharing / viewing) keep one silhouette, and are emitted on a
@@ -65,22 +68,26 @@ SCREEN_CY = 400
 # edge exactly 0..1024 x 0..800, screen interior 80..944 x 80..720.
 BEZEL_RECT = dict(x=40, y=40, w=944, h=720, rx=100, stroke=80)
 
-# The tail (outline cuts). Floating: >=55 units of clear space to the bezel's
-# interior edge on every side, so the gap survives rasterization down to
-# ~18px. Round head lower-left, taper to a tip near the screen's upper-right.
-TAIL = ("M 800 165 "
-        "C 640 390 430 500 240 500 "
-        "C 175 500 140 545 140 590 "
-        "C 140 640 185 665 245 665 "
-        "C 540 665 720 440 800 165 Z")
+# The tail (outline cuts): the spine of an S-curve rising from the lower
+# left, hooking over at the top like a curled tail tip, drawn as a
+# round-capped stroke. Floating: >=50 units of clear space (stroke edge to
+# the bezel's interior edge) on every side, so the gap survives
+# rasterization down to ~18px, and the hook's eye is kept open wide enough
+# (~75 units) not to close below ~28px.
+TAIL_SPINE = ("M 245 600 "
+              "C 440 620 580 540 660 420 "
+              "C 740 300 775 253 745 203 "
+              "C 720 161 655 173 640 228")
+TAIL_STROKE = 96
 
-# The tail (solid cut): shorter and fatter, so the knockout still reads as a
-# tail at 16px where the outline tail's taper would dissolve.
-TAIL_FAT = ("M 770 200 "
-            "C 625 400 435 488 252 488 "
-            "C 170 488 130 545 130 602 "
-            "C 130 662 192 684 260 680 "
-            "C 565 662 705 450 770 200 Z")
+# The tail (solid cut): the same S-sweep as a fat knockout with rounded
+# ends — but no curl, which would close up below ~24px where this cut
+# renders. Channel width ~150 units (>=2px at a 16px favicon).
+TAIL_KNOCKOUT = ("M 208 506 "
+                 "C 400 520 520 470 610 350 "
+                 "A 74 74 0 0 1 726 440 "
+                 "C 610 590 420 668 232 654 "
+                 "A 75 75 0 0 1 208 506 Z")
 
 # The stand (full cut): bold T — neck overlapping the bezel's bottom edge by
 # 4 units (no hairline gap at any raster size) + rounded foot bar. The old
@@ -171,7 +178,9 @@ def bezel(color="currentColor"):
 
 def master_mark(color="currentColor"):
     """Compact cut: bezel + tail, no stand."""
-    return f'{bezel(color)}\n<path fill="{color}" d="{TAIL}"/>'
+    return (f"{bezel(color)}\n"
+            f'<path d="{TAIL_SPINE}" fill="none" stroke="{color}" '
+            f'stroke-width="{TAIL_STROKE}" stroke-linecap="round"/>')
 
 
 def full_mark(color="currentColor"):
@@ -181,7 +190,7 @@ def full_mark(color="currentColor"):
 
 def solid_mark(color="currentColor"):
     """Solid cut: screen silhouette with the fat tail knocked out."""
-    return f'<path fill-rule="evenodd" fill="{color}" d="{SOLID_RECT} {TAIL_FAT}"/>'
+    return f'<path fill-rule="evenodd" fill="{color}" d="{SOLID_RECT} {TAIL_KNOCKOUT}"/>'
 
 
 def place(glyph, glyph_h, width, canvas_w, canvas_h):

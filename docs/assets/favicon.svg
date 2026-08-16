@@ -6,5 +6,5 @@
 -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 800">
 <style>:root { color: #000000; } @media (prefers-color-scheme: dark) { :root { color: #FFFFFF; } }</style>
-<path fill-rule="evenodd" fill="currentColor" d="M 140 0 H 884 A 140 140 0 0 1 1024 140 V 660 A 140 140 0 0 1 884 800 H 140 A 140 140 0 0 1 0 660 V 140 A 140 140 0 0 1 140 0 Z M 770 200 C 625 400 435 488 252 488 C 170 488 130 545 130 602 C 130 662 192 684 260 680 C 565 662 705 450 770 200 Z"/>
+<path fill-rule="evenodd" fill="currentColor" d="M 140 0 H 884 A 140 140 0 0 1 1024 140 V 660 A 140 140 0 0 1 884 800 H 140 A 140 140 0 0 1 0 660 V 140 A 140 140 0 0 1 140 0 Z M 208 506 C 400 520 520 470 610 350 A 74 74 0 0 1 726 440 C 610 590 420 668 232 654 A 75 75 0 0 1 208 506 Z"/>
 </svg>
