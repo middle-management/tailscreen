@@ -10,15 +10,22 @@ no pip dependencies.
 
 The mark
 --------
-A monitor with a fox tail hanging in front of the screen: the screen is
-one stroked rounded rect (the bezel) standing on a T-stand (neck +
-foot), and the tail — the Tailscale nod — follows the grammar of
-stylized fox-tail iconography (cf. game-icons.net's fox-tail glyph): a
-thin base arcing over the top that curls down, a bushy mass hanging
-below it, and the fat end dissolving into three soft fur tufts. The
-tail is *computed* from a spine (two bezier segments), a width profile
-(thin curl -> bushy mass) and a tuft cross-section, so its shape is
-tuned by the constants below rather than by hand-edited outlines.
+A monitor whose outline grows a fox tail: the bezel's bottom-left
+corner flows into a tail that rises inside the screen — the original
+Tailscreen mark's gesture, redrawn with fox-tail anatomy taken from
+stylized fox iconography: an S-curved rise with a swelling belly that
+hugs the bottom of the frame, a slim tip leaning toward the screen
+center, and one soft fur cusp on the upper (concave) edge giving the
+tip a two-point flick. The tail is PART of the screen outline, not a
+floating element — that integration is the identity.
+
+Construction rule that keeps the integration seamless: the tail is a
+separate filled path unioned over the stroked bezel, and every segment
+of its outline that is not meant to be visible must stay inside the
+bezel's painted bands (left band x 0..80 for y 140..660, bottom band
+y 720..800 for x 140..884, and the corner ring between radii 60 and
+140 around (140,660)). Move a closure point outside those bands and a
+seam line appears across the screen.
 
 Three cuts exist, shedding detail as the rendered size drops:
 
@@ -26,21 +33,25 @@ Three cuts exist, shedding detail as the rendered size drops:
   docs/README logo, the Dock-icon glyph, Windows Start tiles, the
   welcome pane. The stand is what makes the shape read as a *monitor*
   rather than a generic rounded rect.
-- **Compact cut** (`master_mark`): bezel + tail, no stand, and the
-  tail's curl drawn thicker — for the menubar's pinned 18x18pt box,
-  where the display-weight curl (22 units ~ 0.4px at 18pt) would
-  vanish and the stand would shrink the screen.
-- **Solid cut** (`solid_mark`): the screen silhouette filled solid
-  with a hanging-comma knockout — the tail's gesture without curl or
-  tufts, which close up below ~24px. Small-size artwork: the favicon
-  (browser tabs render at 16px), the 16/32-point .icns slots, and the
-  Windows 44px/Store plate.
+- **Compact cut** (`master_mark`): bezel + tail, no stand — for the
+  menubar's pinned 18x18pt box, where the stand would shrink the
+  screen. The integrated tail is chunky enough to need no per-size
+  reweighting.
+- **Solid cut** (`solid_mark`): the screen silhouette filled solid,
+  with the screen area knocked out and the tail carved back into the
+  knockout (fill-rule evenodd; TAIL_INNER is the tail clipped to the
+  screen interior — it must cross the interior boundary exactly at
+  its declared points or the corner shows gaps). Small-size artwork:
+  the favicon (browser tabs render at 16px, where strokes go
+  sub-pixel), the 16/32-point .icns slots, and the Windows 44px/Store
+  plate.
 
 Menubar variants share the compact cut's bezel so the three states
-(idle / sharing / viewing) keep one silhouette, and are emitted on a
-square canvas because the app pins menubar templates to 18x18pt
-(`loadMenubarTemplate` sets `img.size`); a non-square page would
-distort there.
+(idle / sharing / viewing) keep one silhouette; sharing/viewing use
+the plain bezel (no tail) exactly as the mark always has. They are
+emitted on a square canvas because the app pins menubar templates to
+18x18pt (`loadMenubarTemplate` sets `img.size`); a non-square page
+would distort there.
 
 Master coordinate space is 1024x800 for the screen (the bezel stroke's
 outer edge lands exactly on the viewBox) plus 154 units of stand below
@@ -50,7 +61,6 @@ padding, which is why the favicon used to be illegible in a browser
 tab.)
 """
 
-import math
 import os
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -71,40 +81,34 @@ SCREEN_CY = 400
 # edge exactly 0..1024 x 0..800, screen interior 80..944 x 80..720.
 BEZEL_RECT = dict(x=40, y=40, w=944, h=720, rx=100, stroke=80)
 
-# The tail's spine: two bezier segments — the thin base arcs in from the
-# left, curls over and down at the upper right, then the mass hangs and
-# swings back to the lower left. SPLIT is the parameter where segment one
-# hands over to segment two.
-TAIL_SPINE = [
-    [(300, 330), (420, 185), (648, 158), (736, 290)],
-    [(736, 290), (778, 405), (738, 498), (610, 562)],
-]
-TAIL_SPLIT = 0.50
+# The fox tail, growing out of the bezel's bottom-left. Landmarks: belly
+# hugging the bottom band out to x~415, S-rise, tip at (460,330) leaning
+# toward screen center, fur cusp at (366,522)->(353,507) splitting the
+# upper edge into a two-point flick. The last three segments live inside
+# the bezel's painted bands (see the construction rule in the module
+# docstring).
+TAIL = ("M 150 762 "
+        "C 280 752 370 704 415 620 "
+        "C 452 550 458 450 460 330 "
+        "C 436 408 408 470 366 522 "
+        "L 353 507 "
+        "C 306 576 228 634 168 658 "
+        "C 120 678 76 668 60 640 "
+        "L 60 700 L 150 762 Z")
 
-# Width profile along the spine: constant curl width until START, swelling
-# to the bushy mass width by HOLD. Display weight vs menubar weight — the
-# 22-unit curl is right at logo/Dock sizes but goes sub-pixel in an 18pt
-# menubar template, so the compact cut fattens it.
-TAIL_WIDTHS = dict(curl=22, mass=98, start=0.46, hold=0.88)
-TAIL_WIDTHS_MENUBAR = dict(curl=38, mass=102, start=0.42, hold=0.86)
-
-# Fur tufts closing the fat end: (fraction across the end cross-section,
-# extension along the spine tangent). Three soft pendant spikes with
-# shallow valleys — the one silhouette cue that reads "fur" rather than
-# "torn edge" (sharper/deeper teeth read as lightning; a smooth cap reads
-# as a leaf).
-TAIL_TUFTS = ((1.0, 0), (0.60, 109), (0.28, 21), (-0.06, 130),
-              (-0.42, 29), (-0.74, 88), (-1.0, 0))
-
-# Solid cut's knockout: the tail reduced to a hanging comma — thin shoulder
-# at the upper right, fat swing to the lower left. Channel widths stay
-# >=~84 units (>=1.3px at a 16px favicon).
-KNOCK_SPINE = [
-    [(640, 180), (748, 290), (742, 440), (610, 545)],
-    [(610, 545), (540, 588), (450, 596), (370, 575)],
-]
-KNOCK_SPLIT = 0.65
-KNOCK_WIDTHS = dict(curl=42, mass=98, start=0.10, hold=0.78)
+# The tail clipped to the screen interior, traced as part of the screen
+# knockout's boundary (solid cut). Crossings with the interior boundary:
+# (340,720) on the bottom edge, (80,652) on the left edge. The curves
+# between the crossings and the tip mirror TAIL's.
+KNOCKOUT = ("M 140 80 H 884 A 60 60 0 0 1 944 140 V 660 A 60 60 0 0 1 884 720 "
+            "H 340 "
+            "C 380 700 400 660 418 616 "
+            "C 452 548 458 450 460 330 "
+            "C 436 408 408 470 366 522 "
+            "L 353 507 "
+            "C 306 576 230 632 172 654 "
+            "C 140 666 104 664 80 652 "
+            "V 140 A 60 60 0 0 1 140 80 Z")
 
 # Solid cut silhouette: the bezel's outer contour as a filled rounded rect
 # (radius = bezel rx + stroke/2).
@@ -128,92 +132,6 @@ SHARE_FILL = dict(x=160, y=160, w=704, h=480, rx=36)
 # interior's center (512, 400) plus a 28-unit rightward optical nudge —
 # a box-centered triangle reads left-heavy.
 PLAY = "M 391 212 L 689 400 L 391 588 Z"
-
-# --- tail construction -------------------------------------------------------
-
-
-def _bez(p0, p1, p2, p3, t):
-    u = 1 - t
-    x = u*u*u*p0[0] + 3*u*u*t*p1[0] + 3*u*t*t*p2[0] + t*t*t*p3[0]
-    y = u*u*u*p0[1] + 3*u*u*t*p1[1] + 3*u*t*t*p2[1] + t*t*t*p3[1]
-    dx = 3*u*u*(p1[0]-p0[0]) + 6*u*t*(p2[0]-p1[0]) + 3*t*t*(p3[0]-p2[0])
-    dy = 3*u*u*(p1[1]-p0[1]) + 6*u*t*(p2[1]-p1[1]) + 3*t*t*(p3[1]-p2[1])
-    n = math.hypot(dx, dy) or 1
-    return (x, y), (dx/n, dy/n), (-dy/n, dx/n)
-
-
-def _spine_pt(segs, split, t):
-    if t < split:
-        return _bez(*segs[0], t / split)
-    return _bez(*segs[1], (t - split) / (1 - split))
-
-
-def _width_fn(spec):
-    curl, mass = spec["curl"], spec["mass"]
-    start, hold = spec["start"], spec["hold"]
-
-    def w(t):
-        if t < start:
-            return curl
-        if t < hold:
-            tt = (t - start) / (hold - start)
-            return curl + (mass - curl) * (tt * tt * (3 - 2 * tt))
-        return mass
-    return w
-
-
-def _catmull(pts):
-    # Smooth cubic path through pts (Catmull-Rom -> bezier).
-    d = ""
-    n = len(pts)
-    for i in range(n - 1):
-        p0 = pts[max(i - 1, 0)]; p1 = pts[i]; p2 = pts[i + 1]; p3 = pts[min(i + 2, n - 1)]
-        c1 = (p1[0] + (p2[0] - p0[0]) / 6, p1[1] + (p2[1] - p0[1]) / 6)
-        c2 = (p2[0] - (p3[0] - p1[0]) / 6, p2[1] - (p3[1] - p1[1]) / 6)
-        d += f"C {c1[0]:.0f} {c1[1]:.0f} {c2[0]:.0f} {c2[1]:.0f} {p2[0]:.0f} {p2[1]:.0f} "
-    return d
-
-
-def _edges(segs, split, wfn, samples):
-    # Cosine-spaced samples: denser near the ends, so the caps stay smooth.
-    ts = [(1 - math.cos(math.pi * i / (samples - 1))) / 2 for i in range(samples)]
-    up, lo = [], []
-    for t in ts:
-        (x, y), _tan, (nx, ny) = _spine_pt(segs, split, t)
-        w = wfn(t)
-        up.append((x + nx * w, y + ny * w))
-        lo.append((x - nx * w, y - ny * w))
-    return up, lo
-
-
-def tail_path(widths, samples=23):
-    """The fox tail: round-capped thin curl, bushy mass, tufted end."""
-    wfn = _width_fn(widths)
-    up, lo = _edges(TAIL_SPINE, TAIL_SPLIT, wfn, samples)
-    (ex, ey), (etx, ety), (enx, eny) = _spine_pt(TAIL_SPINE, TAIL_SPLIT, 1.0)
-    we = wfn(1.0)
-    end = [(ex + enx * we * f + etx * ext, ey + eny * we * f + ety * ext)
-           for f, ext in TAIL_TUFTS]
-    wa = wfn(0)
-    d = f"M {up[0][0]:.0f} {up[0][1]:.0f} " + _catmull(up)
-    d += "L " + " L ".join(f"{p[0]:.0f} {p[1]:.0f}" for p in end) + " "
-    d += _catmull(list(reversed(lo)))
-    d += f"A {wa:.0f} {wa:.0f} 0 0 1 {up[0][0]:.0f} {up[0][1]:.0f} Z"
-    return d
-
-
-def knockout_path(samples=17):
-    """The solid cut's hanging-comma knockout (round caps both ends)."""
-    wfn = _width_fn(KNOCK_WIDTHS)
-    up, lo = _edges(KNOCK_SPINE, KNOCK_SPLIT, wfn, samples)
-    wa, wb = wfn(0), wfn(1)
-    d = f"M {lo[-1][0]:.0f} {lo[-1][1]:.0f} "
-    d += f"A {wb:.0f} {wb:.0f} 0 0 0 {up[-1][0]:.0f} {up[-1][1]:.0f} "
-    d += _catmull(list(reversed(up)))
-    d += f"A {wa:.0f} {wa:.0f} 0 0 1 {lo[0][0]:.0f} {lo[0][1]:.0f} "
-    d += _catmull(lo) + "Z"
-    return d
-
 
 # --- app-icon tile (1024 x 1024) ---------------------------------------------
 
@@ -279,9 +197,9 @@ def bezel(color="currentColor"):
             f'rx="{b["rx"]}" fill="none" stroke="{color}" stroke-width="{b["stroke"]}"/>')
 
 
-def master_mark(color="currentColor", widths=TAIL_WIDTHS):
-    """Compact cut: bezel + tail, no stand."""
-    return f'{bezel(color)}\n<path fill="{color}" d="{tail_path(widths)}"/>'
+def master_mark(color="currentColor"):
+    """Compact cut: bezel with the integrated tail, no stand."""
+    return f'{bezel(color)}\n<path fill="{color}" d="{TAIL}"/>'
 
 
 def full_mark(color="currentColor"):
@@ -290,8 +208,8 @@ def full_mark(color="currentColor"):
 
 
 def solid_mark(color="currentColor"):
-    """Solid cut: screen silhouette with the hanging-comma knockout."""
-    return f'<path fill-rule="evenodd" fill="{color}" d="{SOLID_RECT} {knockout_path()}"/>'
+    """Solid cut: filled silhouette, screen knocked out around the tail."""
+    return f'<path fill-rule="evenodd" fill="{color}" d="{SOLID_RECT} {KNOCKOUT}"/>'
 
 
 def place(glyph, glyph_h, width, canvas_w, canvas_h):
@@ -334,15 +252,16 @@ def menubar(body):
 FILES = {}
 
 FILES["docs/assets/logo.svg"] = comment(f"""
-The Tailscreen mark, full cut: bezel + fox tail + stand, black/white
-with the color scheme. Tight viewBox — add padding at the point of use.
+The Tailscreen mark, full cut: bezel with the integrated fox tail +
+stand, black/white with the color scheme. Tight viewBox — add padding
+at the point of use.
 {GENERATED_NOTE}
 """) + svg(ADAPTIVE_STYLE + "\n" + full_mark(), f"0 0 {MASTER_W} {FULL_H}")
 
 FILES["docs/assets/favicon.svg"] = comment(f"""
-The Tailscreen mark, solid cut: screen silhouette with the tail's
-hanging-comma knockout. This is the small-size artwork — browser tabs
-render favicons at 16px, where the outline cuts' strokes go sub-pixel.
+The Tailscreen mark, solid cut: filled screen silhouette with the
+screen knocked out around the tail. This is the small-size artwork —
+browser tabs render favicons at 16px, where strokes go sub-pixel.
 {GENERATED_NOTE}
 """) + svg(ADAPTIVE_STYLE + "\n" + solid_mark(), f"0 0 {MASTER_W} {MASTER_H}")
 
@@ -367,12 +286,11 @@ the icon reads as a dark blob. `make icon` renders this into the
 """) + svg(tile(solid_mark("#FFFFFF"), MASTER_H, 600), "0 0 1024 1024")
 
 FILES["Apps/macOS/Sources/Resources/MenubarIcon.svg"] = comment(f"""
-Menubar template glyph, idle state: the brand mark, compact cut — no
-stand, and the tail's curl drawn thicker: the display-weight curl is
-~0.4px in the pinned 18x18pt box and would vanish. Square canvas for
-the same pin.
+Menubar template glyph, idle state: the brand mark, compact cut — the
+bezel with its integrated tail, no stand (which would shrink the
+screen in the pinned 18x18pt box). Square canvas for the same pin.
 {GENERATED_NOTE}
-""") + menubar(master_mark("#000000", TAIL_WIDTHS_MENUBAR))
+""") + menubar(master_mark("#000000"))
 
 sf = SHARE_FILL
 FILES["Apps/macOS/Sources/Resources/MenubarSharing.svg"] = comment(f"""
