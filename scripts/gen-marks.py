@@ -14,12 +14,13 @@ A monitor whose outline becomes a fox tail: at the bottom-left the
 frame's left arm tapers to a curved tip, a narrow slit of daylight
 follows, and the tail itself forms the frame's corner before rising
 inside the screen — the original Tailscreen mark's corner-gap gesture,
-redrawn with fox-tail anatomy taken from stylized fox iconography: an
-S-curved rise with a swelling belly that hugs the bottom of the frame,
-a slim tip leaning toward the screen center, and one soft fur cusp on
-the upper (concave) edge giving the tip a two-point flick. The tail is
-PART of the screen outline — that integration, and the little rounded
-gap where the outline hands over to the tail, are the identity.
+redrawn with fox-tail anatomy: a belly that swells as it hugs the
+bottom of the frame, then a rise whose slim tip CURLS LEFT like a
+wave crest. The curl is what reads as tail — a straight rise to a
+point reads as a mountain, and a mid-edge notch reads as a path bug
+rather than fur (both were tried and rejected). The tail is PART of
+the screen outline — that integration, and the little rounded gap
+where the outline hands over to the tail, are the identity.
 
 Construction rules that keep the corner joint seamless:
 - The frame is an OPEN stroked path: the left arm ends at y=560 with a
@@ -94,43 +95,48 @@ FRAME_D = ("M 40 560 L 40 140 A 100 100 0 0 1 140 40 "
            "A 100 100 0 0 1 884 760 L 430 760")
 
 # The left arm's tapered tip: continues the stroke downward, the inner
-# edge sweeping down-left to a point just inside the corner silhouette —
-# the frame's line "slipping" into becoming the tail.
-ARM_TIP = ("M 0 540 L 80 540 L 80 588 "
-           "C 80 628 62 658 36 678 "
-           "C 26 686 13 690 3 684 "
-           "L 0 680 Z")
+# edge sweeping down-left to a softly rounded end just inside the corner
+# silhouette — the frame's line "slipping" into becoming the tail.
+ARM_TIP = ("M 0 540 L 80 540 L 80 585 "
+           "C 80 622 68 650 46 672 "
+           "C 34 684 18 690 8 685 "
+           "C 2 682 0 678 0 672 Z")
 
 # The fox tail, forming the frame's bottom-left corner. Landmarks: outer
 # trace starting on the corner arc at (10,712) and following it around,
-# belly hugging the bottom out to x~450, S-rise, tip at (460,330) leaning
-# toward screen center, fur cusp at (366,522)->(353,507) splitting the
-# upper edge into a two-point flick, and the back edge running parallel
-# to ARM_TIP's inner curve to bound the slit.
+# a soft blend off the bottom at x~360, belly swelling to x=456, and the
+# tip curling LEFT over the sweep (the two short curves through
+# (378,324) and (400,390) are the crest — the outside and inside of the
+# curl). The back edge runs parallel to ARM_TIP's inner curve to bound
+# the slit.
 TAIL = ("M 10 712 "
         "A 140 140 0 0 0 140 800 "
-        "L 400 800 "
-        "C 436 738 448 662 452 576 "
-        "C 456 486 459 402 460 330 "
-        "C 436 408 408 470 366 522 "
-        "L 353 507 "
-        "C 306 576 228 634 168 658 "
-        "C 126 674 92 686 62 700 "
+        "L 360 800 "
+        "C 395 795 420 765 435 725 "
+        "C 452 678 456 620 456 560 "
+        "C 456 480 450 424 434 382 "
+        "C 422 350 402 330 378 324 "
+        "C 392 344 400 366 400 390 "
+        "C 396 458 356 532 298 588 "
+        "C 248 636 190 664 150 676 "
+        "C 122 684 92 692 62 702 "
         "C 42 708 24 712 10 712 Z")
 
 # The tail clipped to the screen interior, traced as part of the screen
 # knockout's boundary (solid cut — which keeps a CLOSED corner: the slit
 # is ~1px at a 16px favicon and would just be mush). Crossings with the
-# interior boundary: (441,720) on the bottom edge, (80,652) on the left
-# edge. The curves between the crossings and the tip mirror TAIL's.
+# interior boundary: (436,720) on the bottom edge, (80,655) on the left
+# edge. The curves between the crossings and the curled tip mirror
+# TAIL's.
 KNOCKOUT = ("M 140 80 H 884 A 60 60 0 0 1 944 140 V 660 A 60 60 0 0 1 884 720 "
-            "H 441 "
-            "C 448 664 451 616 453 574 "
-            "C 456 486 459 402 460 330 "
-            "C 436 408 408 470 366 522 "
-            "L 353 507 "
-            "C 306 576 230 632 172 654 "
-            "C 140 666 104 664 80 652 "
+            "H 436 "
+            "C 450 672 456 618 456 560 "
+            "C 456 480 450 424 434 382 "
+            "C 422 350 402 330 378 324 "
+            "C 392 344 400 366 400 390 "
+            "C 396 458 356 532 298 588 "
+            "C 248 636 190 664 150 676 "
+            "C 124 684 98 672 80 655 "
             "V 140 A 60 60 0 0 1 140 80 Z")
 
 # Solid cut silhouette: the bezel's outer contour as a filled rounded rect
