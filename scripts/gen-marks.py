@@ -26,7 +26,11 @@ Construction rules that keep the corner joint seamless:
 - The frame is an OPEN stroked path: the left arm ends at y=560 with a
   butt cap hidden under ARM_TIP (a filled taper whose top edge sits at
   y=540, inside the arm's painted band x 0..80); the bottom arm ends
-  at x=430 hidden under the tail's fill.
+  at x=340 hidden under the tail's fill — the tail only guarantees
+  coverage of the band out to its bottom terminus at x=360, so an arm
+  ending right of that leaves a white sliver in the bottom outline
+  (this shipped once; scan the band for transparent pixels if either
+  number moves).
 - The slit is bounded by ARM_TIP's inner curve and the tail's back
   edge, which run parallel ~28 units apart and exit at the outer
   silhouette. The tail's outer trace starts exactly ON the corner arc
@@ -92,7 +96,7 @@ SCREEN_CY = 400
 BEZEL_RECT = dict(x=40, y=40, w=944, h=720, rx=100, stroke=80)
 FRAME_D = ("M 40 560 L 40 140 A 100 100 0 0 1 140 40 "
            "L 884 40 A 100 100 0 0 1 984 140 L 984 660 "
-           "A 100 100 0 0 1 884 760 L 430 760")
+           "A 100 100 0 0 1 884 760 L 340 760")
 
 # The left arm's tapered tip: continues the stroke downward, the inner
 # edge sweeping down-left to a softly rounded end just inside the corner
