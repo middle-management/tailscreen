@@ -5,8 +5,9 @@
 -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2066 1000">
 <g transform="translate(713 225.938) scale(0.625)">
-<rect x="40" y="40" width="944" height="720" rx="100" fill="none" stroke="#FFFFFF" stroke-width="80"/>
-<path fill="#FFFFFF" d="M 150 762 C 280 752 370 704 415 620 C 452 550 458 450 460 330 C 436 408 408 470 366 522 L 353 507 C 306 576 228 634 168 658 C 120 678 76 668 60 640 L 60 700 L 150 762 Z"/>
+<path d="M 40 560 L 40 140 A 100 100 0 0 1 140 40 L 884 40 A 100 100 0 0 1 984 140 L 984 660 A 100 100 0 0 1 884 760 L 430 760" fill="none" stroke="#FFFFFF" stroke-width="80" stroke-linecap="butt"/>
+<path fill="#FFFFFF" d="M 0 540 L 80 540 L 80 588 C 80 628 62 658 36 678 C 26 686 13 690 3 684 L 0 680 Z"/>
+<path fill="#FFFFFF" d="M 10 712 A 140 140 0 0 0 140 800 L 400 800 C 436 738 448 662 452 576 C 456 486 459 402 460 330 C 436 408 408 470 366 522 L 353 507 C 306 576 228 634 168 658 C 126 674 92 686 62 700 C 42 708 24 712 10 712 Z"/>
 <rect x="442" y="796" width="140" height="104" fill="#FFFFFF"/><rect x="277" y="896" width="470" height="58" rx="29" fill="#FFFFFF"/>
 </g>
 </svg>

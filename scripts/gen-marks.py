@@ -10,22 +10,29 @@ no pip dependencies.
 
 The mark
 --------
-A monitor whose outline grows a fox tail: the bezel's bottom-left
-corner flows into a tail that rises inside the screen — the original
-Tailscreen mark's gesture, redrawn with fox-tail anatomy taken from
-stylized fox iconography: an S-curved rise with a swelling belly that
-hugs the bottom of the frame, a slim tip leaning toward the screen
-center, and one soft fur cusp on the upper (concave) edge giving the
-tip a two-point flick. The tail is PART of the screen outline, not a
-floating element — that integration is the identity.
+A monitor whose outline becomes a fox tail: at the bottom-left the
+frame's left arm tapers to a curved tip, a narrow slit of daylight
+follows, and the tail itself forms the frame's corner before rising
+inside the screen — the original Tailscreen mark's corner-gap gesture,
+redrawn with fox-tail anatomy taken from stylized fox iconography: an
+S-curved rise with a swelling belly that hugs the bottom of the frame,
+a slim tip leaning toward the screen center, and one soft fur cusp on
+the upper (concave) edge giving the tip a two-point flick. The tail is
+PART of the screen outline — that integration, and the little rounded
+gap where the outline hands over to the tail, are the identity.
 
-Construction rule that keeps the integration seamless: the tail is a
-separate filled path unioned over the stroked bezel, and every segment
-of its outline that is not meant to be visible must stay inside the
-bezel's painted bands (left band x 0..80 for y 140..660, bottom band
-y 720..800 for x 140..884, and the corner ring between radii 60 and
-140 around (140,660)). Move a closure point outside those bands and a
-seam line appears across the screen.
+Construction rules that keep the corner joint seamless:
+- The frame is an OPEN stroked path: the left arm ends at y=560 with a
+  butt cap hidden under ARM_TIP (a filled taper whose top edge sits at
+  y=540, inside the arm's painted band x 0..80); the bottom arm ends
+  at x=430 hidden under the tail's fill.
+- The slit is bounded by ARM_TIP's inner curve and the tail's back
+  edge, which run parallel ~28 units apart and exit at the outer
+  silhouette. The tail's outer trace starts exactly ON the corner arc
+  (its first point must satisfy (x-140)^2+(y-660)^2 = 140^2), or the
+  mark grows a lip that pokes outside the frame.
+- Any other tail segment not meant to be visible stays inside the
+  bezel's painted bands (bottom band y 720..800 for x 140..884).
 
 Three cuts exist, shedding detail as the rendered size drops:
 
@@ -77,33 +84,49 @@ FULL_H = 954                     # screen + stand (full cut's canvas)
 # not on the bounding box (see `place`).
 SCREEN_CY = 400
 
-# Bezel: stroke centered on rect(40,40,944,720) rx=100, width 80 -> outer
-# edge exactly 0..1024 x 0..800, screen interior 80..944 x 80..720.
+# Bezel geometry: stroke centered on rect(40,40,944,720) rx=100, width 80
+# -> outer edge exactly 0..1024 x 0..800, screen interior 80..944 x 80..720.
+# The brand cuts draw it as FRAME_D (open at the bottom-left, where the
+# tail takes over); the sharing/viewing menubar states use the closed rect.
 BEZEL_RECT = dict(x=40, y=40, w=944, h=720, rx=100, stroke=80)
+FRAME_D = ("M 40 560 L 40 140 A 100 100 0 0 1 140 40 "
+           "L 884 40 A 100 100 0 0 1 984 140 L 984 660 "
+           "A 100 100 0 0 1 884 760 L 430 760")
 
-# The fox tail, growing out of the bezel's bottom-left. Landmarks: belly
-# hugging the bottom band out to x~415, S-rise, tip at (460,330) leaning
+# The left arm's tapered tip: continues the stroke downward, the inner
+# edge sweeping down-left to a point just inside the corner silhouette —
+# the frame's line "slipping" into becoming the tail.
+ARM_TIP = ("M 0 540 L 80 540 L 80 588 "
+           "C 80 628 62 658 36 678 "
+           "C 26 686 13 690 3 684 "
+           "L 0 680 Z")
+
+# The fox tail, forming the frame's bottom-left corner. Landmarks: outer
+# trace starting on the corner arc at (10,712) and following it around,
+# belly hugging the bottom out to x~450, S-rise, tip at (460,330) leaning
 # toward screen center, fur cusp at (366,522)->(353,507) splitting the
-# upper edge into a two-point flick. The last three segments live inside
-# the bezel's painted bands (see the construction rule in the module
-# docstring).
-TAIL = ("M 150 762 "
-        "C 280 752 370 704 415 620 "
-        "C 452 550 458 450 460 330 "
+# upper edge into a two-point flick, and the back edge running parallel
+# to ARM_TIP's inner curve to bound the slit.
+TAIL = ("M 10 712 "
+        "A 140 140 0 0 0 140 800 "
+        "L 400 800 "
+        "C 436 738 448 662 452 576 "
+        "C 456 486 459 402 460 330 "
         "C 436 408 408 470 366 522 "
         "L 353 507 "
         "C 306 576 228 634 168 658 "
-        "C 120 678 76 668 60 640 "
-        "L 60 700 L 150 762 Z")
+        "C 126 674 92 686 62 700 "
+        "C 42 708 24 712 10 712 Z")
 
 # The tail clipped to the screen interior, traced as part of the screen
-# knockout's boundary (solid cut). Crossings with the interior boundary:
-# (340,720) on the bottom edge, (80,652) on the left edge. The curves
-# between the crossings and the tip mirror TAIL's.
+# knockout's boundary (solid cut — which keeps a CLOSED corner: the slit
+# is ~1px at a 16px favicon and would just be mush). Crossings with the
+# interior boundary: (441,720) on the bottom edge, (80,652) on the left
+# edge. The curves between the crossings and the tip mirror TAIL's.
 KNOCKOUT = ("M 140 80 H 884 A 60 60 0 0 1 944 140 V 660 A 60 60 0 0 1 884 720 "
-            "H 340 "
-            "C 380 700 400 660 418 616 "
-            "C 452 548 458 450 460 330 "
+            "H 441 "
+            "C 448 664 451 616 453 574 "
+            "C 456 486 459 402 460 330 "
             "C 436 408 408 470 366 522 "
             "L 353 507 "
             "C 306 576 230 632 172 654 "
@@ -198,8 +221,11 @@ def bezel(color="currentColor"):
 
 
 def master_mark(color="currentColor"):
-    """Compact cut: bezel with the integrated tail, no stand."""
-    return f'{bezel(color)}\n<path fill="{color}" d="{TAIL}"/>'
+    """Compact cut: open frame + arm taper + tail-as-corner, no stand."""
+    return (f'<path d="{FRAME_D}" fill="none" stroke="{color}" '
+            f'stroke-width="{BEZEL_RECT["stroke"]}" stroke-linecap="butt"/>\n'
+            f'<path fill="{color}" d="{ARM_TIP}"/>\n'
+            f'<path fill="{color}" d="{TAIL}"/>')
 
 
 def full_mark(color="currentColor"):
