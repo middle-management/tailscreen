@@ -818,6 +818,94 @@ body {
 }
 
 // ---------------------------------------------------------------------------
+// Homepage: product screenshots
+// ---------------------------------------------------------------------------
+// The captures already carry their own window shadow and a light matte, so
+// these add no frame of their own -- just rounded corners, a hairline ring so
+// the matte does not float edgeless against the dark scheme, and a caption.
+
+.ts-shots {
+  margin: 1.75rem 0 2.5rem;
+}
+
+.ts-shot {
+  margin: 0;
+
+  a {
+    display: block;
+    background-image: none;
+
+    &:hover img {
+      transform: translateY(-2px);
+    }
+  }
+
+  img {
+    display: block;
+    width: 100%;
+    height: auto;
+    border-radius: 12px;
+    box-shadow: 0 0 0 1px rgba($body-text-color, 0.07);
+    transition: transform 0.18s ease;
+  }
+
+  figcaption {
+    margin: 0.85rem 0 0;
+    font-size: 0.85rem;
+    line-height: 1.55;
+    text-align: center;
+    color: rgba($body-text-color, 0.8);
+
+    strong {
+      font-weight: 600;
+      color: $body-heading-color;
+    }
+  }
+}
+
+// The lead shot is a wide viewer window; give it the full section width.
+.ts-shot--wide {
+  max-width: 54rem;
+  margin: 0 auto 2.9rem;
+
+  figcaption {
+    max-width: 34rem;
+    margin-left: auto;
+    margin-right: auto;
+  }
+}
+
+// Three tall hub windows. Top-aligned: the crops share an aspect ratio, so the
+// window tops, window bottoms, and caption baselines all line up, and a caption
+// that wraps to an extra line hangs off the bottom instead of shoving its
+// screenshot out of the row.
+.ts-shot-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1.9rem 1.75rem;
+  align-items: start;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ts-shot img {
+    transition: none;
+  }
+
+  .ts-shot a:hover img {
+    transform: none;
+  }
+}
+
+@media (max-width: 52rem) {
+  .ts-shot-row {
+    grid-template-columns: 1fr;
+    max-width: 24rem;
+    margin: 0 auto;
+    gap: 2.4rem;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Homepage: feature grid
 // ---------------------------------------------------------------------------
 

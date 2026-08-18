@@ -155,6 +155,72 @@ Curious what&rsquo;s underneath?
 </div>
 </div>
 
+<!-- Product screenshots.
+     Drop the PNGs in docs/assets/screenshots/ using exactly these names:
+
+       viewer-window.png     wide  - the viewer window with the annotation toolbar
+       hub-peer.png          tall  - hub, a peer expanded (View Screen / Ask to Share)
+       hub-share-request.png tall  - hub, an incoming "wants you to share" request
+       hub-sharing.png       tall  - hub, sharing + an incoming remote-control request
+
+     Export at 2x with the window shadow included, then run them through an
+     optimizer (oxipng / ImageOptim). The whole section is guarded on the four
+     files being present, so the page stays clean until they land. -->
+{% assign ts_shots = site.static_files | where: "extname", ".png" | where_exp: "f", "f.path contains '/assets/screenshots/'" %}
+{% if ts_shots.size >= 4 %}
+## See it in action
+
+<div class="ts-container">
+<div class="ts-shots">
+
+<figure class="ts-shot ts-shot--wide">
+  <a href="{{ '/assets/screenshots/viewer-window.png' | relative_url }}">
+    <img src="{{ '/assets/screenshots/viewer-window.png' | relative_url }}"
+         alt="The Tailscreen viewer window showing a remote Mac's screen, with pen, line, arrow, rectangle, oval and click annotation tools across the title bar."
+         loading="lazy" decoding="async">
+  </a>
+  <figcaption>The viewer is just a window with someone else&rsquo;s screen in
+  it &mdash; drawing tools, mute and live stats along the title bar, nothing
+  else in the way.</figcaption>
+</figure>
+
+<div class="ts-shot-row">
+
+<figure class="ts-shot">
+  <a href="{{ '/assets/screenshots/hub-peer.png' | relative_url }}">
+    <img src="{{ '/assets/screenshots/hub-peer.png' | relative_url }}"
+         alt="The Tailscreen hub window listing a machine named wisp, expanded to show View Screen and Ask to Share buttons alongside its DNS name, IPv4 and IPv6 addresses, and a direct route at 34 milliseconds."
+         loading="lazy" decoding="async">
+  </a>
+  <figcaption><strong>Your machines, by name.</strong> Expand one for its
+  addresses and whether the link is direct.</figcaption>
+</figure>
+
+<figure class="ts-shot">
+  <a href="{{ '/assets/screenshots/hub-share-request.png' | relative_url }}">
+    <img src="{{ '/assets/screenshots/hub-share-request.png' | relative_url }}"
+         alt="The Tailscreen hub window showing a banner reading wisp wants you to share, with Decline and Share buttons."
+         loading="lazy" decoding="async">
+  </a>
+  <figcaption><strong>They can ask.</strong> You still choose what to show
+  &mdash; or decline, and nothing happens.</figcaption>
+</figure>
+
+<figure class="ts-shot">
+  <a href="{{ '/assets/screenshots/hub-sharing.png' | relative_url }}">
+    <img src="{{ '/assets/screenshots/hub-sharing.png' | relative_url }}"
+         alt="The Tailscreen hub window while sharing, showing one viewer connected and a request from wisp-2 for keyboard and mouse control with Deny and Grant buttons."
+         loading="lazy" decoding="async">
+  </a>
+  <figcaption><strong>Nothing without a grant.</strong> See who&rsquo;s
+  watching, and approve control before anyone touches your mouse.</figcaption>
+</figure>
+
+</div>
+</div>
+</div>
+{% endif %}
+
 ## Everything else you'd expect
 
 <div class="ts-container">
