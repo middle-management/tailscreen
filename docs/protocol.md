@@ -74,12 +74,12 @@ mid-stream sees pixels in under a second, no handshake.
 transfer function, matrix, and bit depth into the SPS VUI, and the viewer
 reads them back onto the decoded buffers and its Metal layer — so wide
 color needs no protocol change at all. By default the sharer tags
-BT.709, or Display P3 when capturing a wide-gamut display. Setting
-`TAILSCREEN_ENABLE_10BIT` / `TAILSCREEN_ENABLE_HDR` on the sharer opts
-into 10-bit HEVC Main 10 (BT.2020 PQ for HDR), still gated on the display
-actually being capable. A viewer whose hardware decodes HEVC but not
-10-bit sends `PROFILE_NO` (below) and the share latches back to 8-bit —
-a lighter fallback than dropping all the way to H.264.
+BT.709, or Display P3 when capturing a wide-gamut display. The sharer's
+**Settings → Color** toggles opt into 10-bit HEVC Main 10 (BT.2020 PQ for
+HDR), still gated on the display actually being capable. A viewer whose
+hardware decodes HEVC but not 10-bit sends `PROFILE_NO` (below) and the
+share latches back to 8-bit — a lighter fallback than dropping all the
+way to H.264.
 
 **Keyframe-on-PLI.** The viewer sends a Picture Loss Indication when it
 detects a gap in sequence numbers it can't recover from. The encoder
