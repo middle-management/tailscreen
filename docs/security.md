@@ -57,12 +57,12 @@ trust story is unchanged either way.
 ## Nothing is stored
 
 No frame buffers, no annotations, no transcripts, nothing. Pixels go from
-ScreenCaptureKit → encoder → wire → decoder → display and are then
+capture → encoder → wire → decoder → display and are then
 discarded. The on-disk state Tailscreen creates is: the tsnet node state
-at `~/Library/Application Support/Tailscreen/tailscale` (the ephemeral
-node's machine key — you can `rm -rf` it any time; doing so forces a
-fresh login), and your preferences in `UserDefaults`, which include the
-viewer allow/deny list described below.
+(`~/Library/Application Support/Tailscreen/tailscale` on macOS,
+`~/.config/tailscreen` on Linux — the ephemeral node's machine key; you
+can delete it any time, which forces a fresh login), and your preferences,
+which include the viewer allow/deny list described below.
 
 ## Ephemeral nodes
 
@@ -111,7 +111,7 @@ the block list.
 Admission controls *who* sees your screen; **Cloaked Apps** (Settings →
 Cloaked Apps) controls *what* even admitted viewers see. Apps on the
 cloak list are excluded from every whole-display share at the capture
-layer — `ScreenCaptureKit` never delivers their pixels, so nothing
+layer — their pixels are never delivered to the encoder, so nothing
 sensitive is encoded, sent, and blurred after the fact; it's simply never
 captured. Two honest caveats: a cloaked app that launches mid-share can
 be visible for a moment (typically under a couple of seconds) while the
@@ -134,7 +134,7 @@ Remote control is off until granted, per session, per viewer:
 - **Grants die with the session.** Disconnection, the viewer's own
   release, or Stop Sharing all auto-revoke. The sharer can revoke
   instantly at any moment: the Stop button, File → Stop Remote Control,
-  or the **⌃⌥.** panic hotkey, which is registered system-wide while a
+  or (on macOS) the **⌃⌥.** panic hotkey, registered system-wide while a
   grant is live — so it works even when the controlling viewer has some
   other app focused on your machine.
 - **Rate-limited.** Injected events pass a per-grant rate ceiling, so a
@@ -145,9 +145,9 @@ Remote control is off until granted, per session, per viewer:
   keystrokes land wherever the sharer's OS focus happens to be, because
   scoping keyboard input to one app can't be done reliably, and a scoping
   mechanism that sometimes leaks is worse than a disclosed absence of
-  one. The grant button carries the warning: *"Granting gives full
-  keyboard and mouse control of your entire Mac — not just the shared
-  window."* Treat a grant accordingly, and prefer granting during
+  one. The grant button says so in as many words: granting gives full
+  keyboard and mouse control of your entire computer — not just the shared
+  window. Treat a grant accordingly, and prefer granting during
   display shares you're watching.
 - **On macOS, the OS has a say too.** Injection requires the Accessibility
   permission, granted by you in System Settings. Without it, a grant is

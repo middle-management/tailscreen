@@ -146,21 +146,14 @@ click Install.
 
 ### Pre-release MSIX packages install alongside, not over
 
-A release candidate's MSIX carries a different package identity
-(`Tailscreen.TailscreenRC`) from a release's (`Tailscreen.Tailscreen`), so
-installing one does **not** replace a Tailscreen you already have — both
-appear in the Start menu and Installed apps, and each uninstalls on its own.
-
-That is deliberate. MSIX has no notion of a pre-release, so a candidate and
-the release it precedes would otherwise claim the same identity and version,
-and Windows — which decides upgrades on exactly that — could refuse the real
-release on a machine that had tried the candidate. Separate identities mean
-the question never arises.
-
-Two practical consequences. Running both at once is not a supported
-configuration: they are the same app, and two copies will contend for the
-same port. And a candidate does not upgrade into the release — when the real
-version ships, uninstall the RC and install the release normally.
+A release candidate's MSIX deliberately carries a different package
+identity (`Tailscreen.TailscreenRC`) from a release's
+(`Tailscreen.Tailscreen`) — MSIX has no notion of a pre-release, and a
+shared identity could make Windows refuse the real release on a machine
+that had tried the candidate. So an RC installs *beside* any Tailscreen
+you already have, and doesn't upgrade into the release: uninstall the RC
+when the real version ships. Running both at once isn't supported — two
+copies contend for the same port.
 
 What you're agreeing to, spelled out: the certificate goes into the
 machine's **Trusted People** store — not a root authority — which tells
