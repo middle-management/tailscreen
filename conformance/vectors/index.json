@@ -6,7 +6,7 @@
     {
       "suite": "udp-control",
       "file": "udp-control.json",
-      "cases": 53
+      "cases": 55
     },
     {
       "suite": "rtp",

@@ -45,7 +45,16 @@ what the partial case *is*, because that is the part a reader can act on.
 | Capture backend | ScreenCaptureKit | X11 (`libxcb`) / ScreenCast portal | Windows.Graphics.Capture |
 | Hardware encode | ✅ VideoToolbox | ❌ software libavcodec | ❌ software libavcodec |
 | HEVC ⇄ H.264 negotiation | ✅ | ✅ | ✅ |
-| Wide gamut / 10-bit / HDR | ✅ | ❌ | ❌ |
+| Wide gamut / 10-bit / HDR (sharing) | ✅ | ❌ | ❌ |
+| Decode a 10-bit stream (viewing) | ✅ | ❌ | ❌ |
+
+The two colour rows are independent, and the viewing one is why a mac
+sharer's 10-bit setting can quietly do nothing: viewers advertise whether
+they can decode 10-bit in their `HELLO`, and a share holds itself at 8-bit
+for everyone while any viewer that can't is watching. The libavcodec viewers
+can't yet, so a mac→Linux or mac→Windows share is 8-bit even with the
+sharer's toggle on — correct colour and correct pictures, just not the extra
+two bits.
 
 The Linux share card offers two doors: the primary button shares a screen,
 and a second — **"Share a window or app"**, present only when a desktop

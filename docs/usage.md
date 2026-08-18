@@ -333,8 +333,11 @@ and silently.
 
 **Settings → Color** holds the 10-bit and HDR capture opt-ins that used
 to require environment variables. Both apply the next time you start
-sharing; HDR needs a display with EDR headroom, and if a viewer can't
-decode 10-bit video the share falls back to 8-bit for everyone.
+sharing; HDR needs a display with EDR headroom, and viewers have to be
+able to decode 10-bit video — each one says so when it connects, and the
+share stays at 8-bit for everyone while one that can't is watching (the
+Linux and Windows viewers can't yet). Nothing breaks either way; you just
+don't get the extra depth.
 
 The bandwidth ceiling applies live, mid-share. Frame rate, codec,
 encoder quality, and color changes apply the next time you start sharing.

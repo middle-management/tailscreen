@@ -351,13 +351,32 @@ public struct ScreenShareCaps: OptionSet, Sendable, Hashable {
     /// nobody. Absent ⇒ the viewer hides the drawing tools. Like
     /// `.remoteControl`, purely a sharer capability; a viewer never sets it.
     public static let annotations = ScreenShareCaps(rawValue: 1 << 4)
+    /// **Viewer→sharer only**: this viewer can decode a 10-bit bitstream
+    /// (HEVC Main 10). The sharer encodes ONCE and fans the same packets out
+    /// to everyone, so 10-bit is only safe when *every* admitted viewer can
+    /// take it — a sharer that has opted into the 10-bit/HDR capture path
+    /// therefore drops the share to 8-bit as soon as one viewer joins without
+    /// this bit, and treats a legacy capability-less HELLO as "can't"
+    /// (absence is never read as capability, per TS-CAP-006).
+    ///
+    /// Conservative on purpose, and the direction that fails safe: 8-bit is a
+    /// quality reduction everyone can see, while 10-bit at a viewer that
+    /// can't decode it is a blank screen. It is also not hypothetical — the
+    /// libavcodec viewers (Linux, Windows) reject any non-8-bit frame outright
+    /// in `FFmpegKit`'s `makeFrame`, so before this bit a 10-bit share to one
+    /// of them failed every frame with nothing on the wire to say why.
+    /// `PROFILE_NO` (0x09) remains the after-the-fact escape hatch for a
+    /// viewer whose decoder surprises it mid-share.
+    public static let tenBit = ScreenShareCaps(rawValue: 1 << 5)
 
     /// Every defined capability bit, in one production-side list so
     /// `WireByteRegistryTests` can assert its registry matches this exactly
     /// (single-bit-ness + pairwise disjointness + count). A **new cap MUST be
     /// appended here** in the same change that defines it — a cap that never
     /// joins this list is invisible to the registry's teeth.
-    public static let allKnown: [ScreenShareCaps] = [.nack, .receiverReport, .fec, .remoteControl, .annotations]
+    public static let allKnown: [ScreenShareCaps] = [
+        .nack, .receiverReport, .fec, .remoteControl, .annotations, .tenBit
+    ]
 }
 
 /// RTCP-RR-style receiver report payload (see `ScreenShareControlMessage`

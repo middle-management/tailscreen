@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/middle-management/tailscreen/sdk/go/tailscreen"
 )
 
 const vectorDir = "../vectors"
@@ -201,6 +203,46 @@ func TestVectorsCoverEveryWireValue(t *testing.T) {
 	for typ := 0x03; typ <= 0x0C; typ++ {
 		if !seenTCP[typ] {
 			t.Errorf("no vector exercises TCP message type %#02x", typ)
+		}
+	}
+}
+
+// TestVectorsCoverEveryCapabilityBit is the same registry leg for the other
+// half of the wire's assigned values — the capability bits of Appendix A.3,
+// which the control-byte sweep above cannot see because they ride inside a
+// HELLO's second byte rather than as a message of their own. Without it a new
+// bit can ship with no vector at all, which is exactly how tenBit (bit 5)
+// nearly did.
+func TestVectorsCoverEveryCapabilityBit(t *testing.T) {
+	var seen tailscreen.Caps
+	note := func(raw json.RawMessage) {
+		var fields map[string]any
+		if err := json.Unmarshal(raw, &fields); err != nil {
+			return
+		}
+		if caps, ok := fields["caps"].(float64); ok {
+			seen |= tailscreen.Caps(uint8(caps))
+		}
+	}
+	for _, entry := range loadIndex(t).Suites {
+		for _, c := range loadSuite(t, entry.File).Cases {
+			note(c.In)
+			note(c.Out)
+		}
+	}
+	for _, bit := range []struct {
+		name string
+		cap  tailscreen.Caps
+	}{
+		{"nack", tailscreen.CapNACK},
+		{"receiverReport", tailscreen.CapReceiverReport},
+		{"fec", tailscreen.CapFEC},
+		{"remoteControl", tailscreen.CapRemoteControl},
+		{"annotations", tailscreen.CapAnnotations},
+		{"tenBit", tailscreen.CapTenBit},
+	} {
+		if !seen.Has(bit.cap) {
+			t.Errorf("no vector exercises capability bit %s (%#02x)", bit.name, uint8(bit.cap))
 		}
 	}
 }

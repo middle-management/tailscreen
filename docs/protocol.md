@@ -76,10 +76,13 @@ reads them back onto the decoded buffers and its Metal layer — so wide
 color needs no protocol change at all. By default the sharer tags
 BT.709, or Display P3 when capturing a wide-gamut display. The sharer's
 **Settings → Color** toggles opt into 10-bit HEVC Main 10 (BT.2020 PQ for
-HDR), still gated on the display actually being capable. A viewer whose
-hardware decodes HEVC but not 10-bit sends `PROFILE_NO` (below) and the
-share latches back to 8-bit — a lighter fallback than dropping all the
-way to H.264.
+HDR), still gated on the display actually being capable — and on the
+audience: viewers advertise a `tenBit` capability bit in their `HELLO`, and
+because a sharer encodes once for everyone, the share holds at 8-bit while
+any viewer that didn't advertise it is watching. One that joins mid-stream
+latches a 10-bit share back down. A viewer whose decoder surprises it
+after the fact can still send `PROFILE_NO` (below), which latches the same
+way — a lighter fallback than dropping all the way to H.264.
 
 **Keyframe-on-PLI.** The viewer sends a Picture Loss Indication when it
 detects a gap in sequence numbers it can't recover from. The encoder
@@ -175,9 +178,20 @@ Both follow the same rule the loss-recovery caps do: absence degrades to
 "feature off," and — pre-1.0 with no deployed peers — the bit is
 authoritative, so a set bit is the only thing that lights up the UI.
 
-Bits 0–4 are assigned; the rest are reserved, with an escape hatch to a
+The viewer's HELLO carries one bit of its own beyond the recovery three:
+
+- **bit 5 `tenBit`** — this viewer can decode a 10-bit bitstream (HEVC
+  Main 10). Unlike the recovery bits, which govern one link, this one
+  governs the whole share: the sharer encodes once and fans the same
+  packets out, so it drops to 8-bit for everyone as soon as a viewer
+  without the bit is admitted. Absence is read as "can't" — a legacy
+  viewer has no way to say otherwise, and the failure it prevents (a
+  viewer whose decoder refuses every frame) is worse than the one it
+  causes (two bits of colour depth nobody was promised).
+
+Bits 0–5 are assigned; the rest are reserved, with an escape hatch to a
 second caps byte specified in
-[Growing the capability field]({{ site.baseurl }}{% link spec.md %}#53-growing-the-capability-field).
+[Growing the capability field]({{ site.baseurl }}{% link spec.md %}#54-growing-the-capability-field).
 
 ### NACK — selective retransmission (`0x0A`)
 

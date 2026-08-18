@@ -18,6 +18,13 @@ public struct ViewerConfig: Sendable {
     /// tsnet state directory (ephemeral node key + config).
     public var statePath: String
     /// Capabilities this viewer advertises in its HELLO.
+    ///
+    /// `.tenBit` is deliberately absent from the default: the decoder these
+    /// hosts inject is `FFmpegVideoDecoder`, and `FFmpegKit`'s frame copy
+    /// accepts only 8-bit planar 4:2:0 — a 10-bit frame is rejected, so the
+    /// sharer must be told to encode 8-bit rather than left to discover it one
+    /// failed frame at a time. A host wiring in a decoder that *can* take
+    /// 10-bit adds the bit here; the sharer then keeps its 10-bit path.
     public var caps: ScreenShareCaps = [.nack, .receiverReport, .fec]
 
     /// What this node is *for*, which decides the hostname it registers under
