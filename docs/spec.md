@@ -1028,14 +1028,28 @@ in this document for the roles it implements. An implementation MAY
 implement the viewer role, the sharer role, or both; a requirement scoped to
 a role it does not implement does not apply.
 
-The repository carries a machine-readable conformance suite:
+The repository carries a machine-readable conformance suite, and a second
+implementation to run it against:
 
 ```
 conformance/
 ├── README.md            how to run it, how to add a case
 ├── vectors/*.json       the vectors — language-neutral, one file per area
-└── go/                  a Go implementation of this spec, plus the runner
+└── go/                  the runner
+
+sdk/go/
+├── tailscreen/          this specification, implemented in Go
+├── capi/                the same, built as libtailscreen.a for C callers
+└── ctest/               a C smoke test against that archive
 ```
+
+`sdk/go` is written from this document and shares no code with the Swift
+implementation the Tailscreen apps ship. Both are run against the same
+vectors, which is what makes this document a contract rather than a
+description: one side shows it says enough for an independent implementer,
+the other shows it describes what actually ships. It is published for
+third-party clients — as a Go module, and as a C static library built the way
+`libtailscale.a` is.
 
 - **TS-CNF-001**: Every vector cites the requirement identifiers it
   exercises. A change to a normative requirement MUST be accompanied by a
@@ -1049,8 +1063,17 @@ conformance/
 Run the Go suite with:
 
 ```bash
-make test-conformance      # or: cd conformance/go && go test ./...
+make test-conformance      # the vectors, against sdk/go
+make test-protocol         # the same vectors, against the Swift codecs
+make fuzz-conformance      # coverage-guided fuzzing of sdk/go's parsers
+make libtailscreen-check   # the C archive and its ABI
 ```
+
+- **TS-CNF-004**: An implementation SHOULD fuzz its parsers against structural
+  invariants — a successful decode never claims more bytes than it was given,
+  a rejection stays rejected, anything the encoder produces the decoder reads
+  back. Every parser this document defines takes untrusted input
+  (TS-SEC-008), and the vectors only cover input somebody meant to send.
 
 ---
 

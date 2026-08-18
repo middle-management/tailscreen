@@ -6,15 +6,20 @@ implementation MUST do. This directory is how you find out whether one does.
 ```
 conformance/
 ├── vectors/          the vectors — language-neutral JSON, one file per area
-├── go/               a Go implementation of the spec, plus the runner
+├── go/               the Go runner
 └── tools/            the generator that produces vectors/
 ```
+
+The implementation the Go runner drives is not in here: it is
+[`sdk/go`](../sdk/go), the public Go SDK, which is a shipped artifact rather
+than test scaffolding. That is the point of the arrangement — the thing a
+third party would build a client on is the thing the vectors check.
 
 Two runners execute the same files today:
 
 | Runner | Implementation under test | How to run |
 | :----- | :------------------------ | :--------- |
-| Go | `conformance/go/wire` — written from the spec, sharing no code with the app | `make test-conformance` |
+| Go | `sdk/go/tailscreen` — written from the spec, sharing no code with the app | `make test-conformance` |
 | Swift | `Packages/TailscreenKit`'s production codecs | `make test-protocol` (`ConformanceVectorTests`) |
 
 Two runners is the point. The Go side proves the specification is
@@ -151,6 +156,25 @@ runners that decide whether its output is right.
 A new wire value additionally needs a row in the specification's
 [registry appendix](../docs/spec.md#appendix-a-wire-value-registry) and a row
 in `WireByteRegistryTests` — three places, one commit (TS-CNF-002).
+
+## Fuzzing
+
+The SDK carries coverage-guided fuzz targets beside the implementation
+(`sdk/go/tailscreen/fuzz_test.go`). They complement the vectors rather than
+duplicating them: a vector says what a correct implementation does with input
+somebody meant to send, and a fuzz target says what it does with input nobody
+meant to send — which is the input that actually arrives.
+
+```bash
+make fuzz-conformance                 # every target, FUZZTIME=30s each
+FUZZTIME=5m make fuzz-conformance     # longer
+```
+
+The seed corpus runs on every `go test`, so this costs the PR path nothing.
+A crash is written to `sdk/go/tailscreen/testdata/fuzz/<Target>/`; commit it
+and it becomes a permanent regression case. A 20-second run of
+`FuzzDecodeRTPHeader` is what surfaced the RTP padding bit that no
+requirement covered — TS-VID-008 exists because of it.
 
 ## What this suite does not cover
 

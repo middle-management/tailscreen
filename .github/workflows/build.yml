@@ -286,12 +286,30 @@ jobs:
           # codecs. Both legs read the same JSON, so a vector edited for one and
           # not the other fails immediately rather than drifting.
           #
+          # The leg also gates the PUBLIC Go SDK the runner builds against
+          # (sdk/go), which is a shipped artifact rather than test scaffolding:
+          # its own tests, its runnable examples, its fuzz SEED corpus (the
+          # mutation run is `make fuzz-conformance`, deliberately not on the
+          # PR path), and the C archive.
+          #
+          # The archive earns its 40 seconds. `go build -buildmode=c-archive`
+          # is the same mechanism as libtailscale.a, and its failure mode is
+          # the one this repository has already been bitten by twice: a
+          # library target compiles without ever being LINKED, so a broken
+          # export surfaces in somebody's downstream build rather than here.
+          # Compiling the C smoke test against the generated header is what
+          # runs the linker, and running it is what checks that a returned
+          # buffer is really the caller's to free.
+          #
           # Free: golang-go is one apt package, and the repo already needs Go
           # for libtailscale. No submodules and no libtailscale.a — nothing
           # here links anything of ours.
           - name: linux-conformance
-            apt: golang-go
-            cmd: cd conformance/go && go test ./...
+            apt: golang-go gcc libc6-dev
+            cmd: |
+              cd sdk/go && go test ./... && cd ../..
+              cd conformance/go && go test ./... && cd ../..
+              make libtailscreen-check
 
           # Localization gate: the shared string catalog
           # (Packages/TailscreenL10n). Its suites scan ALL FOUR source trees —

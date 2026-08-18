@@ -1,5 +1,5 @@
-// Package conformance dispatches the language-neutral vectors in
-// ../vectors against the Go implementation in ./wire.
+// Package conformance dispatches the language-neutral vectors in ../vectors
+// against the public Go implementation in ../../sdk/go/tailscreen.
 //
 // Each vector names an `op`, an `in` object and an expected `out` object.
 // The dispatcher below is the whole contract: to run these vectors against
@@ -13,7 +13,7 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/middle-management/tailscreen/conformance/wire"
+	"github.com/middle-management/tailscreen/sdk/go/tailscreen"
 )
 
 // Case is one vector.
@@ -70,22 +70,22 @@ func Run(c Case) (map[string]any, error) {
 		if err := json.Unmarshal(c.In, &in); err != nil {
 			return nil, err
 		}
-		k, ok := wire.ControlByName(in.Kind)
+		k, ok := tailscreen.ControlByName(in.Kind)
 		if !ok {
 			return nil, fmt.Errorf("unknown control name %q", in.Kind)
 		}
-		return map[string]any{"bytes": hex.EncodeToString(wire.EncodeControl(k))}, nil
+		return map[string]any{"bytes": hex.EncodeToString(tailscreen.EncodeControl(k))}, nil
 
 	case "control.decodeKind":
 		var in struct{ Bytes string }
 		if err := json.Unmarshal(c.In, &in); err != nil {
 			return nil, err
 		}
-		k, ok := wire.DecodeControl(mustHex(in.Bytes))
+		k, ok := tailscreen.DecodeControl(mustHex(in.Bytes))
 		if !ok {
 			return map[string]any{"kind": nil}, nil
 		}
-		name, _ := wire.ControlName(k)
+		name, _ := tailscreen.ControlName(k)
 		return map[string]any{"kind": name}, nil
 
 	case "control.classify":
@@ -94,46 +94,46 @@ func Run(c Case) (map[string]any, error) {
 			return nil, err
 		}
 		var name string
-		switch wire.Classify(mustHex(in.Bytes)) {
-		case wire.ClassEmpty:
+		switch tailscreen.Classify(mustHex(in.Bytes)) {
+		case tailscreen.ClassEmpty:
 			name = "empty"
-		case wire.ClassRTP:
+		case tailscreen.ClassRTP:
 			name = "rtp"
-		case wire.ClassControl:
+		case tailscreen.ClassControl:
 			name = "control"
 		}
 		return map[string]any{"class": name}, nil
 
 	case "hello.encode":
-		var in struct{ Caps uint8 }
+		var in struct{ Caps tailscreen.Caps }
 		if err := json.Unmarshal(c.In, &in); err != nil {
 			return nil, err
 		}
-		return map[string]any{"bytes": hex.EncodeToString(wire.EncodeHello(in.Caps))}, nil
+		return map[string]any{"bytes": hex.EncodeToString(tailscreen.EncodeHello(in.Caps))}, nil
 
 	case "hello.decodeCaps":
 		var in struct{ Bytes string }
 		if err := json.Unmarshal(c.In, &in); err != nil {
 			return nil, err
 		}
-		return map[string]any{"caps": wire.DecodeHelloCaps(mustHex(in.Bytes))}, nil
+		return map[string]any{"caps": tailscreen.DecodeHelloCaps(mustHex(in.Bytes))}, nil
 
 	case "helloAck.encode":
 		var in struct {
-			SSRC uint32 `json:"ssrc"`
-			Caps *uint8 `json:"caps"`
+			SSRC uint32           `json:"ssrc"`
+			Caps *tailscreen.Caps `json:"caps"`
 		}
 		if err := json.Unmarshal(c.In, &in); err != nil {
 			return nil, err
 		}
-		return map[string]any{"bytes": hex.EncodeToString(wire.EncodeHelloAck(in.SSRC, in.Caps))}, nil
+		return map[string]any{"bytes": hex.EncodeToString(tailscreen.EncodeHelloAck(in.SSRC, in.Caps))}, nil
 
 	case "helloAck.decodeStrict":
 		var in struct{ Bytes string }
 		if err := json.Unmarshal(c.In, &in); err != nil {
 			return nil, err
 		}
-		ssrc, ok := wire.DecodeHelloAckStrict(mustHex(in.Bytes))
+		ssrc, ok := tailscreen.DecodeHelloAckStrict(mustHex(in.Bytes))
 		if !ok {
 			return map[string]any{"ssrc": nil}, nil
 		}
@@ -144,7 +144,7 @@ func Run(c Case) (map[string]any, error) {
 		if err := json.Unmarshal(c.In, &in); err != nil {
 			return nil, err
 		}
-		ssrc, caps, ok := wire.DecodeHelloAckTolerant(mustHex(in.Bytes))
+		ssrc, caps, ok := tailscreen.DecodeHelloAckTolerant(mustHex(in.Bytes))
 		if !ok {
 			return map[string]any{"ssrc": nil, "caps": nil}, nil
 		}
@@ -153,21 +153,21 @@ func Run(c Case) (map[string]any, error) {
 	// ------------------------------------------------------ loss recovery
 	case "nack.encode":
 		var in struct {
-			Entries []wire.NACKEntry `json:"entries"`
+			Entries []tailscreen.NACKEntry `json:"entries"`
 		}
 		if err := json.Unmarshal(c.In, &in); err != nil {
 			return nil, err
 		}
-		return map[string]any{"bytes": hex.EncodeToString(wire.EncodeNACK(in.Entries))}, nil
+		return map[string]any{"bytes": hex.EncodeToString(tailscreen.EncodeNACK(in.Entries))}, nil
 
 	case "nack.decode":
 		var in struct{ Bytes string }
 		if err := json.Unmarshal(c.In, &in); err != nil {
 			return nil, err
 		}
-		entries := wire.DecodeNACK(mustHex(in.Bytes))
+		entries := tailscreen.DecodeNACK(mustHex(in.Bytes))
 		if entries == nil {
-			entries = []wire.NACKEntry{}
+			entries = []tailscreen.NACKEntry{}
 		}
 		return map[string]any{"entries": entries}, nil
 
@@ -182,14 +182,14 @@ func Run(c Case) (map[string]any, error) {
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"bytes": hex.EncodeToString(wire.EncodePing(v))}, nil
+		return map[string]any{"bytes": hex.EncodeToString(tailscreen.EncodePing(v))}, nil
 
 	case "ping.decode":
 		var in struct{ Bytes string }
 		if err := json.Unmarshal(c.In, &in); err != nil {
 			return nil, err
 		}
-		v, ok := wire.DecodePing(mustHex(in.Bytes))
+		v, ok := tailscreen.DecodePing(mustHex(in.Bytes))
 		if !ok {
 			return map[string]any{"serverUptimeNs": nil}, nil
 		}
@@ -207,14 +207,14 @@ func Run(c Case) (map[string]any, error) {
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"bytes": hex.EncodeToString(wire.EncodeReport(r, in.IncludeRecoveryFields))}, nil
+		return map[string]any{"bytes": hex.EncodeToString(tailscreen.EncodeReport(r, in.IncludeRecoveryFields))}, nil
 
 	case "rr.decode":
 		var in struct{ Bytes string }
 		if err := json.Unmarshal(c.In, &in); err != nil {
 			return nil, err
 		}
-		r, ok := wire.DecodeReport(mustHex(in.Bytes))
+		r, ok := tailscreen.DecodeReport(mustHex(in.Bytes))
 		if !ok {
 			return map[string]any{"report": nil}, nil
 		}
@@ -229,14 +229,14 @@ func Run(c Case) (map[string]any, error) {
 		if err := json.Unmarshal(c.In, &in); err != nil {
 			return nil, err
 		}
-		return map[string]any{"bytes": hex.EncodeToString(wire.EncodeFEC(in.BaseSeq, in.Count, mustHex(in.Body)))}, nil
+		return map[string]any{"bytes": hex.EncodeToString(tailscreen.EncodeFEC(in.BaseSeq, in.Count, mustHex(in.Body)))}, nil
 
 	case "fec.decodeDatagram":
 		var in struct{ Bytes string }
 		if err := json.Unmarshal(c.In, &in); err != nil {
 			return nil, err
 		}
-		baseSeq, count, body, ok := wire.DecodeFEC(mustHex(in.Bytes))
+		baseSeq, count, body, ok := tailscreen.DecodeFEC(mustHex(in.Bytes))
 		if !ok {
 			return map[string]any{"baseSeq": nil, "count": nil, "body": nil}, nil
 		}
@@ -253,7 +253,7 @@ func Run(c Case) (map[string]any, error) {
 		for _, p := range in.Packets {
 			packets = append(packets, mustHex(p))
 		}
-		return map[string]any{"body": hex.EncodeToString(wire.ParityBody(packets))}, nil
+		return map[string]any{"body": hex.EncodeToString(tailscreen.ParityBody(packets))}, nil
 
 	case "fec.recover":
 		var in struct {
@@ -269,7 +269,7 @@ func Run(c Case) (map[string]any, error) {
 		for _, m := range in.Members {
 			members = append(members, mustHex(m))
 		}
-		got := wire.Recover(in.MissingSeq, in.SSRC, members, mustHex(in.Body))
+		got := tailscreen.Recover(in.MissingSeq, in.SSRC, members, mustHex(in.Body))
 		if got == nil {
 			return map[string]any{"packet": nil}, nil
 		}
@@ -287,18 +287,18 @@ func Run(c Case) (map[string]any, error) {
 		if err := json.Unmarshal(c.In, &in); err != nil {
 			return nil, err
 		}
-		h := wire.RTPHeader{
+		h := tailscreen.RTPHeader{
 			Marker: in.Marker, PayloadType: in.PayloadType,
 			Sequence: in.Sequence, Timestamp: in.Timestamp, SSRC: in.SSRC,
 		}
-		return map[string]any{"bytes": hex.EncodeToString(wire.EncodeRTPHeader(h))}, nil
+		return map[string]any{"bytes": hex.EncodeToString(tailscreen.EncodeRTPHeader(h))}, nil
 
 	case "rtp.decodeHeader":
 		var in struct{ Bytes string }
 		if err := json.Unmarshal(c.In, &in); err != nil {
 			return nil, err
 		}
-		h, offset, ok := wire.DecodeRTPHeader(mustHex(in.Bytes))
+		h, offset, ok := tailscreen.DecodeRTPHeader(mustHex(in.Bytes))
 		if !ok {
 			return map[string]any{"header": nil}, nil
 		}
@@ -327,9 +327,9 @@ func Run(c Case) (map[string]any, error) {
 		}
 		var packets [][]byte
 		if c.Op == "packetize.h264" {
-			packets = wire.PacketizeH264(nals, in.Timestamp, in.SSRC, in.StartSequence)
+			packets = tailscreen.PacketizeH264(nals, in.Timestamp, in.SSRC, in.StartSequence)
 		} else {
-			packets = wire.PacketizeHEVC(nals, in.Timestamp, in.SSRC, in.StartSequence)
+			packets = tailscreen.PacketizeHEVC(nals, in.Timestamp, in.SSRC, in.StartSequence)
 		}
 		out := make([]string, 0, len(packets))
 		for _, p := range packets {
@@ -346,7 +346,7 @@ func Run(c Case) (map[string]any, error) {
 		if err := json.Unmarshal(c.In, &in); err != nil {
 			return nil, err
 		}
-		b := wire.EncodeFrame(wire.MessageType(in.Type), mustHex(in.Payload))
+		b := tailscreen.EncodeFrame(tailscreen.MessageType(in.Type), mustHex(in.Payload))
 		return map[string]any{"bytes": hex.EncodeToString(b)}, nil
 
 	case "frame.parse":
@@ -356,7 +356,7 @@ func Run(c Case) (map[string]any, error) {
 		if err := json.Unmarshal(c.In, &in); err != nil {
 			return nil, err
 		}
-		var p wire.FrameParser
+		var p tailscreen.FrameParser
 		frames := []map[string]any{}
 		for _, chunk := range in.Chunks {
 			p.Append(mustHex(chunk))
@@ -377,7 +377,7 @@ func Run(c Case) (map[string]any, error) {
 		if err := json.Unmarshal(c.In, &in); err != nil {
 			return nil, err
 		}
-		ev, err := wire.DecodeInputEvent([]byte(in.JSON))
+		ev, err := tailscreen.DecodeInputEvent([]byte(in.JSON))
 		if err != nil {
 			return map[string]any{"event": nil}, nil
 		}
@@ -390,7 +390,7 @@ func Run(c Case) (map[string]any, error) {
 		if err := json.Unmarshal(c.In, &in); err != nil {
 			return nil, err
 		}
-		op, err := wire.DecodeAnnotationOp([]byte(in.JSON))
+		op, err := tailscreen.DecodeAnnotationOp([]byte(in.JSON))
 		if err != nil {
 			return map[string]any{"op": nil}, nil
 		}
@@ -403,7 +403,7 @@ func Run(c Case) (map[string]any, error) {
 		if err := json.Unmarshal(c.In, &in); err != nil {
 			return nil, err
 		}
-		host, err := wire.DecodeRequestToShare([]byte(in.JSON))
+		host, err := tailscreen.DecodeRequestToShare([]byte(in.JSON))
 		if err != nil {
 			return map[string]any{"fromHostname": nil}, nil
 		}
@@ -416,7 +416,7 @@ func Run(c Case) (map[string]any, error) {
 		if err := json.Unmarshal(c.In, &in); err != nil {
 			return nil, err
 		}
-		accepted, err := wire.DecodeShareResponse([]byte(in.JSON))
+		accepted, err := tailscreen.DecodeShareResponse([]byte(in.JSON))
 		if err != nil {
 			return map[string]any{"accepted": nil}, nil
 		}
@@ -429,7 +429,7 @@ func Run(c Case) (map[string]any, error) {
 		if err := json.Unmarshal(c.In, &in); err != nil {
 			return nil, err
 		}
-		return map[string]any{"reason": wire.DecodeControlRevoked([]byte(in.JSON))}, nil
+		return map[string]any{"reason": tailscreen.DecodeControlRevoked([]byte(in.JSON))}, nil
 
 	case "json.metadata.decode":
 		var in struct {
@@ -438,7 +438,7 @@ func Run(c Case) (map[string]any, error) {
 		if err := json.Unmarshal(c.In, &in); err != nil {
 			return nil, err
 		}
-		md, err := wire.DecodeMetadata([]byte(in.JSON))
+		md, err := tailscreen.DecodeMetadata([]byte(in.JSON))
 		if err != nil {
 			return map[string]any{"metadata": nil}, nil
 		}
@@ -474,12 +474,12 @@ type jsonReport struct {
 	NACKRecovered    uint16 `json:"nackRecovered"`
 }
 
-func (j jsonReport) toWire() (wire.Report, error) {
+func (j jsonReport) toWire() (tailscreen.Report, error) {
 	ts, err := strconv.ParseUint(j.LastPingTs, 10, 64)
 	if err != nil {
-		return wire.Report{}, err
+		return tailscreen.Report{}, err
 	}
-	return wire.Report{
+	return tailscreen.Report{
 		FracLostQ8: j.FracLostQ8, ExtHighestSeq: j.ExtHighestSeq,
 		JitterTicks: j.JitterTicks, LastPingTs: ts,
 		DelaySincePingMs: j.DelaySincePingMs,
@@ -487,7 +487,7 @@ func (j jsonReport) toWire() (wire.Report, error) {
 	}, nil
 }
 
-func fromWireReport(r wire.Report) map[string]any {
+func fromWireReport(r tailscreen.Report) map[string]any {
 	return map[string]any{
 		"fracLostQ8":       r.FracLostQ8,
 		"extHighestSeq":    r.ExtHighestSeq,
@@ -499,7 +499,7 @@ func fromWireReport(r wire.Report) map[string]any {
 	}
 }
 
-func inputEventOut(ev wire.InputEvent) map[string]any {
+func inputEventOut(ev tailscreen.InputEvent) map[string]any {
 	switch ev.Kind {
 	case "mouseMove":
 		return map[string]any{"kind": ev.Kind, "x": ev.X, "y": ev.Y}
@@ -518,7 +518,7 @@ func inputEventOut(ev wire.InputEvent) map[string]any {
 	}
 }
 
-func annotationOut(op wire.AnnotationOp) map[string]any {
+func annotationOut(op tailscreen.AnnotationOp) map[string]any {
 	switch op.Kind {
 	case "clearAll":
 		return map[string]any{"kind": op.Kind}

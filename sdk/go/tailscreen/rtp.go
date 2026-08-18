@@ -1,4 +1,4 @@
-package wire
+package tailscreen
 
 import "encoding/binary"
 

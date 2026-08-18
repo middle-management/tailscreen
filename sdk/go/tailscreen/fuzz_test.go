@@ -1,4 +1,4 @@
-package wire
+package tailscreen
 
 import (
 	"bytes"
@@ -40,7 +40,7 @@ func seedDatagrams() [][]byte {
 		LastPingTs: 1234567890123456789, DelaySincePingMs: 17,
 		FECRecovered: 5, NACKRecovered: 9,
 	}
-	caps := byte(CapNACK | CapReceiverReport | CapFEC)
+	caps := CapNACK | CapReceiverReport | CapFEC
 	return [][]byte{
 		{},
 		EncodeControl(Hello),

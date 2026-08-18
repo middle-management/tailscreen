@@ -1,17 +1,57 @@
-// Package wire is a Go implementation of the Tailscreen wire protocol,
-// written from docs/spec.md and from nothing else. It exists so the
-// conformance vectors are checked by an implementation that shares no code
-// with the Swift one: agreement between the two is evidence that the spec
-// says what the vectors say.
+package tailscreen
+
+import (
+	"encoding/binary"
+	"time"
+)
+
+// SpecVersion is the revision of docs/spec.md this package implements.
+const SpecVersion = 1
+
+// Port is the protocol's default port, used for TCP and UDP alike
+// (TS-GEN-010).
 //
-// It implements the codecs, not the state machines — timers, admission
-// policy and congestion control are normative but not vector-testable, and
-// live in the spec's prose.
-package wire
+// It is provisional: 7447 is not registered with IANA, and a registration
+// could land on a different number (TS-GEN-016). Read the port from your own
+// configuration and pass it around; do not write the literal at each listen,
+// dial and probe site, which is what makes a renumbering a one-line change
+// rather than an archaeology exercise.
+const Port = 7447
 
-import "encoding/binary"
+// Timing constants from the specification's Appendix B. This package
+// implements no timers — it exports the values so that yours agree with
+// everyone else's.
+const (
+	// KeepaliveInterval is how often a viewer must announce itself
+	// (TS-CTL-015).
+	KeepaliveInterval = 500 * time.Millisecond
+	// IdleTimeout is how long either end waits before tearing down a silent
+	// session. The two ends use the SAME value by design (TS-CTL-016,
+	// TS-CTL-017); do not tune one without the other.
+	IdleTimeout = 15 * time.Second
+	// PendingApprovalTimeout bounds how long a viewer may sit in a sharer's
+	// approval queue (TS-ADM-003).
+	PendingApprovalTimeout = 60 * time.Second
+	// ExpelledQuietWindow is how long an expelled address is answered with
+	// denial rather than re-admitted (TS-ADM-008).
+	ExpelledQuietWindow = 30 * time.Second
+	// ReceiverReportInterval is the nominal cadence of receiver reports and
+	// of the RTT pings they echo (TS-RRP-001, TS-RRP-005).
+	ReceiverReportInterval = time.Second
+	// FECParityIdle is how long a receiver waits without parity before
+	// disarming its FEC machinery (TS-FEC-013).
+	FECParityIdle = 3 * time.Second
+	// ReorderGapHold is the minimum time a receiver using selective
+	// retransmission holds an open sequence gap before declaring loss
+	// (TS-VID-043). Abandoning a gap by packet count instead makes loss
+	// inside a keyframe unrecoverable.
+	ReorderGapHold = 300 * time.Millisecond
+)
 
-// Control message types — spec §4.1, Appendix A.1.
+// ControlKind is a UDP control message type — spec §4.1, Appendix A.1.
+//
+// The values are permanent (TS-EXT-003). A receiver must silently discard a
+// datagram whose first byte is not one of them (TS-CTL-002).
 type ControlKind byte
 
 const (
@@ -31,14 +71,48 @@ const (
 	FEC                ControlKind = 0x0D
 )
 
-// Capability bits — spec §5.1, Appendix A.3.
+// Caps is the capability bit field exchanged in the extended HELLO and
+// HELLO_ACK — spec §5.1, Appendix A.3.
+//
+// A feature is in play on a link only if BOTH peers advertised it
+// (TS-CAP-007); see Negotiate. Unknown bits must be ignored rather than
+// rejected (TS-CAP-002), which is what lets a future revision add one.
+type Caps uint8
+
+// The assigned capability bits. Bits 5-7 are reserved and must be sent as
+// zero (TS-CAP-001).
 const (
-	CapNACK           = 1 << 0
-	CapReceiverReport = 1 << 1
-	CapFEC            = 1 << 2
-	CapRemoteControl  = 1 << 3
-	CapAnnotations    = 1 << 4
+	// CapNACK: the peer implements selective retransmission (spec §9.1).
+	CapNACK Caps = 1 << 0
+	// CapReceiverReport: the peer implements receiver reports and RTT pings
+	// (spec §9.2).
+	CapReceiverReport Caps = 1 << 1
+	// CapFEC: the peer implements XOR parity (spec §9.3).
+	CapFEC Caps = 1 << 2
+	// CapRemoteControl is advertised by a SHARER only: this build and
+	// platform can inject viewer input at all (TS-CAP-009). A viewer must not
+	// offer Request Control without it (TS-CAP-008). It says nothing about
+	// whether a live request will be granted — that is a runtime decision,
+	// refused with controlRevoked.
+	CapRemoteControl Caps = 1 << 3
+	// CapAnnotations is advertised by a SHARER only: this sharer renders and
+	// relays viewer annotations. A viewer must not accept annotation input
+	// without it (TS-CAP-008), or it draws strokes that reach nobody.
+	CapAnnotations Caps = 1 << 4
 )
+
+// Has reports whether every bit in want is set.
+func (c Caps) Has(want Caps) bool { return c&want == want }
+
+// Negotiate returns the capabilities in play on a link: those both peers
+// advertised (TS-CAP-007). Sending a NACK, receiver report or parity
+// datagram on a link where the corresponding bit is missing from either
+// side is a protocol violation, not a graceful degradation.
+//
+// The sharer-only bits (CapRemoteControl, CapAnnotations) travel one way, so
+// a viewer reads them from the acknowledgement directly rather than through
+// this function.
+func Negotiate(local, remote Caps) Caps { return local & remote }
 
 var controlNames = map[ControlKind]string{
 	Hello: "hello", Keepalive: "keepalive", Bye: "bye", PLI: "pli",
@@ -61,6 +135,19 @@ var controlByName = func() map[string]ControlKind {
 func ControlName(k ControlKind) (string, bool) {
 	n, ok := controlNames[k]
 	return n, ok
+}
+
+// String names the message, or its hex value when the byte is unassigned.
+func (k ControlKind) String() string {
+	if name, ok := controlNames[k]; ok {
+		return name
+	}
+	return "control(" + hexByte(byte(k)) + ")"
+}
+
+func hexByte(b byte) string {
+	const digits = "0123456789abcdef"
+	return "0x" + string([]byte{digits[b>>4], digits[b&0x0F]})
 }
 
 // ControlByName looks a control byte up by its spec name.
@@ -109,26 +196,26 @@ func Classify(b []byte) DatagramClass {
 // EncodeHello emits the extended two-byte HELLO. A viewer with no
 // capabilities MAY send the one-byte form instead; both decode identically
 // under DecodeHelloCaps (TS-CAP-006).
-func EncodeHello(caps byte) []byte { return []byte{byte(Hello), caps} }
+func EncodeHello(caps Caps) []byte { return []byte{byte(Hello), byte(caps)} }
 
 // DecodeHelloCaps reads the capability byte off a HELLO, returning 0 for the
 // legacy one-byte form (TS-CAP-006) and for a datagram that is not a HELLO.
-func DecodeHelloCaps(b []byte) byte {
+func DecodeHelloCaps(b []byte) Caps {
 	if len(b) < 2 || b[0] != byte(Hello) {
 		return 0
 	}
-	return b[1]
+	return Caps(b[1])
 }
 
 // EncodeHelloAck emits the plain five-byte acknowledgement when caps is nil,
 // and the extended six-byte form otherwise. TS-CAP-004: the extended form is
 // for viewers that advertised capabilities, and for nobody else.
-func EncodeHelloAck(ssrc uint32, caps *byte) []byte {
+func EncodeHelloAck(ssrc uint32, caps *Caps) []byte {
 	out := make([]byte, 5, 6)
 	out[0] = byte(HelloAck)
 	binary.BigEndian.PutUint32(out[1:], ssrc)
 	if caps != nil {
-		out = append(out, *caps)
+		out = append(out, byte(*caps))
 	}
 	return out
 }
@@ -146,13 +233,13 @@ func DecodeHelloAckStrict(b []byte) (uint32, bool) {
 
 // DecodeHelloAckTolerant is the capability-aware parser: it accepts both
 // forms, reading absent capabilities as none (TS-CAP-005).
-func DecodeHelloAckTolerant(b []byte) (ssrc uint32, caps byte, ok bool) {
+func DecodeHelloAckTolerant(b []byte) (ssrc uint32, caps Caps, ok bool) {
 	if len(b) < 5 || b[0] != byte(HelloAck) {
 		return 0, 0, false
 	}
 	ssrc = binary.BigEndian.Uint32(b[1:5])
 	if len(b) >= 6 {
-		caps = b[5]
+		caps = Caps(b[5])
 	}
 	return ssrc, caps, true
 }
@@ -162,6 +249,20 @@ func DecodeHelloAckTolerant(b []byte) (ssrc uint32, caps byte, ok bool) {
 type NACKEntry struct {
 	PID uint16 `json:"pid"`
 	BLP uint16 `json:"blp"`
+}
+
+// Missing expands the entry into the sequence numbers it names: the pid,
+// followed by each of the 16 that follow it whose bit is set in the blp.
+// Sequence arithmetic wraps at 2^16 (TS-GEN-003).
+func (e NACKEntry) Missing() []uint16 {
+	out := make([]uint16, 0, 17)
+	out = append(out, e.PID)
+	for i := 0; i < 16; i++ {
+		if e.BLP&(1<<uint(i)) != 0 {
+			out = append(out, e.PID+uint16(i)+1)
+		}
+	}
+	return out
 }
 
 // EncodeNACK emits a NACK, truncating to the 16-entry ceiling (TS-NCK-001).
