@@ -262,15 +262,35 @@ jobs:
       # impose GPL on the whole app. The LGPL build has no libx264, so it cannot
       # ENCODE H.264 — exactly right for a viewer.
       #
-      # The version is pinned to 7.1 even though the build itself rolls: a fully
-      # floating `master` asset would turn an upstream FFmpeg change into a
-      # mystery failure here.
-      - name: Download FFmpeg (LGPL shared, 7.1, ${{ env.FFMPEG_FLAVOUR }})
+      # The version is pinned, but the PIN IS TO A ROLLING TAG, and that is the
+      # failure mode worth knowing: BtbN publishes every branch's build under
+      # the single `latest` release and DELETES a branch's assets when upstream
+      # retires that branch. n7.1 vanished that way — the URL below 404'd on
+      # every Windows job at once, with nothing in this repository having
+      # changed. A fully floating `master` asset would be worse (an upstream
+      # FFmpeg change becomes a mystery failure here), so the pin stays and the
+      # download step below reports what happened instead of just failing.
+      - name: Download FFmpeg (LGPL shared, 8.1, ${{ env.FFMPEG_FLAVOUR }})
         shell: bash
         run: |
           set -euo pipefail
-          url=https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-${FFMPEG_FLAVOUR}-lgpl-shared-7.1.zip
-          curl -fsSL -o "$RUNNER_TEMP/ffmpeg.zip" "$url"
+          # Two spellings of the same version: BtbN puts the branch in the
+          # middle of the filename and the bare version at the end.
+          branch=n8.1
+          version=8.1
+          url=https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-${branch}-latest-${FFMPEG_FLAVOUR}-lgpl-shared-${version}.zip
+          if ! curl -fsSL -o "$RUNNER_TEMP/ffmpeg.zip" "$url"; then
+            echo "::error::FFmpeg asset not found: $url"
+            echo "A 404 here is almost never the network. BtbN serves every branch"
+            echo "from the rolling 'latest' tag and removes a branch's assets when"
+            echo "upstream retires it, so this usually means $branch is gone and the"
+            echo "pin needs moving. Currently published lgpl-shared assets:"
+            curl -fsSL https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/tags/latest \
+              | grep -o '"name": *"[^"]*lgpl-shared[^"]*"' \
+              | sed 's/.*: *"/  /; s/"$//' \
+              || echo "  (could not list assets)"
+            exit 1
+          fi
           mkdir -p "$RUNNER_TEMP/ffmpeg"
           unzip -q "$RUNNER_TEMP/ffmpeg.zip" -d "$RUNNER_TEMP/ffmpeg"
           # The archive has one top-level directory whose name embeds the build
