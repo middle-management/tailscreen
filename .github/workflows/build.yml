@@ -288,6 +288,9 @@ jobs:
           - name: linux-differential
             apt: golang-go make gcc libc6-dev pkg-config
             submodules: recursive
+            # The bootstrap step runs whenever submodules are checked out, and
+            # it validates its target — an absent key is an error, not a skip.
+            libtailscale: none
             cmd: |
               make libtailscreen
               PKG_CONFIG_PATH="$PWD/sdk/go" swift test --package-path Packages/TailscreenDifferential
