@@ -53,6 +53,8 @@ they appear in all capitals.
 | **admitted viewer** | A viewer the sharer's admission gate has accepted ([§6](#6-viewer-admission)). |
 | **session** | One sharer's share, from first capture frame to `SERVER_BYE`. |
 | **implementation** | Any program speaking this protocol. |
+| **tailnet** | The WireGuard mesh the peers sit on: nodes coordinated by a control plane that authenticates them, gives each a stable identity, and tells each node which peers exist and whether they are reachable. |
+| **control plane** | The coordination server providing that. Tailscale's hosted service and [headscale](https://github.com/juanfont/headscale) are both implementations of it; this protocol depends on the tailnet's properties, never on which one is in use. |
 
 ### 1.3 Notation and conventions
 
@@ -92,10 +94,10 @@ they appear in all capitals.
   `NetworkConfig.tailscreenPort`; a bare `7447` written anywhere else is a
   defect. Peers running different defaults do not interoperate, which is the
   cost a renumbering would carry and the reason it has not happened.
-- **TS-GEN-011**: All traffic MUST be carried inside a Tailscale (WireGuard)
-  tunnel. The protocol defines no transport-level authentication,
-  encryption, or integrity protection of its own, and implementations MUST
-  NOT be deployed on an unprotected network path.
+- **TS-GEN-011**: All traffic MUST be carried inside a tailnet
+  ([§2.1](#21-the-tailnet)). The protocol defines no transport-level
+  authentication, encryption, or integrity protection of its own, and
+  implementations MUST NOT be deployed on an unprotected network path.
 - **TS-GEN-012**: A sharer MUST listen on UDP/7447 for control datagrams and
   MUST send media to the source address and port from which it received an
   admitted viewer's `HELLO`.
@@ -105,6 +107,34 @@ they appear in all capitals.
 - **TS-GEN-014**: A sharer MUST NOT require more than one TCP connection per
   viewer, and MUST tolerate a viewer that opens the TCP channel at any time
   relative to its `HELLO`, including never.
+
+### 2.1 The tailnet
+
+This protocol is not merely tunnelled — it is *built on* a tailnet, and leans
+on it for four distinct things. Naming them is what lets an implementation
+know which substrates it may run on.
+
+- **TS-GEN-017**: The tailnet MUST provide all four of:
+  1. **Authentication** of every peer.
+  2. **Encryption and integrity protection** of traffic between peers.
+  3. **A stable per-node identifier** the local node can resolve from its own
+     view, without trusting anything the remote peer claims. Viewer admission
+     is keyed on it (TS-ADM-006, TS-SEC-004).
+  4. **Peer enumeration and liveness** — a node can learn which peers exist
+     and which are reachable, without probing. Discovery is built on it
+     ([§14](#14-discovery)).
+- **TS-GEN-018**: An implementation MUST NOT require a particular control
+  plane. Tailscale's hosted service and headscale both satisfy TS-GEN-017 and
+  are both supported; selecting one is deployment configuration, not
+  protocol. In this repository it is the `TAILSCREEN_TS_CONTROL_URL`
+  environment variable, and the end-to-end harness runs against headscale.
+- **TS-GEN-019**: A deployment MUST NOT substitute a transport lacking any of
+  TS-GEN-017's four properties. This is a narrower allowance than "any
+  encrypted tunnel", deliberately: a plain WireGuard tunnel supplies the
+  first two properties and neither of the last two, so viewer admission would
+  have no identity to key on and discovery would have nothing to enumerate.
+  Those requirements would not merely degrade — they would be
+  unimplementable.
 
 The channels multiplexed onto these two sockets are:
 
@@ -330,9 +360,10 @@ extended six-byte form:
 - **TS-ADM-005**: A viewer MUST distinguish `HELLO_DENY` from `SERVER_BYE`
   in what it reports to the user when it implements both.
 - **TS-ADM-006**: A sharer that maintains a persistent per-peer allow/deny
-  store MUST key it on the peer's Tailscale StableNodeID as resolved from
-  the sharer's own tailnet state, and MUST NOT key it on any identifier
-  supplied by the peer in a wire payload.
+  store MUST key it on the peer's stable node identifier (TS-GEN-017.3) as
+  resolved from the sharer's own view of the tailnet, and MUST NOT key it on
+  any identifier supplied by the peer in a wire payload. Under both Tailscale
+  and headscale that identifier is the node's StableNodeID.
 - **TS-ADM-007**: A remembered deny MUST outrank an otherwise permissive
   admission policy.
 - **TS-ADM-008**: After expelling a viewer, a sharer MUST answer that
@@ -936,16 +967,16 @@ Remote control is opt-in, single-grantee, and revocable at any moment.
 - **TS-MET-012**: A querier MUST treat every failure — timeout,
   end-of-file, or a peer that dropped the unknown type byte — as *status
   unknown*, and MUST NOT report it as "not sharing".
-- **TS-MET-013**: `metadataResponse` MUST NOT carry information the
-  tailnet does not already expose, beyond the share state a viewer would
-  learn by connecting.
+- **TS-MET-013**: `metadataResponse` MUST NOT carry information the tailnet
+  does not already expose, beyond the share state a viewer would learn by
+  connecting.
 
 ---
 
 ## 14. Discovery
 
 - **TS-DSC-001**: An implementation MUST identify candidate peers from its
-  Tailscale node's own view of the tailnet, and MUST NOT scan address
+  own node's view of the tailnet (TS-GEN-017.4), and MUST NOT scan address
   ranges.
 - **TS-DSC-002**: An installation's node hostname MUST begin with
   `tailscreen-`.
@@ -953,7 +984,7 @@ Remote control is opt-in, single-grantee, and revocable at any moment.
   `tailscreen-client-`, and discovery MUST exclude such nodes from the list
   of connectable installations.
 - **TS-DSC-004**: Discovery MUST NOT require a UDP or TCP probe to decide
-  whether a peer is a Tailscreen installation; the tailnet's own online
+  whether a peer is a Tailscreen installation; the tailnet's own liveness
   state is sufficient.
 - **TS-DSC-005**: An implementation that queries peers for share status
   ([§13.2](#132-metadata-query)) MUST do so lazily — on an explicit refresh
@@ -991,7 +1022,7 @@ compatibility rests on one rule applied everywhere.
 ## 16. Security considerations
 
 The protocol delegates confidentiality, integrity and peer authentication
-entirely to the Tailscale tunnel (TS-GEN-011). What remains is authorization
+entirely to the tailnet (TS-GEN-011, TS-GEN-017). What remains is authorization
 and input validation, and those are Tailscreen's own responsibility.
 
 - **TS-SEC-001**: Being able to reach port 7447 MUST NOT be treated as
@@ -1007,7 +1038,7 @@ and input validation, and those are Tailscreen's own responsibility.
 - **TS-SEC-004**: An implementation MUST NOT trust a peer-supplied
   identifier — hostname, share name, claimed node ID — for any authorization
   decision. Identity comes from the sharer's own view of the tailnet
-  (TS-ADM-006).
+  (TS-GEN-017.3, TS-ADM-006).
 - **TS-SEC-005**: An implementation MUST NOT render a peer-supplied string
   without clamping its length (TS-TCP-023).
 - **TS-SEC-006**: An implementation MUST NOT put a platform-native keycode,
@@ -1190,3 +1221,4 @@ Every value Tailscreen puts on a socket. Values are permanent (TS-EXT-003).
 | Version | Change |
 | :--- | :--- |
 | 1 | Initial specification, describing the protocol as shipped. |
+| 1 | Stated the substrate as a **tailnet** with four named properties (TS-GEN-017 … TS-GEN-019) rather than as Tailscale specifically, so that headscale — already supported and exercised by the end-to-end harness — is inside the specification rather than outside it. A widening: everything conforming before still conforms. |

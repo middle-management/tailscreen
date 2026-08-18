@@ -18,8 +18,12 @@ identifiers and a machine-readable conformance suite behind them — is the
 two disagree, the specification wins.
 
 Tailscreen uses **one port — `7447` — on both TCP and UDP**, and that's it.
-All traffic rides over Tailscale's WireGuard tunnel, so anything you read
-below is happening inside an authenticated, encrypted pipe.
+All traffic rides over the tailnet's WireGuard tunnel, so anything you read
+below is happening inside an authenticated, encrypted pipe. "Tailnet" rather
+than "Tailscale" throughout: the protocol leans on the mesh for peer identity
+and discovery as much as for encryption, and a self-hosted
+[headscale]({{ site.baseurl }}{% link self-hosted.md %}) control plane supplies
+all of it just as the hosted service does.
 
 `7447` is a *provisional* default, not an IANA-registered assignment. Nothing
 in the protocol negotiates it and nothing discovers it, so peers on different
