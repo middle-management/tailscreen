@@ -107,6 +107,21 @@ public final class ViewerUIState: ObservableObject, @unchecked Sendable {
     /// drawing is off (so drags zoom/pan or drive remote control).
     @Published public var activeTool: AnnotationTool?
 
+    /// True when captured input should reach the sharer: a grant is live AND
+    /// no annotation tool is armed.
+    ///
+    /// One spelling of the rule, because two consumers need it and they must
+    /// not disagree — `InputForwarder` gates every captured event on it, and
+    /// the video view's wheel handler asks it whether to scroll the sharer or
+    /// zoom locally. Drawing wins over controlling on purpose: with a pen
+    /// armed a drag is a stroke, not a click, and GTK fans each event to every
+    /// attached controller, so without the clause a controlling viewer who
+    /// armed the pen would draw on the overlay AND drag on the sharer's
+    /// desktop at once.
+    public var forwardsRemoteInput: Bool {
+        controlState == .active && activeTool == nil
+    }
+
     /// The color this viewer draws in — a published MIRROR of
     /// `AnnotationStore.color`, which stays the source of truth the capture
     /// path reads. Published so the toolbar swatch re-renders when a color is

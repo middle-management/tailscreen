@@ -582,6 +582,10 @@ class AppState: ObservableObject {
     /// this viewer holds a remote-control grant. Framed to the video rect by
     /// `AspectFitHostView.layout`.
     private var viewerControlInput: RemoteControlInputView?
+    /// Serializes captured input onto the back-channel so the sharer sees
+    /// capture order. Built with the capture layer and kept for the viewer
+    /// window's (process) lifetime, like the layer itself.
+    private var viewerInputForwarder: ViewerInputForwarder?
     /// The viewer window's aspect-fit host — the view that owns the
     /// continuous content zoom/pan state. Weak: the window's contentView
     /// holds it for the process lifetime. Used to reset the zoom on
@@ -2705,8 +2709,16 @@ class AppState: ObservableObject {
         // Hidden until this viewer holds a grant; while active it intercepts
         // pointer/keyboard events and ships them as normalized InputEvents.
         let controlInput = RemoteControlInputView(frame: host.bounds)
-        controlInput.onEvent = { [weak self] event in
-            Task { [weak self] in await self?.client?.sendInputEvent(event) }
+        // Through the forwarder, never a Task per event: a `mouseUp` that
+        // overtakes its `mouseDown` strands a button held on the sharer's Mac.
+        // The closure resolves `client` per send, so the wiring survives a
+        // back-channel reconnect exactly as the annotation path's does.
+        let inputForwarder = ViewerInputForwarder { [weak self] event in
+            await self?.client?.sendInputEvent(event)
+        }
+        self.viewerInputForwarder = inputForwarder
+        controlInput.onEvent = { event in
+            inputForwarder.submit(event)
         }
         // The release chord (⌃⌥. unless remapped) while capturing releases
         // control instead of being forwarded to the sharer — the defensive

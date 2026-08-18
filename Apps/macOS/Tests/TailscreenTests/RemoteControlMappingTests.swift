@@ -50,7 +50,7 @@ final class RemoteControlMappingTests: XCTestCase {
         // Swift's min/max PROPAGATE NaN, so a plain clamp would emit a NaN
         // CGPoint. globalPoint must not rely on the JSON decoder's
         // non-conforming-float rejection two layers away: non-finite input
-        // maps as 0 (the captureRect origin), same policy as clampToInt32.
+        // maps as 0 (the captureRect origin), same policy as the scroll accumulator.
         let rect = CGRect(x: 100, y: 200, width: 800, height: 600)
         assertPoint(RemoteControlMapping.globalPoint(nx: .nan, ny: 0.5, captureRect: rect), 100, 500)
         assertPoint(RemoteControlMapping.globalPoint(nx: 0.5, ny: .nan, captureRect: rect), 500, 200)

@@ -1279,6 +1279,10 @@ struct ViewerApp: App {
                 ZStack {
                     GtkVideoView(
                         store: gStore, onInputEvent: { gInput.submit($0) },
+                        // The wheel is the one captured event with a local
+                        // fallback (zoom), so the view has to ask the gate
+                        // itself rather than let `submit` drop it silently.
+                        forwardsInput: { gUIState.forwardsRemoteInput },
                         annotations: gAnnotations,
                         chromeHeight: ui.annotationsAvailable ? HubStyle.toolbarHeight : 0)
                     // Stats HUD, pinned top-left over the video (toggleable from

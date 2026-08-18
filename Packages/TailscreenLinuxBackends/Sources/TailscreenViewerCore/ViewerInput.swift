@@ -47,6 +47,42 @@ public enum ViewerInputMapping {
         }
     }
 
+    // MARK: Scroll
+
+    /// What a wheel/touchpad scroll over the video should do.
+    ///
+    /// The wheel is the one input the viewer and the sharer both want. While a
+    /// grant is live the sharer's content has to scroll — a remote desktop you
+    /// cannot scroll is barely usable — but zoom has to stay reachable too, so
+    /// Ctrl+wheel is kept local. Without that split one of the two is simply
+    /// unavailable, and this viewer used to resolve it by never forwarding
+    /// scroll at all: the wheel zoomed the local view and the sharer's content
+    /// never moved. The WinUI viewer makes the identical split
+    /// (`WinUIVideoView.handleWheel`).
+    public enum ScrollDisposition: Equatable, Sendable {
+        /// Send it to the sharer as an ``InputEvent/scroll(x:y:deltaX:deltaY:modifiers:)``
+        /// with these already-converted **wire** deltas.
+        case forward(deltaX: Double, deltaY: Double, modifiers: KeyModifiers)
+        /// Keep it: zoom about the cursor, or pan while Shift is held.
+        case local
+    }
+
+    /// Decide, and convert GDK's delta convention to the wire's.
+    ///
+    /// The sign flip on the vertical axis is the part to read twice. GDK
+    /// reports `dy > 0` for scrolling **down**; the wire (and every injector
+    /// behind it — see ``X11PointerMapping/scroll(delta:axis:)``) reads
+    /// positive `deltaY` as scrolling **up**. The horizontal axis needs no
+    /// flip: both call rightward positive. Getting this wrong scrolls the
+    /// sharer's document the wrong way, which is worse than not scrolling it.
+    public static func scrollDisposition(
+        dx: Double, dy: Double, gdkState: UInt, isControlling: Bool
+    ) -> ScrollDisposition {
+        let modifiers = keyModifiers(fromGdkState: gdkState)
+        guard isControlling, !modifiers.contains(.control) else { return .local }
+        return .forward(deltaX: dx, deltaY: -dy, modifiers: modifiers)
+    }
+
     // MARK: Modifiers
 
     // GDK4 `GdkModifierType` bit values (gdk/gdkenums.h) — ABI-stable, so the GTK

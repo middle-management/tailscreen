@@ -341,7 +341,9 @@ shows "Requesting…" until the sharer answers — click it again to cancel.
 Once granted, your clicks and keystrokes in the viewer window are
 injected on their machine, an orange border outlines the video, and the
 title bar reads "— controlling" so there's no mistaking whose Mac your
-keystrokes land on. Stop with the toolbar's **Stop Controlling**,
+keystrokes land on. Your scroll wheel (or trackpad) scrolls *their*
+content while you hold control; **Ctrl+wheel** still zooms your own view
+of the video, so both stay reachable. Stop with the toolbar's **Stop Controlling**,
 **File → Release Remote Control**, or **⌃⌥.** typed in the viewer window
 (the one chord that's never forwarded to the sharer; it follows the
 remap in Settings → Keyboard Shortcuts).
