@@ -1,4 +1,4 @@
-.PHONY: help build run clean release install tailscale test test-protocol test-conformance fuzz-conformance libtailscreen libtailscreen-check test-tsan test-l10n lint lint-baseline format format-check print-format-paths-all e2e-up e2e-down test-e2e test-e2e-local test-e2e-harness icon icon-windows
+.PHONY: help build run clean release install tailscale test test-protocol test-differential test-conformance fuzz-conformance libtailscreen libtailscreen-check test-tsan test-l10n lint lint-baseline format format-check print-format-paths-all e2e-up e2e-down test-e2e test-e2e-local test-e2e-harness icon icon-windows
 
 # Default target: print a one-line summary of every target. Targets are
 # self-documented via the `## description` suffix on each rule.
@@ -6,14 +6,17 @@
 
 # Lets SwiftPM's systemLibrary targets find their `.pc` files at build time:
 #   - libtailscale.pc (TailscaleKit), which resolves the `-L` for
-#     libtailscale.a, and
+#     libtailscale.a,
+#   - libtailscreen.pc (sdk/go), which resolves the `-L`/`-I` for
+#     libtailscreen.a (the CTailscreen systemLibrary behind the differential
+#     suite), and
 #   - opus.pc (OpusKit's COpus wrapper over libopus).
 # SwiftPM's own pkg-config resolver does NOT search Homebrew's prefix on
 # Apple Silicon, so add `$(brew --prefix)/lib/pkgconfig` explicitly (empty +
 # harmless when brew is absent, e.g. Linux, where opus.pc is on the default
 # path). Any inherited PKG_CONFIG_PATH is appended so a custom prefix wins.
 BREW_PKGCONFIG := $(shell brew --prefix 2>/dev/null)/lib/pkgconfig
-export PKG_CONFIG_PATH := $(CURDIR)/Packages/TailscaleKit:$(BREW_PKGCONFIG):$(PKG_CONFIG_PATH)
+export PKG_CONFIG_PATH := $(CURDIR)/Packages/TailscaleKit:$(CURDIR)/sdk/go:$(BREW_PKGCONFIG):$(PKG_CONFIG_PATH)
 
 help: ## Show this help and exit
 	@awk 'BEGIN { FS = ":.*## "; printf "Tailscreen — Make targets\n\nUsage: make <target>\n\nTargets:\n" } \
@@ -44,6 +47,16 @@ test: tailscale ## Run the unit test suite (swift test)
 # also applies the patches).
 test-protocol: tailscale ## Build + smoke-test the portable TailscreenKit package
 	swift test --package-path Packages/TailscreenKit
+
+# The Swift↔Go differential suite (Packages/TailscreenDifferential): the
+# shipping Swift pipeline and the public Go SDK — linked in as
+# libtailscreen.a via the CTailscreen systemLibrary — driven with identical
+# seeded input, asserting identical output at every step. Its own package,
+# not a TailscreenKit test target, because two Go c-archives cannot share
+# one binary and TailscreenKit's test executable already links
+# libtailscale.a. Reproduces a `linux-differential` CI failure.
+test-differential: libtailscreen ## Run the Swift↔Go differential pipeline suite
+	swift test --package-path Packages/TailscreenDifferential
 
 # The shared string catalog (Packages/TailscreenL10n). Its suites are the ONLY
 # check on the GTK and WinUI apps' user-facing strings: they scan all four

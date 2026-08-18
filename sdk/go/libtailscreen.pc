@@ -1,0 +1,9 @@
+prefix=${pcfiledir}
+libdir=${prefix}/build
+includedir=${prefix}/build
+
+Name: libtailscreen
+Description: Tailscreen wire protocol SDK (Go, -buildmode=c-archive)
+Version: 1.0.0
+Libs: -L${libdir} -ltailscreen -lpthread
+Cflags: -I${includedir}

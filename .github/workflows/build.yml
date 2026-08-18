@@ -269,6 +269,32 @@ jobs:
             libtailscale: host
             cmd: PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" swift test --package-path Packages/TailscreenKit
 
+          # Differential gate: the shipping Swift pipeline and the public Go
+          # SDK (sdk/go built as libtailscreen.a, linked through the
+          # CTailscreen systemLibrary) driven with identical seeded input,
+          # asserting identical output at every step — the stateful
+          # complement to linux-conformance's vectors
+          # (Packages/TailscreenDifferential/Package.swift has the why).
+          #
+          # Its own leg, not part of linux-protocol, because two Go
+          # c-archives cannot share one test binary: TailscreenKit's test
+          # executable links libtailscale.a, so the suite that links
+          # libtailscreen.a lives in its own package with its own binary.
+          # The submodule is only for graph loading (the TailscreenKit
+          # manifest names TailscaleKit, whose target sources are symlinks
+          # into it); nothing here builds or links libtailscale. golang-go /
+          # make / gcc are the c-archive toolchain; pkg-config resolves
+          # sdk/go/libtailscreen.pc.
+          - name: linux-differential
+            apt: golang-go make gcc libc6-dev pkg-config
+            submodules: recursive
+            # The bootstrap step runs whenever submodules are checked out, and
+            # it validates its target — an absent key is an error, not a skip.
+            libtailscale: none
+            cmd: |
+              make libtailscreen
+              PKG_CONFIG_PATH="$PWD/sdk/go" swift test --package-path Packages/TailscreenDifferential
+
           # Protocol-conformance gate: the language-neutral vectors in
           # conformance/vectors, run against the Go implementation in
           # conformance/go.

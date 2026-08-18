@@ -5,6 +5,7 @@ included:
   - Apps/windows/Sources
   - Packages/TailscreenKit/Sources
   - Packages/TailscreenKit/Tests
+  - Packages/TailscreenDifferential/Tests
   - Packages/TailscreenL10n/Sources
   - Packages/TailscreenHubUI/Sources
   - Packages/TailscreenVideoFFmpeg/Sources

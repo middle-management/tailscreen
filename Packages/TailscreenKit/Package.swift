@@ -167,3 +167,9 @@ let package = Package(
         )
     ]
 )
+
+// The Swift↔Go differential suite (Packages/TailscreenDifferential) is
+// deliberately NOT a test target here: it links libtailscreen.a — the public
+// Go SDK as a c-archive — and two Go c-archives cannot share one binary
+// (their cgo export symbols collide), while this package's test executable
+// already links libtailscale.a through TailscreenSharerTests.

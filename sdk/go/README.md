@@ -1,8 +1,8 @@
 # Tailscreen protocol SDK — Go
 
 A complete implementation of the [Tailscreen wire protocol](../../docs/spec.md)'s
-codec layer, usable from Go directly or from any language that can link a C
-static library.
+codec layer and receiver-side pipeline, usable from Go directly or from any
+language that can link a C static library.
 
 ```go
 import "github.com/middle-management/tailscreen/sdk/go/tailscreen"
@@ -28,21 +28,24 @@ specification is checked against.
 
 ## Scope
 
-It encodes and decodes. It owns no socket, no timer and no policy.
+It encodes, decodes, and runs the receiver-side pipeline. It owns no socket,
+no goroutine and no clock — every time-driven type takes `nowNs` from the
+caller, so a recorded session replays deterministically.
 
 | In | Out |
 | :- | :-- |
-| UDP control plane, capability negotiation | the protocol's timers and admission policy |
+| UDP control plane, capability negotiation | the protocol's admission policy |
 | RTP headers, H.264 / HEVC packetization | capture, encoding, decoding, rendering |
 | NACK, receiver reports, RTT pings, XOR parity | congestion control and the FEC on/off gates |
 | The framed TCP channel and its JSON payloads | the remote-control grant lifecycle |
+| The receive pipeline: `ReorderBuffer`, `Depacketizer`, `NACKScheduler`, `FECGroupBuffer`, `RRAccounting` | the loop that drives it (bring your own) |
 | The specification's constants (`Port`, `IdleTimeout`, …) | anything Tailscale |
 
 The excluded column is normative too — it is in the specification's prose,
-and the constants your implementation of it needs are exported here. What is
-deliberately absent is a state machine, so that a client can bring its own
-event loop and concurrency model rather than inherit one from a codec
-library.
+and the constants your implementation of it needs are exported here. The
+pipeline types are pure state machines over explicit inputs; what is
+deliberately absent is an event loop, so that a client can bring its own
+concurrency model rather than inherit one from a protocol library.
 
 **This package does not authenticate anything.** The protocol assumes it runs
 inside a Tailscale tunnel and defines no encryption, authentication or
@@ -95,16 +98,51 @@ Two rules, both in `capi/capi.go`'s doc comment at more length:
   `malloc`'d memory; release it with `tailscreen_free`. A `NULL` pointer with
   length 0 means the input was rejected, which is the protocol's normal
   answer to a malformed datagram rather than an exceptional condition.
-- **One thing is stateful, and it is handle-based.** The framed-channel parser
-  cannot be a pure function — a frame arrives across an arbitrary number of
-  TCP segments — so `tailscreen_parser_new` hands out a handle you pass back
-  and eventually `tailscreen_parser_free`. Everything else is a pure function
-  over bytes and safe to call from any thread.
+- **The stateful pieces are handle-based.** The framed-channel parser, the
+  reorder buffer, the depacketizers, the NACK scheduler, the FEC group buffer
+  and the receiver-report accounting each get a `*_new` / `*_free` pair whose
+  handle you pass back on every call; components that can emit several
+  results from one input queue them on the handle, popped one at a time by a
+  `*_next_*` call. Each handle carries its own lock, time always arrives as
+  an explicit `now_ns` argument, and everything else is a pure function over
+  bytes — the whole library is safe to call from any thread.
 
 `ctest/smoke.c` is a worked example as well as a test: `make
 libtailscreen-check` builds and runs it. It lives outside the `capi/`
 directory because cgo compiles every `.c` file in a package's own directory,
 which would build it *into* the archive rather than against it.
+
+### One Go runtime per binary — build your own archive if you need more Go
+
+A c-archive embeds a whole Go runtime, and two of them cannot be linked into
+one binary: their cgo export symbols (`crosscall2`, `_cgo_panic`,
+`_cgo_topofstack`) collide at link time, and even a linker that tolerated
+that would hand you two runtimes in one process, which Go does not support.
+So if your application needs this SDK **and** another Go library — tsnet /
+libtailscale being the obvious pairing for a Tailscreen client — do not link
+two archives. Build **one** archive from your own `package main` that
+imports everything you need, exactly the way Tailscreen itself builds
+`libtailscale.a` from the libtailscale sources (with its own patches) rather
+than consuming a prebuilt binary.
+
+Concretely: a Go `package main` is not importable, so the `//export` shim
+always lives with whoever builds the archive. Start by copying `capi/capi.go`
+into your own module (it is MIT-licensed and deliberately thin — every
+function is a few lines over `sdk/go/tailscreen`), add your own exports for
+whatever else your binary embeds (tsnet dial/listen, for instance), and build
+it with the same command the Makefile uses:
+
+```bash
+go build -buildvcs=false -buildmode=c-archive -o libmyapp.a ./mycapi
+```
+
+The same constraint is why the Swift↔Go differential suite lives in its own
+package (`Packages/TailscreenDifferential`): TailscreenKit's test binary
+already links `libtailscale.a`, so the suite that links `libtailscreen.a`
+needs a binary of its own. (Dynamic `-buildmode=c-shared` libraries are the
+one alternative — each `.so` keeps its runtime to itself — but the combined
+static archive is the simpler and better-trodden path, and a pure-Go client
+needs none of this: import the package and tsnet directly.)
 
 ## Testing
 
@@ -112,8 +150,18 @@ which would build it *into* the archive rather than against it.
 cd sdk/go && go test ./...     # unit tests, examples, and the fuzz seed corpus
 make test-conformance          # the vectors, from the repository root
 make libtailscreen-check       # the C ABI
+make test-differential         # the Swift↔Go differential suite
 make fuzz-conformance          # coverage-guided fuzzing, FUZZTIME=30s per target
 ```
+
+The pipeline tests in this package are ported assertion-for-assertion from
+the Swift suites, and `make test-differential` closes the loop from the
+other side: `Packages/TailscreenDifferential` links this SDK's c-archive and
+drives it against the shipping Swift pipeline with identical seeded input,
+asserting identical output at every step. Which is why a behavioral change
+to a ported type must land on both sides in the same commit — including the
+deliberate warts (`PackFCI`'s non-wrap-aware sort): "fixing" one side alone
+fails the differential, and is meant to.
 
 The fuzz targets in `tailscreen/fuzz_test.go` assert structural invariants
 rather than expected values — a successful decode never claims more bytes

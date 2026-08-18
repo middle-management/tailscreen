@@ -253,6 +253,137 @@ int main(void) {
         tailscreen_free(control_request.data);
     }
 
+    // --- the stateful pipeline handles ------------------------------------
+    // One pass over each handle type: enough to prove the handle plumbing —
+    // allocation, per-call locking, queued outputs, out-parameters, free —
+    // works from C. The behavioral depth lives in the Go package's own tests.
+    {
+        // Reorder: 0 establishes the origin (released at once), then 2 is
+        // held until 1 fills the gap — after which 0, 1, 2 pop in order.
+        int64_t reorder = tailscreen_reorder_new(64, 0);
+        check(reorder != 0, "a reorder handle is allocated");
+        uint8_t pkt_a[3] = {0xAA, 0, 0}, pkt_b[3] = {0xBB, 1, 1}, pkt_c[3] = {0xCC, 2, 2};
+        check(tailscreen_reorder_push(reorder, 0, pkt_a, 3, 0) == 1,
+              "the first packet is released as the stream origin");
+        check(tailscreen_reorder_push(reorder, 2, pkt_c, 3, 0) == 1,
+              "an out-of-order packet is held, not released");
+        int queued = tailscreen_reorder_push(reorder, 1, pkt_b, 3, 0);
+        check(queued == 3, "the gap fill releases the held packet too");
+        tailscreen_release release;
+        int order_ok = 1;
+        const uint8_t heads[3] = {0xAA, 0xBB, 0xCC};
+        for (int i = 0; i < 3; i++) {
+            if (tailscreen_reorder_next_release(reorder, &release) == 1) {
+                if (release.len != 3 || release.packet[0] != heads[i] || release.lost_before != 0) {
+                    order_ok = 0;
+                }
+                tailscreen_free(release.packet);
+            } else {
+                order_ok = 0;
+            }
+        }
+        check(order_ok, "releases arrive in ascending sequence order");
+        check(tailscreen_reorder_next_release(reorder, &release) == 0, "the release queue drains");
+        check(tailscreen_reorder_skipped_gaps(reorder) == 0, "no gap was abandoned");
+        tailscreen_reorder_free(reorder);
+
+        // Depacketizer: one single-NAL IDR packet with the marker set is one
+        // access unit in AVCC form.
+        int64_t depack = tailscreen_depacketizer_new(0, 64, 0);
+        uint8_t idr_packet[12 + 5];
+        tailscreen_buf idr_header = tailscreen_encode_rtp_header(1, 96, 100, 3000, 42);
+        memcpy(idr_packet, idr_header.data, 12);
+        tailscreen_free(idr_header.data);
+        const uint8_t nal[5] = {0x65, 1, 2, 3, 4};
+        memcpy(idr_packet + 12, nal, 5);
+        check(tailscreen_depacketizer_ingest(depack, idr_packet, sizeof idr_packet, 0) == 1,
+              "the marker completes one access unit");
+        tailscreen_au au;
+        int popped = tailscreen_depacketizer_next_au(depack, &au);
+        check(popped == 1, "the access unit pops");
+        if (popped == 1) {
+            const uint8_t want_avcc[9] = {0, 0, 0, 5, 0x65, 1, 2, 3, 4};
+            check(au.len == 9 && memcmp(au.avcc, want_avcc, 9) == 0 && au.contains_idr == 1 &&
+                      au.hevc == 0 && au.timestamp == 3000 && au.lost_before == 0,
+                  "the unit is in AVCC form and flagged IDR");
+            tailscreen_free(au.avcc);
+        }
+        check(tailscreen_depacketizer_torn_au_count(depack) == 0, "nothing was torn");
+        tailscreen_depacketizer_free(depack);
+
+        // NACK scheduler: a gap past the reorder tolerance becomes one NACK.
+        int64_t nack = tailscreen_nack_new(0, 0, 0, 0, 0, 0, 0, 0);  // all defaults
+        tailscreen_nack_observe(nack, 10, 1000000);
+        check(tailscreen_nack_observe(nack, 12, 2000000) == 0,
+              "a fresh gap inside the tolerance is not yet NACKed");
+        check(tailscreen_nack_has_open_gaps(nack) == 1, "the gap is tracked");
+        check(tailscreen_nack_tick(nack, 20000000) == 1, "aging past the tolerance queues a NACK");
+        tailscreen_nack_action action;
+        int have_action = tailscreen_nack_next_action(nack, &action);
+        check(have_action == 1 && action.pli == 0 && action.count == 1 && action.seqs[0] == 11,
+              "the NACK names the missing sequence");
+        if (have_action == 1) tailscreen_free((uint8_t *)action.seqs);
+        tailscreen_nack_cancel_gap(nack, 11);
+        check(tailscreen_nack_has_open_gaps(nack) == 0, "a served retransmit closes the gap");
+        check(tailscreen_nack_rtt_estimate_ns(nack) > 0, "the RTT estimate is live");
+        tailscreen_nack_free(nack);
+
+        uint16_t missing[2] = {300, 305};
+        uint16_t pids[4], blps[4], capped[4];
+        check(tailscreen_fci_capped_seqs(missing, 2, 16, capped, 4) == 2 && capped[1] == 305,
+              "FCI capping passes a small batch through");
+        check(tailscreen_pack_fci(missing, 2, pids, blps, 4) == 1 && pids[0] == 300 &&
+                  blps[0] == (1 << 4),
+              "one FCI entry packs both sequences");
+
+        // FEC group buffer: two of three members plus the parity recover the
+        // third, and the recovery reports its sequence.
+        uint8_t members[3][20];
+        uint8_t *member_ptrs[3];
+        int member_lengths[3];
+        for (int i = 0; i < 3; i++) {
+            tailscreen_buf h = tailscreen_encode_rtp_header(i == 2, 96, (uint16_t)(700 + i), 6000, 42);
+            memcpy(members[i], h.data, 12);
+            tailscreen_free(h.data);
+            for (int j = 12; j < 20; j++) members[i][j] = (uint8_t)(i * 17 + j);
+            member_ptrs[i] = members[i];
+            member_lengths[i] = 20;
+        }
+        tailscreen_buf group_body = tailscreen_parity_body(member_ptrs, member_lengths, 3);
+        int64_t fec = tailscreen_fec_buffer_new(0, 0, 0, 0, 0);  // all defaults
+        uint16_t recovered_seq = 0;
+        tailscreen_buf recovered_pkt = {NULL, 0};
+        check(tailscreen_fec_note_media(fec, 700, members[0], 20, 1000, &recovered_pkt,
+                                        &recovered_seq) == 0,
+              "a media arrival with no parity recovers nothing");
+        tailscreen_fec_note_media(fec, 702, members[2], 20, 2000, &recovered_pkt, &recovered_seq);
+        int solved = tailscreen_fec_note_parity(fec, 700, 3, group_body.data, group_body.len, 3000,
+                                                &recovered_pkt, &recovered_seq);
+        check(solved == 1 && recovered_pkt.data != NULL && recovered_seq == 701 &&
+                  recovered_pkt.len == 20 && memcmp(recovered_pkt.data, members[1], 20) == 0,
+              "the parity recovers the missing member byte for byte");
+        if (solved == 1) tailscreen_free(recovered_pkt.data);
+        tailscreen_free(group_body.data);
+        tailscreen_fec_buffer_free(fec);
+        check(tailscreen_fec_note_media(fec, 700, members[0], 20, 4000, &recovered_pkt,
+                                        &recovered_seq) == -1,
+              "a freed FEC handle is a distinct -1, not a silent non-recovery");
+
+        // Receiver-report accounting: one loss out of five is 51/256.
+        int64_t rr = tailscreen_rr_new();
+        check(tailscreen_rr_has_baseline(rr) == 0, "no baseline before the first packet");
+        uint8_t frac = 0;
+        uint32_t ext = 0;
+        check(tailscreen_rr_make_report(rr, &frac, &ext) == 0, "no report before the first packet");
+        const uint16_t seqs[4] = {0, 1, 3, 4};  // 2 lost
+        for (int i = 0; i < 4; i++) tailscreen_rr_observe(rr, seqs[i]);
+        check(tailscreen_rr_make_report(rr, &frac, &ext) == 1 && frac == 51 && ext == 4,
+              "one loss out of five reports 51/256");
+        tailscreen_rr_free(rr);
+
+        check(tailscreen_extend_seq(2, 65535) == 65538, "extension picks the nearest cycle");
+    }
+
     if (failures == 0) {
         printf("all checks passed\n");
         return 0;
