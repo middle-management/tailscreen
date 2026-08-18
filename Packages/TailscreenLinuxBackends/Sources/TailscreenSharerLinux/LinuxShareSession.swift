@@ -689,7 +689,11 @@ public final class LinuxShareSession {
         drawing.resetForNewSession()
         drawing.onLocalOp = { [weak overlay, weak server] op in
             overlay?.apply(op)
-            Task { await server?.broadcastAnnotation(op) }
+            // Queued, never one task per op: separately-spawned tasks reach
+            // the fan-out in whatever order the runtime picks, and a `.undo`
+            // that overtakes its `.add` leaves the stroke on every viewer's
+            // canvas with nothing left to remove it.
+            server?.enqueueAnnotationBroadcast(op)
         }
         overlay?.onPointer = { [weak self] phase, point in
             // The C layer fires these on the GTK main thread, which is this

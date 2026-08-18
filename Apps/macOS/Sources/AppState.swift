@@ -582,10 +582,14 @@ class AppState: ObservableObject {
     /// this viewer holds a remote-control grant. Framed to the video rect by
     /// `AspectFitHostView.layout`.
     private var viewerControlInput: RemoteControlInputView?
-    /// Serializes captured input onto the back-channel so the sharer sees
-    /// capture order. Built with the capture layer and kept for the viewer
-    /// window's (process) lifetime, like the layer itself.
-    private var viewerInputForwarder: ViewerInputForwarder?
+    /// Serialize captured input and locally drawn annotation ops onto the
+    /// back-channel so the sharer sees them in the order they were produced.
+    /// Built with the viewer window's overlay stack and kept for its
+    /// (process) lifetime, like the layers themselves. Two outboxes rather
+    /// than one because drawing and controlling are mutually exclusive in the
+    /// UI, so the two streams never need ordering against each other.
+    private var viewerInputOutbox: OrderedOutbox<InputEvent>?
+    private var viewerAnnotationOutbox: OrderedOutbox<AnnotationOp>?
     /// The viewer window's aspect-fit host — the view that owns the
     /// continuous content zoom/pan state. Weak: the window's contentView
     /// holds it for the process lifetime. Used to reset the zoom on
@@ -1399,8 +1403,10 @@ class AppState: ObservableObject {
         // Annotations were scoped to the old surface — a window-relative
         // stroke floating over an unrelated display share is noise. Clear
         // every viewer's canvas; the sharer's own canvas is cleared by the
-        // overlay rebuild below.
-        await server.broadcastAnnotation(.clearAll)
+        // overlay rebuild below. Queued rather than sent inline so it lands
+        // AFTER whatever strokes are still in the outbox — a clear that
+        // overtakes them clears a canvas they then repaint.
+        server.enqueueAnnotationBroadcast(.clearAll)
 
         // The overlay's mode is immutable, so it can't be retargeted —
         // rebuild it for the new selection, preserving the sharer's draw
@@ -1970,10 +1976,11 @@ class AppState: ObservableObject {
         // region) — that's redundant, not wrong, and lets a viewer who
         // joins mid-stroke render an in-progress one from video bytes
         // alone if their annotation back-channel is down.
+        // Queued, never one task per op: a `.undo` that overtakes its `.add`
+        // is dropped by every viewer as an unknown id and leaves the stroke
+        // on their canvas for the rest of the share.
         overlay.onOp = { [weak self] op in
-            Task { [weak self] in
-                await self?.server?.broadcastAnnotation(op)
-            }
+            self?.server?.enqueueAnnotationBroadcast(op)
         }
         overlay.show()
         sharerOverlay = overlay
@@ -2674,8 +2681,16 @@ class AppState: ObservableObject {
         let overlayModel = AnnotationCanvasModel()
         overlayModel.currentColor = Annotation.RGBA.paletteColor(
             forIdentity: TailscaleScreenShareClient.localIdentity())
-        overlayModel.onOp = { [weak self] op in
-            Task { [weak self] in await self?.client?.sendAnnotationOp(op) }
+        // Through the outbox, never a Task per op: an `.undo` that overtakes
+        // its `.add` is dropped by the sharer as an unknown id, leaving the
+        // stroke on their screen — and on every other viewer's, since the
+        // sharer relays it — with nothing left that can remove it.
+        let annotationOutbox = OrderedOutbox<AnnotationOp> { [weak self] op in
+            await self?.client?.sendAnnotationOp(op)
+        }
+        self.viewerAnnotationOutbox = annotationOutbox
+        overlayModel.onOp = { op in
+            annotationOutbox.submit(op)
         }
         // Esc lands on the annotation canvas (it's the first responder).
         // Dismissing the cheat-sheet wins while it's visible; otherwise
@@ -2709,16 +2724,16 @@ class AppState: ObservableObject {
         // Hidden until this viewer holds a grant; while active it intercepts
         // pointer/keyboard events and ships them as normalized InputEvents.
         let controlInput = RemoteControlInputView(frame: host.bounds)
-        // Through the forwarder, never a Task per event: a `mouseUp` that
+        // Through the outbox, never a Task per event: a `mouseUp` that
         // overtakes its `mouseDown` strands a button held on the sharer's Mac.
         // The closure resolves `client` per send, so the wiring survives a
         // back-channel reconnect exactly as the annotation path's does.
-        let inputForwarder = ViewerInputForwarder { [weak self] event in
+        let inputOutbox = OrderedOutbox<InputEvent> { [weak self] event in
             await self?.client?.sendInputEvent(event)
         }
-        self.viewerInputForwarder = inputForwarder
+        self.viewerInputOutbox = inputOutbox
         controlInput.onEvent = { event in
-            inputForwarder.submit(event)
+            inputOutbox.submit(event)
         }
         // The release chord (⌃⌥. unless remapped) while capturing releases
         // control instead of being forwarded to the sharer — the defensive

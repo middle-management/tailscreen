@@ -367,6 +367,39 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// back-channel by IP.
     private let annotationConnectionIP = Mutex<[UUID: String]>([:])
 
+    /// One annotation fan-out, and the ordered outbox in front of it.
+    ///
+    /// Annotation ops are a SEQUENCE about one stroke, not independent
+    /// events: `.undo(X)` only means anything to a peer that already has
+    /// `.add(X)`, and `.clearAll` only clears what arrived before it. Every
+    /// fan-out site used to be its own `Task { await broadcastAnnotation(…) }`
+    /// — one per relayed viewer op, one per disconnect-cleanup undo, one per
+    /// sharer stroke on each of the three hosts — and separately-created
+    /// tasks reach a shared await point in whatever order the runtime picks.
+    /// Invert one `add`/`undo` pair and the undo lands on an id the peer has
+    /// never seen, is dropped as unknown, and the stroke stays on every other
+    /// viewer's screen for the rest of the share with nothing left to remove
+    /// it.
+    ///
+    /// So ordering is established where it can be: `enqueueAnnotationBroadcast`
+    /// is **synchronous**, so the order calls reach it in IS the order, and
+    /// one consumer drains the outbox awaiting each fan-out in turn. Hosts
+    /// call that instead of spawning a task per op.
+    private struct AnnotationBroadcast: Sendable {
+        let op: AnnotationOp
+        let excludingConnection: UUID?
+    }
+    private let annotationOutbox: AsyncStream<AnnotationBroadcast>
+    private let annotationOutboxContinuation: AsyncStream<AnnotationBroadcast>.Continuation
+    private let annotationDrain = Mutex<Task<Void, Never>?>(nil)
+
+    /// Test-only: fires for each op as the drain takes it, in fan-out order,
+    /// before the (listener-less, and so no-op) broadcast. Lets a test assert
+    /// the outbox's ordering guarantee with no tsnet node — which is the only
+    /// way to catch a reintroduced `Task { await broadcastAnnotation(…) }`,
+    /// since that bug is a race that passes most runs.
+    var onAnnotationBroadcastForTesting: ((AnnotationOp) -> Void)?
+
     // MARK: - Remote control
 
     /// The single live remote-control grant, or nil when nobody holds control.
@@ -956,6 +989,40 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         self.rendersAnnotations = rendersAnnotations
         self.logger = PrintLogSink(prefix: "Tailscale", dropListeningNoise: true)
         self.rtpTimestampOriginNs = DispatchTime.now().uptimeNanoseconds
+        var outboxContinuation: AsyncStream<AnnotationBroadcast>.Continuation!
+        // Unbounded: dropping the oldest could drop the `.add` a later `.undo`
+        // refers to, which is the exact failure the outbox exists to prevent.
+        // Annotation ops are drag-paced and tiny, so the queue stays short.
+        self.annotationOutbox = AsyncStream(bufferingPolicy: .unbounded) { outboxContinuation = $0 }
+        self.annotationOutboxContinuation = outboxContinuation
+        startAnnotationDrain()
+    }
+
+    /// Start the outbox's single consumer. `[weak self]` so a server that is
+    /// built and dropped without ever starting isn't kept alive by its own
+    /// drain; `deinit` finishes the stream, which ends the loop.
+    private func startAnnotationDrain() {
+        let outbox = annotationOutbox
+        let task = Task { [weak self] in
+            for await item in outbox {
+                self?.onAnnotationBroadcastForTesting?(item.op)
+                await self?.broadcastAnnotation(item.op, excludingConnection: item.excludingConnection)
+            }
+        }
+        annotationDrain.withLock { $0 = task }
+    }
+
+    /// Queue an annotation op for fan-out, preserving the order of these
+    /// calls on the wire. Synchronous by design — see ``annotationOutbox``;
+    /// wrapping it in a `Task` would reintroduce exactly the race it exists
+    /// to close.
+    ///
+    /// Safe before `start()` and after `stop()`: the fan-out no-ops without a
+    /// control listener, and `stop()` drops whatever is still queued (the
+    /// share is over, and so is every canvas it fed).
+    public func enqueueAnnotationBroadcast(_ op: AnnotationOp, excludingConnection: UUID? = nil) {
+        annotationOutboxContinuation.yield(
+            AnnotationBroadcast(op: op, excludingConnection: excludingConnection))
     }
 
     // MARK: - Start
@@ -1754,10 +1821,10 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             self.onAnnotationReceived?(op)
             // Fan out to every OTHER viewer so window / application share
             // modes can carry annotations peer-to-peer instead of relying
-            // on SCStream catching the sharer's overlay panel.
-            Task { [weak self] in
-                await self?.broadcastAnnotation(op, excludingConnection: connectionID)
-            }
+            // on SCStream catching the sharer's overlay panel. Queued rather
+            // than spawned: this viewer's ops must reach the others in the
+            // order it drew them.
+            self.enqueueAnnotationBroadcast(op, excludingConnection: connectionID)
         }
         listener.onControlRequest = { [weak self] connectionID, peerAddress in
             guard let self else { return }
@@ -1823,9 +1890,11 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
             for uuid in outstanding {
                 let op: AnnotationOp = .undo(uuid)
                 cb?(op)
-                Task { [weak self] in
-                    await self?.broadcastAnnotation(op, excludingConnection: connectionID)
-                }
+                // Same outbox as the relay above, and that is the point: a
+                // departing viewer's last `.add` may still be queued, and an
+                // undo that overtakes it strands the stroke it was meant to
+                // remove.
+                self.enqueueAnnotationBroadcast(op, excludingConnection: connectionID)
             }
         }
     }
@@ -3928,6 +3997,11 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         // function touches the capture backend.
         lifecycle.withLock { $0.isRunning = false }
 
+        // Drop anything still queued for annotation fan-out: every viewer is
+        // about to get SERVER_BYE, so there is no canvas left to correct.
+        annotationOutboxContinuation.finish()
+        annotationDrain.withLock { $0?.cancel() }
+
         // End any remote-control session. Viewers are torn down by SERVER_BYE
         // below, so there's no need to send a per-connection revoke — just
         // clear the grant/request state, drop queued input, and notify the UI.
@@ -4096,6 +4170,10 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
 
     deinit {
         lifecycle.withLock { $0.isRunning = false }
+        // Synchronous only. Finishing the stream is what ends the drain loop
+        // for a server that is dropped without a `stop()`; the loop holds
+        // `self` weakly, which is what lets this run at all.
+        annotationOutboxContinuation.finish()
     }
 
     // MARK: - Test-only entrypoints
