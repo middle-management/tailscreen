@@ -1,0 +1,172 @@
+{
+  "suite": "rtp",
+  "description": "The fixed RTP header: what a sender emits and what a receiver must tolerate.",
+  "spec": "docs/spec.md#71-rtp-header",
+  "cases": [
+    {
+      "id": "rtp/encode-header-video",
+      "requirements": [
+        "TS-VID-001",
+        "TS-GEN-023"
+      ],
+      "op": "rtp.encodeHeader",
+      "in": {
+        "marker": false,
+        "payloadType": 96,
+        "sequenceNumber": 1,
+        "timestamp": 90000,
+        "ssrc": 5
+      },
+      "out": {
+        "bytes": "8060000100015f9000000005"
+      }
+    },
+    {
+      "id": "rtp/encode-header-marker",
+      "requirements": [
+        "TS-VID-006"
+      ],
+      "op": "rtp.encodeHeader",
+      "in": {
+        "marker": true,
+        "payloadType": 97,
+        "sequenceNumber": 65535,
+        "timestamp": 4294967295,
+        "ssrc": 0
+      },
+      "out": {
+        "bytes": "80e1ffffffffffff00000000"
+      }
+    },
+    {
+      "id": "rtp/encode-header-audio-voice",
+      "requirements": [
+        "TS-AUD-003",
+        "TS-AUD-004"
+      ],
+      "op": "rtp.encodeHeader",
+      "in": {
+        "marker": true,
+        "payloadType": 98,
+        "sequenceNumber": 3,
+        "timestamp": 2880,
+        "ssrc": 2
+      },
+      "out": {
+        "bytes": "80e2000300000b4000000002"
+      }
+    },
+    {
+      "id": "rtp/encode-header-system-audio",
+      "requirements": [
+        "TS-AUD-004",
+        "TS-AUD-010"
+      ],
+      "op": "rtp.encodeHeader",
+      "in": {
+        "marker": true,
+        "payloadType": 99,
+        "sequenceNumber": 0,
+        "timestamp": 0,
+        "ssrc": 1
+      },
+      "out": {
+        "bytes": "80e300000000000000000001"
+      }
+    },
+    {
+      "id": "rtp/decode-header-plain",
+      "requirements": [
+        "TS-VID-003"
+      ],
+      "op": "rtp.decodeHeader",
+      "in": {
+        "bytes": "806000090000303900000007aabb"
+      },
+      "out": {
+        "marker": false,
+        "payloadType": 96,
+        "sequenceNumber": 9,
+        "timestamp": 12345,
+        "ssrc": 7,
+        "payloadOffset": 12
+      }
+    },
+    {
+      "id": "rtp/decode-header-rejects-version-1",
+      "requirements": [
+        "TS-VID-002"
+      ],
+      "op": "rtp.decodeHeader",
+      "in": {
+        "bytes": "406000010000000100000001"
+      },
+      "out": {
+        "header": null
+      }
+    },
+    {
+      "id": "rtp/decode-header-rejects-short",
+      "requirements": [
+        "TS-VID-003"
+      ],
+      "op": "rtp.decodeHeader",
+      "in": {
+        "bytes": "8060000100000001000000"
+      },
+      "out": {
+        "header": null
+      }
+    },
+    {
+      "id": "rtp/decode-header-skips-csrc",
+      "requirements": [
+        "TS-VID-003"
+      ],
+      "op": "rtp.decodeHeader",
+      "in": {
+        "bytes": "826000040000000800000009111111112222222201"
+      },
+      "out": {
+        "marker": false,
+        "payloadType": 96,
+        "sequenceNumber": 4,
+        "timestamp": 8,
+        "ssrc": 9,
+        "payloadOffset": 20
+      }
+    },
+    {
+      "id": "rtp/decode-header-skips-extension",
+      "requirements": [
+        "TS-VID-003"
+      ],
+      "op": "rtp.decodeHeader",
+      "in": {
+        "bytes": "90e100040000000800000009bede0002000000000000000001"
+      },
+      "out": {
+        "marker": true,
+        "payloadType": 97,
+        "sequenceNumber": 4,
+        "timestamp": 8,
+        "ssrc": 9,
+        "payloadOffset": 24
+      }
+    },
+    {
+      "id": "rtp/decode-header-rejects-truncated-extension",
+      "requirements": [
+        "TS-VID-003",
+        "TS-SEC-002"
+      ],
+      "op": "rtp.decodeHeader",
+      "in": {
+        "bytes": "906000040000000800000009bede0004"
+      },
+      "out": {
+        "header": null
+      }
+    }
+  ]
+}

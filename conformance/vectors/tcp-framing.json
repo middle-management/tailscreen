@@ -1,0 +1,382 @@
+{
+  "suite": "tcp-framing",
+  "description": "The [type][length][payload] framing shared by annotations, remote control, metadata and request-to-share.",
+  "spec": "docs/spec.md#10-the-framed-tcp-channel",
+  "cases": [
+    {
+      "id": "tcp/encode-annotation-frame",
+      "requirements": [
+        "TS-TCP-001"
+      ],
+      "op": "frame.encode",
+      "in": {
+        "type": 3,
+        "payload": "7b2274797065223a22636c656172416c6c227d"
+      },
+      "out": {
+        "bytes": "03000000137b2274797065223a22636c656172416c6c227d"
+      }
+    },
+    {
+      "id": "tcp/encode-empty-payload-frame",
+      "requirements": [
+        "TS-TCP-001"
+      ],
+      "op": "frame.encode",
+      "in": {
+        "type": 6,
+        "payload": ""
+      },
+      "out": {
+        "bytes": "0600000000"
+      }
+    },
+    {
+      "id": "tcp/parse-single-frame",
+      "requirements": [
+        "TS-TCP-006"
+      ],
+      "op": "frame.parse",
+      "in": {
+        "chunks": [
+          "03000000137b2274797065223a22636c656172416c6c227d"
+        ]
+      },
+      "out": {
+        "frames": [
+          {
+            "type": 3,
+            "payload": "7b2274797065223a22636c656172416c6c227d"
+          }
+        ],
+        "corrupt": false
+      }
+    },
+    {
+      "id": "tcp/parse-three-frames-one-chunk",
+      "requirements": [
+        "TS-TCP-007"
+      ],
+      "op": "frame.parse",
+      "in": {
+        "chunks": [
+          "03000000137b2274797065223a22636c656172416c6c227d040000001e7b2266726f6d486f73746e616d65223a2273747564696f2d696d6163227d0600000000"
+        ]
+      },
+      "out": {
+        "frames": [
+          {
+            "type": 3,
+            "payload": "7b2274797065223a22636c656172416c6c227d"
+          },
+          {
+            "type": 4,
+            "payload": "7b2266726f6d486f73746e616d65223a2273747564696f2d696d6163227d"
+          },
+          {
+            "type": 6,
+            "payload": ""
+          }
+        ],
+        "corrupt": false
+      }
+    },
+    {
+      "id": "tcp/parse-byte-at-a-time",
+      "requirements": [
+        "TS-TCP-006"
+      ],
+      "op": "frame.parse",
+      "in": {
+        "chunks": [
+          "03",
+          "00",
+          "00",
+          "00",
+          "13",
+          "7b",
+          "22",
+          "74",
+          "79",
+          "70",
+          "65",
+          "22",
+          "3a",
+          "22",
+          "63",
+          "6c",
+          "65",
+          "61",
+          "72",
+          "41",
+          "6c",
+          "6c",
+          "22",
+          "7d",
+          "04",
+          "00",
+          "00",
+          "00",
+          "1e",
+          "7b",
+          "22",
+          "66",
+          "72",
+          "6f",
+          "6d",
+          "48",
+          "6f",
+          "73",
+          "74",
+          "6e",
+          "61",
+          "6d",
+          "65",
+          "22",
+          "3a",
+          "22",
+          "73",
+          "74",
+          "75",
+          "64",
+          "69",
+          "6f",
+          "2d",
+          "69",
+          "6d",
+          "61",
+          "63",
+          "22",
+          "7d",
+          "06",
+          "00",
+          "00",
+          "00",
+          "00"
+        ]
+      },
+      "out": {
+        "frames": [
+          {
+            "type": 3,
+            "payload": "7b2274797065223a22636c656172416c6c227d"
+          },
+          {
+            "type": 4,
+            "payload": "7b2266726f6d486f73746e616d65223a2273747564696f2d696d6163227d"
+          },
+          {
+            "type": 6,
+            "payload": ""
+          }
+        ],
+        "corrupt": false
+      }
+    },
+    {
+      "id": "tcp/parse-partial-header-yields-nothing",
+      "requirements": [
+        "TS-TCP-006"
+      ],
+      "op": "frame.parse",
+      "in": {
+        "chunks": [
+          "03000000"
+        ]
+      },
+      "out": {
+        "frames": [],
+        "corrupt": false
+      }
+    },
+    {
+      "id": "tcp/parse-partial-payload-yields-nothing",
+      "requirements": [
+        "TS-TCP-006"
+      ],
+      "op": "frame.parse",
+      "in": {
+        "chunks": [
+          "03000000137b2274797065223a22636c656172416c6c22"
+        ]
+      },
+      "out": {
+        "frames": [],
+        "corrupt": false
+      }
+    },
+    {
+      "id": "tcp/parse-skips-unknown-type",
+      "requirements": [
+        "TS-TCP-003",
+        "TS-EXT-001"
+      ],
+      "op": "frame.parse",
+      "in": {
+        "chunks": [
+          "ff00000008776861746576657203000000137b2274797065223a22636c656172416c6c227d"
+        ]
+      },
+      "out": {
+        "frames": [
+          {
+            "type": 3,
+            "payload": "7b2274797065223a22636c656172416c6c227d"
+          }
+        ],
+        "corrupt": false
+      }
+    },
+    {
+      "id": "tcp/parse-skips-reserved-type",
+      "requirements": [
+        "TS-TCP-003"
+      ],
+      "op": "frame.parse",
+      "in": {
+        "chunks": [
+          "010000000a686973746f726963616c0600000000"
+        ]
+      },
+      "out": {
+        "frames": [
+          {
+            "type": 6,
+            "payload": ""
+          }
+        ],
+        "corrupt": false
+      }
+    },
+    {
+      "id": "tcp/parse-rejects-oversized-length",
+      "requirements": [
+        "TS-TCP-004",
+        "TS-SEC-003"
+      ],
+      "op": "frame.parse",
+      "in": {
+        "chunks": [
+          "03001000010000000000000000"
+        ]
+      },
+      "out": {
+        "frames": [],
+        "corrupt": true
+      }
+    },
+    {
+      "id": "tcp/parse-oversized-poisons-stream",
+      "requirements": [
+        "TS-TCP-005"
+      ],
+      "op": "frame.parse",
+      "in": {
+        "chunks": [
+          "03001000010000000000000000",
+          "03000000137b2274797065223a22636c656172416c6c227d"
+        ]
+      },
+      "out": {
+        "frames": [],
+        "corrupt": true
+      }
+    },
+    {
+      "id": "tcp/parse-oversized-rejected-before-buffering",
+      "requirements": [
+        "TS-TCP-004"
+      ],
+      "op": "frame.parse",
+      "in": {
+        "chunks": [
+          "03ffffffff"
+        ]
+      },
+      "out": {
+        "frames": [],
+        "corrupt": true
+      }
+    },
+    {
+      "id": "tcp/parse-accepts-length-at-limit-header",
+      "requirements": [
+        "TS-TCP-004"
+      ],
+      "op": "frame.parse",
+      "in": {
+        "chunks": [
+          "0300100000"
+        ]
+      },
+      "out": {
+        "frames": [],
+        "corrupt": false
+      }
+    },
+    {
+      "id": "tcp/parse-remaining-known-types",
+      "requirements": [
+        "TS-TCP-001",
+        "TS-CNF-002"
+      ],
+      "op": "frame.parse",
+      "in": {
+        "chunks": [
+          "05000000167b2274797065223a226163636570745368617265227d070000000008000000117b22726561736f6e223a22676f6e65227d0a000000000b00000000"
+        ]
+      },
+      "out": {
+        "frames": [
+          {
+            "type": 5,
+            "payload": "7b2274797065223a226163636570745368617265227d"
+          },
+          {
+            "type": 7,
+            "payload": ""
+          },
+          {
+            "type": 8,
+            "payload": "7b22726561736f6e223a22676f6e65227d"
+          },
+          {
+            "type": 10,
+            "payload": ""
+          },
+          {
+            "type": 11,
+            "payload": ""
+          }
+        ],
+        "corrupt": false
+      }
+    },
+    {
+      "id": "tcp/parse-frame-after-unknown-in-same-chunk",
+      "requirements": [
+        "TS-TCP-003",
+        "TS-TCP-007"
+      ],
+      "op": "frame.parse",
+      "in": {
+        "chunks": [
+          "03000000137b2274797065223a22636c656172416c6c227dff000000087768617465766572040000001e7b2266726f6d486f73746e616d65223a2273747564696f2d696d6163227d"
+        ]
+      },
+      "out": {
+        "frames": [
+          {
+            "type": 3,
+            "payload": "7b2274797065223a22636c656172416c6c227d"
+          },
+          {
+            "type": 4,
+            "payload": "7b2266726f6d486f73746e616d65223a2273747564696f2d696d6163227d"
+          }
+        ],
+        "corrupt": false
+      }
+    }
+  ]
+}

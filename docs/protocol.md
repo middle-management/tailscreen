@@ -2,6 +2,7 @@
 title: Network Protocol
 nav_order: 6
 permalink: /protocol/
+has_children: true
 ---
 
 # Network protocol
@@ -10,9 +11,26 @@ permalink: /protocol/
 1. TOC
 {:toc}
 
+This page explains how the protocol works and why it is shaped this way. The
+normative definition — every MUST and MUST NOT, with stable requirement
+identifiers and a machine-readable conformance suite behind them — is the
+[Wire Protocol Specification]({{ site.baseurl }}{% link spec.md %}). Where the
+two disagree, the specification wins.
+
 Tailscreen uses **one port — `7447` — on both TCP and UDP**, and that's it.
-All traffic rides over Tailscale's WireGuard tunnel, so anything you read
-below is happening inside an authenticated, encrypted pipe.
+All traffic rides over the tailnet's WireGuard tunnel, so anything you read
+below is happening inside an authenticated, encrypted pipe. "Tailnet" rather
+than "Tailscale" throughout: the protocol leans on the mesh for peer identity
+and discovery as much as for encryption, and a self-hosted
+[headscale]({{ site.baseurl }}{% link self-hosted.md %}) control plane supplies
+all of it just as the hosted service does.
+
+`7447` is a *provisional* default, not an IANA-registered assignment. Nothing
+in the protocol negotiates it and nothing discovers it, so peers on different
+numbers simply don't find each other — which is why it reads as fixed in
+practice. It is still free to move (a registration could land on a different
+number), and the code is written for that: the literal lives once, in
+`NetworkConfig.tailscreenPort`.
 
 | Channel        | Transport | Purpose                                                              |
 | :------------- | :-------- | :------------------------------------------------------------------- |
@@ -22,11 +40,12 @@ below is happening inside an authenticated, encrypted pipe.
 | Annotations    | TCP/7447  | Length-framed JSON messages. Reliable on purpose.                    |
 | Remote control | TCP/7447  | Request/grant/revoke + input events, on the same framed channel.     |
 | Metadata       | TCP/7447  | Share name, resolution, request-to-share prompts.                    |
-| Discovery      | TCP/7447  | Probe across the tailnet to find Tailscreen peers.                   |
+| Discovery      | —         | Read off the tailnet's own netmap, not probed. See below.            |
 
-Planning to make `7447` configurable? It's hardcoded across the discovery,
-server, client, and metadata paths — search for `7447` and update every
-occurrence, or discovery quietly finds nothing.
+Planning to make `7447` configurable? It lives in one place —
+`NetworkConfig.tailscreenPort` — and the server, client, listener and
+metadata paths all read it from there. A bare `7447` written anywhere else in
+the code is a regression, not a second knob to turn.
 
 ## Video — UDP RTP
 
@@ -332,16 +351,22 @@ This isn't its own port for a reason: opening a second port would mean a
 second hole in any tailnet ACL and a second TCP probe in discovery. One
 port, multiple channels, separated by the framing byte.
 
-## Discovery probe
+## Discovery
 
-Discovery enumerates peers from the local tsnet LocalAPI, then opens
-TCP/7447 to each peer in parallel with a short timeout. Peers that accept
-and reply with the Tailscreen handshake show up in the **Screens** list.
-Peers that don't, don't.
+Discovery reads the tailnet, it doesn't probe it. Every Tailscreen
+installation registers its tsnet node under a hostname starting
+`tailscreen-`, so the IPN netmap already says which machines are Tailscreen
+installations and which are online — no TCP or UDP probe adds anything.
+Ephemeral viewer-only nodes register under `tailscreen-client-` and are
+excluded, so a transient viewer never shows up as something you can connect
+to.
 
-The probe is parallel because tailnets get big, and a serial probe of 50
-peers with a 500ms timeout each is 25 seconds of staring at a spinner.
-Parallel, it's 500ms total.
+Share *status* is the one thing the netmap can't tell you, and that's a
+separate, lazy query: the metadata pair above (`0x0B`/`0x0C`), dialled
+concurrently across online peers only when the menu opens, on a manual
+refresh, or when the "only screens being shared" filter turns on. Every
+failure — timeout, EOF, an older peer dropping the unknown byte — reads as
+*status unknown*, never as "not sharing".
 
 ## Changing the protocol
 
@@ -352,3 +377,11 @@ per-channel uniqueness, and every parser on this page is run through a
 deterministic seeded fuzz harness in CI. If you add a wire byte, add its
 registry row in the same commit; if you renumber a shipped one, the
 registry will name you, and deployed peers will break. Don't.
+
+The rules those constants have to obey — and the ones every parser on this
+page has to obey — are written down normatively in the
+[Wire Protocol Specification]({{ site.baseurl }}{% link spec.md %}), and the
+`conformance/` directory carries language-neutral vectors that pin them. A
+change to a wire value touches three things in one commit: the registry test,
+the specification's [registry appendix]({{ site.baseurl }}{% link spec.md %}#appendix-a-wire-value-registry),
+and a vector.

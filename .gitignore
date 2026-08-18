@@ -45,3 +45,8 @@ Tailscreen
 Apps/macOS/Resources/*.iconset/
 e2e/.native-run/
 e2e/.native-bin/
+
+# The C archive built from the Go SDK (sdk/go/capi). Like libtailscale.a it is
+# a build product with a compiler and a platform baked into it, so it is built
+# per machine rather than committed — `make libtailscreen`.
+sdk/go/build/

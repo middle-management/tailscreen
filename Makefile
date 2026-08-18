@@ -1,4 +1,4 @@
-.PHONY: help build run clean release install tailscale test test-protocol test-tsan test-l10n lint lint-baseline format format-check print-format-paths-all e2e-up e2e-down test-e2e test-e2e-local test-e2e-harness icon icon-windows
+.PHONY: help build run clean release install tailscale test test-protocol test-conformance fuzz-conformance libtailscreen libtailscreen-check test-tsan test-l10n lint lint-baseline format format-check print-format-paths-all e2e-up e2e-down test-e2e test-e2e-local test-e2e-harness icon icon-windows
 
 # Default target: print a one-line summary of every target. Targets are
 # self-documented via the `## description` suffix on each rule.
@@ -53,6 +53,64 @@ test-protocol: tailscale ## Build + smoke-test the portable TailscreenKit packag
 # Swift does; CI's linux-l10n job runs exactly this.
 test-l10n: ## Build + test the shared localization catalog package
 	swift test --package-path Packages/TailscreenL10n
+
+# The protocol conformance vectors (conformance/), run against the Go
+# implementation in conformance/go — which was written from docs/spec.md and
+# shares no code with the Swift one. That independence is the whole value: it
+# is what tells you the specification is implementable by somebody who only
+# read it, rather than merely self-consistent.
+#
+# The OTHER half runs inside `make test-protocol`: ConformanceVectorTests
+# executes the same vectors against the shipping Swift codecs, which is what
+# keeps the specification describing Tailscreen rather than an idealized
+# cousin of it. Needs Go, which the repo already requires for libtailscale.
+# CI's linux-conformance job runs exactly this.
+test-conformance: ## Run the protocol conformance vectors (Go runner)
+	cd conformance/go && go test ./...
+
+# Coverage-guided fuzzing of the Go SDK's parsers. Their SEED corpus already
+# runs on every `go test` (and so on every `make test-conformance`); this
+# target is the mutation run, which needs a wall-clock budget and therefore an
+# explicit invocation. Go writes any crash to
+# sdk/go/tailscreen/testdata/fuzz/<Target>/ — commit it, and it becomes a
+# permanent regression case the seed run replays for free.
+#
+# FUZZTIME is per target, so the whole sweep is FUZZTIME × the target count.
+FUZZTIME ?= 30s
+fuzz-conformance: ## Fuzz the Go protocol parsers (FUZZTIME=30s per target)
+	@cd sdk/go && for target in $$(go test ./tailscreen -list 'Fuzz.*' | grep '^Fuzz'); do \
+		echo "== $$target"; \
+		go test ./tailscreen -run '^$$' -fuzz "^$$target$$" -fuzztime $(FUZZTIME) || exit 1; \
+	done
+
+# libtailscreen.a — the Go wire implementation as a C static library, for
+# clients that are not Go. Same mechanism as libtailscale.a one floor down
+# (Go compiled with -buildmode=c-archive, consumed through a generated
+# header), so the two are built and linked the same way.
+#
+# Not committed: an archive carries a compiler and a target platform, so it is
+# built per machine. Output lands in sdk/go/build/, which .gitignore covers.
+#
+# -buildvcs=false because the archive does not want a VCS stamp and cannot
+# always get one: Go shells out to git to stamp the revision, and inside CI's
+# container git refuses the checkout as dubiously-owned and exits 128, which
+# fails the build over metadata nothing here reads. Turning it off also makes
+# the artifact reproducible from a tarball with no .git at all.
+libtailscreen: ## Build sdk/go/build/libtailscreen.{a,h} (C static library)
+	@mkdir -p sdk/go/build
+	cd sdk/go && go build -buildvcs=false -buildmode=c-archive -o build/libtailscreen.a ./capi
+	@echo "sdk/go/build/libtailscreen.a + libtailscreen.h"
+
+# Compiles and runs the C smoke test against the archive. It is the ABI that
+# is under test here, not the codecs — those are covered by the vectors, which
+# run against the same Go package this archive wraps. What only a C caller can
+# check is that the header's signatures match, that the archive links, that a
+# returned buffer is really malloc'd memory it can free, and that a rejected
+# datagram arrives as a NULL pointer rather than as a crash.
+libtailscreen-check: libtailscreen ## Build + run the C smoke test against the archive
+	cc -Wall -Wextra -Isdk/go/build sdk/go/ctest/smoke.c sdk/go/build/libtailscreen.a \
+		-lpthread -o sdk/go/build/smoke
+	./sdk/go/build/smoke
 
 # Thread sanitizer build of the test suite. Catches data races on locks,
 # double-resumed continuations, callback ordering bugs that compile fine

@@ -1,0 +1,37 @@
+{
+  "specVersion": 1,
+  "spec": "docs/spec.md",
+  "generator": "conformance/tools/gen_vectors.py",
+  "suites": [
+    {
+      "suite": "udp-control",
+      "file": "udp-control.json",
+      "cases": 53
+    },
+    {
+      "suite": "rtp",
+      "file": "rtp.json",
+      "cases": 10
+    },
+    {
+      "suite": "packetization",
+      "file": "packetization.json",
+      "cases": 11
+    },
+    {
+      "suite": "loss-recovery",
+      "file": "loss-recovery.json",
+      "cases": 42
+    },
+    {
+      "suite": "tcp-framing",
+      "file": "tcp-framing.json",
+      "cases": 15
+    },
+    {
+      "suite": "json-payloads",
+      "file": "json-payloads.json",
+      "cases": 32
+    }
+  ]
+}
