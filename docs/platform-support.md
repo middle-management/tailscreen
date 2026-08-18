@@ -14,23 +14,14 @@ What works where. macOS is the reference implementation; Linux and Windows are
 newer and deliberately incomplete in places.
 
 This page doubles as the **alignment scoreboard**: every ⚠️ and ❌ below is
-either a gap worth closing or a decision worth writing down, and several of them
-were found by building this table rather than by anyone hitting them. The order
-to close them in — and which ones are deliberate divergences rather than debt —
+either a gap worth closing or a decision worth writing down. The order to
+close them in — and which ones are deliberate divergences rather than debt —
 is `plans/platform-alignment.md`.
 
-**Rows track `main`, not open pull requests, and not what a plan says is next.**
-A row is ✅ when the thing works for somebody who installed the app, which means
-the code is merged *and* something consumes it. That distinction is not
-pedantic: "Grant + inject remote control as a sharer" read ✅ for Linux while the
-sharer had no way to answer a request at all — the injector existed, the
-capability bit was advertised, and nothing in the app subscribed to the requests
-it invited. The row was true about the backend and false about the product.
-
-The failure runs one way. Nobody has ever marked a working feature ❌; the
-pressure is always to flip a row early, on the strength of a merged package or a
-PR about to land. So when a row is ⚠️, say what the partial case *is* — that is
-the part a reader can act on.
+**Rows track `main`, not open pull requests.** A row is ✅ only when the
+thing works for somebody who installed the app — the code is merged *and*
+the product consumes it, not merely the backend. And a ⚠️ row's note says
+what the partial case *is*, because that is the part a reader can act on.
 
 ## Legend
 
@@ -66,9 +57,8 @@ X11-only desktop genuinely lacks; a window selection is never silently
 widened to the whole screen.
 
 **Wayland sharing works too.** The sharer picks its backend from the
-session kind — `XDG_SESSION_TYPE`, never `$DISPLAY`, because XWayland sets
-`$DISPLAY` and the old display-only gate made a Wayland desktop "share" an
-empty XWayland root while the UI said Sharing. An X11 session keeps direct
+session kind — `XDG_SESSION_TYPE`, never `$DISPLAY`, which XWayland sets
+on Wayland desktops too. An X11 session keeps direct
 root capture; a Wayland session negotiates the ScreenCast portal
 (`PortalCaptureKit` + `TailscreenSharerPortal`, PipeWire frames into the
 same BGRAToI420 → libavcodec seam as X11 and WGC), which begins with the
@@ -112,15 +102,11 @@ system's own output; viewers on every platform play it back.
 | Detects a vanished sharer (timeout / dead socket) | ✅ | ✅ | ✅ |
 | Cancel while waiting for approval | ✅ | ✅ | ✅ |
 
-**Linux and Windows *were* near mirror images here**, which was an accident of
-the order things were built rather than a design: Linux grew the viewer half
-first, Windows the sharer half. Every row except the revoke hotkey is now
-closed on all three — Linux's sharer half (annotation rendering, then XTEST
-injection) and then the Windows viewer half (drawing, zoom + pan, requesting
-control) went in that order. Closing them was mostly wiring: the protocol, the
-grant gate, the coordinate mapping and the neutral key model were all portable
-and already tested, so what was missing each time was the host call rather
-than a capability.
+Every row except the revoke hotkey is closed on all three platforms.
+Closing them was mostly wiring: the protocol, the grant gate, the
+coordinate mapping and the neutral key model were all portable and already
+tested, so what was missing each time was the host call rather than a
+capability.
 
 Three specifics worth knowing:
 
@@ -130,14 +116,8 @@ Three specifics worth knowing:
   would be a black rectangle over the sharer's whole screen. It therefore
   refuses to exist there, and the capability bit is withheld with it, so
   viewers see disabled drawing tools rather than strokes reaching nobody. Every
-  mainstream desktop composites; headless and bare-X setups don't.
-
-  This row was ❌ until recently for a more embarrassing reason: the sharer
-  *claimed* annotations it could not render. `rendersAnnotations` defaulted to
-  `true`, so every viewer enabled its drawing tools and strokes were relayed to
-  *other* viewers while never appearing on the sharer's own screen — with one
-  viewer, the common case, drawing silently did nothing. The default now
-  withholds, and each host derives the bit from something it actually has.
+  mainstream desktop composites; headless and bare-X setups don't. (The bit is
+  always *derived* from something the host actually has, never defaulted on.)
 - **The Linux sharer injects through XTEST, which is an optional X11
   extension.** Without it every call succeeds and injects nothing, so its
   presence is probed at open and the capability is withheld when absent —
@@ -161,19 +141,12 @@ Three specifics worth knowing:
 | Kick a connected viewer | ✅ | ✅ | ✅ |
 | Ask a peer to share their screen | ✅ | ✅ | ✅ |
 
-This section was the worst gap in the matrix and is now closed. It mattered more
-than the video rows: a sharer on Linux or Windows could let somebody in and then
-had no way to change their mind, and by the alignment plan's bar — *nobody should
-move between platforms and find a decision they cannot make* — that is a
-different kind of missing than software-vs-hardware encode.
-
-The approval gate itself was always portable and every host asserts it (the
-server's own default is *off*, which is right for a headless automation sharer
-and wrong for anything with a person in front of it). What the other two lacked
-was the persistent per-peer store and somewhere to drive it from. Both now come
-from shared code: the decision logic and the StableNodeID-keyed intent queue
-live in the portable tier (`ViewerRosterDecision` + `SharerAccessCoordinator`),
-and the hub renders one viewer-row component on every host.
+All of it comes from shared code: the approval gate, the decision logic and
+the StableNodeID-keyed intent queue live in the portable tier
+(`ViewerRosterDecision` + `SharerAccessCoordinator`), and the hub renders
+one viewer-row component on every host. (The server's own default is
+approval *off* — right for a headless automation sharer; every app host
+turns it on.)
 
 Two things behind the ✅s are worth knowing:
 
@@ -229,12 +202,11 @@ coming forward. Linux and Windows put everything in one window — which during 
 share is behind the thing you're sharing, and raising it is itself visible to
 your viewers. Every mid-share action costs an interruption the audience can see.
 
-**Notifications used to be the worst of these gaps, and are now the most
-uneven.** Approval defaults *on*, so a sharer who isn't watching the window
-silently strands whoever tries to connect; there is nothing to poll for and no
-way to find out. All three platforms now post, and the *decisions* behind them
-— what to say, when, when to take it back — are one shared, tested layer, so
-they can't drift apart. Every ask carries Accept / Deny you answer without
+**Notifications are the most uneven block.** They matter because approval
+defaults *on*: a sharer who isn't watching the window silently strands
+whoever tries to connect. All three platforms post, and the *decisions*
+behind them — what to say, when, when to take it back — are one shared,
+tested layer, so they can't drift apart. Every ask carries Accept / Deny you answer without
 leaving what you're doing, the two that strand somebody mid-share break through
 Do Not Disturb and the reports don't, and nothing dings while a share is
 running, because a notification sound is played by another process and would go
@@ -261,21 +233,12 @@ actually deliver:
 **"Am I still sharing?" is a different question, and an outline answers it
 better than an icon.** A border drawn around the captured region says what a
 status glyph can't: not that a share is running somewhere, but that *this* is
-what viewers can see. macOS draws one for every share kind; Linux draws one for
-X11 display shares and deliberately none for a portal share, where it can't know
-the captured region and a wrong border is worse than none. Windows didn't have
+what viewers can see. macOS draws one for every share kind. Linux paints one
+under the annotations overlay for X11 display shares only: the portal hands
+back a stream size but no position on screen, so a portal share gets no
+indicator rather than a border around the wrong region. Windows didn't have
 to build one — WGC draws its own capture border unless an app opts out, and ours
 doesn't (still unconfirmed on a real desktop).
-
-Linux draws its own, painted under the annotations on the overlay that is
-already the capture rectangle. It is ⚠️ rather than ✅ for a reason worth
-stating, because it is the same class of thing this page exists to catch: the
-overlay is sized from the **X display**, since the portal hands back a stream
-size but no position on screen. A portal share of one window would therefore get
-a border around the whole desktop — which states the exact opposite of what an
-outline claims. So it is shown only for X11 display shares, where the rectangle
-is known to be the right one, and a portal share gets no indicator rather than a
-misleading one.
 
 The capabilities behind the remaining rows now exist everywhere — microphone
 capture and the click-taking sharer overlay both landed — so what's left
@@ -292,7 +255,8 @@ platforms — is in
 ## Transport and resilience
 
 Everything here is in the portable core and identical on all three platforms,
-because none of it touches the OS:
+because none of it touches the OS (the mechanics are on the
+[Network Protocol]({{ site.baseurl }}{% link protocol.md %}) page):
 
 NACK retransmission · XOR FEC · receiver reports · congestion control and the
 fps ladder · adaptive bitrate · per-viewer fairness · reorder/jitter buffering ·
@@ -300,12 +264,10 @@ keyframe request (PLI) · idle sweep · the codec fallback ladder · the
 decode-failure escalation ladder (keyframe request → decoder reset → a
 user-visible stall error).
 
-Voice has its own resilience layer, and it is portable on the same terms:
-Opus packet-loss concealment across short sequence gaps (capped, and faded at
-both boundaries so a long gap doesn't drone), a per-speaker adaptive jitter
-buffer sized from RFC 3550 jitter, a cooldown on a decoder that starts failing
-rather than hammering it, and a sweep that retires speakers who have gone quiet.
-All three platforms run the same decisions.
+Voice has its own resilience layer on the same terms — packet-loss
+concealment, per-speaker jitter buffering, a cooldown on a failing decoder,
+a sweep that retires quiet speakers — and all three platforms run the same
+decisions.
 
 That is the point of the split: a bug fixed in the loss-recovery path is fixed
 everywhere, and the platform code stays down to capture, encode, decode, render,

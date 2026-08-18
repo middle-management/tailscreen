@@ -206,10 +206,10 @@ required. And if you want Tailscreen ready the moment you log in, flip
 The viewer's toolbar has drawing tools, plus a color swatch — pick one of
 the eight preset colors and your strokes carry it to the sharer and every
 other viewer. Doodle on the sharer's screen and
-your strokes appear in a transparent overlay window on their machine. The
-back-channel rides over TCP rather than the lossy UDP video stream — see
-[Network Protocol]({{ site.baseurl }}{% link protocol.md %}) — so individual stroke segments
-won't drop even if you lose a video frame or two.
+your strokes appear in a transparent overlay window on their machine.
+Strokes ride a reliable channel separate from the video (see
+[Network Protocol]({{ site.baseurl }}{% link protocol.md %})), so they
+don't drop even when video frames do.
 
 Annotations aren't persisted on either end — quit the viewer or stop
 sharing and they're gone.
@@ -218,12 +218,11 @@ sharing and they're gone.
 
 Both sides have a mic button (on macOS, **⌃⌥M** also works system-wide,
 even when Tailscreen isn't focused — remappable in **Settings → Keyboard
-Shortcuts**, which also warns when another app already owns the combo). Audio is Opus over the same tunnel as
-the video.
+Shortcuts**, which also warns when another app already owns the combo).
+Audio travels over the same tunnel as the video.
 With multiple viewers, everyone hears everyone — the sharer relays each
-viewer's voice to the other viewers. The receive path runs an adaptive
-jitter buffer with packet-loss concealment, so a lossy Wi-Fi link degrades
-into brief soft spots rather than robotic stutter.
+viewer's voice to the other viewers. A lossy Wi-Fi link degrades into
+brief soft spots rather than robotic stutter.
 
 ## Sharing system audio
 
@@ -439,6 +438,5 @@ Things you can do:
   saturating the upstream link will crowd out the video and show up as
   stutters — pause them while you share.
 - **On a genuinely bad link, pick the Low preset** in Settings → Quality.
-  The adaptive machinery (bitrate, frame rate, retransmission, FEC) copes
-  with loss automatically, but starting from a smaller budget gives it
-  less work to do.
+  The adaptive machinery copes with loss automatically, but starting from
+  a smaller budget gives it less work to do.

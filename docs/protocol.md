@@ -26,10 +26,9 @@ and discovery as much as for encryption, and a self-hosted
 all of it just as the hosted service does.
 
 `7447` is a *provisional* default, not an IANA-registered assignment. Nothing
-in the protocol negotiates it and nothing discovers it, so peers on different
-numbers simply don't find each other — which is why it reads as fixed in
-practice. It is still free to move (a registration could land on a different
-number), and the code is written for that: the literal lives once, in
+negotiates or discovers it, so peers on different numbers simply don't find
+each other — which is why it reads as fixed in practice. It is still free to
+move, and for that reason the literal lives once in the code, in
 `NetworkConfig.tailscreenPort`.
 
 | Channel        | Transport | Purpose                                                              |
@@ -41,11 +40,6 @@ number), and the code is written for that: the literal lives once, in
 | Remote control | TCP/7447  | Request/grant/revoke + input events, on the same framed channel.     |
 | Metadata       | TCP/7447  | Share name, resolution, request-to-share prompts.                    |
 | Discovery      | —         | Read off the tailnet's own netmap, not probed. See below.            |
-
-Planning to make `7447` configurable? It lives in one place —
-`NetworkConfig.tailscreenPort` — and the server, client, listener and
-metadata paths all read it from there. A bare `7447` written anywhere else in
-the code is a regression, not a second knob to turn.
 
 ## Video — UDP RTP
 
@@ -98,9 +92,8 @@ keyframe at all.
 ## Audio — UDP RTP
 
 Same socket, same RTP framing, separate payload types and a separate SSRC
-space from video. Opus (royalty-free, software-only — it replaced the
-original AAC-LC path), mono, 48 kHz, one 20 ms frame (960 samples) per
-packet:
+space from video. Opus (royalty-free, software-only), mono, 48 kHz, one
+20 ms frame (960 samples) per packet:
 
 - `98` — voice (bidirectional; the sharer also relays each viewer's voice
   to the other viewers, byte-for-byte, after validating the packet's SSRC
@@ -182,47 +175,17 @@ Both follow the same rule the loss-recovery caps do: absence degrades to
 "feature off," and — pre-1.0 with no deployed peers — the bit is
 authoritative, so a set bit is the only thing that lights up the UI.
 
-**Reserved / future caps.** The `caps` byte is a single `UInt8` per
-direction; bits 0–4 are assigned, leaving room but not unlimited room.
-Candidates deliberately *not* yet spent:
-
-- **Video-codec caps** (viewer→sharer "I decode HEVC" / "I decode 10-bit").
-  The weakest candidate, because codec is *already* negotiated — just not
-  in HELLO. It's self-describing on every packet (payload type 96/97),
-  the parameter sets ride every keyframe, and the `CODEC_NO` / `PROFILE_NO`
-  fallbacks are keyframe-latched: an incompatible viewer signals, the
-  sharer re-inits the encoder, and the switch lands at the next keyframe
-  (~1–2 s). A HELLO cap would only save the *initial* `CODEC_NO`
-  round-trip for a single incompatible viewer — a time-to-first-frame
-  delay at startup, not a mid-stream glitch — and even that is diluted by
-  the encode-once-fan-out rule (the first non-HEVC viewer latches everyone
-  to H.264 anyway). The existing keyframe-granular mechanism already
-  converges on its own; a cap is pure polish.
-- **System-audio cap** (viewer→sharer "I play PT 99") would let the sharer
-  skip system-audio fan-out to viewers that would drop it — a bandwidth
-  optimization, not a UX one.
-- **~~Opus~~ — no cap needed (decision: Opus-only).** Opus was the obvious
-  "must-negotiate" future codec, but the pre-1.0 decision is to *replace*
-  AAC with Opus rather than negotiate between them (see
-  `plans/porting-plan.md` #6). Opus has no support gap on any platform, so
-  with no deployed AAC-only peers there's nothing to negotiate — one
-  audio codec, distinguished on the wire by its payload type like the
-  existing 98/99, no capability bit.
-
-**Extending the caps field.** If the 8 bits ever fill, reserve the top bit
-as an "extended caps follow" flag: a peer that sets it appends a second
-caps byte, and a peer that understands the flag reads it. Old peers that
-don't set/understand the flag stay single-byte — the same
-ignore-unknown degradation, applied to the caps field itself. So the
-budget is a soft limit, not a hard one; we just haven't needed the second
-byte yet.
+Bits 0–4 are assigned; the rest are reserved, with an escape hatch to a
+second caps byte specified in
+[Growing the capability field]({{ site.baseurl }}{% link spec.md %}#53-growing-the-capability-field).
 
 ### NACK — selective retransmission (`0x0A`)
 
-`[0x0A][count:1][(pid:2 BE, blp:2 BE) × count]`, ≤ 16 entries — RTCP
-generic-NACK FCI semantics: `pid` is the first missing sequence number
-(in *that viewer's* sequence space; every viewer gets its own rewritten
-RTP header), `blp` a bitmask of the 16 sequence numbers after it.
+RTCP generic-NACK FCI semantics
+([wire format]({{ site.baseurl }}{% link spec.md %}#91-nack)): the viewer
+names the first missing sequence number and a bitmask of the 16 after it,
+in *that viewer's* sequence space — every viewer gets its own rewritten
+RTP header.
 
 The sharer answers with byte-identical retransmissions from a bounded
 send-side ring, under a per-viewer token budget capped at 25% of the
@@ -235,35 +198,25 @@ retransmits have time to land.
 
 ### Receiver reports and pings (`0x0B`, `0x0C`)
 
-The sharer pings each cap-aware viewer about once a second
-(`[0x0C][serverUptimeNs:8]`); the viewer echoes that timestamp in its
-~1 Hz receiver report:
-
-```
-[0x0B][fracLostQ8:1][extHighestSeq:4][jitterTicks:4]
-      [lastPingTs:8][delaySincePingMs:2]           — 20 bytes
-      [fecRecovered:2 BE]                          — optional, 22-byte form
-```
-
+The sharer pings each cap-aware viewer about once a second; the viewer
+echoes the ping timestamp in its ~1 Hz receiver report
+([wire format]({{ site.baseurl }}{% link spec.md %}#92-receiver-reports-and-rtt)).
 That gives the sharer real per-viewer loss fraction, cumulative sequence
 position, jitter, and RTT — the inputs to the congestion controller (see
-[Architecture]({{ site.baseurl }}{% link architecture.md %})). The trailing `fecRecovered`
-count exists only on FEC-negotiated links (a tolerant decoder reads 0
-from the legacy 20-byte form): packets repaired by FEC count as
+[Architecture]({{ site.baseurl }}{% link architecture.md %})). The report's
+trailing `fecRecovered` count exists only on FEC-negotiated links
+(a tolerant decoder reads 0 from the legacy form): packets repaired by FEC count as
 *received* in the loss fraction, so the bitrate controller reacts only to
 loss the viewer actually suffered, while the sharer separately
 reconstructs the raw link loss to steer the FEC overhead.
 
 ### FEC — XOR parity (`0x0D`)
 
-`[0x0D][baseSeq:2 BE][count:1][xor body]` — one parity datagram per group
-of up to N consecutive media packets (N adapts 10 → 7 → 5 as measured
-raw loss rises; `count` is the actual group size, 2–16, always
-contiguous). The body is the XOR across the group of
-`[len:2 BE][byte1][timestamp:4][payload…]`, zero-padded to the longest
-member — enough to reconstruct any *one* lost packet in the group,
-including the frame-ending marker packet, with zero additional
-round-trips.
+One parity datagram per group of up to N consecutive media packets
+(N adapts 10 → 7 → 5 as measured raw loss rises), enough to reconstruct
+any *one* lost packet in the group — including the frame-ending marker
+packet — with zero additional round-trips
+([wire format]({{ site.baseurl }}{% link spec.md %}#93-fec--xor-parity)).
 
 Design points that matter:
 
@@ -302,7 +255,7 @@ The message types on this channel:
 | `0x06` | `controlRequest`  | viewer → sharer | "Let me control your machine."                   |
 | `0x07` | `controlGranted`  | sharer → viewer | You have control.                                |
 | `0x08` | `controlRevoked`  | sharer → viewer | Control ended (`{reason}`).                      |
-| `0x09` | `inputEvent`      | viewer → sharer | Mouse move/down/up/scroll (left/right/middle), key down/up. Coordinates normalized `[0,1]` top-left, same convention as annotations. Keys are **USB HID keyboard-page usage IDs** and modifiers a five-bit platform-neutral set (shift/control/alt/meta/capsLock) — no platform's native keycodes or flag bits ever ride the wire; each endpoint translates (macOS: `MacKeyCodeMapping`). Button/scroll events carry the modifier snapshot too, so modified clicks work. |
+| `0x09` | `inputEvent`      | viewer → sharer | Mouse move/down/up/scroll, key down/up. Coordinates normalized `[0,1]` top-left; keys are **USB HID usage IDs** with a platform-neutral modifier set — no platform's native keycodes or flag bits ever ride the wire ([details]({{ site.baseurl }}{% link spec.md %}#122-input-events)). |
 | `0x0A` | `controlReleased` | viewer → sharer | "I'm done controlling" — the sharer revokes so UI and gate clear in step. |
 
 `0x00`–`0x02` are historical and stay reserved. Types `0x0A`–`0x0C` also
@@ -370,18 +323,13 @@ failure — timeout, EOF, an older peer dropping the unknown byte — reads as
 
 ## Changing the protocol
 
-Every wire constant above — TCP types, UDP control bytes, capability
-bits, RTP payload types, reserved SSRCs — is pinned by a registry test
-(`WireByteRegistryTests`) that asserts exact values, exhaustiveness, and
-per-channel uniqueness, and every parser on this page is run through a
-deterministic seeded fuzz harness in CI. If you add a wire byte, add its
-registry row in the same commit; if you renumber a shipped one, the
-registry will name you, and deployed peers will break. Don't.
-
-The rules those constants have to obey — and the ones every parser on this
-page has to obey — are written down normatively in the
-[Wire Protocol Specification]({{ site.baseurl }}{% link spec.md %}), and the
-`conformance/` directory carries language-neutral vectors that pin them. A
-change to a wire value touches three things in one commit: the registry test,
-the specification's [registry appendix]({{ site.baseurl }}{% link spec.md %}#appendix-a-wire-value-registry),
-and a vector.
+Every wire constant above is pinned by a registry test
+(`WireByteRegistryTests`), and every parser on this page runs through a
+deterministic seeded fuzz harness in CI. The rules they all obey are
+normative in the
+[Wire Protocol Specification]({{ site.baseurl }}{% link spec.md %}), pinned
+by the language-neutral vectors under `conformance/`. A change to a wire
+value touches three things in one commit: the registry test, the
+specification's [registry appendix]({{ site.baseurl }}{% link spec.md %}#appendix-a-wire-value-registry),
+and a vector — and a shipped byte is never renumbered; deployed peers
+would break.
