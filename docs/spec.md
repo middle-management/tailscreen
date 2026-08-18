@@ -812,7 +812,9 @@ absent optional fields MUST be treated as unset.
 - **TS-TCP-023**: A reader MUST clamp `fromHostname` to 64 characters,
   `reason` to 128 characters, and `shareName` and `hostname` to 128
   characters before using them in a user interface. These strings are
-  attacker-controlled.
+  attacker-controlled. Counts are of user-perceived characters, and a clamp
+  MUST NOT split one — a combining sequence stays with its base character or
+  is dropped whole.
 - **TS-TCP-024**: A reader MUST accept a `controlRevoked` frame with an
   empty payload, treating the reason as absent.
 

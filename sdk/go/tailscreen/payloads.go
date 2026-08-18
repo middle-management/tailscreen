@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 // Clamps applied to peer-supplied display strings — spec §10.2, TS-TCP-023.
@@ -17,15 +18,39 @@ const (
 	MaxDisplayStringChars = 128
 )
 
-// clamp truncates to at most n characters. The vectors use ASCII only; on
-// non-ASCII input an implementation MUST NOT split a user-perceived
-// character, so this counts runes rather than bytes.
-func clamp(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
-		return s
+// clamp truncates to at most limit user-perceived characters (TS-TCP-023).
+//
+// Counting runes here was wrong twice over: it split combining sequences —
+// the exact thing the spec forbids — and it diverged from the Swift
+// implementation, whose String.prefix counts grapheme clusters. This version
+// counts a base rune plus its extenders (combining marks, ZWJ continuations,
+// variation selectors) as one unit, which agrees with Swift for the
+// sequences that occur in hostnames and display strings. It is an
+// approximation of UAX #29, not an implementation of it — exotic clusters
+// (conjoined Hangul jamo, regional-indicator pairs) may still count
+// differently than Swift's — which is acceptable for a display clamp whose
+// job is bounding hostile input, and is why the conformance vectors pin only
+// ASCII cases.
+func clamp(s string, limit int) string {
+	if limit <= 0 {
+		return ""
 	}
-	return string(r[:n])
+	units := 0
+	prevZWJ := false
+	for i, r := range s {
+		extends := i > 0 && (prevZWJ ||
+			unicode.In(r, unicode.Mn, unicode.Mc, unicode.Me) ||
+			r == '\u200d' ||
+			(r >= '\ufe00' && r <= '\ufe0f'))
+		prevZWJ = r == '\u200d'
+		if !extends {
+			units++
+			if units > limit {
+				return s[:i]
+			}
+		}
+	}
+	return s
 }
 
 var errMalformed = errors.New("malformed payload")

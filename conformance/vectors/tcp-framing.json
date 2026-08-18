@@ -315,6 +315,44 @@
       }
     },
     {
+      "id": "tcp/parse-remaining-known-types",
+      "requirements": [
+        "TS-TCP-001",
+        "TS-CNF-002"
+      ],
+      "op": "frame.parse",
+      "in": {
+        "chunks": [
+          "05000000167b2274797065223a226163636570745368617265227d070000000008000000117b22726561736f6e223a22676f6e65227d0a000000000b00000000"
+        ]
+      },
+      "out": {
+        "frames": [
+          {
+            "type": 5,
+            "payload": "7b2274797065223a226163636570745368617265227d"
+          },
+          {
+            "type": 7,
+            "payload": ""
+          },
+          {
+            "type": 8,
+            "payload": "7b22726561736f6e223a22676f6e65227d"
+          },
+          {
+            "type": 10,
+            "payload": ""
+          },
+          {
+            "type": 11,
+            "payload": ""
+          }
+        ],
+        "corrupt": false
+      }
+    },
+    {
       "id": "tcp/parse-frame-after-unknown-in-same-chunk",
       "requirements": [
         "TS-TCP-003",

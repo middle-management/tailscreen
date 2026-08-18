@@ -440,4 +440,34 @@ final class ScreenShareProtocolTests: XCTestCase {
             return XCTFail("expected .annotation(.clearAll) after skipping unknown type")
         }
     }
+
+    func testUndecodablePayloadDoesNotStallFramesBufferedBehindIt() throws {
+        // TS-TCP-008: a KNOWN-type frame whose payload fails to decode is
+        // discarded and parsing continues with the next frame. next() used to
+        // return nil for the bad frame, which every receive loop's `while let`
+        // drain read as "need more bytes" — so a message already buffered
+        // behind the bad frame sat undelivered until further traffic happened
+        // to arrive on the connection, and forever if the peer went quiet.
+        var bad = Data()
+        bad.append(ScreenShareMessage.MessageType.annotation.rawValue)
+        let junk = Data("not json".utf8)
+        let len = UInt32(junk.count)
+        bad.append(UInt8((len >> 24) & 0xFF))
+        bad.append(UInt8((len >> 16) & 0xFF))
+        bad.append(UInt8((len >> 8) & 0xFF))
+        bad.append(UInt8(len & 0xFF))
+        bad.append(junk)
+
+        var parser = ScreenShareMessageParser()
+        parser.append(bad + ScreenShareMessage.controlReleased.encode())
+
+        // One next() must deliver the frame behind the undecodable one.
+        let decoded = try XCTUnwrap(
+            parser.next(), "the frame buffered behind the bad one must be delivered")
+        guard case .controlReleased = decoded else {
+            return XCTFail("expected .controlReleased, got \(decoded)")
+        }
+        XCTAssertNil(parser.next())
+        XCTAssertFalse(parser.isCorrupt, "a decode failure is not a framing error")
+    }
 }

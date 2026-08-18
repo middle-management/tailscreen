@@ -25,7 +25,7 @@ import (
 // The seed corpus runs on every `go test`, so these cost CI nothing. Real
 // fuzzing is opt-in and time-boxed:
 //
-//	cd conformance/go && go test ./wire -run '^$' -fuzz FuzzDecodeFEC -fuzztime 60s
+//	cd sdk/go && go test ./tailscreen -run '^$' -fuzz FuzzDecodeFEC -fuzztime 60s
 //	make fuzz-conformance                     # every target, 30s each
 //
 // A crash is written to testdata/fuzz/<Target>/ — commit it, it becomes a
@@ -428,22 +428,25 @@ func FuzzDecodePayloads(f *testing.F) {
 			}
 		}
 
+		// A clamp counts user-perceived characters, not runes, so "N runes"
+		// is not the invariant. What must hold is that every returned string
+		// is a fixed point: re-clamping it changes nothing.
 		if host, err := DecodeRequestToShare(payload); err == nil {
-			if n := len([]rune(host)); n > MaxHostnameChars {
-				t.Fatalf("returned a %d-character hostname unclamped", n)
+			if clamp(host, MaxHostnameChars) != host {
+				t.Fatalf("returned an unclamped hostname: %q", host)
 			}
 		}
 
-		if n := len([]rune(DecodeControlRevoked(payload))); n > MaxReasonChars {
-			t.Fatalf("returned a %d-character reason unclamped", n)
+		if reason := DecodeControlRevoked(payload); clamp(reason, MaxReasonChars) != reason {
+			t.Fatalf("returned an unclamped reason: %q", reason)
 		}
 
 		if md, err := DecodeMetadata(payload); err == nil {
-			if n := len([]rune(md.ShareName)); n > MaxDisplayStringChars {
-				t.Fatalf("returned a %d-character share name unclamped", n)
+			if clamp(md.ShareName, MaxDisplayStringChars) != md.ShareName {
+				t.Fatalf("returned an unclamped share name: %q", md.ShareName)
 			}
-			if n := len([]rune(md.Hostname)); n > MaxDisplayStringChars {
-				t.Fatalf("returned a %d-character hostname unclamped", n)
+			if clamp(md.Hostname, MaxDisplayStringChars) != md.Hostname {
+				t.Fatalf("returned an unclamped hostname: %q", md.Hostname)
 			}
 			if md.VideoCodec != nil && *md.VideoCodec != "h264" && *md.VideoCodec != "hevc" {
 				t.Fatalf("accepted the codec %q", *md.VideoCodec)

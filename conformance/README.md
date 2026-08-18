@@ -122,10 +122,14 @@ Two conventions worth knowing before you add a case:
 
 - **`frame.parse` reports framing, not payloads.** Unknown message types are
   skipped (TS-TCP-003); a known type's payload comes back raw. Whether a
-  payload decodes is the `json.*` ops' business. Keep the payloads in
-  `tcp-framing` vectors to a single JSON key or none: the Swift runner
-  re-encodes each parsed message to recover its bytes, and JSON object key
-  order is not guaranteed across implementations.
+  payload decodes is the `json.*` ops' business. Two constraints on the
+  payloads a `tcp-framing` vector carries, both forced by the Swift runner
+  driving the production parser: keep them to a single JSON key or none
+  (the runner re-encodes each parsed message to recover its bytes, and JSON
+  object key order is not guaranteed across implementations), and keep them
+  **decodable** for known types — the production parser discards an
+  undecodable frame and moves on (TS-TCP-008), while the Go `FrameParser`
+  yields it raw, so such a vector cannot expect one answer from both.
 - **The `json.*` ops are decode-direction only.** Encoding JSON byte-exactly
   across languages is a fight about key order and float formatting that says
   nothing about interoperability. What the vectors pin is what a receiver

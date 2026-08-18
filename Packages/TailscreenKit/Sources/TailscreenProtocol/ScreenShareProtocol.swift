@@ -156,54 +156,67 @@ public struct ScreenShareMessageParser {
     }
 
     public mutating func next() -> ScreenShareMessage? {
-        guard !isCorrupt else { return nil }
-        guard buffer.count >= ScreenShareMessage.headerSize else { return nil }
+        // A loop rather than early returns on decode failure: a frame whose
+        // payload fails to decode is discarded and parsing continues with the
+        // next frame (TS-TCP-008). Returning nil for a bad payload made every
+        // receive loop's `while let` drain treat "bad frame" as "need more
+        // bytes" — messages already buffered behind the bad frame sat
+        // undelivered until further traffic happened to arrive.
+        while true {
+            guard !isCorrupt else { return nil }
+            guard buffer.count >= ScreenShareMessage.headerSize else { return nil }
 
-        let rawType = buffer[buffer.startIndex]
-        let lengthStart = buffer.index(buffer.startIndex, offsetBy: 1)
-        let length = Int(buffer.readBE(UInt32.self, at: lengthStart))
-        // Reject an oversized frame at header-parse time — BEFORE buffering
-        // its payload — so a bogus 4 GiB length can't grow the buffer.
-        guard length <= ScreenShareMessage.maxPayloadLength else {
-            isCorrupt = true
-            buffer.removeAll(keepingCapacity: false)
-            return nil
-        }
-        let totalSize = ScreenShareMessage.headerSize + length
-        guard buffer.count >= totalSize else { return nil }
+            let rawType = buffer[buffer.startIndex]
+            let lengthStart = buffer.index(buffer.startIndex, offsetBy: 1)
+            let length = Int(buffer.readBE(UInt32.self, at: lengthStart))
+            // Reject an oversized frame at header-parse time — BEFORE buffering
+            // its payload — so a bogus 4 GiB length can't grow the buffer.
+            guard length <= ScreenShareMessage.maxPayloadLength else {
+                isCorrupt = true
+                buffer.removeAll(keepingCapacity: false)
+                return nil
+            }
+            let totalSize = ScreenShareMessage.headerSize + length
+            guard buffer.count >= totalSize else { return nil }
 
-        let payloadStart = buffer.index(buffer.startIndex, offsetBy: ScreenShareMessage.headerSize)
-        let payloadEnd = buffer.index(payloadStart, offsetBy: length)
-        let payload = buffer[payloadStart..<payloadEnd]
+            let payloadStart = buffer.index(buffer.startIndex, offsetBy: ScreenShareMessage.headerSize)
+            let payloadEnd = buffer.index(payloadStart, offsetBy: length)
+            let payload = buffer[payloadStart..<payloadEnd]
 
-        buffer.removeSubrange(buffer.startIndex..<payloadEnd)
+            buffer.removeSubrange(buffer.startIndex..<payloadEnd)
 
-        guard let type = ScreenShareMessage.MessageType(rawValue: rawType) else {
-            // Unknown type: payload already consumed, drop it.
-            return next()
-        }
+            guard let type = ScreenShareMessage.MessageType(rawValue: rawType) else {
+                // Unknown type: payload already consumed, drop it (TS-TCP-003).
+                continue
+            }
 
-        switch type {
-        case .annotation:
-            return decodeAnnotation(payload)
-        case .requestToShare:
-            return decodeRequestToShare(payload)
-        case .shareResponse:
-            return decodeShareResponse(payload)
-        case .controlRequest:
-            return .controlRequest
-        case .controlGranted:
-            return .controlGranted
-        case .controlRevoked:
-            return decodeControlRevoked(payload)
-        case .inputEvent:
-            return decodeInputEvent(payload)
-        case .controlReleased:
-            return .controlReleased
-        case .metadataRequest:
-            return .metadataRequest
-        case .metadataResponse:
-            return decodeMetadataResponse(payload)
+            let message: ScreenShareMessage?
+            switch type {
+            case .annotation:
+                message = decodeAnnotation(payload)
+            case .requestToShare:
+                message = decodeRequestToShare(payload)
+            case .shareResponse:
+                message = decodeShareResponse(payload)
+            case .controlRequest:
+                message = .controlRequest
+            case .controlGranted:
+                message = .controlGranted
+            case .controlRevoked:
+                message = decodeControlRevoked(payload)
+            case .inputEvent:
+                message = decodeInputEvent(payload)
+            case .controlReleased:
+                message = .controlReleased
+            case .metadataRequest:
+                message = .metadataRequest
+            case .metadataResponse:
+                message = decodeMetadataResponse(payload)
+            }
+            if let message {
+                return message
+            }
+            // Known type, undecodable payload: dropped, keep parsing.
         }
     }
 

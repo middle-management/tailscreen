@@ -1153,6 +1153,32 @@ def suite_tcp_framing():
             {"frames": [], "corrupt": False},
         ),
         case(
+            "tcp/parse-remaining-known-types",
+            ["TS-TCP-001", "TS-CNF-002"],
+            "frame.parse",
+            {
+                "chunks": [
+                    h(
+                        frame(TCP_TYPES["shareResponse"], b'{"type":"acceptShare"}')
+                        + frame(TCP_TYPES["controlGranted"])
+                        + frame(TCP_TYPES["controlRevoked"], b'{"reason":"gone"}')
+                        + frame(TCP_TYPES["controlReleased"])
+                        + frame(TCP_TYPES["metadataRequest"])
+                    )
+                ]
+            },
+            {
+                "frames": [
+                    {"type": 0x05, "payload": h(b'{"type":"acceptShare"}')},
+                    {"type": 0x07, "payload": ""},
+                    {"type": 0x08, "payload": h(b'{"reason":"gone"}')},
+                    {"type": 0x0A, "payload": ""},
+                    {"type": 0x0B, "payload": ""},
+                ],
+                "corrupt": False,
+            },
+        ),
+        case(
             "tcp/parse-frame-after-unknown-in-same-chunk",
             ["TS-TCP-003", "TS-TCP-007"],
             "frame.parse",

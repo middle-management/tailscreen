@@ -15,9 +15,11 @@
 // bytes: nothing opens a socket, starts a goroutine or keeps state between
 // calls except the one explicitly handle-based parser (the TCP framer, which
 // cannot be stateless because a frame arrives across segments). That makes
-// the library safe to call from any thread and impossible to leak by
-// forgetting to shut something down — the only resources are the buffers it
-// returns and the parser handles it hands out.
+// the library safe to call from any thread — parser handles included: each
+// handle carries its own lock, so calls on one handle from different threads
+// serialize rather than race — and impossible to leak by forgetting to shut
+// something down; the only resources are the buffers it returns and the
+// parser handles it hands out.
 //
 // # Memory
 //
@@ -487,9 +489,20 @@ func tailscreen_encode_frame(msgType C.uint8_t, payload *C.uint8_t, payloadLen C
 // function: a frame arrives across an arbitrary number of segments, so the
 // parser has to remember what it has seen. Handles rather than pointers,
 // because a Go pointer may not be held by C.
+//
+// Each handle carries its own lock: parsersMu guards only the table, and
+// without a per-handle mutex a C caller feeding tailscreen_parser_append
+// from a socket-reader thread while another thread drains
+// tailscreen_parser_next would race on the parser's buffer — in a library
+// whose header promises thread safety.
+type frameParserHandle struct {
+	mu     sync.Mutex
+	parser tailscreen.FrameParser
+}
+
 var (
 	parsersMu sync.Mutex
-	parsers   = map[int64]*tailscreen.FrameParser{}
+	parsers   = map[int64]*frameParserHandle{}
 	nextID    int64
 )
 
@@ -502,7 +515,7 @@ func tailscreen_parser_new() C.int64_t {
 	parsersMu.Lock()
 	defer parsersMu.Unlock()
 	nextID++
-	parsers[nextID] = &tailscreen.FrameParser{}
+	parsers[nextID] = &frameParserHandle{}
 	return C.int64_t(nextID)
 }
 
@@ -515,7 +528,7 @@ func tailscreen_parser_free(handle C.int64_t) {
 	delete(parsers, int64(handle))
 }
 
-func lookupParser(handle C.int64_t) *tailscreen.FrameParser {
+func lookupParser(handle C.int64_t) *frameParserHandle {
 	parsersMu.Lock()
 	defer parsersMu.Unlock()
 	return parsers[int64(handle)]
@@ -526,14 +539,16 @@ func lookupParser(handle C.int64_t) *tailscreen.FrameParser {
 //
 //export tailscreen_parser_append
 func tailscreen_parser_append(handle C.int64_t, data *C.uint8_t, length C.int) C.int {
-	parser := lookupParser(handle)
-	if parser == nil {
+	h := lookupParser(handle)
+	if h == nil {
 		return 0
 	}
-	// Copies, because the parser keeps these bytes past this call and the
-	// caller's buffer is theirs to reuse the moment it returns.
-	chunk := append([]byte(nil), goBytes(data, length)...)
-	parser.Append(chunk)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	// No intermediate copy: FrameParser.Append copies the bytes into its own
+	// buffer and never retains the caller's view, and the C buffer is valid
+	// for the duration of the call — which the lock bounds.
+	h.parser.Append(goBytes(data, length))
 	return 1
 }
 
@@ -544,11 +559,13 @@ func tailscreen_parser_append(handle C.int64_t, data *C.uint8_t, length C.int) C
 //
 //export tailscreen_parser_next
 func tailscreen_parser_next(handle C.int64_t, out *C.tailscreen_frame) C.int {
-	parser := lookupParser(handle)
-	if parser == nil || out == nil {
+	h := lookupParser(handle)
+	if h == nil || out == nil {
 		return 0
 	}
-	frame, ok := parser.Next()
+	h.mu.Lock()
+	frame, ok := h.parser.Next()
+	h.mu.Unlock()
 	if !ok {
 		return 0
 	}
@@ -566,11 +583,13 @@ func tailscreen_parser_next(handle C.int64_t, out *C.tailscreen_frame) C.int {
 //
 //export tailscreen_parser_corrupt
 func tailscreen_parser_corrupt(handle C.int64_t) C.int {
-	parser := lookupParser(handle)
-	if parser == nil {
+	h := lookupParser(handle)
+	if h == nil {
 		return 1
 	}
-	if parser.Corrupt() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.parser.Corrupt() {
 		return 1
 	}
 	return 0

@@ -26,7 +26,7 @@
     {
       "suite": "tcp-framing",
       "file": "tcp-framing.json",
-      "cases": 14
+      "cases": 15
     },
     {
       "suite": "json-payloads",

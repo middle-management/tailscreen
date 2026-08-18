@@ -147,28 +147,43 @@ func TestRequirementsExistInSpec(t *testing.T) {
 	}
 }
 
-// TestVectorsCoverEveryWireValue is the registry leg: every assigned control
-// byte and every assigned TCP message type must appear in some vector, so a
-// new wire value cannot ship without one (TS-CNF-002).
+// TestVectorsCoverEveryWireValue is the registry leg: every assigned UDP
+// control byte AND every assigned TCP message type must be exercised by some
+// vector, so a new wire value cannot ship without one (TS-CNF-002).
 func TestVectorsCoverEveryWireValue(t *testing.T) {
-	seen := map[string]bool{}
+	seenControl := map[string]bool{}
+	seenTCP := map[int]bool{}
+
+	// The two multi-key JSON payload types (inputEvent, metadataResponse)
+	// cannot ride a frame.parse vector byte-identically — the Swift runner
+	// re-encodes payloads, and JSON object key order is not stable across
+	// implementations (see conformance/README.md) — so their payload-level
+	// ops stand in for their framing coverage.
+	payloadOps := map[string]int{
+		"json.annotationOp.decode":   0x03,
+		"json.requestToShare.decode": 0x04,
+		"json.shareResponse.decode":  0x05,
+		"json.controlRevoked.decode": 0x08,
+		"json.inputEvent.decode":     0x09,
+		"json.metadata.decode":       0x0C,
+	}
+
 	for _, entry := range loadIndex(t).Suites {
 		for _, c := range loadSuite(t, entry.File).Cases {
+			if typ, ok := payloadOps[c.Op]; ok {
+				seenTCP[typ] = true
+			}
 			var in map[string]any
-			if err := json.Unmarshal(c.In, &in); err != nil {
-				continue
+			if err := json.Unmarshal(c.In, &in); err == nil {
+				if kind, ok := in["kind"].(string); ok {
+					seenControl[kind] = true
+				}
+				if typ, ok := in["type"].(float64); ok && c.Op == "frame.encode" {
+					seenTCP[int(typ)] = true
+				}
 			}
-			if kind, ok := in["kind"].(string); ok {
-				seen["control:"+kind] = true
-			}
-			if b, ok := in["bytes"].(string); ok && len(b) >= 2 && strings.HasPrefix(c.Op, "control.") {
-				seen["controlByte:"+b[:2]] = true
-			}
-			if t, ok := in["type"].(float64); ok {
-				seen["tcp:"+string(rune(int(t)))] = true
-			}
-			for _, f := range asFrames(c.Out) {
-				seen["tcp:"+string(rune(f))] = true
+			for _, typ := range asFrames(c.Out) {
+				seenTCP[typ] = true
 			}
 		}
 	}
@@ -178,8 +193,14 @@ func TestVectorsCoverEveryWireValue(t *testing.T) {
 		"helloPending", "codecUnsupported", "helloDenied", "profileUnsupported",
 		"nack", "receiverReport", "ping", "fec",
 	} {
-		if !seen["control:"+name] {
+		if !seenControl[name] {
 			t.Errorf("no vector exercises control message %s", name)
+		}
+	}
+	// The assigned TCP message-type range — spec Appendix A.2.
+	for typ := 0x03; typ <= 0x0C; typ++ {
+		if !seenTCP[typ] {
+			t.Errorf("no vector exercises TCP message type %#02x", typ)
 		}
 	}
 }
