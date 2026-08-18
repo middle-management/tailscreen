@@ -107,8 +107,10 @@ image: /assets/social-card.png
 
 <p class="ts-intro">Tailscreen captures your screen with each
 platform&rsquo;s native tooling and streams it over
-<a href="https://tailscale.com/">Tailscale</a> &mdash; direct when the
-network allows, relayed inside the same encryption when it isn&rsquo;t.
+<a href="https://tailscale.com/">Tailscale</a> (or any
+<a href="{{ site.baseurl }}{% link self-hosted.md %}">compatible control
+plane</a>) &mdash; direct when the network allows, relayed inside the same
+encryption when it isn&rsquo;t.
 macOS, Linux, and Windows all speak the same protocol, so any of them can
 watch any other, and your screen never touches a third-party server.
 Curious what&rsquo;s underneath?
