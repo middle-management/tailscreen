@@ -6,14 +6,17 @@
 
 # Lets SwiftPM's systemLibrary targets find their `.pc` files at build time:
 #   - libtailscale.pc (TailscaleKit), which resolves the `-L` for
-#     libtailscale.a, and
+#     libtailscale.a,
+#   - libtailscreen.pc (sdk/go), which resolves the `-L`/`-I` for
+#     libtailscreen.a (the CTailscreen systemLibrary behind the differential
+#     suite), and
 #   - opus.pc (OpusKit's COpus wrapper over libopus).
 # SwiftPM's own pkg-config resolver does NOT search Homebrew's prefix on
 # Apple Silicon, so add `$(brew --prefix)/lib/pkgconfig` explicitly (empty +
 # harmless when brew is absent, e.g. Linux, where opus.pc is on the default
 # path). Any inherited PKG_CONFIG_PATH is appended so a custom prefix wins.
 BREW_PKGCONFIG := $(shell brew --prefix 2>/dev/null)/lib/pkgconfig
-export PKG_CONFIG_PATH := $(CURDIR)/Packages/TailscaleKit:$(BREW_PKGCONFIG):$(PKG_CONFIG_PATH)
+export PKG_CONFIG_PATH := $(CURDIR)/Packages/TailscaleKit:$(CURDIR)/sdk/go:$(BREW_PKGCONFIG):$(PKG_CONFIG_PATH)
 
 help: ## Show this help and exit
 	@awk 'BEGIN { FS = ":.*## "; printf "Tailscreen — Make targets\n\nUsage: make <target>\n\nTargets:\n" } \
@@ -41,8 +44,10 @@ test: tailscale ## Run the unit test suite (swift test)
 # patched header, but the test bundle LINKS libtailscale.a — the
 # Tests/TailscreenSharerTests executable links TailscreenSharer, which
 # names TailscaleKit — hence the full `tailscale` prerequisite (which
-# also applies the patches).
-test-protocol: tailscale ## Build + smoke-test the portable TailscreenKit package
+# also applies the patches). The `libtailscreen` prerequisite feeds
+# Tests/TailscreenDifferentialTests, which links the Go SDK's archive and
+# drives it against the shipping Swift pipeline with identical input.
+test-protocol: tailscale libtailscreen ## Build + smoke-test the portable TailscreenKit package
 	swift test --package-path Packages/TailscreenKit
 
 # The shared string catalog (Packages/TailscreenL10n). Its suites are the ONLY

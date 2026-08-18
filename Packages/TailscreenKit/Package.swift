@@ -164,6 +164,33 @@ let package = Package(
             // seams hand back.
             dependencies: ["TailscreenSharer", "TailscreenProtocol", "TailscreenTransport"],
             path: "Tests/TailscreenSharerTests"
+        ),
+
+        // The public Go SDK (sdk/go) built as a C static library — the same
+        // c-archive mechanism as libtailscale.a. `make libtailscreen` emits
+        // sdk/go/build/libtailscreen.{a,h}; sdk/go/libtailscreen.pc supplies
+        // the -L/-I flags, so PKG_CONFIG_PATH must include sdk/go (the root
+        // Makefile exports it — go through `make test-protocol`).
+        .systemLibrary(
+            name: "CTailscreen",
+            path: "Modules/CTailscreen",
+            pkgConfig: "libtailscreen"
+        ),
+
+        // The differential suite: the shipping Swift pipeline and the Go SDK
+        // (linked via CTailscreen) driven with identical seeded input,
+        // asserting identical output at every step. The conformance vectors
+        // pin the stateless codecs on both sides; this target pins the
+        // STATEFUL pipeline — reorder, depacketizers, NACK scheduling, FEC
+        // group solving, RR accounting — where a fixed vector file cannot
+        // express a clock-driven interleaving.
+        .testTarget(
+            name: "TailscreenDifferentialTests",
+            dependencies: ["TailscreenProtocol", "CTailscreen"],
+            path: "Tests/TailscreenDifferentialTests",
+            linkerSettings: [
+                .linkedLibrary("pthread", .when(platforms: [.linux]))
+            ]
         )
     ]
 )

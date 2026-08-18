@@ -1,0 +1,5 @@
+module CTailscreen {
+    header "../../../../sdk/go/build/libtailscreen.h"
+    link "tailscreen"
+    export *
+}

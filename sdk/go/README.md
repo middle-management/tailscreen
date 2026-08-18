@@ -118,8 +118,18 @@ which would build it *into* the archive rather than against it.
 cd sdk/go && go test ./...     # unit tests, examples, and the fuzz seed corpus
 make test-conformance          # the vectors, from the repository root
 make libtailscreen-check       # the C ABI
+make test-protocol             # includes the Swift↔Go differential suite
 make fuzz-conformance          # coverage-guided fuzzing, FUZZTIME=30s per target
 ```
+
+The pipeline tests in this package are ported assertion-for-assertion from
+the Swift suites, and `make test-protocol` closes the loop from the other
+side: its `TailscreenDifferentialTests` links this SDK's c-archive and
+drives it against the shipping Swift pipeline with identical seeded input,
+asserting identical output at every step. Which is why a behavioral change
+to a ported type must land on both sides in the same commit — including the
+deliberate warts (`PackFCI`'s non-wrap-aware sort): "fixing" one side alone
+fails the differential, and is meant to.
 
 The fuzz targets in `tailscreen/fuzz_test.go` assert structural invariants
 rather than expected values — a successful decode never claims more bytes

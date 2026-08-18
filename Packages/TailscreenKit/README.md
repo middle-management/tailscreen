@@ -124,7 +124,16 @@ that roadmap.
   `ViewerLifecycleDecisionTests`) — they consume the deliberately-public
   decision surface through a plain `import TailscreenSharer`, no `@testable`,
   and run on the same job — plus `SharerAskToShareCoordinatorTests` (which
-  does use `@testable`, for the coordinator's internal reply-send seam). A suite belongs in the package iff it imports no
+  does use `@testable`, for the coordinator's internal reply-send seam).
+  `Tests/TailscreenDifferentialTests` is the odd one out: it links the
+  **public Go SDK** (`sdk/go` built as `libtailscreen.a`, `make
+  libtailscreen`) through the `Modules/CTailscreen` systemLibrary
+  (resolved via `sdk/go/libtailscreen.pc` — the root Makefile's
+  `PKG_CONFIG_PATH` carries `sdk/go`) and drives the Go pipeline against
+  this package's Swift pipeline with identical seeded input, asserting
+  identical output at every step. Linking a Go archive does not breach the
+  portability rule — like `libtailscale.a` it is a link-time input, not an
+  Apple framework, and the suite runs on the same `linux-protocol` job. A suite belongs in the package iff it imports no
   Apple framework and references only package types; anything that mixes in a
   mac symbol (an Apple-framework import, an
   `AppState`/`VideoDecoder`/`VoiceChannel` decision, or a shared helper with a

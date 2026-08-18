@@ -262,12 +262,21 @@ jobs:
           # set as linux-tailscalekit (the swift:*-noble images guarantee
           # clang, not gcc, and cgo wants gcc; the host archive build goes
           # through make).
+          #
+          # `make libtailscreen` builds the Go SDK as a C archive for
+          # Tests/TailscreenDifferentialTests — the suite that links the
+          # public Go implementation (via the CTailscreen systemLibrary,
+          # resolved through sdk/go/libtailscreen.pc, hence the second
+          # PKG_CONFIG_PATH entry) and drives it against the shipping Swift
+          # pipeline with identical seeded input.
           - name: linux-protocol
             apt: golang-go make gcc libc6-dev libopus-dev pkg-config
             submodules: recursive
             go: preinstalled
             libtailscale: host
-            cmd: PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" swift test --package-path Packages/TailscreenKit
+            cmd: |
+              make libtailscreen
+              PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit:$PWD/sdk/go" swift test --package-path Packages/TailscreenKit
 
           # Protocol-conformance gate: the language-neutral vectors in
           # conformance/vectors, run against the Go implementation in

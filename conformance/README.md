@@ -28,6 +28,15 @@ specification describes what Tailscreen actually ships. A vector that only
 one of them passes is a bug in the spec, the vectors, or an implementation —
 and which of the three it is has always been worth knowing.
 
+The vectors pin the STATELESS codecs. The stateful pipeline — reorder
+buffer, depacketizers, NACK scheduler, FEC group buffer, receiver-report
+accounting — is pinned by a third mechanism, because a fixed vector file
+cannot express a clock-driven interleaving: `TailscreenDifferentialTests`
+(in `Packages/TailscreenKit`, inside `make test-protocol`) links the Go
+SDK's c-archive (`make libtailscreen`) and drives both implementations with
+identical seeded, clock-injected input, asserting identical output at every
+step.
+
 ## Running
 
 ```bash
