@@ -305,7 +305,11 @@ jobs:
           # for libtailscale. No submodules and no libtailscale.a — nothing
           # here links anything of ours.
           - name: linux-conformance
-            apt: golang-go gcc libc6-dev
+            # `make` is not decoration: the archive step goes through the root
+            # Makefile, and the swift:*-noble images ship without it — the leg
+            # got as far as running both Go suites and then died on
+            # `make: not found`.
+            apt: golang-go make gcc libc6-dev
             cmd: |
               cd sdk/go && go test ./... && cd ../..
               cd conformance/go && go test ./... && cd ../..

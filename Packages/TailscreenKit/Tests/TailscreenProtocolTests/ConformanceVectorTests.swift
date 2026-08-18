@@ -1,8 +1,5 @@
+import Foundation
 import XCTest
-
-#if canImport(CoreGraphics)
-import CoreGraphics
-#endif
 
 @testable import TailscreenProtocol
 
@@ -584,7 +581,8 @@ private enum JSONValue: Equatable, CustomStringConvertible {
         case .string(let value): return "\"\(value)\""
         case .array(let values): return "[" + values.map(\.description).joined(separator: ", ") + "]"
         case .object(let values):
-            return "{" + values.keys.sorted().map { "\($0): \(values[$0]!)" }.joined(separator: ", ") + "}"
+            let pairs = values.sorted { $0.key < $1.key }.map { "\($0.key): \($0.value)" }
+            return "{" + pairs.joined(separator: ", ") + "}"
         }
     }
 }
