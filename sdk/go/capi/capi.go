@@ -11,15 +11,17 @@
 //
 // # What it exposes
 //
-// The codecs, and only the codecs. Everything here is a pure function over
-// bytes: nothing opens a socket, starts a goroutine or keeps state between
-// calls except the one explicitly handle-based parser (the TCP framer, which
-// cannot be stateless because a frame arrives across segments). That makes
-// the library safe to call from any thread — parser handles included: each
-// handle carries its own lock, so calls on one handle from different threads
-// serialize rather than race — and impossible to leak by forgetting to shut
-// something down; the only resources are the buffers it returns and the
-// parser handles it hands out.
+// Two layers. The codecs: pure functions over bytes — nothing opens a socket
+// or starts a goroutine, and nothing keeps state between calls. And the
+// stateful receive pipeline, as explicit handles: the TCP frame parser (a
+// frame arrives across segments), the reorder buffer, the depacketizers, the
+// NACK scheduler, the FEC group buffer and the receiver-report accounting —
+// each of which cannot be stateless because its whole job is remembering
+// what it has seen. Every handle carries its own lock, so calls on one
+// handle from different threads serialize rather than race; the library as a
+// whole is safe to call from any thread. Time-driven behaviour takes an
+// explicit now_ns argument — the library never reads a clock, so a caller
+// can replay a session deterministically.
 //
 // # Memory
 //
@@ -30,9 +32,9 @@
 // to be handled so much as the protocol's standard answer to a malformed
 // datagram, which is to discard it (TS-CTL-002, TS-GEN-022).
 //
-// The one exception is tailscreen_parser_new / tailscreen_parser_free, whose
-// handles index a table inside Go. Free every parser you create; a leaked
-// handle keeps its buffered bytes alive for the process's lifetime.
+// The exception is the *_new / *_free handle pairs, whose values index
+// tables inside Go. Free every handle you create; a leaked handle keeps its
+// buffered bytes alive for the process's lifetime.
 package main
 
 /*
@@ -53,6 +55,36 @@ typedef struct {
 	uint8_t *payload;
 	int      len;
 } tailscreen_frame;
+
+// One packet released by the reorder buffer, in ascending sequence order.
+// `lost_before` is 1 when a gap was abandoned immediately before this packet.
+// Free `packet` with tailscreen_free.
+typedef struct {
+	uint8_t *packet;
+	int      len;
+	int      lost_before;
+} tailscreen_release;
+
+// One reassembled video access unit, in AVCC form. `hevc` is 0 for H.264 and
+// 1 for HEVC; `lost_before` is 1 when loss preceded this unit and the caller
+// should request a keyframe. Free `avcc` with tailscreen_free.
+typedef struct {
+	uint8_t  *avcc;
+	int       len;
+	int       contains_idr;
+	int       lost_before;
+	uint32_t  timestamp;
+	int       hevc;
+} tailscreen_au;
+
+// One NACK-scheduler decision: either `count` missing sequence numbers to
+// pack into a NACK datagram, or `pli` = 1 to fall back to a keyframe
+// request. Free `seqs` with tailscreen_free (cast to uint8_t*).
+typedef struct {
+	uint16_t *seqs;
+	int       count;
+	int       pli;
+} tailscreen_nack_action;
 */
 import "C"
 
@@ -485,26 +517,52 @@ func tailscreen_encode_frame(msgType C.uint8_t, payload *C.uint8_t, payloadLen C
 	return cBuf(tailscreen.EncodeFrame(tailscreen.MessageType(msgType), goBytes(payload, payloadLen)))
 }
 
-// The framed TCP channel is the one thing here that cannot be a pure
-// function: a frame arrives across an arbitrary number of segments, so the
-// parser has to remember what it has seen. Handles rather than pointers,
-// because a Go pointer may not be held by C.
+// The framed TCP channel — like the rest of the stateful pipeline below —
+// cannot be a pure function: a frame arrives across an arbitrary number of
+// segments, so the parser has to remember what it has seen. Handles rather
+// than pointers, because a Go pointer may not be held by C.
 //
-// Each handle carries its own lock: parsersMu guards only the table, and
-// without a per-handle mutex a C caller feeding tailscreen_parser_append
+// Each handle carries its own lock: the table's mutex guards only the table,
+// and without a per-handle mutex a C caller feeding tailscreen_parser_append
 // from a socket-reader thread while another thread drains
 // tailscreen_parser_next would race on the parser's buffer — in a library
 // whose header promises thread safety.
-type frameParserHandle struct {
-	mu     sync.Mutex
-	parser tailscreen.FrameParser
+type handle[T any] struct {
+	mu    sync.Mutex
+	value T
 }
 
-var (
-	parsersMu sync.Mutex
-	parsers   = map[int64]*frameParserHandle{}
-	nextID    int64
-)
+type handleTable[T any] struct {
+	mu     sync.Mutex
+	items  map[int64]*handle[T]
+	nextID int64
+}
+
+func newHandleTable[T any]() *handleTable[T] {
+	return &handleTable[T]{items: map[int64]*handle[T]{}}
+}
+
+func (t *handleTable[T]) put(v T) C.int64_t {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.nextID++
+	t.items[t.nextID] = &handle[T]{value: v}
+	return C.int64_t(t.nextID)
+}
+
+func (t *handleTable[T]) get(id C.int64_t) *handle[T] {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.items[int64(id)]
+}
+
+func (t *handleTable[T]) free(id C.int64_t) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.items, int64(id))
+}
+
+var parsers = newHandleTable[tailscreen.FrameParser]()
 
 // Creates a framed-channel parser, returning its handle. Free it with
 // tailscreen_parser_free; a leaked handle keeps its buffered bytes alive for
@@ -512,26 +570,14 @@ var (
 //
 //export tailscreen_parser_new
 func tailscreen_parser_new() C.int64_t {
-	parsersMu.Lock()
-	defer parsersMu.Unlock()
-	nextID++
-	parsers[nextID] = &frameParserHandle{}
-	return C.int64_t(nextID)
+	return parsers.put(tailscreen.FrameParser{})
 }
 
 // Destroys a parser. Freeing an unknown handle is a no-op.
 //
 //export tailscreen_parser_free
 func tailscreen_parser_free(handle C.int64_t) {
-	parsersMu.Lock()
-	defer parsersMu.Unlock()
-	delete(parsers, int64(handle))
-}
-
-func lookupParser(handle C.int64_t) *frameParserHandle {
-	parsersMu.Lock()
-	defer parsersMu.Unlock()
-	return parsers[int64(handle)]
+	parsers.free(handle)
 }
 
 // Feeds received bytes to a parser. Returns 0 for an unknown handle, 1
@@ -539,7 +585,7 @@ func lookupParser(handle C.int64_t) *frameParserHandle {
 //
 //export tailscreen_parser_append
 func tailscreen_parser_append(handle C.int64_t, data *C.uint8_t, length C.int) C.int {
-	h := lookupParser(handle)
+	h := parsers.get(handle)
 	if h == nil {
 		return 0
 	}
@@ -548,7 +594,7 @@ func tailscreen_parser_append(handle C.int64_t, data *C.uint8_t, length C.int) C
 	// No intermediate copy: FrameParser.Append copies the bytes into its own
 	// buffer and never retains the caller's view, and the C buffer is valid
 	// for the duration of the call — which the lock bounds.
-	h.parser.Append(goBytes(data, length))
+	h.value.Append(goBytes(data, length))
 	return 1
 }
 
@@ -559,12 +605,12 @@ func tailscreen_parser_append(handle C.int64_t, data *C.uint8_t, length C.int) C
 //
 //export tailscreen_parser_next
 func tailscreen_parser_next(handle C.int64_t, out *C.tailscreen_frame) C.int {
-	h := lookupParser(handle)
+	h := parsers.get(handle)
 	if h == nil || out == nil {
 		return 0
 	}
 	h.mu.Lock()
-	frame, ok := h.parser.Next()
+	frame, ok := h.value.Next()
 	h.mu.Unlock()
 	if !ok {
 		return 0
@@ -583,14 +629,650 @@ func tailscreen_parser_next(handle C.int64_t, out *C.tailscreen_frame) C.int {
 //
 //export tailscreen_parser_corrupt
 func tailscreen_parser_corrupt(handle C.int64_t) C.int {
-	h := lookupParser(handle)
+	h := parsers.get(handle)
 	if h == nil {
 		return 1
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.parser.Corrupt() {
+	if h.value.Corrupt() {
 		return 1
 	}
 	return 0
+}
+
+// ---------------------------------------------------------------------------
+// Stateful receive pipeline
+// ---------------------------------------------------------------------------
+//
+// The viewer-side pipeline as handles, one per component, mirroring the Go
+// package's types (and, behind them, the shipping Swift implementations).
+// Components that can emit several results from one input — the reorder
+// buffer, the depacketizers, the NACK scheduler — queue their outputs on the
+// handle; a matching *_next_* call pops one at a time, returning 0 when the
+// queue is empty. Time never comes from the library: every time-driven call
+// takes now_ns from the caller's monotonic clock, so a recorded session
+// replays byte-for-byte.
+
+// copyBytes copies a caller-owned view into Go memory, for components that
+// retain the packet past the call (the reorder buffer's held gap, the FEC
+// buffer's media ring).
+func copyBytes(data *C.uint8_t, length C.int) []byte {
+	view := goBytes(data, length)
+	if view == nil {
+		return nil
+	}
+	return append([]byte(nil), view...)
+}
+
+// cSeqs copies a []uint16 into malloc'd memory the caller owns. Freed with
+// tailscreen_free (cast to uint8_t*).
+func cSeqs(seqs []uint16) (*C.uint16_t, C.int) {
+	if len(seqs) == 0 {
+		return nil, 0
+	}
+	out := C.malloc(C.size_t(len(seqs) * 2))
+	if out == nil {
+		return nil, 0
+	}
+	copy(unsafe.Slice((*uint16)(out), len(seqs)), seqs)
+	return (*C.uint16_t)(out), C.int(len(seqs))
+}
+
+// --- Reorder buffer (TS-VID-040 … TS-VID-044) ---
+
+type reorderState struct {
+	buf     *tailscreen.ReorderBuffer
+	pending []tailscreen.ReorderRelease
+}
+
+var reorders = newHandleTable[reorderState]()
+
+// Creates a reorder buffer. max_depth bounds held packets; gap_hold_ns = 0
+// selects count-based gap abandonment, > 0 the time-based hold selective
+// retransmission needs (TS-VID-043). Free with tailscreen_reorder_free.
+//
+//export tailscreen_reorder_new
+func tailscreen_reorder_new(maxDepth C.int, gapHoldNs C.uint64_t) C.int64_t {
+	return reorders.put(reorderState{buf: tailscreen.NewReorderBuffer(int(maxDepth), uint64(gapHoldNs))})
+}
+
+//export tailscreen_reorder_free
+func tailscreen_reorder_free(handle C.int64_t) {
+	reorders.free(handle)
+}
+
+// Feeds one packet; released packets queue on the handle in ascending
+// sequence order for tailscreen_reorder_next_release. Returns the number of
+// releases now queued, or -1 for an unknown handle.
+//
+//export tailscreen_reorder_push
+func tailscreen_reorder_push(handle C.int64_t, seq C.uint16_t, data *C.uint8_t, length C.int, nowNs C.uint64_t) C.int {
+	h := reorders.get(handle)
+	if h == nil {
+		return -1
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	// Copied because the buffer retains packets while a gap is open.
+	released := h.value.buf.Push(uint16(seq), copyBytes(data, length), uint64(nowNs))
+	h.value.pending = append(h.value.pending, released...)
+	return C.int(len(h.value.pending))
+}
+
+// Pops the next queued release. Returns 0 when none are queued or the handle
+// is unknown; 1 on a release, whose packet the caller frees.
+//
+//export tailscreen_reorder_next_release
+func tailscreen_reorder_next_release(handle C.int64_t, out *C.tailscreen_release) C.int {
+	h := reorders.get(handle)
+	if h == nil || out == nil {
+		return 0
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.value.pending) == 0 {
+		return 0
+	}
+	release := h.value.pending[0]
+	h.value.pending = h.value.pending[1:]
+	buf := cBuf(release.Packet)
+	out.packet = buf.data
+	out.len = buf.len
+	if release.LostBefore {
+		out.lost_before = 1
+	} else {
+		out.lost_before = 0
+	}
+	return 1
+}
+
+// The number of gaps abandoned as genuine loss so far, or -1 for an unknown
+// handle.
+//
+//export tailscreen_reorder_skipped_gaps
+func tailscreen_reorder_skipped_gaps(handle C.int64_t) C.int {
+	h := reorders.get(handle)
+	if h == nil {
+		return -1
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return C.int(h.value.buf.SkippedGapCount())
+}
+
+// Clears buffered packets and pending releases for a fresh stream.
+//
+//export tailscreen_reorder_reset
+func tailscreen_reorder_reset(handle C.int64_t) {
+	h := reorders.get(handle)
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.value.buf.Reset()
+	h.value.pending = nil
+}
+
+// --- Depacketizer (TS-VID-035, §7.3/§7.4) ---
+
+type depacketizerState struct {
+	d       *tailscreen.Depacketizer
+	pending []tailscreen.VideoAccessUnit
+}
+
+var depacketizers = newHandleTable[depacketizerState]()
+
+// Creates a depacketizer with an embedded reorder buffer. hevc = 0 parses
+// RFC 6184 (H.264) payloads, 1 RFC 7798 (HEVC). Free with
+// tailscreen_depacketizer_free.
+//
+//export tailscreen_depacketizer_new
+func tailscreen_depacketizer_new(hevc C.int, reorderDepth C.int, gapHoldNs C.uint64_t) C.int64_t {
+	var d *tailscreen.Depacketizer
+	if hevc != 0 {
+		d = tailscreen.NewH265Depacketizer(int(reorderDepth), uint64(gapHoldNs))
+	} else {
+		d = tailscreen.NewH264Depacketizer(int(reorderDepth), uint64(gapHoldNs))
+	}
+	return depacketizers.put(depacketizerState{d: d})
+}
+
+//export tailscreen_depacketizer_free
+func tailscreen_depacketizer_free(handle C.int64_t) {
+	depacketizers.free(handle)
+}
+
+// Feeds one RTP packet; completed access units queue on the handle for
+// tailscreen_depacketizer_next_au (a late gap fill can complete several at
+// once). Returns the number of units now queued, or -1 for an unknown
+// handle.
+//
+//export tailscreen_depacketizer_ingest
+func tailscreen_depacketizer_ingest(handle C.int64_t, data *C.uint8_t, length C.int, nowNs C.uint64_t) C.int {
+	h := depacketizers.get(handle)
+	if h == nil {
+		return -1
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	// Copied because the embedded reorder buffer retains packets.
+	if au := h.value.d.Ingest(copyBytes(data, length), uint64(nowNs)); au != nil {
+		h.value.pending = append(h.value.pending, *au)
+	}
+	h.value.pending = append(h.value.pending, h.value.d.DrainReady()...)
+	return C.int(len(h.value.pending))
+}
+
+// Pops the next completed access unit. Returns 0 when none are queued or the
+// handle is unknown; 1 on a unit, whose avcc buffer the caller frees.
+//
+//export tailscreen_depacketizer_next_au
+func tailscreen_depacketizer_next_au(handle C.int64_t, out *C.tailscreen_au) C.int {
+	h := depacketizers.get(handle)
+	if h == nil || out == nil {
+		return 0
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.value.pending) == 0 {
+		return 0
+	}
+	au := h.value.pending[0]
+	h.value.pending = h.value.pending[1:]
+	buf := cBuf(au.AVCC)
+	out.avcc = buf.data
+	out.len = buf.len
+	out.contains_idr = 0
+	if au.ContainsIDR {
+		out.contains_idr = 1
+	}
+	out.lost_before = 0
+	if au.LostBeforeThisAU {
+		out.lost_before = 1
+	}
+	out.timestamp = C.uint32_t(au.Timestamp)
+	out.hevc = 0
+	if au.Codec == "hevc" {
+		out.hevc = 1
+	}
+	return 1
+}
+
+// The number of access units discarded as torn so far, or -1 for an unknown
+// handle.
+//
+//export tailscreen_depacketizer_torn_au_count
+func tailscreen_depacketizer_torn_au_count(handle C.int64_t) C.int {
+	h := depacketizers.get(handle)
+	if h == nil {
+		return -1
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return C.int(h.value.d.TornAUCount())
+}
+
+// The embedded reorder buffer's abandoned-gap count, or -1 for an unknown
+// handle.
+//
+//export tailscreen_depacketizer_skipped_gap_count
+func tailscreen_depacketizer_skipped_gap_count(handle C.int64_t) C.int {
+	h := depacketizers.get(handle)
+	if h == nil {
+		return -1
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return C.int(h.value.d.SkippedGapCount())
+}
+
+// --- NACK scheduler (§9.1) ---
+
+type nackState struct {
+	s       *tailscreen.NACKScheduler
+	pending []tailscreen.NACKAction
+}
+
+var nackSchedulers = newHandleTable[nackState]()
+
+// Creates a NACK scheduler. Every tunable 0 selects that field's default
+// (Appendix B); see NACKSchedulerConfig for the meanings. Free with
+// tailscreen_nack_free.
+//
+//export tailscreen_nack_new
+func tailscreen_nack_new(
+	reorderToleranceNs C.uint64_t, reorderPacketTolerance C.int,
+	maxAttempts C.int, reNackFloorNs C.uint64_t, ringWindowNs C.uint64_t,
+	maxNacksPerSecond C.int, maxGaps C.int, initialRTTNs C.uint64_t,
+) C.int64_t {
+	return nackSchedulers.put(nackState{s: tailscreen.NewNACKScheduler(tailscreen.NACKSchedulerConfig{
+		ReorderToleranceNs:     uint64(reorderToleranceNs),
+		ReorderPacketTolerance: int(reorderPacketTolerance),
+		MaxAttempts:            int(maxAttempts),
+		ReNackFloorNs:          uint64(reNackFloorNs),
+		RingWindowNs:           uint64(ringWindowNs),
+		MaxNacksPerSecond:      int(maxNacksPerSecond),
+		MaxGaps:                int(maxGaps),
+		InitialRTTNs:           uint64(initialRTTNs),
+	})})
+}
+
+//export tailscreen_nack_free
+func tailscreen_nack_free(handle C.int64_t) {
+	nackSchedulers.free(handle)
+}
+
+// Feeds one received video sequence number; any resulting decisions queue on
+// the handle for tailscreen_nack_next_action. Returns the number of actions
+// now queued, or -1 for an unknown handle.
+//
+//export tailscreen_nack_observe
+func tailscreen_nack_observe(handle C.int64_t, seq C.uint16_t, nowNs C.uint64_t) C.int {
+	h := nackSchedulers.get(handle)
+	if h == nil {
+		return -1
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.value.pending = append(h.value.pending, h.value.s.Observe(uint16(seq), uint64(nowNs))...)
+	return C.int(len(h.value.pending))
+}
+
+// Re-evaluates open gaps on the caller's clock; due re-NACKs and abandonment
+// PLIs queue on the handle. Returns the number of actions now queued, or -1
+// for an unknown handle.
+//
+//export tailscreen_nack_tick
+func tailscreen_nack_tick(handle C.int64_t, nowNs C.uint64_t) C.int {
+	h := nackSchedulers.get(handle)
+	if h == nil {
+		return -1
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.value.pending = append(h.value.pending, h.value.s.Tick(uint64(nowNs))...)
+	return C.int(len(h.value.pending))
+}
+
+// Pops the next queued decision. Returns 0 when none are queued or the
+// handle is unknown; 1 on an action, whose seqs array the caller frees.
+//
+//export tailscreen_nack_next_action
+func tailscreen_nack_next_action(handle C.int64_t, out *C.tailscreen_nack_action) C.int {
+	h := nackSchedulers.get(handle)
+	if h == nil || out == nil {
+		return 0
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.value.pending) == 0 {
+		return 0
+	}
+	action := h.value.pending[0]
+	h.value.pending = h.value.pending[1:]
+	out.seqs, out.count = cSeqs(action.Seqs)
+	out.pli = 0
+	if action.PLI {
+		out.pli = 1
+	}
+	return 1
+}
+
+// Closes the gap covering seq after its packet arrived (a served retransmit
+// or plain late arrival), feeding the RTT estimator.
+//
+//export tailscreen_nack_cancel_gap
+func tailscreen_nack_cancel_gap(handle C.int64_t, seq C.uint16_t) {
+	h := nackSchedulers.get(handle)
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.value.s.CancelGap(uint16(seq))
+}
+
+// Closes the gap covering seq after FEC recovered its packet: the gap
+// clears, the recovered-fill counter advances, and the RTT estimate is NOT
+// polluted (the recovery was not a NACK round trip).
+//
+//export tailscreen_nack_note_recovered
+func tailscreen_nack_note_recovered(handle C.int64_t, seq C.uint16_t, nowNs C.uint64_t) {
+	h := nackSchedulers.get(handle)
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.value.s.NoteRecovered(uint16(seq), uint64(nowNs))
+}
+
+// Switches the gap-eligibility tolerances in place — how FEC mode loosens
+// NACK while parity flows (TS-FEC-013).
+//
+//export tailscreen_nack_set_reorder_tolerances
+func tailscreen_nack_set_reorder_tolerances(handle C.int64_t, toleranceNs C.uint64_t, packetTolerance C.int) {
+	h := nackSchedulers.get(handle)
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.value.s.SetReorderTolerances(uint64(toleranceNs), int(packetTolerance))
+}
+
+// Returns and resets the count of gaps filled by served retransmits — the
+// receiver report's nackRecovered input (TS-RRP-010). -1 for an unknown
+// handle.
+//
+//export tailscreen_nack_drain_recovered
+func tailscreen_nack_drain_recovered(handle C.int64_t) C.int {
+	h := nackSchedulers.get(handle)
+	if h == nil {
+		return -1
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return C.int(h.value.s.DrainNackRecovered())
+}
+
+// The current smoothed RTT estimate in nanoseconds, or 0 for an unknown
+// handle.
+//
+//export tailscreen_nack_rtt_estimate_ns
+func tailscreen_nack_rtt_estimate_ns(handle C.int64_t) C.uint64_t {
+	h := nackSchedulers.get(handle)
+	if h == nil {
+		return 0
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return C.uint64_t(h.value.s.RTTEstimateNs())
+}
+
+// Whether any gap is still open, or -1 for an unknown handle.
+//
+//export tailscreen_nack_has_open_gaps
+func tailscreen_nack_has_open_gaps(handle C.int64_t) C.int {
+	h := nackSchedulers.get(handle)
+	if h == nil {
+		return -1
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.value.s.HasOpenGaps() {
+		return 1
+	}
+	return 0
+}
+
+// Caps a batch of missing sequence numbers to what max_entries FCI entries
+// can express (TS-NCK-001), writing at most `capacity` into `out`. A pure
+// function; returns the number written.
+//
+//export tailscreen_fci_capped_seqs
+func tailscreen_fci_capped_seqs(seqs *C.uint16_t, count C.int, maxEntries C.int, out *C.uint16_t, capacity C.int) C.int {
+	if seqs == nil || count <= 0 || out == nil || capacity <= 0 {
+		return 0
+	}
+	in := unsafe.Slice((*uint16)(unsafe.Pointer(seqs)), int(count))
+	capped := tailscreen.FCICappedSeqs(append([]uint16(nil), in...), int(maxEntries))
+	if len(capped) > int(capacity) {
+		capped = capped[:capacity]
+	}
+	copy(unsafe.Slice((*uint16)(unsafe.Pointer(out)), int(capacity)), capped)
+	return C.int(len(capped))
+}
+
+// Packs missing sequence numbers into (pid, blp) FCI entries, writing at
+// most `capacity` pairs. A pure function; returns the number written.
+//
+//export tailscreen_pack_fci
+func tailscreen_pack_fci(seqs *C.uint16_t, count C.int, pids *C.uint16_t, blps *C.uint16_t, capacity C.int) C.int {
+	if seqs == nil || count <= 0 || pids == nil || blps == nil || capacity <= 0 {
+		return 0
+	}
+	in := unsafe.Slice((*uint16)(unsafe.Pointer(seqs)), int(count))
+	entries := tailscreen.PackFCI(append([]uint16(nil), in...))
+	if len(entries) > int(capacity) {
+		entries = entries[:capacity]
+	}
+	pidSlice := unsafe.Slice((*uint16)(unsafe.Pointer(pids)), int(capacity))
+	blpSlice := unsafe.Slice((*uint16)(unsafe.Pointer(blps)), int(capacity))
+	for i, entry := range entries {
+		pidSlice[i] = entry.PID
+		blpSlice[i] = entry.BLP
+	}
+	return C.int(len(entries))
+}
+
+// --- FEC group buffer (§10) ---
+
+var fecBuffers = newHandleTable[*tailscreen.FECGroupBuffer]()
+
+// Creates a receiver-side FEC group buffer. Every bound 0 selects that
+// field's default (Appendix B). Free with tailscreen_fec_buffer_free.
+//
+//export tailscreen_fec_buffer_new
+func tailscreen_fec_buffer_new(
+	maxHeldBytes C.int, maxHeldPackets C.int, parityLingerNs C.uint64_t,
+	maxPendingParities C.int, maxRecoveredGuard C.int,
+) C.int64_t {
+	return fecBuffers.put(tailscreen.NewFECGroupBuffer(tailscreen.FECGroupBufferConfig{
+		MaxHeldBytes:       int(maxHeldBytes),
+		MaxHeldPackets:     int(maxHeldPackets),
+		ParityLingerNs:     uint64(parityLingerNs),
+		MaxPendingParities: int(maxPendingParities),
+		MaxRecoveredGuard:  int(maxRecoveredGuard),
+	}))
+}
+
+//export tailscreen_fec_buffer_free
+func tailscreen_fec_buffer_free(handle C.int64_t) {
+	fecBuffers.free(handle)
+}
+
+// Retains one received video packet and re-checks buffered parities. On a
+// recovery, returns the recovered packet (caller frees) and writes its
+// sequence through seq_out; a NULL buffer means nothing recovered.
+//
+//export tailscreen_fec_note_media
+func tailscreen_fec_note_media(handle C.int64_t, seq C.uint16_t, data *C.uint8_t, length C.int, nowNs C.uint64_t, seqOut *C.uint16_t) C.tailscreen_buf {
+	h := fecBuffers.get(handle)
+	if h == nil {
+		return rejected()
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	// Copied because the buffer retains held media.
+	recovery := h.value.NoteMedia(uint16(seq), copyBytes(data, length), uint64(nowNs))
+	if recovery == nil {
+		return rejected()
+	}
+	if seqOut != nil {
+		*seqOut = C.uint16_t(recovery.Seq)
+	}
+	return cBuf(recovery.Packet)
+}
+
+// Ingests one parity datagram's fields (from tailscreen_decode_fec). On a
+// recovery, returns the recovered packet (caller frees) and writes its
+// sequence through seq_out; a NULL buffer means nothing recovered — the
+// parity solved nothing yet, was redundant, or was buffered for reordered
+// members.
+//
+//export tailscreen_fec_note_parity
+func tailscreen_fec_note_parity(handle C.int64_t, baseSeq C.uint16_t, count C.int, body *C.uint8_t, bodyLen C.int, nowNs C.uint64_t, seqOut *C.uint16_t) C.tailscreen_buf {
+	h := fecBuffers.get(handle)
+	if h == nil {
+		return rejected()
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	// Copied because an unsolvable parity is buffered for its linger window.
+	recovery := h.value.NoteParity(uint16(baseSeq), int(count), copyBytes(body, bodyLen), uint64(nowNs))
+	if recovery == nil {
+		return rejected()
+	}
+	if seqOut != nil {
+		*seqOut = C.uint16_t(recovery.Seq)
+	}
+	return cBuf(recovery.Packet)
+}
+
+// Clears all held media, buffered parities and the recovery guard.
+//
+//export tailscreen_fec_buffer_reset
+func tailscreen_fec_buffer_reset(handle C.int64_t) {
+	h := fecBuffers.get(handle)
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.value.Reset()
+}
+
+// --- Receiver-report accounting (§9.2) ---
+
+var rrAccountings = newHandleTable[*tailscreen.RRAccounting]()
+
+// Creates receiver-report accounting. Free with tailscreen_rr_free.
+//
+//export tailscreen_rr_new
+func tailscreen_rr_new() C.int64_t {
+	return rrAccountings.put(tailscreen.NewRRAccounting())
+}
+
+//export tailscreen_rr_free
+func tailscreen_rr_free(handle C.int64_t) {
+	rrAccountings.free(handle)
+}
+
+// Feeds one received video packet's sequence number. Duplicates within the
+// dedupe window are not counted twice; a served retransmit's first arrival
+// counts as received (TS-RRP-010).
+//
+//export tailscreen_rr_observe
+func tailscreen_rr_observe(handle C.int64_t, seq C.uint16_t) {
+	h := rrAccountings.get(handle)
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.value.Observe(uint16(seq))
+}
+
+// Whether at least one packet has been observed, or -1 for an unknown
+// handle.
+//
+//export tailscreen_rr_has_baseline
+func tailscreen_rr_has_baseline(handle C.int64_t) C.int {
+	h := rrAccountings.get(handle)
+	if h == nil {
+		return -1
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.value.HasBaseline() {
+		return 1
+	}
+	return 0
+}
+
+// Builds one report interval's values and resets the interval accounting.
+// Returns 0 before the first packet or for an unknown handle, 1 on success.
+// Either out-parameter may be NULL.
+//
+//export tailscreen_rr_make_report
+func tailscreen_rr_make_report(handle C.int64_t, fracLostQ8 *C.uint8_t, extHighestSeq *C.uint32_t) C.int {
+	h := rrAccountings.get(handle)
+	if h == nil {
+		return 0
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	frac, ext, ok := h.value.MakeReport()
+	if !ok {
+		return 0
+	}
+	if fracLostQ8 != nil {
+		*fracLostQ8 = C.uint8_t(frac)
+	}
+	if extHighestSeq != nil {
+		*extHighestSeq = C.uint32_t(ext)
+	}
+	return 1
+}
+
+// Maps a 16-bit sequence number into the extended (wrap-monotone) space,
+// choosing the cycle nearest `near`. A pure function; may return a negative
+// value for a straggler preceding the session start.
+//
+//export tailscreen_extend_seq
+func tailscreen_extend_seq(seq C.uint16_t, near C.int64_t) C.int64_t {
+	return C.int64_t(tailscreen.ExtendSeq(uint16(seq), int64(near)))
 }

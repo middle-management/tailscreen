@@ -1,8 +1,8 @@
 # Tailscreen protocol SDK — Go
 
 A complete implementation of the [Tailscreen wire protocol](../../docs/spec.md)'s
-codec layer, usable from Go directly or from any language that can link a C
-static library.
+codec layer and receiver-side pipeline, usable from Go directly or from any
+language that can link a C static library.
 
 ```go
 import "github.com/middle-management/tailscreen/sdk/go/tailscreen"
@@ -28,21 +28,24 @@ specification is checked against.
 
 ## Scope
 
-It encodes and decodes. It owns no socket, no timer and no policy.
+It encodes, decodes, and runs the receiver-side pipeline. It owns no socket,
+no goroutine and no clock — every time-driven type takes `nowNs` from the
+caller, so a recorded session replays deterministically.
 
 | In | Out |
 | :- | :-- |
-| UDP control plane, capability negotiation | the protocol's timers and admission policy |
+| UDP control plane, capability negotiation | the protocol's admission policy |
 | RTP headers, H.264 / HEVC packetization | capture, encoding, decoding, rendering |
 | NACK, receiver reports, RTT pings, XOR parity | congestion control and the FEC on/off gates |
 | The framed TCP channel and its JSON payloads | the remote-control grant lifecycle |
+| The receive pipeline: `ReorderBuffer`, `Depacketizer`, `NACKScheduler`, `FECGroupBuffer`, `RRAccounting` | the loop that drives it (bring your own) |
 | The specification's constants (`Port`, `IdleTimeout`, …) | anything Tailscale |
 
 The excluded column is normative too — it is in the specification's prose,
-and the constants your implementation of it needs are exported here. What is
-deliberately absent is a state machine, so that a client can bring its own
-event loop and concurrency model rather than inherit one from a codec
-library.
+and the constants your implementation of it needs are exported here. The
+pipeline types are pure state machines over explicit inputs; what is
+deliberately absent is an event loop, so that a client can bring its own
+concurrency model rather than inherit one from a protocol library.
 
 **This package does not authenticate anything.** The protocol assumes it runs
 inside a Tailscale tunnel and defines no encryption, authentication or
@@ -95,11 +98,14 @@ Two rules, both in `capi/capi.go`'s doc comment at more length:
   `malloc`'d memory; release it with `tailscreen_free`. A `NULL` pointer with
   length 0 means the input was rejected, which is the protocol's normal
   answer to a malformed datagram rather than an exceptional condition.
-- **One thing is stateful, and it is handle-based.** The framed-channel parser
-  cannot be a pure function — a frame arrives across an arbitrary number of
-  TCP segments — so `tailscreen_parser_new` hands out a handle you pass back
-  and eventually `tailscreen_parser_free`. Everything else is a pure function
-  over bytes and safe to call from any thread.
+- **The stateful pieces are handle-based.** The framed-channel parser, the
+  reorder buffer, the depacketizers, the NACK scheduler, the FEC group buffer
+  and the receiver-report accounting each get a `*_new` / `*_free` pair whose
+  handle you pass back on every call; components that can emit several
+  results from one input queue them on the handle, popped one at a time by a
+  `*_next_*` call. Each handle carries its own lock, time always arrives as
+  an explicit `now_ns` argument, and everything else is a pure function over
+  bytes — the whole library is safe to call from any thread.
 
 `ctest/smoke.c` is a worked example as well as a test: `make
 libtailscreen-check` builds and runs it. It lives outside the `capi/`
