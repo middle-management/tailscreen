@@ -62,15 +62,12 @@ tool — and very little else. The
 truth — are we sharing, are we connecting, who are the peers, which display
 — lives in a single `@MainActor` coordinator.
 
-Every SwiftUI view lives in one file, deliberately: the view code is short
-enough that jumping between files would cost more than scrolling.
-
 The native `NSMenu` (File → Disconnect, etc.) is built by hand because some
 things SwiftUI's `MenuBarExtra` still doesn't do well in 2026.
 
 The viewer window is a regular `NSWindow`, held for the entire process
-lifetime. That's not laziness — releasing it on disconnect raced with
-VideoToolbox/Metal teardown and crashed. Holding it is the fix.
+lifetime — releasing it on disconnect raced with VideoToolbox/Metal
+teardown and crashed.
 
 ## Capture
 
@@ -81,9 +78,7 @@ the helper as environment variables at spawn time). The buffers come out
 as `CVPixelBuffer`s and go straight into the encoder — no copies, no
 Swift heap allocations per frame. The encoder also runs in the helper, so
 encoded access units are written directly from the encoder thread to a
-framed stdout pipe; the parent process never sees raw pixels. If you're
-staring at the encoder wondering why it doesn't make defensive copies,
-that's why.
+framed stdout pipe; the parent process never sees raw pixels.
 
 The main process must never touch the ScreenCaptureKit family of APIs.
 **Never call `SCShareableContent` from the parent** — that registers the
@@ -198,29 +193,24 @@ and new peers degrades to plain PLI (the wire details are on the
   received ones, so the NACK scheduler and receiver reports stay
   coherent. Multi-loss groups hand off to NACK.
 
-All the decision math — loss attribution, throttle renewal, congestion
-bands, fps transitions, FEC gating — is extracted into pure functions
-with CI-able unit tests, because the live loops need a real tsnet node,
-a real display, and a genuinely bad network to exercise.
+All the decision math (loss attribution, congestion response, FEC
+gating) is extracted into pure functions with unit tests — the live
+loops need a real tsnet node and a genuinely bad network to exercise.
 
 ## Audio
 
-Voice runs in both directions (Opus, mono, 48 kHz) alongside playback of
-the sharer's **system audio**, and is bidirectional with viewer-to-viewer
-relay through the sharer. The receive side runs an adaptive jitter buffer,
-conceals short sequence gaps instead of glitching, and puts a failing
-decoder on a cooldown rather than hammering it.
+Voice runs in both directions (Opus, mono, 48 kHz), with viewer-to-viewer
+relay through the sharer, alongside the sharer's **system audio**. The
+receive side runs an adaptive jitter buffer, conceals short sequence gaps
+instead of glitching, and puts a failing decoder on a cooldown rather
+than hammering it. All of those decisions live in the portable core
+(`VoiceReceiveDecisions`), composed by every platform's audio path, so a
+fix lands on all three platforms at once; each host supplies only its own
+microphone and speaker.
 
-None of that resilience is macOS's. The decisions — the gap policy, the
-concealment cap and its fades, the jitter sizing, the cooldown, the
-stale-speaker sweep — live in the portable core as `VoiceReceiveDecisions`,
-which macOS's `VoiceChannel` and the portable `VoiceDownlink` both compose,
-so a fix lands on all three platforms at once. Each host supplies only its
-own microphone and speaker.
-
-The codec is Opus — libopus wrapped by the local `OpusKit` — which
-replaced the original AudioToolbox AAC-LC path. Royalty-free and
-software-only, so the exact same codec runs on Linux and Windows.
+The codec is Opus (libopus, wrapped by the local `OpusKit`):
+royalty-free and software-only, so the exact same codec runs on Linux
+and Windows.
 
 System audio is captured *in the capture helper* (`SCStream` grabs it
 with the video via `capturesAudio`, excluding Tailscreen's own output so
@@ -264,13 +254,9 @@ hated.
 
 [TailscaleKit](https://github.com/tailscale/libtailscale) is a Swift
 wrapper around `libtailscale` (the same C library used by Tailscale's own
-embeds). We pull it in as a local SwiftPM package at
-`./Packages/TailscaleKit/` so we can apply our patches on top of the upstream
-Swift sources. The patches are all small — things like a `Foundation`
-import, glue imports for the C bridge, `send`/`receive` on connections, a
-public `logout`, listener poll-timeout handling, and our `tsnet
-ListenPacket` Swift wrapper for the UDP video path. They live in
-`Packages/TailscaleKit/Patches/`.
+embeds), pulled in as a local SwiftPM package so our patches apply on top
+of the upstream Swift sources. The patches are small glue; the list is in
+[Contributing]({{ site.baseurl }}{% link contributing.md %}#tailscalekit-and-the-patches).
 
 Each Tailscreen session spins up an **ephemeral tsnet node**: a fresh
 Tailscale identity that lives only as long as the session. The Tailscale
@@ -319,22 +305,15 @@ The metadata channel exchanges three things over TCP/7447:
 
 ## Guardrails
 
-Two pieces of test infrastructure act as protocol guardrails rather than
-feature tests, and they're worth knowing about before you touch wire
-code:
+Two test suites guard the protocol itself — know them before touching
+wire code:
 
-- **The wire-byte registry.** Every wire constant — TCP message types,
-  UDP control bytes, capability bits, helper-IPC types, RTP payload
-  types, reserved SSRCs — is pinned in one registry test per channel,
-  asserting exact values, exhaustiveness, and uniqueness. Adding a byte
-  without a registry row, or renumbering a shipped one, fails CI with a
-  message that names the collision.
-- **Parser fuzzing.** Every parser that touches peer-controlled bytes
-  (the framed TCP parser, RTP depacketizers, UDP control decoders, the
-  helper's parameter-set decoder) runs under a deterministic seeded fuzz
-  harness — random bytes, truncations, bit flips, length-field mutations
-  — on every CI run, with a ~50× longer nightly soak. A failure prints
-  its reproducing seed.
+- **The wire-byte registry.** Every wire constant is pinned in a registry
+  test: exact value, exhaustiveness, uniqueness. A new byte needs a
+  registry row in the same commit; a shipped byte is never renumbered.
+- **Parser fuzzing.** Every parser that reads peer-controlled bytes runs
+  under a deterministic seeded fuzz harness on each CI run, with a longer
+  nightly soak. A failure prints its reproducing seed.
 
 ## Concurrency
 
