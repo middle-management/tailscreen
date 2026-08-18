@@ -989,11 +989,12 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         self.rendersAnnotations = rendersAnnotations
         self.logger = PrintLogSink(prefix: "Tailscale", dropListeningNoise: true)
         self.rtpTimestampOriginNs = DispatchTime.now().uptimeNanoseconds
-        var outboxContinuation: AsyncStream<AnnotationBroadcast>.Continuation!
         // Unbounded: dropping the oldest could drop the `.add` a later `.undo`
         // refers to, which is the exact failure the outbox exists to prevent.
         // Annotation ops are drag-paced and tiny, so the queue stays short.
-        self.annotationOutbox = AsyncStream(bufferingPolicy: .unbounded) { outboxContinuation = $0 }
+        let (outbox, outboxContinuation) = AsyncStream<AnnotationBroadcast>.makeStream(
+            bufferingPolicy: .unbounded)
+        self.annotationOutbox = outbox
         self.annotationOutboxContinuation = outboxContinuation
         startAnnotationDrain()
     }

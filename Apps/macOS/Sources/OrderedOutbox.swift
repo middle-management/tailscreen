@@ -43,15 +43,15 @@ final class OrderedOutbox<Element: Sendable> {
     ///   working across a back-channel reconnect.
     init(send: @escaping @MainActor (Element) async -> Void) {
         self.send = send
-        var cont: AsyncStream<Element>.Continuation!
         // Unbounded on purpose: dropping the oldest could drop a `mouseUp`,
         // a `keyUp`, or the `.add` a later `.undo` refers to — the exact
         // failures this type exists to prevent. Flood control belongs
         // upstream, where it can be selective: the capture view throttles
         // `mouseMove` (the only coalescable event) and the sharer's injector
         // coalesces runs of them per drain.
-        self.stream = AsyncStream(bufferingPolicy: .unbounded) { cont = $0 }
-        self.continuation = cont
+        let (stream, continuation) = AsyncStream<Element>.makeStream(bufferingPolicy: .unbounded)
+        self.stream = stream
+        self.continuation = continuation
     }
 
     deinit {
