@@ -89,7 +89,7 @@ image: /assets/social-card.png
 <div class="ts-stats">
   <div class="ts-stat">
     <span class="ts-stat-n">60&thinsp;fps</span>
-    <span class="ts-stat-c">hardware-encoded HEVC, full Retina</span>
+    <span class="ts-stat-c">hardware-encoded, full-resolution video</span>
   </div>
   <div class="ts-stat">
     <span class="ts-stat-n">Zero</span>
@@ -105,14 +105,16 @@ image: /assets/social-card.png
   </div>
 </div>
 
-<p class="ts-intro">On a Mac, ScreenCaptureKit grabs the pixels and VideoToolbox
-encodes them in hardware; on Linux and Windows, X11 or ScreenCast-portal
-capture and Windows.Graphics.Capture feed libavcodec. Either way,
-<a href="https://tailscale.com/">Tailscale</a>&rsquo;s WireGuard tunnel carries
-the result straight to the other machine &mdash; direct when the network
-allows, through Tailscale&rsquo;s DERP relays when it doesn&rsquo;t &mdash;
-and every platform speaks the same wire protocol, so any of them can watch
-any other. Your screen never touches a third-party server.</p>
+<p class="ts-intro">Tailscreen captures your screen with each
+platform&rsquo;s native tooling and streams it over
+<a href="https://tailscale.com/">Tailscale</a> (or any
+<a href="{{ site.baseurl }}{% link self-hosted.md %}">compatible control
+plane</a>) &mdash; direct when the network allows, relayed inside the same
+encryption when it isn&rsquo;t.
+macOS, Linux, and Windows all speak the same protocol, so any of them can
+watch any other, and your screen never touches a third-party server.
+Curious what&rsquo;s underneath?
+<a href="{{ site.baseurl }}{% link architecture.md %}">Read the architecture</a>.</p>
 </div>
 
 ## Sharp where it counts
@@ -127,12 +129,10 @@ any other. Your screen never touches a third-party server.</p>
   </div>
   <div class="ts-spotlight-body">
     <h3>Video that keeps up</h3>
-    <p>Hardware HEVC (H.264 when the other side needs it), wide color that
-    survives the trip on P3 displays. And when the network turns ugly,
-    Tailscreen fights back instead of freezing: selective retransmission,
-    forward error correction, and adaptive bitrate and frame-rate control
-    degrade smoothly &mdash; then snap back to full quality the moment the
-    link recovers.</p>
+    <p>Smooth, hardware-encoded video, with wide color that survives the
+    trip. And when the network turns ugly, Tailscreen fights back instead
+    of freezing: it repairs losses and adapts quality on the fly, then
+    snaps back to pin-sharp the moment the link recovers.</p>
   </div>
 </div>
 
@@ -191,9 +191,8 @@ any other. Your screen never touches a third-party server.</p>
       </svg>
     </div>
     <h3>Voice &amp; system audio</h3>
-    <p>Talk over the same tunnel, and share what your computer is playing
-    &mdash; all Opus-encoded. Viewers hear both; everyone gets a mute
-    button.</p>
+    <p>Talk over the same tunnel, and share what your computer is playing.
+    Viewers hear both; everyone gets a mute button.</p>
   </div>
   <div class="ts-card">
     <div class="ts-card-icon">
@@ -203,8 +202,8 @@ any other. Your screen never touches a third-party server.</p>
       </svg>
     </div>
     <h3>Draw on the screen</h3>
-    <p>Two-way annotations ride a reliable back-channel, so strokes land
-    even when the network is dropping video packets.</p>
+    <p>Both sides can sketch on the shared screen &mdash; and strokes
+    arrive reliably even when the network is dropping video.</p>
   </div>
   <div class="ts-card">
     <div class="ts-card-icon">
@@ -262,10 +261,12 @@ any other. Your screen never touches a third-party server.</p>
   <li>macOS 15 (Sequoia) or later, Linux (x86_64 or arm64, X11 or Wayland),
   or Windows 10/11 (x64 or arm64) &mdash; in any combination on the two
   ends.</li>
-  <li>A Tailscale account &mdash; the free personal tier is fine.</li>
+  <li>A Tailscale account &mdash; the free personal tier is fine. (Or a
+  <a href="{{ site.baseurl }}{% link self-hosted.md %}">self-hosted,
+  compatible control plane</a> such as headscale &mdash; no Tailscale
+  account needed at all.)</li>
   <li>On a Mac: Screen Recording permission; macOS asks the first time you
   share. (Accessibility too, but only if you ever grant remote control.)</li>
-  <li>A Swift 6 toolchain &mdash; only if you&rsquo;re building from source.</li>
 </ul>
 </div>
 
