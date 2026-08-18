@@ -85,6 +85,13 @@ jobs:
         run: |
           mkdir -p /tmp/current
           git archive "${{ steps.tag.outputs.tag }}" docs | tar -x -C /tmp/current
+          # Site CHROME comes from main, content from the tag. The channel
+          # banner (root ⇄ /next) lives in head_custom.html, and a banner
+          # pointing at the other channel shouldn't have to wait for a
+          # release before it exists on both sides. Content pages stay
+          # pinned to the tag — this overlays only the shared <head>.
+          mkdir -p /tmp/current/docs/_includes
+          cp docs/_includes/head_custom.html /tmp/current/docs/_includes/
 
       - name: Setup Ruby
         uses: ruby/setup-ruby@v1
