@@ -10,104 +10,70 @@ permalink: /architecture/
 1. TOC
 {:toc}
 
-Tailscreen is small: a few dozen Swift files, one Go-built C archive,
-and no external services. Most of the interesting work happens in the video
-pipeline; everything else is plumbing.
+Tailscreen is small: one portable Swift core, three thin native apps, one
+Go-built C archive, and no external services. Most of the interesting work
+happens in the video pipeline; everything else is plumbing.
 
 ## The whole picture
 
-Capture and encoding live in a separate **helper subprocess** spawned per
-share. Process death is the only reliable signal that clears `replayd`'s
-per-bundle slot, so isolating `SCStream` + VideoToolbox in a child means
-"Stop Sharing" always works — no stuck menubar recording badge. The native
-content picker runs in a second short-lived helper for the same defensive
-reason.
+The portable core — `Packages/TailscreenKit`: the wire protocol, the viewer
+session, the sharer engine, and every loss-recovery, congestion, and
+admission decision — is shared by all three apps, and each platform
+supplies only what has to touch the OS:
+
+|  | macOS | Linux | Windows |
+| :--- | :--- | :--- | :--- |
+| Capture | ScreenCaptureKit | X11 / ScreenCast portal | Windows.Graphics.Capture |
+| Encode / decode | VideoToolbox (hardware) | libavcodec (software) | libavcodec (software) |
+| Render | Metal | OpenGL (GTK4) | WinUI |
+| Audio I/O | AVAudioEngine | ALSA | WASAPI |
+| Input injection | CGEvent | XTEST | SendInput |
 
 ```
-TailscreenApp (@main)
- ├─ Main process
- │   └─ AppState (@MainActor)
- │        ├─ presentNativePicker() ──spawn──▶ picker-helper subprocess
- │        │       (returns the selection as framed JSON on stdout)
- │        ├─ TailscaleScreenShareServer
- │        │    ├─ HelperScreenCapture ──spawn──▶ capture-helper subprocess
- │        │    │     (encoded AUs + system-audio AUs come back over framed stdout)
- │        │    ├─ per-viewer send chains → RTP → UDP/7447
- │        │    │     + RetransmitBuffer / FEC parity / congestion sweep
- │        │    └─ TCP/7447 (annotations, metadata, remote control)
- │        ├─ TailscaleScreenShareClient
- │        │    └─ UDP/7447 → FECGroupBuffer → RTP depacketize → VideoDecoder
- │        │       → MetalViewerRenderer, + NACKScheduler / RRAccounting
- │        │       + TCP/7447 (annotations + input events out)
- │        ├─ RemoteControlInjector ── CGEvent injection (Accessibility TCC)
- │        ├─ VoiceChannel          ── PCM ↔ Opus ↔ RTP, bidi over UDP/7447
- │        ├─ TailscalePeerDiscovery ── LocalAPI + TCP probe
- │        ├─ TailscaleIPNWatcher    ── IPN bus subscription
- │        ├─ TailscaleAuth          ── browser-based login
- │        └─ TailscreenMetadataService ── share name, resolution, request-to-share
- ├─ picker-helper subprocess (short-lived: exits when the user picks)
- │    └─ SCContentSharingPicker
- └─ capture-helper subprocess (lives for one share)
-      └─ SCStream (video + optional system audio) → VideoEncoder / Opus → framed stdout
+sharer                                       viewer
+┌──────────────────────────────┐             ┌──────────────────────────────┐
+│ capture → encode  (platform) │             │ decode → render   (platform) │
+│    ↓                         │             │    ↑                         │
+│ RTP packetize                │  UDP/7447   │ reorder · FEC repair         │
+│ per-viewer send chains       │ ──────────▶ │ depacketize                  │
+│ retransmit ring · FEC parity │ ◀────────── │ NACK · receiver reports ·    │
+│ · congestion      (portable) │             │ PLI               (portable) │
+└──────────────┬───────────────┘             └───────────────┬──────────────┘
+               └───────────────── TCP/7447 ───────────────────┘
+           annotations · remote control · metadata (framed JSON)
 ```
+
+How each app is put together — process layout, UI shell, capture
+specifics — lives with the app:
+[`Apps/macOS/README.md`](https://github.com/middle-management/tailscreen/blob/main/Apps/macOS/README.md),
+[`Apps/linux/README.md`](https://github.com/middle-management/tailscreen/blob/main/Apps/linux/README.md),
+[`Apps/windows/README.md`](https://github.com/middle-management/tailscreen/blob/main/Apps/windows/README.md).
+One example worth a sentence here: the macOS app isolates capture and
+encoding in a per-share helper subprocess, so a wedged system capture
+service can never stick a share — process death is the reliable reset.
 
 If you've used a low-latency video stack before, this will look familiar.
 If you haven't, the rest of this page is the tour.
 
-## SwiftUI app shell
-
-The app entry point owns two scenes — a docked hub window (sign-in,
-accounts, the peer list) and a menubar item that acts as the sharing
-tool — and very little else. The
-truth — are we sharing, are we connecting, who are the peers, which display
-— lives in a single `@MainActor` coordinator.
-
-The native `NSMenu` (File → Disconnect, etc.) is built by hand because some
-things SwiftUI's `MenuBarExtra` still doesn't do well in 2026.
-
-The viewer window is a regular `NSWindow`, held for the entire process
-lifetime — releasing it on disconnect raced with VideoToolbox/Metal
-teardown and crashed.
-
 ## Capture
 
-Capture is a thin wrapper over `ScreenCaptureKit`, running entirely
-inside the helper subprocess. We capture at native Retina (2×) at a 60
-fps target (cappable via Settings → Quality; the quality knobs travel to
-the helper as environment variables at spawn time). The buffers come out
-as `CVPixelBuffer`s and go straight into the encoder — no copies, no
-Swift heap allocations per frame. The encoder also runs in the helper, so
-encoded access units are written directly from the encoder thread to a
-framed stdout pipe; the parent process never sees raw pixels.
-
-The main process must never touch the ScreenCaptureKit family of APIs.
-**Never call `SCShareableContent` from the parent** — that registers the
-parent with `replayd`, and the helper child's subsequent `SCStream` then
-fails with "application connection being interrupted". The same goes for
-presenting the picker: `SCContentSharingPicker` runs in its own
-short-lived `--picker-helper` subprocess, which also drives the Screen
-Recording TCC prompt on first use, so the parent never preflight-checks
-the permission at all.
-
-The helper emits a ~1 Hz **heartbeat** off any delivered SCStream sample
-— including the idle frames a completely static screen still produces —
-so the parent can tell "healthy but nothing changing" from "SCStream
-wedged". A live helper that goes silent for 15 s gets restarted by a
-watchdog; an exiting helper gets up to 3 auto-restarts in a 30 s window.
-The mid-share "Change Source…" flow rides the same restart path: swap the
-cached picker selection, restart the helper, let viewers resync off the
-fresh keyframe's in-band parameter sets.
+Each platform captures with its native engine, and choosing what to share
+happens in the platform's native picker (on Wayland, the compositor's own
+consent dialog). Frames go from capture to encoder with as little copying
+as the platform allows, and the quality knobs — fps cap, preset — apply at
+that seam.
 
 ## Video encode/decode
 
-VideoToolbox configured for the lowest latency we can talk it into:
+The encoder is configured for the lowest latency we can talk it into:
 
-- **HEVC by default, H.264 as a fallback.** The sharer tries to set up a
-  hardware HEVC encoder at startup; if VideoToolbox refuses (mostly older
-  Intel Macs without HW HEVC), it transparently retries with H.264. The
+- **HEVC by default, H.264 as a fallback.** The sharer tries to set up an
+  HEVC encoder at startup; if the platform refuses (mostly older Intel
+  Macs without hardware HEVC), it transparently retries with H.264. The
   viewer doesn't need to know in advance — it picks up the codec from the
   RTP payload type and configures the decoder on the fly.
-- Hardware encoder where available (everywhere on Apple Silicon).
+- Hardware encode on macOS (VideoToolbox — everywhere on Apple Silicon);
+  software libavcodec on Linux and Windows today.
 - Frame reordering disabled. No B-frames. Each frame depends only on
   earlier frames, which means a packet loss can't strand future frames
   waiting for a frame from the past.
@@ -130,10 +96,9 @@ sets. Parameter sets go in-band on every keyframe — **SPS+PPS** for H.264,
 **VPS+SPS+PPS** for HEVC — so a viewer that connects partway through can
 spin up a decoder without an out-of-band handshake.
 
-The decode path is the symmetric VideoToolbox side. It builds its
-`CMFormatDescription` from whichever parameter-set flavor came in on the
-wire, so the decoder follows the encoder's choice. The decoded
-`CVPixelBuffer`s feed straight into a `CAMetalLayer` for the actual blit.
+The decode path is symmetric. It builds its format description from
+whichever parameter-set flavor came in on the wire, so the decoder follows
+the encoder's choice, and decoded frames feed the platform's renderer.
 
 When decoding starts *failing* (rather than just missing packets), the
 viewer runs an escalation ladder instead of dying quietly: request a
@@ -182,7 +147,7 @@ and new peers degrades to plain PLI (the wire details are on the
   distort the numbers). The sharer's congestion controller turns that
   into two levers: the bitrate arm (cut / hold / raise with asymmetric
   hysteresis) and, once bitrate bottoms out, an fps ladder (60 → 30 → 15,
-  applied live via the capture helper).
+  applied live to the capture pipeline).
 - **XOR FEC.** For viewers whose paths are both lossy *and* long (where a
   retransmit round-trip is genuinely expensive), the sharer interleaves
   one XOR parity packet per group of N media packets (`FECCodec`), sizing
@@ -212,39 +177,31 @@ The codec is Opus (libopus, wrapped by the local `OpusKit`):
 royalty-free and software-only, so the exact same codec runs on Linux
 and Windows.
 
-System audio is captured *in the capture helper* (`SCStream` grabs it
-with the video via `capturesAudio`, excluding Tailscreen's own output so
-viewers' voices never loop back), encoded to Opus, and framed to the
-parent over the same stdout pipe as video. On the wire it's a separate
-RTP payload type and a reserved SSRC; on the viewer it plays through a
-dedicated player node mixed with voice. The mute toggle is an emission
-latch in the helper — instant, no capture reconfiguration — re-sent after
-every helper respawn so restarts preserve it.
+System audio — macOS-only today — is captured alongside the video,
+excluding Tailscreen's own output so viewers' voices never loop back. On
+the wire it's a separate RTP payload type and a reserved SSRC; on the
+viewer it plays through a dedicated player node mixed with voice, and
+the sharer's mute toggle takes effect instantly.
 
 ## Remote control
 
-Input injection is the one capture-adjacent feature that deliberately
-lives in the **main process**, not a helper: `CGEvent` posting needs
-Accessibility permission, not Screen Recording, and has no `replayd`
-coupling — so there's no stuck-state failure mode to isolate, and a
-helper would just add IPC latency to every mouse move.
-
-The pipeline: the viewer captures local mouse/keyboard in the viewer
+The viewer captures local mouse/keyboard in the viewer
 window, normalizes coordinates to `[0,1]`, and sends them as framed TCP
 input events. The sharer's gate (`RemoteControlPolicy`) admits events
 only from the exact connection that holds the grant — one grantee at a
 time, identified by server-assigned connection ID, behind an event-rate
-ceiling. Admitted events go to `RemoteControlInjector`, which maps
-normalized coordinates onto the captured region's live global rect per
-share kind (display bounds, window bounds, or the union of a shared app's
-window rects — so an app share can't be used to click your Dock),
+ceiling. Admitted events go to the platform's injector — `CGEvent` on
+macOS, XTEST on Linux, `SendInput` on Windows — which maps normalized
+coordinates onto the captured region's live global rect per share kind
+(display bounds, window bounds, or the union of a shared app's window
+rects — so an app share can't be used to click your Dock or taskbar) and
 translates the wire's platform-neutral key model (USB HID usages + a
-five-bit modifier set) into mac keycodes and `CGEventFlags` — constructive
-translation, so a hostile viewer can't smuggle arbitrary flag bits — and
-posts `CGEvent`s from a serial queue. Revocation is TOCTOU-safe: a sealed injector drops anything that
+five-bit modifier set) into native input — constructive
+translation, so a hostile viewer can't smuggle arbitrary flag bits.
+Revocation is TOCTOU-safe: a sealed injector drops anything that
 raced the revoke and synthesizes a button-up for any button held
 mid-drag, so revoke never leaves a stuck mouse button. Keyboard scope is
-whole-Mac by design (see [Security]({{ site.baseurl }}{% link security.md %}) for why, and
+whole-machine by design (see [Security]({{ site.baseurl }}{% link security.md %}) for why, and
 for the grant-time disclosure).
 
 ## Tailscale integration
@@ -278,15 +235,12 @@ that's just how `libtailscale` works.
 
 ## Annotations
 
-The drawing UI is a SwiftUI canvas hosted inside an AppKit `NSPanel`. The
-AppKit wrapper exists because a borderless overlay panel needs to receive
-keyDown and first-mouse events that SwiftUI alone can't reach. The viewer
-floats this overlay over the video window for local low-latency feedback;
-the sharer floats the same overlay over the actual display, so the
-captured frames include the strokes — every viewer (including the
-original drawer) sees the same annotations through the video stream, with
-the local-side overlay just smoothing out latency for whoever's holding
-the pen.
+The viewer floats a drawing overlay over the video window for local
+low-latency feedback; the sharer floats the same overlay over the actual
+display, so the captured frames include the strokes — every viewer
+(including the original drawer) sees the same annotations through the
+video stream, with the local-side overlay just smoothing out latency for
+whoever's holding the pen.
 
 The wire format is TCP, framed, JSON-encoded. We use TCP rather than
 RTCP-style RTP feedback because losing a stroke segment is worse than the
@@ -314,23 +268,6 @@ wire code:
 - **Parser fuzzing.** Every parser that reads peer-controlled bytes runs
   under a deterministic seeded fuzz harness on each CI run, with a longer
   nightly soak. A failure prints its reproducing seed.
-
-## Concurrency
-
-Swift 6 strict concurrency. Some specifics worth knowing if you're
-modifying:
-
-- Anything that touches UI is `@MainActor`. That includes the central
-  coordinator and anywhere an `NSWindow` is constructed.
-- Networking classes that handle their own thread safety (the screen-share
-  server and client) are `@unchecked Sendable`. We're owning the
-  invariants, the compiler isn't checking them.
-- `CVPixelBuffer` is **not** `Sendable`. If you need to hop a captured
-  frame to `@MainActor` (we do this for preview thumbnails), convert to
-  `CGImage` first.
-- No `Task { ... self ... }` in `deinit`. The instance is being torn down;
-  capturing `self` after `deinit` starts is undefined behavior in Swift.
-  Cleanup in `deinit` is synchronous or it doesn't happen.
 
 ## What's not here
 
