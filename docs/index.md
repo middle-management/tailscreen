@@ -259,7 +259,10 @@ Curious what&rsquo;s underneath?
   <li>macOS 15 (Sequoia) or later, Linux (x86_64 or arm64, X11 or Wayland),
   or Windows 10/11 (x64 or arm64) &mdash; in any combination on the two
   ends.</li>
-  <li>A Tailscale account &mdash; the free personal tier is fine.</li>
+  <li>A Tailscale account &mdash; the free personal tier is fine. (Or a
+  <a href="{{ site.baseurl }}{% link self-hosted.md %}">self-hosted,
+  compatible control plane</a> such as headscale &mdash; no Tailscale
+  account needed at all.)</li>
   <li>On a Mac: Screen Recording permission; macOS asks the first time you
   share. (Accessibility too, but only if you ever grant remote control.)</li>
 </ul>
