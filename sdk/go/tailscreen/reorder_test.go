@@ -153,3 +153,35 @@ func TestReorderMemoryCapWinsOverTheTimeHold(t *testing.T) {
 		t.Fatal("the packet after an abandoned gap must be marked")
 	}
 }
+
+func TestReorderPushDoesNotRetainCallersSlice(t *testing.T) {
+	b := NewReorderBuffer(16, 0)
+	buf := []byte{0xAA, 1, 2}
+	released := b.Push(0, buf, 0) // stream origin: released immediately
+	buf[0] = 0xEE                 // the caller reuses its read buffer
+	if len(released) != 1 || released[0].Packet[0] != 0xAA {
+		t.Fatal("an immediately released packet aliases the caller's buffer")
+	}
+	copy(buf, []byte{0xCC, 3, 4})
+	b.Push(2, buf, 0) // held while seq 1 is missing
+	buf[0] = 0xEE
+	out := b.Push(1, []byte{0xBB, 5, 6}, 0)
+	if len(out) != 2 || out[0].Packet[0] != 0xBB || out[1].Packet[0] != 0xCC {
+		t.Fatal("a held packet aliases the caller's buffer")
+	}
+}
+
+func TestReorderZeroDepthAbandonsImmediately(t *testing.T) {
+	// maxDepth is literal on both sides of the differential pair: 0 means
+	// nothing is ever held, so any out-of-order arrival abandons its gap on
+	// the spot.
+	b := NewReorderBuffer(0, 0)
+	b.Push(0, []byte{0}, 0)
+	out := b.Push(2, []byte{2}, 0)
+	if len(out) != 1 || !out[0].LostBefore {
+		t.Fatalf("depth 0 must abandon the gap immediately, got %d releases", len(out))
+	}
+	if b.SkippedGapCount() != 1 {
+		t.Fatalf("SkippedGapCount = %d, want 1", b.SkippedGapCount())
+	}
+}

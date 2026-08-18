@@ -190,3 +190,49 @@ func TestFECMediaRingEvictsOldestUnderMemoryBound(t *testing.T) {
 		t.Fatal("evicted members must make the old group unsolvable, not mis-solved")
 	}
 }
+
+func TestFECNoteMediaDoesNotRetainCallersSlice(t *testing.T) {
+	group := fecMakeGroup(300, 900)
+	buffer := NewFECGroupBuffer(FECGroupBufferConfig{})
+	scratch := make([]byte, 0, 4096)
+	for i, packet := range group {
+		if i == 1 {
+			continue
+		}
+		scratch = append(scratch[:0], packet...) // one reused read buffer
+		buffer.NoteMedia(fecSeqOf(t, packet), scratch, uint64(i)*fecMs)
+	}
+	for i := range scratch {
+		scratch[i] = 0xEE // whatever landed in it last is overwritten
+	}
+	base, count, body := fecParityFor(t, group)
+	recovery := buffer.NoteParity(base, count, body, 10*fecMs)
+	if recovery == nil || !bytes.Equal(recovery.Packet, group[1]) {
+		t.Fatal("held media aliased the caller's reused buffer — recovery corrupted")
+	}
+}
+
+func TestFECNoteParityDoesNotRetainCallersBody(t *testing.T) {
+	group := fecMakeGroup(400, 900)
+	buffer := NewFECGroupBuffer(FECGroupBufferConfig{})
+	for i, packet := range group {
+		if i < 2 {
+			continue
+		}
+		buffer.NoteMedia(fecSeqOf(t, packet), packet, uint64(i)*fecMs)
+	}
+	base, count, body := fecParityFor(t, group)
+	scratch := append([]byte(nil), body...)
+	if buffer.NoteParity(base, count, scratch, 6*fecMs) != nil {
+		t.Fatal("two missing members must not solve")
+	}
+	for i := range scratch {
+		scratch[i] = 0xEE // the caller reuses its datagram buffer
+	}
+	// The reordered member arrives; the buffered parity must solve from its
+	// own copy of the body, not the caller's overwritten one.
+	recovery := buffer.NoteMedia(fecSeqOf(t, group[1]), group[1], 8*fecMs)
+	if recovery == nil || !bytes.Equal(recovery.Packet, group[0]) {
+		t.Fatal("a buffered parity aliased the caller's body buffer")
+	}
+}

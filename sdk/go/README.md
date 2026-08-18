@@ -112,6 +112,38 @@ libtailscreen-check` builds and runs it. It lives outside the `capi/`
 directory because cgo compiles every `.c` file in a package's own directory,
 which would build it *into* the archive rather than against it.
 
+### One Go runtime per binary — build your own archive if you need more Go
+
+A c-archive embeds a whole Go runtime, and two of them cannot be linked into
+one binary: their cgo export symbols (`crosscall2`, `_cgo_panic`,
+`_cgo_topofstack`) collide at link time, and even a linker that tolerated
+that would hand you two runtimes in one process, which Go does not support.
+So if your application needs this SDK **and** another Go library — tsnet /
+libtailscale being the obvious pairing for a Tailscreen client — do not link
+two archives. Build **one** archive from your own `package main` that
+imports everything you need, exactly the way Tailscreen itself builds
+`libtailscale.a` from the libtailscale sources (with its own patches) rather
+than consuming a prebuilt binary.
+
+Concretely: a Go `package main` is not importable, so the `//export` shim
+always lives with whoever builds the archive. Start by copying `capi/capi.go`
+into your own module (it is MIT-licensed and deliberately thin — every
+function is a few lines over `sdk/go/tailscreen`), add your own exports for
+whatever else your binary embeds (tsnet dial/listen, for instance), and build
+it with the same command the Makefile uses:
+
+```bash
+go build -buildvcs=false -buildmode=c-archive -o libmyapp.a ./mycapi
+```
+
+The same constraint is why the Swift↔Go differential suite lives in its own
+package (`Packages/TailscreenDifferential`): TailscreenKit's test binary
+already links `libtailscale.a`, so the suite that links `libtailscreen.a`
+needs a binary of its own. (Dynamic `-buildmode=c-shared` libraries are the
+one alternative — each `.so` keeps its runtime to itself — but the combined
+static archive is the simpler and better-trodden path, and a pure-Go client
+needs none of this: import the package and tsnet directly.)
+
 ## Testing
 
 ```bash

@@ -100,6 +100,9 @@ func (d *Depacketizer) minPayload() int {
 // access unit if the marker bit finished one. nowNs drives the reorder
 // buffer's time-based hold; pass 0 in count-based mode.
 //
+// The packet bytes are never retained past the call (the embedded reorder
+// buffer copies on entry), so a receive loop can reuse one read buffer.
+//
 // At most one access unit comes back per call even when a late packet
 // completes several — the rest queue up and arrive one per subsequent call,
 // or all at once from DrainReady.

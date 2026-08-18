@@ -654,17 +654,6 @@ func tailscreen_parser_corrupt(handle C.int64_t) C.int {
 // takes now_ns from the caller's monotonic clock, so a recorded session
 // replays byte-for-byte.
 
-// copyBytes copies a caller-owned view into Go memory, for components that
-// retain the packet past the call (the reorder buffer's held gap, the FEC
-// buffer's media ring).
-func copyBytes(data *C.uint8_t, length C.int) []byte {
-	view := goBytes(data, length)
-	if view == nil {
-		return nil
-	}
-	return append([]byte(nil), view...)
-}
-
 // cSeqs copies a []uint16 into malloc'd memory the caller owns. Freed with
 // tailscreen_free (cast to uint8_t*).
 func cSeqs(seqs []uint16) (*C.uint16_t, C.int) {
@@ -688,9 +677,11 @@ type reorderState struct {
 
 var reorders = newHandleTable[reorderState]()
 
-// Creates a reorder buffer. max_depth bounds held packets; gap_hold_ns = 0
-// selects count-based gap abandonment, > 0 the time-based hold selective
-// retransmission needs (TS-VID-043). Free with tailscreen_reorder_free.
+// Creates a reorder buffer. max_depth bounds held packets and is taken
+// literally — 0 abandons a gap the moment anything would be held;
+// gap_hold_ns = 0 selects count-based gap abandonment, > 0 the time-based
+// hold selective retransmission needs (TS-VID-043). Free with
+// tailscreen_reorder_free.
 //
 //export tailscreen_reorder_new
 func tailscreen_reorder_new(maxDepth C.int, gapHoldNs C.uint64_t) C.int64_t {
@@ -714,8 +705,9 @@ func tailscreen_reorder_push(handle C.int64_t, seq C.uint16_t, data *C.uint8_t, 
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	// Copied because the buffer retains packets while a gap is open.
-	released := h.value.buf.Push(uint16(seq), copyBytes(data, length), uint64(nowNs))
+	// No intermediate copy: Push copies on entry and never retains the
+	// caller's view, which the lock bounds to this call.
+	released := h.value.buf.Push(uint16(seq), goBytes(data, length), uint64(nowNs))
 	h.value.pending = append(h.value.pending, released...)
 	return C.int(len(h.value.pending))
 }
@@ -817,8 +809,9 @@ func tailscreen_depacketizer_ingest(handle C.int64_t, data *C.uint8_t, length C.
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	// Copied because the embedded reorder buffer retains packets.
-	if au := h.value.d.Ingest(copyBytes(data, length), uint64(nowNs)); au != nil {
+	// No intermediate copy: Ingest's reorder buffer copies on entry and
+	// never retains the caller's view, which the lock bounds to this call.
+	if au := h.value.d.Ingest(goBytes(data, length), uint64(nowNs)); au != nil {
 		h.value.pending = append(h.value.pending, *au)
 	}
 	h.value.pending = append(h.value.pending, h.value.d.DrainReady()...)
@@ -898,7 +891,11 @@ type nackState struct {
 var nackSchedulers = newHandleTable[nackState]()
 
 // Creates a NACK scheduler. Every tunable 0 selects that field's default
-// (Appendix B); see NACKSchedulerConfig for the meanings. Free with
+// (Appendix B); see NACKSchedulerConfig for the meanings. An explicit zero
+// is therefore not expressible HERE — for the two tunables where zero is
+// meaningful (the reorder tolerances, whose zeros make every gap instantly
+// NACK-eligible), call tailscreen_nack_set_reorder_tolerances after
+// construction: it takes its arguments literally. Free with
 // tailscreen_nack_free.
 //
 //export tailscreen_nack_new
@@ -1134,52 +1131,62 @@ func tailscreen_fec_buffer_free(handle C.int64_t) {
 	fecBuffers.free(handle)
 }
 
-// Retains one received video packet and re-checks buffered parities. On a
-// recovery, returns the recovered packet (caller frees) and writes its
-// sequence through seq_out; a NULL buffer means nothing recovered.
+// Retains one received video packet and re-checks buffered parities.
+// Returns -1 for an unknown handle, 0 when nothing recovered, 1 on a
+// recovery — the recovered packet lands in `out` (caller frees out->data)
+// and its sequence in seq_out. A distinct status rather than a bare NULL
+// buffer, because "this handle is dead" must never read as the routine
+// "nothing recovered yet" (the sibling exports' -1 convention).
 //
 //export tailscreen_fec_note_media
-func tailscreen_fec_note_media(handle C.int64_t, seq C.uint16_t, data *C.uint8_t, length C.int, nowNs C.uint64_t, seqOut *C.uint16_t) C.tailscreen_buf {
+func tailscreen_fec_note_media(handle C.int64_t, seq C.uint16_t, data *C.uint8_t, length C.int, nowNs C.uint64_t, out *C.tailscreen_buf, seqOut *C.uint16_t) C.int {
 	h := fecBuffers.get(handle)
 	if h == nil {
-		return rejected()
+		return -1
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	// Copied because the buffer retains held media.
-	recovery := h.value.NoteMedia(uint16(seq), copyBytes(data, length), uint64(nowNs))
+	// No intermediate copy: NoteMedia copies when it retains and never
+	// aliases the caller's view, which the lock bounds to this call.
+	recovery := h.value.NoteMedia(uint16(seq), goBytes(data, length), uint64(nowNs))
 	if recovery == nil {
-		return rejected()
+		return 0
+	}
+	if out != nil {
+		*out = cBuf(recovery.Packet)
 	}
 	if seqOut != nil {
 		*seqOut = C.uint16_t(recovery.Seq)
 	}
-	return cBuf(recovery.Packet)
+	return 1
 }
 
-// Ingests one parity datagram's fields (from tailscreen_decode_fec). On a
-// recovery, returns the recovered packet (caller frees) and writes its
-// sequence through seq_out; a NULL buffer means nothing recovered — the
-// parity solved nothing yet, was redundant, or was buffered for reordered
-// members.
+// Ingests one parity datagram's fields (from tailscreen_decode_fec).
+// Returns -1 for an unknown handle, 0 when nothing recovered — the parity
+// solved nothing yet, was redundant, or was buffered for reordered members —
+// and 1 on a recovery, delivered exactly as tailscreen_fec_note_media's.
 //
 //export tailscreen_fec_note_parity
-func tailscreen_fec_note_parity(handle C.int64_t, baseSeq C.uint16_t, count C.int, body *C.uint8_t, bodyLen C.int, nowNs C.uint64_t, seqOut *C.uint16_t) C.tailscreen_buf {
+func tailscreen_fec_note_parity(handle C.int64_t, baseSeq C.uint16_t, count C.int, body *C.uint8_t, bodyLen C.int, nowNs C.uint64_t, out *C.tailscreen_buf, seqOut *C.uint16_t) C.int {
 	h := fecBuffers.get(handle)
 	if h == nil {
-		return rejected()
+		return -1
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	// Copied because an unsolvable parity is buffered for its linger window.
-	recovery := h.value.NoteParity(uint16(baseSeq), int(count), copyBytes(body, bodyLen), uint64(nowNs))
+	// No intermediate copy: NoteParity copies if it buffers and never
+	// retains the caller's view, which the lock bounds to this call.
+	recovery := h.value.NoteParity(uint16(baseSeq), int(count), goBytes(body, bodyLen), uint64(nowNs))
 	if recovery == nil {
-		return rejected()
+		return 0
+	}
+	if out != nil {
+		*out = cBuf(recovery.Packet)
 	}
 	if seqOut != nil {
 		*seqOut = C.uint16_t(recovery.Seq)
 	}
-	return cBuf(recovery.Packet)
+	return 1
 }
 
 // Clears all held media, buffered parities and the recovery guard.

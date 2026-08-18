@@ -7,8 +7,13 @@ type FECRecovery struct {
 	Packet []byte
 }
 
-// FECGroupBufferConfig carries the buffer's bounds; zero values select the
-// defaults.
+// FECGroupBufferConfig carries the buffer's bounds. A zero value in any
+// field selects that field's default — which means an explicit zero bound is
+// not representable at construction. That is deliberate: none of these
+// bounds is meaningful at zero (a zero-byte ring or a zero-entry guard is a
+// buffer that cannot function), so the C convention of 0-means-default costs
+// nothing here, unlike the NACK scheduler's tunables (see
+// NACKSchedulerConfig).
 type FECGroupBufferConfig struct {
 	// MaxHeldBytes caps retained media bytes — about four keyframe-sized
 	// groups.
@@ -84,9 +89,12 @@ func NewFECGroupBuffer(cfg FECGroupBufferConfig) *FECGroupBuffer {
 // NoteMedia retains one received video packet and re-checks any buffered
 // parity whose group it may have just made solvable — parity can outrun a
 // reordered member. Returns a recovery if one solved.
+//
+// The packet bytes are copied when retained: the caller's slice is never
+// aliased, so a receive loop can reuse one read buffer across calls.
 func (b *FECGroupBuffer) NoteMedia(seq uint16, packet []byte, nowNs uint64) *FECRecovery {
 	if _, ok := b.held[seq]; !ok {
-		b.held[seq] = packet
+		b.held[seq] = append([]byte(nil), packet...)
 		b.heldOrder = append(b.heldOrder, seq)
 		b.heldBytes += len(packet)
 		b.evictHeldIfNeeded()
@@ -97,6 +105,9 @@ func (b *FECGroupBuffer) NoteMedia(seq uint16, packet []byte, nowNs uint64) *FEC
 // NoteParity ingests one parity datagram: solves immediately when exactly one
 // group member is missing, drops it when none are, and buffers it for one
 // reorder tolerance when two or more are — multi-loss groups belong to NACK.
+//
+// The body bytes are copied if the parity is buffered: the caller's slice is
+// never retained past the call.
 func (b *FECGroupBuffer) NoteParity(baseSeq uint16, count int, body []byte, nowNs uint64) *FECRecovery {
 	b.purgeAgedParities(nowNs)
 	parity := pendingParity{baseSeq: baseSeq, count: count, body: body, firstSeenNs: nowNs}
@@ -106,6 +117,7 @@ func (b *FECGroupBuffer) NoteParity(baseSeq uint16, count int, body []byte, nowN
 	if len(b.missingSeqs(baseSeq, count)) == 0 {
 		return nil // fully received — the parity has nothing to add
 	}
+	parity.body = append([]byte(nil), body...)
 	b.pending = append(b.pending, parity)
 	if len(b.pending) > b.cfg.MaxPendingParities {
 		b.pending = b.pending[len(b.pending)-b.cfg.MaxPendingParities:]
@@ -170,9 +182,10 @@ func (b *FECGroupBuffer) trySolve(parity pendingParity) *FECRecovery {
 
 	b.markRecovered(missingSeq)
 	// The recovered packet joins the held set like a received one, so an
-	// overlapping parity sees a complete group and drops.
+	// overlapping parity sees a complete group and drops. Stored as its own
+	// copy — the returned recovery is the caller's to mutate.
 	if _, ok := b.held[missingSeq]; !ok {
-		b.held[missingSeq] = packet
+		b.held[missingSeq] = append([]byte(nil), packet...)
 		b.heldOrder = append(b.heldOrder, missingSeq)
 		b.heldBytes += len(packet)
 		b.evictHeldIfNeeded()

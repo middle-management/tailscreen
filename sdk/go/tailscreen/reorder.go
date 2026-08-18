@@ -47,11 +47,11 @@ type ReorderBuffer struct {
 }
 
 // NewReorderBuffer constructs a buffer. maxDepth is the hard cap on held
-// packets; gapHoldNs of 0 selects count-based abandonment.
+// packets; gapHoldNs of 0 selects count-based abandonment. maxDepth is taken
+// literally — 0 abandons a gap the moment anything would be held, exactly as
+// the Swift implementation does; clamping it here would be a one-sided
+// divergence in a differentially-pinned pair.
 func NewReorderBuffer(maxDepth int, gapHoldNs uint64) *ReorderBuffer {
-	if maxDepth < 1 {
-		maxDepth = 1
-	}
 	return &ReorderBuffer{
 		maxDepth:  maxDepth,
 		gapHoldNs: gapHoldNs,
@@ -79,7 +79,13 @@ func (b *ReorderBuffer) Reset() {
 // Push inserts one received packet at time nowNs and returns whatever is now
 // releasable, in order. Pass nowNs of 0 in count-based mode, where no clock
 // is consulted.
+//
+// The packet bytes are copied on entry: the caller's slice is never retained
+// or aliased, so a receive loop can reuse one read buffer across calls and
+// hold released packets indefinitely — the same contract Swift's Data value
+// semantics give the original implementation.
 func (b *ReorderBuffer) Push(seq uint16, packet []byte, nowNs uint64) []ReorderRelease {
+	packet = append([]byte(nil), packet...)
 	if !b.hasNext {
 		// First packet of a (re)synced stream: release it and take its
 		// sequence as the origin.

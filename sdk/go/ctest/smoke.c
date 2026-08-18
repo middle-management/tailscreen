@@ -352,17 +352,22 @@ int main(void) {
         tailscreen_buf group_body = tailscreen_parity_body(member_ptrs, member_lengths, 3);
         int64_t fec = tailscreen_fec_buffer_new(0, 0, 0, 0, 0);  // all defaults
         uint16_t recovered_seq = 0;
-        tailscreen_buf none = tailscreen_fec_note_media(fec, 700, members[0], 20, 1000, &recovered_seq);
-        check(none.data == NULL, "a media arrival with no parity recovers nothing");
-        tailscreen_fec_note_media(fec, 702, members[2], 20, 2000, &recovered_seq);
-        tailscreen_buf recovered_pkt = tailscreen_fec_note_parity(fec, 700, 3, group_body.data,
-                                                                  group_body.len, 3000, &recovered_seq);
-        check(recovered_pkt.data != NULL && recovered_seq == 701 && recovered_pkt.len == 20 &&
-                  memcmp(recovered_pkt.data, members[1], 20) == 0,
+        tailscreen_buf recovered_pkt = {NULL, 0};
+        check(tailscreen_fec_note_media(fec, 700, members[0], 20, 1000, &recovered_pkt,
+                                        &recovered_seq) == 0,
+              "a media arrival with no parity recovers nothing");
+        tailscreen_fec_note_media(fec, 702, members[2], 20, 2000, &recovered_pkt, &recovered_seq);
+        int solved = tailscreen_fec_note_parity(fec, 700, 3, group_body.data, group_body.len, 3000,
+                                                &recovered_pkt, &recovered_seq);
+        check(solved == 1 && recovered_pkt.data != NULL && recovered_seq == 701 &&
+                  recovered_pkt.len == 20 && memcmp(recovered_pkt.data, members[1], 20) == 0,
               "the parity recovers the missing member byte for byte");
-        tailscreen_free(recovered_pkt.data);
+        if (solved == 1) tailscreen_free(recovered_pkt.data);
         tailscreen_free(group_body.data);
         tailscreen_fec_buffer_free(fec);
+        check(tailscreen_fec_note_media(fec, 700, members[0], 20, 4000, &recovered_pkt,
+                                        &recovered_seq) == -1,
+              "a freed FEC handle is a distinct -1, not a silent non-recovery");
 
         // Receiver-report accounting: one loss out of five is 51/256.
         int64_t rr = tailscreen_rr_new();

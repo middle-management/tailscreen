@@ -214,19 +214,21 @@ final class GoFECGroupBuffer {
 
     func noteMedia(seq: UInt16, packet: Data, nowNs: UInt64) -> Recovery? {
         var recoveredSeq: UInt16 = 0
-        let buf = withCBytes(packet) { pointer, length in
-            tailscreen_fec_note_media(handle, seq, pointer, length, nowNs, &recoveredSeq)
+        var buf = tailscreen_buf()
+        let status = withCBytes(packet) { pointer, length in
+            tailscreen_fec_note_media(handle, seq, pointer, length, nowNs, &buf, &recoveredSeq)
         }
-        guard let data = takeBuf(buf) else { return nil }
+        guard status == 1, let data = takeBuf(buf) else { return nil }
         return Recovery(seq: recoveredSeq, packet: data)
     }
 
     func noteParity(baseSeq: UInt16, count: Int, body: Data, nowNs: UInt64) -> Recovery? {
         var recoveredSeq: UInt16 = 0
-        let buf = withCBytes(body) { pointer, length in
-            tailscreen_fec_note_parity(handle, baseSeq, Int32(count), pointer, length, nowNs, &recoveredSeq)
+        var buf = tailscreen_buf()
+        let status = withCBytes(body) { pointer, length in
+            tailscreen_fec_note_parity(handle, baseSeq, Int32(count), pointer, length, nowNs, &buf, &recoveredSeq)
         }
-        guard let data = takeBuf(buf) else { return nil }
+        guard status == 1, let data = takeBuf(buf) else { return nil }
         return Recovery(seq: recoveredSeq, packet: data)
     }
 }

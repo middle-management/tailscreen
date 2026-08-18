@@ -55,6 +55,11 @@ final class MediaPathDifferentialTests: XCTestCase {
         for seed: UInt64 in [1, 2024, 777_777] {
             runReorderScenario(seed: seed, maxDepth: 16, gapHoldNs: 0)
         }
+        // maxDepth is literal on both sides: 0 holds nothing, so every
+        // out-of-order arrival abandons its gap on the spot. Pinned here
+        // because a "helpful" clamp on either side is exactly the one-sided
+        // divergence this suite exists to catch.
+        runReorderScenario(seed: 5, maxDepth: 0, gapHoldNs: 0)
     }
 
     func testReorderBufferMatchesGoInTimeHeldMode() {
