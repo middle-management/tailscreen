@@ -90,9 +90,15 @@ fuzz-conformance: ## Fuzz the Go protocol parsers (FUZZTIME=30s per target)
 #
 # Not committed: an archive carries a compiler and a target platform, so it is
 # built per machine. Output lands in sdk/go/build/, which .gitignore covers.
+#
+# -buildvcs=false because the archive does not want a VCS stamp and cannot
+# always get one: Go shells out to git to stamp the revision, and inside CI's
+# container git refuses the checkout as dubiously-owned and exits 128, which
+# fails the build over metadata nothing here reads. Turning it off also makes
+# the artifact reproducible from a tarball with no .git at all.
 libtailscreen: ## Build sdk/go/build/libtailscreen.{a,h} (C static library)
 	@mkdir -p sdk/go/build
-	cd sdk/go && go build -buildmode=c-archive -o build/libtailscreen.a ./capi
+	cd sdk/go && go build -buildvcs=false -buildmode=c-archive -o build/libtailscreen.a ./capi
 	@echo "sdk/go/build/libtailscreen.a + libtailscreen.h"
 
 # Compiles and runs the C smoke test against the archive. It is the ABI that
