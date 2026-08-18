@@ -724,12 +724,15 @@ public final class H264Packetizer: Sendable {
 /// sequence arithmetic is `&-`/`&+` wrap-safe.
 public struct RTPReorderBuffer {
     /// One packet released to the assembler, in ascending sequence order.
+    /// Public members: the differential suite (Packages/TailscreenDifferential,
+    /// a separate package, so no `@testable`) compares releases field-by-field
+    /// against the Go SDK's.
     public struct Release {
-        let packet: Data
+        public let packet: Data
         /// True when a gap was skipped immediately before this packet — the
         /// assembler latches it into the AU's `lostBeforeThisAU` so the viewer
         /// still sends a PLI for genuine loss.
-        let lostBefore: Bool
+        public let lostBefore: Bool
     }
 
     /// Hard cap on out-of-order packets held while waiting for a gap to fill.

@@ -1,6 +1,5 @@
+import TailscreenProtocol
 import XCTest
-
-@testable import TailscreenProtocol
 
 /// Differential tests for the media receive path: the shipping Swift
 /// `RTPReorderBuffer` and `MultiCodecDepacketizer` against the public Go

@@ -1,4 +1,4 @@
-.PHONY: help build run clean release install tailscale test test-protocol test-conformance fuzz-conformance libtailscreen libtailscreen-check test-tsan test-l10n lint lint-baseline format format-check print-format-paths-all e2e-up e2e-down test-e2e test-e2e-local test-e2e-harness icon icon-windows
+.PHONY: help build run clean release install tailscale test test-protocol test-differential test-conformance fuzz-conformance libtailscreen libtailscreen-check test-tsan test-l10n lint lint-baseline format format-check print-format-paths-all e2e-up e2e-down test-e2e test-e2e-local test-e2e-harness icon icon-windows
 
 # Default target: print a one-line summary of every target. Targets are
 # self-documented via the `## description` suffix on each rule.
@@ -44,11 +44,19 @@ test: tailscale ## Run the unit test suite (swift test)
 # patched header, but the test bundle LINKS libtailscale.a — the
 # Tests/TailscreenSharerTests executable links TailscreenSharer, which
 # names TailscaleKit — hence the full `tailscale` prerequisite (which
-# also applies the patches). The `libtailscreen` prerequisite feeds
-# Tests/TailscreenDifferentialTests, which links the Go SDK's archive and
-# drives it against the shipping Swift pipeline with identical input.
-test-protocol: tailscale libtailscreen ## Build + smoke-test the portable TailscreenKit package
+# also applies the patches).
+test-protocol: tailscale ## Build + smoke-test the portable TailscreenKit package
 	swift test --package-path Packages/TailscreenKit
+
+# The Swift↔Go differential suite (Packages/TailscreenDifferential): the
+# shipping Swift pipeline and the public Go SDK — linked in as
+# libtailscreen.a via the CTailscreen systemLibrary — driven with identical
+# seeded input, asserting identical output at every step. Its own package,
+# not a TailscreenKit test target, because two Go c-archives cannot share
+# one binary and TailscreenKit's test executable already links
+# libtailscale.a. Reproduces a `linux-differential` CI failure.
+test-differential: libtailscreen ## Run the Swift↔Go differential pipeline suite
+	swift test --package-path Packages/TailscreenDifferential
 
 # The shared string catalog (Packages/TailscreenL10n). Its suites are the ONLY
 # check on the GTK and WinUI apps' user-facing strings: they scan all four

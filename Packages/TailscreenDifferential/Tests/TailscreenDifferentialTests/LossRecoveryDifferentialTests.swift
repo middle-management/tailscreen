@@ -1,6 +1,5 @@
+import TailscreenProtocol
 import XCTest
-
-@testable import TailscreenProtocol
 
 /// Differential tests for the loss-recovery machinery: the shipping Swift
 /// `NACKScheduler`, `FECGroupBuffer` and `RRAccounting` against the public Go
@@ -232,9 +231,9 @@ final class LossRecoveryDifferentialTests: XCTestCase {
                         .map { GoFECGroupBuffer.Recovery(seq: $0.seq, packet: $0.packet) }
                     goRecovery = goBuffer.noteMedia(seq: mediaSeq, packet: packet, nowNs: nowNs)
                 case .parity:
-                    swiftRecovery = swiftBuffer.noteParity(
+                    let noted = swiftBuffer.noteParity(
                         baseSeq: baseSeq, count: packets.count, body: parityBody, nowNs: nowNs)
-                        .map { GoFECGroupBuffer.Recovery(seq: $0.seq, packet: $0.packet) }
+                    swiftRecovery = noted.map { GoFECGroupBuffer.Recovery(seq: $0.seq, packet: $0.packet) }
                     goRecovery = goBuffer.noteParity(
                         baseSeq: baseSeq, count: packets.count, body: parityBody, nowNs: nowNs)
                 }
@@ -253,9 +252,8 @@ final class LossRecoveryDifferentialTests: XCTestCase {
             for index in dropped.sorted() where rng.chance(50) {
                 nowNs &+= UInt64(rng.next(upTo: 2_000_000))
                 let lateSeq = baseSeq &+ UInt16(index)
-                let swiftRecovery = swiftBuffer.noteMedia(
-                    seq: lateSeq, packet: packets[index], nowNs: nowNs)
-                    .map { GoFECGroupBuffer.Recovery(seq: $0.seq, packet: $0.packet) }
+                let noted = swiftBuffer.noteMedia(seq: lateSeq, packet: packets[index], nowNs: nowNs)
+                let swiftRecovery = noted.map { GoFECGroupBuffer.Recovery(seq: $0.seq, packet: $0.packet) }
                 let goRecovery = goBuffer.noteMedia(seq: lateSeq, packet: packets[index], nowNs: nowNs)
                 guard swiftRecovery == goRecovery else {
                     XCTFail(
