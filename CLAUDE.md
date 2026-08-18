@@ -32,6 +32,7 @@ Use `rg` to find specific files; the per-area rules files below carry the rest.
 Always go through `make` (`make build`, `test`, `run`, `release`, …) — the root Makefile sets `PKG_CONFIG_PATH=$(CURDIR)/Packages/TailscaleKit` so SwiftPM's `systemLibrary` target finds `libtailscale.pc`, which in turn supplies the `-L` flag for `libtailscale.a`. Two targets whose purpose isn't obvious from the Makefile:
 
 - `make test-protocol` — builds + smoke-tests the portable TailscreenKit package with no Apple frameworks. Also runs on Linux, and is how you reproduce a `linux-protocol` CI failure locally. It builds `libtailscale.a` first: the package's `TailscreenSharerTests` bundle links `TailscreenSharer` → `TailscaleKit`, so the archive is a link-time input even though no test calls tsnet.
+- `make test-conformance` — runs the protocol conformance vectors (`conformance/vectors/`) against the Go implementation in `conformance/go`, which was written from `docs/spec.md` and shares no code with ours. Needs Go, nothing else; reproduces a `linux-conformance` CI failure. The Swift half of the same pair rides inside `make test-protocol`.
 - `make test-l10n` — builds + tests the shared string catalog. Its suites scan **all four** source trees for `L("…")` keys the catalog is missing, so it is the only check on the GTK and WinUI apps' user-facing strings; reproduces a `linux-l10n` CI failure.
 - `make test-e2e` — one-shot `e2e-up` → `swift test --filter TailscaleConnectivityTests` → `e2e-down` against a local headscale in Docker.
 
@@ -46,6 +47,8 @@ After a fresh clone: `git submodule update --init --recursive` (the libtailscale
 Port **7447**, TCP **and** UDP. Video and audio are RTP over UDP (video PT 96 = H.264 / 97 = HEVC, audio PT 98 = voice / 99 = system audio; the viewer auto-detects, nothing is negotiated out of band). Loss recovery is layered FEC → NACK → PLI, capability-negotiated in an extended HELLO/HELLO_ACK. Annotations, remote control, metadata and request-to-share ride a framed TCP channel (`[type:1][len:4 BE][payload:N]`, JSON payloads).
 
 **Every wire constant is pinned by `WireByteRegistryTests`. Add a registry row in the same commit as any new wire byte, and never renumber a shipped one.** Full protocol details: `.claude/rules/protocol.md`.
+
+The **normative** definition — RFC 2119 MUST/SHOULD/MAY with stable requirement IDs (`TS-CTL-001`, …) — is `docs/spec.md`, and `conformance/` carries the language-neutral vectors that pin it: `make test-conformance` runs them against an independent Go implementation, and `make test-protocol` runs the same files against the shipping Swift codecs. A wire change touches four things in one commit: the code, the registry test, the spec's registry appendix, and a vector.
 
 ## Swift 6 conventions used here
 
@@ -90,7 +93,7 @@ Topic detail is split into `.claude/rules/`, each scoped by `paths:` frontmatter
 
 One skill loads on demand rather than by path: **`test-catalog`** — the extracted pure-decision suites, the test-only seams, and which package a new suite belongs in. Invoke it when adding or moving a test.
 
-Longer-form design docs (published site) live in `docs/`: `architecture.md`, `protocol.md`, `security.md`, `platform-support.md` (the public per-platform feature matrix — update it in the same commit as any change that opens or closes a platform gap). Internal working plans — porting, the per-platform viewer plans, `platform-alignment.md` and friends — live in `plans/` at the repo root and are deliberately **not** published; keep roadmap/status prose there, not in `docs/`.
+Longer-form design docs (published site) live in `docs/`: `architecture.md`, `protocol.md` (with `spec.md`, the normative wire spec, as its child page), `security.md`, `platform-support.md` (the public per-platform feature matrix — update it in the same commit as any change that opens or closes a platform gap). Internal working plans — porting, the per-platform viewer plans, `platform-alignment.md` and friends — live in `plans/` at the repo root and are deliberately **not** published; keep roadmap/status prose there, not in `docs/`.
 
 **The docs site ships with the change that makes it true.** A PR that changes anything user-facing — a feature, an install step, an artifact name, a permission prompt, a platform gap opening or closing — updates the matching page under `docs/` (`index.md`, `install.md`, `usage.md`, `platform-support.md`, `troubleshooting.md`, …) in the same PR; there is no separate docs catch-up step. This is safe to do eagerly: `docs/` on `main` publishes only to the **/next** preview channel (tailscreen.dev/next, banner + noindex), while the root site builds from the **latest release tag** (see `pages.yml`), so docs merged with a feature never promise anything unreleased — and the root flips to them automatically when the release publishes.
 

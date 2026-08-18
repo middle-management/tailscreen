@@ -1,4 +1,4 @@
-.PHONY: help build run clean release install tailscale test test-protocol test-tsan test-l10n lint lint-baseline format format-check print-format-paths-all e2e-up e2e-down test-e2e test-e2e-local test-e2e-harness icon icon-windows
+.PHONY: help build run clean release install tailscale test test-protocol test-conformance test-tsan test-l10n lint lint-baseline format format-check print-format-paths-all e2e-up e2e-down test-e2e test-e2e-local test-e2e-harness icon icon-windows
 
 # Default target: print a one-line summary of every target. Targets are
 # self-documented via the `## description` suffix on each rule.
@@ -53,6 +53,20 @@ test-protocol: tailscale ## Build + smoke-test the portable TailscreenKit packag
 # Swift does; CI's linux-l10n job runs exactly this.
 test-l10n: ## Build + test the shared localization catalog package
 	swift test --package-path Packages/TailscreenL10n
+
+# The protocol conformance vectors (conformance/), run against the Go
+# implementation in conformance/go — which was written from docs/spec.md and
+# shares no code with the Swift one. That independence is the whole value: it
+# is what tells you the specification is implementable by somebody who only
+# read it, rather than merely self-consistent.
+#
+# The OTHER half runs inside `make test-protocol`: ConformanceVectorTests
+# executes the same vectors against the shipping Swift codecs, which is what
+# keeps the specification describing Tailscreen rather than an idealized
+# cousin of it. Needs Go, which the repo already requires for libtailscale.
+# CI's linux-conformance job runs exactly this.
+test-conformance: ## Run the protocol conformance vectors (Go runner)
+	cd conformance/go && go test ./...
 
 # Thread sanitizer build of the test suite. Catches data races on locks,
 # double-resumed continuations, callback ordering bugs that compile fine

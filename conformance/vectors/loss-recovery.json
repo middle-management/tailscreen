@@ -1,0 +1,797 @@
+{
+  "suite": "loss-recovery",
+  "description": "NACK, receiver reports, RTT pings, and XOR parity \u2014 the capability-negotiated recovery layers.",
+  "spec": "docs/spec.md#9-loss-recovery",
+  "cases": [
+    {
+      "id": "nack/encode-single-entry",
+      "requirements": [
+        "TS-NCK-001",
+        "TS-CTL-001"
+      ],
+      "op": "nack.encode",
+      "in": {
+        "entries": [
+          {
+            "pid": 1000,
+            "blp": 5
+          }
+        ]
+      },
+      "out": {
+        "bytes": "0a0103e80005"
+      }
+    },
+    {
+      "id": "nack/encode-three-entries",
+      "requirements": [
+        "TS-NCK-001"
+      ],
+      "op": "nack.encode",
+      "in": {
+        "entries": [
+          {
+            "pid": 1,
+            "blp": 0
+          },
+          {
+            "pid": 65535,
+            "blp": 65535
+          },
+          {
+            "pid": 32768,
+            "blp": 32769
+          }
+        ]
+      },
+      "out": {
+        "bytes": "0a0300010000ffffffff80008001"
+      }
+    },
+    {
+      "id": "nack/encode-truncates-at-sixteen",
+      "requirements": [
+        "TS-NCK-001"
+      ],
+      "op": "nack.encode",
+      "in": {
+        "entries": [
+          {
+            "pid": 0,
+            "blp": 0
+          },
+          {
+            "pid": 1,
+            "blp": 1
+          },
+          {
+            "pid": 2,
+            "blp": 2
+          },
+          {
+            "pid": 3,
+            "blp": 3
+          },
+          {
+            "pid": 4,
+            "blp": 4
+          },
+          {
+            "pid": 5,
+            "blp": 5
+          },
+          {
+            "pid": 6,
+            "blp": 6
+          },
+          {
+            "pid": 7,
+            "blp": 7
+          },
+          {
+            "pid": 8,
+            "blp": 8
+          },
+          {
+            "pid": 9,
+            "blp": 9
+          },
+          {
+            "pid": 10,
+            "blp": 10
+          },
+          {
+            "pid": 11,
+            "blp": 11
+          },
+          {
+            "pid": 12,
+            "blp": 12
+          },
+          {
+            "pid": 13,
+            "blp": 13
+          },
+          {
+            "pid": 14,
+            "blp": 14
+          },
+          {
+            "pid": 15,
+            "blp": 15
+          },
+          {
+            "pid": 16,
+            "blp": 16
+          }
+        ]
+      },
+      "out": {
+        "bytes": "0a1000000000000100010002000200030003000400040005000500060006000700070008000800090009000a000a000b000b000c000c000d000d000e000e000f000f"
+      }
+    },
+    {
+      "id": "nack/encode-empty",
+      "requirements": [
+        "TS-NCK-001"
+      ],
+      "op": "nack.encode",
+      "in": {
+        "entries": []
+      },
+      "out": {
+        "bytes": "0a00"
+      }
+    },
+    {
+      "id": "nack/decode-three-entries",
+      "requirements": [
+        "TS-NCK-001"
+      ],
+      "op": "nack.decode",
+      "in": {
+        "bytes": "0a0300010000ffffffff80008001"
+      },
+      "out": {
+        "entries": [
+          {
+            "pid": 1,
+            "blp": 0
+          },
+          {
+            "pid": 65535,
+            "blp": 65535
+          },
+          {
+            "pid": 32768,
+            "blp": 32769
+          }
+        ]
+      }
+    },
+    {
+      "id": "nack/decode-rejects-truncated-entry-list",
+      "requirements": [
+        "TS-NCK-002",
+        "TS-SEC-002"
+      ],
+      "op": "nack.decode",
+      "in": {
+        "bytes": "0a0300010000ffffffff800080"
+      },
+      "out": {
+        "entries": []
+      }
+    },
+    {
+      "id": "nack/decode-rejects-short-datagram",
+      "requirements": [
+        "TS-CTL-003"
+      ],
+      "op": "nack.decode",
+      "in": {
+        "bytes": "0a"
+      },
+      "out": {
+        "entries": []
+      }
+    },
+    {
+      "id": "nack/decode-rejects-wrong-type",
+      "requirements": [
+        "TS-CTL-005"
+      ],
+      "op": "nack.decode",
+      "in": {
+        "bytes": "030100010000"
+      },
+      "out": {
+        "entries": []
+      }
+    },
+    {
+      "id": "nack/decode-ignores-trailing-bytes",
+      "requirements": [
+        "TS-CTL-004"
+      ],
+      "op": "nack.decode",
+      "in": {
+        "bytes": "0a0103e80005deadbeef"
+      },
+      "out": {
+        "entries": [
+          {
+            "pid": 1000,
+            "blp": 5
+          }
+        ]
+      }
+    },
+    {
+      "id": "ping/encode",
+      "requirements": [
+        "TS-RRP-001"
+      ],
+      "op": "ping.encode",
+      "in": {
+        "serverUptimeNs": "1234567890123456789"
+      },
+      "out": {
+        "bytes": "0c112210f47de98115"
+      }
+    },
+    {
+      "id": "ping/encode-zero",
+      "requirements": [
+        "TS-RRP-003"
+      ],
+      "op": "ping.encode",
+      "in": {
+        "serverUptimeNs": "0"
+      },
+      "out": {
+        "bytes": "0c0000000000000000"
+      }
+    },
+    {
+      "id": "ping/decode",
+      "requirements": [
+        "TS-RRP-002"
+      ],
+      "op": "ping.decode",
+      "in": {
+        "bytes": "0cffffffffffffffff"
+      },
+      "out": {
+        "serverUptimeNs": "18446744073709551615"
+      }
+    },
+    {
+      "id": "ping/decode-rejects-short",
+      "requirements": [
+        "TS-CTL-003"
+      ],
+      "op": "ping.decode",
+      "in": {
+        "bytes": "0c00000000000000"
+      },
+      "out": {
+        "serverUptimeNs": null
+      }
+    },
+    {
+      "id": "ping/decode-ignores-trailing",
+      "requirements": [
+        "TS-CTL-004"
+      ],
+      "op": "ping.decode",
+      "in": {
+        "bytes": "0c000000000000002aff"
+      },
+      "out": {
+        "serverUptimeNs": "42"
+      }
+    },
+    {
+      "id": "receiver-report/encode-legacy-20",
+      "requirements": [
+        "TS-RRP-011"
+      ],
+      "op": "rr.encode",
+      "in": {
+        "report": {
+          "fracLostQ8": 13,
+          "extHighestSeq": 70000,
+          "jitterTicks": 900,
+          "lastPingTs": "1234567890123456789",
+          "delaySincePingMs": 17,
+          "fecRecovered": 5,
+          "nackRecovered": 9
+        },
+        "includeRecoveryFields": false
+      },
+      "out": {
+        "bytes": "0b0d0001117000000384112210f47de981150011"
+      }
+    },
+    {
+      "id": "receiver-report/encode-extended-24",
+      "requirements": [
+        "TS-RRP-010",
+        "TS-RRP-011"
+      ],
+      "op": "rr.encode",
+      "in": {
+        "report": {
+          "fracLostQ8": 13,
+          "extHighestSeq": 70000,
+          "jitterTicks": 900,
+          "lastPingTs": "1234567890123456789",
+          "delaySincePingMs": 17,
+          "fecRecovered": 5,
+          "nackRecovered": 9
+        },
+        "includeRecoveryFields": true
+      },
+      "out": {
+        "bytes": "0b0d0001117000000384112210f47de98115001100050009"
+      }
+    },
+    {
+      "id": "receiver-report/decode-legacy-20",
+      "requirements": [
+        "TS-RRP-009"
+      ],
+      "op": "rr.decode",
+      "in": {
+        "bytes": "0b0d0001117000000384112210f47de981150011"
+      },
+      "out": {
+        "report": {
+          "fracLostQ8": 13,
+          "extHighestSeq": 70000,
+          "jitterTicks": 900,
+          "lastPingTs": "1234567890123456789",
+          "delaySincePingMs": 17,
+          "fecRecovered": 0,
+          "nackRecovered": 0
+        }
+      }
+    },
+    {
+      "id": "receiver-report/decode-fec-era-22",
+      "requirements": [
+        "TS-RRP-009",
+        "TS-EXT-004"
+      ],
+      "op": "rr.decode",
+      "in": {
+        "bytes": "0b0d0001117000000384112210f47de9811500110005"
+      },
+      "out": {
+        "report": {
+          "fracLostQ8": 13,
+          "extHighestSeq": 70000,
+          "jitterTicks": 900,
+          "lastPingTs": "1234567890123456789",
+          "delaySincePingMs": 17,
+          "fecRecovered": 5,
+          "nackRecovered": 0
+        }
+      }
+    },
+    {
+      "id": "receiver-report/decode-full-24",
+      "requirements": [
+        "TS-RRP-009"
+      ],
+      "op": "rr.decode",
+      "in": {
+        "bytes": "0b0d0001117000000384112210f47de98115001100050009"
+      },
+      "out": {
+        "report": {
+          "fracLostQ8": 13,
+          "extHighestSeq": 70000,
+          "jitterTicks": 900,
+          "lastPingTs": "1234567890123456789",
+          "delaySincePingMs": 17,
+          "fecRecovered": 5,
+          "nackRecovered": 9
+        }
+      }
+    },
+    {
+      "id": "receiver-report/decode-21-reads-as-20",
+      "requirements": [
+        "TS-RRP-009"
+      ],
+      "op": "rr.decode",
+      "in": {
+        "bytes": "0b0d0001117000000384112210f47de98115001107"
+      },
+      "out": {
+        "report": {
+          "fracLostQ8": 13,
+          "extHighestSeq": 70000,
+          "jitterTicks": 900,
+          "lastPingTs": "1234567890123456789",
+          "delaySincePingMs": 17,
+          "fecRecovered": 0,
+          "nackRecovered": 0
+        }
+      }
+    },
+    {
+      "id": "receiver-report/decode-23-reads-as-22",
+      "requirements": [
+        "TS-RRP-009"
+      ],
+      "op": "rr.decode",
+      "in": {
+        "bytes": "0b0d0001117000000384112210f47de981150011000507"
+      },
+      "out": {
+        "report": {
+          "fracLostQ8": 13,
+          "extHighestSeq": 70000,
+          "jitterTicks": 900,
+          "lastPingTs": "1234567890123456789",
+          "delaySincePingMs": 17,
+          "fecRecovered": 5,
+          "nackRecovered": 0
+        }
+      }
+    },
+    {
+      "id": "receiver-report/decode-rejects-19",
+      "requirements": [
+        "TS-CTL-003"
+      ],
+      "op": "rr.decode",
+      "in": {
+        "bytes": "0b0d0001117000000384112210f47de9811500"
+      },
+      "out": {
+        "report": null
+      }
+    },
+    {
+      "id": "receiver-report/decode-rejects-wrong-type",
+      "requirements": [
+        "TS-CTL-005"
+      ],
+      "op": "rr.decode",
+      "in": {
+        "bytes": "0a0d0001117000000384112210f47de981150011"
+      },
+      "out": {
+        "report": null
+      }
+    },
+    {
+      "id": "receiver-report/no-ping-seen-is-zero",
+      "requirements": [
+        "TS-RRP-003"
+      ],
+      "op": "rr.encode",
+      "in": {
+        "report": {
+          "fracLostQ8": 0,
+          "extHighestSeq": 100,
+          "jitterTicks": 0,
+          "lastPingTs": "0",
+          "delaySincePingMs": 0,
+          "fecRecovered": 0,
+          "nackRecovered": 0
+        },
+        "includeRecoveryFields": false
+      },
+      "out": {
+        "bytes": "0b00000000640000000000000000000000000000"
+      }
+    },
+    {
+      "id": "fec/encode-datagram",
+      "requirements": [
+        "TS-CTL-001",
+        "TS-FEC-004"
+      ],
+      "op": "fec.encodeDatagram",
+      "in": {
+        "baseSeq": 1000,
+        "count": 3,
+        "body": "585f666d747b82"
+      },
+      "out": {
+        "bytes": "0d03e803585f666d747b82"
+      }
+    },
+    {
+      "id": "fec/decode-datagram",
+      "requirements": [
+        "TS-FEC-004"
+      ],
+      "op": "fec.decodeDatagram",
+      "in": {
+        "bytes": "0d03e803585f666d747b82"
+      },
+      "out": {
+        "baseSeq": 1000,
+        "count": 3,
+        "body": "585f666d747b82"
+      }
+    },
+    {
+      "id": "fec/decode-datagram-max-body",
+      "requirements": [
+        "TS-FEC-003"
+      ],
+      "op": "fec.decodeDatagram",
+      "in": {
+        "bytes": "0d000010777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5"
+      },
+      "out": {
+        "baseSeq": 0,
+        "count": 16,
+        "body": "777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5"
+      }
+    },
+    {
+      "id": "fec/decode-datagram-rejects-oversized-body",
+      "requirements": [
+        "TS-FEC-003",
+        "TS-SEC-003"
+      ],
+      "op": "fec.decodeDatagram",
+      "in": {
+        "bytes": "0d000010969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4db"
+      },
+      "out": {
+        "baseSeq": null,
+        "count": null,
+        "body": null
+      }
+    },
+    {
+      "id": "fec/decode-datagram-rejects-short-body",
+      "requirements": [
+        "TS-FEC-002"
+      ],
+      "op": "fec.decodeDatagram",
+      "in": {
+        "bytes": "0d000003b5bcc3cad1d8"
+      },
+      "out": {
+        "baseSeq": null,
+        "count": null,
+        "body": null
+      }
+    },
+    {
+      "id": "fec/decode-datagram-rejects-count-1",
+      "requirements": [
+        "TS-FEC-001",
+        "TS-FEC-006"
+      ],
+      "op": "fec.decodeDatagram",
+      "in": {
+        "bytes": "0d000001585f666d747b82"
+      },
+      "out": {
+        "baseSeq": null,
+        "count": null,
+        "body": null
+      }
+    },
+    {
+      "id": "fec/decode-datagram-rejects-count-17",
+      "requirements": [
+        "TS-FEC-001"
+      ],
+      "op": "fec.decodeDatagram",
+      "in": {
+        "bytes": "0d000011585f666d747b82"
+      },
+      "out": {
+        "baseSeq": null,
+        "count": null,
+        "body": null
+      }
+    },
+    {
+      "id": "fec/decode-datagram-rejects-count-0",
+      "requirements": [
+        "TS-FEC-001"
+      ],
+      "op": "fec.decodeDatagram",
+      "in": {
+        "bytes": "0d000000585f666d747b82"
+      },
+      "out": {
+        "baseSeq": null,
+        "count": null,
+        "body": null
+      }
+    },
+    {
+      "id": "fec/parity-body-three-packets",
+      "requirements": [
+        "TS-FEC-004"
+      ],
+      "op": "fec.parity",
+      "in": {
+        "packets": [
+          "806001f400015f900000002a8e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989f",
+          "806001f500015f900000002aadb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f66",
+          "80e001f600015f900000002accd3dae1e8eff6fd040b1219"
+        ]
+      },
+      "out": {
+        "body": "0060e000015f90eff2fd808b8e999c272a3538e3e1ffe1e321272123616f616361272123211fe1e3e1e72123212f21c5ccd3dae1e8eff6fd040b121920272e353c434a51585f66"
+      }
+    },
+    {
+      "id": "fec/parity-body-rejects-single-packet",
+      "requirements": [
+        "TS-FEC-006"
+      ],
+      "op": "fec.parity",
+      "in": {
+        "packets": [
+          "806001f400015f900000002a8e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989f"
+        ]
+      },
+      "out": {
+        "body": ""
+      }
+    },
+    {
+      "id": "fec/parity-body-rejects-short-member",
+      "requirements": [
+        "TS-SEC-002"
+      ],
+      "op": "fec.parity",
+      "in": {
+        "packets": [
+          "806001f400015f900000002a8e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989f",
+          "806001f500015f90000000"
+        ]
+      },
+      "out": {
+        "body": ""
+      }
+    },
+    {
+      "id": "fec/recover-first-member",
+      "requirements": [
+        "TS-FEC-009"
+      ],
+      "op": "fec.recover",
+      "in": {
+        "missingSeq": 500,
+        "ssrc": 42,
+        "members": [
+          "806001f500015f900000002aadb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f66",
+          "80e001f600015f900000002accd3dae1e8eff6fd040b1219"
+        ],
+        "body": "0060e000015f90eff2fd808b8e999c272a3538e3e1ffe1e321272123616f616361272123211fe1e3e1e72123212f21c5ccd3dae1e8eff6fd040b121920272e353c434a51585f66"
+      },
+      "out": {
+        "packet": "806001f400015f900000002a8e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989f"
+      }
+    },
+    {
+      "id": "fec/recover-longest-member",
+      "requirements": [
+        "TS-FEC-009",
+        "TS-FEC-010"
+      ],
+      "op": "fec.recover",
+      "in": {
+        "missingSeq": 501,
+        "ssrc": 42,
+        "members": [
+          "806001f400015f900000002a8e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989f",
+          "80e001f600015f900000002accd3dae1e8eff6fd040b1219"
+        ],
+        "body": "0060e000015f90eff2fd808b8e999c272a3538e3e1ffe1e321272123616f616361272123211fe1e3e1e72123212f21c5ccd3dae1e8eff6fd040b121920272e353c434a51585f66"
+      },
+      "out": {
+        "packet": "806001f500015f900000002aadb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f66"
+      }
+    },
+    {
+      "id": "fec/recover-marker-packet",
+      "requirements": [
+        "TS-FEC-009",
+        "TS-VID-006"
+      ],
+      "op": "fec.recover",
+      "in": {
+        "missingSeq": 502,
+        "ssrc": 42,
+        "members": [
+          "806001f400015f900000002a8e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989f",
+          "806001f500015f900000002aadb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f66"
+        ],
+        "body": "0060e000015f90eff2fd808b8e999c272a3538e3e1ffe1e321272123616f616361272123211fe1e3e1e72123212f21c5ccd3dae1e8eff6fd040b121920272e353c434a51585f66"
+      },
+      "out": {
+        "packet": "80e001f600015f900000002accd3dae1e8eff6fd040b1219"
+      }
+    },
+    {
+      "id": "fec/recover-rejects-short-body",
+      "requirements": [
+        "TS-FEC-002"
+      ],
+      "op": "fec.recover",
+      "in": {
+        "missingSeq": 500,
+        "ssrc": 42,
+        "members": [
+          "806001f500015f900000002aadb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f66",
+          "80e001f600015f900000002accd3dae1e8eff6fd040b1219"
+        ],
+        "body": "0060e000015f"
+      },
+      "out": {
+        "packet": null
+      }
+    },
+    {
+      "id": "fec/recover-rejects-short-member",
+      "requirements": [
+        "TS-SEC-002"
+      ],
+      "op": "fec.recover",
+      "in": {
+        "missingSeq": 500,
+        "ssrc": 42,
+        "members": [
+          "806001f500015f90000000",
+          "80e001f600015f900000002accd3dae1e8eff6fd040b1219"
+        ],
+        "body": "0060e000015f90eff2fd808b8e999c272a3538e3e1ffe1e321272123616f616361272123211fe1e3e1e72123212f21c5ccd3dae1e8eff6fd040b121920272e353c434a51585f66"
+      },
+      "out": {
+        "packet": null
+      }
+    },
+    {
+      "id": "fec/recover-rejects-member-past-padded-region",
+      "requirements": [
+        "TS-FEC-010"
+      ],
+      "op": "fec.recover",
+      "in": {
+        "missingSeq": 500,
+        "ssrc": 42,
+        "members": [
+          "806001f500015f900000002aebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe2e9f0f7fe050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f161d242b323940474e555c"
+        ],
+        "body": "0060e000015f90eff2fd808b8e999c272a3538e3e1ffe1e321272123616f616361272123211fe1e3e1e72123212f21c5ccd3dae1e8eff6fd040b121920272e353c434a51585f66"
+      },
+      "out": {
+        "packet": null
+      }
+    },
+    {
+      "id": "fec/recover-rejects-impossible-length",
+      "requirements": [
+        "TS-FEC-010"
+      ],
+      "op": "fec.recover",
+      "in": {
+        "missingSeq": 500,
+        "ssrc": 42,
+        "members": [],
+        "body": "000b0a11181f26"
+      },
+      "out": {
+        "packet": null
+      }
+    }
+  ]
+}

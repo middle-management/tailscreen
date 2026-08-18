@@ -269,6 +269,30 @@ jobs:
             libtailscale: host
             cmd: PKG_CONFIG_PATH="$PWD/Packages/TailscaleKit" swift test --package-path Packages/TailscreenKit
 
+          # Protocol-conformance gate: the language-neutral vectors in
+          # conformance/vectors, run against the Go implementation in
+          # conformance/go.
+          #
+          # It is a gate on the SPECIFICATION, not on the app. docs/spec.md is
+          # the normative wire definition; the Go implementation under test was
+          # written from it and shares no code with the Swift one, so this leg
+          # answers a question no Swift test can: does the specification say
+          # enough for somebody who only read it to interoperate? A vector the
+          # Swift runner passes and this one fails is a specification that
+          # describes what we happen to do rather than what we require.
+          #
+          # The other half of the pair runs inside linux-protocol, where
+          # ConformanceVectorTests executes the same files against the shipping
+          # codecs. Both legs read the same JSON, so a vector edited for one and
+          # not the other fails immediately rather than drifting.
+          #
+          # Free: golang-go is one apt package, and the repo already needs Go
+          # for libtailscale. No submodules and no libtailscale.a — nothing
+          # here links anything of ours.
+          - name: linux-conformance
+            apt: golang-go
+            cmd: cd conformance/go && go test ./...
+
           # Localization gate: the shared string catalog
           # (Packages/TailscreenL10n). Its suites scan ALL FOUR source trees —
           # the three apps plus TailscreenHubUI — and fail on any `L("…")` key

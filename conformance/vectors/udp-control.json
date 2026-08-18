@@ -1,0 +1,707 @@
+{
+  "suite": "udp-control",
+  "description": "Control-datagram demultiplexing, the HELLO/HELLO_ACK handshake, and capability negotiation.",
+  "spec": "docs/spec.md#4-udp-control-plane",
+  "cases": [
+    {
+      "id": "control/encode-hello",
+      "requirements": [
+        "TS-CTL-001"
+      ],
+      "op": "control.encodeSimple",
+      "in": {
+        "kind": "hello"
+      },
+      "out": {
+        "bytes": "00"
+      }
+    },
+    {
+      "id": "control/decode-hello",
+      "requirements": [
+        "TS-CTL-001"
+      ],
+      "op": "control.decodeKind",
+      "in": {
+        "bytes": "00"
+      },
+      "out": {
+        "kind": "hello"
+      }
+    },
+    {
+      "id": "control/encode-keepalive",
+      "requirements": [
+        "TS-CTL-001"
+      ],
+      "op": "control.encodeSimple",
+      "in": {
+        "kind": "keepalive"
+      },
+      "out": {
+        "bytes": "01"
+      }
+    },
+    {
+      "id": "control/decode-keepalive",
+      "requirements": [
+        "TS-CTL-001"
+      ],
+      "op": "control.decodeKind",
+      "in": {
+        "bytes": "01"
+      },
+      "out": {
+        "kind": "keepalive"
+      }
+    },
+    {
+      "id": "control/encode-bye",
+      "requirements": [
+        "TS-CTL-001"
+      ],
+      "op": "control.encodeSimple",
+      "in": {
+        "kind": "bye"
+      },
+      "out": {
+        "bytes": "02"
+      }
+    },
+    {
+      "id": "control/decode-bye",
+      "requirements": [
+        "TS-CTL-001"
+      ],
+      "op": "control.decodeKind",
+      "in": {
+        "bytes": "02"
+      },
+      "out": {
+        "kind": "bye"
+      }
+    },
+    {
+      "id": "control/encode-pli",
+      "requirements": [
+        "TS-CTL-001"
+      ],
+      "op": "control.encodeSimple",
+      "in": {
+        "kind": "pli"
+      },
+      "out": {
+        "bytes": "03"
+      }
+    },
+    {
+      "id": "control/decode-pli",
+      "requirements": [
+        "TS-CTL-001"
+      ],
+      "op": "control.decodeKind",
+      "in": {
+        "bytes": "03"
+      },
+      "out": {
+        "kind": "pli"
+      }
+    },
+    {
+      "id": "control/encode-helloAck",
+      "requirements": [
+        "TS-CTL-001"
+      ],
+      "op": "control.encodeSimple",
+      "in": {
+        "kind": "helloAck"
+      },
+      "out": {
+        "bytes": "04"
+      }
+    },
+    {
+      "id": "control/decode-helloAck",
+      "requirements": [
+        "TS-CTL-001"
+      ],
+      "op": "control.decodeKind",
+      "in": {
+        "bytes": "04"
+      },
+      "out": {
+        "kind": "helloAck"
+      }
+    },
+    {
+      "id": "control/encode-serverBye",
+      "requirements": [
+        "TS-CTL-001"
+      ],
+      "op": "control.encodeSimple",
+      "in": {
+        "kind": "serverBye"
+      },
+      "out": {
+        "bytes": "05"
+      }
+    },
+    {
+      "id": "control/decode-serverBye",
+      "requirements": [
+        "TS-CTL-001"
+      ],
+      "op": "control.decodeKind",
+      "in": {
+        "bytes": "05"
+      },
+      "out": {
+        "kind": "serverBye"
+      }
+    },
+    {
+      "id": "control/encode-helloPending",
+      "requirements": [
+        "TS-CTL-001"
+      ],
+      "op": "control.encodeSimple",
+      "in": {
+        "kind": "helloPending"
+      },
+      "out": {
+        "bytes": "06"
+      }
+    },
+    {
+      "id": "control/decode-helloPending",
+      "requirements": [
+        "TS-CTL-001"
+      ],
+      "op": "control.decodeKind",
+      "in": {
+        "bytes": "06"
+      },
+      "out": {
+        "kind": "helloPending"
+      }
+    },
+    {
+      "id": "control/encode-codecUnsupported",
+      "requirements": [
+        "TS-CTL-001"
+      ],
+      "op": "control.encodeSimple",
+      "in": {
+        "kind": "codecUnsupported"
+      },
+      "out": {
+        "bytes": "07"
+      }
+    },
+    {
+      "id": "control/decode-codecUnsupported",
+      "requirements": [
+        "TS-CTL-001"
+      ],
+      "op": "control.decodeKind",
+      "in": {
+        "bytes": "07"
+      },
+      "out": {
+        "kind": "codecUnsupported"
+      }
+    },
+    {
+      "id": "control/encode-helloDenied",
+      "requirements": [
+        "TS-CTL-001"
+      ],
+      "op": "control.encodeSimple",
+      "in": {
+        "kind": "helloDenied"
+      },
+      "out": {
+        "bytes": "08"
+      }
+    },
+    {
+      "id": "control/decode-helloDenied",
+      "requirements": [
+        "TS-CTL-001"
+      ],
+      "op": "control.decodeKind",
+      "in": {
+        "bytes": "08"
+      },
+      "out": {
+        "kind": "helloDenied"
+      }
+    },
+    {
+      "id": "control/encode-profileUnsupported",
+      "requirements": [
+        "TS-CTL-001"
+      ],
+      "op": "control.encodeSimple",
+      "in": {
+        "kind": "profileUnsupported"
+      },
+      "out": {
+        "bytes": "09"
+      }
+    },
+    {
+      "id": "control/decode-profileUnsupported",
+      "requirements": [
+        "TS-CTL-001"
+      ],
+      "op": "control.decodeKind",
+      "in": {
+        "bytes": "09"
+      },
+      "out": {
+        "kind": "profileUnsupported"
+      }
+    },
+    {
+      "id": "control/encode-nack",
+      "requirements": [
+        "TS-CTL-001"
+      ],
+      "op": "control.encodeSimple",
+      "in": {
+        "kind": "nack"
+      },
+      "out": {
+        "bytes": "0a"
+      }
+    },
+    {
+      "id": "control/decode-nack",
+      "requirements": [
+        "TS-CTL-001"
+      ],
+      "op": "control.decodeKind",
+      "in": {
+        "bytes": "0a"
+      },
+      "out": {
+        "kind": "nack"
+      }
+    },
+    {
+      "id": "control/encode-receiverReport",
+      "requirements": [
+        "TS-CTL-001"
+      ],
+      "op": "control.encodeSimple",
+      "in": {
+        "kind": "receiverReport"
+      },
+      "out": {
+        "bytes": "0b"
+      }
+    },
+    {
+      "id": "control/decode-receiverReport",
+      "requirements": [
+        "TS-CTL-001"
+      ],
+      "op": "control.decodeKind",
+      "in": {
+        "bytes": "0b"
+      },
+      "out": {
+        "kind": "receiverReport"
+      }
+    },
+    {
+      "id": "control/encode-ping",
+      "requirements": [
+        "TS-CTL-001"
+      ],
+      "op": "control.encodeSimple",
+      "in": {
+        "kind": "ping"
+      },
+      "out": {
+        "bytes": "0c"
+      }
+    },
+    {
+      "id": "control/decode-ping",
+      "requirements": [
+        "TS-CTL-001"
+      ],
+      "op": "control.decodeKind",
+      "in": {
+        "bytes": "0c"
+      },
+      "out": {
+        "kind": "ping"
+      }
+    },
+    {
+      "id": "control/encode-fec",
+      "requirements": [
+        "TS-CTL-001"
+      ],
+      "op": "control.encodeSimple",
+      "in": {
+        "kind": "fec"
+      },
+      "out": {
+        "bytes": "0d"
+      }
+    },
+    {
+      "id": "control/decode-fec",
+      "requirements": [
+        "TS-CTL-001"
+      ],
+      "op": "control.decodeKind",
+      "in": {
+        "bytes": "0d"
+      },
+      "out": {
+        "kind": "fec"
+      }
+    },
+    {
+      "id": "control/decode-unknown-byte",
+      "requirements": [
+        "TS-CTL-002",
+        "TS-EXT-001"
+      ],
+      "op": "control.decodeKind",
+      "in": {
+        "bytes": "0e"
+      },
+      "out": {
+        "kind": null
+      }
+    },
+    {
+      "id": "control/decode-unknown-high-byte",
+      "requirements": [
+        "TS-CTL-002"
+      ],
+      "op": "control.decodeKind",
+      "in": {
+        "bytes": "7f"
+      },
+      "out": {
+        "kind": null
+      }
+    },
+    {
+      "id": "control/decode-empty",
+      "requirements": [
+        "TS-GEN-022"
+      ],
+      "op": "control.decodeKind",
+      "in": {
+        "bytes": ""
+      },
+      "out": {
+        "kind": null
+      }
+    },
+    {
+      "id": "control/classify-empty",
+      "requirements": [
+        "TS-GEN-022"
+      ],
+      "op": "control.classify",
+      "in": {
+        "bytes": ""
+      },
+      "out": {
+        "class": "empty"
+      }
+    },
+    {
+      "id": "control/classify-rtp-lowest",
+      "requirements": [
+        "TS-GEN-020",
+        "TS-GEN-023"
+      ],
+      "op": "control.classify",
+      "in": {
+        "bytes": "80"
+      },
+      "out": {
+        "class": "rtp"
+      }
+    },
+    {
+      "id": "control/classify-rtp-highest",
+      "requirements": [
+        "TS-GEN-020"
+      ],
+      "op": "control.classify",
+      "in": {
+        "bytes": "bf"
+      },
+      "out": {
+        "class": "rtp"
+      }
+    },
+    {
+      "id": "control/classify-control-zero",
+      "requirements": [
+        "TS-GEN-020"
+      ],
+      "op": "control.classify",
+      "in": {
+        "bytes": "00"
+      },
+      "out": {
+        "class": "control"
+      }
+    },
+    {
+      "id": "control/classify-control-7f",
+      "requirements": [
+        "TS-GEN-021"
+      ],
+      "op": "control.classify",
+      "in": {
+        "bytes": "7f"
+      },
+      "out": {
+        "class": "control"
+      }
+    },
+    {
+      "id": "control/classify-not-rtp-c0",
+      "requirements": [
+        "TS-GEN-020",
+        "TS-VID-002"
+      ],
+      "op": "control.classify",
+      "in": {
+        "bytes": "c0"
+      },
+      "out": {
+        "class": "control"
+      }
+    },
+    {
+      "id": "hello/encode-no-caps",
+      "requirements": [
+        "TS-CAP-006"
+      ],
+      "op": "hello.encode",
+      "in": {
+        "caps": 0
+      },
+      "out": {
+        "bytes": "0000"
+      }
+    },
+    {
+      "id": "hello/encode-nack-rr-fec",
+      "requirements": [
+        "TS-CAP-001"
+      ],
+      "op": "hello.encode",
+      "in": {
+        "caps": 7
+      },
+      "out": {
+        "bytes": "0007"
+      }
+    },
+    {
+      "id": "hello/decode-legacy-one-byte",
+      "requirements": [
+        "TS-CAP-006"
+      ],
+      "op": "hello.decodeCaps",
+      "in": {
+        "bytes": "00"
+      },
+      "out": {
+        "caps": 0
+      }
+    },
+    {
+      "id": "hello/decode-extended",
+      "requirements": [
+        "TS-CAP-002"
+      ],
+      "op": "hello.decodeCaps",
+      "in": {
+        "bytes": "0003"
+      },
+      "out": {
+        "caps": 3
+      }
+    },
+    {
+      "id": "hello/decode-reserved-bits-preserved",
+      "requirements": [
+        "TS-CAP-002"
+      ],
+      "op": "hello.decodeCaps",
+      "in": {
+        "bytes": "00e1"
+      },
+      "out": {
+        "caps": 225
+      }
+    },
+    {
+      "id": "hello/decode-wrong-first-byte",
+      "requirements": [
+        "TS-CTL-003"
+      ],
+      "op": "hello.decodeCaps",
+      "in": {
+        "bytes": "0103"
+      },
+      "out": {
+        "caps": 0
+      }
+    },
+    {
+      "id": "hello-ack/encode-plain",
+      "requirements": [
+        "TS-CTL-012",
+        "TS-CAP-004"
+      ],
+      "op": "helloAck.encode",
+      "in": {
+        "ssrc": 2,
+        "caps": null
+      },
+      "out": {
+        "bytes": "0400000002"
+      }
+    },
+    {
+      "id": "hello-ack/encode-extended",
+      "requirements": [
+        "TS-CAP-004"
+      ],
+      "op": "helloAck.encode",
+      "in": {
+        "ssrc": 7,
+        "caps": 31
+      },
+      "out": {
+        "bytes": "04000000071f"
+      }
+    },
+    {
+      "id": "hello-ack/encode-max-ssrc",
+      "requirements": [
+        "TS-AUD-011"
+      ],
+      "op": "helloAck.encode",
+      "in": {
+        "ssrc": 4294967295,
+        "caps": null
+      },
+      "out": {
+        "bytes": "04ffffffff"
+      }
+    },
+    {
+      "id": "hello-ack/decode-strict-accepts-five",
+      "requirements": [
+        "TS-CAP-004"
+      ],
+      "op": "helloAck.decodeStrict",
+      "in": {
+        "bytes": "0400000002"
+      },
+      "out": {
+        "ssrc": 2
+      }
+    },
+    {
+      "id": "hello-ack/decode-strict-rejects-six",
+      "requirements": [
+        "TS-CAP-004"
+      ],
+      "op": "helloAck.decodeStrict",
+      "in": {
+        "bytes": "040000000207"
+      },
+      "out": {
+        "ssrc": null
+      }
+    },
+    {
+      "id": "hello-ack/decode-strict-rejects-four",
+      "requirements": [
+        "TS-CTL-003"
+      ],
+      "op": "helloAck.decodeStrict",
+      "in": {
+        "bytes": "04000000"
+      },
+      "out": {
+        "ssrc": null
+      }
+    },
+    {
+      "id": "hello-ack/decode-tolerant-five",
+      "requirements": [
+        "TS-CAP-005"
+      ],
+      "op": "helloAck.decodeTolerant",
+      "in": {
+        "bytes": "0400000002"
+      },
+      "out": {
+        "ssrc": 2,
+        "caps": 0
+      }
+    },
+    {
+      "id": "hello-ack/decode-tolerant-six",
+      "requirements": [
+        "TS-CAP-005"
+      ],
+      "op": "helloAck.decodeTolerant",
+      "in": {
+        "bytes": "040000000218"
+      },
+      "out": {
+        "ssrc": 2,
+        "caps": 24
+      }
+    },
+    {
+      "id": "hello-ack/decode-tolerant-short",
+      "requirements": [
+        "TS-CTL-003"
+      ],
+      "op": "helloAck.decodeTolerant",
+      "in": {
+        "bytes": "0400"
+      },
+      "out": {
+        "ssrc": null,
+        "caps": null
+      }
+    },
+    {
+      "id": "hello-ack/decode-tolerant-wrong-type",
+      "requirements": [
+        "TS-CTL-003"
+      ],
+      "op": "helloAck.decodeTolerant",
+      "in": {
+        "bytes": "0500000002"
+      },
+      "out": {
+        "ssrc": null,
+        "caps": null
+      }
+    }
+  ]
+}

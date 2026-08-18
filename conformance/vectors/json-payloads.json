@@ -1,0 +1,533 @@
+{
+  "suite": "json-payloads",
+  "description": "The JSON payloads carried inside TCP frames, in the decode direction \u2014 including the clamps and the rejections that are normative.",
+  "spec": "docs/spec.md#102-payload-encodings",
+  "cases": [
+    {
+      "id": "json/input-mouse-move",
+      "requirements": [
+        "TS-RMT-020"
+      ],
+      "op": "json.inputEvent.decode",
+      "in": {
+        "json": "{\"mouseMove\":{\"x\":0.25,\"y\":0.75}}"
+      },
+      "out": {
+        "event": {
+          "kind": "mouseMove",
+          "x": 0.25,
+          "y": 0.75
+        }
+      }
+    },
+    {
+      "id": "json/input-mouse-down-with-modifiers",
+      "requirements": [
+        "TS-RMT-021",
+        "TS-RMT-023"
+      ],
+      "op": "json.inputEvent.decode",
+      "in": {
+        "json": "{\"mouseDown\":{\"x\":0.5,\"y\":0.5,\"button\":\"right\",\"modifiers\":9}}"
+      },
+      "out": {
+        "event": {
+          "kind": "mouseDown",
+          "x": 0.5,
+          "y": 0.5,
+          "button": "right",
+          "modifiers": 9
+        }
+      }
+    },
+    {
+      "id": "json/input-mouse-up-middle",
+      "requirements": [
+        "TS-RMT-021"
+      ],
+      "op": "json.inputEvent.decode",
+      "in": {
+        "json": "{\"mouseUp\":{\"x\":0.0,\"y\":1.0,\"button\":\"middle\",\"modifiers\":0}}"
+      },
+      "out": {
+        "event": {
+          "kind": "mouseUp",
+          "x": 0.0,
+          "y": 1.0,
+          "button": "middle",
+          "modifiers": 0
+        }
+      }
+    },
+    {
+      "id": "json/input-scroll",
+      "requirements": [
+        "TS-RMT-028"
+      ],
+      "op": "json.inputEvent.decode",
+      "in": {
+        "json": "{\"scroll\":{\"x\":0.5,\"y\":0.5,\"deltaX\":0.0,\"deltaY\":-3.5,\"modifiers\":1}}"
+      },
+      "out": {
+        "event": {
+          "kind": "scroll",
+          "x": 0.5,
+          "y": 0.5,
+          "deltaX": 0.0,
+          "deltaY": -3.5,
+          "modifiers": 1
+        }
+      }
+    },
+    {
+      "id": "json/input-key-down-hid-usage",
+      "requirements": [
+        "TS-RMT-022"
+      ],
+      "op": "json.inputEvent.decode",
+      "in": {
+        "json": "{\"keyDown\":{\"key\":4,\"modifiers\":2}}"
+      },
+      "out": {
+        "event": {
+          "kind": "keyDown",
+          "key": 4,
+          "modifiers": 2
+        }
+      }
+    },
+    {
+      "id": "json/input-key-up-hid-usage",
+      "requirements": [
+        "TS-RMT-022"
+      ],
+      "op": "json.inputEvent.decode",
+      "in": {
+        "json": "{\"keyUp\":{\"key\":57,\"modifiers\":16}}"
+      },
+      "out": {
+        "event": {
+          "kind": "keyUp",
+          "key": 57,
+          "modifiers": 16
+        }
+      }
+    },
+    {
+      "id": "json/input-rejects-nan",
+      "requirements": [
+        "TS-RMT-029",
+        "TS-SEC-002"
+      ],
+      "op": "json.inputEvent.decode",
+      "in": {
+        "json": "{\"mouseMove\":{\"x\":NaN,\"y\":0.5}}"
+      },
+      "out": {
+        "event": null
+      }
+    },
+    {
+      "id": "json/input-rejects-infinity",
+      "requirements": [
+        "TS-RMT-029"
+      ],
+      "op": "json.inputEvent.decode",
+      "in": {
+        "json": "{\"mouseMove\":{\"x\":Infinity,\"y\":0.5}}"
+      },
+      "out": {
+        "event": null
+      }
+    },
+    {
+      "id": "json/input-rejects-out-of-range-literal",
+      "requirements": [
+        "TS-RMT-029"
+      ],
+      "op": "json.inputEvent.decode",
+      "in": {
+        "json": "{\"mouseMove\":{\"x\":1e999,\"y\":0.5}}"
+      },
+      "out": {
+        "event": null
+      }
+    },
+    {
+      "id": "json/input-rejects-unknown-button",
+      "requirements": [
+        "TS-RMT-021"
+      ],
+      "op": "json.inputEvent.decode",
+      "in": {
+        "json": "{\"mouseDown\":{\"x\":0.5,\"y\":0.5,\"button\":\"thumb\",\"modifiers\":0}}"
+      },
+      "out": {
+        "event": null
+      }
+    },
+    {
+      "id": "json/input-rejects-unknown-case",
+      "requirements": [
+        "TS-TCP-008"
+      ],
+      "op": "json.inputEvent.decode",
+      "in": {
+        "json": "{\"teleport\":{\"x\":0.5,\"y\":0.5}}"
+      },
+      "out": {
+        "event": null
+      }
+    },
+    {
+      "id": "json/input-rejects-empty-object",
+      "requirements": [
+        "TS-TCP-008"
+      ],
+      "op": "json.inputEvent.decode",
+      "in": {
+        "json": "{}"
+      },
+      "out": {
+        "event": null
+      }
+    },
+    {
+      "id": "json/annotation-add-pen",
+      "requirements": [
+        "TS-ANN-001",
+        "TS-ANN-002",
+        "TS-ANN-004"
+      ],
+      "op": "json.annotationOp.decode",
+      "in": {
+        "json": "{\"type\":\"add\",\"annotation\":{\"id\":\"6C84FB90-12C4-11E1-840D-7B25C5EE775A\",\"tool\":\"pen\",\"points\":[[0.25,0.5],[0.3,0.55]],\"color\":{\"r\":1,\"g\":0.1,\"b\":0.15,\"a\":1},\"width\":3}}"
+      },
+      "out": {
+        "op": {
+          "kind": "add",
+          "id": "6C84FB90-12C4-11E1-840D-7B25C5EE775A",
+          "tool": "pen",
+          "points": [
+            [
+              0.25,
+              0.5
+            ],
+            [
+              0.3,
+              0.55
+            ]
+          ],
+          "color": {
+            "r": 1.0,
+            "g": 0.1,
+            "b": 0.15,
+            "a": 1.0
+          },
+          "width": 3.0
+        }
+      }
+    },
+    {
+      "id": "json/annotation-add-click-single-point",
+      "requirements": [
+        "TS-ANN-003"
+      ],
+      "op": "json.annotationOp.decode",
+      "in": {
+        "json": "{\"type\":\"add\",\"annotation\":{\"id\":\"00000000-0000-0000-0000-000000000001\",\"tool\":\"click\",\"points\":[[0.1,0.9]],\"color\":{\"r\":0,\"g\":0,\"b\":0,\"a\":1},\"width\":1}}"
+      },
+      "out": {
+        "op": {
+          "kind": "add",
+          "id": "00000000-0000-0000-0000-000000000001",
+          "tool": "click",
+          "points": [
+            [
+              0.1,
+              0.9
+            ]
+          ],
+          "color": {
+            "r": 0.0,
+            "g": 0.0,
+            "b": 0.0,
+            "a": 1.0
+          },
+          "width": 1.0
+        }
+      }
+    },
+    {
+      "id": "json/annotation-undo",
+      "requirements": [
+        "TS-ANN-004"
+      ],
+      "op": "json.annotationOp.decode",
+      "in": {
+        "json": "{\"type\":\"undo\",\"id\":\"6C84FB90-12C4-11E1-840D-7B25C5EE775A\"}"
+      },
+      "out": {
+        "op": {
+          "kind": "undo",
+          "id": "6C84FB90-12C4-11E1-840D-7B25C5EE775A"
+        }
+      }
+    },
+    {
+      "id": "json/annotation-clear-all",
+      "requirements": [
+        "TS-ANN-003"
+      ],
+      "op": "json.annotationOp.decode",
+      "in": {
+        "json": "{\"type\":\"clearAll\"}"
+      },
+      "out": {
+        "op": {
+          "kind": "clearAll"
+        }
+      }
+    },
+    {
+      "id": "json/annotation-rejects-unknown-tool",
+      "requirements": [
+        "TS-ANN-003",
+        "TS-TCP-008"
+      ],
+      "op": "json.annotationOp.decode",
+      "in": {
+        "json": "{\"type\":\"add\",\"annotation\":{\"id\":\"00000000-0000-0000-0000-000000000001\",\"tool\":\"airbrush\",\"points\":[[0,0]],\"color\":{\"r\":0,\"g\":0,\"b\":0,\"a\":1},\"width\":1}}"
+      },
+      "out": {
+        "op": null
+      }
+    },
+    {
+      "id": "json/annotation-rejects-unknown-op",
+      "requirements": [
+        "TS-TCP-008"
+      ],
+      "op": "json.annotationOp.decode",
+      "in": {
+        "json": "{\"type\":\"redo\"}"
+      },
+      "out": {
+        "op": null
+      }
+    },
+    {
+      "id": "json/request-to-share",
+      "requirements": [
+        "TS-MET-001"
+      ],
+      "op": "json.requestToShare.decode",
+      "in": {
+        "json": "{\"fromHostname\":\"studio-imac\"}"
+      },
+      "out": {
+        "fromHostname": "studio-imac"
+      }
+    },
+    {
+      "id": "json/request-to-share-clamps-hostname",
+      "requirements": [
+        "TS-TCP-023",
+        "TS-SEC-005"
+      ],
+      "op": "json.requestToShare.decode",
+      "in": {
+        "json": "{\"fromHostname\": \"hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh\"}"
+      },
+      "out": {
+        "fromHostname": "hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh"
+      }
+    },
+    {
+      "id": "json/request-to-share-rejects-missing-field",
+      "requirements": [
+        "TS-TCP-008"
+      ],
+      "op": "json.requestToShare.decode",
+      "in": {
+        "json": "{}"
+      },
+      "out": {
+        "fromHostname": null
+      }
+    },
+    {
+      "id": "json/share-response-accept",
+      "requirements": [
+        "TS-MET-002"
+      ],
+      "op": "json.shareResponse.decode",
+      "in": {
+        "json": "{\"type\":\"acceptShare\"}"
+      },
+      "out": {
+        "accepted": true
+      }
+    },
+    {
+      "id": "json/share-response-decline",
+      "requirements": [
+        "TS-MET-002"
+      ],
+      "op": "json.shareResponse.decode",
+      "in": {
+        "json": "{\"type\":\"declineShare\"}"
+      },
+      "out": {
+        "accepted": false
+      }
+    },
+    {
+      "id": "json/share-response-rejects-request-payload",
+      "requirements": [
+        "TS-TCP-008"
+      ],
+      "op": "json.shareResponse.decode",
+      "in": {
+        "json": "{\"type\":\"requestToShare\",\"from\":\"studio-imac\"}"
+      },
+      "out": {
+        "accepted": null
+      }
+    },
+    {
+      "id": "json/control-revoked-reason",
+      "requirements": [
+        "TS-RMT-005"
+      ],
+      "op": "json.controlRevoked.decode",
+      "in": {
+        "json": "{\"reason\":\"the sharer ended remote control\"}"
+      },
+      "out": {
+        "reason": "the sharer ended remote control"
+      }
+    },
+    {
+      "id": "json/control-revoked-empty-payload",
+      "requirements": [
+        "TS-TCP-024"
+      ],
+      "op": "json.controlRevoked.decode",
+      "in": {
+        "json": ""
+      },
+      "out": {
+        "reason": ""
+      }
+    },
+    {
+      "id": "json/control-revoked-undecodable-payload",
+      "requirements": [
+        "TS-TCP-024"
+      ],
+      "op": "json.controlRevoked.decode",
+      "in": {
+        "json": "not json at all"
+      },
+      "out": {
+        "reason": ""
+      }
+    },
+    {
+      "id": "json/control-revoked-clamps-reason",
+      "requirements": [
+        "TS-TCP-023",
+        "TS-SEC-005"
+      ],
+      "op": "json.controlRevoked.decode",
+      "in": {
+        "json": "{\"reason\": \"rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr\"}"
+      },
+      "out": {
+        "reason": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
+      }
+    },
+    {
+      "id": "json/metadata-full",
+      "requirements": [
+        "TS-TCP-020",
+        "TS-TCP-021"
+      ],
+      "op": "json.metadata.decode",
+      "in": {
+        "json": "{\"version\":\"1.0\",\"shareName\":\"Display 1\",\"hostname\":\"studio-imac\",\"screenResolution\":{\"width\":3840,\"height\":2160},\"isSharing\":true,\"timestamp\":776000000,\"videoCodec\":\"hevc\"}"
+      },
+      "out": {
+        "metadata": {
+          "version": "1.0",
+          "shareName": "Display 1",
+          "hostname": "studio-imac",
+          "width": 3840,
+          "height": 2160,
+          "isSharing": true,
+          "timestamp": 776000000.0,
+          "videoCodec": "hevc"
+        }
+      }
+    },
+    {
+      "id": "json/metadata-absent-codec-is-null",
+      "requirements": [
+        "TS-TCP-021"
+      ],
+      "op": "json.metadata.decode",
+      "in": {
+        "json": "{\"version\":\"1.0\",\"shareName\":\"\",\"hostname\":\"box\",\"screenResolution\":{\"width\":1280,\"height\":720},\"isSharing\":false,\"timestamp\":0}"
+      },
+      "out": {
+        "metadata": {
+          "version": "1.0",
+          "shareName": "",
+          "hostname": "box",
+          "width": 1280,
+          "height": 720,
+          "isSharing": false,
+          "timestamp": 0.0,
+          "videoCodec": null
+        }
+      }
+    },
+    {
+      "id": "json/metadata-clamps-display-strings",
+      "requirements": [
+        "TS-TCP-023",
+        "TS-SEC-005"
+      ],
+      "op": "json.metadata.decode",
+      "in": {
+        "json": "{\"version\": \"1.0\", \"shareName\": \"nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn\", \"hostname\": \"nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn\", \"screenResolution\": {\"width\": 1, \"height\": 1}, \"isSharing\": true, \"timestamp\": 1.5}"
+      },
+      "out": {
+        "metadata": {
+          "version": "1.0",
+          "shareName": "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn",
+          "hostname": "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn",
+          "width": 1,
+          "height": 1,
+          "isSharing": true,
+          "timestamp": 1.5,
+          "videoCodec": null
+        }
+      }
+    },
+    {
+      "id": "json/metadata-rejects-missing-resolution",
+      "requirements": [
+        "TS-TCP-008"
+      ],
+      "op": "json.metadata.decode",
+      "in": {
+        "json": "{\"shareName\":\"a\",\"hostname\":\"b\",\"isSharing\":true,\"timestamp\":0}"
+      },
+      "out": {
+        "metadata": null
+      }
+    }
+  ]
+}
