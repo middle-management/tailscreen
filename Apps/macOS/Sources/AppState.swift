@@ -3078,9 +3078,12 @@ class AppState: ObservableObject {
         if Self.isUIPreviewVideo {
             subject = viewerWindow
         } else {
-            subject = windows
-                .filter { $0.isVisible && $0.frame.width > 200 && $0.frame.height > 200 }
-                .max { $0.frame.width * $0.frame.height < $1.frame.width * $1.frame.height }
+            let candidates = windows.filter {
+                $0.isVisible && $0.frame.width > 200 && $0.frame.height > 200
+            }
+            subject = candidates.max {
+                $0.frame.width * $0.frame.height < $1.frame.width * $1.frame.height
+            }
         }
         guard let subject = subject else { return false }
         do {
