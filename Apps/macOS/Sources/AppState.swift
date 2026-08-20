@@ -2911,6 +2911,21 @@ class AppState: ObservableObject {
         sharerSupportsAnnotations = true
         refreshViewerWindowTitle()
 
+        // `ensureViewer` opens at 1280x720, and nothing snaps it here because
+        // no real stream ever arrives to report its dimensions. That does not
+        // fit the 1024x768 virtual display a hosted runner hands out, so the
+        // capture would come back clipped. Pick a 16:9 size that fits, and
+        // center it so no edge is against the screen's.
+        if let window = viewerWindow {
+            window.setContentSize(NSSize(width: 960, height: 540))
+            window.center()
+        }
+
+        // Front it before the frame: the renderer presents off a display
+        // link, which only runs against a layer that is actually on screen.
+        viewerWindow?.orderFrontRegardless()
+        viewerWindow?.makeKeyAndOrderFront(nil)
+
         if let frame = Self.makeUIPreviewFrame(width: 1920, height: 1080) {
             renderer.setPixelBuffer(
                 frame, receiveUptimeNs: DispatchTime.now().uptimeNanoseconds)
@@ -2934,9 +2949,6 @@ class AppState: ObservableObject {
         seed(.arrow, [CGPoint(x: 0.46, y: 0.72), CGPoint(x: 0.58, y: 0.30)], 2)
         seed(.rectangle, [CGPoint(x: 0.62, y: 0.34), CGPoint(x: 0.76, y: 0.66)], 3)
         seed(.oval, [CGPoint(x: 0.80, y: 0.34), CGPoint(x: 0.94, y: 0.66)], 4)
-
-        viewerWindow?.orderFrontRegardless()
-        viewerWindow?.makeKeyAndOrderFront(nil)
     }
 
     /// A 16:9 gradient stand-in for decoded video, big enough that the
