@@ -2984,11 +2984,15 @@ class AppState: ObservableObject {
                         id: UUID(), tool: tool, points: points,
                         color: Annotation.RGBA.palette[colorIndex], width: 4)))
         }
-        seed(.pen, [CGPoint(x: 0.08, y: 0.30), CGPoint(x: 0.20, y: 0.55), CGPoint(x: 0.14, y: 0.72)], 0)
-        seed(.line, [CGPoint(x: 0.28, y: 0.30), CGPoint(x: 0.40, y: 0.72)], 1)
-        seed(.arrow, [CGPoint(x: 0.46, y: 0.72), CGPoint(x: 0.58, y: 0.30)], 2)
-        seed(.rectangle, [CGPoint(x: 0.62, y: 0.34), CGPoint(x: 0.76, y: 0.66)], 3)
-        seed(.oval, [CGPoint(x: 0.80, y: 0.34), CGPoint(x: 0.94, y: 0.66)], 4)
+        // Kept clear of the stats HUD, which occupies roughly the left 19% of
+        // the frame down to mid-height: the strokes ran under it and the pen
+        // came out half-hidden, which is a poor look for the one shot the
+        // landing page leads with.
+        seed(.pen, [CGPoint(x: 0.24, y: 0.30), CGPoint(x: 0.34, y: 0.55), CGPoint(x: 0.29, y: 0.72)], 0)
+        seed(.line, [CGPoint(x: 0.41, y: 0.30), CGPoint(x: 0.51, y: 0.72)], 1)
+        seed(.arrow, [CGPoint(x: 0.56, y: 0.72), CGPoint(x: 0.66, y: 0.30)], 2)
+        seed(.rectangle, [CGPoint(x: 0.69, y: 0.34), CGPoint(x: 0.81, y: 0.66)], 3)
+        seed(.oval, [CGPoint(x: 0.84, y: 0.34), CGPoint(x: 0.96, y: 0.66)], 4)
     }
 
     /// A 16:9 gradient stand-in for decoded video, big enough that the
