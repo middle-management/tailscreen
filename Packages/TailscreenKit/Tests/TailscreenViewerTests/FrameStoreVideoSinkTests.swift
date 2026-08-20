@@ -115,18 +115,23 @@ final class FrameStoreVideoSinkTests: XCTestCase {
     /// print whatever the session started with, which is the wrong answer
     /// exactly when it matters (a sharer that changed its colour settings
     /// mid-share and respawned its encoder).
-    func testStatsCarryTheColorInfoOfTheClosingFrame() {
+    func testStatsCarryTheColorInfoOfTheClosingFrame() throws {
         let counts = Counts()
         let clock = Clock()
         let sink = makeSink(counts, clock)
         let full = VideoColorInfo(range: .full, primaries: .displayP3, transfer: .bt709)
+        // The window OPENS on the first frame and closes on one at least a
+        // second later (`FrameRateCounter.record`), so the gap between these
+        // two is what makes a window close at all — not the elapsed time since
+        // the clock's zero.
         clock.nowNs &+= 500_000_000
         sink.present(frame(colorInfo: .unspecifiedLimited))
-        clock.nowNs &+= 600_000_000
+        clock.nowNs &+= 1_100_000_000
         sink.present(frame(colorInfo: full))
+        let published = try XCTUnwrap(counts.stats.first)
         XCTAssertEqual(counts.stats.count, 1)
-        XCTAssertEqual(counts.stats[0].color, full)
-        XCTAssertEqual(counts.stats[0].color.shortLabel, "P3 · full")
+        XCTAssertEqual(published.color, full)
+        XCTAssertEqual(published.color.shortLabel, "P3 · full")
     }
 
     /// The fps window must survive a reset without carrying the idle gap

@@ -28,8 +28,7 @@ public final class FrameStoreVideoSink: VideoSink, @unchecked Sendable {
     private let store: FrameStore
     private let onFirstFrame: (@Sendable () -> Void)?
     private let onFrame: (@Sendable () -> Void)?
-    private let onStats:
-        (@Sendable (_ width: Int, _ height: Int, _ fps: Int, _ color: VideoColorInfo) -> Void)?
+    private let onStats: (@Sendable (_ width: Int, _ height: Int, _ fps: Int, _ color: VideoColorInfo) -> Void)?
     private let clock: @Sendable () -> UInt64
 
     /// Touched only from `present`, which the session drives serially — the
