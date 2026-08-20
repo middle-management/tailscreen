@@ -351,38 +351,36 @@ jobs:
           </plist>
           EOF
 
-      # Hosted runners hand us a 1024x768 1x virtual display, and a window
-      # cropped out of that is too soft for the docs site to show at width.
-      # Ask for the largest HiDPI mode the virtual display admits, which
-      # doubles the backing store and therefore the captured pixels. Entirely
-      # best-effort: every failure path here leaves the default mode in place
-      # and the shots merely go back to being 1x, so nothing after it is
-      # allowed to see a non-zero exit.
-      - name: Try for a HiDPI display mode
+      # Hosted runners hand us a 1024x768 display whose mode list contains no
+      # `scaling:on` entry at all (verified 2026-08 — displayplacer enumerated
+      # twelve modes, every one of them 1x), so there is no HiDPI to ask for
+      # and these shots are 1x however they are taken. What the mode list does
+      # offer is more room: 1920x1080 lets the viewer window come up at a real
+      # 1280x720, which is genuinely more pixels of video rather than more
+      # empty desktop. The hub's chrome is fixed-width and does not care.
+      #
+      # Best-effort by construction: every failure path leaves the default
+      # mode in place and the shots merely get smaller, so nothing here is
+      # allowed to fail the job.
+      - name: Widen the display
         if: inputs.screenshots
         continue-on-error: true
         run: |
           set -uo pipefail
           brew install displayplacer || exit 0
-          displayplacer list || true
-          id="$(displayplacer list | awk '/^Persistent screen id:/ {print $4; exit}')"
-          [ -n "$id" ] || exit 0
-          # Widest `scaling:on` (HiDPI) mode the display advertises.
-          mode="$(displayplacer list \
-            | grep -o 'res:[0-9]*x[0-9]* hz:[0-9]* color_depth:[0-9]* scaling:on' \
-            | sort -t: -k2 -n | tail -1)"
-          [ -n "$mode" ] || { echo "no HiDPI mode advertised; staying at 1x"; exit 0; }
-          echo "requesting $mode"
-          displayplacer "id:$id $mode origin:(0,0) degree:0" || true
-          displayplacer list | grep -A2 "Persistent screen id: $id" || true
+          id="$(displayplacer list | awk '/^Persistent screen id:/ {print $4; exit}')" || true
+          [ -n "${id:-}" ] || { echo "no screen id; staying at the default mode"; exit 0; }
+          displayplacer "id:$id res:1920x1080 hz:60 color_depth:7 scaling:on origin:(0,0) degree:0" \
+            || displayplacer "id:$id res:1920x1080 hz:60 color_depth:7 scaling:off origin:(0,0) degree:0" \
+            || echo "could not change mode; staying at the default"
+          displayplacer list | sed -n '1,12p' || true
 
       # Each `--ui-preview*` combination renders the hub (or the viewer)
       # seeded with the same deterministic fake tailnet the GTK and Windows
-      # apps show — signed in, fake peers, no tsnet node, no network — and
-      # activates itself so the capture shows Tailscreen's menu bar rather
-      # than Finder's. Launched via `open` so LaunchServices gives it a
-      # proper GUI session; that is also why the window-id path travels as an
-      # `--args` flag rather than an env var, which `open` would drop.
+      # apps show — signed in, fake peers, no tsnet node, no network. Launched
+      # via `open` so LaunchServices gives it a proper GUI session; that is
+      # also why the window-id path travels as an `--args` flag rather than an
+      # env var, which `open` would drop.
       #
       # `screencapture -l <window>` crops to the app's own window and keeps
       # its shadow on transparency, so the docs site gets the window rather
@@ -390,10 +388,21 @@ jobs:
       # TCC grant, which the hosted runner's session turned out to have
       # (verified 2026-08 — the artifact showed the real window).
       #
-      # Two guards, both of the same shape: a crashed app must not turn into
-      # a convincing screenshot of an empty desktop, and a stale window id
-      # must not turn into a zero-byte PNG nobody notices until it is on the
-      # landing page. Hence pgrep before, and a non-empty check after.
+      # Three things here were each a wrong-looking PNG first:
+      #
+      #   - WAIT for the app to name its window rather than sleeping a fixed
+      #     15s. The FIRST launch on a runner is far slower than the warm ones
+      #     after it (Gatekeeper, LaunchServices registration), and a fixed
+      #     sleep meant the hub shot — always first — raced the app and fell
+      #     back to a full-screen grab while the later three cropped fine.
+      #   - FAIL when the id never arrives. The fallback that produced that
+      #     full-screen hub shot is exactly the shape this repo distrusts:
+      #     absence looking like success, all the way onto the landing page.
+      #   - ACTIVATE immediately before the shutter. The app activates itself
+      #     at launch, but by +15s something else is frontmost and the capture
+      #     came back with the window in its inactive chrome — grey traffic
+      #     lights, grey buttons, an accent colour nowhere. `activate` is the
+      #     one that has to be late, so it sits right against the capture.
       - name: Screenshot the app
         if: inputs.screenshots
         run: |
@@ -405,16 +414,20 @@ jobs:
             shift
             idfile="$(mktemp -t tailscreen-winid)"
             open "${APP_NAME}.app" --args "$@" --ui-preview-window-file "$idfile"
-            sleep 15
+            for _ in $(seq 1 60); do
+              [ -s "$idfile" ] && break
+              sleep 1
+            done
             pgrep -x "$APP_NAME" >/dev/null \
               || { echo "app exited before the $out capture" >&2; exit 1; }
             winid="$(cat "$idfile" 2>/dev/null || true)"
-            if [ -n "$winid" ]; then
-              screencapture -x -l "$winid" "screenshots/$out"
-            else
-              echo "no window id for $out; falling back to the whole screen" >&2
-              screencapture -x "screenshots/$out"
-            fi
+            [ -n "$winid" ] \
+              || { echo "app never named a window for $out" >&2; exit 1; }
+            # Let the window finish coming up, then take the focus back.
+            sleep 4
+            osascript -e "tell application \"${APP_NAME}\" to activate" || true
+            sleep 2
+            screencapture -x -l "$winid" "screenshots/$out"
             pkill -x "$APP_NAME" || true
             rm -f "$idfile"
             sleep 2

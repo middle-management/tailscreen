@@ -2911,13 +2911,14 @@ class AppState: ObservableObject {
         sharerSupportsAnnotations = true
         refreshViewerWindowTitle()
 
-        // `ensureViewer` opens at 1280x720, and nothing snaps it here because
-        // no real stream ever arrives to report its dimensions. That does not
-        // fit the 1024x768 virtual display a hosted runner hands out, so the
-        // capture would come back clipped. Pick a 16:9 size that fits, and
-        // center it so no edge is against the screen's.
+        // Nothing snaps this window here — no real stream ever arrives to
+        // report its dimensions — so state the size rather than inheriting
+        // whatever `ensureViewer` opened at or a previous run autosaved.
+        // 1280x720 is 16:9 and fits the 1920x1080 the screenshot job asks
+        // the runner's display for; centered, so no edge sits against the
+        // screen's and gets clipped out of the capture.
         if let window = viewerWindow {
-            window.setContentSize(NSSize(width: 960, height: 540))
+            window.setContentSize(NSSize(width: 1280, height: 720))
             window.center()
         }
 
