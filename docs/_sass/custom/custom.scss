@@ -820,9 +820,12 @@ body {
 // ---------------------------------------------------------------------------
 // Homepage: product screenshots
 // ---------------------------------------------------------------------------
-// The captures already carry their own window shadow and a light matte, so
-// these add no frame of their own -- just rounded corners, a hairline ring so
-// the matte does not float edgeless against the dark scheme, and a caption.
+// `screencapture -l` hands back the window with its own shadow on
+// TRANSPARENCY, which is why these carry no frame, no radius and no ring: the
+// rounded corners are the window's, the shadow is the window's, and anything
+// drawn here would be drawn around the transparent bounding box instead of
+// around the window inside it. The same alpha is why one rule covers both
+// colour schemes -- there is no baked-in matte to clash with either.
 
 .ts-shots {
   margin: 1.75rem 0 2.5rem;
@@ -844,8 +847,6 @@ body {
     display: block;
     width: 100%;
     height: auto;
-    border-radius: 12px;
-    box-shadow: 0 0 0 1px rgba($body-text-color, 0.07);
     transition: transform 0.18s ease;
   }
 
