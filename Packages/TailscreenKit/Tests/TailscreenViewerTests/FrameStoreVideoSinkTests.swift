@@ -1,4 +1,5 @@
 import Foundation
+import TailscreenProtocol
 import XCTest
 
 @testable import TailscreenViewer
@@ -19,13 +20,17 @@ final class FrameStoreVideoSinkTests: XCTestCase {
         let height = 64
     }
 
-    private func frame(width: Int = 64, height: Int = 32) -> DecodedVideoFrame {
+    private func frame(
+        width: Int = 64, height: Int = 32,
+        colorInfo: VideoColorInfo = .unspecifiedLimited
+    ) -> DecodedVideoFrame {
         let chroma = ((width + 1) / 2) * ((height + 1) / 2)
         return DecodedVideoFrame(
             width: width, height: height,
             yPlane: [UInt8](repeating: 16, count: width * height),
             uPlane: [UInt8](repeating: 128, count: chroma),
-            vPlane: [UInt8](repeating: 128, count: chroma))
+            vPlane: [UInt8](repeating: 128, count: chroma),
+            colorInfo: colorInfo)
     }
 
     /// Mutable counters shared with the sink's `@Sendable` callbacks. The sink
@@ -34,7 +39,7 @@ final class FrameStoreVideoSinkTests: XCTestCase {
     private final class Counts: @unchecked Sendable {
         var firstFrames = 0
         var frames = 0
-        var stats: [(width: Int, height: Int, fps: Int)] = []
+        var stats: [(width: Int, height: Int, fps: Int, color: VideoColorInfo)] = []
     }
 
     private final class Clock: @unchecked Sendable {
@@ -48,8 +53,8 @@ final class FrameStoreVideoSinkTests: XCTestCase {
             store: store,
             onFirstFrame: { counts.firstFrames += 1 },
             onFrame: { counts.frames += 1 },
-            onStats: { width, height, fps in
-                counts.stats.append((width, height, fps))
+            onStats: { width, height, fps, color in
+                counts.stats.append((width, height, fps, color))
             },
             clock: { clock.nowNs })
     }
@@ -103,6 +108,25 @@ final class FrameStoreVideoSinkTests: XCTestCase {
         XCTAssertEqual(counts.stats[0].width, 320)
         XCTAssertEqual(counts.stats[0].height, 240)
         XCTAssertGreaterThan(counts.stats[0].fps, 0)
+    }
+
+    /// The colour encoding travels with the stats window, and it is the
+    /// CLOSING frame's — a host publishing this to its HUD would otherwise
+    /// print whatever the session started with, which is the wrong answer
+    /// exactly when it matters (a sharer that changed its colour settings
+    /// mid-share and respawned its encoder).
+    func testStatsCarryTheColorInfoOfTheClosingFrame() {
+        let counts = Counts()
+        let clock = Clock()
+        let sink = makeSink(counts, clock)
+        let full = VideoColorInfo(range: .full, primaries: .displayP3, transfer: .bt709)
+        clock.nowNs &+= 500_000_000
+        sink.present(frame(colorInfo: .unspecifiedLimited))
+        clock.nowNs &+= 600_000_000
+        sink.present(frame(colorInfo: full))
+        XCTAssertEqual(counts.stats.count, 1)
+        XCTAssertEqual(counts.stats[0].color, full)
+        XCTAssertEqual(counts.stats[0].color.shortLabel, "P3 · full")
     }
 
     /// The fps window must survive a reset without carrying the idle gap

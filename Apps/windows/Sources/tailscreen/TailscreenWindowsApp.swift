@@ -299,7 +299,8 @@ struct TailscreenWindowsApp: App {
             if state.showStats && state.fps > 0 {
                 HStack {
                     StatsHUD(
-                        width: state.videoWidth, height: state.videoHeight, fps: state.fps)
+                        width: state.videoWidth, height: state.videoHeight, fps: state.fps,
+                        colorLabel: state.videoColorLabel)
                     Spacer()
                 }
                 .padding(.horizontal, 12)
@@ -501,6 +502,11 @@ final class AppUIState: ObservableObject {
     @Published private(set) var videoWidth = 0
     @Published private(set) var videoHeight = 0
     @Published private(set) var fps = 0
+    /// The stream's colour encoding as the decoder reported it, preformatted
+    /// ("BT.709 · limited"). Empty until the first stats window closes; the HUD
+    /// prints no colour line while it is, since blank would read as "no colour
+    /// information" rather than "not measured yet".
+    @Published private(set) var videoColorLabel = ""
     /// Whether the stats HUD is shown. Session-scoped rather than persisted:
     /// it is a debugging glance, not a preference, and the GTK viewer treats
     /// it the same way.
@@ -1309,13 +1315,14 @@ final class AppUIState: ObservableObject {
                 onFrame: { [weak self] in
                     Task { @MainActor in self?.frameGeneration &+= 1 }
                 },
-                onStats: { [weak self] width, height, fps in
+                onStats: { [weak self] width, height, fps, color in
                     // Fires roughly once a second off the session's thread; the
                     // published values are main-actor state.
                     Task { @MainActor in
                         self?.videoWidth = width
                         self?.videoHeight = height
                         self?.fps = fps
+                        self?.videoColorLabel = color.shortLabel
                     }
                 })
             sink.resetForNewSession()

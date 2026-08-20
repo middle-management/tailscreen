@@ -6,6 +6,7 @@
 static int inited = 0;
 static GLuint prog, vao, texY, texU, texV;
 static GLint uXformLoc = -1;
+static GLint uFullRangeLoc = -1;
 // View state (zoom ≥ 1, pan in NDC), settable from Swift via cgtkvideo_set_view.
 static float gZoom = 1.0f, gPanX = 0.0f, gPanY = 0.0f;
 // The last aspect-fit × zoom scale computed by cgtkvideo_draw_yuv, reused by the
@@ -28,10 +29,16 @@ static const char *VS =
 "  gl_Position = vec4(p*uXform.xy + uXform.zw, 0.0, 1.0);\n"  // letterbox/zoom/pan
 "}\n";
 
-// Limited-range BT.709 YUV->RGB: luma 16..235, chroma 128±112. One of five
-// implementations of these constants in this repo — the canonical list is the
-// doc comment on BGRAToI420 (Packages/TailscreenKit/Sources/TailscreenProtocol/
-// BGRAToI420.swift). What catches a disagreement HERE is
+// BT.709 YUV->RGB, in EITHER range: `uFullRange` selects whether the samples
+// span 16..235 / 128±112 (limited) or the whole byte (full). The flag is not
+// decoration — the macOS sharer captures full-range 8-bit by default while the
+// X11/portal/WGC sharers produce limited range, so a shader that assumes one
+// crushes or washes out every share from the other. It arrives per frame from
+// the decoder's VUI reporting (`DecodedVideoFrame.colorInfo`).
+//
+// One of five implementations of these constants in this repo — the canonical
+// list is the doc comment on BGRAToI420 (Packages/TailscreenKit/Sources/
+// TailscreenProtocol/BGRAToI420.swift). What catches a disagreement HERE is
 // `tailscreen --overlay-self-test` rendering the shared makeColorBarsFrame()
 // under Xvfb; CWinVideo's HLSL twin has its own WARP gate against the same
 // frame, so the two disagreeing shows up as one passing and the other failing.
@@ -40,11 +47,17 @@ static const char *FS =
 "precision highp float;\n"
 "in vec2 uv;\n"
 "uniform sampler2D texY, texU, texV;\n"
+"uniform float uFullRange;\n"
 "out vec4 frag;\n"
 "void main(){\n"
-"  float y = (texture(texY,uv).r - 16.0/255.0) * (255.0/219.0);\n"
-"  float u = (texture(texU,uv).r - 0.5) * (255.0/224.0);\n"
-"  float v = (texture(texV,uv).r - 0.5) * (255.0/224.0);\n"
+"  float y = texture(texY,uv).r;\n"
+"  float u = texture(texU,uv).r - 0.5;\n"
+"  float v = texture(texV,uv).r - 0.5;\n"
+"  if (uFullRange < 0.5) {\n"
+"    y = (y - 16.0/255.0) * (255.0/219.0);\n"
+"    u *= (255.0/224.0);\n"
+"    v *= (255.0/224.0);\n"
+"  }\n"
 "  float r = y + 1.5748*v;\n"
 "  float g = y - 0.1873*u - 0.4681*v;\n"
 "  float b = y + 1.8556*u;\n"
@@ -89,6 +102,7 @@ static void init(void) {
     glUniform1i(glGetUniformLocation(prog, "texU"), 1);
     glUniform1i(glGetUniformLocation(prog, "texV"), 2);
     uXformLoc = glGetUniformLocation(prog, "uXform");
+    uFullRangeLoc = glGetUniformLocation(prog, "uFullRange");
     inited = 1;
 }
 
@@ -104,7 +118,8 @@ static void upload(GLuint tex, int w, int h, const uint8_t *data) {
 }
 
 void cgtkvideo_draw_yuv(int32_t width, int32_t height,
-                        const uint8_t *y, const uint8_t *u, const uint8_t *v) {
+                        const uint8_t *y, const uint8_t *u, const uint8_t *v,
+                        int32_t full_range) {
     if (!inited) init();
     int cw = (width + 1) / 2, ch = (height + 1) / 2;  // ceil: match DecodedVideoFrame plane dims
     upload(texY, width, height, y);
@@ -132,6 +147,7 @@ void cgtkvideo_draw_yuv(int32_t width, int32_t height,
     glClear(GL_COLOR_BUFFER_BIT);
     glUseProgram(prog);
     glUniform4f(uXformLoc, sx, sy, gPanX, gPanY);
+    glUniform1f(uFullRangeLoc, full_range ? 1.0f : 0.0f);
     glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, texY);
     glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, texU);
     glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, texV);

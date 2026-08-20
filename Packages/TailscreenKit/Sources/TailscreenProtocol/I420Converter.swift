@@ -9,11 +9,13 @@ import Foundation
 /// renderers disagreeing about colour would show the same stream in two
 /// different sets of colours, and the constants below are the agreement.
 ///
-/// **Limited-range BT.709**, matching what the sharers produce — `X11CaptureKit`
-/// documents "BGRA→I420 (limited-range BT.709)" and the macOS capture path tags
-/// BT.709 in the SPS VUI by default. Getting the range wrong is not subtle: full
-/// -range maths on limited-range input washes blacks to grey and clips
-/// highlights.
+/// **BT.709, either range.** Getting the range wrong is not subtle: full-range
+/// maths on limited-range input washes blacks to grey, and limited-range maths
+/// on full-range input crushes blacks and clips highlights. Both sharers exist:
+/// `X11CaptureKit` and `BGRAToI420` produce limited range, while the macOS
+/// capture path is full-range 8-bit by default (`ColorInfo.bt709FullRange8`).
+/// The caller says which it has via `Source.range`, defaulting to limited —
+/// what a decoder must assume when the bitstream is silent.
 ///
 /// BGRA byte order with opaque alpha is what `WriteableBitmap` wants
 /// (BGRA8, premultiplied — and premultiplying by an alpha of 255 is identity,
@@ -23,11 +25,38 @@ public enum I420Converter {
     ///
     /// Integer maths rather than Float: this runs per pixel, per frame, on the
     /// UI thread, and the rounding is indistinguishable at 8 bits per channel.
-    private static let yCoeff = 76309  // 1.164383 × 65536
-    private static let vToR = 117489  // 1.792741 × 65536
-    private static let uToG = -13975  // -0.213249 × 65536
-    private static let vToG = -34925  // -0.532909 × 65536
-    private static let uToB = 138438  // 2.112402 × 65536
+    ///
+    /// The two sets are the same BT.709 matrix with and without the
+    /// limited-range expansion folded in: limited scales luma by 255/219 after
+    /// subtracting 16 and chroma by 255/224, full range does neither.
+    private struct Coefficients {
+        let lumaOffset: Int
+        let yCoeff: Int
+        let vToR: Int
+        let uToG: Int
+        let vToG: Int
+        let uToB: Int
+
+        static let limited = Coefficients(
+            lumaOffset: 16,
+            yCoeff: 76309,  // 1.164383 × 65536
+            vToR: 117489,  // 1.792741 × 65536
+            uToG: -13975,  // -0.213249 × 65536
+            vToG: -34925,  // -0.532909 × 65536
+            uToB: 138438)  // 2.112402 × 65536
+
+        static let full = Coefficients(
+            lumaOffset: 0,
+            yCoeff: 65536,  // 1.0 × 65536 — samples already span 0…255
+            vToR: 103206,  // 1.5748 × 65536
+            uToG: -12275,  // -0.1873 × 65536
+            vToG: -30677,  // -0.4681 × 65536
+            uToB: 121609)  // 1.8556 × 65536
+
+        static func forRange(_ range: VideoColorRange) -> Coefficients {
+            range == .full ? .full : .limited
+        }
+    }
 
     /// Half a unit in the fixed-point scale, added before the shift so the
     /// result rounds instead of truncating.
@@ -49,13 +78,22 @@ public enum I420Converter {
         public let vPlane: [UInt8]
         public let width: Int
         public let height: Int
+        /// How the samples use their code space. Defaults to `.limited` — both
+        /// the codec-mandated default for a silent bitstream and what every
+        /// caller predating this parameter was implicitly passing, so the
+        /// default is bit-for-bit the old behaviour rather than a new guess.
+        public let range: VideoColorRange
 
-        public init(yPlane: [UInt8], uPlane: [UInt8], vPlane: [UInt8], width: Int, height: Int) {
+        public init(
+            yPlane: [UInt8], uPlane: [UInt8], vPlane: [UInt8], width: Int, height: Int,
+            range: VideoColorRange = .limited
+        ) {
             self.yPlane = yPlane
             self.uPlane = uPlane
             self.vPlane = vPlane
             self.width = width
             self.height = height
+            self.range = range
         }
     }
 
@@ -90,6 +128,7 @@ public enum I420Converter {
             source.vPlane.count >= chromaWidth * chromaHeight
         else { return false }
 
+        let coefficients = Coefficients.forRange(source.range)
         source.yPlane.withUnsafeBufferPointer { y in
             source.uPlane.withUnsafeBufferPointer { u in
                 source.vPlane.withUnsafeBufferPointer { v in
@@ -98,14 +137,16 @@ public enum I420Converter {
                         let chromaRow = (row / 2) * chromaWidth
                         var out = row * width * 4
                         for column in 0..<width {
-                            let luma = (Int(y[yRow + column]) - 16) * yCoeff + rounding
+                            let luma =
+                                (Int(y[yRow + column]) - coefficients.lumaOffset)
+                                * coefficients.yCoeff + rounding
                             let chromaIndex = chromaRow + column / 2
                             let cb = Int(u[chromaIndex]) - 128
                             let cr = Int(v[chromaIndex]) - 128
 
-                            let r = (luma + vToR * cr) >> 16
-                            let g = (luma + uToG * cb + vToG * cr) >> 16
-                            let b = (luma + uToB * cb) >> 16
+                            let r = (luma + coefficients.vToR * cr) >> 16
+                            let g = (luma + coefficients.uToG * cb + coefficients.vToG * cr) >> 16
+                            let b = (luma + coefficients.uToB * cb) >> 16
 
                             // BGRA, opaque.
                             destination[out] = clamp(b)

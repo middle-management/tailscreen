@@ -51,13 +51,96 @@ public enum FFmpeg {
         public let yPlane: [UInt8]
         public let uPlane: [UInt8]
         public let vPlane: [UInt8]
+        /// How the samples use their code space, as libavcodec parsed it out of
+        /// the bitstream's VUI. Reported rather than resolved: `unspecified` is
+        /// a real answer the consumer must decide about (the codec specs say
+        /// treat it as limited), and collapsing it here would hide whether a
+        /// stream said so or merely didn't say.
+        public let colorRange: ColorRange
+        /// Colour primaries and transfer characteristics, same provenance.
+        /// Carried for display — nothing in this package acts on them.
+        public let colorPrimaries: ColorPrimaries
+        public let colorTransfer: ColorTransfer
 
-        public init(width: Int, height: Int, yPlane: [UInt8], uPlane: [UInt8], vPlane: [UInt8]) {
+        public init(
+            width: Int, height: Int, yPlane: [UInt8], uPlane: [UInt8], vPlane: [UInt8],
+            colorRange: ColorRange = .unspecified,
+            colorPrimaries: ColorPrimaries = .unspecified,
+            colorTransfer: ColorTransfer = .unspecified
+        ) {
             self.width = width
             self.height = height
             self.yPlane = yPlane
             self.uPlane = uPlane
             self.vPlane = vPlane
+            self.colorRange = colorRange
+            self.colorPrimaries = colorPrimaries
+            self.colorTransfer = colorTransfer
+        }
+    }
+
+    /// `AVColorRange`, as much of it as exists.
+    ///
+    /// These three enums are FFmpeg-shaped on purpose: this package wraps the
+    /// system library and knows nothing about Tailscreen's types (see the
+    /// layering note in TailscreenVideoFFmpeg's Package.swift), so it reports
+    /// what libavcodec said and lets its consumer map that to whatever the app
+    /// tier calls it.
+    public enum ColorRange: Sendable, Equatable {
+        case unspecified
+        case limited
+        case full
+
+        static func from(_ raw: AVColorRange) -> ColorRange {
+            switch raw {
+            case AVCOL_RANGE_MPEG: return .limited
+            case AVCOL_RANGE_JPEG: return .full
+            default: return .unspecified
+            }
+        }
+    }
+
+    /// `AVColorPrimaries`, narrowed to the values a screen share plausibly
+    /// carries; anything else keeps its raw code rather than being flattened
+    /// into a wrong-but-familiar name.
+    public enum ColorPrimaries: Sendable, Equatable {
+        case unspecified
+        case bt709
+        case bt601
+        case displayP3
+        case bt2020
+        case other(Int)
+
+        static func from(_ raw: AVColorPrimaries) -> ColorPrimaries {
+            switch raw {
+            case AVCOL_PRI_BT709: return .bt709
+            case AVCOL_PRI_BT470BG, AVCOL_PRI_SMPTE170M: return .bt601
+            case AVCOL_PRI_SMPTE432: return .displayP3
+            case AVCOL_PRI_BT2020: return .bt2020
+            case AVCOL_PRI_UNSPECIFIED: return .unspecified
+            default: return .other(Int(raw.rawValue))
+            }
+        }
+    }
+
+    /// `AVColorTransferCharacteristic`, narrowed the same way.
+    public enum ColorTransfer: Sendable, Equatable {
+        case unspecified
+        case bt709
+        case srgb
+        case pq
+        case hlg
+        case other(Int)
+
+        static func from(_ raw: AVColorTransferCharacteristic) -> ColorTransfer {
+            switch raw {
+            case AVCOL_TRC_BT709: return .bt709
+            case AVCOL_TRC_IEC61966_2_1: return .srgb
+            case AVCOL_TRC_SMPTE2084: return .pq
+            case AVCOL_TRC_ARIB_STD_B67: return .hlg
+            case AVCOL_TRC_UNSPECIFIED: return .unspecified
+            default: return .other(Int(raw.rawValue))
+            }
         }
     }
 
@@ -266,7 +349,17 @@ public enum FFmpeg {
             let y = copyPlane(f.pointee.data.0, stride: Int(f.pointee.linesize.0), width: w, height: h)
             let u = copyPlane(f.pointee.data.1, stride: Int(f.pointee.linesize.1), width: cw, height: ch)
             let v = copyPlane(f.pointee.data.2, stride: Int(f.pointee.linesize.2), width: cw, height: ch)
-            return Frame(width: w, height: h, yPlane: y, uPlane: u, vPlane: v)
+            // YUVJ420P is the deprecated spelling of "YUV420P, full range" and
+            // still what some builds hand back; it must not read as unspecified
+            // just because `color_range` wasn't also set.
+            let range =
+                fmt == AV_PIX_FMT_YUVJ420P.rawValue
+                ? ColorRange.full : ColorRange.from(f.pointee.color_range)
+            return Frame(
+                width: w, height: h, yPlane: y, uPlane: u, vPlane: v,
+                colorRange: range,
+                colorPrimaries: ColorPrimaries.from(f.pointee.color_primaries),
+                colorTransfer: ColorTransfer.from(f.pointee.color_trc))
         }
 
         /// Copy one plane, dropping the decoder's row padding (`stride` may

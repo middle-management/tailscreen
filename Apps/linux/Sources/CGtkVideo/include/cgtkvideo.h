@@ -7,8 +7,14 @@
 // first call. Must be called with a current GL context (inside a GtkGLArea
 // render). glTexImage2D (re)allocates each call so a mid-stream resolution
 // change is handled without a separate path.
+//
+// `full_range` selects the sample range: 0 for limited (16..235 luma), 1 for
+// full (0..255). Pass what the DECODER reported for this frame — guessing
+// crushes blacks on one kind of sharer or greys them out on the other. 0 is
+// the codec-mandated default when a stream says nothing.
 void cgtkvideo_draw_yuv(int32_t width, int32_t height,
-                        const uint8_t *y, const uint8_t *u, const uint8_t *v);
+                        const uint8_t *y, const uint8_t *u, const uint8_t *v,
+                        int32_t full_range);
 
 // Clear to black (when there's no frame yet).
 void cgtkvideo_clear(void);

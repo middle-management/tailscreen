@@ -52,6 +52,14 @@ struct ViewerStats: Sendable, Equatable {
     /// high-RTT link this should rise while `nacksSent` AND `plisSent` stay
     /// near zero — the net-impair validation signal for the FEC path.
     var fecRecovered: Int
+    /// The stream's colour description, read off the decoded buffer's
+    /// attachments (`ColorInfo.statsLabel`) — "P3", "BT.2020 · PQ". Nil until a
+    /// frame carries one, and nil for a plain BT.709 stream that tags nothing.
+    ///
+    /// No range here: the mac decoder outputs 32BGRA, so a decoded buffer has
+    /// no YCbCr range left to report. The GTK and WinUI viewers show one
+    /// because their decoder hands back the planes it decoded.
+    var colorLabel: String?
 
     static let empty = ViewerStats(
         latencyMs: nil,
@@ -65,7 +73,8 @@ struct ViewerStats: Sendable, Equatable {
         plisSent: 0,
         isDegraded: false,
         nacksSent: 0,
-        fecRecovered: 0
+        fecRecovered: 0,
+        colorLabel: nil
     )
 }
 
@@ -193,6 +202,23 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
     /// Codec observed on the wire. Set by the client when it detects the
     /// RTP payload type. Pure metadata — the renderer doesn't act on it.
     private var observedCodec: VideoCodec?
+
+    /// Colour description read off the decoded buffers, formatted for the
+    /// overlay. Kept here rather than written straight into the stats model
+    /// because the 1 Hz snapshot rebuilds `ViewerStats` from scratch — a value
+    /// set only on the model would survive for one second and then vanish.
+    private var observedColorLabel: String?
+
+    /// Set by `resetStats` so the next frame re-derives the colour label even
+    /// when its primaries are unchanged.
+    ///
+    /// Without it, `lastColorPrimaries` — which exists to keep the attachment
+    /// read off the per-frame path — silently defeats the reset: reconnecting
+    /// to the SAME sharer clears the label and then never repopulates it,
+    /// because nothing about the stream changed. A stats row that is right for
+    /// the first session and blank for every one after is exactly the kind of
+    /// wrong readout this row was added to prevent.
+    private var colorNeedsRepublish = true
 
     /// Decode failures reported via `noteDecodeFailure`. Reset on `resetStats`.
     private var decodeFailuresTotal: Int = 0
@@ -420,6 +446,8 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
         bucketBytesReceived = 0
         bucketStartNs = 0
         observedCodec = nil
+        observedColorLabel = nil
+        colorNeedsRepublish = true
         decodeFailuresTotal = 0
         plisSentTotal = 0
         nacksSentTotal = 0
@@ -480,10 +508,22 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
     private func applyColorSpaceIfNeeded(from buffer: CVPixelBuffer) {
         let raw = CVBufferCopyAttachment(buffer, kCVImageBufferColorPrimariesKey, nil)
         let primaries = raw as? String
-        if primaries == lastColorPrimaries { return }
+        lock.lock()
+        let mustRepublish = colorNeedsRepublish
+        lock.unlock()
+        if primaries == lastColorPrimaries, !mustRepublish { return }
         lastColorPrimaries = primaries
         let name = ColorInfo.layerColorSpaceName(forPrimaries: primaries)
         metalLayer.colorspace = CGColorSpace(name: name)
+        // Same attachments, second consumer: the stats overlay. Sampled here
+        // rather than per frame because it changes at most once per stream,
+        // which is exactly when this runs; the next 1 Hz flush publishes it.
+        let transferRaw = CVBufferCopyAttachment(buffer, kCVImageBufferTransferFunctionKey, nil)
+        let label = ColorInfo.statsLabel(primaries: primaries, transfer: transferRaw as? String)
+        lock.lock()
+        observedColorLabel = label
+        colorNeedsRepublish = false
+        lock.unlock()
     }
 
     private func render(buffer: CVPixelBuffer, receiveUptimeNs: UInt64) {
@@ -586,6 +626,7 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
         let totalPresented = framesPresented
         let totalDropped = framesDroppedTotal
         let codecSnap = observedCodec
+        let colorLabelSnap = observedColorLabel
         let decodeFailuresSnap = decodeFailuresTotal
         let plisSentSnap = plisSentTotal
         let nacksSentSnap = nacksSentTotal
@@ -649,7 +690,8 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
             plisSent: plisSentSnap,
             isDegraded: degradedSnap,
             nacksSent: nacksSentSnap,
-            fecRecovered: fecRecoveredSnap
+            fecRecovered: fecRecoveredSnap,
+            colorLabel: colorLabelSnap
         )
         let historySample = HistorySample(
             latencyMs: latencyForSnapshot,

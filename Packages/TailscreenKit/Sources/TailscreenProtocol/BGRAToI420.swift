@@ -23,13 +23,21 @@ import Foundation
 /// Limited-range BT.709 — luma 16..235, chroma 128±112 — is implemented five
 /// times in this repo, twice forward and three times inverse:
 ///
-/// | Direction | Where | Language | Serves |
-/// |---|---|---|---|
-/// | BGRA → I420 | **this file** | Swift | the WGC and portal capture backends |
-/// | BGRA → I420 | `CX11Capture`'s `x11cap_bgra_to_i420` | C | the X11 capture backend |
-/// | I420 → RGB | `CGtkVideo`'s shader | GLSL | the GTK viewer |
-/// | I420 → RGB | `CWinVideo`'s `ps_main` | HLSL | the WinUI viewer |
-/// | I420 → BGRA | `I420Converter` | Swift | the CPU blit + the X11 sharer's preview |
+/// | Direction | Where | Language | Serves | Range |
+/// |---|---|---|---|---|
+/// | BGRA → I420 | **this file** | Swift | the WGC and portal capture backends | limited only |
+/// | BGRA → I420 | `CX11Capture`'s `x11cap_bgra_to_i420` | C | the X11 capture backend | limited only |
+/// | I420 → RGB | `CGtkVideo`'s shader | GLSL | the GTK viewer | either (`uFullRange`) |
+/// | I420 → RGB | `CWinVideo`'s `ps_main` | HLSL | the WinUI viewer | either (`fullRange`) |
+/// | I420 → BGRA | `I420Converter` | Swift | the CPU blit + the X11 sharer's preview | either (`Source.range`) |
+///
+/// **The three inverse implementations take a range; the two forward ones do
+/// not**, and that asymmetry is the design rather than an omission. A capture
+/// backend knows what it produces — these two produce limited — while a viewer
+/// receives whatever some other platform's sharer encoded, and the macOS one
+/// captures FULL-range 8-bit by default (`ColorInfo.bt709FullRange8`). So the
+/// decoders report the range (`VideoColorInfo`, carried on
+/// `DecodedVideoFrame`) and the three inverses honour it.
 ///
 /// Getting the range wrong does not fail loudly — it washes out or crushes
 /// every frame — so each is pinned rather than trusted. This one round-trips
@@ -37,7 +45,11 @@ import Foundation
 /// alone; the two shaders are gated against the shared `makeColorBarsFrame()`
 /// by `tailscreen --overlay-self-test` (GL, under Xvfb) and `winvideo-selftest`
 /// (HLSL, under WARP), which is why that frame lives in `TailscreenViewer` and
-/// not beside either renderer.
+/// not beside either renderer. Those two self-tests render the bars as LIMITED
+/// (what the fixture's 235/16 values are), so they gate the limited path only;
+/// the full-range arithmetic is pinned on the CPU side by
+/// `ColorBarsConversionTests`, which asserts the same planes read as full range
+/// land on their raw sample values instead.
 ///
 /// The C forward converter predates this one and is not folded into it;
 /// adopting this from `X11CaptureEncoder` would remove that duplication, and is

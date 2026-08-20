@@ -5,6 +5,7 @@ import TailscreenL10n
 import enum TailscreenProtocol.AnnotationRasterizer
 import enum TailscreenProtocol.InputEvent
 import struct TailscreenProtocol.KeyModifiers
+import enum TailscreenProtocol.VideoColorRange
 import enum TailscreenProtocol.ViewerPointerMapping
 import enum TailscreenProtocol.ViewerZoomMath
 import enum TailscreenProtocol.WindowsKeyCodeMapping
@@ -286,7 +287,8 @@ struct WinUIVideoView: WinUIElementRepresentable {
                             _ = winvideo_draw_yuv(
                                 Int32(frame.width), Int32(frame.height),
                                 yBuf.baseAddress, uBuf.baseAddress, vBuf.baseAddress,
-                                overlayPointer)
+                                overlayPointer,
+                                frame.colorInfo.range == .full ? 1 : 0)
                         }
                     }
                 }

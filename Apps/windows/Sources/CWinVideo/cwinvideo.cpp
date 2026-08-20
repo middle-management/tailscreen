@@ -68,7 +68,10 @@ SamplerState samp : register(s0);
 
 cbuffer Params : register(b0) {
     float hasOverlay;
-    float3 pad;
+    // 1 when the frame's samples span the full byte, 0 for limited range. Set
+    // per draw from what the decoder reported, never assumed.
+    float fullRange;
+    float2 pad;
 };
 
 struct VSOut {
@@ -88,16 +91,29 @@ VSOut vs_main(uint vid : SV_VertexID) {
 }
 
 float4 ps_main(VSOut i) : SV_TARGET {
-    // Limited range: Y is 16..235, chroma 16..240 about 128. One of five
-    // implementations of these constants in this repo — the canonical list is
-    // the doc comment on BGRAToI420 (Packages/TailscreenKit/Sources/
-    // TailscreenProtocol/BGRAToI420.swift). What catches a disagreement HERE is
-    // winvideo-selftest rendering ColorBars under WARP; the GL shader has its
-    // own gate, so a mismatch between the two shows up as one passing and the
-    // other failing against the same frame, never as a single test.
-    float y = (texY.Sample(samp, i.uv) * 255.0 - 16.0) / 219.0;
-    float u = (texU.Sample(samp, i.uv) * 255.0 - 128.0) / 224.0;
-    float v = (texV.Sample(samp, i.uv) * 255.0 - 128.0) / 224.0;
+    // BT.709 in either range. Limited: Y is 16..235, chroma 16..240 about 128.
+    // Full: the whole byte, no expansion. The macOS sharer sends full-range
+    // 8-bit by default and the X11/portal/WGC sharers send limited, so a fixed
+    // choice here is wrong for one of them — visibly, on every frame.
+    //
+    // One of five implementations of these constants in this repo — the
+    // canonical list is the doc comment on BGRAToI420 (Packages/TailscreenKit/
+    // Sources/TailscreenProtocol/BGRAToI420.swift). What catches a disagreement
+    // HERE is winvideo-selftest rendering ColorBars under WARP; the GL shader
+    // has its own gate, so a mismatch between the two shows up as one passing
+    // and the other failing against the same frame, never as a single test.
+    float y = texY.Sample(samp, i.uv) * 255.0;
+    float u = texU.Sample(samp, i.uv) * 255.0 - 128.0;
+    float v = texV.Sample(samp, i.uv) * 255.0 - 128.0;
+    if (fullRange > 0.5) {
+        y = y / 255.0;
+        u = u / 255.0;
+        v = v / 255.0;
+    } else {
+        y = (y - 16.0) / 219.0;
+        u = u / 224.0;
+        v = v / 224.0;
+    }
 
     float3 rgb;
     rgb.r = y + 1.5748 * v;
@@ -252,8 +268,8 @@ bool uploadPlane(ID3D11Texture2D *tex, const uint8_t *src, int srcStride, int w,
     return true;
 }
 
-void setParams(bool hasOverlay) {
-    float v[4] = {hasOverlay ? 1.0f : 0.0f, 0, 0, 0};
+void setParams(bool hasOverlay, bool fullRange) {
+    float v[4] = {hasOverlay ? 1.0f : 0.0f, fullRange ? 1.0f : 0.0f, 0, 0};
     D3D11_MAPPED_SUBRESOURCE m = {};
     if (SUCCEEDED(g.context->Map(g.params, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) {
         memcpy(m.pData, v, sizeof(v));
@@ -436,7 +452,7 @@ int32_t winvideo_bind_source(void *surface_image_source_unknown, int32_t width,
 
 int32_t winvideo_draw_yuv(int32_t width, int32_t height, const uint8_t *y,
                           const uint8_t *u, const uint8_t *v,
-                          const uint8_t *overlay_bgra) {
+                          const uint8_t *overlay_bgra, int32_t full_range) {
     if (!g.device || !g.source || !y || !u || !v) return 0;
     if (width <= 0 || height <= 0) return 0;
     if (!ensureTextures(width, height)) return 0;
@@ -465,7 +481,7 @@ int32_t winvideo_draw_yuv(int32_t width, int32_t height, const uint8_t *y,
     vp.MaxDepth = 1.0f;
 
     ID3D11ShaderResourceView *srvs[4] = {g.srvY, g.srvU, g.srvV, g.srvOverlay};
-    setParams(hasOverlay);
+    setParams(hasOverlay, full_range != 0);
 
     g.context->OMSetRenderTargets(1, &rtv, nullptr);
     g.context->RSSetViewports(1, &vp);
@@ -561,7 +577,7 @@ int32_t winvideo_selftest_check(int32_t width, int32_t height, const uint8_t *y,
     uploadPlane(g.texY, y, width, width, height, 1);
     uploadPlane(g.texU, u, cw, cw, ch, 1);
     uploadPlane(g.texV, v, cw, cw, ch, 1);
-    setParams(false);
+    setParams(false, false);
 
     D3D11_VIEWPORT vp = {};
     vp.Width = (FLOAT)width;
@@ -670,7 +686,7 @@ int32_t winvideo_selftest_check(int32_t width, int32_t height, const uint8_t *y,
                 uploadPlane(g.texY, y, width, width, height, 1);
                 uploadPlane(g.texU, u, cw, cw, ch, 1);
                 uploadPlane(g.texV, v, cw, cw, ch, 1);
-                setParams(true);
+                setParams(true, false);
                 // Re-bind the views after the uploads. WRITE_DISCARD renames the
                 // underlying allocation, so re-pointing the slots is the honest
                 // thing to do rather than trusting the rename to carry through a

@@ -55,13 +55,50 @@ public final class FFmpegVideoDecoder: VideoDecoding, @unchecked Sendable {
                 onDecodedFrame?(
                     DecodedVideoFrame(
                         width: frame.width, height: frame.height,
-                        yPlane: frame.yPlane, uPlane: frame.uPlane, vPlane: frame.vPlane
+                        yPlane: frame.yPlane, uPlane: frame.uPlane, vPlane: frame.vPlane,
+                        colorInfo: Self.colorInfo(of: frame)
                     )
                 )
             }
         } catch {
             report(error, codec: codec)
             onDecodeFailure?()
+        }
+    }
+
+    /// Translate libavcodec's colour reporting into the portable tier's.
+    ///
+    /// The one decision here is `unspecified` → `.limited`: H.264 and HEVC both
+    /// define an absent `video_full_range_flag` as limited range, so this
+    /// resolves it at the boundary rather than leaving every renderer to guess.
+    /// It is resolved HERE, and not inside FFmpegKit, so the raw "the stream
+    /// said nothing" answer stays visible to anything that wants it.
+    static func colorInfo(of frame: FFmpeg.Frame) -> VideoColorInfo {
+        VideoColorInfo(
+            range: frame.colorRange == .full ? .full : .limited,
+            primaries: portablePrimaries(frame.colorPrimaries),
+            transfer: portableTransfer(frame.colorTransfer))
+    }
+
+    private static func portablePrimaries(_ primaries: FFmpeg.ColorPrimaries) -> VideoColorPrimaries {
+        switch primaries {
+        case .bt709: return .bt709
+        case .bt601: return .bt601
+        case .displayP3: return .displayP3
+        case .bt2020: return .bt2020
+        case .unspecified: return .unspecified
+        case .other(let code): return .other(code)
+        }
+    }
+
+    private static func portableTransfer(_ transfer: FFmpeg.ColorTransfer) -> VideoTransferFunction {
+        switch transfer {
+        case .bt709: return .bt709
+        case .srgb: return .srgb
+        case .pq: return .pq
+        case .hlg: return .hlg
+        case .unspecified: return .unspecified
+        case .other(let code): return .other(code)
         }
     }
 

@@ -23,8 +23,8 @@ public final class GtkVideoSink: VideoSink, @unchecked Sendable {
                 uiState?.markVideoFlowing()
                 uiState?.post(sessionPhase: .viewing)
             },
-            onStats: { width, height, fps in
-                uiState?.post(fps: fps, width: width, height: height)
+            onStats: { width, height, fps, color in
+                uiState?.post(fps: fps, width: width, height: height, color: color)
             })
         // No `onFrame`: the repaint is requested inside `FrameStore.set`, and
         // CGtkVideo marshals it onto the GTK main thread with `g_idle_add`, so
