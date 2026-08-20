@@ -446,10 +446,23 @@ jobs:
               pkill -x "$APP_NAME" || true
               exit 1
             fi
-            # Let the window finish coming up, then take the focus back.
+            # Let the window finish coming up, then take the focus back --
+            # and CHECK that it landed rather than sleeping and hoping. One
+            # activate plus a fixed sleep is a race, and it lost once in three:
+            # that shot came back in inactive chrome (grey traffic lights, grey
+            # buttons, no accent colour anywhere), which in a row of three
+            # windows reads as a dead app rather than as a capture artifact.
             sleep 4
-            osascript -e "tell application \"${APP_NAME}\" to activate" || true
-            sleep 2
+            front=unknown
+            for _ in $(seq 1 8); do
+              osascript -e "tell application \"${APP_NAME}\" to activate" >/dev/null 2>&1 || true
+              sleep 1
+              front="$(osascript -e \
+                'tell application "System Events" to get name of first application process whose frontmost is true' \
+                2>/dev/null || echo unknown)"
+              [ "$front" = "$APP_NAME" ] && break
+            done
+            echo "frontmost before $out: $front"
             screencapture -x -l "$winid" "screenshots/$out"
             pkill -x "$APP_NAME" || true
             rm -f "$idfile"
