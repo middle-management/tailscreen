@@ -3,6 +3,7 @@ import ApplicationServices
 import Combine
 import CoreAudio
 import CoreGraphics
+import CoreVideo
 import Foundation
 import Observation
 import QuartzCore
@@ -2807,6 +2808,16 @@ class AppState: ObservableObject {
     /// one product.
     static let isUIPreview = CommandLine.arguments.contains("--ui-preview")
 
+    /// The extra preview states, each additive on top of `--ui-preview` and
+    /// spelled exactly as the GTK app spells its own (`Apps/linux`'s
+    /// `main.swift`), so one screenshot job drives all three platforms with
+    /// one vocabulary. Each is an *element* match, so passing only
+    /// `--ui-preview-sharing` leaves `isUIPreview` false and seeds nothing —
+    /// CI passes the base flag alongside, as the GTK job does.
+    static let isUIPreviewRequest = CommandLine.arguments.contains("--ui-preview-request")
+    static let isUIPreviewSharing = CommandLine.arguments.contains("--ui-preview-sharing")
+    static let isUIPreviewVideo = CommandLine.arguments.contains("--ui-preview-video")
+
     /// The seeded preview state: tagged and untagged, online and offline,
     /// one peer sharing and one relayed — so a single screenshot exercises
     /// the sharing chip, the route line, the latency figure, and every axis
@@ -2844,6 +2855,244 @@ class AppState: ObservableObject {
         ]
         peerLatencyMs = ["1": 12, "2": 38]
         hasCompletedInitialDiscovery = true
+
+        if Self.isUIPreviewRequest { seedUIPreviewShareRequest() }
+        if Self.isUIPreviewSharing { seedUIPreviewSharing() }
+
+        // The viewer window and the main window both belong to SwiftUI's
+        // scene machinery, which has built neither at init time — the video
+        // seed needs a window to put a frame into, and the window-id file
+        // needs one to name. One settle hop covers both, and CI's own dwell
+        // before the shutter dwarfs it.
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard let self = self else { return }
+            if Self.isUIPreviewVideo { self.seedUIPreviewVideo() }
+            // Keep looking rather than reporting nothing once. The hub's
+            // NSWindow is SwiftUI's to create, and on a COLD first launch --
+            // Gatekeeper, LaunchServices registration -- it is not there yet
+            // at +2s, while every warm launch after it is. A single attempt
+            // therefore wrote the file for three states out of four, and the
+            // screenshot job blocks on that file: giving up silently cost it
+            // the wait and then the run.
+            // 60s of looking, which has to outlast the screenshot job's own
+            // wait: it spends that time nudging this process with `reopen`
+            // until a window exists, and the answer only becomes yes part way
+            // through.
+            for _ in 0..<120 {
+                if self.writeUIPreviewWindowID() { break }
+                try? await Task.sleep(for: .milliseconds(500))
+            }
+        }
+    }
+
+    /// `--ui-preview-request`: one peer asking this machine to share, which
+    /// is the banner both the hub and the menubar popover render.
+    private func seedUIPreviewShareRequest() {
+        pendingShareRequests = [
+            PendingShareRequest(
+                fromHostname: "studio-imac", receivedAtNs: 1,
+                connectionID: nil, sourceKey: "100.64.0.31")
+        ]
+    }
+
+    /// `--ui-preview-sharing`: mid-share with one viewer connected and that
+    /// same viewer asking for control — the two decision surfaces stacked, so
+    /// a single shot carries the roster row, the grant prompt and the
+    /// consequence line under it.
+    private func seedUIPreviewSharing() {
+        sharingState = .active
+        currentViewers = [
+            ViewerInfo(
+                id: "100.64.0.31:52104", tailscaleIP: "100.64.0.31",
+                hostname: "tailscreen-studio-imac", connectedAt: Date())
+        ]
+        controlRequests = [
+            ControlRequestInfo(
+                id: UUID(), viewerIP: "100.64.0.31",
+                hostname: "tailscreen-studio-imac", arrivedAt: Date())
+        ]
+    }
+
+    /// `--ui-preview-video`: the viewer window itself — chrome, drawing
+    /// toolbar and overlay over a stand-in frame. `ensureViewer()` builds the
+    /// whole graph (window, toolbar, annotation overlay, stats host), so the
+    /// seed is: make it, feed it a frame, draw on it, front it.
+    private func seedUIPreviewVideo() {
+        let renderer = ensureViewer()
+        connectionState = .viewing
+        connectedHostname = "robert-macbook"
+        sharerSupportsAnnotations = true
+        refreshViewerWindowTitle()
+
+        // Nothing snaps this window here — no real stream ever arrives to
+        // report its dimensions — so state the size rather than inheriting
+        // whatever `ensureViewer` opened at or a previous run autosaved.
+        // 1280x720 is 16:9 and fits the 1920x1080 the screenshot job asks
+        // the runner's display for; centered, so no edge sits against the
+        // screen's and gets clipped out of the capture.
+        if let window = viewerWindow {
+            window.setContentSize(NSSize(width: 1280, height: 720))
+            window.center()
+        }
+
+        // Front it before the frame: the renderer presents off a display
+        // link, which only runs against a layer that is actually on screen.
+        viewerWindow?.orderFrontRegardless()
+        viewerWindow?.makeKeyAndOrderFront(nil)
+
+        if let frame = Self.makeUIPreviewFrame(width: 1920, height: 1080) {
+            renderer.setPixelBuffer(
+                frame, receiveUptimeNs: DispatchTime.now().uptimeNanoseconds)
+        }
+
+        // Raise the stats HUD, holding a plausible steady-state session --
+        // the same deterministic-fake convention as the seeded tailnet above,
+        // and the reason `suppressStatsPublishing` exists: a still image
+        // measures as 0 fps with no codec, which would put a dead session in
+        // the screenshot. The sparkline wants history, so give it a minute of
+        // gently varying samples rather than a flat line.
+        renderer.suppressStatsPublishing = true
+        var stats = ViewerStats.empty
+        stats.latencyMs = 18
+        stats.fps = 60
+        stats.droppedPct = 0
+        stats.bitrateBps = 4_100_000
+        stats.codec = .hevc
+        stats.framesPresented = 3600
+        renderer.statsModel.update(stats)
+        for index in 0..<ViewerStatsModel.historyCapacity {
+            let wobble = Double((index * 7) % 5)
+            renderer.statsModel.appendHistory(
+                HistorySample(
+                    latencyMs: 16 + wobble,
+                    bitrateBps: 3_900_000 + wobble * 60_000,
+                    droppedPct: 0))
+        }
+        renderer.statsModel.isVisible = true
+
+        // One stroke per tool so the overlay and every shape's geometry are
+        // both in the frame. `.click` is deliberately absent: it is an
+        // EPHEMERAL annotation and this canvas is photographed seconds after
+        // launch, so unlike the GTK seed — which can date a stroke into the
+        // far future because its model takes the clock as an argument — this
+        // model sweeps it on a real timer that a screenshot cannot outrun.
+        func seed(_ tool: AnnotationTool, _ points: [CGPoint], _ colorIndex: Int) {
+            viewerOverlay?.model.apply(
+                remoteOp: .add(
+                    Annotation(
+                        id: UUID(), tool: tool, points: points,
+                        color: Annotation.RGBA.palette[colorIndex], width: 4)))
+        }
+        // Kept clear of the stats HUD, which occupies roughly the left 19% of
+        // the frame down to mid-height: the strokes ran under it and the pen
+        // came out half-hidden, which is a poor look for the one shot the
+        // landing page leads with.
+        seed(.pen, [CGPoint(x: 0.24, y: 0.30), CGPoint(x: 0.34, y: 0.55), CGPoint(x: 0.29, y: 0.72)], 0)
+        seed(.line, [CGPoint(x: 0.41, y: 0.30), CGPoint(x: 0.51, y: 0.72)], 1)
+        seed(.arrow, [CGPoint(x: 0.56, y: 0.72), CGPoint(x: 0.66, y: 0.30)], 2)
+        seed(.rectangle, [CGPoint(x: 0.69, y: 0.34), CGPoint(x: 0.81, y: 0.66)], 3)
+        seed(.oval, [CGPoint(x: 0.84, y: 0.34), CGPoint(x: 0.96, y: 0.66)], 4)
+    }
+
+    /// A 16:9 gradient stand-in for decoded video, big enough that the
+    /// annotation overlay is legible in a screenshot. Same role as the GTK
+    /// app's `makePreviewFrame`, in the pixel format the Metal renderer's
+    /// BGRA path already takes.
+    private static func makeUIPreviewFrame(width: Int, height: Int) -> CVPixelBuffer? {
+        var out: CVPixelBuffer?
+        let attrs: [CFString: Any] = [
+            kCVPixelBufferCGImageCompatibilityKey: true,
+            kCVPixelBufferCGBitmapContextCompatibilityKey: true,
+            kCVPixelBufferMetalCompatibilityKey: true
+        ]
+        guard
+            CVPixelBufferCreate(
+                kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA,
+                attrs as CFDictionary, &out) == kCVReturnSuccess,
+            let buffer = out
+        else { return nil }
+
+        CVPixelBufferLockBaseAddress(buffer, [])
+        defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
+        guard let base = CVPixelBufferGetBaseAddress(buffer) else { return nil }
+        let stride = CVPixelBufferGetBytesPerRow(buffer)
+        let bytes = base.assumingMemoryBound(to: UInt8.self)
+        for y in 0..<height {
+            let row = bytes + y * stride
+            let vertical = Double(y) / Double(height)
+            for x in 0..<width {
+                let horizontal = Double(x) / Double(width)
+                let pixel = row + x * 4
+                // BGRA, and a dark indigo-to-slate wash so white overlay
+                // strokes and the toolbar both read against it.
+                pixel[0] = UInt8(60 + 70 * vertical)
+                pixel[1] = UInt8(38 + 46 * horizontal)
+                pixel[2] = UInt8(46 + 40 * horizontal)
+                pixel[3] = 255
+            }
+        }
+        return buffer
+    }
+
+    /// Name the window CI should crop its capture to (`screencapture -l`), so
+    /// a shot is the app's own window plus its shadow rather than the whole
+    /// desktop. Silent no-op without the flag, which is every launch that
+    /// isn't the screenshot job.
+    ///
+    /// An argument rather than an environment variable because the screenshot
+    /// job launches the bundle through `open` — which forwards `--args` but
+    /// not the caller's environment — and `open` is load-bearing there: it is
+    /// what gets the app a real GUI session on the runner.
+    /// Returns true once it has written (or has nothing to write, so the
+    /// caller can stop asking).
+    @discardableResult
+    private func writeUIPreviewWindowID() -> Bool {
+        let args = CommandLine.arguments
+        guard let flag = args.firstIndex(of: "--ui-preview-window-file") else { return true }
+        let next = args.index(after: flag)
+        guard next < args.endIndex else { return true }
+        let path = args[next]
+        guard !path.isEmpty else { return true }
+        // Leave a note of everything on screen beside the id file. The first
+        // version of this picked by `canBecomeMain && .titled` and silently
+        // matched nothing on the plain `--ui-preview` launch while matching
+        // fine on the three seeded ones, and "silently matched nothing" is
+        // not a thing you can debug from a missing file ten minutes later.
+        let windows = NSApp.windows
+        let dump = windows.map {
+            [
+                "n=\($0.windowNumber)", "class=\(type(of: $0))",
+                "visible=\($0.isVisible)", "main=\($0.canBecomeMain)",
+                "titled=\($0.styleMask.contains(.titled))",
+                "frame=\(NSStringFromRect($0.frame))", "title=\($0.title)"
+            ].joined(separator: " ")
+        }.joined(separator: "\n")
+        try? dump.write(toFile: path + ".windows", atomically: true, encoding: .utf8)
+
+        // In video mode the subject is the viewer window. Otherwise take the
+        // biggest thing on screen: the hub is the only large window this app
+        // raises, and the MenuBarExtra's backing panels are small — which is
+        // a property they actually have, unlike the style bits above.
+        let subject: NSWindow?
+        if Self.isUIPreviewVideo {
+            subject = viewerWindow
+        } else {
+            let candidates = windows.filter {
+                $0.isVisible && $0.frame.width > 200 && $0.frame.height > 200
+            }
+            subject = candidates.max {
+                $0.frame.width * $0.frame.height < $1.frame.width * $1.frame.height
+            }
+        }
+        guard let subject = subject else { return false }
+        do {
+            try String(subject.windowNumber).write(
+                toFile: path, atomically: true, encoding: .utf8)
+            return true
+        } catch {
+            return false
+        }
     }
 
     func discoverPeers() async {

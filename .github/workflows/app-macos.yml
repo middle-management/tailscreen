@@ -98,8 +98,9 @@ on:
         default: false
       screenshots:
         description: >-
-          Launch the assembled .app on the runner, capture the screen to a PNG,
-          and upload it as an artifact.
+          Launch the assembled .app on the runner once per --ui-preview state,
+          capture each one cropped to its own window, and upload them as an
+          artifact.
         required: false
         type: boolean
         default: false
@@ -350,36 +351,141 @@ jobs:
           </plist>
           EOF
 
-      # `--ui-preview` renders the hub seeded with the same deterministic
-      # fake tailnet the GTK and Windows apps show — signed in, fake peers,
-      # no tsnet node, no network — and activates itself so the capture
-      # shows Tailscreen's menu bar rather than Finder's. Launched via
-      # `open` so LaunchServices gives it a proper GUI session.
-      # `screencapture` needs the Screen Recording TCC grant, which the
-      # hosted runner's session turned out to have (verified 2026-08 — the
-      # artifact showed the real window). The pgrep guard is: a crashed app
-      # must not turn into a convincing screenshot of an empty desktop.
+      # Hosted runners hand us a 1024x768 display whose mode list contains no
+      # `scaling:on` entry at all (verified 2026-08 — displayplacer enumerated
+      # twelve modes, every one of them 1x), so there is no HiDPI to ask for
+      # and these shots are 1x however they are taken. What the mode list does
+      # offer is more room: 1920x1080 lets the viewer window come up at a real
+      # 1280x720, which is genuinely more pixels of video rather than more
+      # empty desktop. The hub's chrome is fixed-width and does not care.
+      #
+      # Best-effort by construction: every failure path leaves the default
+      # mode in place and the shots merely get smaller, so nothing here is
+      # allowed to fail the job.
+      - name: Widen the display
+        if: inputs.screenshots
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          brew install displayplacer || exit 0
+          id="$(displayplacer list | awk '/^Persistent screen id:/ {print $4; exit}')" || true
+          [ -n "${id:-}" ] || { echo "no screen id; staying at the default mode"; exit 0; }
+          displayplacer "id:$id res:1920x1080 hz:60 color_depth:7 scaling:off origin:(0,0) degree:0" \
+            || echo "could not change mode; staying at the default"
+          displayplacer list | sed -n '1,12p' || true
+
+      # Each `--ui-preview*` combination renders the hub (or the viewer)
+      # seeded with the same deterministic fake tailnet the GTK and Windows
+      # apps show — signed in, fake peers, no tsnet node, no network. Launched
+      # via `open` so LaunchServices gives it a proper GUI session; that is
+      # also why the window-id path travels as an `--args` flag rather than an
+      # env var, which `open` would drop.
+      #
+      # `screencapture -l <window>` crops to the app's own window and keeps
+      # its shadow on transparency, so the docs site gets the window rather
+      # than a picture of a runner's desktop. It needs the Screen Recording
+      # TCC grant, which the hosted runner's session turned out to have
+      # (verified 2026-08 — the artifact showed the real window).
+      #
+      # Three things here were each a wrong-looking PNG first:
+      #
+      #   - WAIT for the app to name its window rather than sleeping a fixed
+      #     15s. The FIRST launch on a runner is far slower than the warm ones
+      #     after it (Gatekeeper, LaunchServices registration), and a fixed
+      #     sleep meant the hub shot — always first — raced the app and fell
+      #     back to a full-screen grab while the later three cropped fine.
+      #   - FAIL when the id never arrives. The fallback that produced that
+      #     full-screen hub shot is exactly the shape this repo distrusts:
+      #     absence looking like success, all the way onto the landing page.
+      #   - ACTIVATE immediately before the shutter. The app activates itself
+      #     at launch, but by +15s something else is frontmost and the capture
+      #     came back with the window in its inactive chrome — grey traffic
+      #     lights, grey buttons, an accent colour nowhere. `activate` is the
+      #     one that has to be late, so it sits right against the capture.
       - name: Screenshot the app
         if: inputs.screenshots
         run: |
           set -euo pipefail
           mkdir -p screenshots
-          open "${APP_NAME}.app" --args --ui-preview
-          sleep 15
-          pgrep -x "$APP_NAME" >/dev/null \
-            || { echo "app exited before the screenshot" >&2; exit 1; }
-          screencapture -x screenshots/macos-hub.png
-          pkill -x "$APP_NAME" || true
-          ls -la screenshots/
 
+          shoot() {
+            out="$1"
+            shift
+            idfile="$(mktemp -t tailscreen-winid)"
+            open "${APP_NAME}.app" --args "$@" --ui-preview-window-file "$idfile"
+            # A COLD first launch comes up with a Dock icon and a menubar item
+            # and no window: the scene declares `.defaultLaunchBehavior(
+            # .presented)`, but on the very first launch of a freshly built
+            # bundle that presentation is lost, and the app then sits there
+            # with nothing to photograph. (The diagnostic that settled this:
+            # Finder frontmost, and the app reporting exactly one window, its
+            # 34x24 NSStatusBarWindow.) `reopen` is the AppleEvent the Dock
+            # sends when you click a running app's icon, which is precisely
+            # the "you have no windows, make one" path -- so nudge with it
+            # while waiting, rather than waiting harder.
+            for i in $(seq 1 45); do
+              [ -s "$idfile" ] && break
+              if [ $((i % 3)) -eq 0 ]; then
+                osascript -e "tell application \"${APP_NAME}\" to reopen" >/dev/null 2>&1 || true
+                osascript -e "tell application \"${APP_NAME}\" to activate" >/dev/null 2>&1 || true
+              fi
+              sleep 1
+            done
+            pgrep -x "$APP_NAME" >/dev/null \
+              || { echo "app exited before the $out capture" >&2; exit 1; }
+            winid="$(cat "$idfile" 2>/dev/null || true)"
+            if [ -z "$winid" ]; then
+              # Leave something behind to look at. A missing file ten minutes
+              # later says only that it is missing; the app's own window dump
+              # plus a picture of the screen say which of "no window", "wrong
+              # window" or "no app" actually happened.
+              echo "app never named a window for $out" >&2
+              echo "--- windows the app saw ---" >&2
+              cat "$idfile.windows" >&2 2>/dev/null || echo "(no dump written)" >&2
+              screencapture -x "screenshots/DIAGNOSTIC-$out" || true
+              pkill -x "$APP_NAME" || true
+              exit 1
+            fi
+            # Let the window finish coming up, then take the focus back --
+            # and CHECK that it landed rather than sleeping and hoping. One
+            # activate plus a fixed sleep is a race, and it lost once in three:
+            # that shot came back in inactive chrome (grey traffic lights, grey
+            # buttons, no accent colour anywhere), which in a row of three
+            # windows reads as a dead app rather than as a capture artifact.
+            sleep 4
+            front=unknown
+            for _ in $(seq 1 8); do
+              osascript -e "tell application \"${APP_NAME}\" to activate" >/dev/null 2>&1 || true
+              sleep 1
+              front="$(osascript -e \
+                'tell application "System Events" to get name of first application process whose frontmost is true' \
+                2>/dev/null || echo unknown)"
+              [ "$front" = "$APP_NAME" ] && break
+            done
+            echo "frontmost before $out: $front"
+            screencapture -x -l "$winid" "screenshots/$out"
+            pkill -x "$APP_NAME" || true
+            rm -f "$idfile"
+            sleep 2
+            [ -s "screenshots/$out" ] || { echo "$out is empty" >&2; exit 1; }
+          }
+
+          shoot macos-hub.png --ui-preview
+          shoot macos-share-request.png --ui-preview --ui-preview-request
+          shoot macos-sharing.png --ui-preview --ui-preview-sharing
+          shoot macos-viewer.png --ui-preview --ui-preview-video
+          ls -la screenshots/
+          sips -g pixelWidth -g pixelHeight screenshots/*.png || true
+
+      # `always()` so a failed capture still hands back its DIAGNOSTIC-*.png.
       - name: Upload screenshots
-        if: inputs.screenshots
+        if: ${{ inputs.screenshots && !cancelled() }}
         uses: actions/upload-artifact@v7
         with:
           name: tailscreen-screenshots-macos
           path: screenshots/
           retention-days: 14
-          if-no-files-found: error
+          if-no-files-found: warn
 
       - name: Check signing availability
         id: signing

@@ -255,8 +255,8 @@ body {
     }
   }
 
-  .ts-mock {
-    max-width: 46rem;
+  .ts-hero-shot {
+    max-width: 52rem;
   }
 
   .ts-stats {
@@ -498,234 +498,6 @@ body {
 }
 
 // ---------------------------------------------------------------------------
-// Homepage: app mockup
-// ---------------------------------------------------------------------------
-// A stylized viewer window. The window chrome follows the site theme; the
-// "shared screen" inside is its own fixed dark world so it reads as a remote
-// display in both color schemes.
-
-.ts-mock {
-  max-width: 40rem;
-  margin: 2.25rem auto 2rem;
-}
-
-// A slim fake macOS menubar above the viewer window: sells "the whole UI is
-// a menubar icon" with the Tailscreen glyph in its active state.
-.ts-mock-menubar {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 0.8rem;
-  margin: 0 0.6rem 0.55rem;
-  padding: 0.28rem 0.75rem;
-  border: 1px solid $border-color;
-  border-radius: 8px;
-  background-color: $sidebar-color;
-  color: rgba($body-text-color, 0.65);
-
-  svg {
-    display: block;
-    width: 0.85rem;
-    height: 0.85rem;
-  }
-}
-
-.ts-mock-mb-menus {
-  display: flex;
-  align-items: center;
-  gap: 0.7rem;
-  margin-right: auto;
-}
-
-.ts-mock-mb-menu {
-  display: block;
-  height: 6px;
-  border-radius: 3px;
-  background-color: rgba($body-text-color, 0.25);
-
-  &:first-child {
-    background-color: rgba($body-text-color, 0.45);
-  }
-}
-
-.ts-mock-mb-app {
-  display: flex;
-  align-items: center;
-  padding: 0.14rem 0.32rem;
-  border-radius: 5px;
-  background-color: rgba($link-color, 0.16);
-  color: $link-color;
-}
-
-.ts-mock-mb-time {
-  font-size: 0.68rem;
-  font-weight: 500;
-  font-variant-numeric: tabular-nums;
-}
-
-.ts-mock-window {
-  overflow: hidden;
-  border: 1px solid $border-color;
-  border-radius: 12px;
-  background-color: $sidebar-color;
-  box-shadow: 0 22px 48px -20px rgba(0, 0, 0, 0.4),
-    0 4px 14px rgba(0, 0, 0, 0.08);
-}
-
-.ts-mock-titlebar {
-  display: flex;
-  align-items: center;
-  padding: 0.55rem 0.8rem;
-  border-bottom: 1px solid $border-color;
-}
-
-.ts-mock-dot {
-  width: 11px;
-  height: 11px;
-  margin-right: 7px;
-  border-radius: 50%;
-  flex: 0 0 auto;
-
-  &--red {
-    background-color: #ff5f57;
-  }
-
-  &--yellow {
-    background-color: #febc2e;
-  }
-
-  &--green {
-    background-color: #28c840;
-  }
-}
-
-.ts-mock-title {
-  flex: 1;
-  // Optically center: offset the traffic lights' width.
-  margin-right: 54px;
-  text-align: center;
-  font-size: 0.72rem;
-  font-weight: 500;
-  color: rgba($body-text-color, 0.7);
-}
-
-.ts-mock-screen {
-  position: relative;
-  padding: 2.1rem 1.4rem 1.5rem;
-  background-color: #14161f;
-  background-image: linear-gradient(
-    160deg,
-    rgba(99, 102, 241, 0.08),
-    rgba(0, 0, 0, 0) 55%
-  );
-}
-
-.ts-mock-route {
-  position: absolute;
-  top: 0.6rem;
-  left: 0.8rem;
-  padding: 0.14rem 0.5rem;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 999px;
-  background-color: rgba(10, 12, 18, 0.7);
-  font-family: "SFMono-Regular", Menlo, Consolas, monospace;
-  font-size: 0.58rem;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.6);
-}
-
-.ts-mock-code {
-  position: relative;
-}
-
-.ts-mock-line {
-  display: block;
-  height: 9px;
-  margin-bottom: 10px;
-  border-radius: 4px;
-  background-color: rgba(255, 255, 255, 0.13);
-
-  &:last-child {
-    margin-bottom: 0;
-  }
-
-  &.is-accent {
-    background-color: rgba(129, 136, 249, 0.85);
-  }
-
-  &.is-green {
-    background-color: rgba(52, 199, 120, 0.6);
-  }
-}
-
-.ts-mock-anno {
-  position: absolute;
-  top: 30%;
-  left: 4%;
-  width: 52%;
-  height: auto;
-  color: #fbbf24;
-  filter: drop-shadow(0 1px 4px rgba(0, 0, 0, 0.4));
-}
-
-.ts-mock-cursor {
-  position: absolute;
-  top: 56%;
-  right: 20%;
-  display: flex;
-  align-items: flex-start;
-
-  svg {
-    width: 20px;
-    height: 20px;
-    filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.5));
-  }
-}
-
-.ts-mock-cursor-label {
-  display: inline-block;
-  margin: 12px 0 0 -2px;
-  padding: 0.08rem 0.5rem;
-  border-radius: 999px;
-  background-color: #6366f1;
-  font-size: 0.62rem;
-  font-weight: 600;
-  color: #ffffff;
-}
-
-.ts-mock-stats {
-  position: absolute;
-  right: 0.8rem;
-  bottom: 0.7rem;
-  display: inline-flex;
-  align-items: center;
-  padding: 0.25rem 0.6rem;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 6px;
-  background-color: rgba(10, 12, 18, 0.72);
-  font-family: "SFMono-Regular", Menlo, Consolas, monospace;
-  font-size: 0.62rem;
-  letter-spacing: 0.02em;
-  color: rgba(255, 255, 255, 0.85);
-}
-
-.ts-mock-live {
-  width: 6px;
-  height: 6px;
-  margin-right: 6px;
-  border-radius: 50%;
-  background-color: #28c840;
-}
-
-.ts-mock-caption {
-  margin: 0.75rem 0 0;
-  text-align: center;
-  font-size: 0.8rem;
-  color: rgba($body-text-color, 0.78);
-}
-
-// ---------------------------------------------------------------------------
 // Homepage: stats strip
 // ---------------------------------------------------------------------------
 
@@ -814,6 +586,106 @@ body {
   svg {
     width: 1.3rem;
     height: 1.3rem;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Homepage: product screenshots
+// ---------------------------------------------------------------------------
+// `screencapture -l` hands back the window with its own shadow on
+// TRANSPARENCY, which is why these carry no frame, no radius and no ring: the
+// rounded corners are the window's, the shadow is the window's, and anything
+// drawn here would be drawn around the transparent bounding box instead of
+// around the window inside it. The same alpha is why one rule covers both
+// colour schemes -- there is no baked-in matte to clash with either.
+
+// The hero's product shot. Same reasoning as the gallery figures below --
+// window shadow on transparency, so no frame of our own -- but this one is
+// above the fold, so it is eager and never animates on hover: there is
+// nothing to click through to that the page does not already show bigger.
+.ts-hero-shot {
+  max-width: 46rem;
+  margin: 2.25rem auto 2rem;
+
+  img {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+
+  figcaption {
+    margin: 0.75rem 0 0;
+    text-align: center;
+    font-size: 0.8rem;
+    line-height: 1.55;
+    color: rgba($body-text-color, 0.78);
+  }
+}
+
+.ts-shots {
+  margin: 1.75rem 0 2.5rem;
+}
+
+.ts-shot {
+  margin: 0;
+
+  a {
+    display: block;
+    background-image: none;
+
+    &:hover img {
+      transform: translateY(-2px);
+    }
+  }
+
+  img {
+    display: block;
+    width: 100%;
+    height: auto;
+    transition: transform 0.18s ease;
+  }
+
+  figcaption {
+    margin: 0.85rem 0 0;
+    font-size: 0.85rem;
+    line-height: 1.55;
+    text-align: center;
+    color: rgba($body-text-color, 0.8);
+
+    strong {
+      font-weight: 600;
+      color: $body-heading-color;
+    }
+  }
+}
+
+// Three tall hub windows. Top-aligned: the crops share an aspect ratio, so the
+// window tops, window bottoms, and caption baselines all line up, and a caption
+// that wraps to an extra line hangs off the bottom instead of shoving its
+// screenshot out of the row.
+.ts-shot-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1.9rem 1.75rem;
+  align-items: start;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ts-shot img {
+    transition: none;
+  }
+
+  .ts-shot a:hover img {
+    transform: none;
+  }
+}
+
+@media (max-width: 52rem) {
+  .ts-shot-row {
+    grid-template-columns: 1fr;
+    max-width: 24rem;
+    margin: 0 auto;
+    gap: 2.4rem;
   }
 }
 

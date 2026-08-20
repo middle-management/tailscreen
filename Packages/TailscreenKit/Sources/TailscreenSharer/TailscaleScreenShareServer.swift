@@ -64,6 +64,23 @@ public struct ViewerInfo: Sendable, Identifiable, Hashable {
     public var displayName: String {
         hostname.map { TailscreenInstance.displayName(fromHostname: $0) } ?? tailscaleIP
     }
+
+    /// The server builds these itself, so this init exists for the hosts'
+    /// `--ui-preview` modes: a seeded roster row with no server behind it.
+    /// Public because the memberwise init a `public struct` gets for free is
+    /// only `internal`, which put `ViewerInfo` out of reach of the app targets
+    /// that need to fake one.
+    public init(
+        id: String, tailscaleIP: String, hostname: String? = nil,
+        health: ViewerHealth = .good, stableID: String? = nil, connectedAt: Date
+    ) {
+        self.id = id
+        self.tailscaleIP = tailscaleIP
+        self.hostname = hostname
+        self.health = health
+        self.stableID = stableID
+        self.connectedAt = connectedAt
+    }
 }
 
 /// A viewer that sent HELLO while `requireApproval` was on and is waiting

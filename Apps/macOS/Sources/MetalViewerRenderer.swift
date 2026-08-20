@@ -573,10 +573,19 @@ final class MetalViewerRenderer: NSObject, @unchecked Sendable {
         publishStatsTick(latencyMsThisFrame: latencyMsThisFrame)
     }
 
+    /// Set by `--ui-preview-video` to pin whatever snapshot that mode seeded
+    /// into the stats model. The preview presents ONE frame and then sits
+    /// there, so the 1 s flush below would immediately overwrite the seeded
+    /// numbers with the honest measurements of a still image -- 0 fps, no
+    /// codec, no bitrate -- and the overlay in the screenshot would read as a
+    /// dead session. Nothing outside the preview path sets this.
+    var suppressStatsPublishing = false
+
     /// Update the 1 s rolling bucket and, when it fills, hand a fresh
     /// `ViewerStats` snapshot to the observable model. Called once per
     /// rendered frame from the display-link tick (main thread).
     private func publishStatsTick(latencyMsThisFrame: Double?) {
+        if suppressStatsPublishing { return }
         let nowNs = DispatchTime.now().uptimeNanoseconds
 
         lock.lock()
