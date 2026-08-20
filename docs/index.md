@@ -25,66 +25,14 @@ image: /assets/social-card.png
 </div>
 
 <div class="ts-container">
-<div class="ts-mock" aria-hidden="true">
-  <div class="ts-mock-menubar">
-    <span class="ts-mock-mb-menus">
-      <span class="ts-mock-mb-menu" style="width: 1.6rem"></span>
-      <span class="ts-mock-mb-menu" style="width: 1.1rem"></span>
-      <span class="ts-mock-mb-menu" style="width: 1.3rem"></span>
-      <span class="ts-mock-mb-menu" style="width: 1.2rem"></span>
-    </span>
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg">
-      <path d="M5 12.5a10 10 0 0 1 14 0"/>
-      <path d="M8.5 16a5 5 0 0 1 7 0"/>
-      <circle cx="12" cy="19" r="1" fill="currentColor" stroke="none"/>
-    </svg>
-    <span class="ts-mock-mb-app">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">
-        <rect x="3" y="4" width="18" height="13" rx="2"/>
-        <path d="M9 21h6"/>
-        <path d="M12 17v4"/>
-      </svg>
-    </span>
-    <span class="ts-mock-mb-time">Tue 12:04</span>
-  </div>
-  <div class="ts-mock-window">
-    <div class="ts-mock-titlebar">
-      <span class="ts-mock-dot ts-mock-dot--red"></span>
-      <span class="ts-mock-dot ts-mock-dot--yellow"></span>
-      <span class="ts-mock-dot ts-mock-dot--green"></span>
-      <span class="ts-mock-title">Viewing robert&rsquo;s MacBook&nbsp;Pro</span>
-    </div>
-    <div class="ts-mock-screen">
-      <span class="ts-mock-route">direct &middot; wireguard</span>
-      <div class="ts-mock-code">
-        <span class="ts-mock-line is-accent" style="width: 32%"></span>
-        <span class="ts-mock-line" style="width: 74%; margin-left: 6%"></span>
-        <span class="ts-mock-line" style="width: 58%; margin-left: 6%"></span>
-        <span class="ts-mock-line is-green" style="width: 42%; margin-left: 12%"></span>
-        <span class="ts-mock-line" style="width: 66%; margin-left: 12%"></span>
-        <span class="ts-mock-line" style="width: 30%; margin-left: 6%"></span>
-        <span class="ts-mock-line is-accent" style="width: 48%"></span>
-        <span class="ts-mock-line" style="width: 70%; margin-left: 6%"></span>
-        <span class="ts-mock-line is-green" style="width: 36%; margin-left: 12%"></span>
-        <span class="ts-mock-line" style="width: 54%; margin-left: 6%"></span>
-      </div>
-      <svg class="ts-mock-anno" viewBox="0 0 220 64" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <path d="M16 34 C 20 12, 160 4, 196 18 C 214 26, 186 50, 100 54 C 44 56, 10 48, 16 34"
-              stroke="currentColor" stroke-width="5" stroke-linecap="round"/>
-      </svg>
-      <div class="ts-mock-cursor">
-        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-          <path d="M5.5 2.5l13 10.4-6.7 1L9.2 20z" fill="#ffffff" stroke="#20242f"
-                stroke-width="1.4" stroke-linejoin="round"/>
-        </svg>
-        <span class="ts-mock-cursor-label">anna</span>
-      </div>
-      <span class="ts-mock-stats"><span class="ts-mock-live"></span>60 fps &middot; HEVC &middot; 4.1 Mbit/s</span>
-    </div>
-  </div>
-  <p class="ts-mock-caption">The whole UI is a compact window (plus a menubar sharing tool on the
-  Mac). The viewer is just a window &mdash; with someone else&rsquo;s screen in it.</p>
-</div>
+<figure class="ts-hero-shot">
+  <img src="{{ '/assets/screenshots/macos-viewer.png' | relative_url }}"
+       alt="The Tailscreen viewer window, titled Viewing robert-macbook, showing a remote screen with pen, line, arrow, rectangle and oval strokes drawn over it, the drawing tools along the title bar, and a stats overlay reading 60 fps over HEVC."
+       fetchpriority="high" decoding="async">
+  <figcaption>The whole UI is a compact window (plus a menubar sharing tool on
+  the Mac). The viewer is just a window &mdash; with someone else&rsquo;s
+  screen in it.</figcaption>
+</figure>
 
 <div class="ts-stats">
   <div class="ts-stat">
@@ -166,17 +114,6 @@ Curious what&rsquo;s underneath?
 
 <div class="ts-container">
 <div class="ts-shots">
-
-<figure class="ts-shot ts-shot--wide">
-  <a href="{{ '/assets/screenshots/macos-viewer.png' | relative_url }}">
-    <img src="{{ '/assets/screenshots/macos-viewer.png' | relative_url }}"
-         alt="The Tailscreen viewer window, titled Viewing robert-macbook, showing a remote screen with pen, line, arrow, rectangle and oval strokes drawn over it and the drawing tools along the title bar."
-         loading="lazy" decoding="async">
-  </a>
-  <figcaption>The viewer is just a window with someone else&rsquo;s screen in
-  it &mdash; drawing tools, mute and live stats along the title bar, nothing
-  else in the way.</figcaption>
-</figure>
 
 <div class="ts-shot-row">
 
