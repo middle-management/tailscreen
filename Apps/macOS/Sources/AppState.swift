@@ -2868,7 +2868,21 @@ class AppState: ObservableObject {
             try? await Task.sleep(for: .seconds(2))
             guard let self = self else { return }
             if Self.isUIPreviewVideo { self.seedUIPreviewVideo() }
-            self.writeUIPreviewWindowID()
+            // Keep looking rather than reporting nothing once. The hub's
+            // NSWindow is SwiftUI's to create, and on a COLD first launch --
+            // Gatekeeper, LaunchServices registration -- it is not there yet
+            // at +2s, while every warm launch after it is. A single attempt
+            // therefore wrote the file for three states out of four, and the
+            // screenshot job blocks on that file: giving up silently cost it
+            // the wait and then the run.
+            // 60s of looking, which has to outlast the screenshot job's own
+            // wait: it spends that time nudging this process with `reopen`
+            // until a window exists, and the answer only becomes yes part way
+            // through.
+            for _ in 0..<120 {
+                if self.writeUIPreviewWindowID() { break }
+                try? await Task.sleep(for: .milliseconds(500))
+            }
         }
     }
 
@@ -3001,25 +3015,52 @@ class AppState: ObservableObject {
     /// job launches the bundle through `open` — which forwards `--args` but
     /// not the caller's environment — and `open` is load-bearing there: it is
     /// what gets the app a real GUI session on the runner.
-    private func writeUIPreviewWindowID() {
+    /// Returns true once it has written (or has nothing to write, so the
+    /// caller can stop asking).
+    @discardableResult
+    private func writeUIPreviewWindowID() -> Bool {
         let args = CommandLine.arguments
-        guard let flag = args.firstIndex(of: "--ui-preview-window-file") else { return }
+        guard let flag = args.firstIndex(of: "--ui-preview-window-file") else { return true }
         let next = args.index(after: flag)
-        guard next < args.endIndex else { return }
+        guard next < args.endIndex else { return true }
         let path = args[next]
-        guard !path.isEmpty else { return }
-        // In video mode the subject is the viewer window; otherwise it is the
-        // hub. `canBecomeMain` skips the MenuBarExtra's own backing windows,
-        // which are titled panels that would otherwise match first.
-        let subject =
-            Self.isUIPreviewVideo
-            ? viewerWindow
-            : NSApp.windows.first {
-                $0.isVisible && $0.canBecomeMain && $0.styleMask.contains(.titled)
-            }
-        guard let subject = subject else { return }
-        try? String(subject.windowNumber).write(
-            toFile: path, atomically: true, encoding: .utf8)
+        guard !path.isEmpty else { return true }
+        // Leave a note of everything on screen beside the id file. The first
+        // version of this picked by `canBecomeMain && .titled` and silently
+        // matched nothing on the plain `--ui-preview` launch while matching
+        // fine on the three seeded ones, and "silently matched nothing" is
+        // not a thing you can debug from a missing file ten minutes later.
+        let windows = NSApp.windows
+        let dump = windows.map {
+            [
+                "n=\($0.windowNumber)", "class=\(type(of: $0))",
+                "visible=\($0.isVisible)", "main=\($0.canBecomeMain)",
+                "titled=\($0.styleMask.contains(.titled))",
+                "frame=\(NSStringFromRect($0.frame))", "title=\($0.title)"
+            ].joined(separator: " ")
+        }.joined(separator: "\n")
+        try? dump.write(toFile: path + ".windows", atomically: true, encoding: .utf8)
+
+        // In video mode the subject is the viewer window. Otherwise take the
+        // biggest thing on screen: the hub is the only large window this app
+        // raises, and the MenuBarExtra's backing panels are small — which is
+        // a property they actually have, unlike the style bits above.
+        let subject: NSWindow?
+        if Self.isUIPreviewVideo {
+            subject = viewerWindow
+        } else {
+            subject = windows
+                .filter { $0.isVisible && $0.frame.width > 200 && $0.frame.height > 200 }
+                .max { $0.frame.width * $0.frame.height < $1.frame.width * $1.frame.height }
+        }
+        guard let subject = subject else { return false }
+        do {
+            try String(subject.windowNumber).write(
+                toFile: path, atomically: true, encoding: .utf8)
+            return true
+        } catch {
+            return false
+        }
     }
 
     func discoverPeers() async {
