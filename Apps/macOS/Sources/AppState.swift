@@ -2946,6 +2946,31 @@ class AppState: ObservableObject {
                 frame, receiveUptimeNs: DispatchTime.now().uptimeNanoseconds)
         }
 
+        // Raise the stats HUD, holding a plausible steady-state session --
+        // the same deterministic-fake convention as the seeded tailnet above,
+        // and the reason `suppressStatsPublishing` exists: a still image
+        // measures as 0 fps with no codec, which would put a dead session in
+        // the screenshot. The sparkline wants history, so give it a minute of
+        // gently varying samples rather than a flat line.
+        renderer.suppressStatsPublishing = true
+        var stats = ViewerStats.empty
+        stats.latencyMs = 18
+        stats.fps = 60
+        stats.droppedPct = 0
+        stats.bitrateBps = 4_100_000
+        stats.codec = .hevc
+        stats.framesPresented = 3600
+        renderer.statsModel.update(stats)
+        for index in 0..<ViewerStatsModel.historyCapacity {
+            let wobble = Double((index * 7) % 5)
+            renderer.statsModel.appendHistory(
+                HistorySample(
+                    latencyMs: 16 + wobble,
+                    bitrateBps: 3_900_000 + wobble * 60_000,
+                    droppedPct: 0))
+        }
+        renderer.statsModel.isVisible = true
+
         // One stroke per tool so the overlay and every shape's geometry are
         // both in the frame. `.click` is deliberately absent: it is an
         // EPHEMERAL annotation and this canvas is photographed seconds after
