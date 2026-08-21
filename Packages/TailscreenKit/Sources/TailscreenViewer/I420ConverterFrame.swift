@@ -22,7 +22,7 @@ extension I420Converter {
         convert(
             Source(
                 yPlane: frame.yPlane, uPlane: frame.uPlane, vPlane: frame.vPlane,
-                width: frame.width, height: frame.height),
+                width: frame.width, height: frame.height, range: frame.colorInfo.range),
             into: destination)
     }
 }

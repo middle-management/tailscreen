@@ -29,6 +29,10 @@ struct ViewerStatsOverlay: View {
             row(L("FEC recovered"), "\(stats.fecRecovered)")
             row(L("Bitrate"), formatBitrate(stats.bitrateBps))
             row(L("Codec"), stats.codec.map(formatCodec) ?? "—")
+            // Standards names ("P3", "BT.2020 · PQ") — unlocalized, like the
+            // codec names above. Absent for a plain BT.709 stream, which tags
+            // nothing, so "—" means "not signalled" rather than "unknown".
+            row(L("Color"), stats.colorLabel ?? "—")
             row(L("Connection"), "Tailscale")
             chartSection
         }

@@ -50,19 +50,30 @@ public struct DecodedVideoFrame: Sendable, Equatable, DecodedFrame {
     public let uPlane: [UInt8]
     /// `⌈width/2⌉ × ⌈height/2⌉` red-difference chroma (V/Cr) samples.
     public let vPlane: [UInt8]
+    /// What the decoder learned about how these samples encode colour.
+    ///
+    /// `range` is the half a renderer MUST honour: a sharer using full-range
+    /// samples (every default macOS share) rendered with limited-range maths
+    /// loses its shadows and highlights. It defaults to
+    /// `.unspecifiedLimited` so a frame built by a caller that predates this
+    /// field — the colour-bars fixture, the sharer's preview path, a test —
+    /// keeps exactly the behaviour it had.
+    public let colorInfo: VideoColorInfo
 
     public init(
         width: Int,
         height: Int,
         yPlane: [UInt8],
         uPlane: [UInt8],
-        vPlane: [UInt8]
+        vPlane: [UInt8],
+        colorInfo: VideoColorInfo = .unspecifiedLimited
     ) {
         self.width = width
         self.height = height
         self.yPlane = yPlane
         self.uPlane = uPlane
         self.vPlane = vPlane
+        self.colorInfo = colorInfo
     }
 }
 

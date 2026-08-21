@@ -110,6 +110,56 @@ final class DecodeTests: XCTestCase {
         XCTAssertEqual(decoded.first?.width, width)
     }
 
+    // MARK: - Colour reporting
+
+    /// A full-range stream must come back saying so.
+    ///
+    /// This is the leg the renderers act on: a full-range frame drawn with
+    /// limited-range maths clips every highlight and crushes every shadow, and
+    /// the macOS sharer captures full-range 8-bit by default — so "what did the
+    /// stream say" has to survive the decoder, not be assumed by the viewer.
+    func testFullRangeIsReportedBack() throws {
+        guard
+            let encoder = TestH264Encoder(
+                width: 64, height: 48, colorRange: AVCOL_RANGE_JPEG,
+                colorPrimaries: AVCOL_PRI_BT709)
+        else { throw XCTSkip("no H.264 encoder in this libavcodec build") }
+        let first = try XCTUnwrap(try roundTrip(encoder).first)
+        // An encoder that dropped the VUI entirely is a build difference, not a
+        // wrapper defect — but reporting LIMITED for a full-range stream is
+        // exactly the defect, so that still fails.
+        try XCTSkipIf(
+            first.colorRange == .unspecified,
+            "this libavcodec/x264 build did not write the VUI range flag")
+        XCTAssertEqual(first.colorRange, .full)
+        XCTAssertEqual(first.colorPrimaries, .bt709)
+        XCTAssertEqual(first.colorTransfer, .bt709)
+    }
+
+    /// The ordinary case: an encoder that says nothing about range must not
+    /// come back claiming full. (Resolving "said nothing" to limited is the
+    /// CONSUMER's job — `FFmpegVideoDecoder.colorInfo` — so that the raw
+    /// answer stays visible here.)
+    func testUnsignalledRangeIsNeverReportedAsFull() throws {
+        guard let encoder = TestH264Encoder(width: 32, height: 32) else {
+            throw XCTSkip("no H.264 encoder in this libavcodec build")
+        }
+        let first = try XCTUnwrap(try roundTrip(encoder).first)
+        XCTAssertNotEqual(first.colorRange, .full)
+    }
+
+    /// Encode a few solid frames and decode them back.
+    private func roundTrip(_ encoder: TestH264Encoder) throws -> [FFmpeg.Frame] {
+        var units: [Data] = []
+        for i in 0..<3 { units.append(contentsOf: encoder.encode(luma: 128, chroma: 128, pts: Int64(i))) }
+        units.append(contentsOf: encoder.flush())
+        let decoder = try FFmpeg.VideoDecoder(codec: .h264)
+        var decoded: [FFmpeg.Frame] = []
+        for au in units { decoded.append(contentsOf: try decoder.decode(annexB: au)) }
+        decoded.append(contentsOf: try decoder.flush())
+        return decoded
+    }
+
     // MARK: - Test-only Annex-B → AVCC (inverse of the wrapper's converter)
 
     /// Split an Annex-B buffer on `00 00 00 01` / `00 00 01` start codes and
@@ -166,12 +216,25 @@ private final class TestH264Encoder {
     private let width: Int32
     private let height: Int32
 
-    init?(width: Int32, height: Int32) {
+    /// `colorRange` / `colorPrimaries`, when given, are written into the
+    /// encoder context so the encoder emits them in the bitstream's VUI —
+    /// which is the only way to test that the decoder reads them back.
+    init?(
+        width: Int32, height: Int32,
+        colorRange: AVColorRange? = nil,
+        colorPrimaries: AVColorPrimaries? = nil
+    ) {
         guard let codec = avcodec_find_encoder(AV_CODEC_ID_H264) else { return nil }
         guard let cctx = avcodec_alloc_context3(codec) else { return nil }
         cctx.pointee.width = width
         cctx.pointee.height = height
         cctx.pointee.pix_fmt = AV_PIX_FMT_YUV420P
+        if let colorRange { cctx.pointee.color_range = colorRange }
+        if let colorPrimaries {
+            cctx.pointee.color_primaries = colorPrimaries
+            cctx.pointee.color_trc = AVCOL_TRC_BT709
+            cctx.pointee.colorspace = AVCOL_SPC_BT709
+        }
         cctx.pointee.time_base = AVRational(num: 1, den: 30)
         cctx.pointee.framerate = AVRational(num: 30, den: 1)
         cctx.pointee.gop_size = 30

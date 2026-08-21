@@ -136,7 +136,8 @@ public struct GtkVideoView: View {
                         frame.vPlane.withUnsafeBufferPointer { vb in
                             cgtkvideo_draw_yuv(
                                 Int32(frame.width), Int32(frame.height),
-                                yb.baseAddress, ub.baseAddress, vb.baseAddress)
+                                yb.baseAddress, ub.baseAddress, vb.baseAddress,
+                                frame.colorInfo.range == .full ? 1 : 0)
                         }
                     }
                 }

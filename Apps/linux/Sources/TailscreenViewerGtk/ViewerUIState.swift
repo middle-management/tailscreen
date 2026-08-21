@@ -7,6 +7,7 @@ import TailscreenL10n
 // Combine is absent). Only the tool enum and the color type are needed here.
 import struct TailscreenProtocol.Annotation
 import enum TailscreenProtocol.AnnotationTool
+import struct TailscreenProtocol.VideoColorInfo
 import enum TailscreenProtocol.ViewerSessionEndReason
 
 /// Observable UI state for the viewer chrome (placards, and later the stats
@@ -81,6 +82,11 @@ public final class ViewerUIState: ObservableObject, @unchecked Sendable {
     @Published public var fps = 0
     @Published public var videoWidth = 0
     @Published public var videoHeight = 0
+    /// The stream's colour encoding as the decoder reported it — e.g.
+    /// `"BT.709 · limited"`. Empty until the first stats window closes, which
+    /// is what the HUD keys off to decide whether to print the line at all:
+    /// a blank colour line reads as "unknown", which is worse than no line.
+    @Published public var videoColorLabel = ""
     /// Whether the stats HUD is shown (toggled from the control bar).
     @Published public var showStats = false
 
@@ -167,16 +173,19 @@ public final class ViewerUIState: ObservableObject, @unchecked Sendable {
             self.fps = 0
             self.videoWidth = 0
             self.videoHeight = 0
+            self.videoColorLabel = ""
             self.activeTool = nil
         }
     }
 
-    /// Publish the latest fps + resolution on the main thread.
-    public func post(fps newFps: Int, width: Int, height: Int) {
+    /// Publish the latest fps + resolution + colour encoding on the main thread.
+    public func post(fps newFps: Int, width: Int, height: Int, color: VideoColorInfo) {
+        let label = color.shortLabel
         DispatchQueue.main.async {
             self.fps = newFps
             self.videoWidth = width
             self.videoHeight = height
+            self.videoColorLabel = label
         }
     }
 

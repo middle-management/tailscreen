@@ -1,6 +1,8 @@
 import XCTest
 
 import enum TailscreenProtocol.I420Converter
+import struct TailscreenProtocol.VideoColorInfo
+import enum TailscreenProtocol.VideoColorRange
 
 @testable import TailscreenViewer
 
@@ -30,8 +32,14 @@ final class ColorBarsConversionTests: XCTestCase {
         var description: String { "rgb(\(r),\(g),\(b))" }
     }
 
-    private func converted() -> (pixels: [UInt8], width: Int, height: Int) {
-        let frame = makeColorBarsFrame()
+    private func converted(
+        range: VideoColorRange = .limited
+    ) -> (pixels: [UInt8], width: Int, height: Int) {
+        let bars = makeColorBarsFrame()
+        let frame = DecodedVideoFrame(
+            width: bars.width, height: bars.height,
+            yPlane: bars.yPlane, uPlane: bars.uPlane, vPlane: bars.vPlane,
+            colorInfo: VideoColorInfo(range: range))
         var out = [UInt8](repeating: 0, count: frame.width * frame.height * 4)
         let ok = out.withUnsafeMutableBufferPointer { buffer -> Bool in
             guard let base = buffer.baseAddress else { return false }
@@ -63,6 +71,32 @@ final class ColorBarsConversionTests: XCTestCase {
                 RGB(r: 255, g: 63, b: 130),  // Y=128, V=255: mid-luma max chroma, NOT red
                 RGB(r: 130, g: 103, b: 255)  // Y=128, U=255: mid-luma max chroma, NOT blue
             ])
+    }
+
+    /// The same planes read as FULL range, which is what a macOS sharer sends
+    /// by default: no 16..235 expansion, so the bars land on their raw sample
+    /// values instead. White is the load-bearing one — 235 stays 235 rather
+    /// than being stretched to 255 — because it is the direction that shipped
+    /// wrong: a full-range stream through limited-range maths clips everything
+    /// above 235 to white and crushes everything below 16 to black.
+    func testFullRangeSkipsTheLimitedRangeExpansion() {
+        let (pixels, width, height) = converted(range: .full)
+        let barWidth = width / 4
+        let sampled = (0..<4).map {
+            pixel(pixels, width: width, x: $0 * barWidth + barWidth / 2, y: height / 2)
+        }
+        XCTAssertEqual(
+            sampled,
+            [
+                RGB(r: 235, g: 235, b: 235),  // Y=235 is 235, NOT stretched to white
+                RGB(r: 16, g: 16, b: 16),  // Y=16 is 16, NOT crushed to black
+                RGB(r: 255, g: 69, b: 128),
+                RGB(r: 128, g: 104, b: 255)
+            ])
+        // And the two readings genuinely differ — a range parameter that was
+        // accepted and ignored would pass every assertion above by accident.
+        let (limitedPixels, _, _) = converted(range: .limited)
+        XCTAssertNotEqual(pixels, limitedPixels)
     }
 
     func testEachBarIsFlatAllTheWayAcrossAndDown() {

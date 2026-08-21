@@ -1,4 +1,5 @@
 import Foundation
+import TailscreenProtocol
 
 /// The `VideoSink` a CPU-blit renderer wants: park the latest decoded frame in
 /// a `FrameStore` for the host's view to draw, poke the host so it redraws, and
@@ -27,7 +28,7 @@ public final class FrameStoreVideoSink: VideoSink, @unchecked Sendable {
     private let store: FrameStore
     private let onFirstFrame: (@Sendable () -> Void)?
     private let onFrame: (@Sendable () -> Void)?
-    private let onStats: (@Sendable (_ width: Int, _ height: Int, _ fps: Int) -> Void)?
+    private let onStats: (@Sendable (_ width: Int, _ height: Int, _ fps: Int, _ color: VideoColorInfo) -> Void)?
     private let clock: @Sendable () -> UInt64
 
     /// Touched only from `present`, which the session drives serially — the
@@ -44,13 +45,18 @@ public final class FrameStoreVideoSink: VideoSink, @unchecked Sendable {
     ///     backend whose store already wakes its renderer (the GTK shim does
     ///     this itself, inside `FrameStore.set`).
     ///   - onStats: fired only when an fps window closes, roughly once a
-    ///     second. That is what keeps stats off the per-frame path.
+    ///     second. That is what keeps stats off the per-frame path. `color` is
+    ///     the closing frame's reported colour encoding — the one stat a viewer
+    ///     cannot infer by looking, and the one that explains a picture that
+    ///     looks washed out or crushed.
     ///   - clock: injected so the fps windowing is testable without sleeping.
     public init(
         store: FrameStore,
         onFirstFrame: (@Sendable () -> Void)? = nil,
         onFrame: (@Sendable () -> Void)? = nil,
-        onStats: (@Sendable (_ width: Int, _ height: Int, _ fps: Int) -> Void)? = nil,
+        onStats:
+            (@Sendable (_ width: Int, _ height: Int, _ fps: Int, _ color: VideoColorInfo) -> Void)? =
+            nil,
         clock: @escaping @Sendable () -> UInt64 = { DispatchTime.now().uptimeNanoseconds }
     ) {
         self.store = store
@@ -83,7 +89,7 @@ public final class FrameStoreVideoSink: VideoSink, @unchecked Sendable {
         }
         onFrame?()
         if let fps = frameRate.record(nowNs: clock()) {
-            onStats?(frame.width, frame.height, fps)
+            onStats?(frame.width, frame.height, fps, frame.colorInfo)
         }
     }
 }

@@ -252,20 +252,42 @@ public struct StatsHUD: View {
     let width: Int
     let height: Int
     let fps: Int
+    /// The stream's colour encoding, already formatted (`VideoColorInfo`'s
+    /// `shortLabel` — "BT.709 · limited"). Empty prints no line at all: the
+    /// value is only known once a frame has been decoded, and an empty colour
+    /// line reads as "this stream has no colour information" rather than "not
+    /// measured yet".
+    let colorLabel: String
 
-    public init(width: Int, height: Int, fps: Int) {
+    public init(width: Int, height: Int, fps: Int, colorLabel: String = "") {
         self.width = width
         self.height = height
         self.fps = fps
+        self.colorLabel = colorLabel
     }
 
     public var body: some View {
-        Text(L("\(width)×\(height) · \(fps) fps"))
-            .font(.caption)
-            .foregroundColor(.white)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(RoundedRectangle(cornerRadius: 6).fill(Color(white: 0, opacity: 0.55)))
+        // The text modifiers sit on each `Text` rather than on the stack:
+        // `.padding`/`.background` are applied to containers elsewhere in this
+        // file, `.font`/`.foregroundColor` never are.
+        VStack(alignment: .leading, spacing: 2) {
+            Text(L("\(width)×\(height) · \(fps) fps"))
+                .font(.caption)
+                .foregroundColor(.white)
+            if !colorLabel.isEmpty {
+                // Standards names ("BT.709", "limited") — deliberately NOT
+                // through `L(_:)`, the same unlocalized class as the codec
+                // names: a catalog key nobody could translate usefully, and
+                // `LocalizationCatalogTests` scans for `L("…")` literals, which
+                // a runtime-built string could never satisfy anyway.
+                Text(colorLabel)
+                    .font(.caption)
+                    .foregroundColor(.white)
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color(white: 0, opacity: 0.55)))
     }
 }
 

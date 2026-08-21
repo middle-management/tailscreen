@@ -56,9 +56,16 @@ int32_t winvideo_bind_source(void *surface_image_source_unknown,
 //
 // Returns 1 if a frame was presented, 0 otherwise (no binding, device lost — see
 // `winvideo_device_lost`).
+//
+// `full_range` selects the sample range: 0 for limited (16..235 luma), 1 for
+// full (0..255). Pass what the DECODER reported for this frame — a fixed guess
+// is wrong for half the sharers (macOS captures full-range 8-bit; the X11,
+// portal and WGC backends produce limited), and wrong here means crushed
+// shadows or washed-out blacks on every frame. 0 is the codec-mandated default
+// when a stream says nothing.
 int32_t winvideo_draw_yuv(int32_t width, int32_t height,
                           const uint8_t *y, const uint8_t *u, const uint8_t *v,
-                          const uint8_t *overlay_bgra);
+                          const uint8_t *overlay_bgra, int32_t full_range);
 
 // True (1) if the last draw failed because the D3D device was removed or reset.
 // The caller's recovery is `winvideo_reset()` then `winvideo_init()` +

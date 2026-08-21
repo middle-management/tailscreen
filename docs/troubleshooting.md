@@ -191,6 +191,25 @@ quality.
 construction. Check Console.app for Metal or VideoToolbox errors. Restart
 both apps as a first move.
 
+## Colours look washed out, or shadows look crushed
+
+Open the viewer's stats overlay (macOS: **Stats** in the viewer toolbar;
+Linux and Windows: the **Stats** button) and read the colour line. It shows
+what the sender said about the stream — for example `BT.709 · limited` or
+`P3 · full`.
+
+The two ranges use the 0–255 byte differently: *limited* puts black at 16
+and white at 235, *full* uses the whole byte. Decoding one as the other is
+what greys out blacks or clips highlights. The viewers pick their maths from
+what the stream says, so a mismatch here means the sender is mislabelling
+its video rather than that the viewer guessed wrong — worth a bug report,
+with the colour line and both platforms named.
+
+The macOS viewer's line shows the colour primaries only (`P3`, `BT.2020 ·
+PQ`, or `—` for a plain BT.709 stream that tags nothing). It shows no range
+because its decoder hands the renderer RGB, by which point the stream's
+range no longer exists to report.
+
 ## The app is in English even though my system isn't
 
 Tailscreen ships English and Swedish today; anything else falls back to

@@ -194,4 +194,35 @@ extension ColorInfo {
         }
         return CGColorSpace.sRGB
     }
+
+    /// A short technical label for the stats overlay, built from the same two
+    /// attachments the renderer already reads off each decoded buffer:
+    /// `"P3 · PQ"`, `"BT.709"`, or nil when the buffer says nothing.
+    ///
+    /// Deliberately says nothing about RANGE. The mac decoder asks VideoToolbox
+    /// for 32BGRA output, so by the time a buffer reaches the renderer it is
+    /// RGB and its YCbCr range is a property of a bitstream that no longer
+    /// exists — printing a range here would mean inventing one. The portable
+    /// viewers, whose decoder hands back the YUV planes it actually decoded,
+    /// report range from libavcodec instead. Pure and CI-tested.
+    static func statsLabel(primaries: String?, transfer: String?) -> String? {
+        var parts: [String] = []
+        if let primaries {
+            if primaries == (kCVImageBufferColorPrimaries_P3_D65 as String) {
+                parts.append("P3")
+            } else if primaries == (kCVImageBufferColorPrimaries_ITU_R_2020 as String) {
+                parts.append("BT.2020")
+            } else if primaries == (kCVImageBufferColorPrimaries_ITU_R_709_2 as String) {
+                parts.append("BT.709")
+            }
+        }
+        if let transfer {
+            if transfer == (kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ as String) {
+                parts.append("PQ")
+            } else if transfer == (kCVImageBufferTransferFunction_ITU_R_2100_HLG as String) {
+                parts.append("HLG")
+            }
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
 }

@@ -1171,7 +1171,9 @@ struct ViewerApp: App {
                     if ui.showStats {
                         VStack {
                             HStack {
-                                StatsHUD(width: ui.videoWidth, height: ui.videoHeight, fps: ui.fps)
+                                StatsHUD(
+                                    width: ui.videoWidth, height: ui.videoHeight, fps: ui.fps,
+                                    colorLabel: ui.videoColorLabel)
                                 Spacer()
                             }
                             Spacer()
