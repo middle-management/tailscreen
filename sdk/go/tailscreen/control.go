@@ -79,7 +79,7 @@ const (
 // rejected (TS-CAP-002), which is what lets a future revision add one.
 type Caps uint8
 
-// The assigned capability bits. Bits 5-7 are reserved and must be sent as
+// The assigned capability bits. Bits 6-7 are reserved and must be sent as
 // zero (TS-CAP-001).
 const (
 	// CapNACK: the peer implements selective retransmission (spec §9.1).
@@ -99,6 +99,13 @@ const (
 	// relays viewer annotations. A viewer must not accept annotation input
 	// without it (TS-CAP-008), or it draws strokes that reach nobody.
 	CapAnnotations Caps = 1 << 4
+	// CapTenBit is advertised by a VIEWER only: this viewer can decode a
+	// 10-bit bitstream (HEVC Main 10). A sharer encodes once for every
+	// viewer, so it must not send 10-bit on a share where any admitted viewer
+	// omitted this bit (TS-CAP-012) — including a legacy viewer whose
+	// capability-less HELLO says nothing, which TS-CAP-006 requires be read
+	// as no capabilities rather than as unknown.
+	CapTenBit Caps = 1 << 5
 )
 
 // Has reports whether every bit in want is set.

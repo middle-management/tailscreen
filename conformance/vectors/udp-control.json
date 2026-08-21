@@ -514,6 +514,19 @@
       }
     },
     {
+      "id": "hello/encode-nack-rr-fec-tenbit",
+      "requirements": [
+        "TS-CAP-011"
+      ],
+      "op": "hello.encode",
+      "in": {
+        "caps": 39
+      },
+      "out": {
+        "bytes": "0027"
+      }
+    },
+    {
       "id": "hello/decode-legacy-one-byte",
       "requirements": [
         "TS-CAP-006"
@@ -540,16 +553,29 @@
       }
     },
     {
+      "id": "hello/decode-ten-bit",
+      "requirements": [
+        "TS-CAP-011"
+      ],
+      "op": "hello.decodeCaps",
+      "in": {
+        "bytes": "0027"
+      },
+      "out": {
+        "caps": 39
+      }
+    },
+    {
       "id": "hello/decode-reserved-bits-preserved",
       "requirements": [
         "TS-CAP-002"
       ],
       "op": "hello.decodeCaps",
       "in": {
-        "bytes": "00e1"
+        "bytes": "00c1"
       },
       "out": {
-        "caps": 225
+        "caps": 193
       }
     },
     {

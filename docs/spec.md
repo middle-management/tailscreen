@@ -261,7 +261,10 @@ fixed or variable payload; the rest are exactly one byte long.
   profile or bit depth MUST send `PROFILE_NO` rather than `CODEC_NO`.
 - **TS-CTL-035**: On receiving `PROFILE_NO` while encoding 10-bit HEVC, a
   sharer MUST latch the share to 8-bit and MUST emit a keyframe at the
-  switch. It MUST NOT drop to H.264 for `PROFILE_NO` alone.
+  switch. It MUST NOT drop to H.264 for `PROFILE_NO` alone. `PROFILE_NO`
+  remains the after-the-fact recovery for a decoder that surprises its own
+  viewer; the `tenBit` capability ([§5.3](#53-bit-depth)) is how a sharer
+  avoids sending an undecodable depth in the first place.
 - **TS-CTL-036**: A sharer MUST NOT interpret `CODEC_NO` or `PROFILE_NO`
   from an unadmitted peer.
 
@@ -284,13 +287,16 @@ Both directions use a single `UInt8` bit field.
 | 2 | `0x04` | `fec` | both | Peer implements XOR parity ([§9.3](#93-fec-xor-parity)). |
 | 3 | `0x08` | `remoteControl` | sharer only | This sharer can inject viewer input ([§12](#12-remote-control)). |
 | 4 | `0x10` | `annotations` | sharer only | This sharer renders and relays viewer annotations ([§11](#11-annotations)). |
-| 5–7 | `0xE0` | — | — | Reserved. |
+| 5 | `0x20` | `tenBit` | viewer only | This viewer can decode a 10-bit bitstream ([§5.3](#53-bit-depth)). |
+| 6–7 | `0xC0` | — | — | Reserved. |
 
 - **TS-CAP-001**: A sender MUST set reserved capability bits to zero.
 - **TS-CAP-002**: A receiver MUST ignore capability bits it does not
   understand, and MUST NOT reject the message that carried them.
 - **TS-CAP-003**: A viewer MUST NOT set bits 3 or 4 in its `HELLO`, and a
-  sharer MUST ignore those bits if a viewer sets them.
+  sharer MUST ignore those bits if a viewer sets them. A sharer MUST NOT set
+  bit 5 in its `HELLO_ACK`, and a viewer MUST ignore that bit if a sharer sets
+  it.
 
 ### 5.2 Extended HELLO and HELLO_ACK
 
@@ -333,7 +339,25 @@ extended six-byte form:
   capability; a runtime refusal is signalled with `controlRevoked`
   ([§12](#12-remote-control)) instead.
 
-### 5.3 Growing the capability field
+### 5.3 Bit depth
+
+A sharer encodes once and fans the same packets out to every viewer, so bit
+depth is a property of the share rather than of a link. `tenBit` is what lets
+a sharer choose it before encoding instead of discovering it from a viewer
+that cannot decode what it is already receiving.
+
+- **TS-CAP-011**: A viewer MUST advertise `tenBit` if and only if it can
+  decode a 10-bit bitstream. A viewer that cannot MUST leave the bit clear
+  rather than advertising it and relying on `PROFILE_NO`
+  ([§4.3](#43-keyframe-requests-and-codec-fallback)) to recover.
+- **TS-CAP-012**: A sharer MUST NOT encode video at a bit depth greater than
+  8 while any admitted viewer has not advertised `tenBit`. A sharer already
+  encoding 10-bit when such a viewer is admitted MUST latch the share to 8-bit
+  and MUST emit a keyframe at the switch, exactly as for `PROFILE_NO`
+  (TS-CTL-035). Under TS-CAP-006 a capability-less `HELLO` advertises nothing,
+  so a legacy viewer holds the share at 8-bit.
+
+### 5.4 Growing the capability field
 
 - **TS-CAP-010**: A future revision that needs more than eight capability
   bits MUST reserve bit 7 as an "extended capabilities follow" flag and
@@ -1160,7 +1184,8 @@ Every value Tailscreen puts on a socket. Values are permanent (TS-EXT-003).
 | 2 | `fec` | both |
 | 3 | `remoteControl` | sharer |
 | 4 | `annotations` | sharer |
-| 5–7 | unassigned | — |
+| 5 | `tenBit` | viewer |
+| 6–7 | unassigned | — |
 
 ### A.4 RTP payload types
 

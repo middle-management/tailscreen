@@ -863,6 +863,26 @@ final class LossRecoveryWireTests: XCTestCase {
         XCTAssertEqual(ScreenShareControlMessage.decodeHelloCaps(Data([0x00])), [])
     }
 
+    func testTenBitCapRidesTheSameHelloByte() {
+        // `.tenBit` (bit 5) is a VIEWER capability — "I can decode 10-bit" —
+        // carried by the extended HELLO that already exists, so a sharer
+        // learns it in the handshake instead of after a failed frame.
+        XCTAssertEqual(ScreenShareCaps.tenBit.rawValue, 1 << 5)
+        let caps: ScreenShareCaps = [.nack, .receiverReport, .fec, .tenBit]
+        let hello = ScreenShareControlMessage.encodeHello(caps: caps)
+        XCTAssertEqual(hello, Data([0x00, 0x27]))
+        XCTAssertEqual(ScreenShareControlMessage.decodeHelloCaps(hello), caps)
+        XCTAssertTrue(ScreenShareControlMessage.decodeHelloCaps(hello).contains(.tenBit))
+        // A pre-`.tenBit` viewer's HELLO is unchanged on the wire and reads as
+        // "no 10-bit" — the whole back-compat story in two assertions.
+        let legacy = ScreenShareControlMessage.encodeHello(caps: [.nack, .receiverReport, .fec])
+        XCTAssertEqual(legacy, Data([0x00, 0x07]))
+        XCTAssertFalse(ScreenShareControlMessage.decodeHelloCaps(legacy).contains(.tenBit))
+        // And an old SHARER, which knows nothing of bit 5, still parses the
+        // caps it does understand out of a `.tenBit` viewer's HELLO.
+        XCTAssertTrue(ScreenShareControlMessage.decodeHelloCaps(hello).contains(.fec))
+    }
+
     // MARK: - FEC (0x0D) wire codec + extended receiver report
 
     func testFECControlByteIsDistinctAndInControlRange() {

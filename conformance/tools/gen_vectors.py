@@ -327,6 +327,13 @@ def suite_udp_control():
             {"bytes": "0007"},
         ),
         case(
+            "hello/encode-nack-rr-fec-tenbit",
+            ["TS-CAP-011"],
+            "hello.encode",
+            {"caps": 0x27},
+            {"bytes": "0027"},
+        ),
+        case(
             "hello/decode-legacy-one-byte",
             ["TS-CAP-006"],
             "hello.decodeCaps",
@@ -341,11 +348,20 @@ def suite_udp_control():
             {"caps": 3},
         ),
         case(
+            "hello/decode-ten-bit",
+            ["TS-CAP-011"],
+            "hello.decodeCaps",
+            {"bytes": "0027"},
+            {"caps": 0x27},
+        ),
+        case(
+            # Bits 6-7 only: bit 5 became `tenBit`, so a vector claiming to
+            # cover reserved bits must stop asserting about it.
             "hello/decode-reserved-bits-preserved",
             ["TS-CAP-002"],
             "hello.decodeCaps",
-            {"bytes": "00e1"},
-            {"caps": 0xE1},
+            {"bytes": "00c1"},
+            {"caps": 0xC1},
         ),
         case(
             "hello/decode-wrong-first-byte",

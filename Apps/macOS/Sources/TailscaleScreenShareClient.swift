@@ -562,7 +562,15 @@ final class TailscaleScreenShareClient: @unchecked Sendable {
         }
         let sink = MetalSinkAdapter(renderer: renderer)
         let session = ViewerSession(
-            caps: [.nack, .receiverReport, .fec],
+            // `.tenBit`: VideoToolbox decodes HEVC Main 10 on every Mac that
+            // can run this app (the 15.2 deployment floor rules out the
+            // pre-Main10 Intel hardware `PROFILE_NO` was written for), and the
+            // decoder asks for 32BGRA output, so a 10-bit stream is
+            // down-converted for the renderer rather than refused. Advertising
+            // it is what lets a mac-to-mac share actually use the sharer's
+            // Settings → Color opt-in — the sharer drops any share to 8-bit
+            // the moment a viewer without this bit joins.
+            caps: [.nack, .receiverReport, .fec, .tenBit],
             decoder: adapter,
             videoSink: sink,
             audioSink: nil,

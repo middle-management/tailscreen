@@ -316,7 +316,19 @@ class AppState: ObservableObject {
             ColorCaptureDefaults.hdrEnvKey: enableHDRCapture ? "1" : "0"
         ]
         HelperScreenCapture.colorEnvironment.withLock { $0 = overlay }
+        // The server polices the viewer-side `.tenBit` capability off the same
+        // choice: without this it would keep enforcing (or keep ignoring) the
+        // depth the share had when it started. Live rather than spawn-time
+        // because turning 10-bit ON while an incapable viewer watches must
+        // latch the share to 8-bit before the next spawn reads the env above.
+        server?.setTenBitCaptureRequested(wantsTenBitCapture)
     }
+
+    /// Whether the capture path is configured to produce 10-bit video: either
+    /// color toggle does it, since HDR (BT.2020 PQ) implies Main 10 in the
+    /// helper. Both are still gated there on the display actually being
+    /// capable — this is the request, not the outcome.
+    private var wantsTenBitCapture: Bool { enable10BitCapture || enableHDRCapture }
 
     // MARK: - Global hotkey chords
 
@@ -1574,6 +1586,12 @@ class AppState: ObservableObject {
                 // (re)spawns so the latch is in place when it comes up.
                 isSystemAudioOn = shareSystemAudioByDefault
                 srv.setShareSystemAudio(shareSystemAudioByDefault)
+                // Settings → Color, the other half of the color opt-in: the
+                // env overlay tells the HELPER what to capture, this tells the
+                // SERVER whether to police viewers' `.tenBit` capability.
+                // Before `start()` for the same reason as the gates above — a
+                // viewer that can't decode 10-bit may HELLO during bring-up.
+                srv.setTenBitCaptureRequested(wantsTenBitCapture)
                 // Carry over any request-to-share pre-approvals so an
                 // accepted requester's HELLO auto-admits on this fresh server.
                 //

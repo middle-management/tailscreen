@@ -645,6 +645,18 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     /// the extra two bits. Locked for the same reason as `forceH264`.
     private let force8bit = Mutex<Bool>(false)
 
+    /// Whether the host asked for the 10-bit capture path at all (macOS
+    /// Settings → Color; every other sharer leaves it false). Set through
+    /// `setTenBitCaptureRequested`, the same latch-and-re-push discipline as
+    /// `shareSystemAudio`.
+    ///
+    /// Load-bearing for the capability gate below, not just bookkeeping: the
+    /// gate must not respawn the helper for a viewer that can't decode 10-bit
+    /// when the share was never going to send 10-bit in the first place. An
+    /// 8-bit share is the overwhelmingly common case and every libavcodec
+    /// viewer joining one would otherwise cost everybody a capture restart.
+    private let tenBitRequested = Mutex<Bool>(false)
+
     /// Whether the sharer is sharing system/computer audio to viewers. Gates
     /// *emission* in the helper (the audio SCStream output is always configured
     /// when the share starts with audio available). Locked: written from the
@@ -2099,24 +2111,78 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     }
 
     /// A viewer reported it can decode the codec but not its bit depth (a
-    /// 10-bit HEVC Main 10 stream on 8-bit-only decode hardware). Latch the
-    /// share to 8-bit and respawn the helper so the encoder drops to Main.
-    /// Idempotent via the `force8bit` latch, exactly like
-    /// `handleCodecUnsupported`: a storm of PROFILE_NO from a still-stuck
-    /// viewer triggers at most one restart. If we're already encoding 8-bit
-    /// the latch short-circuits the pointless respawn.
+    /// 10-bit HEVC Main 10 stream on 8-bit-only decode hardware). The
+    /// after-the-fact half of the bit-depth story: `.tenBit` in the viewer's
+    /// HELLO is what normally keeps us off a depth it can't take, and this
+    /// catches a decoder that surprises its own viewer instead.
     private func handleProfileUnsupported(from addr: String) {
         guard isRunning else { return }
+        latchEightBit(reason: "viewer \(addr) can't decode the current bit depth (PROFILE_NO)")
+    }
+
+    /// Latch the share to 8-bit and respawn the helper so the encoder drops to
+    /// Main. Idempotent: the first caller wins and everyone after it is a
+    /// no-op, so a PROFILE_NO storm from a still-stuck viewer — or a burst of
+    /// viewers joining without `.tenBit` — costs at most one restart.
+    private func latchEightBit(reason: String) {
         let shouldFallback = force8bit.withLock { flag -> Bool in
             if flag { return false }
             flag = true
             return true
         }
         guard shouldFallback else { return }
-        logger.log("Viewer \(addr) can't decode the current bit depth — falling back to 8-bit")
+        logger.log("Falling back to 8-bit — \(reason)")
         Task { [weak self] in
             try? await self?.restartCapture()
         }
+    }
+
+    /// Pure: must a share that wants 10-bit drop to 8-bit for this set of
+    /// admitted viewers? True when the host asked for 10-bit, we haven't
+    /// already latched down, and at least one admitted viewer did not
+    /// advertise `.tenBit`.
+    ///
+    /// The three guards are each load-bearing. `tenBitRequested` keeps an
+    /// ordinary 8-bit share from restarting capture for a viewer whose
+    /// capability was never going to matter. `alreadyEightBit` makes the
+    /// decision idempotent so a second incapable viewer costs nothing. And an
+    /// EMPTY viewer list is not a downgrade: a share starts before anyone
+    /// connects, and treating "nobody yet" as "somebody can't" would pin every
+    /// share to 8-bit forever, since the latch never lifts.
+    ///
+    /// Absence of the bit is read as "can't decode 10-bit", never as unknown
+    /// (TS-CAP-006): a legacy viewer sends a capability-less HELLO and has no
+    /// way to say otherwise, and guessing generously there is precisely the
+    /// blank screen this gate exists to prevent.
+    public static func tenBitDowngradeNeeded(
+        tenBitRequested: Bool,
+        alreadyEightBit: Bool,
+        viewerCaps: [ScreenShareCaps]
+    ) -> Bool {
+        guard tenBitRequested, !alreadyEightBit, !viewerCaps.isEmpty else { return false }
+        return viewerCaps.contains { !$0.contains(.tenBit) }
+    }
+
+    /// Apply `tenBitDowngradeNeeded` to the live admitted set. Called when a
+    /// viewer joins and when the host turns the 10-bit setting on; the helper
+    /// picks the resulting latch up through `TAILSCREEN_FORCE_8BIT` on the
+    /// respawn `latchEightBit` schedules.
+    private func enforceBitDepthCapability(trigger: String) {
+        guard isRunning else { return }
+        let addrs = viewers.withLock { Array($0.keys) }
+        // Admitted viewers only: a pending viewer has its caps recorded at
+        // HELLO but receives no video until it is approved, and restarting
+        // capture for someone the sharer may yet decline would spend a
+        // visible interruption on a non-viewer.
+        let capsByAddr = viewerCaps.withLock { $0 }
+        let caps = addrs.map { capsByAddr[$0] ?? [] }
+        guard
+            Self.tenBitDowngradeNeeded(
+                tenBitRequested: tenBitRequested.withLock { $0 },
+                alreadyEightBit: force8bit.withLock { $0 },
+                viewerCaps: caps)
+        else { return }
+        latchEightBit(reason: "a viewer without 10-bit decode is watching (\(trigger))")
     }
 
     /// Enqueue one audio packet onto each recipient's own send chain. Recipient
@@ -2459,6 +2525,12 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
         if cachedName == nil || cachedStableID == nil {
             scheduleIdentityResolve()
         }
+        // One choke point for "a viewer entered the admitted set" (both the
+        // open-door path and `approveViewer` land here), which is exactly when
+        // a 10-bit share has to find out whether its newest audience can
+        // decode 10-bit. Their caps were recorded at HELLO, before either
+        // caller promoted them, so the lookup is already populated.
+        enforceBitDepthCapability(trigger: "viewer \(addr) joined")
     }
 
     /// Move a pending viewer into the active set: emit the HELLO_ACK
@@ -3541,6 +3613,22 @@ public final class TailscaleScreenShareServer: @unchecked Sendable {
     public func setShareSystemAudio(_ on: Bool) {
         shareSystemAudio.withLock { $0 = on }
         helperCapture?.setAudioEnabled(on)
+    }
+
+    /// Tell the server whether the host's capture path is configured to
+    /// produce 10-bit video (macOS Settings → Color's 10-bit or HDR toggle).
+    /// The host owns the setting and pushes it here; the server only needs to
+    /// know whether the `.tenBit` viewer capability is worth enforcing.
+    ///
+    /// Safe to call before or during a share. Turning it ON mid-share
+    /// re-evaluates the admitted viewers immediately, so enabling 10-bit while
+    /// a viewer that can't decode it is already watching latches to 8-bit now
+    /// rather than at the next join — the helper reads the latch on its next
+    /// spawn either way, which is when the setting itself takes effect.
+    public func setTenBitCaptureRequested(_ requested: Bool) {
+        tenBitRequested.withLock { $0 = requested }
+        guard requested else { return }
+        enforceBitDepthCapability(trigger: "capture setting")
     }
 
     /// Packetize one helper-produced system-audio AU as RTP (PT 99, reserved
