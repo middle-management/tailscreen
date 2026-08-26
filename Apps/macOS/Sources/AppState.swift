@@ -3011,11 +3011,11 @@ class AppState: ObservableObject {
         //
         // All of it stays clear of the stats HUD, which occupies roughly the
         // left 19% of the frame down to mid-height.
-        seed(.oval, [CGPoint(x: 0.215, y: 0.205), CGPoint(x: 0.470, y: 0.350)], 4)
-        seed(.arrow, [CGPoint(x: 0.630, y: 0.410), CGPoint(x: 0.487, y: 0.295)], 2)
-        seed(.pen, [CGPoint(x: 0.232, y: 0.500), CGPoint(x: 0.310, y: 0.532), CGPoint(x: 0.392, y: 0.494)], 0)
-        seed(.line, [CGPoint(x: 0.600, y: 0.600), CGPoint(x: 0.820, y: 0.452)], 1)
-        seed(.rectangle, [CGPoint(x: 0.098, y: 0.760), CGPoint(x: 0.552, y: 0.828)], 3)
+        seed(.oval, [CGPoint(x: 0.218, y: 0.200), CGPoint(x: 0.600, y: 0.318)], 4)
+        seed(.arrow, [CGPoint(x: 0.790, y: 0.430), CGPoint(x: 0.615, y: 0.318)], 2)
+        seed(.line, [CGPoint(x: 0.250, y: 0.438), CGPoint(x: 0.670, y: 0.438)], 1)
+        seed(.pen, [CGPoint(x: 0.232, y: 0.530), CGPoint(x: 0.430, y: 0.548), CGPoint(x: 0.635, y: 0.526)], 0)
+        seed(.rectangle, [CGPoint(x: 0.095, y: 0.730), CGPoint(x: 0.520, y: 0.766)], 3)
     }
 
     /// A 16:9 stand-in for decoded video: a dark editor over a terminal,
@@ -3096,27 +3096,30 @@ class AppState: ObservableObject {
 
         box(0, 0, 1, 1, 0x14_161E)
         box(0.18, 0.02, 0.79, 0.055, 0x1C_1F2A)
-        box(0.19, 0.025, 0.11, 0.047, 0x26_2A38, rounded: true)
-        box(0.315, 0.025, 0.085, 0.047, 0x1A_1D26, rounded: true)
-        box(0.415, 0.025, 0.07, 0.047, 0x1A_1D26, rounded: true)
+        box(0.19, 0.025, 0.115, 0.047, 0x2E_3345, rounded: true)
+        box(0.205, 0.042, 0.060, 0.011, ident, 0.75, rounded: true)
+        box(0.320, 0.025, 0.090, 0.047, 0x1A_1D26, rounded: true)
+        box(0.334, 0.042, 0.048, 0.011, ident, 0.30, rounded: true)
+        box(0.425, 0.025, 0.075, 0.047, 0x1A_1D26, rounded: true)
+        box(0.437, 0.042, 0.040, 0.011, ident, 0.30, rounded: true)
 
         // (indent, [(segment width, colour)]) -- laid out left to right with a
         // fixed gap, so the shapes read as words without being any.
         let code: [(Double, [(Double, UInt32)])] = [
-            (0.000, [(0.150, comment)]),
-            (0.000, [(0.045, keyword), (0.080, ident), (0.018, ident)]),
-            (0.028, [(0.035, keyword), (0.105, ident)]),
-            (0.028, [(0.058, ident), (0.026, ident), (0.095, string)]),
-            (0.056, [(0.040, keyword), (0.070, type), (0.026, number)]),
-            (0.056, [(0.090, ident), (0.048, string)]),
-            (0.028, [(0.020, ident)]),
-            (0.000, [(0.125, comment)]),
-            (0.000, [(0.050, keyword), (0.090, ident), (0.018, ident)]),
-            (0.028, [(0.072, ident), (0.028, ident), (0.058, type)]),
-            (0.056, [(0.045, keyword), (0.115, string)]),
-            (0.056, [(0.085, ident), (0.038, number)]),
-            (0.028, [(0.020, ident)]),
-            (0.000, [(0.062, keyword), (0.100, ident)])
+            (0.000, [(0.260, comment)]),
+            (0.000, [(0.075, keyword), (0.190, ident), (0.045, ident), (0.115, type)]),
+            (0.028, [(0.055, keyword), (0.210, ident), (0.080, number)]),
+            (0.028, [(0.110, ident), (0.040, ident), (0.235, string)]),
+            (0.056, [(0.065, keyword), (0.145, type), (0.040, number), (0.100, ident)]),
+            (0.056, [(0.175, ident), (0.120, string), (0.065, ident)]),
+            (0.028, [(0.030, ident)]),
+            (0.000, [(0.215, comment)]),
+            (0.000, [(0.080, keyword), (0.195, ident), (0.045, ident), (0.135, type)]),
+            (0.028, [(0.145, ident), (0.045, ident), (0.120, type), (0.070, number)]),
+            (0.056, [(0.070, keyword), (0.250, string)]),
+            (0.056, [(0.170, ident), (0.060, number), (0.095, ident)]),
+            (0.028, [(0.030, ident)]),
+            (0.000, [(0.095, keyword), (0.225, ident), (0.055, ident)])
         ]
         for (index, line) in code.enumerated() {
             let y = 0.105 + Double(index) * 0.036
@@ -3140,18 +3143,19 @@ class AppState: ObservableObject {
 
         // Terminal, split off the bottom. Below the HUD, so it may use the
         // full width the editor above it cannot.
-        box(0.06, 0.695, 0.89, 0.25, 0x0D_0F15)
-        box(0.06, 0.695, 0.89, 0.035, 0x17_1A23)
-        box(0.072, 0.706, 0.055, 0.013, ident, 0.45, rounded: true)
+        box(0.06, 0.645, 0.89, 0.300, 0x0D_0F15)
+        box(0.06, 0.645, 0.89, 0.035, 0x17_1A23)
+        box(0.072, 0.656, 0.055, 0.013, ident, 0.45, rounded: true)
         let terminal: [(Double, [(Double, UInt32)])] = [
-            (0.00, [(0.014, string), (0.090, ident), (0.060, number)]),
-            (0.02, [(0.180, ident)]),
-            (0.02, [(0.130, comment)]),
-            (0.00, [(0.014, string), (0.115, ident)]),
-            (0.02, [(0.075, type), (0.150, ident)])
+            (0.00, [(0.014, string), (0.135, ident), (0.090, number)]),
+            (0.02, [(0.290, ident)]),
+            (0.02, [(0.205, comment)]),
+            (0.00, [(0.014, string), (0.175, ident), (0.060, type)]),
+            (0.02, [(0.115, type), (0.240, ident)]),
+            (0.02, [(0.160, ident), (0.070, number)])
         ]
         for (index, line) in terminal.enumerated() {
-            let y = 0.752 + Double(index) * 0.036
+            let y = 0.700 + Double(index) * 0.036
             var x = 0.082 + line.0
             for segment in line.1 {
                 box(x, y, segment.0, 0.016, segment.1, 0.8, rounded: true)
