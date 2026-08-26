@@ -3002,21 +3002,35 @@ class AppState: ObservableObject {
                         id: UUID(), tool: tool, points: points,
                         color: Annotation.RGBA.palette[colorIndex], width: 4)))
         }
-        // Kept clear of the stats HUD, which occupies roughly the left 19% of
-        // the frame down to mid-height: the strokes ran under it and the pen
-        // came out half-hidden, which is a poor look for the one shot the
+        // Placed ON things in the frame below rather than spread evenly across
+        // it: an oval round a block, an arrow pointing at that oval, a pen
+        // underline, a strike, a rectangle round a line of terminal output.
+        // Five shapes at even spacing proved every tool renders and looked
+        // like a test pattern, which is the wrong read for the shot the
         // landing page leads with.
-        seed(.pen, [CGPoint(x: 0.24, y: 0.30), CGPoint(x: 0.34, y: 0.55), CGPoint(x: 0.29, y: 0.72)], 0)
-        seed(.line, [CGPoint(x: 0.41, y: 0.30), CGPoint(x: 0.51, y: 0.72)], 1)
-        seed(.arrow, [CGPoint(x: 0.56, y: 0.72), CGPoint(x: 0.66, y: 0.30)], 2)
-        seed(.rectangle, [CGPoint(x: 0.69, y: 0.34), CGPoint(x: 0.81, y: 0.66)], 3)
-        seed(.oval, [CGPoint(x: 0.84, y: 0.34), CGPoint(x: 0.96, y: 0.66)], 4)
+        //
+        // All of it stays clear of the stats HUD, which occupies roughly the
+        // left 19% of the frame down to mid-height.
+        seed(.oval, [CGPoint(x: 0.215, y: 0.205), CGPoint(x: 0.470, y: 0.350)], 4)
+        seed(.arrow, [CGPoint(x: 0.630, y: 0.410), CGPoint(x: 0.487, y: 0.295)], 2)
+        seed(.pen, [CGPoint(x: 0.232, y: 0.500), CGPoint(x: 0.310, y: 0.532), CGPoint(x: 0.392, y: 0.494)], 0)
+        seed(.line, [CGPoint(x: 0.600, y: 0.600), CGPoint(x: 0.820, y: 0.452)], 1)
+        seed(.rectangle, [CGPoint(x: 0.098, y: 0.760), CGPoint(x: 0.552, y: 0.828)], 3)
     }
 
-    /// A 16:9 gradient stand-in for decoded video, big enough that the
-    /// annotation overlay is legible in a screenshot. Same role as the GTK
-    /// app's `makePreviewFrame`, in the pixel format the Metal renderer's
-    /// BGRA path already takes.
+    /// A 16:9 stand-in for decoded video: a dark editor over a terminal,
+    /// drawn as bars rather than letterforms. Same role as the GTK app's
+    /// `makePreviewFrame`, in the pixel format the Metal renderer's BGRA path
+    /// already takes -- but a flat gradient made the landing page's lead shot
+    /// read as an abstract, and what the viewer is FOR is somebody else's
+    /// screen, so the stand-in should look like one.
+    ///
+    /// Bars, not text: this is a screenshot on a public page, and a page that
+    /// renders convincing-looking code nobody wrote invites the reader to
+    /// squint at it. The old CSS mockup this replaced used the same device.
+    ///
+    /// The left 19% down to mid-height is deliberately empty of anything that
+    /// matters -- that is where the stats HUD sits.
     private static func makeUIPreviewFrame(width: Int, height: Int) -> CVPixelBuffer? {
         var out: CVPixelBuffer?
         let attrs: [CFString: Any] = [
@@ -3034,20 +3048,114 @@ class AppState: ObservableObject {
         CVPixelBufferLockBaseAddress(buffer, [])
         defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
         guard let base = CVPixelBufferGetBaseAddress(buffer) else { return nil }
-        let stride = CVPixelBufferGetBytesPerRow(buffer)
-        let bytes = base.assumingMemoryBound(to: UInt8.self)
-        for y in 0..<height {
-            let row = bytes + y * stride
-            let vertical = Double(y) / Double(height)
-            for x in 0..<width {
-                let horizontal = Double(x) / Double(width)
-                let pixel = row + x * 4
-                // BGRA, and a dark indigo-to-slate wash so white overlay
-                // strokes and the toolbar both read against it.
-                pixel[0] = UInt8(60 + 70 * vertical)
-                pixel[1] = UInt8(38 + 46 * horizontal)
-                pixel[2] = UInt8(46 + 40 * horizontal)
-                pixel[3] = 255
+        guard
+            let context = CGContext(
+                data: base, width: width, height: height, bitsPerComponent: 8,
+                bytesPerRow: CVPixelBufferGetBytesPerRow(buffer),
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue
+                    | CGBitmapInfo.byteOrder32Little.rawValue)
+        else { return nil }
+
+        // Flip to y-down so these coordinates read like the annotation space
+        // above, where the strokes that land on top of this are written.
+        context.translateBy(x: 0, y: CGFloat(height))
+        context.scaleBy(x: 1, y: -1)
+
+        let frameWidth = Double(width)
+        let frameHeight = Double(height)
+        func box(
+            _ x: Double, _ y: Double, _ boxWidth: Double, _ boxHeight: Double,
+            _ rgb: UInt32, _ alpha: Double = 1, rounded: Bool = false
+        ) {
+            let rect = CGRect(
+                x: x * frameWidth, y: y * frameHeight,
+                width: boxWidth * frameWidth, height: boxHeight * frameHeight)
+            context.setFillColor(
+                red: CGFloat((rgb >> 16) & 0xFF) / 255,
+                green: CGFloat((rgb >> 8) & 0xFF) / 255,
+                blue: CGFloat(rgb & 0xFF) / 255,
+                alpha: CGFloat(alpha))
+            if rounded {
+                context.addPath(
+                    CGPath(
+                        roundedRect: rect, cornerWidth: rect.height / 2,
+                        cornerHeight: rect.height / 2, transform: nil))
+                context.fillPath()
+            } else {
+                context.fill(rect)
+            }
+        }
+
+        let keyword: UInt32 = 0xA8_79F0
+        let ident: UInt32 = 0xB8_C0D4
+        let string: UInt32 = 0x6B_D08A
+        let type: UInt32 = 0x58_C4D4
+        let number: UInt32 = 0xE0_A35C
+        let comment: UInt32 = 0x4D_5568
+
+        box(0, 0, 1, 1, 0x14_161E)
+        box(0.18, 0.02, 0.79, 0.055, 0x1C_1F2A)
+        box(0.19, 0.025, 0.11, 0.047, 0x26_2A38, rounded: true)
+        box(0.315, 0.025, 0.085, 0.047, 0x1A_1D26, rounded: true)
+        box(0.415, 0.025, 0.07, 0.047, 0x1A_1D26, rounded: true)
+
+        // (indent, [(segment width, colour)]) -- laid out left to right with a
+        // fixed gap, so the shapes read as words without being any.
+        let code: [(Double, [(Double, UInt32)])] = [
+            (0.000, [(0.150, comment)]),
+            (0.000, [(0.045, keyword), (0.080, ident), (0.018, ident)]),
+            (0.028, [(0.035, keyword), (0.105, ident)]),
+            (0.028, [(0.058, ident), (0.026, ident), (0.095, string)]),
+            (0.056, [(0.040, keyword), (0.070, type), (0.026, number)]),
+            (0.056, [(0.090, ident), (0.048, string)]),
+            (0.028, [(0.020, ident)]),
+            (0.000, [(0.125, comment)]),
+            (0.000, [(0.050, keyword), (0.090, ident), (0.018, ident)]),
+            (0.028, [(0.072, ident), (0.028, ident), (0.058, type)]),
+            (0.056, [(0.045, keyword), (0.115, string)]),
+            (0.056, [(0.085, ident), (0.038, number)]),
+            (0.028, [(0.020, ident)]),
+            (0.000, [(0.062, keyword), (0.100, ident)])
+        ]
+        for (index, line) in code.enumerated() {
+            let y = 0.105 + Double(index) * 0.036
+            box(0.202, y + 0.004, 0.010, 0.011, comment, 0.7, rounded: true)
+            var x = 0.228 + line.0
+            for segment in line.1 {
+                box(x, y, segment.0, 0.017, segment.1, 0.85, rounded: true)
+                x += segment.0 + 0.009
+            }
+        }
+
+        // Minimap: the same lines again, scaled down and faint.
+        for (index, line) in code.enumerated() {
+            let y = 0.11 + Double(index) * 0.0135
+            var x = 0.905 + line.0 * 0.18
+            for segment in line.1 {
+                box(x, y, segment.0 * 0.18, 0.006, segment.1, 0.35)
+                x += (segment.0 + 0.009) * 0.18
+            }
+        }
+
+        // Terminal, split off the bottom. Below the HUD, so it may use the
+        // full width the editor above it cannot.
+        box(0.06, 0.695, 0.89, 0.25, 0x0D_0F15)
+        box(0.06, 0.695, 0.89, 0.035, 0x17_1A23)
+        box(0.072, 0.706, 0.055, 0.013, ident, 0.45, rounded: true)
+        let terminal: [(Double, [(Double, UInt32)])] = [
+            (0.00, [(0.014, string), (0.090, ident), (0.060, number)]),
+            (0.02, [(0.180, ident)]),
+            (0.02, [(0.130, comment)]),
+            (0.00, [(0.014, string), (0.115, ident)]),
+            (0.02, [(0.075, type), (0.150, ident)])
+        ]
+        for (index, line) in terminal.enumerated() {
+            let y = 0.752 + Double(index) * 0.036
+            var x = 0.082 + line.0
+            for segment in line.1 {
+                box(x, y, segment.0, 0.016, segment.1, 0.8, rounded: true)
+                x += segment.0 + 0.010
             }
         }
         return buffer
